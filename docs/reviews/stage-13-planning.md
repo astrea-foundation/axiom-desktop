@@ -34,3 +34,11 @@ cargo test --workspace --all-targets
 cargo clippy --workspace --all-targets -- -D warnings
 cargo deny check
 ```
+
+## Final revalidation
+
+Reopened and passed against implementation `f9fcedf` on 2026-08-22 by Codex.
+The criterion mapping, exact commands/test totals, architecture/security/front-
+end/dependency/performance findings, deferrals, and final rationale are
+incorporated from the [final Stage 00–15 revalidation](final-revalidation-2026-08-22.md).
+Final decision: **PASS**.

@@ -50,3 +50,11 @@ subprocess tests passed, and 2 deterministic agent evaluations passed.
 
 Unresolved items: ACP `session/load`, durable identity, richer plans/questions,
 and per-session MCP belong to Stages 10–13 and are not advertised at this gate.
+
+## Final revalidation
+
+Reopened and passed against implementation `f9fcedf` on 2026-08-22 by Codex.
+The criterion mapping, exact commands/test totals, architecture/security/front-
+end/dependency/performance findings, deferrals, and final rationale are
+incorporated from the [final Stage 00–15 revalidation](final-revalidation-2026-08-22.md).
+Final decision: **PASS**.

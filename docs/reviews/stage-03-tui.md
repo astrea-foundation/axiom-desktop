@@ -54,3 +54,11 @@ ACP subprocess tests, 2 agent evaluations and 3 real PTY tests passed.
 Unresolved items: inline patch-specific navigation will attach to the generic
 viewer in Stage 08; session selection/resume attaches in Stage 10. Neither is a
 missing Stage 03 shell behavior.
+
+## Final revalidation
+
+Reopened and passed against implementation `f9fcedf` on 2026-08-22 by Codex.
+The criterion mapping, exact commands/test totals, architecture/security/front-
+end/dependency/performance findings, deferrals, and final rationale are
+incorporated from the [final Stage 00–15 revalidation](final-revalidation-2026-08-22.md).
+Final decision: **PASS**.

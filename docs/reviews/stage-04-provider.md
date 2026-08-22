@@ -20,3 +20,11 @@ Decision: **PASS**
 
 The live test remains opt-in and is not run with credentials in CI. It fails
 closed unless all three explicit live-test environment variables are present.
+
+## Final revalidation
+
+Reopened and passed against implementation `f9fcedf` on 2026-08-22 by Codex.
+The criterion mapping, exact commands/test totals, architecture/security/front-
+end/dependency/performance findings, deferrals, and final rationale are
+incorporated from the [final Stage 00–15 revalidation](final-revalidation-2026-08-22.md).
+Final decision: **PASS**.

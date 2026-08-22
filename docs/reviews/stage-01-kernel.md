@@ -53,3 +53,11 @@ deterministic agent evaluations passed.
 
 Unresolved items: none for Stage 01. Storage migration behavior and user-facing
 resume remain owned by Stage 10.
+
+## Final revalidation
+
+Reopened and passed against implementation `f9fcedf` on 2026-08-22 by Codex.
+The criterion mapping, exact commands/test totals, architecture/security/front-
+end/dependency/performance findings, deferrals, and final rationale are
+incorporated from the [final Stage 00–15 revalidation](final-revalidation-2026-08-22.md).
+Final decision: **PASS**.

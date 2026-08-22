@@ -45,3 +45,11 @@ cargo deny check                                        PASS
 Supported release-candidate platform for this stage: Linux x86-64. Non-Linux
 execution keeps the same empty-environment/process-group interface for compile
 portability, but is not advertised as an isolated release path.
+
+## Final revalidation
+
+Reopened and passed against implementation `f9fcedf` on 2026-08-22 by Codex.
+The criterion mapping, exact commands/test totals, architecture/security/front-
+end/dependency/performance findings, deferrals, and final rationale are
+incorporated from the [final Stage 00–15 revalidation](final-revalidation-2026-08-22.md).
+Final decision: **PASS**.

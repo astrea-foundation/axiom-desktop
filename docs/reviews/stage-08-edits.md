@@ -26,3 +26,11 @@ Decision: **PASS**
 - The deterministic coding evaluation uses `apply_patch`, observes the diff
   event and change set, runs a real test command, and verifies that structured
   and libgit2 diffs agree on removed/added content.
+
+## Final revalidation
+
+Reopened and passed against implementation `f9fcedf` on 2026-08-22 by Codex.
+The criterion mapping, exact commands/test totals, architecture/security/front-
+end/dependency/performance findings, deferrals, and final rationale are
+incorporated from the [final Stage 00–15 revalidation](final-revalidation-2026-08-22.md).
+Final decision: **PASS**.

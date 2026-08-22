@@ -24,3 +24,11 @@ cargo test --locked --manifest-path axiomcli/Cargo.toml --all-features --no-fail
 
 Both completed successfully (51 unit tests passed, 2 explicit live-service
 tests ignored, plus 8 integration/PTY tests passed).
+
+## Final revalidation
+
+Reopened and passed against implementation `f9fcedf` on 2026-08-22 by Codex.
+The criterion mapping, exact commands/test totals, architecture/security/front-
+end/dependency/performance findings, deferrals, and final rationale are
+incorporated from the [final Stage 00–15 revalidation](final-revalidation-2026-08-22.md).
+Final decision: **PASS**.

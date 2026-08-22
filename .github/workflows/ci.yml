@@ -49,7 +49,7 @@ jobs:
         with:
           toolchain: 1.97.1
       - uses: Swatinem/rust-cache@v2
-      - run: sudo apt-get update && sudo apt-get install -y bubblewrap
+      - run: sudo apt-get update && sudo apt-get install -y bubblewrap jq
       - run: cargo install cargo-deny --locked
       - run: scripts/package-release
         env:

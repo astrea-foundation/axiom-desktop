@@ -36,3 +36,11 @@ cargo test --locked --manifest-path axiomcli/Cargo.toml --all-features --no-fail
 The focused policy, approval lifecycle, configuration-precedence, TUI-drop,
 and agent disconnect/timeout tests pass. No operation executes on a fail-closed
 path.
+
+## Final revalidation
+
+Reopened and passed against implementation `f9fcedf` on 2026-08-22 by Codex.
+The criterion mapping, exact commands/test totals, architecture/security/front-
+end/dependency/performance findings, deferrals, and final rationale are
+incorporated from the [final Stage 00–15 revalidation](final-revalidation-2026-08-22.md).
+Final decision: **PASS**.

@@ -27,11 +27,14 @@ contain the omitted behavior and evidence rather than redefining the plan.
 | 14 | Repeated multi-language evaluations, scoring, resume/web/MCP coverage, frontend equivalence, soak gates, and live baseline pass. |
 | 15 | Accessibility/terminal polish, deterministic signed-package mechanics, install/start/resume/ACP/uninstall smokes, compatibility policy, and clean-checkout verification pass. |
 
-The final clean-checkout gate was run against commit `7de3ef4`. It included all
-workspace targets, strict Clippy, Cargo Deny, deterministic evaluations, the
-real pinned SearXNG integration, optimized packaging, archive verification, an
-isolated install/start test, and uninstall. The Stage 15 review records the
-complete commands and behavioral smokes.
+The final clean-checkout gate was rerun against implementation commit
+`f9fcedf3125c83e1b2082da7cee422ad94142f10`. It included all workspace
+targets and features, strict Clippy, Cargo Deny, deterministic evaluations, the
+real pinned SearXNG integration, optimized reproducible packaging, dependency
+notice collection, archive verification, isolated install/start/coding/ACP/TUI
+smokes, and uninstall. The
+[final revalidation](final-revalidation-2026-08-22.md) records the exact
+commands, totals, findings, and safe deferrals.
 
 The supported release-candidate platform for this plan is Linux x86-64 GNU.
 macOS and Windows are not packaged or advertised as supported until their

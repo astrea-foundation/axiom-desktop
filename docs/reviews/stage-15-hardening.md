@@ -22,8 +22,9 @@ decision does not claim macOS/Windows support or production TEE/E2EE.
 
 - `scripts/package-release` creates a locked optimized GNU tar/gzip artifact
   with fixed timestamps, stable ordering, SHA-256, build metadata, project
-  license, and generated third-party license inventory. Fixed-input archives
-  compare byte-for-byte.
+  license, generated third-party license inventory, and dependency-shipped
+  license/copying/notice files with a deterministic manifest. Fixed-input
+  archives compare byte-for-byte.
 - Detached GPG signing and verification were exercised with an ephemeral release
   test key. Tagged-release automation accepts only the separately provisioned
   maintainer key; publishing an officially signed release remains an operational
@@ -40,9 +41,9 @@ decision does not claim macOS/Windows support or production TEE/E2EE.
 - The optimized binary completed a disposable Rust coding task: it inspected the
   repository, corrected the defect, ran the real test suite, and reported the
   passing result.
-- The installed ACP server initialized, created a session, completed a live
-  prompt, stopped, reloaded the same durable session after restart, replayed
-  history, and completed another live prompt.
+- The installed ACP server initialized, created a session, completed a prompt
+  through a real local OpenAI-compatible HTTP stream, stopped, reloaded the same
+  durable session after restart, replayed history, and completed another prompt.
 - The installed TUI resumed that session in a PTY, rendered help, handled input,
   and restored the alternate screen on exit.
 - This smoke exposed a real persistence defect: secret redaction confused usage
@@ -52,13 +53,14 @@ decision does not claim macOS/Windows support or production TEE/E2EE.
 
 ## Independent clean-checkout gate
 
-Commit `7de3ef4` was cloned into a new directory and passed:
+Commit `f9fcedf3125c83e1b2082da7cee422ad94142f10` was cloned into a new
+directory and passed:
 
 ```text
 cargo fmt --all -- --check
-cargo check --workspace --all-targets
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace --all-targets
+cargo check --workspace --all-targets --all-features
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-features
 cargo deny check
 scripts/axiomcli-eval deterministic
 AXIOMCLI_SEARXNG_STATE_DIR=... scripts/searxng-dev integration-test
@@ -70,10 +72,20 @@ scripts/uninstall-release PREFIX
 
 The SearXNG gate started the real pinned service and exercised lifecycle,
 failure, and citation behavior; it did not use a search mock. The clean release
-binary also started inside a fresh Bubblewrap namespace.
+binary also started inside a fresh Bubblewrap namespace. Two fixed-input
+optimized archives were byte-identical; the 7,666,205-byte archive contained
+745 dependency license/notice files and an 809-line manifest.
 
 The release-candidate threat-model audit has no open blocker or high-severity
 item inside the stated platform and development-inference scope. Dependencies
 are locked, `unsafe` Rust is forbidden, Cargo Deny passes (with reviewed
 duplicate-version warnings), and neither repository nor artifact contains an
 Axiom credential.
+
+## Final revalidation
+
+Reopened and passed against implementation `f9fcedf` on 2026-08-22 by Codex.
+The criterion mapping, exact commands/test totals, architecture/security/front-
+end/dependency/performance findings, deferrals, and final rationale are
+incorporated from the [final Stage 00–15 revalidation](final-revalidation-2026-08-22.md).
+Final decision: **PASS**.

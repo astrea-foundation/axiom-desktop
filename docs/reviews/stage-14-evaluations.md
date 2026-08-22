@@ -27,3 +27,11 @@ Decision: **PASS (reviewed 2026-08-22)**
 Verification includes `scripts/axiomcli-eval deterministic`, the opt-in live
 evaluation, the real SearXNG lifecycle suite, strict Clippy, and dependency
 policy checks. Live credentials are never persisted or printed.
+
+## Final revalidation
+
+Reopened and passed against implementation `f9fcedf` on 2026-08-22 by Codex.
+The criterion mapping, exact commands/test totals, architecture/security/front-
+end/dependency/performance findings, deferrals, and final rationale are
+incorporated from the [final Stage 00–15 revalidation](final-revalidation-2026-08-22.md).
+Final decision: **PASS**.

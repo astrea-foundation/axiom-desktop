@@ -37,3 +37,11 @@ cargo deny check
 HTTP MCP transport and ACP per-session MCP declarations are not advertised in
 this early version. Reconnect is intentionally bounded rather than an
 unbounded background retry loop.
+
+## Final revalidation
+
+Reopened and passed against implementation `f9fcedf` on 2026-08-22 by Codex.
+The criterion mapping, exact commands/test totals, architecture/security/front-
+end/dependency/performance findings, deferrals, and final rationale are
+incorporated from the [final Stage 00–15 revalidation](final-revalidation-2026-08-22.md).
+Final decision: **PASS**.
