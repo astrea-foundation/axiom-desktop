@@ -26,7 +26,8 @@ impl AcpProcess {
     }
 
     fn spawn_inner(runner: &str, state_path: &Path, state: Option<TempDir>) -> Self {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_axiomcli"))
+        let mut command = Command::new(env!("CARGO_BIN_EXE_axiomcli"));
+        command
             .arg("acp")
             .env("AXIOMCLI_TEST_RUNNER", runner)
             .env("XDG_CONFIG_HOME", state_path.join("config"))
@@ -34,9 +35,11 @@ impl AcpProcess {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .expect("spawn ACP");
+            .kill_on_drop(true);
+        if runner == "workspace_edit" {
+            command.env("AXIOM_PERMISSION_PROFILE", "workspace");
+        }
+        let mut child = command.spawn().expect("spawn ACP");
         let stdin = child.stdin.take().expect("stdin");
         let stdout = BufReader::new(child.stdout.take().expect("stdout")).lines();
         Self {
@@ -125,6 +128,41 @@ impl AcpProcess {
             .expect("wait ACP");
         assert!(status.success());
     }
+}
+
+#[tokio::test]
+async fn workspace_edit_reaches_the_expected_acp_semantics_and_final_workspace() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    std::fs::write(workspace.path().join("frontend.txt"), "before\n").expect("fixture");
+    let state = tempfile::tempdir().expect("state");
+    let mut acp = AcpProcess::spawn_inner("workspace_edit", state.path(), None);
+    // This fixture exercises a pre-authorized shared turn; it still rejects
+    // profiles without workspace write authority.
+    acp.initialize().await;
+    let session = acp.new_session(2, workspace.path()).await;
+    acp.send(&json!({
+        "jsonrpc":"2.0","id":3,"method":"session/prompt",
+        "params":{"sessionId":session,"prompt":[{"type":"text","text":"edit fixture"}]}
+    }))
+    .await;
+    let mut transcript = String::new();
+    loop {
+        let value = acp.read().await;
+        transcript.push_str(&value.to_string());
+        if value.get("id").and_then(Value::as_i64) == Some(3) {
+            assert_eq!(value["result"]["stopReason"], "end_turn");
+            break;
+        }
+    }
+    assert_eq!(
+        std::fs::read_to_string(workspace.path().join("frontend.txt")).expect("result"),
+        "after\n"
+    );
+    assert!(transcript.contains("replace_text"));
+    assert!(transcript.contains("frontend-edit"));
+    assert!(transcript.contains("DIFF"));
+    assert!(transcript.contains("Updated frontend.txt through the shared turn contract."));
+    acp.close().await;
 }
 
 #[tokio::test]

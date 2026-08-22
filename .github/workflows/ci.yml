@@ -21,6 +21,7 @@ jobs:
       - run: cargo check --workspace --all-targets
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace --all-targets
+      - run: scripts/axiomcli-eval deterministic
       - run: cargo install cargo-deny --locked
       - run: cargo deny check
 

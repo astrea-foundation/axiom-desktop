@@ -5,7 +5,7 @@ use axiomcli::{
     AxiomError,
     agent::{
         AgentEngine, AgentLimits, BlockingTurnRunner, EchoTurnRunner, QuestionTurnRunner,
-        TurnContext, TurnRunner,
+        TurnContext, TurnRunner, WorkspaceEditTurnRunner,
     },
     app::{AppEvent, SessionId, TurnId},
     config::Config,
@@ -425,6 +425,7 @@ async fn build_runner(config: &Config) -> anyhow::Result<Arc<dyn TurnRunner>> {
             Ok("echo") => return Ok(Arc::new(EchoTurnRunner)),
             Ok("blocking") => return Ok(Arc::new(BlockingTurnRunner)),
             Ok("questions") => return Ok(Arc::new(QuestionTurnRunner)),
+            Ok("workspace_edit") => return Ok(Arc::new(WorkspaceEditTurnRunner)),
             _ => {}
         }
     }

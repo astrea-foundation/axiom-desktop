@@ -1,0 +1,36 @@
+name: scheduled live evaluations
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 9 * * 2"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: axiomcli-live-evaluation
+  cancel-in-progress: false
+
+jobs:
+  live-model:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      AXIOM_API_KEY: ${{ secrets.AXIOM_EVAL_API_KEY }}
+      AXIOM_LIVE_BASE_URL: ${{ secrets.AXIOM_EVAL_BASE_URL }}
+      AXIOM_LIVE_MODEL: ${{ secrets.AXIOM_EVAL_MODEL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.1
+      - uses: Swatinem/rust-cache@v2
+      - name: Run budgeted live evaluation
+        shell: bash
+        run: |
+          if [[ -z "$AXIOM_LIVE_BASE_URL" || -z "$AXIOM_LIVE_MODEL" ]]; then
+            echo "::notice::Live evaluation secrets are not configured; no live gate was run."
+            exit 0
+          fi
+          scripts/axiomcli-eval live

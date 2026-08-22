@@ -18,6 +18,7 @@ use crate::{
         AssistantTurn, ChatMessage, ChatRole, InferenceProvider, InferenceRequest, ProviderEvent,
     },
     tools::{ToolContext, ToolRegistry},
+    workspace::Workspace,
 };
 
 #[derive(Clone)]
@@ -203,6 +204,92 @@ impl TurnRunner for QuestionTurnRunner {
             .send(AppEvent::TextDelta {
                 turn_id: context.turn_id,
                 text: serde_json::to_string(&answers)?,
+            })
+            .map_err(|_| AxiomError::Cancelled)?;
+        Ok(())
+    }
+}
+
+/// Debug-build-only deterministic workspace mutation used to prove that ACP
+/// and TUI adapters preserve the same semantic turn contract.
+#[derive(Debug, Default)]
+pub struct WorkspaceEditTurnRunner;
+
+#[async_trait]
+impl TurnRunner for WorkspaceEditTurnRunner {
+    async fn run(
+        &self,
+        context: TurnContext,
+        _prompt: String,
+        events: mpsc::UnboundedSender<AppEvent>,
+        cancellation: CancellationToken,
+    ) -> Result<()> {
+        if cancellation.is_cancelled() {
+            return Err(AxiomError::Cancelled);
+        }
+        if !matches!(
+            context.permission_profile,
+            PermissionProfile::Workspace | PermissionProfile::Autonomous
+        ) {
+            return Err(AxiomError::PermissionDenied(
+                "workspace-edit fixture requires workspace authority".into(),
+            ));
+        }
+        let call_id = "frontend-edit".to_owned();
+        let arguments = serde_json::json!({
+            "path": "frontend.txt",
+            "old": "before\n",
+            "new": "after\n"
+        });
+        events
+            .send(AppEvent::ToolProposed {
+                turn_id: context.turn_id.clone(),
+                call_id: call_id.clone(),
+                name: "replace_text".into(),
+                arguments,
+            })
+            .map_err(|_| AxiomError::Cancelled)?;
+        events
+            .send(AppEvent::ToolStarted {
+                call_id: call_id.clone(),
+                name: "replace_text".into(),
+            })
+            .map_err(|_| AxiomError::Cancelled)?;
+        let outcome = Workspace::new(&context.cwd)?.apply_replacement(
+            "frontend.txt",
+            "before\n",
+            "after\n",
+            None,
+        )?;
+        events
+            .send(AppEvent::ToolOutput {
+                call_id: call_id.clone(),
+                content: "updated frontend.txt".into(),
+                truncated: false,
+            })
+            .map_err(|_| AxiomError::Cancelled)?;
+        events
+            .send(AppEvent::ToolCompleted {
+                call_id: call_id.clone(),
+                success: true,
+            })
+            .map_err(|_| AxiomError::Cancelled)?;
+        events
+            .send(AppEvent::WorkspaceChanged {
+                paths: vec![outcome.path],
+            })
+            .map_err(|_| AxiomError::Cancelled)?;
+        events
+            .send(AppEvent::DiffAvailable {
+                call_id,
+                diff: outcome.diff,
+                truncated: false,
+            })
+            .map_err(|_| AxiomError::Cancelled)?;
+        events
+            .send(AppEvent::TextDelta {
+                turn_id: context.turn_id,
+                text: "Updated frontend.txt through the shared turn contract.".into(),
             })
             .map_err(|_| AxiomError::Cancelled)?;
         Ok(())

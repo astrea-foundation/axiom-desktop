@@ -33,6 +33,9 @@ fn run_tui_at(
     command.env("NO_COLOR", "1");
     command.env("XDG_CONFIG_HOME", state_path.join("config"));
     command.env("XDG_DATA_HOME", state_path.join("data"));
+    if runner == "workspace_edit" {
+        command.env("AXIOM_PERMISSION_PROFILE", "workspace");
+    }
     if panic_probe {
         command.env("AXIOMCLI_TEST_TUI_PANIC", "1");
     }
@@ -171,4 +174,132 @@ fn durable_tui_session_resumes_in_the_same_workspace() {
             || resumed_output.contains("no interrupted actions replayed"),
         "resume state was not rendered: {resumed_output:?}"
     );
+}
+
+#[test]
+fn workspace_edit_reaches_the_expected_tui_semantics_and_final_workspace() {
+    let state = tempfile::tempdir().expect("state");
+    let workspace = tempfile::tempdir().expect("workspace");
+    std::fs::write(workspace.path().join("frontend.txt"), "before\n").expect("fixture");
+    let cwd = workspace.path().to_string_lossy().into_owned();
+    let (output, success) = run_tui_at("workspace_edit", false, state.path(), &["--cwd", &cwd]);
+    assert!(success, "TUI fixture failed: {output:?}");
+    assert_eq!(
+        std::fs::read_to_string(workspace.path().join("frontend.txt")).expect("result"),
+        "after\n"
+    );
+    assert!(output.contains("replace_text"), "missing tool identity");
+    assert!(output.contains("frontend.txt"), "missing workspace path");
+    let listed = std::process::Command::new(env!("CARGO_BIN_EXE_axiomcli"))
+        .args(["sessions", "list"])
+        .env("XDG_CONFIG_HOME", state.path().join("config"))
+        .env("XDG_DATA_HOME", state.path().join("data"))
+        .output()
+        .expect("list TUI session");
+    assert!(listed.status.success());
+    let session_id = String::from_utf8(listed.stdout)
+        .expect("session list")
+        .lines()
+        .next()
+        .and_then(|line| line.split('\t').next())
+        .expect("session ID")
+        .to_owned();
+    let exported = std::process::Command::new(env!("CARGO_BIN_EXE_axiomcli"))
+        .args(["sessions", "show", &session_id])
+        .env("XDG_CONFIG_HOME", state.path().join("config"))
+        .env("XDG_DATA_HOME", state.path().join("data"))
+        .output()
+        .expect("export TUI session");
+    assert!(exported.status.success());
+    let journal = String::from_utf8(exported.stdout).expect("journal JSON");
+    assert!(
+        journal.contains("Updated frontend.txt through the shared turn contract.")
+            && journal.contains("diff_available")
+            && journal.contains("tool_completed"),
+        "missing shared semantic events: {journal}"
+    );
+    assert!(output.contains("\u{1b}[?1049l"));
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn idle_tui_stays_within_linux_memory_and_cpu_budgets() {
+    let state = tempfile::tempdir().expect("state");
+    let pair = native_pty_system()
+        .openpty(PtySize {
+            rows: 30,
+            cols: 100,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .expect("open PTY");
+    let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_axiomcli"));
+    command.arg("tui");
+    command.env("AXIOMCLI_TEST_RUNNER", "echo");
+    command.env("AXIOMCLI_ASCII", "1");
+    command.env("NO_COLOR", "1");
+    command.env("XDG_CONFIG_HOME", state.path().join("config"));
+    command.env("XDG_DATA_HOME", state.path().join("data"));
+    let mut child = pair.slave.spawn_command(command).expect("spawn TUI");
+    drop(pair.slave);
+    let pid = child.process_id().expect("TUI process ID");
+    let mut reader = pair.master.try_clone_reader().expect("PTY reader");
+    let reader_thread = thread::spawn(move || {
+        let mut sink = std::io::sink();
+        std::io::copy(&mut reader, &mut sink).expect("drain PTY");
+    });
+    let mut writer = pair.master.take_writer().expect("PTY writer");
+    writer.write_all(b"\x1b[1;1R").expect("cursor response");
+    writer.flush().expect("flush cursor response");
+    thread::sleep(Duration::from_millis(300));
+
+    let first_ticks = linux_process_ticks(pid);
+    thread::sleep(Duration::from_secs(1));
+    let second_ticks = linux_process_ticks(pid);
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).expect("process status");
+    let rss_kib = status
+        .lines()
+        .find_map(|line| line.strip_prefix("VmRSS:"))
+        .and_then(|value| value.split_whitespace().next())
+        .and_then(|value| value.parse::<u64>().ok())
+        .expect("VmRSS");
+    assert!(rss_kib < 64 * 1024, "idle RSS was {rss_kib} KiB");
+    assert!(
+        second_ticks.saturating_sub(first_ticks) <= 20,
+        "idle TUI used more than 20 scheduler ticks in one second"
+    );
+    eprintln!(
+        "idle TUI summary: rss_kib={rss_kib} scheduler_ticks_1s={}",
+        second_ticks.saturating_sub(first_ticks)
+    );
+
+    writer.write_all(&[27]).expect("quit TUI");
+    writer.flush().expect("flush quit");
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if child.try_wait().expect("poll TUI").is_some() {
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            child.kill().expect("kill stuck TUI");
+            panic!("idle TUI did not exit");
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    drop(writer);
+    reader_thread.join().expect("PTY reader");
+}
+
+#[cfg(target_os = "linux")]
+fn linux_process_ticks(pid: u32) -> u64 {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).expect("process stat");
+    let fields = stat
+        .split_once(") ")
+        .expect("stat command boundary")
+        .1
+        .split_whitespace()
+        .collect::<Vec<_>>();
+    let user = fields[11].parse::<u64>().expect("user ticks");
+    let system = fields[12].parse::<u64>().expect("system ticks");
+    user + system
 }

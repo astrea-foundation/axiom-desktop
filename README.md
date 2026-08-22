@@ -138,6 +138,12 @@ cargo test --workspace --all-features
 cargo deny check
 ```
 
+The required deterministic evaluation lane is
+`scripts/axiomcli-eval deterministic`. Budgeted live-model and full real-service
+runs are opt-in via `scripts/axiomcli-eval live|full`; see
+[`docs/evaluations.md`](docs/evaluations.md) for scoring and the recorded
+baseline.
+
 ## Reference policy
 
 Other coding agents are behavioral references only. AxiomCLI code and tests are

@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+workspace_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+mode=${1:-deterministic}
+
+cd "$workspace_root"
+
+run_deterministic() {
+  cargo test -p axiomcli --test autonomous_eval
+  cargo test -p axiomcli --test evaluation_suite original_multilanguage_evaluation_set_is_repeatable_from_clean_fixtures
+  cargo test -p axiomcli --test soak
+  cargo test -p axiomcli --test acp_transcript
+  cargo test -p axiomcli --test tui_pty
+  cargo test -p axiomcli --test mcp_integration
+}
+
+run_live_model() {
+  : "${AXIOM_LIVE_BASE_URL:?set AXIOM_LIVE_BASE_URL for the opt-in live evaluation}"
+  : "${AXIOM_LIVE_MODEL:?set AXIOM_LIVE_MODEL for the opt-in live evaluation}"
+  cargo test -p axiomcli --test evaluation_suite \
+    live_model_investigation_baseline_is_budgeted_and_non_mutating \
+    -- --ignored --nocapture
+}
+
+case "$mode" in
+  deterministic)
+    run_deterministic
+    ;;
+  live)
+    run_live_model
+    ;;
+  full)
+    run_deterministic
+    scripts/searxng-dev integration-test
+    run_live_model
+    ;;
+  *)
+    echo "usage: scripts/axiomcli-eval [deterministic|live|full]" >&2
+    exit 2
+    ;;
+esac
