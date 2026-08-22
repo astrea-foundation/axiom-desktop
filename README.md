@@ -12,7 +12,9 @@ desktop application.
 
 The implementation follows the gated plan in
 [`docs/axiomcli-implementation-plan.md`](docs/axiomcli-implementation-plan.md).
-Each completed stage has a review record under `docs/reviews/`.
+All applicable Stage 00–15 gates pass for the early Linux x86-64 GNU release
+candidate. Each stage has an evidence-backed review record under `docs/reviews/`.
+Production TEE/E2EE and the desktop application remain separate future work.
 
 ## Commands
 

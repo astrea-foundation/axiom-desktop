@@ -1,7 +1,8 @@
 # AxiomCLI TUI Implementation Plan
 
-Status: implementation in progress; original gates reopened by the 2026-08-22
-completion audit
+Status: **complete for the stated early-version Linux x86-64 GNU scope**. All
+applicable Stage 00–15 gates pass; see the 2026-08-22 completion audit and stage
+review records. Explicitly deferred and out-of-scope work remains deferred.
 
 Product: `axiomcli`
 

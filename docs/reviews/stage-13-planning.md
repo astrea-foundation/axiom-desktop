@@ -1,6 +1,6 @@
 # Stage 13 Review — Plans, questions, and controlled concurrency
 
-Decision: **PASS (early bounded scope, reviewed 2026-08-22)**
+Decision: **PASS (reviewed 2026-08-22)**
 
 - `plan` is a deterministic policy profile, not a prompt convention. It permits
   workspace reads and `PlanWrite` only beneath `.axiomcli/plans`; edits,
