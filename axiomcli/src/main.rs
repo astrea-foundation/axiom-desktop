@@ -3,7 +3,9 @@ use std::{path::PathBuf, str::FromStr as _, sync::Arc};
 use anyhow::Context as _;
 use axiomcli::{
     AxiomError,
-    agent::{AgentEngine, BlockingTurnRunner, EchoTurnRunner, TurnContext, TurnRunner},
+    agent::{
+        AgentEngine, AgentLimits, BlockingTurnRunner, EchoTurnRunner, TurnContext, TurnRunner,
+    },
     app::{AppEvent, SessionId, TurnId},
     config::Config,
     provider::{AxiomProvider, InferenceProvider},
@@ -228,11 +230,17 @@ async fn build_runner(config: &Config) -> anyhow::Result<Arc<dyn TurnRunner>> {
     {
         tools.register(tool)?;
     }
-    Ok(Arc::new(AgentEngine::new(
+    Ok(Arc::new(AgentEngine::with_limits(
         Arc::new(provider),
         Arc::new(tools),
         config.model.clone(),
-        config.max_agent_steps,
+        AgentLimits {
+            max_steps: config.max_agent_steps,
+            max_context_bytes: config.max_context_bytes,
+            max_context_tokens: config.max_context_tokens,
+            max_tool_output_bytes: config.max_tool_output_bytes,
+            max_wall_time: std::time::Duration::from_secs(config.max_turn_secs),
+        },
     )))
 }
 

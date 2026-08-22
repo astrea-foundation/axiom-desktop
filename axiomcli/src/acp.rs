@@ -362,6 +362,23 @@ fn send_event(
                 )),
             ))
         }
+        AppEvent::ProgressUpdated {
+            message,
+            completed,
+            total,
+        } => connection.send_notification(protocol::SessionNotification::new(
+            session_id.clone(),
+            protocol::SessionUpdate::AgentThoughtChunk(protocol::ContentChunk::new(
+                protocol::ContentBlock::Text(protocol::TextContent::new(
+                    match (completed, total) {
+                        (Some(completed), Some(total)) => {
+                            format!("[progress {completed}/{total}] {message}")
+                        }
+                        _ => format!("[progress] {message}"),
+                    },
+                )),
+            )),
+        )),
         AppEvent::ToolProposed {
             call_id,
             name,

@@ -35,7 +35,10 @@ pub struct Config {
     pub permission_profile: PermissionProfile,
     pub searxng_url: String,
     pub max_agent_steps: usize,
+    pub max_context_bytes: usize,
+    pub max_context_tokens: usize,
     pub max_tool_output_bytes: usize,
+    pub max_turn_secs: u64,
     pub request_timeout_secs: u64,
     pub animation: bool,
     pub mcp_servers: Vec<McpServerConfig>,
@@ -62,7 +65,10 @@ struct ConfigLayer {
     permission_profile: Option<PermissionProfile>,
     searxng_url: Option<String>,
     max_agent_steps: Option<usize>,
+    max_context_bytes: Option<usize>,
+    max_context_tokens: Option<usize>,
     max_tool_output_bytes: Option<usize>,
+    max_turn_secs: Option<u64>,
     request_timeout_secs: Option<u64>,
     animation: Option<bool>,
     mcp_servers: Option<Vec<McpServerConfig>>,
@@ -85,8 +91,17 @@ impl ConfigLayer {
         if let Some(value) = self.max_agent_steps {
             config.max_agent_steps = value;
         }
+        if let Some(value) = self.max_context_bytes {
+            config.max_context_bytes = value;
+        }
+        if let Some(value) = self.max_context_tokens {
+            config.max_context_tokens = value;
+        }
         if let Some(value) = self.max_tool_output_bytes {
             config.max_tool_output_bytes = value;
+        }
+        if let Some(value) = self.max_turn_secs {
+            config.max_turn_secs = value;
         }
         if let Some(value) = self.request_timeout_secs {
             config.request_timeout_secs = value;
@@ -120,8 +135,17 @@ impl ConfigLayer {
         if let Some(value) = self.max_agent_steps {
             config.max_agent_steps = value.min(config.max_agent_steps);
         }
+        if let Some(value) = self.max_context_bytes {
+            config.max_context_bytes = value.min(config.max_context_bytes);
+        }
+        if let Some(value) = self.max_context_tokens {
+            config.max_context_tokens = value.min(config.max_context_tokens);
+        }
         if let Some(value) = self.max_tool_output_bytes {
             config.max_tool_output_bytes = value.min(config.max_tool_output_bytes);
+        }
+        if let Some(value) = self.max_turn_secs {
+            config.max_turn_secs = value.min(config.max_turn_secs);
         }
         if let Some(value) = self.request_timeout_secs {
             config.request_timeout_secs = value.min(config.request_timeout_secs);
@@ -150,7 +174,10 @@ impl Default for Config {
             permission_profile: PermissionProfile::Confirm,
             searxng_url: "http://127.0.0.1:8888".into(),
             max_agent_steps: 24,
+            max_context_bytes: 2 * 1024 * 1024,
+            max_context_tokens: 256 * 1024,
             max_tool_output_bytes: 128 * 1024,
+            max_turn_secs: 15 * 60,
             request_timeout_secs: 120,
             animation: true,
             mcp_servers: Vec::new(),
@@ -198,6 +225,21 @@ impl Config {
         if self.max_tool_output_bytes < 1024 {
             return Err(AxiomError::Config(
                 "max_tool_output_bytes must be at least 1024".into(),
+            ));
+        }
+        if self.max_context_bytes < 4096 || self.max_context_bytes > 64 * 1024 * 1024 {
+            return Err(AxiomError::Config(
+                "max_context_bytes must be between 4096 and 67108864".into(),
+            ));
+        }
+        if self.max_context_tokens < 1024 || self.max_context_tokens > 4 * 1024 * 1024 {
+            return Err(AxiomError::Config(
+                "max_context_tokens must be between 1024 and 4194304".into(),
+            ));
+        }
+        if self.max_turn_secs == 0 || self.max_turn_secs > 24 * 60 * 60 {
+            return Err(AxiomError::Config(
+                "max_turn_secs must be between 1 and 86400".into(),
             ));
         }
         let base_url = reqwest::Url::parse(&self.base_url)

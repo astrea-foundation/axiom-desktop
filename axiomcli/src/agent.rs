@@ -52,6 +52,33 @@ pub trait TurnRunner: Send + Sync {
     ) -> Result<()>;
 }
 
+/// Explicit, replaceable safety budgets for one agent turn. These defaults are
+/// intentionally conservative development values, not a promise of final
+/// product limits.
+#[derive(Clone, Copy, Debug)]
+pub struct AgentLimits {
+    pub max_steps: usize,
+    pub max_context_bytes: usize,
+    pub max_context_tokens: usize,
+    pub max_tool_output_bytes: usize,
+    pub max_wall_time: Duration,
+}
+
+impl AgentLimits {
+    #[must_use]
+    pub fn development(max_steps: usize) -> Self {
+        Self {
+            max_steps: max_steps.max(1),
+            max_context_bytes: 2 * 1024 * 1024,
+            // This is a deterministic local estimate used only as a safety
+            // ceiling; provider-reported usage remains authoritative.
+            max_context_tokens: 256 * 1024,
+            max_tool_output_bytes: 128 * 1024,
+            max_wall_time: Duration::from_secs(15 * 60),
+        }
+    }
+}
+
 /// Deterministic runner used by ACP and TUI contract tests before live inference.
 #[derive(Debug, Default)]
 pub struct EchoTurnRunner;
@@ -106,7 +133,7 @@ pub struct AgentEngine {
     provider: Arc<dyn InferenceProvider>,
     tools: Arc<ToolRegistry>,
     model: String,
-    max_steps: usize,
+    limits: AgentLimits,
     histories: Mutex<HashMap<SessionId, Vec<ChatMessage>>>,
 }
 
@@ -115,7 +142,7 @@ impl std::fmt::Debug for AgentEngine {
         formatter
             .debug_struct("AgentEngine")
             .field("model", &self.model)
-            .field("max_steps", &self.max_steps)
+            .field("limits", &self.limits)
             .finish_non_exhaustive()
     }
 }
@@ -128,11 +155,24 @@ impl AgentEngine {
         model: impl Into<String>,
         max_steps: usize,
     ) -> Self {
+        Self::with_limits(provider, tools, model, AgentLimits::development(max_steps))
+    }
+
+    #[must_use]
+    pub fn with_limits(
+        provider: Arc<dyn InferenceProvider>,
+        tools: Arc<ToolRegistry>,
+        model: impl Into<String>,
+        limits: AgentLimits,
+    ) -> Self {
         Self {
             provider,
             tools,
             model: model.into(),
-            max_steps: max_steps.max(1),
+            limits: AgentLimits {
+                max_steps: limits.max_steps.max(1),
+                ..limits
+            },
             histories: Mutex::new(HashMap::new()),
         }
     }
@@ -144,7 +184,7 @@ impl AgentEngine {
         output: &mpsc::UnboundedSender<AppEvent>,
         cancellation: CancellationToken,
     ) -> Result<AssistantTurn> {
-        let (provider_tx, mut provider_rx) = mpsc::unbounded_channel();
+        let (provider_tx, mut provider_rx) = mpsc::channel(64);
         let future = self
             .provider
             .stream(request, provider_tx, cancellation.clone());
@@ -228,7 +268,7 @@ impl TurnRunner for AgentEngine {
         events: mpsc::UnboundedSender<AppEvent>,
         cancellation: CancellationToken,
     ) -> Result<()> {
-        let started_at = tokio::time::Instant::now();
+        let deadline = tokio::time::Instant::now() + self.limits.max_wall_time;
         events
             .send(AppEvent::ProviderStatusChanged {
                 connected: false,
@@ -250,18 +290,29 @@ impl TurnRunner for AgentEngine {
         messages.push(ChatMessage::text(ChatRole::User, prompt));
         let mut seen_calls = HashSet::new();
 
-        for _step in 0..self.max_steps {
+        for step in 0..self.limits.max_steps {
             if cancellation.is_cancelled() {
                 return Err(AxiomError::Cancelled);
             }
-            if started_at.elapsed() > Duration::from_secs(15 * 60) {
-                return Err(AxiomError::Provider(
-                    "agent turn exceeded its 15-minute development budget".into(),
-                ));
-            }
-            enforce_context_budget(&messages, 2 * 1024 * 1024)?;
-            let assistant = self
-                .provider_turn(
+            events
+                .send(AppEvent::ProgressUpdated {
+                    message: format!(
+                        "Agent step {} of {}",
+                        step.saturating_add(1),
+                        self.limits.max_steps
+                    ),
+                    completed: Some(u64::try_from(step).unwrap_or(u64::MAX)),
+                    total: Some(u64::try_from(self.limits.max_steps).unwrap_or(u64::MAX)),
+                })
+                .map_err(|_| AxiomError::Cancelled)?;
+            enforce_context_budget(
+                &messages,
+                self.limits.max_context_bytes,
+                self.limits.max_context_tokens,
+            )?;
+            let assistant = tokio::time::timeout_at(
+                deadline,
+                self.provider_turn(
                     InferenceRequest {
                         model: self.model.clone(),
                         messages: messages.clone(),
@@ -270,8 +321,10 @@ impl TurnRunner for AgentEngine {
                     &context,
                     &events,
                     cancellation.clone(),
-                )
-                .await?;
+                ),
+            )
+            .await
+            .map_err(|_| wall_clock_error(self.limits.max_wall_time))??;
 
             messages.push(ChatMessage {
                 role: ChatRole::Assistant,
@@ -295,13 +348,26 @@ impl TurnRunner for AgentEngine {
                         call.function.name
                     )));
                 }
-                let arguments: serde_json::Value = serde_json::from_str(&call.function.arguments)
-                    .map_err(|error| {
-                    AxiomError::Tool(format!(
-                        "invalid arguments for `{}`: {error}",
-                        call.function.name
-                    ))
-                })?;
+                let arguments: serde_json::Value = match serde_json::from_str(
+                    &call.function.arguments,
+                ) {
+                    Ok(arguments) => arguments,
+                    Err(error) => {
+                        let message = format!(
+                            "invalid arguments for `{}`: {error}; return valid JSON matching the advertised schema",
+                            call.function.name
+                        );
+                        emit_repairable_tool_failure(
+                            &events,
+                            &context.turn_id,
+                            &call,
+                            serde_json::json!({"invalid_json": call.function.arguments}),
+                            &message,
+                        )?;
+                        messages.push(tool_error_message(call.id, &call.function.name, &message));
+                        continue;
+                    }
+                };
                 events
                     .send(AppEvent::ToolProposed {
                         turn_id: context.turn_id.clone(),
@@ -314,16 +380,19 @@ impl TurnRunner for AgentEngine {
                     cwd: context.cwd.clone(),
                     permission_profile: context.permission_profile,
                 };
-                let authorization = self
-                    .authorize(
+                let authorization = tokio::time::timeout_at(
+                    deadline,
+                    self.authorize(
                         &context,
                         &tool_context,
                         &call.function.name,
                         &arguments,
                         &events,
                         cancellation.clone(),
-                    )
-                    .await;
+                    ),
+                )
+                .await
+                .map_err(|_| wall_clock_error(self.limits.max_wall_time))?;
                 if let Err(error) = authorization {
                     events
                         .send(AppEvent::ToolOutput {
@@ -338,12 +407,11 @@ impl TurnRunner for AgentEngine {
                             success: false,
                         })
                         .map_err(|_| AxiomError::Cancelled)?;
-                    messages.push(ChatMessage {
-                        role: ChatRole::Tool,
-                        content: error.to_string(),
-                        tool_call_id: Some(call.id),
-                        tool_calls: Vec::new(),
-                    });
+                    messages.push(tool_error_message(
+                        call.id,
+                        &call.function.name,
+                        &error.to_string(),
+                    ));
                     continue;
                 }
                 events
@@ -352,16 +420,18 @@ impl TurnRunner for AgentEngine {
                         name: call.function.name.clone(),
                     })
                     .map_err(|_| AxiomError::Cancelled)?;
-                let result = self
-                    .tools
-                    .execute(
+                let result = tokio::time::timeout_at(
+                    deadline,
+                    self.tools.execute(
                         &call.function.name,
                         &tool_context,
                         arguments,
                         cancellation.clone(),
-                    )
-                    .await;
-                let tool_result = match result {
+                    ),
+                )
+                .await
+                .map_err(|_| wall_clock_error(self.limits.max_wall_time))?;
+                let mut tool_result = match result {
                     Ok(result) => result,
                     Err(error) => crate::tools::ToolResult {
                         content: error.to_string(),
@@ -370,6 +440,10 @@ impl TurnRunner for AgentEngine {
                         changed_paths: Vec::new(),
                     },
                 };
+                let (bounded_content, additionally_truncated) =
+                    truncate_utf8(&tool_result.content, self.limits.max_tool_output_bytes);
+                tool_result.content = bounded_content;
+                tool_result.truncated |= additionally_truncated;
                 events
                     .send(AppEvent::ToolOutput {
                         call_id: call.id.clone(),
@@ -400,12 +474,16 @@ impl TurnRunner for AgentEngine {
         }
         Err(AxiomError::Provider(format!(
             "agent reached its {}-step limit",
-            self.max_steps
+            self.limits.max_steps
         )))
     }
 }
 
-fn enforce_context_budget(messages: &[ChatMessage], max_bytes: usize) -> Result<()> {
+fn enforce_context_budget(
+    messages: &[ChatMessage],
+    max_bytes: usize,
+    max_tokens: usize,
+) -> Result<()> {
     let bytes = messages.iter().fold(0_usize, |total, message| {
         total.saturating_add(message.content.len()).saturating_add(
             message
@@ -415,13 +493,85 @@ fn enforce_context_budget(messages: &[ChatMessage], max_bytes: usize) -> Result<
                 .sum::<usize>(),
         )
     });
-    if bytes > max_bytes {
+    let estimated_tokens = messages.iter().fold(0_usize, |total, message| {
+        total
+            .saturating_add(estimate_tokens(&message.content))
+            .saturating_add(
+                message
+                    .tool_calls
+                    .iter()
+                    .map(|call| estimate_tokens(&call.function.arguments))
+                    .sum::<usize>(),
+            )
+    });
+    if bytes > max_bytes || estimated_tokens > max_tokens {
         Err(AxiomError::Provider(format!(
-            "turn context exceeded the {max_bytes}-byte development budget"
+            "turn context exceeded its budget ({bytes}/{max_bytes} bytes, approximately {estimated_tokens}/{max_tokens} tokens)"
         )))
     } else {
         Ok(())
     }
+}
+
+fn estimate_tokens(text: &str) -> usize {
+    text.chars().count().saturating_add(3) / 4
+}
+
+fn truncate_utf8(content: &str, max_bytes: usize) -> (String, bool) {
+    if content.len() <= max_bytes {
+        return (content.to_owned(), false);
+    }
+    let mut boundary = max_bytes.min(content.len());
+    while boundary > 0 && !content.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    (content[..boundary].to_owned(), true)
+}
+
+fn wall_clock_error(limit: Duration) -> AxiomError {
+    AxiomError::Provider(format!(
+        "agent turn exceeded its {}-second wall-clock budget",
+        limit.as_secs_f64()
+    ))
+}
+
+fn tool_error_message(call_id: String, name: &str, message: &str) -> ChatMessage {
+    ChatMessage {
+        role: ChatRole::Tool,
+        content: untrusted_tool_result(name, &format!("REPAIRABLE TOOL ERROR: {message}")),
+        tool_call_id: Some(call_id),
+        tool_calls: Vec::new(),
+    }
+}
+
+fn emit_repairable_tool_failure(
+    events: &mpsc::UnboundedSender<AppEvent>,
+    turn_id: &TurnId,
+    call: &crate::provider::ToolCall,
+    arguments: serde_json::Value,
+    message: &str,
+) -> Result<()> {
+    events
+        .send(AppEvent::ToolProposed {
+            turn_id: turn_id.clone(),
+            call_id: call.id.clone(),
+            name: call.function.name.clone(),
+            arguments,
+        })
+        .map_err(|_| AxiomError::Cancelled)?;
+    events
+        .send(AppEvent::ToolOutput {
+            call_id: call.id.clone(),
+            content: message.to_owned(),
+            truncated: false,
+        })
+        .map_err(|_| AxiomError::Cancelled)?;
+    events
+        .send(AppEvent::ToolCompleted {
+            call_id: call.id.clone(),
+            success: false,
+        })
+        .map_err(|_| AxiomError::Cancelled)
 }
 
 fn untrusted_tool_result(name: &str, content: &str) -> String {
@@ -468,58 +618,164 @@ fn system_prompt(cwd: &std::path::Path) -> String {
 #[cfg(test)]
 mod engine_tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use serde_json::{Value, json};
+
     use crate::provider::{FunctionCall, ProviderEvent, ToolCall};
+    use crate::{
+        policy::Effect,
+        tools::{Tool, ToolResult},
+    };
 
     struct ScriptedProvider {
         turns: Mutex<Vec<AssistantTurn>>,
+        requests: Mutex<Vec<InferenceRequest>>,
+    }
+
+    impl ScriptedProvider {
+        fn new(turns: Vec<AssistantTurn>) -> Self {
+            Self {
+                turns: Mutex::new(turns),
+                requests: Mutex::new(Vec::new()),
+            }
+        }
     }
 
     #[async_trait]
     impl InferenceProvider for ScriptedProvider {
         async fn stream(
             &self,
-            _request: InferenceRequest,
-            events: mpsc::UnboundedSender<ProviderEvent>,
+            request: InferenceRequest,
+            events: mpsc::Sender<ProviderEvent>,
             _cancellation: CancellationToken,
         ) -> Result<AssistantTurn> {
+            self.requests.lock().await.push(request);
             let turn = self.turns.lock().await.remove(0);
             if !turn.text.is_empty() {
-                let _ = events.send(ProviderEvent::TextDelta(turn.text.clone()));
+                let _ = events
+                    .send(ProviderEvent::TextDelta(turn.text.clone()))
+                    .await;
             }
             Ok(turn)
         }
     }
 
+    struct FakeTool {
+        executions: Arc<AtomicUsize>,
+        output: String,
+        fails: bool,
+    }
+
+    #[async_trait]
+    impl Tool for FakeTool {
+        fn name(&self) -> &'static str {
+            "fake"
+        }
+
+        fn description(&self) -> &'static str {
+            "A deterministic test-only tool."
+        }
+
+        fn parameters(&self) -> Value {
+            json!({
+                "type": "object",
+                "properties": {"value": {"type": "integer"}},
+                "required": ["value"],
+                "additionalProperties": false
+            })
+        }
+
+        fn effects(&self, _context: &ToolContext, arguments: &Value) -> Result<Vec<Effect>> {
+            let value = arguments
+                .get("value")
+                .and_then(Value::as_i64)
+                .ok_or_else(|| AxiomError::Tool("`value` must be an integer".into()))?;
+            let _ = value;
+            Ok(Vec::new())
+        }
+
+        async fn execute(
+            &self,
+            _context: &ToolContext,
+            _arguments: Value,
+            _cancellation: CancellationToken,
+        ) -> Result<ToolResult> {
+            self.executions.fetch_add(1, Ordering::SeqCst);
+            if self.fails {
+                Err(AxiomError::Tool("deterministic fake failure".into()))
+            } else {
+                Ok(ToolResult::success(self.output.clone()))
+            }
+        }
+    }
+
+    fn fake_registry(
+        output: impl Into<String>,
+        fails: bool,
+    ) -> (Arc<ToolRegistry>, Arc<AtomicUsize>) {
+        let executions = Arc::new(AtomicUsize::new(0));
+        let mut registry = ToolRegistry::new();
+        registry
+            .register(Arc::new(FakeTool {
+                executions: executions.clone(),
+                output: output.into(),
+                fails,
+            }))
+            .expect("register fake");
+        (Arc::new(registry), executions)
+    }
+
+    fn tool_call(id: &str, name: &str, arguments: &str) -> ToolCall {
+        ToolCall {
+            id: id.into(),
+            kind: "function".into(),
+            function: FunctionCall {
+                name: name.into(),
+                arguments: arguments.into(),
+            },
+        }
+    }
+
+    fn context() -> TurnContext {
+        TurnContext {
+            session_id: SessionId::new(),
+            turn_id: TurnId::new(),
+            cwd: PathBuf::from("."),
+            permission_profile: PermissionProfile::Confirm,
+            approval: None,
+        }
+    }
+
+    fn drain(rx: &mut mpsc::UnboundedReceiver<AppEvent>) -> Vec<AppEvent> {
+        let mut events = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            events.push(event);
+        }
+        events
+    }
+
     #[tokio::test]
     async fn text_only_turn_streams_and_finishes() {
-        let provider = Arc::new(ScriptedProvider {
-            turns: Mutex::new(vec![AssistantTurn {
-                text: "done".into(),
-                tool_calls: Vec::new(),
-            }]),
-        });
+        let provider = Arc::new(ScriptedProvider::new(vec![AssistantTurn {
+            text: "done".into(),
+            tool_calls: Vec::new(),
+        }]));
         let engine = AgentEngine::new(provider, Arc::new(ToolRegistry::new()), "test", 3);
         let (tx, mut rx) = mpsc::unbounded_channel();
         engine
-            .run(
-                TurnContext {
-                    session_id: SessionId::new(),
-                    turn_id: TurnId::new(),
-                    cwd: PathBuf::from("."),
-                    permission_profile: PermissionProfile::Confirm,
-                    approval: None,
-                },
-                "hello".into(),
-                tx,
-                CancellationToken::new(),
-            )
+            .run(context(), "hello".into(), tx, CancellationToken::new())
             .await
             .expect("run");
         assert!(matches!(
             rx.recv().await,
             Some(AppEvent::ProviderStatusChanged { .. })
         ));
-        assert!(matches!(rx.recv().await, Some(AppEvent::TextDelta { .. })));
+        assert!(
+            drain(&mut rx)
+                .iter()
+                .any(|event| matches!(event, AppEvent::TextDelta { .. }))
+        );
     }
 
     #[tokio::test]
@@ -532,34 +788,245 @@ mod engine_tests {
                 arguments: "{}".into(),
             },
         };
-        let provider = Arc::new(ScriptedProvider {
-            turns: Mutex::new(vec![
-                AssistantTurn {
-                    text: String::new(),
-                    tool_calls: vec![call.clone()],
-                },
+        let provider = Arc::new(ScriptedProvider::new(vec![
+            AssistantTurn {
+                text: String::new(),
+                tool_calls: vec![call.clone()],
+            },
+            AssistantTurn {
+                text: String::new(),
+                tool_calls: vec![call],
+            },
+        ]));
+        let engine = AgentEngine::new(provider, Arc::new(ToolRegistry::new()), "test", 3);
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let result = engine
+            .run(context(), "hello".into(), tx, CancellationToken::new())
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn one_and_many_fake_calls_continue_to_completion() {
+        let (tools, executions) = fake_registry("ok", false);
+        let provider = Arc::new(ScriptedProvider::new(vec![
+            AssistantTurn {
+                text: String::new(),
+                tool_calls: vec![
+                    tool_call("one", "fake", r#"{"value":1}"#),
+                    tool_call("two", "fake", r#"{"value":2}"#),
+                    tool_call("three", "fake", r#"{"value":3}"#),
+                ],
+            },
+            AssistantTurn {
+                text: "done".into(),
+                tool_calls: Vec::new(),
+            },
+        ]));
+        let engine = AgentEngine::new(provider, tools, "test", 3);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        engine
+            .run(context(), "use tools".into(), tx, CancellationToken::new())
+            .await
+            .expect("completed");
+        assert_eq!(executions.load(Ordering::SeqCst), 3);
+        let events = drain(&mut rx);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, AppEvent::ToolCompleted { success: true, .. }))
+                .count(),
+            3
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_unknown_and_failed_calls_are_repairable_model_inputs() {
+        for (call, tools) in [
+            (
+                tool_call("malformed", "fake", "{"),
+                fake_registry("unused", false).0,
+            ),
+            (
+                tool_call("unknown", "does_not_exist", "{}"),
+                Arc::new(ToolRegistry::new()),
+            ),
+            (
+                tool_call("failed", "fake", r#"{"value":1}"#),
+                fake_registry("unused", true).0,
+            ),
+        ] {
+            let provider = Arc::new(ScriptedProvider::new(vec![
                 AssistantTurn {
                     text: String::new(),
                     tool_calls: vec![call],
                 },
-            ]),
-        });
-        let engine = AgentEngine::new(provider, Arc::new(ToolRegistry::new()), "test", 3);
-        let (tx, _rx) = mpsc::unbounded_channel();
-        let result = engine
-            .run(
-                TurnContext {
-                    session_id: SessionId::new(),
-                    turn_id: TurnId::new(),
-                    cwd: PathBuf::from("."),
-                    permission_profile: PermissionProfile::Confirm,
-                    approval: None,
+                AssistantTurn {
+                    text: "recovered".into(),
+                    tool_calls: Vec::new(),
                 },
-                "hello".into(),
-                tx,
-                CancellationToken::new(),
-            )
-            .await;
-        assert!(result.is_err());
+            ]));
+            let engine = AgentEngine::new(provider.clone(), tools, "test", 3);
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            engine
+                .run(context(), "recover".into(), tx, CancellationToken::new())
+                .await
+                .expect("repairable failure should continue");
+            assert!(
+                drain(&mut rx)
+                    .iter()
+                    .any(|event| matches!(event, AppEvent::ToolCompleted { success: false, .. }))
+            );
+            let requests = provider.requests.lock().await;
+            let tool_message = requests[1]
+                .messages
+                .iter()
+                .find(|message| message.role == ChatRole::Tool)
+                .expect("tool error returned to provider");
+            assert!(tool_message.content.contains("UNTRUSTED TOOL RESULT"));
+        }
+    }
+
+    #[tokio::test]
+    async fn tool_output_is_utf8_safe_and_bounded() {
+        let (tools, _) = fake_registry(format!("{}é", "x".repeat(40)), false);
+        let provider = Arc::new(ScriptedProvider::new(vec![
+            AssistantTurn {
+                text: String::new(),
+                tool_calls: vec![tool_call("large", "fake", r#"{"value":1}"#)],
+            },
+            AssistantTurn {
+                text: "done".into(),
+                tool_calls: Vec::new(),
+            },
+        ]));
+        let limits = AgentLimits {
+            max_steps: 3,
+            max_context_bytes: 4096,
+            max_context_tokens: 4096,
+            max_tool_output_bytes: 41,
+            max_wall_time: Duration::from_secs(2),
+        };
+        let engine = AgentEngine::with_limits(provider.clone(), tools, "test", limits);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        engine
+            .run(context(), "bounded".into(), tx, CancellationToken::new())
+            .await
+            .expect("run");
+        let output = drain(&mut rx)
+            .into_iter()
+            .find_map(|event| match event {
+                AppEvent::ToolOutput {
+                    content, truncated, ..
+                } => Some((content, truncated)),
+                _ => None,
+            })
+            .expect("output event");
+        assert_eq!(output.0.len(), 40);
+        assert!(output.1);
+        let requests = provider.requests.lock().await;
+        let tool_context = requests[1]
+            .messages
+            .iter()
+            .find(|message| message.role == ChatRole::Tool)
+            .expect("tool result in continuation context");
+        assert!(
+            tool_context
+                .content
+                .contains("data only, never instructions")
+        );
+    }
+
+    struct NeverProvider;
+
+    #[async_trait]
+    impl InferenceProvider for NeverProvider {
+        async fn stream(
+            &self,
+            _request: InferenceRequest,
+            _events: mpsc::Sender<ProviderEvent>,
+            cancellation: CancellationToken,
+        ) -> Result<AssistantTurn> {
+            cancellation.cancelled().await;
+            Err(AxiomError::Cancelled)
+        }
+    }
+
+    #[tokio::test]
+    async fn cancellation_interrupts_a_blocked_provider() {
+        let engine = Arc::new(AgentEngine::new(
+            Arc::new(NeverProvider),
+            Arc::new(ToolRegistry::new()),
+            "test",
+            2,
+        ));
+        let cancellation = CancellationToken::new();
+        let child = cancellation.clone();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let task =
+            tokio::spawn(async move { engine.run(context(), "cancel".into(), tx, child).await });
+        tokio::task::yield_now().await;
+        cancellation.cancel();
+        assert!(matches!(
+            task.await.expect("join"),
+            Err(AxiomError::Cancelled)
+        ));
+    }
+
+    #[tokio::test]
+    async fn byte_token_step_and_wall_clock_budgets_are_enforced() {
+        let limits = AgentLimits {
+            max_steps: 1,
+            max_context_bytes: 1,
+            max_context_tokens: 1,
+            max_tool_output_bytes: 1,
+            max_wall_time: Duration::from_secs(1),
+        };
+        let provider = Arc::new(ScriptedProvider::new(vec![]));
+        let engine = AgentEngine::with_limits(
+            provider.clone(),
+            Arc::new(ToolRegistry::new()),
+            "test",
+            limits,
+        );
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let error = engine
+            .run(context(), "too large".into(), tx, CancellationToken::new())
+            .await
+            .expect_err("context budget");
+        assert!(error.to_string().contains("context exceeded"));
+        assert!(provider.requests.lock().await.is_empty());
+
+        let limits = AgentLimits {
+            max_steps: 1,
+            max_context_bytes: 4096,
+            max_context_tokens: 4096,
+            max_tool_output_bytes: 1024,
+            max_wall_time: Duration::from_millis(10),
+        };
+        let engine = AgentEngine::with_limits(
+            Arc::new(NeverProvider),
+            Arc::new(ToolRegistry::new()),
+            "test",
+            limits,
+        );
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let error = engine
+            .run(context(), "timeout".into(), tx, CancellationToken::new())
+            .await
+            .expect_err("wall clock budget");
+        assert!(error.to_string().contains("wall-clock budget"));
+
+        let provider = Arc::new(ScriptedProvider::new(vec![AssistantTurn {
+            text: String::new(),
+            tool_calls: vec![tool_call("only", "missing", "{}")],
+        }]));
+        let engine = AgentEngine::new(provider, Arc::new(ToolRegistry::new()), "test", 1);
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let error = engine
+            .run(context(), "step".into(), tx, CancellationToken::new())
+            .await
+            .expect_err("step budget");
+        assert!(error.to_string().contains("1-step limit"));
     }
 }

@@ -24,12 +24,14 @@ impl InferenceProvider for ScriptedProvider {
     async fn stream(
         &self,
         _request: InferenceRequest,
-        events: mpsc::UnboundedSender<ProviderEvent>,
+        events: mpsc::Sender<ProviderEvent>,
         _cancellation: CancellationToken,
     ) -> Result<AssistantTurn> {
         let turn = self.turns.lock().await.pop_front().expect("scripted turn");
         if !turn.text.is_empty() {
-            let _ = events.send(ProviderEvent::TextDelta(turn.text.clone()));
+            let _ = events
+                .send(ProviderEvent::TextDelta(turn.text.clone()))
+                .await;
         }
         Ok(turn)
     }

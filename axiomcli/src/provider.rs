@@ -115,7 +115,7 @@ pub trait InferenceProvider: Send + Sync {
     async fn stream(
         &self,
         request: InferenceRequest,
-        events: mpsc::UnboundedSender<ProviderEvent>,
+        events: mpsc::Sender<ProviderEvent>,
         cancellation: CancellationToken,
     ) -> Result<AssistantTurn>;
 
@@ -316,7 +316,7 @@ impl InferenceProvider for AxiomProvider {
     async fn stream(
         &self,
         request: InferenceRequest,
-        events: mpsc::UnboundedSender<ProviderEvent>,
+        events: mpsc::Sender<ProviderEvent>,
         cancellation: CancellationToken,
     ) -> Result<AssistantTurn> {
         let body = WireRequest {
@@ -332,10 +332,12 @@ impl InferenceProvider for AxiomProvider {
         let response = self
             .send_with_retry(&body, &request_id, &cancellation)
             .await?;
-        let _ = events.send(ProviderEvent::Status {
-            connected: true,
-            detail: "Axiom development inference connected · UNATTESTED".into(),
-        });
+        let _ = events
+            .send(ProviderEvent::Status {
+                connected: true,
+                detail: "Axiom development inference connected · UNATTESTED".into(),
+            })
+            .await;
 
         let mut stream = response.bytes_stream().eventsource();
         let mut text = String::new();
@@ -369,10 +371,10 @@ impl InferenceProvider for AxiomProvider {
             for choice in chunk.choices {
                 if let Some(delta) = choice.delta.content {
                     text.push_str(&delta);
-                    let _ = events.send(ProviderEvent::TextDelta(delta));
+                    let _ = events.send(ProviderEvent::TextDelta(delta)).await;
                 }
                 if let Some(delta) = choice.delta.reasoning_content {
-                    let _ = events.send(ProviderEvent::ReasoningDelta(delta));
+                    let _ = events.send(ProviderEvent::ReasoningDelta(delta)).await;
                 }
                 for delta in choice.delta.tool_calls {
                     if delta.index >= 1024 {
@@ -395,10 +397,12 @@ impl InferenceProvider for AxiomProvider {
                 }
             }
             if let Some(usage) = chunk.usage {
-                let _ = events.send(ProviderEvent::Usage {
-                    input_tokens: usage.prompt_tokens,
-                    output_tokens: usage.completion_tokens,
-                });
+                let _ = events
+                    .send(ProviderEvent::Usage {
+                        input_tokens: usage.prompt_tokens,
+                        output_tokens: usage.completion_tokens,
+                    })
+                    .await;
             }
         }
 
@@ -585,7 +589,7 @@ mod tests {
         let provider =
             AxiomProvider::new(format!("http://{address}/v1"), None, Duration::from_secs(5))
                 .expect("provider");
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = mpsc::channel(64);
         let turn = provider
             .stream(request("test"), tx, CancellationToken::new())
             .await
@@ -637,7 +641,7 @@ mod tests {
         let provider =
             AxiomProvider::new(format!("http://{address}/v1"), None, Duration::from_secs(5))
                 .expect("provider");
-        let (tx, _rx) = mpsc::unbounded_channel();
+        let (tx, _rx) = mpsc::channel(64);
         let error = provider
             .stream(request("test"), tx, CancellationToken::new())
             .await
@@ -689,7 +693,7 @@ mod tests {
         let provider =
             AxiomProvider::new(format!("http://{address}/v1"), None, Duration::from_secs(5))
                 .expect("provider");
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = mpsc::channel(64);
         let turn = provider
             .stream(request("test"), tx, CancellationToken::new())
             .await
@@ -732,7 +736,7 @@ mod tests {
             Duration::from_secs(5),
         )
         .expect("provider");
-        let (tx, _) = mpsc::unbounded_channel();
+        let (tx, _) = mpsc::channel(64);
         let error = provider
             .stream(request("test"), tx, CancellationToken::new())
             .await
@@ -797,7 +801,7 @@ mod tests {
         .expect("provider");
         let token = CancellationToken::new();
         let cancel = token.clone();
-        let (tx, _) = mpsc::unbounded_channel();
+        let (tx, _) = mpsc::channel(64);
         let task = tokio::spawn(async move { provider.stream(request("test"), tx, token).await });
         tokio::task::yield_now().await;
         cancel.cancel();
@@ -819,7 +823,7 @@ mod tests {
         let key = std::env::var("AXIOM_API_KEY").expect("AXIOM_API_KEY");
         let provider =
             AxiomProvider::new(base_url, Some(key), Duration::from_secs(45)).expect("provider");
-        let (tx, _rx) = mpsc::unbounded_channel();
+        let (tx, _rx) = mpsc::channel(64);
         let turn = provider
             .stream(
                 InferenceRequest {
