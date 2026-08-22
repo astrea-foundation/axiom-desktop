@@ -9,6 +9,7 @@ use axiomcli::{
         AssistantTurn, FunctionCall, InferenceProvider, InferenceRequest, ProviderEvent, ToolCall,
     },
     tools::default_registry,
+    workspace::Workspace,
 };
 use serde_json::json;
 use tempfile::tempdir;
@@ -65,13 +66,23 @@ async fn deterministic_agent_edits_runs_tests_and_reports_completion() {
         "pub fn answer() -> u8 { 0 }\n#[test]\nfn correct() { assert_eq!(answer(), 42); }\n",
     )
     .expect("source");
+    let source_hash = Workspace::new(root.path())
+        .expect("workspace")
+        .read("src/lib.rs", 1, 100, 4096)
+        .expect("read")
+        .sha256;
 
     let provider = Arc::new(ScriptedProvider {
         turns: Mutex::new(VecDeque::from([
             call(
                 "edit-1",
-                "replace_text",
-                &json!({"path":"src/lib.rs", "old":"{ 0 }", "new":"{ 42 }"}),
+                "apply_patch",
+                &json!({"edits":[{
+                    "operation":"update",
+                    "path":"src/lib.rs",
+                    "expected_sha256":source_hash,
+                    "content":"pub fn answer() -> u8 { 42 }\n#[test]\nfn correct() { assert_eq!(answer(), 42); }\n"
+                }]}),
             ),
             call(
                 "test-1",
@@ -91,10 +102,11 @@ async fn deterministic_agent_edits_runs_tests_and_reports_completion() {
         8,
     );
     let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+    let session_id = SessionId::new();
     engine
         .run(
             TurnContext {
-                session_id: SessionId::new(),
+                session_id: session_id.clone(),
                 turn_id: TurnId::new(),
                 cwd: root.path().to_path_buf(),
                 permission_profile: PermissionProfile::Workspace,
@@ -108,6 +120,7 @@ async fn deterministic_agent_edits_runs_tests_and_reports_completion() {
         .expect("agent run");
     let mut saw_edit = false;
     let mut saw_test = false;
+    let mut saw_diff = false;
     while let Ok(event) = events_rx.try_recv() {
         match event {
             AppEvent::WorkspaceChanged { paths } => {
@@ -116,10 +129,18 @@ async fn deterministic_agent_edits_runs_tests_and_reports_completion() {
             AppEvent::ToolCompleted { call_id, success } if call_id == "test-1" => {
                 saw_test = success;
             }
+            AppEvent::DiffAvailable { call_id, diff, .. } if call_id == "edit-1" => {
+                saw_diff = diff.contains("-pub fn answer() -> u8 { 0 }")
+                    && diff.contains("+pub fn answer() -> u8 { 42 }");
+            }
             _ => {}
         }
     }
-    assert!(saw_edit && saw_test);
+    assert!(saw_edit && saw_test && saw_diff);
+    assert_eq!(
+        engine.change_set(&session_id).await,
+        vec![PathBuf::from("src/lib.rs")]
+    );
     assert!(
         std::fs::read_to_string(root.path().join("src/lib.rs"))
             .expect("result")

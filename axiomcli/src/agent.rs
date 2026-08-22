@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     path::PathBuf,
     sync::Arc,
     time::Duration,
@@ -139,6 +139,7 @@ pub struct AgentEngine {
     histories: Mutex<HashMap<SessionId, Vec<ChatMessage>>>,
     policy_rules: Vec<PolicyRule>,
     policies: Mutex<HashMap<SessionId, PolicyEngine>>,
+    change_sets: Mutex<HashMap<SessionId, BTreeSet<PathBuf>>>,
 }
 
 impl std::fmt::Debug for AgentEngine {
@@ -181,6 +182,7 @@ impl AgentEngine {
             histories: Mutex::new(HashMap::new()),
             policy_rules: Vec::new(),
             policies: Mutex::new(HashMap::new()),
+            change_sets: Mutex::new(HashMap::new()),
         }
     }
 
@@ -199,6 +201,15 @@ impl AgentEngine {
             PolicyEngine::for_workspace_with_rules(&context.cwd, self.policy_rules.clone())?;
         policies.insert(context.session_id.clone(), policy.clone());
         Ok(policy)
+    }
+
+    pub async fn change_set(&self, session_id: &SessionId) -> Vec<PathBuf> {
+        self.change_sets
+            .lock()
+            .await
+            .get(session_id)
+            .map(|paths| paths.iter().cloned().collect())
+            .unwrap_or_default()
     }
 
     async fn provider_turn(
@@ -487,12 +498,19 @@ impl TurnRunner for AgentEngine {
                         success: false,
                         truncated: false,
                         changed_paths: Vec::new(),
+                        diff: None,
                     },
                 };
                 let (bounded_content, additionally_truncated) =
                     truncate_utf8(&tool_result.content, self.limits.max_tool_output_bytes);
                 tool_result.content = bounded_content;
                 tool_result.truncated |= additionally_truncated;
+                if let Some(diff) = &tool_result.diff {
+                    let (bounded_diff, diff_truncated) =
+                        truncate_utf8(diff, self.limits.max_tool_output_bytes);
+                    tool_result.diff = Some(bounded_diff);
+                    tool_result.truncated |= diff_truncated;
+                }
                 events
                     .send(AppEvent::ToolOutput {
                         call_id: call.id.clone(),
@@ -507,9 +525,24 @@ impl TurnRunner for AgentEngine {
                     })
                     .map_err(|_| AxiomError::Cancelled)?;
                 if !tool_result.changed_paths.is_empty() {
+                    self.change_sets
+                        .lock()
+                        .await
+                        .entry(context.session_id.clone())
+                        .or_default()
+                        .extend(tool_result.changed_paths.iter().cloned());
                     events
                         .send(AppEvent::WorkspaceChanged {
                             paths: tool_result.changed_paths.clone(),
+                        })
+                        .map_err(|_| AxiomError::Cancelled)?;
+                }
+                if let Some(diff) = &tool_result.diff {
+                    events
+                        .send(AppEvent::DiffAvailable {
+                            call_id: call.id.clone(),
+                            diff: diff.clone(),
+                            truncated: tool_result.truncated,
                         })
                         .map_err(|_| AxiomError::Cancelled)?;
                 }

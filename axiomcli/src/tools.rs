@@ -11,7 +11,7 @@ use crate::{
     policy::Effect,
     provider::{FunctionDefinition, ToolDefinition},
     web::{SafeFetcher, SearchProvider, SearxngClient},
-    workspace::{ProcessManager, ProcessRequest, Workspace},
+    workspace::{EditIntent, ProcessManager, ProcessRequest, StructuredPatch, Workspace},
 };
 
 #[derive(Clone, Debug)]
@@ -26,6 +26,7 @@ pub struct ToolResult {
     pub success: bool,
     pub truncated: bool,
     pub changed_paths: Vec<PathBuf>,
+    pub diff: Option<String>,
 }
 
 impl ToolResult {
@@ -36,6 +37,7 @@ impl ToolResult {
             success: true,
             truncated: false,
             changed_paths: Vec::new(),
+            diff: None,
         }
     }
 }
@@ -144,6 +146,9 @@ pub fn default_registry(max_output_bytes: usize, searxng_url: &str) -> Result<To
     }))?;
     registry.register(Arc::new(InspectGit {
         max_bytes: max_output_bytes,
+    }))?;
+    registry.register(Arc::new(ApplyPatch {
+        max_diff_bytes: max_output_bytes,
     }))?;
     registry.register(Arc::new(ReplaceText))?;
     registry.register(Arc::new(RunCommand {
@@ -463,6 +468,7 @@ impl Tool for InspectGit {
             success: true,
             truncated: inspection.truncated,
             changed_paths: Vec::new(),
+            diff: None,
         })
     }
 }
@@ -566,6 +572,110 @@ impl Tool for ReadFile {
             success: true,
             truncated: read.truncated,
             changed_paths: Vec::new(),
+            diff: None,
+        })
+    }
+}
+
+struct ApplyPatch {
+    max_diff_bytes: usize,
+}
+
+#[async_trait]
+impl Tool for ApplyPatch {
+    fn name(&self) -> &'static str {
+        "apply_patch"
+    }
+
+    fn description(&self) -> &'static str {
+        "Apply an all-prevalidated create/update/delete transaction. Updates and deletes require exact SHA-256 versions."
+    }
+
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "required": ["edits"],
+            "additionalProperties": false,
+            "properties": {
+                "edits": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 100,
+                    "items": {
+                        "oneOf": [
+                            {
+                                "type": "object",
+                                "required": ["operation", "path", "content"],
+                                "additionalProperties": false,
+                                "properties": {
+                                    "operation": {"const": "create"},
+                                    "path": {"type": "string"},
+                                    "content": {"type": "string"},
+                                    "mode": {"type": ["integer", "null"], "minimum": 0, "maximum": 511}
+                                }
+                            },
+                            {
+                                "type": "object",
+                                "required": ["operation", "path", "expected_sha256", "content"],
+                                "additionalProperties": false,
+                                "properties": {
+                                    "operation": {"const": "update"},
+                                    "path": {"type": "string"},
+                                    "expected_sha256": {"type": "string", "minLength": 64, "maxLength": 64},
+                                    "content": {"type": "string"},
+                                    "preserve_line_endings": {"type": "boolean", "default": true}
+                                }
+                            },
+                            {
+                                "type": "object",
+                                "required": ["operation", "path", "expected_sha256"],
+                                "additionalProperties": false,
+                                "properties": {
+                                    "operation": {"const": "delete"},
+                                    "path": {"type": "string"},
+                                    "expected_sha256": {"type": "string", "minLength": 64, "maxLength": 64}
+                                }
+                            }
+                        ]
+                    }
+                }
+            }
+        })
+    }
+
+    fn effects(&self, context: &ToolContext, arguments: &Value) -> Result<Vec<Effect>> {
+        let patch: StructuredPatch = parse(self.name(), arguments.clone())?;
+        let workspace = workspace(context)?;
+        patch
+            .edits
+            .into_iter()
+            .map(|edit| match edit {
+                EditIntent::Create { path, .. } | EditIntent::Update { path, .. } => {
+                    Ok(Effect::FileWrite {
+                        path: workspace.resolve_for_write(path)?,
+                    })
+                }
+                EditIntent::Delete { path, .. } => Ok(Effect::FileDelete {
+                    path: workspace.resolve_existing(path)?,
+                }),
+            })
+            .collect()
+    }
+
+    async fn execute(
+        &self,
+        context: &ToolContext,
+        arguments: Value,
+        _cancellation: CancellationToken,
+    ) -> Result<ToolResult> {
+        let patch: StructuredPatch = parse(self.name(), arguments)?;
+        let outcome = workspace(context)?.apply_structured_patch(&patch, self.max_diff_bytes)?;
+        Ok(ToolResult {
+            content: serde_json::to_string_pretty(&outcome)?,
+            success: true,
+            truncated: outcome.diff_truncated,
+            changed_paths: outcome.changed_paths.clone(),
+            diff: Some(outcome.diff),
         })
     }
 }
@@ -620,6 +730,7 @@ impl Tool for ReplaceText {
             success: true,
             truncated: false,
             changed_paths: vec![result.path],
+            diff: Some(result.diff),
         })
     }
 }
@@ -695,6 +806,7 @@ impl Tool for RunCommand {
             success: outcome.exit_code == Some(0),
             truncated: outcome.truncated,
             changed_paths: Vec::new(),
+            diff: None,
         })
     }
 }
@@ -877,6 +989,7 @@ impl Tool for FetchUrl {
             success: true,
             truncated: result.truncated,
             changed_paths: Vec::new(),
+            diff: None,
         })
     }
 }

@@ -441,6 +441,26 @@ fn send_event(
                 protocol::ToolCallStatus::Failed
             }),
         ),
+        AppEvent::DiffAvailable {
+            call_id,
+            diff,
+            truncated,
+        } => send_tool_update(
+            connection,
+            session_id,
+            call_id,
+            protocol::ToolCallUpdateFields::new().content(vec![
+                protocol::ContentBlock::Text(protocol::TextContent::new(format!(
+                    "DIFF\n{diff}{}",
+                    if truncated {
+                        "\n… diff truncated"
+                    } else {
+                        ""
+                    }
+                )))
+                .into(),
+            ]),
+        ),
         _ => Ok(()),
     }
 }

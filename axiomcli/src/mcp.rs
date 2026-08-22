@@ -189,6 +189,7 @@ impl Tool for McpTool {
             success: result.is_error != Some(true),
             truncated,
             changed_paths: Vec::new(),
+            diff: None,
         })
     }
 }

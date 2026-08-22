@@ -1,7 +1,7 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs::{File, OpenOptions},
-    io::Read as _,
+    io::{Read as _, Write as _},
     path::{Component, Path, PathBuf},
     process::Stdio,
     sync::Arc,
@@ -106,6 +106,75 @@ pub struct PatchOutcome {
     pub old_sha256: Option<String>,
     pub new_sha256: String,
     pub diff: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StructuredPatch {
+    pub edits: Vec<EditIntent>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "operation", deny_unknown_fields)]
+pub enum EditIntent {
+    Create {
+        path: PathBuf,
+        content: String,
+        #[serde(default)]
+        mode: Option<u32>,
+    },
+    Update {
+        path: PathBuf,
+        expected_sha256: String,
+        content: String,
+        #[serde(default = "default_true")]
+        preserve_line_endings: bool,
+    },
+    Delete {
+        path: PathBuf,
+        expected_sha256: String,
+    },
+}
+
+const fn default_true() -> bool {
+    true
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct StructuredEditOutcome {
+    pub operation: String,
+    pub path: PathBuf,
+    pub old_sha256: Option<String>,
+    pub new_sha256: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PatchTransactionOutcome {
+    pub edits: Vec<StructuredEditOutcome>,
+    pub changed_paths: Vec<PathBuf>,
+    pub diff: String,
+    pub diff_truncated: bool,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PreparedOperation {
+    Create,
+    Update,
+    Delete,
+}
+
+struct PreparedEdit {
+    operation: PreparedOperation,
+    path: PathBuf,
+    relative: PathBuf,
+    expected_sha256: Option<String>,
+    old_sha256: Option<String>,
+    new_sha256: Option<String>,
+    staged: Option<PathBuf>,
+    backup: Option<PathBuf>,
+    installed: bool,
+    diff: String,
 }
 
 impl Workspace {
@@ -457,19 +526,31 @@ impl Workspace {
             }
         }
 
-        let diff = repository.diff_index_to_workdir(None, None)?;
+        let head_tree = repository
+            .head()
+            .ok()
+            .and_then(|head| head.peel_to_tree().ok());
+        let diff = repository.diff_tree_to_workdir(head_tree.as_ref(), None)?;
         let output = std::cell::RefCell::new(Vec::new());
         let truncated = std::cell::Cell::new(false);
         diff.print(DiffFormat::Patch, |_delta, _hunk, line| {
             let mut output = output.borrow_mut();
-            let remaining = max_diff_bytes.saturating_sub(output.len());
-            if remaining == 0 {
+            let available = max_diff_bytes.saturating_sub(output.len());
+            if available == 0 {
                 truncated.set(true);
                 return true;
             }
+            let prefix = matches!(line.origin(), '+' | '-' | ' ').then_some(line.origin() as u8);
             let content = line.content();
+            let total = content.len().saturating_add(usize::from(prefix.is_some()));
+            if let Some(prefix) = prefix
+                && output.len() < max_diff_bytes
+            {
+                output.push(prefix);
+            }
+            let remaining = max_diff_bytes.saturating_sub(output.len());
             output.extend_from_slice(&content[..content.len().min(remaining)]);
-            truncated.set(truncated.get() || content.len() > remaining);
+            truncated.set(truncated.get() || total > available);
             true
         })?;
         let diff = String::from_utf8_lossy(&output.into_inner()).into_owned();
@@ -548,6 +629,269 @@ impl Workspace {
         })
     }
 
+    pub fn apply_structured_patch(
+        &self,
+        patch: &StructuredPatch,
+        max_diff_bytes: usize,
+    ) -> Result<PatchTransactionOutcome> {
+        self.apply_structured_patch_inner(patch, max_diff_bytes, None)
+    }
+
+    fn apply_structured_patch_inner(
+        &self,
+        patch: &StructuredPatch,
+        max_diff_bytes: usize,
+        fail_after_commits: Option<usize>,
+    ) -> Result<PatchTransactionOutcome> {
+        const MAX_EDITS: usize = 100;
+        const MAX_CONTENT_BYTES: usize = 8 * 1024 * 1024;
+        if patch.edits.is_empty() || patch.edits.len() > MAX_EDITS {
+            return Err(AxiomError::Tool(format!(
+                "a patch must contain between 1 and {MAX_EDITS} edits"
+            )));
+        }
+        let mut prepared = Vec::with_capacity(patch.edits.len());
+        let mut paths = HashSet::new();
+        let mut content_bytes = 0_usize;
+        for edit in &patch.edits {
+            let item = match self.prepare_edit(edit, &mut content_bytes, MAX_CONTENT_BYTES) {
+                Ok(item) => item,
+                Err(error) => {
+                    cleanup_staged(&prepared);
+                    return Err(error);
+                }
+            };
+            if !paths.insert(item.path.clone()) {
+                cleanup_staged(&prepared);
+                if let Some(staged) = &item.staged {
+                    let _ = std::fs::remove_file(staged);
+                }
+                return Err(AxiomError::Tool(format!(
+                    "patch contains duplicate target {}",
+                    item.relative.display()
+                )));
+            }
+            prepared.push(item);
+        }
+
+        let commit = (|| -> Result<()> {
+            for (index, edit) in prepared.iter_mut().enumerate() {
+                match edit.operation {
+                    PreparedOperation::Create => {
+                        if std::fs::symlink_metadata(&edit.path).is_ok() {
+                            return Err(AxiomError::Tool(format!(
+                                "create conflict: {} now exists",
+                                edit.relative.display()
+                            )));
+                        }
+                        std::fs::rename(
+                            edit.staged.as_ref().expect("create has staged file"),
+                            &edit.path,
+                        )?;
+                        edit.staged = None;
+                        edit.installed = true;
+                    }
+                    PreparedOperation::Update | PreparedOperation::Delete => {
+                        let current = read_edit_target(&edit.path, &self.root, MAX_CONTENT_BYTES)?;
+                        let current_sha = digest(&current.0);
+                        if edit.expected_sha256.as_deref() != Some(&current_sha) {
+                            return Err(AxiomError::Tool(format!(
+                                "stale edit during commit for {}: expected {}, found {current_sha}",
+                                edit.relative.display(),
+                                edit.expected_sha256.as_deref().unwrap_or("(missing)")
+                            )));
+                        }
+                        let backup = sibling_artifact(&edit.path, "backup");
+                        std::fs::rename(&edit.path, &backup)?;
+                        edit.backup = Some(backup);
+                        if edit.operation == PreparedOperation::Update {
+                            std::fs::rename(
+                                edit.staged.as_ref().expect("update has staged file"),
+                                &edit.path,
+                            )?;
+                            edit.staged = None;
+                            edit.installed = true;
+                        }
+                    }
+                }
+                if fail_after_commits == Some(index + 1) {
+                    return Err(AxiomError::Tool(format!(
+                        "injected commit failure after {} edit(s)",
+                        index + 1
+                    )));
+                }
+            }
+            Ok(())
+        })();
+
+        if let Err(error) = commit {
+            let rollback_errors = rollback_prepared(&mut prepared);
+            if rollback_errors.is_empty() {
+                return Err(error);
+            }
+            return Err(AxiomError::Tool(format!(
+                "{error}; rollback needs manual recovery: {}",
+                rollback_errors.join("; ")
+            )));
+        }
+
+        let mut warnings = Vec::new();
+        for edit in &prepared {
+            if let Some(backup) = &edit.backup
+                && let Err(error) = std::fs::remove_file(backup)
+            {
+                warnings.push(format!(
+                    "committed edit but could not remove backup {}: {error}",
+                    backup.display()
+                ));
+            }
+        }
+        let mut diff = prepared
+            .iter()
+            .map(|edit| edit.diff.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut diff_truncated = false;
+        diff = truncate_utf8(&diff, max_diff_bytes, &mut diff_truncated);
+        let changed_paths = prepared
+            .iter()
+            .map(|edit| edit.relative.clone())
+            .collect::<Vec<_>>();
+        let edits = prepared
+            .into_iter()
+            .map(|edit| StructuredEditOutcome {
+                operation: match edit.operation {
+                    PreparedOperation::Create => "create",
+                    PreparedOperation::Update => "update",
+                    PreparedOperation::Delete => "delete",
+                }
+                .into(),
+                path: edit.relative,
+                old_sha256: edit.old_sha256,
+                new_sha256: edit.new_sha256,
+            })
+            .collect();
+        Ok(PatchTransactionOutcome {
+            edits,
+            changed_paths,
+            diff,
+            diff_truncated,
+            warnings,
+        })
+    }
+
+    fn prepare_edit(
+        &self,
+        edit: &EditIntent,
+        total_content_bytes: &mut usize,
+        max_content_bytes: usize,
+    ) -> Result<PreparedEdit> {
+        match edit {
+            EditIntent::Create {
+                path,
+                content,
+                mode,
+            } => {
+                if mode.is_some_and(|mode| mode > 0o777) {
+                    return Err(AxiomError::Tool(
+                        "create mode must be between 0000 and 0777".into(),
+                    ));
+                }
+                *total_content_bytes = total_content_bytes.saturating_add(content.len());
+                ensure_patch_content_budget(*total_content_bytes, max_content_bytes)?;
+                let path = self.resolve_for_write(path)?;
+                if std::fs::symlink_metadata(&path).is_ok() {
+                    return Err(AxiomError::Tool(format!(
+                        "create target already exists: {}",
+                        self.relative(&path).display()
+                    )));
+                }
+                let staged = stage_content(&path, content.as_bytes(), None, *mode)?;
+                let relative = self.relative(&path);
+                Ok(PreparedEdit {
+                    operation: PreparedOperation::Create,
+                    relative: relative.clone(),
+                    path: path.clone(),
+                    expected_sha256: None,
+                    old_sha256: None,
+                    new_sha256: Some(digest(content.as_bytes())),
+                    staged: Some(staged),
+                    backup: None,
+                    installed: false,
+                    diff: file_diff(&relative, None, Some(content)),
+                })
+            }
+            EditIntent::Update {
+                path,
+                expected_sha256,
+                content,
+                preserve_line_endings,
+            } => {
+                let path = self.resolve_existing(path)?;
+                let (old, permissions) = read_edit_target(&path, &self.root, max_content_bytes)?;
+                let old_sha256 = digest(&old);
+                if expected_sha256 != &old_sha256 {
+                    return Err(AxiomError::Tool(format!(
+                        "stale edit: expected {expected_sha256}, found {old_sha256}"
+                    )));
+                }
+                let old_text = String::from_utf8(old).map_err(|_| {
+                    AxiomError::Tool("structured updates require a UTF-8 target".into())
+                })?;
+                let content = if *preserve_line_endings {
+                    preserve_newlines(&old_text, content)
+                } else {
+                    content.clone()
+                };
+                *total_content_bytes = total_content_bytes.saturating_add(content.len());
+                ensure_patch_content_budget(*total_content_bytes, max_content_bytes)?;
+                let staged = stage_content(&path, content.as_bytes(), Some(permissions), None)?;
+                let relative = self.relative(&path);
+                Ok(PreparedEdit {
+                    operation: PreparedOperation::Update,
+                    relative: relative.clone(),
+                    path: path.clone(),
+                    expected_sha256: Some(expected_sha256.clone()),
+                    old_sha256: Some(old_sha256),
+                    new_sha256: Some(digest(content.as_bytes())),
+                    staged: Some(staged),
+                    backup: None,
+                    installed: false,
+                    diff: file_diff(&relative, Some(&old_text), Some(&content)),
+                })
+            }
+            EditIntent::Delete {
+                path,
+                expected_sha256,
+            } => {
+                let path = self.resolve_existing(path)?;
+                let (old, _permissions) = read_edit_target(&path, &self.root, max_content_bytes)?;
+                let old_sha256 = digest(&old);
+                if expected_sha256 != &old_sha256 {
+                    return Err(AxiomError::Tool(format!(
+                        "stale delete: expected {expected_sha256}, found {old_sha256}"
+                    )));
+                }
+                let old_text = String::from_utf8(old).map_err(|_| {
+                    AxiomError::Tool("structured deletes require a UTF-8 target".into())
+                })?;
+                let relative = self.relative(&path);
+                Ok(PreparedEdit {
+                    operation: PreparedOperation::Delete,
+                    relative: relative.clone(),
+                    path: path.clone(),
+                    expected_sha256: Some(expected_sha256.clone()),
+                    old_sha256: Some(old_sha256),
+                    new_sha256: None,
+                    staged: None,
+                    backup: None,
+                    installed: false,
+                    diff: file_diff(&relative, Some(&old_text), None),
+                })
+            }
+        }
+    }
+
     pub fn apply_replacement(
         &self,
         path: impl AsRef<Path>,
@@ -556,8 +900,8 @@ impl Workspace {
         expected_sha256: Option<&str>,
     ) -> Result<PatchOutcome> {
         let path = self.resolve_for_write(path)?;
-        let (old_content, old_permissions, old_sha256) = if path.exists() {
-            let bytes = std::fs::read(&path)?;
+        let (old_content, old_sha256) = if path.exists() {
+            let (bytes, _permissions) = read_edit_target(&path, &self.root, 8 * 1024 * 1024)?;
             let sha = digest(&bytes);
             if let Some(expected) = expected_sha256
                 && expected != sha
@@ -569,7 +913,6 @@ impl Workspace {
             (
                 String::from_utf8(bytes)
                     .map_err(|_| AxiomError::Tool("cannot edit a non-UTF-8 file".into()))?,
-                Some(std::fs::metadata(&path)?.permissions()),
                 Some(sha),
             )
         } else {
@@ -578,7 +921,7 @@ impl Workspace {
                     "new file replacement must use an empty old string".into(),
                 ));
             }
-            (String::new(), None, None)
+            (String::new(), None)
         };
 
         let new_content = if old.is_empty() {
@@ -599,24 +942,25 @@ impl Workspace {
             old_content.replacen(old, new, 1)
         };
 
-        let temp = path.with_file_name(format!(
-            ".{}.axiomcli-{}",
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("edit"),
-            Uuid::new_v4()
-        ));
-        std::fs::write(&temp, new_content.as_bytes())?;
-        if let Some(permissions) = old_permissions {
-            std::fs::set_permissions(&temp, permissions)?;
-        }
-        if let Err(error) = std::fs::rename(&temp, &path) {
-            let _ = std::fs::remove_file(&temp);
-            return Err(error.into());
-        }
+        let relative = self.relative(&path);
+        let edit = if let Some(old_sha256) = &old_sha256 {
+            EditIntent::Update {
+                path: relative.clone(),
+                expected_sha256: old_sha256.clone(),
+                content: new_content.clone(),
+                preserve_line_endings: false,
+            }
+        } else {
+            EditIntent::Create {
+                path: relative.clone(),
+                content: new_content.clone(),
+                mode: None,
+            }
+        };
+        self.apply_structured_patch(&StructuredPatch { edits: vec![edit] }, 128 * 1024)?;
 
         Ok(PatchOutcome {
-            path: self.relative(&path),
+            path: relative,
             old_sha256,
             new_sha256: digest(new_content.as_bytes()),
             diff: unified_diff(&old_content, &new_content),
@@ -648,6 +992,158 @@ impl Workspace {
     fn relative(&self, path: &Path) -> PathBuf {
         path.strip_prefix(&self.root).unwrap_or(path).to_path_buf()
     }
+}
+
+fn ensure_patch_content_budget(bytes: usize, max_bytes: usize) -> Result<()> {
+    if bytes > max_bytes {
+        Err(AxiomError::Tool(format!(
+            "patch content exceeds the {max_bytes}-byte transaction budget"
+        )))
+    } else {
+        Ok(())
+    }
+}
+
+fn read_edit_target(
+    path: &Path,
+    root: &Path,
+    max_bytes: usize,
+) -> Result<(Vec<u8>, std::fs::Permissions)> {
+    let mut file = open_verified(path, root)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(AxiomError::Tool(format!(
+            "edit target is not a regular file: {}",
+            path.display()
+        )));
+    }
+    if metadata.len() > u64::try_from(max_bytes).unwrap_or(u64::MAX) {
+        return Err(AxiomError::Tool(format!(
+            "edit target exceeds the {max_bytes}-byte transaction budget: {}",
+            path.display()
+        )));
+    }
+    let mut bytes = Vec::with_capacity(usize::try_from(metadata.len()).unwrap_or(0));
+    file.read_to_end(&mut bytes)?;
+    Ok((bytes, metadata.permissions()))
+}
+
+fn stage_content(
+    path: &Path,
+    content: &[u8],
+    permissions: Option<std::fs::Permissions>,
+    mode: Option<u32>,
+) -> Result<PathBuf> {
+    let staged = sibling_artifact(path, "stage");
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.custom_flags(nix::libc::O_NOFOLLOW);
+    }
+    let result = (|| -> Result<()> {
+        let mut file = options.open(&staged)?;
+        file.write_all(content)?;
+        file.sync_all()?;
+        if let Some(permissions) = permissions {
+            std::fs::set_permissions(&staged, permissions)?;
+        }
+        #[cfg(unix)]
+        if let Some(mode) = mode {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(mode))?;
+        }
+        #[cfg(not(unix))]
+        if mode.is_some() {
+            return Err(AxiomError::Tool(
+                "explicit file modes are not supported on this platform".into(),
+            ));
+        }
+        Ok(())
+    })();
+    if let Err(error) = result {
+        let _ = std::fs::remove_file(&staged);
+        return Err(error);
+    }
+    Ok(staged)
+}
+
+fn sibling_artifact(path: &Path, purpose: &str) -> PathBuf {
+    path.with_file_name(format!(
+        ".{}.axiomcli-{purpose}-{}",
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("edit"),
+        Uuid::new_v4()
+    ))
+}
+
+fn cleanup_staged(prepared: &[PreparedEdit]) {
+    for edit in prepared {
+        if let Some(staged) = &edit.staged {
+            let _ = std::fs::remove_file(staged);
+        }
+    }
+}
+
+fn rollback_prepared(prepared: &mut [PreparedEdit]) -> Vec<String> {
+    let mut errors = Vec::new();
+    for edit in prepared.iter_mut().rev() {
+        if edit.installed
+            && edit.path.exists()
+            && let Err(error) = std::fs::remove_file(&edit.path)
+        {
+            errors.push(format!("remove {}: {error}", edit.path.display()));
+            continue;
+        }
+        if let Some(backup) = &edit.backup
+            && backup.exists()
+            && let Err(error) = std::fs::rename(backup, &edit.path)
+        {
+            errors.push(format!(
+                "restore {} from {}: {error}",
+                edit.path.display(),
+                backup.display()
+            ));
+        }
+        if let Some(staged) = &edit.staged {
+            let _ = std::fs::remove_file(staged);
+        }
+    }
+    errors
+}
+
+fn preserve_newlines(old: &str, new: &str) -> String {
+    let old_crlf = old
+        .as_bytes()
+        .windows(2)
+        .filter(|pair| *pair == b"\r\n")
+        .count();
+    let old_lf = old.split('\n').count().saturating_sub(1);
+    if old_crlf > 0 && old_crlf == old_lf {
+        new.replace("\r\n", "\n").replace('\n', "\r\n")
+    } else {
+        new.to_owned()
+    }
+}
+
+fn file_diff(path: &Path, old: Option<&str>, new: Option<&str>) -> String {
+    let display = path.to_string_lossy();
+    let old_label = if old.is_some() {
+        format!("a/{display}")
+    } else {
+        "/dev/null".into()
+    };
+    let new_label = if new.is_some() {
+        format!("b/{display}")
+    } else {
+        "/dev/null".into()
+    };
+    format!(
+        "--- {old_label}\n+++ {new_label}\n{}",
+        unified_diff(old.unwrap_or_default(), new.unwrap_or_default())
+    )
 }
 
 fn open_verified(path: &Path, root: &Path) -> Result<File> {
@@ -1139,6 +1635,264 @@ mod tests {
                 .any(|entry| entry.path == Path::new("tracked.txt"))
         );
         assert!(inspection.diff.len() <= 32);
+    }
+
+    #[test]
+    fn structured_patch_creates_updates_deletes_and_preserves_newlines_and_mode() {
+        let root = tempdir().expect("root");
+        std::fs::write(root.path().join("update.txt"), "old\r\nline\r\n").expect("update");
+        std::fs::write(root.path().join("delete.txt"), "remove me\n").expect("delete");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(
+                root.path().join("update.txt"),
+                std::fs::Permissions::from_mode(0o744),
+            )
+            .expect("mode");
+        }
+        let workspace = Workspace::new(root.path()).expect("workspace");
+        let update_hash = workspace
+            .read("update.txt", 1, 20, 1024)
+            .expect("read update")
+            .sha256;
+        let delete_hash = workspace
+            .read("delete.txt", 1, 20, 1024)
+            .expect("read delete")
+            .sha256;
+        let patch = StructuredPatch {
+            edits: vec![
+                EditIntent::Update {
+                    path: PathBuf::from("update.txt"),
+                    expected_sha256: update_hash,
+                    content: "new\n🌸\n".into(),
+                    preserve_line_endings: true,
+                },
+                EditIntent::Create {
+                    path: PathBuf::from("created.txt"),
+                    content: "created λ\n".into(),
+                    mode: Some(0o640),
+                },
+                EditIntent::Delete {
+                    path: PathBuf::from("delete.txt"),
+                    expected_sha256: delete_hash,
+                },
+            ],
+        };
+        let outcome = workspace
+            .apply_structured_patch(&patch, 16 * 1024)
+            .expect("transaction");
+        assert_eq!(outcome.edits.len(), 3);
+        assert_eq!(
+            std::fs::read(root.path().join("update.txt")).expect("updated"),
+            "new\r\n🌸\r\n".as_bytes()
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.path().join("created.txt")).expect("created"),
+            "created λ\n"
+        );
+        assert!(!root.path().join("delete.txt").exists());
+        assert!(outcome.diff.contains("--- a/update.txt"));
+        assert!(outcome.diff.contains("+++ /dev/null"));
+        assert!(outcome.diff.contains("+++ b/created.txt"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            assert_eq!(
+                std::fs::metadata(root.path().join("update.txt"))
+                    .expect("updated metadata")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o744
+            );
+            assert_eq!(
+                std::fs::metadata(root.path().join("created.txt"))
+                    .expect("created metadata")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o640
+            );
+        }
+        let created_hash = workspace
+            .read("created.txt", 1, 20, 1024)
+            .expect("created hash")
+            .sha256;
+        let truncated = workspace
+            .apply_structured_patch(
+                &StructuredPatch {
+                    edits: vec![EditIntent::Update {
+                        path: PathBuf::from("created.txt"),
+                        expected_sha256: created_hash,
+                        content: "a substantially longer replacement\n".into(),
+                        preserve_line_endings: true,
+                    }],
+                },
+                8,
+            )
+            .expect("truncated preview");
+        assert!(truncated.diff_truncated);
+        assert!(truncated.diff.len() <= 8);
+    }
+
+    #[test]
+    fn structured_patch_prevalidation_conflict_and_partial_commit_roll_back() {
+        let root = tempdir().expect("root");
+        std::fs::write(root.path().join("first.txt"), "first old\n").expect("first");
+        std::fs::write(root.path().join("second.txt"), "second old\n").expect("second");
+        let workspace = Workspace::new(root.path()).expect("workspace");
+        let first_hash = workspace
+            .read("first.txt", 1, 20, 1024)
+            .expect("first read")
+            .sha256;
+        let conflict = StructuredPatch {
+            edits: vec![
+                EditIntent::Update {
+                    path: PathBuf::from("first.txt"),
+                    expected_sha256: first_hash.clone(),
+                    content: "first new\n".into(),
+                    preserve_line_endings: true,
+                },
+                EditIntent::Update {
+                    path: PathBuf::from("second.txt"),
+                    expected_sha256: "0".repeat(64),
+                    content: "second new\n".into(),
+                    preserve_line_endings: true,
+                },
+            ],
+        };
+        assert!(workspace.apply_structured_patch(&conflict, 4096).is_err());
+        assert_eq!(
+            std::fs::read_to_string(root.path().join("first.txt")).expect("unchanged"),
+            "first old\n"
+        );
+
+        let rollback = StructuredPatch {
+            edits: vec![
+                EditIntent::Update {
+                    path: PathBuf::from("first.txt"),
+                    expected_sha256: first_hash,
+                    content: "first new\n".into(),
+                    preserve_line_endings: true,
+                },
+                EditIntent::Create {
+                    path: PathBuf::from("created.txt"),
+                    content: "created\n".into(),
+                    mode: None,
+                },
+            ],
+        };
+        let error = workspace
+            .apply_structured_patch_inner(&rollback, 4096, Some(1))
+            .expect_err("injected failure");
+        assert!(error.to_string().contains("injected commit failure"));
+        assert_eq!(
+            std::fs::read_to_string(root.path().join("first.txt")).expect("rolled back"),
+            "first old\n"
+        );
+        assert!(!root.path().join("created.txt").exists());
+        assert!(
+            std::fs::read_dir(root.path())
+                .expect("entries")
+                .all(|entry| !entry
+                    .expect("entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .contains(".axiomcli-"))
+        );
+    }
+
+    #[test]
+    fn structured_patch_rejects_escape_duplicate_unknown_and_symlink_targets() {
+        let root = tempdir().expect("root");
+        let outside = tempdir().expect("outside");
+        let workspace = Workspace::new(root.path()).expect("workspace");
+        let escape = StructuredPatch {
+            edits: vec![EditIntent::Create {
+                path: PathBuf::from("../escape.txt"),
+                content: "no".into(),
+                mode: None,
+            }],
+        };
+        assert!(workspace.apply_structured_patch(&escape, 4096).is_err());
+        assert!(!outside.path().join("escape.txt").exists());
+        let duplicate = StructuredPatch {
+            edits: vec![
+                EditIntent::Create {
+                    path: PathBuf::from("same.txt"),
+                    content: "one".into(),
+                    mode: None,
+                },
+                EditIntent::Create {
+                    path: PathBuf::from("same.txt"),
+                    content: "two".into(),
+                    mode: None,
+                },
+            ],
+        };
+        assert!(workspace.apply_structured_patch(&duplicate, 4096).is_err());
+        assert!(!root.path().join("same.txt").exists());
+        assert!(
+            serde_json::from_value::<StructuredPatch>(serde_json::json!({
+                "edits": [{"operation":"create", "path":"x", "content":"x", "surprise":true}]
+            }))
+            .is_err()
+        );
+
+        #[cfg(unix)]
+        {
+            std::fs::write(outside.path().join("secret"), "outside").expect("outside file");
+            std::os::unix::fs::symlink(outside.path().join("secret"), root.path().join("link"))
+                .expect("symlink");
+            let patch = StructuredPatch {
+                edits: vec![EditIntent::Delete {
+                    path: PathBuf::from("link"),
+                    expected_sha256: digest(b"outside"),
+                }],
+            };
+            assert!(workspace.apply_structured_patch(&patch, 4096).is_err());
+            assert_eq!(
+                std::fs::read_to_string(outside.path().join("secret")).expect("outside intact"),
+                "outside"
+            );
+        }
+    }
+
+    #[test]
+    fn structured_diff_and_git_diff_agree_on_changed_lines() {
+        let root = tempdir().expect("root");
+        let repository = Repository::init(root.path()).expect("repository");
+        std::fs::write(root.path().join("file.txt"), "old\n").expect("file");
+        let mut index = repository.index().expect("index");
+        index.add_path(Path::new("file.txt")).expect("add");
+        let tree_id = index.write_tree().expect("tree");
+        let tree = repository.find_tree(tree_id).expect("tree");
+        let signature = Signature::now("AxiomCLI", "test@example.invalid").expect("signature");
+        repository
+            .commit(Some("HEAD"), &signature, &signature, "base", &tree, &[])
+            .expect("commit");
+        drop(tree);
+        let workspace = Workspace::new(root.path()).expect("workspace");
+        let hash = workspace.read("file.txt", 1, 10, 100).expect("read").sha256;
+        let outcome = workspace
+            .apply_structured_patch(
+                &StructuredPatch {
+                    edits: vec![EditIntent::Update {
+                        path: PathBuf::from("file.txt"),
+                        expected_sha256: hash,
+                        content: "new content\n".into(),
+                        preserve_line_endings: true,
+                    }],
+                },
+                4096,
+            )
+            .expect("patch");
+        let git = workspace.inspect_git(10, 1, 4096).expect("git diff");
+        for line in ["-old", "+new content"] {
+            assert!(outcome.diff.contains(line), "structured {line}");
+            assert!(git.diff.contains(line), "git {line}: {:?}", git.diff);
+        }
     }
 
     #[tokio::test]
