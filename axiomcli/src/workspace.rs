@@ -1,11 +1,15 @@
 use std::{
     collections::HashMap,
+    fs::{File, OpenOptions},
+    io::Read as _,
     path::{Component, Path, PathBuf},
     process::Stdio,
     sync::Arc,
     time::Duration,
 };
 
+use git2::{DiffFormat, Repository, StatusOptions};
+use globset::Glob;
 use ignore::WalkBuilder;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -33,6 +37,67 @@ pub struct FileRead {
     pub end_line: usize,
     pub sha256: String,
     pub truncated: bool,
+    pub size_bytes: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FileMetadata {
+    pub path: PathBuf,
+    pub kind: String,
+    pub size_bytes: u64,
+    pub readonly: bool,
+    pub executable: bool,
+    pub content: ContentClassification,
+    pub provenance: SourceClassification,
+    pub modified_unix_seconds: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContentClassification {
+    Text,
+    Binary,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceClassification {
+    Authored,
+    LikelyGenerated,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ContextRange {
+    pub path: PathBuf,
+    pub start_line: usize,
+    pub end_line: usize,
+    pub content: String,
+    pub sha256: String,
+    pub score: usize,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GitStatusEntry {
+    pub path: PathBuf,
+    pub status: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GitCommitSummary {
+    pub id: String,
+    pub summary: String,
+    pub author: String,
+    pub unix_seconds: i64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GitInspection {
+    pub branch: Option<String>,
+    pub head: Option<String>,
+    pub status: Vec<GitStatusEntry>,
+    pub recent_commits: Vec<GitCommitSummary>,
+    pub diff: String,
+    pub truncated: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -53,6 +118,26 @@ impl Workspace {
             )));
         }
         Ok(Self { root })
+    }
+
+    /// Discover the nearest repository root, falling back to the supplied
+    /// directory when it is not inside a Git worktree.
+    pub fn discover(start: impl AsRef<Path>) -> Result<Self> {
+        let start = start.as_ref().canonicalize()?;
+        let directory = if start.is_dir() {
+            start
+        } else {
+            start
+                .parent()
+                .ok_or_else(|| AxiomError::Config("workspace path has no parent".into()))?
+                .to_path_buf()
+        };
+        let root = directory
+            .ancestors()
+            .find(|ancestor| ancestor.join(".git").exists())
+            .unwrap_or(&directory)
+            .to_path_buf();
+        Self::new(root)
     }
 
     #[must_use]
@@ -98,6 +183,87 @@ impl Workspace {
             .collect())
     }
 
+    pub fn glob(
+        &self,
+        pattern: &str,
+        max_entries: usize,
+        include_ignored: bool,
+    ) -> Result<Vec<PathBuf>> {
+        if pattern.trim().is_empty() {
+            return Err(AxiomError::Tool("glob pattern cannot be empty".into()));
+        }
+        let matcher = Glob::new(pattern)
+            .map_err(|error| AxiomError::Tool(format!("invalid glob pattern: {error}")))?
+            .compile_matcher();
+        let mut builder = WalkBuilder::new(&self.root);
+        builder
+            .hidden(false)
+            .git_ignore(!include_ignored)
+            .git_global(!include_ignored)
+            .git_exclude(!include_ignored)
+            .ignore(!include_ignored);
+        let mut paths = Vec::new();
+        for entry in builder.build().filter_map(std::result::Result::ok) {
+            let relative = self.relative(entry.path());
+            if relative.as_os_str().is_empty()
+                || relative.starts_with(".git")
+                || !matcher.is_match(&relative)
+            {
+                continue;
+            }
+            paths.push(relative);
+            if paths.len() >= max_entries {
+                break;
+            }
+        }
+        paths.sort();
+        Ok(paths)
+    }
+
+    pub fn metadata(&self, path: impl AsRef<Path>) -> Result<FileMetadata> {
+        let input = path.as_ref();
+        let candidate = self.candidate(input)?;
+        let link_metadata = std::fs::symlink_metadata(&candidate)?;
+        let resolved = self.resolve_existing(&candidate)?;
+        let metadata = std::fs::metadata(&resolved)?;
+        let kind = if link_metadata.file_type().is_symlink() {
+            "symlink"
+        } else if metadata.is_file() {
+            "file"
+        } else if metadata.is_dir() {
+            "directory"
+        } else {
+            "special"
+        };
+        let prefix = if metadata.is_file() {
+            read_verified_prefix(&resolved, &self.root, 8192)?
+        } else {
+            Vec::new()
+        };
+        Ok(FileMetadata {
+            path: self.relative(&candidate),
+            kind: kind.into(),
+            size_bytes: metadata.len(),
+            readonly: metadata.permissions().readonly(),
+            executable: is_executable(&metadata),
+            content: if looks_binary(&prefix) {
+                ContentClassification::Binary
+            } else {
+                ContentClassification::Text
+            },
+            provenance: if likely_generated(&self.relative(&candidate), &prefix) {
+                SourceClassification::LikelyGenerated
+            } else {
+                SourceClassification::Authored
+            },
+            modified_unix_seconds: metadata
+                .modified()
+                .ok()
+                .and_then(|value| value.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|value| value.as_secs()),
+        })
+    }
+
     pub fn search(
         &self,
         query: &str,
@@ -122,14 +288,20 @@ impl Workspace {
                 _ => continue,
             };
             let _ = metadata;
-            let Ok(content) = std::fs::read_to_string(entry.path()) else {
+            let relative = self.relative(entry.path());
+            let Ok(read) = self.read(
+                &relative,
+                1,
+                100_000,
+                usize::try_from(max_file_bytes).unwrap_or(usize::MAX),
+            ) else {
                 continue;
             };
-            for (index, line) in content.lines().enumerate() {
+            for (index, line) in read.content.lines().enumerate() {
                 if line.contains(query) {
                     matches.push(format!(
                         "{}:{}:{}",
-                        self.relative(entry.path()).display(),
+                        relative.display(),
                         index + 1,
                         line.trim()
                     ));
@@ -142,6 +314,175 @@ impl Workspace {
         Ok(matches)
     }
 
+    pub fn select_context(
+        &self,
+        query: &str,
+        max_files: usize,
+        max_bytes: usize,
+    ) -> Result<Vec<ContextRange>> {
+        if query.trim().is_empty() {
+            return Err(AxiomError::Tool("context query cannot be empty".into()));
+        }
+        let needle = query.to_lowercase();
+        let mut candidates = Vec::new();
+        let walker = WalkBuilder::new(&self.root)
+            .hidden(false)
+            .git_ignore(true)
+            .git_global(true)
+            .build();
+        for entry in walker.filter_map(std::result::Result::ok) {
+            let Ok(metadata) = entry.metadata() else {
+                continue;
+            };
+            if !metadata.is_file() || metadata.len() > 2 * 1024 * 1024 {
+                continue;
+            }
+            let relative = self.relative(entry.path());
+            let Ok(read) = self.read(&relative, 1, 100_000, 2 * 1024 * 1024) else {
+                continue;
+            };
+            let lines: Vec<_> = read.content.lines().collect();
+            let matches: Vec<_> = lines
+                .iter()
+                .enumerate()
+                .filter_map(|(index, line)| line.to_lowercase().contains(&needle).then_some(index))
+                .collect();
+            if matches.is_empty() {
+                continue;
+            }
+            let first = matches[0];
+            let start = first.saturating_sub(3);
+            let end = (matches[matches.len() - 1] + 4).min(lines.len());
+            let content = lines[start..end].join("\n");
+            let name_bonus =
+                usize::from(relative.to_string_lossy().to_lowercase().contains(&needle));
+            candidates.push(ContextRange {
+                path: relative,
+                start_line: start + 1,
+                end_line: end,
+                content,
+                sha256: read.sha256,
+                score: matches
+                    .len()
+                    .saturating_mul(10)
+                    .saturating_add(name_bonus * 25),
+            });
+        }
+        candidates.sort_by(|left, right| {
+            right
+                .score
+                .cmp(&left.score)
+                .then_with(|| left.path.cmp(&right.path))
+        });
+        let mut retained = Vec::new();
+        let mut retained_bytes = 0_usize;
+        for mut range in candidates.into_iter().take(max_files) {
+            let remaining = max_bytes.saturating_sub(retained_bytes);
+            if remaining == 0 {
+                break;
+            }
+            let mut truncated = false;
+            range.content = truncate_utf8(&range.content, remaining, &mut truncated);
+            range.end_line = range
+                .start_line
+                .saturating_add(range.content.lines().count().saturating_sub(1));
+            retained_bytes = retained_bytes.saturating_add(range.content.len());
+            retained.push(range);
+            if truncated {
+                break;
+            }
+        }
+        Ok(retained)
+    }
+
+    pub fn inspect_git(
+        &self,
+        max_status: usize,
+        max_commits: usize,
+        max_diff_bytes: usize,
+    ) -> Result<GitInspection> {
+        let repository = Repository::discover(&self.root)
+            .map_err(|error| AxiomError::Tool(format!("not a Git repository: {error}")))?;
+        let workdir = repository
+            .workdir()
+            .ok_or_else(|| AxiomError::Tool("bare Git repositories are not supported".into()))?
+            .canonicalize()?;
+        if self.root != workdir {
+            return Err(AxiomError::OutsideWorkspace(workdir));
+        }
+        let head = repository.head().ok();
+        let branch = head
+            .as_ref()
+            .and_then(|head| head.shorthand().ok())
+            .map(str::to_owned);
+        let head_id = head
+            .as_ref()
+            .and_then(git2::Reference::target)
+            .map(|id| id.to_string());
+
+        let mut options = StatusOptions::new();
+        options
+            .include_untracked(true)
+            .recurse_untracked_dirs(true)
+            .include_ignored(false);
+        let statuses = repository
+            .statuses(Some(&mut options))?
+            .iter()
+            .take(max_status)
+            .map(|entry| GitStatusEntry {
+                path: PathBuf::from(entry.path().unwrap_or("(non-utf8 path)")),
+                status: format!("{:?}", entry.status()),
+            })
+            .collect();
+
+        let mut recent_commits = Vec::new();
+        if let Ok(mut walk) = repository.revwalk()
+            && walk.push_head().is_ok()
+        {
+            for id in walk.take(max_commits).filter_map(std::result::Result::ok) {
+                let Ok(commit) = repository.find_commit(id) else {
+                    continue;
+                };
+                recent_commits.push(GitCommitSummary {
+                    id: id.to_string(),
+                    summary: commit
+                        .summary()
+                        .ok()
+                        .flatten()
+                        .unwrap_or("(no summary)")
+                        .to_owned(),
+                    author: commit.author().name().unwrap_or("unknown").to_owned(),
+                    unix_seconds: commit.time().seconds(),
+                });
+            }
+        }
+
+        let diff = repository.diff_index_to_workdir(None, None)?;
+        let output = std::cell::RefCell::new(Vec::new());
+        let truncated = std::cell::Cell::new(false);
+        diff.print(DiffFormat::Patch, |_delta, _hunk, line| {
+            let mut output = output.borrow_mut();
+            let remaining = max_diff_bytes.saturating_sub(output.len());
+            if remaining == 0 {
+                truncated.set(true);
+                return true;
+            }
+            let content = line.content();
+            output.extend_from_slice(&content[..content.len().min(remaining)]);
+            truncated.set(truncated.get() || content.len() > remaining);
+            true
+        })?;
+        let diff = String::from_utf8_lossy(&output.into_inner()).into_owned();
+        Ok(GitInspection {
+            branch,
+            head: head_id,
+            status: statuses,
+            recent_commits,
+            diff,
+            truncated: truncated.get(),
+        })
+    }
+
     pub fn read(
         &self,
         path: impl AsRef<Path>,
@@ -149,8 +490,25 @@ impl Workspace {
         max_lines: usize,
         max_bytes: usize,
     ) -> Result<FileRead> {
+        const MAX_INSPECT_BYTES: u64 = 8 * 1024 * 1024;
         let path = self.resolve_existing(path)?;
-        let bytes = std::fs::read(&path)?;
+        let mut file = open_verified(&path, &self.root)?;
+        let metadata = file.metadata()?;
+        if !metadata.is_file() {
+            return Err(AxiomError::Tool(format!(
+                "special file cannot be read: {}",
+                self.relative(&path).display()
+            )));
+        }
+        if metadata.len() > MAX_INSPECT_BYTES {
+            return Err(AxiomError::Tool(format!(
+                "large file omitted: {} is {} bytes (limit {MAX_INSPECT_BYTES}); inspect metadata or select a smaller source file",
+                self.relative(&path).display(),
+                metadata.len()
+            )));
+        }
+        let mut bytes = Vec::with_capacity(usize::try_from(metadata.len()).unwrap_or(0));
+        file.read_to_end(&mut bytes)?;
         if bytes.iter().take(8192).any(|byte| *byte == 0) {
             return Err(AxiomError::Tool(format!(
                 "binary file cannot be read as text: {}",
@@ -158,7 +516,13 @@ impl Workspace {
             )));
         }
         let sha256 = digest(&bytes);
-        let full = String::from_utf8_lossy(&bytes);
+        let full = std::str::from_utf8(bytes.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(&bytes))
+            .map_err(|_| {
+            AxiomError::Tool(format!(
+                "text file is not valid UTF-8: {}",
+                self.relative(&path).display()
+            ))
+        })?;
         let start_line = start_line.max(1);
         let lines: Vec<_> = full
             .lines()
@@ -180,6 +544,7 @@ impl Workspace {
             end_line: start_line.saturating_add(line_count.saturating_sub(1)),
             sha256,
             truncated,
+            size_bytes: metadata.len(),
         })
     }
 
@@ -283,6 +648,79 @@ impl Workspace {
     fn relative(&self, path: &Path) -> PathBuf {
         path.strip_prefix(&self.root).unwrap_or(path).to_path_buf()
     }
+}
+
+fn open_verified(path: &Path, root: &Path) -> Result<File> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK);
+    }
+    let file = options.open(path)?;
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsRawFd as _;
+        let actual = PathBuf::from(format!("/proc/self/fd/{}", file.as_raw_fd())).canonicalize()?;
+        if !actual.starts_with(root) {
+            return Err(AxiomError::OutsideWorkspace(actual));
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let actual = path.canonicalize()?;
+        if !actual.starts_with(root) {
+            return Err(AxiomError::OutsideWorkspace(actual));
+        }
+    }
+    Ok(file)
+}
+
+fn read_verified_prefix(path: &Path, root: &Path, max_bytes: usize) -> Result<Vec<u8>> {
+    let file = open_verified(path, root)?;
+    let mut bytes = Vec::new();
+    file.take(u64::try_from(max_bytes).unwrap_or(u64::MAX))
+        .read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+fn looks_binary(bytes: &[u8]) -> bool {
+    bytes.contains(&0)
+        || (!bytes.is_empty()
+            && bytes
+                .iter()
+                .filter(|byte| byte.is_ascii_control() && !matches!(byte, b'\n' | b'\r' | b'\t'))
+                .count()
+                .saturating_mul(20)
+                > bytes.len())
+}
+
+fn likely_generated(path: &Path, prefix: &[u8]) -> bool {
+    let generated_directory = path.components().any(|component| {
+        matches!(
+            component.as_os_str().to_str(),
+            Some("target" | "node_modules" | "dist" | "build" | "vendor" | "generated")
+        )
+    });
+    let header = String::from_utf8_lossy(prefix).to_lowercase();
+    generated_directory
+        || header.lines().take(5).any(|line| {
+            line.contains("generated file")
+                || line.contains("code generated")
+                || line.contains("do not edit")
+        })
+}
+
+#[cfg(unix)]
+fn is_executable(metadata: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::PermissionsExt as _;
+    metadata.permissions().mode() & 0o111 != 0
+}
+
+#[cfg(not(unix))]
+fn is_executable(_metadata: &std::fs::Metadata) -> bool {
+    false
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -525,6 +963,7 @@ fn unified_diff(old: &str, new: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use git2::{IndexAddOption, Signature};
     use tempfile::tempdir;
 
     use super::*;
@@ -561,6 +1000,145 @@ mod tests {
                 .apply_replacement("file.txt", "new", "again", Some(&read.sha256))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn discovery_glob_metadata_and_context_are_bounded_and_stable() {
+        let root = tempdir().expect("root");
+        Repository::init(root.path()).expect("repository");
+        std::fs::create_dir_all(root.path().join("src/nested")).expect("src");
+        std::fs::write(root.path().join(".gitignore"), "ignored.txt\n").expect("ignore");
+        std::fs::write(
+            root.path().join("src/lib.rs"),
+            "pub fn cherry_router() {\n    // cherry context\n}\n",
+        )
+        .expect("rust");
+        std::fs::write(
+            root.path().join("src/nested/app.py"),
+            "def cherry_worker():\n    return 'context'\n",
+        )
+        .expect("python");
+        std::fs::write(root.path().join("ignored.txt"), "cherry secret\n").expect("ignored");
+        std::fs::write(
+            root.path().join("generated.rs"),
+            "// Code generated; DO NOT EDIT.\npub const VALUE: u8 = 1;\n",
+        )
+        .expect("generated");
+        let discovered = Workspace::discover(root.path().join("src/nested")).expect("discover");
+        assert_eq!(discovered.root(), root.path().canonicalize().expect("root"));
+        assert_eq!(
+            discovered.glob("**/*.rs", 10, false).expect("glob"),
+            vec![PathBuf::from("generated.rs"), PathBuf::from("src/lib.rs")]
+        );
+        assert!(
+            !discovered
+                .glob("**/*.txt", 10, false)
+                .expect("ignored glob")
+                .contains(&PathBuf::from("ignored.txt"))
+        );
+        assert!(
+            discovered
+                .glob("**/*.txt", 10, true)
+                .expect("override glob")
+                .contains(&PathBuf::from("ignored.txt"))
+        );
+        let metadata = discovered.metadata("generated.rs").expect("metadata");
+        assert_eq!(metadata.provenance, SourceClassification::LikelyGenerated);
+        assert_eq!(metadata.content, ContentClassification::Text);
+
+        let first = discovered
+            .select_context("cherry", 8, 120)
+            .expect("context");
+        let second = discovered
+            .select_context("cherry", 8, 120)
+            .expect("stable context");
+        assert_eq!(
+            serde_json::to_string(&first).expect("first"),
+            serde_json::to_string(&second).expect("second")
+        );
+        assert!(first.iter().all(|range| !range.path.is_absolute()));
+        assert!(first.iter().map(|range| range.content.len()).sum::<usize>() <= 120);
+        assert!(
+            first
+                .iter()
+                .any(|range| range.path == Path::new("src/lib.rs"))
+        );
+    }
+
+    #[test]
+    fn binary_large_invalid_encoding_special_and_symlink_swap_fail_safely() {
+        let root = tempdir().expect("root");
+        let outside = tempdir().expect("outside");
+        std::fs::write(root.path().join("binary.bin"), b"abc\0def").expect("binary");
+        std::fs::write(root.path().join("invalid.txt"), [0xff, 0xfe, 0x41]).expect("encoding");
+        let large = File::create(root.path().join("large.txt")).expect("large");
+        large.set_len(9 * 1024 * 1024).expect("sparse length");
+        std::fs::write(root.path().join("victim.txt"), "inside").expect("victim");
+        std::fs::write(outside.path().join("secret.txt"), "outside").expect("outside");
+        let workspace = Workspace::new(root.path()).expect("workspace");
+        assert!(workspace.read("binary.bin", 1, 10, 100).is_err());
+        assert!(workspace.read("invalid.txt", 1, 10, 100).is_err());
+        let large_error = workspace
+            .read("large.txt", 1, 10, 100)
+            .expect_err("large file");
+        assert!(large_error.to_string().contains("large file omitted"));
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::{fs::symlink, net::UnixListener};
+            let socket_path = root.path().join("special.sock");
+            let _socket = UnixListener::bind(&socket_path).expect("socket");
+            assert!(workspace.read("special.sock", 1, 10, 100).is_err());
+
+            let _checked = workspace
+                .resolve_existing("victim.txt")
+                .expect("policy check");
+            std::fs::remove_file(root.path().join("victim.txt")).expect("remove victim");
+            symlink(
+                outside.path().join("secret.txt"),
+                root.path().join("victim.txt"),
+            )
+            .expect("swap");
+            assert!(workspace.read("victim.txt", 1, 10, 100).is_err());
+        }
+    }
+
+    #[test]
+    fn git_inspection_uses_library_and_returns_bounded_status_diff_and_log() {
+        let root = tempdir().expect("root");
+        let repository = Repository::init(root.path()).expect("repository");
+        std::fs::write(root.path().join("tracked.txt"), "old\n").expect("tracked");
+        let mut index = repository.index().expect("index");
+        index
+            .add_all(["tracked.txt"], IndexAddOption::DEFAULT, None)
+            .expect("add");
+        let tree_id = index.write_tree().expect("tree id");
+        let tree = repository.find_tree(tree_id).expect("tree");
+        let signature = Signature::now("AxiomCLI test", "test@example.invalid").expect("signature");
+        repository
+            .commit(
+                Some("HEAD"),
+                &signature,
+                &signature,
+                "initial fixture",
+                &tree,
+                &[],
+            )
+            .expect("commit");
+        drop(tree);
+        std::fs::write(root.path().join("tracked.txt"), "new\n").expect("modify");
+        std::fs::write(root.path().join("untracked.txt"), "new\n").expect("untracked");
+        let workspace = Workspace::new(root.path()).expect("workspace");
+        let inspection = workspace.inspect_git(10, 5, 32).expect("inspect");
+        assert!(inspection.head.is_some());
+        assert_eq!(inspection.recent_commits[0].summary, "initial fixture");
+        assert!(
+            inspection
+                .status
+                .iter()
+                .any(|entry| entry.path == Path::new("tracked.txt"))
+        );
+        assert!(inspection.diff.len() <= 32);
     }
 
     #[tokio::test]

@@ -19,6 +19,8 @@ pub enum AxiomError {
     Provider(String),
     #[error("tool error: {0}")]
     Tool(String),
+    #[error("git error: {0}")]
+    Git(#[from] git2::Error),
     #[error("storage error: {0}")]
     Storage(String),
     #[error("protocol error: {0}")]

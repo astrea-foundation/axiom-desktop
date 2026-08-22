@@ -135,8 +135,16 @@ pub fn default_registry(max_output_bytes: usize, searxng_url: &str) -> Result<To
     let processes = ProcessManager::new(max_output_bytes);
     let mut registry = ToolRegistry::new();
     registry.register(Arc::new(ListFiles))?;
+    registry.register(Arc::new(GlobFiles))?;
     registry.register(Arc::new(SearchText))?;
     registry.register(Arc::new(ReadFile))?;
+    registry.register(Arc::new(InspectMetadata))?;
+    registry.register(Arc::new(SelectContext {
+        max_bytes: max_output_bytes,
+    }))?;
+    registry.register(Arc::new(InspectGit {
+        max_bytes: max_output_bytes,
+    }))?;
     registry.register(Arc::new(ReplaceText))?;
     registry.register(Arc::new(RunCommand {
         processes: processes.clone(),
@@ -221,6 +229,241 @@ impl Tool for ListFiles {
                 .collect::<Vec<_>>()
                 .join("\n"),
         ))
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GlobArgs {
+    pattern: String,
+    #[serde(default = "default_glob_entries")]
+    max_entries: usize,
+    #[serde(default)]
+    include_ignored: bool,
+}
+
+fn default_glob_entries() -> usize {
+    500
+}
+
+struct GlobFiles;
+
+#[async_trait]
+impl Tool for GlobFiles {
+    fn name(&self) -> &'static str {
+        "glob_files"
+    }
+
+    fn description(&self) -> &'static str {
+        "Find bounded workspace-relative paths by glob. Ignored files require an explicit scope-expansion approval."
+    }
+
+    fn parameters(&self) -> Value {
+        schema(
+            json!({
+                "pattern": {"type": "string", "minLength": 1},
+                "max_entries": {"type": "integer", "minimum": 1, "maximum": 2000},
+                "include_ignored": {"type": "boolean", "default": false}
+            }),
+            &["pattern"],
+        )
+    }
+
+    fn effects(&self, context: &ToolContext, arguments: &Value) -> Result<Vec<Effect>> {
+        let args: GlobArgs = parse(self.name(), arguments.clone())?;
+        let root = workspace(context)?.root().to_path_buf();
+        let mut effects = vec![Effect::FileRead { path: root.clone() }];
+        if args.include_ignored {
+            effects.push(Effect::ScopeChange {
+                scope: format!("include ignored files under {}", root.display()),
+            });
+        }
+        Ok(effects)
+    }
+
+    async fn execute(
+        &self,
+        context: &ToolContext,
+        arguments: Value,
+        _cancellation: CancellationToken,
+    ) -> Result<ToolResult> {
+        let args: GlobArgs = parse(self.name(), arguments)?;
+        let paths = workspace(context)?.glob(
+            &args.pattern,
+            args.max_entries.clamp(1, 2000),
+            args.include_ignored,
+        )?;
+        Ok(ToolResult::success(
+            paths
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ))
+    }
+}
+
+struct InspectMetadata;
+
+#[async_trait]
+impl Tool for InspectMetadata {
+    fn name(&self) -> &'static str {
+        "inspect_metadata"
+    }
+
+    fn description(&self) -> &'static str {
+        "Inspect bounded file metadata and binary/generated classifications without reading full content."
+    }
+
+    fn parameters(&self) -> Value {
+        schema(json!({"path": {"type": "string"}}), &["path"])
+    }
+
+    fn effects(&self, context: &ToolContext, arguments: &Value) -> Result<Vec<Effect>> {
+        let args: PathArgs = parse(self.name(), arguments.clone())?;
+        Ok(vec![Effect::FileRead {
+            path: workspace(context)?.resolve_existing(args.path)?,
+        }])
+    }
+
+    async fn execute(
+        &self,
+        context: &ToolContext,
+        arguments: Value,
+        _cancellation: CancellationToken,
+    ) -> Result<ToolResult> {
+        let args: PathArgs = parse(self.name(), arguments)?;
+        Ok(ToolResult::success(serde_json::to_string_pretty(
+            &workspace(context)?.metadata(args.path)?,
+        )?))
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ContextArgs {
+    query: String,
+    #[serde(default = "default_context_files")]
+    max_files: usize,
+}
+
+fn default_context_files() -> usize {
+    8
+}
+
+struct SelectContext {
+    max_bytes: usize,
+}
+
+#[async_trait]
+impl Tool for SelectContext {
+    fn name(&self) -> &'static str {
+        "select_context"
+    }
+
+    fn description(&self) -> &'static str {
+        "Select relevant cited source ranges for a query under a strict byte budget."
+    }
+
+    fn parameters(&self) -> Value {
+        schema(
+            json!({
+                "query": {"type": "string", "minLength": 1},
+                "max_files": {"type": "integer", "minimum": 1, "maximum": 32}
+            }),
+            &["query"],
+        )
+    }
+
+    fn effects(&self, context: &ToolContext, arguments: &Value) -> Result<Vec<Effect>> {
+        let _: ContextArgs = parse(self.name(), arguments.clone())?;
+        Ok(vec![Effect::FileRead {
+            path: workspace(context)?.root().to_path_buf(),
+        }])
+    }
+
+    async fn execute(
+        &self,
+        context: &ToolContext,
+        arguments: Value,
+        _cancellation: CancellationToken,
+    ) -> Result<ToolResult> {
+        let args: ContextArgs = parse(self.name(), arguments)?;
+        let ranges = workspace(context)?.select_context(
+            &args.query,
+            args.max_files.clamp(1, 32),
+            self.max_bytes,
+        )?;
+        Ok(ToolResult::success(serde_json::to_string_pretty(&ranges)?))
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GitArgs {
+    #[serde(default = "default_status_entries")]
+    max_status: usize,
+    #[serde(default = "default_commits")]
+    max_commits: usize,
+}
+
+fn default_status_entries() -> usize {
+    200
+}
+
+fn default_commits() -> usize {
+    20
+}
+
+struct InspectGit {
+    max_bytes: usize,
+}
+
+#[async_trait]
+impl Tool for InspectGit {
+    fn name(&self) -> &'static str {
+        "inspect_git"
+    }
+
+    fn description(&self) -> &'static str {
+        "Inspect Git branch, HEAD, status, recent commits, and bounded worktree diff without spawning a process."
+    }
+
+    fn parameters(&self) -> Value {
+        schema(
+            json!({
+                "max_status": {"type": "integer", "minimum": 1, "maximum": 2000},
+                "max_commits": {"type": "integer", "minimum": 0, "maximum": 100}
+            }),
+            &[],
+        )
+    }
+
+    fn effects(&self, context: &ToolContext, arguments: &Value) -> Result<Vec<Effect>> {
+        let _: GitArgs = parse(self.name(), arguments.clone())?;
+        Ok(vec![Effect::FileRead {
+            path: workspace(context)?.root().to_path_buf(),
+        }])
+    }
+
+    async fn execute(
+        &self,
+        context: &ToolContext,
+        arguments: Value,
+        _cancellation: CancellationToken,
+    ) -> Result<ToolResult> {
+        let args: GitArgs = parse(self.name(), arguments)?;
+        let inspection = workspace(context)?.inspect_git(
+            args.max_status.clamp(1, 2000),
+            args.max_commits.min(100),
+            self.max_bytes,
+        )?;
+        Ok(ToolResult {
+            content: serde_json::to_string_pretty(&inspection)?,
+            success: true,
+            truncated: inspection.truncated,
+            changed_paths: Vec::new(),
+        })
     }
 }
 
@@ -676,6 +919,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+    use crate::policy::{DecisionKind, PolicyEngine};
 
     struct TestTool;
 
@@ -753,6 +997,61 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(root.path().join("hello.txt")).expect("result"),
             "cherry\n"
+        );
+    }
+
+    #[test]
+    fn observe_profile_allows_intelligence_but_denies_side_effect_surfaces() {
+        let root = tempdir().expect("root");
+        std::fs::write(root.path().join("file.txt"), "content").expect("fixture");
+        let context = ToolContext {
+            cwd: root.path().to_path_buf(),
+            permission_profile: PermissionProfile::Observe,
+        };
+        let registry = default_registry(4096, "http://127.0.0.1:8888").expect("registry");
+        let policy = PolicyEngine::for_workspace(root.path()).expect("policy");
+        for (name, arguments) in [
+            ("list_files", json!({})),
+            ("glob_files", json!({"pattern":"**/*.txt"})),
+            ("search_text", json!({"query":"content"})),
+            ("read_file", json!({"path":"file.txt"})),
+            ("inspect_metadata", json!({"path":"file.txt"})),
+            ("select_context", json!({"query":"content"})),
+            ("inspect_git", json!({})),
+        ] {
+            for effect in registry
+                .effects(name, &context, &arguments)
+                .expect("read effect")
+            {
+                assert_eq!(
+                    policy.evaluate(PermissionProfile::Observe, effect).kind,
+                    DecisionKind::Allow,
+                    "{name}"
+                );
+            }
+        }
+        for (name, arguments) in [
+            (
+                "replace_text",
+                json!({"path":"file.txt", "old":"content", "new":"changed"}),
+            ),
+            ("run_command", json!({"program":"true"})),
+            ("web_search", json!({"query":"must not reach the network"})),
+        ] {
+            for effect in registry
+                .effects(name, &context, &arguments)
+                .expect("effect")
+            {
+                assert_eq!(
+                    policy.evaluate(PermissionProfile::Observe, effect).kind,
+                    DecisionKind::Deny,
+                    "{name}"
+                );
+            }
+        }
+        assert_eq!(
+            std::fs::read_to_string(root.path().join("file.txt")).expect("unchanged"),
+            "content"
         );
     }
 }

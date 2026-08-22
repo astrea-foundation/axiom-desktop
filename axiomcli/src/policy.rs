@@ -35,6 +35,9 @@ pub enum Effect {
         tool: String,
         side_effecting: bool,
     },
+    ScopeChange {
+        scope: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -46,6 +49,7 @@ pub enum EffectClass {
     Process,
     Network,
     Mcp,
+    ScopeChange,
 }
 
 impl EffectClass {
@@ -57,6 +61,7 @@ impl EffectClass {
             Effect::Process { .. } => Self::Process,
             Effect::Network { .. } => Self::Network,
             Effect::Mcp { .. } => Self::Mcp,
+            Effect::ScopeChange { .. } => Self::ScopeChange,
         }
     }
 }
@@ -493,6 +498,15 @@ impl PolicyEngine {
                     side_effecting,
                 })
             }
+            Effect::ScopeChange { scope } => {
+                let scope = scope.trim().to_owned();
+                if scope.is_empty() || scope.contains('\0') {
+                    return Err(AxiomError::PermissionDenied(
+                        "scope changes must have a non-empty/NUL-free identity".into(),
+                    ));
+                }
+                Ok(Effect::ScopeChange { scope })
+            }
         }
     }
 
@@ -571,7 +585,9 @@ fn normalize_rule(mut rule: PolicyRule, root: &Path) -> Result<PolicyRule> {
             url.set_fragment(None);
             url.to_string()
         }
-        EffectClass::Process | EffectClass::Mcp => prefix.trim().to_owned(),
+        EffectClass::Process | EffectClass::Mcp | EffectClass::ScopeChange => {
+            prefix.trim().to_owned()
+        }
     };
     if normalized.is_empty() {
         return Err(AxiomError::Config(
@@ -603,6 +619,11 @@ fn profile_default(
     match (profile, effect) {
         (_, Effect::FileRead { .. }) => (DecisionKind::Allow, "workspace read", false),
         (PermissionProfile::Observe, _) => (DecisionKind::Deny, "observe mode is read-only", false),
+        (_, Effect::ScopeChange { .. }) => (
+            DecisionKind::Ask,
+            "scope expansion always requires approval",
+            false,
+        ),
         (PermissionProfile::Confirm, _) => {
             (DecisionKind::Ask, "confirm mode requires approval", true)
         }
@@ -679,7 +700,7 @@ fn suggested_prefix(effect: &Effect) -> Option<ScopedGrant> {
             server: server.clone(),
             side_effecting: *side_effecting,
         }),
-        Effect::Process { .. } => None,
+        Effect::Process { .. } | Effect::ScopeChange { .. } => None,
     }
 }
 
@@ -721,6 +742,7 @@ fn effect_matches_prefix(effect: &Effect, prefix: &str) -> bool {
         Effect::Process { program, .. } => program.starts_with(prefix),
         Effect::Network { url } => url.starts_with(prefix),
         Effect::Mcp { server, tool, .. } => format!("{server}/{tool}").starts_with(prefix),
+        Effect::ScopeChange { scope } => scope.starts_with(prefix),
     }
 }
 
@@ -807,6 +829,7 @@ pub fn describe_effect(effect: &Effect) -> String {
                 "read-only declared"
             }
         ),
+        Effect::ScopeChange { scope } => format!("expand scope: {scope}"),
     }
 }
 
