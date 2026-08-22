@@ -22,3 +22,5 @@ not advertised.
 | custom extensions | unsupported | none | unknown requests receive standard protocol errors |
 
 ACP mode reserves stdout for protocol frames. All logs are routed to stderr.
+Versioning, storage migration, and ACP change rules are defined in
+[`versioning.md`](versioning.md).

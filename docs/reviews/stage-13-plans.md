@@ -1,14 +1,7 @@
-# Stage 13 Review — Plans and controlled concurrency
+# Stage 13 Review — Superseded record
 
-Decision: **PASS (no-subagent scope)**
-
-- Plans use a tested state machine with revision checks, terminal states,
-  line-range comments, and atomic workspace-local persistence.
-- Background processes provide bounded concurrency with task IDs, independent
-  state/output, timeouts, and cancellation.
-- ADR 0007 explicitly forbids subagents until identity, inherited capability,
-  budget, audit attribution, concurrency, and cancellation-tree semantics are
-  designed. No partial or unbounded subagent feature is hidden behind prompts.
-
-Rich question overlays and ACP plan operations are pre-1.0 UX work; their core
-semantic event types are reserved without advertising unsupported ACP features.
+This early partial review is superseded by
+[`stage-13-planning.md`](stage-13-planning.md). The complete gate includes plan
+policy, durable review/revision, structured TUI/ACP questions, attention
+ordering, and parent-owned bounded concurrency. Keep this file only so old links
+do not silently point at stale claims.

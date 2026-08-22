@@ -1145,9 +1145,13 @@ pub fn render(frame: &mut Frame<'_>, state: &TuiState) {
     let theme = Theme::for_mode(state.options.color_mode);
     if area.width < 42 || area.height < 10 {
         frame.render_widget(
-            Paragraph::new("AxiomCLI needs at least 42×10 terminal cells.")
-                .style(Style::default().fg(theme.cherry_bright))
-                .wrap(Wrap { trim: true }),
+            Paragraph::new(if state.options.ascii {
+                "AxiomCLI needs at least 42x10 terminal cells."
+            } else {
+                "AxiomCLI needs at least 42×10 terminal cells."
+            })
+            .style(Style::default().fg(theme.cherry_bright))
+            .wrap(Wrap { trim: true }),
             area,
         );
         return;
@@ -1465,6 +1469,47 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn undersized_terminal_has_a_plain_actionable_fallback() {
+        let state = TuiState::with_options(
+            PathBuf::from("/tmp/project"),
+            "model".into(),
+            PermissionProfile::Observe,
+            TuiOptions {
+                color_mode: ColorMode::NoColor,
+                ascii: true,
+                animation: false,
+            },
+        );
+        let output = render_symbols(24, 5, &state);
+        assert!(output.contains("AxiomCLI needs at least"));
+        assert!(output.contains("42x10"));
+    }
+
+    #[test]
+    fn an_error_returns_to_a_composable_recoverable_state() {
+        let mut state = TuiState::new(
+            PathBuf::from("/tmp/project"),
+            "model".into(),
+            PermissionProfile::Confirm,
+        );
+        state.running = true;
+        state.input = "retry with narrower scope".into();
+        state.apply(&AppEvent::ErrorRaised {
+            turn_id: Some(TurnId::new()),
+            message: "provider disconnected; retry is safe".into(),
+        });
+        assert!(!state.running);
+        assert_eq!(state.focus, Focus::Composer);
+        assert_eq!(state.input, "retry with narrower scope");
+        assert!(
+            state
+                .entries
+                .last()
+                .is_some_and(|entry| entry.kind == EntryKind::Error)
+        );
     }
 
     #[test]

@@ -1,27 +1,12 @@
 use serde_json::Value;
 
-const SECRET_KEYS: &[&str] = &[
-    "api_key",
-    "apikey",
-    "authorization",
-    "cookie",
-    "encryption_key",
-    "password",
-    "private_key",
-    "secret",
-    "token",
-];
-
 /// Redact structured secret fields and recognizable credential prefixes before
 /// data crosses the audit/storage boundary. This is intentionally conservative.
 pub fn redact_value(value: &mut Value) {
     match value {
         Value::Object(object) => {
             for (key, value) in object {
-                if SECRET_KEYS
-                    .iter()
-                    .any(|secret| key.to_ascii_lowercase().contains(secret))
-                {
+                if is_secret_key(key) {
                     *value = Value::String("[REDACTED]".into());
                 } else {
                     redact_value(value);
@@ -32,6 +17,34 @@ pub fn redact_value(value: &mut Value) {
         Value::String(text) => *text = redact_text(text),
         Value::Null | Value::Bool(_) | Value::Number(_) => {}
     }
+}
+
+fn is_secret_key(key: &str) -> bool {
+    let key = key.to_ascii_lowercase().replace('-', "_");
+    matches!(
+        key.as_str(),
+        "api_key"
+            | "apikey"
+            | "authorization"
+            | "cookie"
+            | "encryption_key"
+            | "password"
+            | "private_key"
+            | "secret"
+            | "token"
+    ) || [
+        "_api_key",
+        "_apikey",
+        "_authorization",
+        "_cookie",
+        "_encryption_key",
+        "_password",
+        "_private_key",
+        "_secret",
+        "_token",
+    ]
+    .iter()
+    .any(|suffix| key.ends_with(suffix))
 }
 
 #[must_use]
@@ -77,14 +90,20 @@ mod tests {
     fn structured_and_inline_secrets_are_removed() {
         let mut value = json!({
             "authorization": "Bearer sensitive",
+            "service_access_token": "also-sensitive",
             "nested": {"message": "use axm_123456789abcdef and Bearer abcdefghijklmnop now"},
-            "safe": "cherry"
+            "safe": "cherry",
+            "input_tokens": 42,
+            "max_context_tokens": 4096
         });
         redact_value(&mut value);
         let serialized = value.to_string();
         assert!(!serialized.contains("sensitive"));
         assert!(!serialized.contains("axm_"));
         assert!(!serialized.contains("abcdefghijklmnop"));
+        assert!(!serialized.contains("also-sensitive"));
         assert!(serialized.contains("cherry"));
+        assert_eq!(value["input_tokens"], 42);
+        assert_eq!(value["max_context_tokens"], 4096);
     }
 }

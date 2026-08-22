@@ -243,9 +243,9 @@ impl Config {
                 "max_agent_steps must be between 1 and 256".into(),
             ));
         }
-        if self.max_tool_output_bytes < 1024 {
+        if !(1024..=64 * 1024 * 1024).contains(&self.max_tool_output_bytes) {
             return Err(AxiomError::Config(
-                "max_tool_output_bytes must be at least 1024".into(),
+                "max_tool_output_bytes must be between 1024 and 67108864".into(),
             ));
         }
         if self.max_context_bytes < 4096 || self.max_context_bytes > 64 * 1024 * 1024 {
@@ -263,15 +263,19 @@ impl Config {
                 "max_turn_secs must be between 1 and 86400".into(),
             ));
         }
+        if !(1..=3600).contains(&self.request_timeout_secs) {
+            return Err(AxiomError::Config(
+                "request_timeout_secs must be between 1 and 3600".into(),
+            ));
+        }
         let base_url = reqwest::Url::parse(&self.base_url)
             .map_err(|error| AxiomError::Config(format!("invalid base_url: {error}")))?;
         let searxng_url = reqwest::Url::parse(&self.searxng_url)
             .map_err(|error| AxiomError::Config(format!("invalid searxng_url: {error}")))?;
-        if !matches!(base_url.scheme(), "http" | "https")
-            || !matches!(searxng_url.scheme(), "http" | "https")
-        {
+        if !valid_endpoint(&base_url) || !valid_endpoint(&searxng_url) {
             return Err(AxiomError::Config(
-                "provider and SearXNG URLs must use http or https".into(),
+                "provider and SearXNG URLs must use http(s), include a host, and contain no embedded credentials"
+                    .into(),
             ));
         }
         let mut names = HashSet::new();
@@ -279,9 +283,19 @@ impl Config {
             rule.validate()?;
         }
         for server in &self.mcp_servers {
-            if server.name.trim().is_empty() || server.command.trim().is_empty() {
+            if server.name.trim().is_empty()
+                || server.command.trim().is_empty()
+                || server.name.contains('\0')
+                || server.command.contains('\0')
+                || server.args.iter().any(|argument| argument.contains('\0'))
+                || server
+                    .read_only_tools
+                    .iter()
+                    .any(|tool| tool.trim().is_empty() || tool.contains('\0'))
+            {
                 return Err(AxiomError::Config(
-                    "MCP server name and command cannot be empty".into(),
+                    "MCP server fields must be non-empty where required and contain no NUL bytes"
+                        .into(),
                 ));
             }
             if !names.insert(&server.name) {
@@ -312,6 +326,13 @@ impl Config {
     }
 }
 
+fn valid_endpoint(url: &reqwest::Url) -> bool {
+    matches!(url.scheme(), "http" | "https")
+        && url.host_str().is_some()
+        && url.username().is_empty()
+        && url.password().is_none()
+}
+
 fn read_layer(path: &std::path::Path) -> Result<ConfigLayer> {
     let content = std::fs::read_to_string(path)?;
     toml::from_str(&content)
@@ -329,6 +350,33 @@ mod tests {
             ..Config::default()
         };
         assert!(config.validate().is_err());
+        for url in ["ftp://example.com", "https://user:secret@example.com"] {
+            let config = Config {
+                base_url: url.into(),
+                ..Config::default()
+            };
+            assert!(config.validate().is_err());
+        }
+    }
+
+    #[test]
+    fn release_resource_limits_are_bounded() {
+        for config in [
+            Config {
+                request_timeout_secs: 0,
+                ..Config::default()
+            },
+            Config {
+                request_timeout_secs: 3601,
+                ..Config::default()
+            },
+            Config {
+                max_tool_output_bytes: 64 * 1024 * 1024 + 1,
+                ..Config::default()
+            },
+        ] {
+            assert!(config.validate().is_err());
+        }
     }
 
     #[test]

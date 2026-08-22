@@ -800,6 +800,31 @@ mod tests {
         );
     }
 
+    #[test]
+    fn usage_token_counters_remain_typed_and_resumable_after_redaction() {
+        let store = SessionStore::in_memory().expect("store");
+        let id = SessionId::new();
+        store.append(&created(&id, 1)).expect("create");
+        store
+            .append(&event(
+                &id,
+                2,
+                AppEvent::UsageUpdated {
+                    input_tokens: 42,
+                    output_tokens: 7,
+                },
+            ))
+            .expect("persist usage");
+        let loaded = store.load(&id).expect("load live-shaped journal");
+        assert!(matches!(
+            loaded[1].event,
+            AppEvent::UsageUpdated {
+                input_tokens: 42,
+                output_tokens: 7
+            }
+        ));
+    }
+
     #[tokio::test]
     async fn every_event_boundary_reopens_ready_without_replaying_unknown_work() {
         let id = SessionId::new();

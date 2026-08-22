@@ -23,10 +23,33 @@ cargo run -p axiomcli -- tui
 cargo run -p axiomcli -- exec "inspect this repository"
 cargo run -p axiomcli -- acp
 cargo run -p axiomcli -- sessions list
+cargo run -p axiomcli -- plans list
 ```
 
 `axiomcli acp` reserves stdout for newline-delimited ACP JSON-RPC. Logs and
 diagnostics go to stderr.
+
+The TUI uses the current terminal viewport (it does not resize the terminal).
+It needs at least 42×10 cells. Press `?` for its keyboard/mouse reference;
+transcript search, folding, entry/diff viewing, reduced motion, ASCII, and
+no-color modes are built in.
+
+## Installation
+
+Development installs can use `cargo install --locked --path axiomcli`. The
+supported release artifact is currently Linux x86-64 GNU:
+
+```text
+scripts/verify-release dist/axiomcli-VERSION-x86_64-unknown-linux-gnu.tar.gz \
+  dist/axiomcli-VERSION-x86_64-unknown-linux-gnu.tar.gz.asc
+scripts/install-release dist/axiomcli-VERSION-x86_64-unknown-linux-gnu.tar.gz PREFIX
+scripts/uninstall-release PREFIX
+```
+
+See [`docs/releasing.md`](docs/releasing.md) for reproducible packaging and
+signing, and [`docs/configuration.md`](docs/configuration.md),
+[`docs/privacy.md`](docs/privacy.md), and
+[`docs/troubleshooting.md`](docs/troubleshooting.md) for operation details.
 
 ## Provider configuration
 
@@ -125,8 +148,10 @@ actions are reported as unknown and never replayed.
 - Background process work is limited to four concurrent children. It has
   independent IDs, time/output budgets, ordered provenance, and inherits parent
   cancellation. Subagents are deliberately not implemented yet.
-- The TUI is intentionally compact; richer transcript search/diff navigation
-  and release installers remain pre-1.0 work.
+- The release package supports Linux x86-64 GNU only. macOS and Windows remain
+  unsupported until their sandbox, PTY, and installer gates match Linux.
+- Active TUI transcript content is retained in memory until the session closes;
+  durable exports and loads are bounded.
 
 ## Quality checks
 
