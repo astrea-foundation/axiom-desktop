@@ -1,0 +1,24 @@
+---
+source: axiomcli/src/tui.rs
+expression: "render_symbols(80, 20, &state)"
+---
+AXIOMCLI · /work/axiomcli                    UNATTESTED DEV · glm-test · confirm
+
+────────────────────────────────────────────────────────────────────────────────
+profile.
+
+ › YOU
+  Inspect the repository
+
+ ◆ AXIOM
+  I’ll inspect the relevant files.
+
+ ◆ TOOL
+  src/main.rs
+  src/lib.rs
+
+o Responding…
+┌ › Message ───────────────────────────────────────────────────────────────────┐
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+Enter send/toggle · Tab focus · j/k scroll · / search · v view · ? help

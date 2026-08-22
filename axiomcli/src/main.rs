@@ -85,6 +85,7 @@ async fn main() -> anyhow::Result<()> {
                 cwd,
                 config.model.clone(),
                 config.permission_profile,
+                axiomcli::tui::TuiOptions::from_environment(config.animation),
                 Some(open_store()?),
             )
             .await

@@ -9,6 +9,10 @@ the official Agent Client Protocol Rust SDK, the official Rust MCP SDK,
 Rusqlite/SQLite, Serde, and Clap. Their license texts and notices remain those
 published by their respective packages.
 
+The test suite uses the MIT-licensed `portable-pty` crate to exercise terminal
+resize, cancellation, panic unwinding, and restoration against an actual
+pseudo-terminal rather than a mocked input stream.
+
 The development search service downloads and runs official SearXNG separately.
 SearXNG is AGPL-3.0-or-later and is not linked, vendored, or redistributed as
 part of the AxiomCLI Rust binary. See `dev/searxng/README.md` and the pinned
