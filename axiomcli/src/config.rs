@@ -4,7 +4,7 @@ use clap::ValueEnum;
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 
-use crate::{Result, app::PermissionProfile, error::AxiomError};
+use crate::{Result, app::PermissionProfile, error::AxiomError, policy::PolicyRule};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
 #[serde(rename_all = "snake_case")]
@@ -41,6 +41,11 @@ pub struct Config {
     pub max_turn_secs: u64,
     pub request_timeout_secs: u64,
     pub animation: bool,
+    pub policy_rules: Vec<PolicyRule>,
+    /// Restrictions loaded from the current repository. Kept separate so a
+    /// project layer can never replace trusted-user restrictions.
+    #[serde(skip)]
+    pub project_policy_rules: Vec<PolicyRule>,
     pub mcp_servers: Vec<McpServerConfig>,
 }
 
@@ -71,6 +76,7 @@ struct ConfigLayer {
     max_turn_secs: Option<u64>,
     request_timeout_secs: Option<u64>,
     animation: Option<bool>,
+    policy_rules: Option<Vec<PolicyRule>>,
     mcp_servers: Option<Vec<McpServerConfig>>,
 }
 
@@ -108,6 +114,9 @@ impl ConfigLayer {
         }
         if let Some(value) = self.animation {
             config.animation = value;
+        }
+        if let Some(value) = self.policy_rules {
+            config.policy_rules = value;
         }
         if let Some(value) = self.mcp_servers {
             config.mcp_servers = value;
@@ -153,6 +162,9 @@ impl ConfigLayer {
         if let Some(value) = self.animation {
             config.animation = value;
         }
+        if let Some(value) = self.policy_rules {
+            config.project_policy_rules = value;
+        }
         Ok(())
     }
 }
@@ -180,6 +192,8 @@ impl Default for Config {
             max_turn_secs: 15 * 60,
             request_timeout_secs: 120,
             animation: true,
+            policy_rules: Vec::new(),
+            project_policy_rules: Vec::new(),
             mcp_servers: Vec::new(),
         }
     }
@@ -254,6 +268,9 @@ impl Config {
             ));
         }
         let mut names = HashSet::new();
+        for rule in self.policy_rules.iter().chain(&self.project_policy_rules) {
+            rule.validate()?;
+        }
         for server in &self.mcp_servers {
             if server.name.trim().is_empty() || server.command.trim().is_empty() {
                 return Err(AxiomError::Config(
@@ -340,5 +357,26 @@ mod tests {
         let narrow: ConfigLayer = toml::from_str("permission_profile = 'observe'").expect("layer");
         narrow.apply_project(&mut config).expect("narrowing");
         assert_eq!(config.permission_profile, PermissionProfile::Observe);
+    }
+
+    #[test]
+    fn project_policy_only_adds_restrictions_and_cannot_replace_global_rules() {
+        let mut config = Config::default();
+        let trusted: ConfigLayer = toml::from_str(
+            "[[policy_rules]]\naction='deny'\neffect='network'\nreason='trusted deny'\n",
+        )
+        .expect("trusted rule");
+        trusted.apply_trusted(&mut config);
+        let project: ConfigLayer = toml::from_str(
+            "[[policy_rules]]\naction='ask'\neffect='file_write'\nresource_prefix='src'\n",
+        )
+        .expect("project rule");
+        project.apply_project(&mut config).expect("narrowing rule");
+        assert_eq!(config.policy_rules.len(), 1);
+        assert_eq!(config.project_policy_rules.len(), 1);
+        assert!(
+            toml::from_str::<ConfigLayer>("[[policy_rules]]\naction='allow'\neffect='process'\n")
+                .is_err()
+        );
     }
 }

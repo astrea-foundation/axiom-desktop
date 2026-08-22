@@ -9,7 +9,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     agent::TurnRunner,
     app::{AppCommand, AppEvent, Origin, PermissionProfile, Runtime, SessionId, TurnId},
-    policy::{ApprovalHandler, ApprovalRequest},
+    policy::{ApprovalChoice, ApprovalHandler, ApprovalRequest, ApprovalResponse},
     session::SessionStore,
 };
 
@@ -35,26 +35,38 @@ impl ApprovalHandler for AcpApproval {
         &self,
         request: ApprovalRequest,
         cancellation: CancellationToken,
-    ) -> crate::Result<bool> {
+    ) -> crate::Result<ApprovalResponse> {
         let tool_call = protocol::ToolCallUpdate::new(
-            request.request_id,
+            request.request_id.clone(),
             protocol::ToolCallUpdateFields::new()
-                .title(request.explanation)
+                .title(request.explanation.clone())
                 .kind(protocol::ToolKind::Other)
                 .status(protocol::ToolCallStatus::Pending),
         );
-        let options = vec![
-            protocol::PermissionOption::new(
-                "allow_once",
-                "Allow once",
-                protocol::PermissionOptionKind::AllowOnce,
-            ),
-            protocol::PermissionOption::new(
-                "reject_once",
-                "Deny",
-                protocol::PermissionOptionKind::RejectOnce,
-            ),
-        ];
+        let mut options = vec![protocol::PermissionOption::new(
+            "allow_once",
+            "Allow once",
+            protocol::PermissionOptionKind::AllowOnce,
+        )];
+        if request.allow_session_grants {
+            options.push(protocol::PermissionOption::new(
+                "allow_exact_session",
+                "Allow this exact operation for this AxiomCLI session",
+                protocol::PermissionOptionKind::AllowAlways,
+            ));
+        }
+        if let Some(scope) = &request.suggested_prefix_scope {
+            options.push(protocol::PermissionOption::new(
+                "allow_prefix_session",
+                format!("Allow {scope} for this AxiomCLI session"),
+                protocol::PermissionOptionKind::AllowAlways,
+            ));
+        }
+        options.push(protocol::PermissionOption::new(
+            "reject_once",
+            "Deny",
+            protocol::PermissionOptionKind::RejectOnce,
+        ));
         let response = tokio::select! {
             () = cancellation.cancelled() => return Err(crate::AxiomError::Cancelled),
             response = self.connection
@@ -65,11 +77,22 @@ impl ApprovalHandler for AcpApproval {
                 ))
                 .block_task() => response.map_err(|error| crate::AxiomError::Protocol(error.to_string()))?,
         };
-        Ok(matches!(
-            response.outcome,
-            protocol::RequestPermissionOutcome::Selected(selected)
-                if selected.option_id.0.as_ref() == "allow_once"
-        ))
+        let choice = match response.outcome {
+            protocol::RequestPermissionOutcome::Selected(selected) => {
+                match selected.option_id.0.as_ref() {
+                    "allow_once" => ApprovalChoice::AllowOnce,
+                    "allow_exact_session" if request.allow_session_grants => {
+                        ApprovalChoice::AllowExactSession
+                    }
+                    "allow_prefix_session" if request.suggested_prefix_scope.is_some() => {
+                        ApprovalChoice::AllowPrefixSession
+                    }
+                    _ => ApprovalChoice::Deny,
+                }
+            }
+            _ => ApprovalChoice::Deny,
+        };
+        Ok(ApprovalResponse { choice })
     }
 }
 

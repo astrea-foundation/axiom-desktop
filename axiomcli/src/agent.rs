@@ -11,7 +11,9 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     AxiomError, Result,
     app::{AppEvent, PermissionProfile, SessionId, TurnId},
-    policy::{ApprovalHandler, ApprovalRequest, DecisionKind, PolicyEngine},
+    policy::{
+        ApprovalHandler, ApprovalRequest, ApprovalResponse, DecisionKind, PolicyEngine, PolicyRule,
+    },
     provider::{
         AssistantTurn, ChatMessage, ChatRole, InferenceProvider, InferenceRequest, ProviderEvent,
     },
@@ -135,6 +137,8 @@ pub struct AgentEngine {
     model: String,
     limits: AgentLimits,
     histories: Mutex<HashMap<SessionId, Vec<ChatMessage>>>,
+    policy_rules: Vec<PolicyRule>,
+    policies: Mutex<HashMap<SessionId, PolicyEngine>>,
 }
 
 impl std::fmt::Debug for AgentEngine {
@@ -143,6 +147,7 @@ impl std::fmt::Debug for AgentEngine {
             .debug_struct("AgentEngine")
             .field("model", &self.model)
             .field("limits", &self.limits)
+            .field("policy_rule_count", &self.policy_rules.len())
             .finish_non_exhaustive()
     }
 }
@@ -174,7 +179,26 @@ impl AgentEngine {
                 ..limits
             },
             histories: Mutex::new(HashMap::new()),
+            policy_rules: Vec::new(),
+            policies: Mutex::new(HashMap::new()),
         }
+    }
+
+    #[must_use]
+    pub fn with_policy_rules(mut self, rules: Vec<PolicyRule>) -> Self {
+        self.policy_rules = rules;
+        self
+    }
+
+    async fn policy_for(&self, context: &TurnContext) -> Result<PolicyEngine> {
+        let mut policies = self.policies.lock().await;
+        if let Some(policy) = policies.get(&context.session_id) {
+            return Ok(policy.clone());
+        }
+        let policy =
+            PolicyEngine::for_workspace_with_rules(&context.cwd, self.policy_rules.clone())?;
+        policies.insert(context.session_id.clone(), policy.clone());
+        Ok(policy)
     }
 
     async fn provider_turn(
@@ -213,7 +237,7 @@ impl AgentEngine {
         events: &mpsc::UnboundedSender<AppEvent>,
         cancellation: CancellationToken,
     ) -> Result<()> {
-        let policy = PolicyEngine::for_workspace(&context.cwd)?;
+        let policy = self.policy_for(context).await?;
         for effect in self.tools.effects(tool_name, tool_context, arguments)? {
             let decision = policy.evaluate(context.permission_profile, effect);
             match decision.kind {
@@ -229,21 +253,46 @@ impl AgentEngine {
                             explanation: request.explanation.clone(),
                         })
                         .map_err(|_| AxiomError::Cancelled)?;
-                    let allowed = if let Some(handler) = &context.approval {
-                        tokio::select! {
+                    let response = if let Some(handler) = &context.approval {
+                        let result = tokio::select! {
                             () = cancellation.cancelled() => return Err(AxiomError::Cancelled),
                             response = tokio::time::timeout(
                                 Duration::from_secs(120),
                                 handler.request(request.clone(), cancellation.clone()),
-                            ) => response.map_err(|_| AxiomError::PermissionDenied("approval timed out".into()))??,
+                            ) => response.map_err(|_| AxiomError::PermissionDenied("approval timed out".into())).and_then(std::convert::identity),
+                        };
+                        match result {
+                            Ok(response) => response,
+                            Err(error) => {
+                                events
+                                    .send(AppEvent::PermissionResolved {
+                                        request_id: request.request_id.clone(),
+                                        allowed: false,
+                                        choice: Some("failed_closed".into()),
+                                    })
+                                    .map_err(|_| AxiomError::Cancelled)?;
+                                return Err(error);
+                            }
                         }
                     } else {
-                        false
+                        ApprovalResponse::deny()
                     };
+                    let allowed = response.choice.is_allowed();
+                    if let Err(error) = policy.apply_approval(&request, response) {
+                        events
+                            .send(AppEvent::PermissionResolved {
+                                request_id: request.request_id.clone(),
+                                allowed: false,
+                                choice: Some("rejected_scope".into()),
+                            })
+                            .map_err(|_| AxiomError::Cancelled)?;
+                        return Err(error);
+                    }
                     events
                         .send(AppEvent::PermissionResolved {
-                            request_id: request.request_id,
+                            request_id: request.request_id.clone(),
                             allowed,
+                            choice: Some(response.choice.as_str().into()),
                         })
                         .map_err(|_| AxiomError::Cancelled)?;
                     if !allowed {
@@ -1028,5 +1077,236 @@ mod engine_tests {
             .await
             .expect_err("step budget");
         assert!(error.to_string().contains("1-step limit"));
+    }
+
+    struct ApprovalTool {
+        executions: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl Tool for ApprovalTool {
+        fn name(&self) -> &'static str {
+            "approval_fixture"
+        }
+
+        fn description(&self) -> &'static str {
+            "A test-only mutating operation."
+        }
+
+        fn parameters(&self) -> Value {
+            json!({
+                "type": "object",
+                "properties": {"nonce": {"type": "integer"}},
+                "required": ["nonce"],
+                "additionalProperties": false
+            })
+        }
+
+        fn effects(&self, context: &ToolContext, _arguments: &Value) -> Result<Vec<Effect>> {
+            Ok(vec![Effect::FileDelete {
+                path: context.cwd.join("fixture.txt"),
+            }])
+        }
+
+        async fn execute(
+            &self,
+            _context: &ToolContext,
+            _arguments: Value,
+            _cancellation: CancellationToken,
+        ) -> Result<ToolResult> {
+            self.executions.fetch_add(1, Ordering::SeqCst);
+            Ok(ToolResult::success("executed"))
+        }
+    }
+
+    struct ExactSessionApproval {
+        requests: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl ApprovalHandler for ExactSessionApproval {
+        async fn request(
+            &self,
+            _request: ApprovalRequest,
+            _cancellation: CancellationToken,
+        ) -> Result<ApprovalResponse> {
+            self.requests.fetch_add(1, Ordering::SeqCst);
+            Ok(ApprovalResponse {
+                choice: crate::policy::ApprovalChoice::AllowExactSession,
+            })
+        }
+    }
+
+    struct FailedApproval;
+
+    #[async_trait]
+    impl ApprovalHandler for FailedApproval {
+        async fn request(
+            &self,
+            _request: ApprovalRequest,
+            _cancellation: CancellationToken,
+        ) -> Result<ApprovalResponse> {
+            Err(AxiomError::Protocol("approval client disconnected".into()))
+        }
+    }
+
+    struct NeverApproval;
+
+    #[async_trait]
+    impl ApprovalHandler for NeverApproval {
+        async fn request(
+            &self,
+            _request: ApprovalRequest,
+            cancellation: CancellationToken,
+        ) -> Result<ApprovalResponse> {
+            cancellation.cancelled().await;
+            Err(AxiomError::Cancelled)
+        }
+    }
+
+    #[tokio::test]
+    async fn session_grant_is_reused_but_disconnect_fails_closed() {
+        let root = tempfile::tempdir().expect("root");
+        std::fs::write(root.path().join("fixture.txt"), "unchanged").expect("fixture");
+        let executions = Arc::new(AtomicUsize::new(0));
+        let mut registry = ToolRegistry::new();
+        registry
+            .register(Arc::new(ApprovalTool {
+                executions: executions.clone(),
+            }))
+            .expect("register");
+        let provider = Arc::new(ScriptedProvider::new(vec![
+            AssistantTurn {
+                text: String::new(),
+                tool_calls: vec![tool_call("first", "approval_fixture", r#"{"nonce":1}"#)],
+            },
+            AssistantTurn {
+                text: String::new(),
+                tool_calls: vec![tool_call("second", "approval_fixture", r#"{"nonce":2}"#)],
+            },
+            AssistantTurn {
+                text: "done".into(),
+                tool_calls: Vec::new(),
+            },
+        ]));
+        let approval = Arc::new(ExactSessionApproval {
+            requests: AtomicUsize::new(0),
+        });
+        let engine = AgentEngine::new(provider, Arc::new(registry), "test", 4);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut turn_context = context();
+        turn_context.cwd = root.path().to_path_buf();
+        turn_context.approval = Some(approval.clone());
+        engine
+            .run(
+                turn_context,
+                "approve narrowly".into(),
+                tx,
+                CancellationToken::new(),
+            )
+            .await
+            .expect("run");
+        assert_eq!(approval.requests.load(Ordering::SeqCst), 1);
+        assert_eq!(executions.load(Ordering::SeqCst), 2);
+        assert!(drain(&mut rx).iter().any(|event| matches!(
+            event,
+            AppEvent::PermissionResolved {
+                allowed: true,
+                choice: Some(choice),
+                ..
+            } if choice == "allow_exact_session"
+        )));
+
+        let provider = Arc::new(ScriptedProvider::new(vec![
+            AssistantTurn {
+                text: String::new(),
+                tool_calls: vec![tool_call("blocked", "approval_fixture", r#"{"nonce":3}"#)],
+            },
+            AssistantTurn {
+                text: "blocked safely".into(),
+                tool_calls: Vec::new(),
+            },
+        ]));
+        let mut registry = ToolRegistry::new();
+        registry
+            .register(Arc::new(ApprovalTool {
+                executions: executions.clone(),
+            }))
+            .expect("register");
+        let engine = AgentEngine::new(provider, Arc::new(registry), "test", 2);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut turn_context = context();
+        turn_context.cwd = root.path().to_path_buf();
+        turn_context.approval = Some(Arc::new(FailedApproval));
+        engine
+            .run(
+                turn_context,
+                "disconnect".into(),
+                tx,
+                CancellationToken::new(),
+            )
+            .await
+            .expect("agent may recover after denied operation");
+        assert_eq!(executions.load(Ordering::SeqCst), 2);
+        assert!(drain(&mut rx).iter().any(|event| matches!(
+            event,
+            AppEvent::PermissionResolved {
+                allowed: false,
+                choice: Some(choice),
+                ..
+            } if choice == "failed_closed"
+        )));
+    }
+
+    #[tokio::test]
+    async fn approval_cancellation_and_turn_timeout_never_execute() {
+        for cancel in [true, false] {
+            let root = tempfile::tempdir().expect("root");
+            let executions = Arc::new(AtomicUsize::new(0));
+            let mut registry = ToolRegistry::new();
+            registry
+                .register(Arc::new(ApprovalTool {
+                    executions: executions.clone(),
+                }))
+                .expect("register");
+            let provider = Arc::new(ScriptedProvider::new(vec![AssistantTurn {
+                text: String::new(),
+                tool_calls: vec![tool_call("pending", "approval_fixture", r#"{"nonce":1}"#)],
+            }]));
+            let limits = AgentLimits {
+                max_steps: 2,
+                max_context_bytes: 4096,
+                max_context_tokens: 4096,
+                max_tool_output_bytes: 1024,
+                max_wall_time: Duration::from_millis(20),
+            };
+            let engine = Arc::new(AgentEngine::with_limits(
+                provider,
+                Arc::new(registry),
+                "test",
+                limits,
+            ));
+            let cancellation = CancellationToken::new();
+            let child = cancellation.clone();
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            let mut turn_context = context();
+            turn_context.cwd = root.path().to_path_buf();
+            turn_context.approval = Some(Arc::new(NeverApproval));
+            let task =
+                tokio::spawn(
+                    async move { engine.run(turn_context, "pending".into(), tx, child).await },
+                );
+            if cancel {
+                loop {
+                    if matches!(rx.recv().await, Some(AppEvent::PermissionRequired { .. })) {
+                        break;
+                    }
+                }
+                cancellation.cancel();
+            }
+            let result = task.await.expect("join");
+            assert!(result.is_err());
+            assert_eq!(executions.load(Ordering::SeqCst), 0);
+        }
     }
 }

@@ -1,4 +1,4 @@
-use std::{env, io, path::PathBuf, sync::Arc};
+use std::{env, fmt::Write as _, io, path::PathBuf, sync::Arc};
 
 use async_trait::async_trait;
 use crossterm::{
@@ -25,7 +25,7 @@ use crate::{
     AxiomError, Result,
     agent::{TurnContext, TurnRunner},
     app::{AppCommand, AppEvent, Origin, PermissionProfile, Runtime, TurnId},
-    policy::{ApprovalHandler, ApprovalRequest},
+    policy::{ApprovalChoice, ApprovalHandler, ApprovalRequest, ApprovalResponse},
     session::SessionStore,
 };
 
@@ -535,7 +535,7 @@ impl TuiState {
 enum UiMessage {
     Event(AppEvent),
     Done(TurnId, Result<()>),
-    Approval(ApprovalRequest, oneshot::Sender<bool>),
+    Approval(ApprovalRequest, oneshot::Sender<ApprovalResponse>),
 }
 
 #[derive(Clone)]
@@ -549,16 +549,28 @@ impl ApprovalHandler for TuiApproval {
         &self,
         request: ApprovalRequest,
         cancellation: CancellationToken,
-    ) -> Result<bool> {
+    ) -> Result<ApprovalResponse> {
         let (tx, rx) = oneshot::channel();
         self.tx
             .send(UiMessage::Approval(request, tx))
             .map_err(|_| AxiomError::Cancelled)?;
         tokio::select! {
             () = cancellation.cancelled() => Err(AxiomError::Cancelled),
-            response = rx => Ok(response.unwrap_or(false)),
+            response = rx => Ok(response.unwrap_or_else(|_| ApprovalResponse::deny())),
         }
     }
+}
+
+fn approval_status(request: &ApprovalRequest) -> String {
+    let mut choices = String::from("[y] allow once");
+    if request.allow_session_grants {
+        choices.push_str("  [e] exact for session");
+    }
+    if let Some(scope) = &request.suggested_prefix_scope {
+        let _ = write!(choices, "  [p] {scope} for session");
+    }
+    choices.push_str("  [n] deny");
+    format!("{}  {choices}", request.explanation)
 }
 
 struct TerminalGuard;
@@ -613,7 +625,7 @@ pub async fn run(
     let mut input_events = EventStream::new();
     let (ui_tx, mut ui_rx) = mpsc::unbounded_channel();
     let mut cancellation: Option<CancellationToken> = None;
-    let mut pending_approval: Option<(ApprovalRequest, oneshot::Sender<bool>)> = None;
+    let mut pending_approval: Option<(ApprovalRequest, oneshot::Sender<ApprovalResponse>)> = None;
 
     assert!(
         !(cfg!(debug_assertions) && env::var("AXIOMCLI_TEST_TUI_PANIC").as_deref() == Ok("1")),
@@ -631,7 +643,7 @@ pub async fn run(
                             match key.code {
                                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                                     let (_, response) = pending_approval.take().expect("pending approval exists");
-                                    let _ = response.send(false);
+                                    let _ = response.send(ApprovalResponse::deny());
                                     if let Some(token) = &cancellation {
                                         token.cancel();
                                     }
@@ -639,16 +651,26 @@ pub async fn run(
                                 }
                                 KeyCode::Char('y' | 'Y') => {
                                     let (request, response) = pending_approval.take().expect("pending approval exists");
-                                    let _ = response.send(true);
-                                    state.status = format!("Approved {}", request.request_id);
+                                    let _ = response.send(ApprovalResponse { choice: ApprovalChoice::AllowOnce });
+                                    state.status = format!("Allowed once · {}", request.request_id);
+                                }
+                                KeyCode::Char('e' | 'E') if request.allow_session_grants => {
+                                    let (request, response) = pending_approval.take().expect("pending approval exists");
+                                    let _ = response.send(ApprovalResponse { choice: ApprovalChoice::AllowExactSession });
+                                    state.status = format!("Allowed exact operation for session · {}", request.request_id);
+                                }
+                                KeyCode::Char('p' | 'P') if request.suggested_prefix_scope.is_some() => {
+                                    let (request, response) = pending_approval.take().expect("pending approval exists");
+                                    let _ = response.send(ApprovalResponse { choice: ApprovalChoice::AllowPrefixSession });
+                                    state.status = format!("Allowed safe scope for session · {}", request.request_id);
                                 }
                                 KeyCode::Char('n' | 'N') | KeyCode::Esc => {
                                     let (request, response) = pending_approval.take().expect("pending approval exists");
-                                    let _ = response.send(false);
+                                    let _ = response.send(ApprovalResponse::deny());
                                     state.status = format!("Denied {}", request.request_id);
                                 }
                                 _ => {
-                                    state.status = format!("{}  [y] allow once  [n] deny", request.explanation);
+                                    state.status = approval_status(request);
                                 }
                             }
                         } else if state.overlay.is_some() {
@@ -817,7 +839,7 @@ pub async fn run(
                         }
                     }
                     UiMessage::Approval(request, response) => {
-                        state.status = format!("{}  [y] allow once  [n] deny", request.explanation);
+                        state.status = approval_status(&request);
                         pending_approval = Some((request, response));
                     }
                 }
@@ -1177,6 +1199,7 @@ mod tests {
             AppEvent::PermissionResolved {
                 request_id: "permission".into(),
                 allowed: false,
+                choice: Some("deny".into()),
             },
             AppEvent::ToolCompleted {
                 call_id: "c1".into(),
@@ -1348,5 +1371,30 @@ mod tests {
     #[test]
     fn path_truncation_keeps_both_ends() {
         assert_eq!(truncate_middle("abcdefghij", 7), "abc…hij");
+    }
+
+    #[tokio::test]
+    async fn dropped_tui_approval_surface_fails_closed() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let handler = TuiApproval { tx };
+        let request = ApprovalRequest {
+            request_id: "request".into(),
+            explanation: "delete /workspace/file".into(),
+            effect: crate::policy::Effect::FileDelete {
+                path: PathBuf::from("/workspace/file"),
+            },
+            allow_session_grants: true,
+            suggested_prefix_scope: Some("FileDelete within /workspace".into()),
+        };
+        let task =
+            tokio::spawn(async move { handler.request(request, CancellationToken::new()).await });
+        let UiMessage::Approval(_, response) = rx.recv().await.expect("approval message") else {
+            panic!("unexpected UI message");
+        };
+        drop(response);
+        assert_eq!(
+            task.await.expect("join").expect("closed response"),
+            ApprovalResponse::deny()
+        );
     }
 }

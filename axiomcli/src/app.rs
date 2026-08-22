@@ -306,6 +306,8 @@ pub enum AppEvent {
     PermissionResolved {
         request_id: String,
         allowed: bool,
+        #[serde(default)]
+        choice: Option<String>,
     },
     ToolStarted {
         call_id: String,
@@ -575,6 +577,7 @@ impl Kernel {
                 vec![AppEvent::PermissionResolved {
                     request_id,
                     allowed,
+                    choice: None,
                 }]
             }
             AppCommand::AnswerQuestion {
