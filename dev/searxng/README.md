@@ -13,8 +13,17 @@ scripts/searxng-dev integration-test
 scripts/searxng-dev stop
 ```
 
-The chosen engines make real upstream requests, so engine throttling or an
-offline network can yield an empty result set. That is surfaced as a real
-availability condition. The checked-in secret is explicitly development-only;
-do not expose this configuration to a network or reuse it for Axiom's hosted
-service.
+The integration command starts the pinned real service itself on ephemeral
+loopback ports and always terminates processes it owns. It exercises the normal
+real-upstream configuration plus checked-in empty, disabled, timeout, and
+shutdown configurations. Those fixtures change SearXNG configuration and
+lifecycle; they do not replace SearXNG with a response mock.
+
+The chosen normal engines make real upstream requests, so engine throttling or
+an offline network can still yield an empty result set. AxiomCLI reports empty
+results and per-engine failures separately. The endpoint shown in tool output is
+the *configured SearXNG service*; it may be local or operated by Axiom later and
+the client does not claim which merely from its URL.
+
+The checked-in secrets are explicitly development-only. Do not expose these
+configurations to a network or reuse their keys for Axiom's hosted service.

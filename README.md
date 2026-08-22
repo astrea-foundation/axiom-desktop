@@ -52,8 +52,8 @@ Do not put API keys in repository configuration or command-line arguments.
 
 The model proposes operations but never authorizes them. Structured tools,
 canonical paths, process groups, output caps, SSRF checks, and the policy engine
-remain outside model control. The early implementation intentionally has no
-general shell tool.
+remain outside model control. Shell execution is a separate, explicitly
+higher-risk tool and always requires approval.
 
 ## Real SearXNG integration
 
@@ -92,8 +92,10 @@ read_only_tools = ["lookup"] # explicit user trust; server hints do not grant it
 ```
 
 Session journals are redacted SQLite records under the platform data directory.
-`sessions list/show/rename/archive/unarchive` manages them. Interrupted actions
-are reported and never replayed. Full conversational resume is not yet claimed.
+`sessions list/show/export/rename/archive/unarchive/prune` manages them. Use
+`axiomcli tui --resume SESSION_ID` to restore a transcript and bounded model
+context. ACP advertises `session/load` when its durable store opens. Interrupted
+actions are reported as unknown and never replayed.
 
 ## Known early-version limits
 

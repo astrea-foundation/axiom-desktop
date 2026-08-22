@@ -7,10 +7,12 @@ source_dir="${state_dir}/source"
 venv_dir="${state_dir}/venv"
 pid_file="${state_dir}/searxng.pid"
 log_file="${state_dir}/searxng.log"
-settings_file="${project_dir}/dev/searxng/settings.yml"
+settings_file="${AXIOMCLI_SEARXNG_SETTINGS:-${project_dir}/dev/searxng/settings.yml}"
 upstream="https://github.com/searxng/searxng.git"
 revision="5f4005996e387985353e9300fd171e0b0045dd1a"
-endpoint="${AXIOMCLI_SEARXNG_URL:-http://127.0.0.1:8888}"
+bind_address="${AXIOMCLI_SEARXNG_BIND_ADDRESS:-127.0.0.1}"
+port="${AXIOMCLI_SEARXNG_PORT:-8888}"
+endpoint="${AXIOMCLI_SEARXNG_URL:-http://${bind_address}:${port}}"
 
 bootstrap() {
   mkdir -p "${state_dir}"
@@ -44,8 +46,8 @@ run_foreground() {
   [[ -x "${venv_dir}/bin/searxng-run" ]] || bootstrap
   cd "${source_dir}"
   SEARXNG_SETTINGS_PATH="${settings_file}" \
-  SEARXNG_BIND_ADDRESS="127.0.0.1" \
-  SEARXNG_PORT="8888" \
+  SEARXNG_BIND_ADDRESS="${bind_address}" \
+  SEARXNG_PORT="${port}" \
   SEARXNG_LIMITER="false" \
     exec "${venv_dir}/bin/searxng-run"
 }
@@ -59,8 +61,8 @@ start() {
   (
     cd "${source_dir}"
     SEARXNG_SETTINGS_PATH="${settings_file}" \
-    SEARXNG_BIND_ADDRESS="127.0.0.1" \
-    SEARXNG_PORT="8888" \
+    SEARXNG_BIND_ADDRESS="${bind_address}" \
+    SEARXNG_PORT="${port}" \
     SEARXNG_LIMITER="false" \
       nohup "${venv_dir}/bin/searxng-run" >"${log_file}" 2>&1 &
     echo $! >"${pid_file}"
@@ -108,16 +110,9 @@ case "${1:-}" in
       --data-urlencode "q=$*" --data "format=json" "${endpoint}/search"
     ;;
   integration-test)
-    owned_service=0
-    if ! is_running; then
-      start
-      owned_service=1
-    fi
-    if [[ "${owned_service}" -eq 1 ]]; then
-      trap stop EXIT
-    fi
+    [[ -x "${venv_dir}/bin/searxng-run" ]] || bootstrap
     cargo test --manifest-path "${project_dir}/Cargo.toml" \
-      web::tests::real_searxng_returns_normalized_results -- --ignored --exact
+      --test searxng_integration -- --ignored --nocapture
     ;;
   *)
     echo "usage: $0 {bootstrap|run|start|stop|status|query SEARCH TERMS|integration-test}" >&2

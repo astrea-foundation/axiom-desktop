@@ -1,6 +1,7 @@
 use std::{
     collections::HashSet,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+    sync::Arc,
     time::Duration,
 };
 
@@ -8,6 +9,7 @@ use async_trait::async_trait;
 use futures::StreamExt as _;
 use reqwest::{StatusCode, Url, header};
 use serde::{Deserialize, Serialize};
+use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
 use crate::{AxiomError, Result};
@@ -21,14 +23,16 @@ pub struct SearchResult {
     pub score: Option<f64>,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SearchReport {
+    pub results: Vec<SearchResult>,
+    pub warnings: Vec<String>,
+}
+
 #[async_trait]
 pub trait SearchProvider: Send + Sync {
     fn provenance(&self) -> &str;
-    async fn search(
-        &self,
-        query: &str,
-        cancellation: CancellationToken,
-    ) -> Result<Vec<SearchResult>>;
+    async fn search(&self, query: &str, cancellation: CancellationToken) -> Result<SearchReport>;
 }
 
 #[derive(Clone, Debug)]
@@ -36,6 +40,7 @@ pub struct SearxngClient {
     base_url: Url,
     client: reqwest::Client,
     max_results: usize,
+    concurrency: Arc<Semaphore>,
 }
 
 impl SearxngClient {
@@ -59,6 +64,7 @@ impl SearxngClient {
             base_url,
             client,
             max_results: max_results.clamp(1, 100),
+            concurrency: Arc::new(Semaphore::new(4)),
         })
     }
 
@@ -74,11 +80,7 @@ impl SearchProvider for SearxngClient {
         self.base_url.as_str()
     }
 
-    async fn search(
-        &self,
-        query: &str,
-        cancellation: CancellationToken,
-    ) -> Result<Vec<SearchResult>> {
+    async fn search(&self, query: &str, cancellation: CancellationToken) -> Result<SearchReport> {
         if query.trim().is_empty() {
             return Err(AxiomError::Tool("search query cannot be empty".into()));
         }
@@ -86,6 +88,10 @@ impl SearchProvider for SearxngClient {
             .base_url
             .join("search")
             .map_err(|error| AxiomError::Provider(error.to_string()))?;
+        let permit = tokio::select! {
+            () = cancellation.cancelled() => return Err(AxiomError::Cancelled),
+            permit = self.concurrency.acquire() => permit.map_err(|_| AxiomError::Provider("SearXNG request queue closed".into()))?,
+        };
         let request = self.client.get(endpoint).query(&[
             ("q", query),
             ("format", "json"),
@@ -114,22 +120,43 @@ impl SearchProvider for SearxngClient {
             let Ok(mut url) = Url::parse(&raw.url) else {
                 continue;
             };
-            if !matches!(url.scheme(), "http" | "https") {
+            if !is_safe_result_url(&url) {
                 continue;
             }
             url.set_fragment(None);
+            if url.port() == url.port_or_known_default() {
+                let _ = url.set_port(None);
+            }
             if !seen.insert(url.to_string()) {
                 continue;
             }
             results.push(SearchResult {
-                title: raw.title.trim().to_owned(),
+                title: bounded_external_text(&raw.title, 512),
                 url,
-                snippet: raw.content.unwrap_or_default().trim().to_owned(),
-                source: raw.engine.unwrap_or_else(|| "searxng".into()),
+                snippet: bounded_external_text(raw.content.as_deref().unwrap_or_default(), 4096),
+                source: bounded_external_text(raw.engine.as_deref().unwrap_or("searxng"), 128),
                 score: raw.score,
             });
         }
-        Ok(results)
+        drop(permit);
+        let mut warnings = payload
+            .unresponsive_engines
+            .into_iter()
+            .take(20)
+            .map(|failure| {
+                bounded_external_text(
+                    &format!(
+                        "SearXNG engine unavailable: {}",
+                        format_engine_failure(&failure)
+                    ),
+                    512,
+                )
+            })
+            .collect::<Vec<_>>();
+        if results.is_empty() && warnings.is_empty() {
+            warnings.push("configured SearXNG service returned no results".into());
+        }
+        Ok(SearchReport { results, warnings })
     }
 }
 
@@ -137,6 +164,61 @@ impl SearchProvider for SearxngClient {
 struct SearxResponse {
     #[serde(default)]
     results: Vec<SearxResult>,
+    #[serde(default)]
+    unresponsive_engines: Vec<serde_json::Value>,
+}
+
+fn format_engine_failure(value: &serde_json::Value) -> String {
+    value
+        .as_array()
+        .map(|parts| {
+            parts
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .collect::<Vec<_>>()
+                .join(" — ")
+        })
+        .filter(|message| !message.is_empty())
+        .unwrap_or_else(|| "unknown failure".into())
+}
+
+fn is_safe_result_url(url: &Url) -> bool {
+    if !matches!(url.scheme(), "http" | "https")
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        return false;
+    }
+    match url.host() {
+        Some(url::Host::Ipv4(address)) => is_public_ip(IpAddr::V4(address)),
+        Some(url::Host::Ipv6(address)) => is_public_ip(IpAddr::V6(address)),
+        Some(url::Host::Domain(domain)) => {
+            let domain = domain.to_ascii_lowercase();
+            domain != "localhost"
+                && !domain.ends_with(".localhost")
+                && domain
+                    .rsplit_once('.')
+                    .is_none_or(|(_, suffix)| suffix != "local")
+                && !domain.ends_with(".internal")
+        }
+        None => false,
+    }
+}
+
+fn bounded_external_text(input: &str, maximum: usize) -> String {
+    let sanitized = input
+        .chars()
+        .filter(|character| *character == '\n' || *character == '\t' || !character.is_control())
+        .collect::<String>();
+    let sanitized = sanitized.trim();
+    if sanitized.len() <= maximum {
+        return sanitized.to_owned();
+    }
+    let mut end = maximum;
+    while !sanitized.is_char_boundary(end) {
+        end -= 1;
+    }
+    sanitized[..end].to_owned()
 }
 
 #[derive(Deserialize)]
@@ -189,6 +271,7 @@ impl SafeFetcher {
             let client = reqwest::Client::builder()
                 .timeout(self.timeout)
                 .redirect(reqwest::redirect::Policy::none())
+                .no_proxy()
                 .user_agent(concat!("AxiomCLI/", env!("CARGO_PKG_VERSION")))
                 .resolve_to_addrs(host, &resolved)
                 .build()
@@ -228,6 +311,17 @@ impl SafeFetcher {
                 .get(header::CONTENT_TYPE)
                 .and_then(|value| value.to_str().ok())
                 .map(str::to_owned);
+            if content_type.as_deref().is_some_and(|kind| {
+                !kind.starts_with("text/")
+                    && !kind.contains("json")
+                    && !kind.contains("xml")
+                    && !kind.contains("javascript")
+            }) {
+                return Err(AxiomError::Tool(format!(
+                    "fetch content type is not text-readable: {}",
+                    content_type.as_deref().unwrap_or_default()
+                )));
+            }
             let mut stream = response.bytes_stream();
             let mut bytes = Vec::new();
             let mut truncated = false;
@@ -297,12 +391,17 @@ async fn validate_public_destination(url: &Url) -> Result<Vec<SocketAddr>> {
         .await
         .map_err(|error| AxiomError::Tool(format!("DNS lookup failed: {error}")))?
         .collect();
+    validate_resolved_addresses(&addresses)?;
+    Ok(addresses)
+}
+
+fn validate_resolved_addresses(addresses: &[SocketAddr]) -> Result<()> {
     if addresses.is_empty() || addresses.iter().any(|address| !is_public_ip(address.ip())) {
         return Err(AxiomError::PermissionDenied(
             "destination resolves to a non-public address".into(),
         ));
     }
-    Ok(addresses)
+    Ok(())
 }
 
 #[must_use]
@@ -328,10 +427,12 @@ fn is_public_v4(ip: Ipv4Addr) -> bool {
         || in_prefix(Ipv4Addr::new(100, 64, 0, 0), 10)
         || in_prefix(Ipv4Addr::new(127, 0, 0, 0), 8)
         || in_prefix(Ipv4Addr::new(169, 254, 0, 0), 16)
+        || ip == Ipv4Addr::new(168, 63, 129, 16)
         || in_prefix(Ipv4Addr::new(172, 16, 0, 0), 12)
         || in_prefix(Ipv4Addr::new(192, 0, 0, 0), 24)
         || in_prefix(Ipv4Addr::new(192, 0, 2, 0), 24)
         || in_prefix(Ipv4Addr::new(192, 168, 0, 0), 16)
+        || in_prefix(Ipv4Addr::new(192, 88, 99, 0), 24)
         || in_prefix(Ipv4Addr::new(198, 18, 0, 0), 15)
         || in_prefix(Ipv4Addr::new(198, 51, 100, 0), 24)
         || in_prefix(Ipv4Addr::new(203, 0, 113, 0), 24)
@@ -344,7 +445,9 @@ fn is_public_v6(ip: Ipv6Addr) -> bool {
         return is_public_v4(mapped);
     }
     let first = ip.segments()[0];
-    first & 0xe000 == 0x2000 && !(ip.segments()[0] == 0x2001 && ip.segments()[1] == 0x0db8)
+    first & 0xe000 == 0x2000
+        && !(ip.segments()[0] == 0x2001 && matches!(ip.segments()[1], 0x0000 | 0x0db8))
+        && ip.segments()[0] != 0x2002
 }
 
 fn strip_html(input: &str) -> String {
@@ -414,27 +517,53 @@ mod tests {
     }
 
     #[test]
+    fn dns_rebinding_mixed_answers_and_metadata_ranges_are_blocked() {
+        let mixed = [
+            SocketAddr::new("1.1.1.1".parse().expect("public"), 443),
+            SocketAddr::new("127.0.0.1".parse().expect("loopback"), 443),
+        ];
+        assert!(validate_resolved_addresses(&mixed).is_err());
+        for address in [
+            "169.254.169.254",
+            "168.63.129.16",
+            "100.100.100.200",
+            "192.0.0.192",
+            "2002:7f00:1::",
+        ] {
+            assert!(!is_public_ip(address.parse().expect("metadata IP")));
+        }
+    }
+
+    #[tokio::test]
+    async fn redirect_pivots_and_local_services_fail_before_a_request() {
+        for target in [
+            "http://localhost/admin",
+            "http://127.0.0.1:8888/search",
+            "http://169.254.169.254/latest/meta-data/",
+            "http://metadata.google.internal/computeMetadata/v1/",
+        ] {
+            let url = Url::parse(target).expect("URL");
+            assert!(validate_public_destination(&url).await.is_err(), "{target}");
+        }
+    }
+
+    #[test]
+    fn search_result_urls_and_external_text_are_normalized_safely() {
+        assert!(!is_safe_result_url(
+            &Url::parse("http://user:pass@example.com/").expect("URL")
+        ));
+        assert!(!is_safe_result_url(
+            &Url::parse("http://127.0.0.1/").expect("URL")
+        ));
+        assert_eq!(bounded_external_text("\u{1b}[31mcherry", 64), "[31mcherry");
+        assert_eq!(bounded_external_text("ééé", 3), "é");
+    }
+
+    #[test]
     fn html_is_reduced_to_bounded_plain_text() {
         assert_eq!(
             strip_html("<h1>Hello</h1><p>cherry tree</p>"),
             "Hello cherry tree"
-        );
-    }
-
-    #[tokio::test]
-    #[ignore = "requires scripts/searxng-dev start and real upstream engines"]
-    async fn real_searxng_returns_normalized_results() {
-        let provider = SearxngClient::new("http://127.0.0.1:8888", Duration::from_secs(30), 10)
-            .expect("client");
-        let results = provider
-            .search("Rust programming language", CancellationToken::new())
-            .await
-            .expect("real SearXNG query");
-        assert!(!results.is_empty());
-        assert!(
-            results
-                .iter()
-                .all(|result| matches!(result.url.scheme(), "http" | "https"))
         );
     }
 }
