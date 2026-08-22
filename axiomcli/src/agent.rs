@@ -84,6 +84,24 @@ impl TurnRunner for EchoTurnRunner {
     }
 }
 
+/// Debug-build-only cancellation fixture used by ACP/PTTY conformance tests.
+#[derive(Debug, Default)]
+pub struct BlockingTurnRunner;
+
+#[async_trait]
+impl TurnRunner for BlockingTurnRunner {
+    async fn run(
+        &self,
+        _context: TurnContext,
+        _prompt: String,
+        _events: mpsc::UnboundedSender<AppEvent>,
+        cancellation: CancellationToken,
+    ) -> Result<()> {
+        cancellation.cancelled().await;
+        Err(AxiomError::Cancelled)
+    }
+}
+
 pub struct AgentEngine {
     provider: Arc<dyn InferenceProvider>,
     tools: Arc<ToolRegistry>,

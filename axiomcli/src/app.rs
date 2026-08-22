@@ -652,6 +652,17 @@ impl Kernel {
                 session.lifecycle = SessionLifecycle::WaitingForApproval;
                 session.pending_permission = Some(request_id.clone());
             }
+            AppEvent::PermissionResolved { request_id, .. } => {
+                if session.lifecycle != SessionLifecycle::WaitingForApproval
+                    || session.pending_permission.as_deref() != Some(request_id)
+                {
+                    return Err(AxiomError::InvalidTransition(format!(
+                        "permission {request_id} is not pending"
+                    )));
+                }
+                session.lifecycle = SessionLifecycle::Running;
+                session.pending_permission = None;
+            }
             AppEvent::QuestionAsked { question_id, .. } => {
                 if session.lifecycle != SessionLifecycle::Running {
                     return Err(AxiomError::InvalidTransition(
@@ -660,6 +671,21 @@ impl Kernel {
                 }
                 session.lifecycle = SessionLifecycle::WaitingForAnswer;
                 session.pending_question = Some(question_id.clone());
+            }
+            AppEvent::QuestionAnswered {
+                question_id,
+                answers,
+            } => {
+                if answers.is_empty()
+                    || session.lifecycle != SessionLifecycle::WaitingForAnswer
+                    || session.pending_question.as_deref() != Some(question_id)
+                {
+                    return Err(AxiomError::InvalidTransition(format!(
+                        "question {question_id} is not pending or has no answer"
+                    )));
+                }
+                session.lifecycle = SessionLifecycle::Running;
+                session.pending_question = None;
             }
             _ => {}
         }

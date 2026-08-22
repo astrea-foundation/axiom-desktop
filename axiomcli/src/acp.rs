@@ -311,12 +311,19 @@ pub async fn serve_stdio(
 fn prompt_text(blocks: &[protocol::ContentBlock]) -> std::result::Result<String, &'static str> {
     let mut text = String::new();
     for block in blocks {
-        if let protocol::ContentBlock::Text(content) = block {
-            if !text.is_empty() {
-                text.push('\n');
-            }
-            text.push_str(&content.text);
+        let content = match block {
+            protocol::ContentBlock::Text(content) => content.text.clone(),
+            protocol::ContentBlock::ResourceLink(resource) => format!(
+                "[Referenced resource: {}]({})",
+                resource.title.as_deref().unwrap_or(&resource.name),
+                resource.uri
+            ),
+            _ => return Err("ACP prompt contains a content type AxiomCLI did not advertise"),
+        };
+        if !text.is_empty() {
+            text.push('\n');
         }
+        text.push_str(&content);
     }
     if text.trim().is_empty() {
         Err("AxiomCLI currently requires a non-empty text prompt")
@@ -428,6 +435,13 @@ mod tests {
                 "  "
             ))])
             .is_err()
+        );
+        assert_eq!(
+            prompt_text(&[protocol::ContentBlock::ResourceLink(
+                protocol::ResourceLink::new("source", "file:///tmp/source.rs")
+            )])
+            .expect("resource link"),
+            "[Referenced resource: source](file:///tmp/source.rs)"
         );
     }
 }

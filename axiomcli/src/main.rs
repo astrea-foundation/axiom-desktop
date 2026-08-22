@@ -3,7 +3,7 @@ use std::{path::PathBuf, str::FromStr as _, sync::Arc};
 use anyhow::Context as _;
 use axiomcli::{
     AxiomError,
-    agent::{AgentEngine, EchoTurnRunner, TurnContext, TurnRunner},
+    agent::{AgentEngine, BlockingTurnRunner, EchoTurnRunner, TurnContext, TurnRunner},
     app::{AppEvent, SessionId, TurnId},
     config::Config,
     provider::AxiomProvider,
@@ -203,8 +203,12 @@ fn manage_sessions(action: SessionAction) -> anyhow::Result<()> {
 }
 
 async fn build_runner(config: &Config) -> anyhow::Result<Arc<dyn TurnRunner>> {
-    if std::env::var("AXIOMCLI_TEST_RUNNER").as_deref() == Ok("echo") {
-        return Ok(Arc::new(EchoTurnRunner));
+    if cfg!(debug_assertions) {
+        match std::env::var("AXIOMCLI_TEST_RUNNER").as_deref() {
+            Ok("echo") => return Ok(Arc::new(EchoTurnRunner)),
+            Ok("blocking") => return Ok(Arc::new(BlockingTurnRunner)),
+            _ => {}
+        }
     }
     let provider = AxiomProvider::from_environment(&config.base_url, config.request_timeout())?;
     let mut tools = default_registry(config.max_tool_output_bytes, &config.searxng_url)?;
