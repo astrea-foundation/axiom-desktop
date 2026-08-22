@@ -26,6 +26,8 @@ pub enum Effect {
         program: String,
         args: Vec<String>,
         shell: bool,
+        cwd: PathBuf,
+        env: Vec<(String, String)>,
     },
     Network {
         url: String,
@@ -441,20 +443,34 @@ impl PolicyEngine {
                 program,
                 args,
                 shell,
+                cwd,
+                mut env,
             } => {
                 let program = program.trim().to_owned();
                 if program.is_empty()
                     || program.contains('\0')
                     || args.iter().any(|argument| argument.contains('\0'))
+                    || env.iter().any(|(key, value)| {
+                        !is_allowed_child_env_key(key) || key.contains('\0') || value.contains('\0')
+                    })
                 {
                     return Err(AxiomError::PermissionDenied(
-                        "process program and arguments must be non-empty/NUL-free".into(),
+                        "process program/arguments/environment are invalid or not allowlisted"
+                            .into(),
                     ));
                 }
+                env.sort();
+                env.dedup_by(|left, right| left.0 == right.0);
+                let basename = program.rsplit('/').next().unwrap_or(&program);
+                let shell = shell
+                    || (matches!(basename, "sh" | "bash" | "zsh" | "fish" | "dash")
+                        && args.first().is_some_and(|argument| argument == "-c"));
                 Ok(Effect::Process {
                     program,
                     args,
                     shell,
+                    cwd: self.normalize_path(cwd),
+                    env,
                 })
             }
             Effect::Network { url } => {
@@ -532,6 +548,12 @@ impl PolicyEngine {
                         path.display()
                     ))
                 }
+            }
+            Effect::Process { cwd, .. } if !self.roots.iter().any(|root| cwd.starts_with(root)) => {
+                Some(format!(
+                    "process cwd {} is outside authorized workspace roots",
+                    cwd.display()
+                ))
             }
             Effect::Process { program, .. }
                 if matches!(
@@ -652,6 +674,7 @@ fn profile_default(
                 program,
                 args,
                 shell: false,
+                ..
             },
         ) if is_workspace_program_allowed(program, args) => (
             DecisionKind::Allow,
@@ -797,6 +820,14 @@ fn is_workspace_program_allowed(program: &str, args: &[String]) -> bool {
 }
 
 #[must_use]
+pub fn is_allowed_child_env_key(key: &str) -> bool {
+    matches!(
+        key,
+        "CI" | "RUST_BACKTRACE" | "RUST_LOG" | "NODE_ENV" | "CARGO_TERM_COLOR" | "NO_COLOR"
+    )
+}
+
+#[must_use]
 pub fn describe_effect(effect: &Effect) -> String {
     match effect {
         Effect::FileRead { path } => format!("read {}", path.display()),
@@ -806,14 +837,28 @@ pub fn describe_effect(effect: &Effect) -> String {
             program,
             args,
             shell,
+            cwd,
+            env,
         } => format!(
-            "run {}{}{}",
+            "run {}{}{} in {}{}",
             if *shell { "shell " } else { "" },
             program,
             if args.is_empty() {
                 String::new()
             } else {
                 format!(" {}", args.join(" "))
+            },
+            cwd.display(),
+            if env.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    " with environment {}",
+                    env.iter()
+                        .map(|(key, _)| key.as_str())
+                        .collect::<Vec<_>>()
+                        .join(",")
+                )
             }
         ),
         Effect::Network { url } => format!("connect to {url}"),
@@ -869,11 +914,15 @@ mod tests {
                 program: "cargo".into(),
                 args: vec!["test".into()],
                 shell: false,
+                cwd: root.path().to_path_buf(),
+                env: Vec::new(),
             },
             Effect::Process {
                 program: "echo hi".into(),
                 args: Vec::new(),
                 shell: true,
+                cwd: root.path().to_path_buf(),
+                env: Vec::new(),
             },
             Effect::Network {
                 url: "https://example.com/search#fragment".into(),
@@ -1047,6 +1096,8 @@ mod tests {
                     program: "sudo".into(),
                     args: vec!["true".into()],
                     shell: false,
+                    cwd: root.path().to_path_buf(),
+                    env: Vec::new(),
                 },
                 Effect::Network {
                     url: "file:///etc/passwd".into(),
@@ -1055,6 +1106,39 @@ mod tests {
                 assert_eq!(policy.evaluate(profile, effect).kind, DecisionKind::Deny);
             }
         }
+    }
+
+    #[test]
+    fn shell_interpretation_is_detected_and_always_higher_risk() {
+        let root = tempdir().expect("root");
+        let policy = PolicyEngine::for_workspace(root.path()).expect("policy");
+        let disguised_shell = Effect::Process {
+            program: "/usr/bin/sh".into(),
+            args: vec!["-c".into(), "cargo test".into()],
+            shell: false,
+            cwd: root.path().to_path_buf(),
+            env: Vec::new(),
+        };
+        let decision = policy.evaluate(PermissionProfile::Autonomous, disguised_shell);
+        assert_eq!(decision.kind, DecisionKind::Ask);
+        assert!(matches!(
+            decision.normalized_effect,
+            Effect::Process { shell: true, .. }
+        ));
+
+        let structured = Effect::Process {
+            program: "cargo".into(),
+            args: vec!["test".into()],
+            shell: false,
+            cwd: root.path().to_path_buf(),
+            env: vec![("CI".into(), "true".into())],
+        };
+        assert_eq!(
+            policy
+                .evaluate(PermissionProfile::Workspace, structured)
+                .kind,
+            DecisionKind::Allow
+        );
     }
 
     proptest! {

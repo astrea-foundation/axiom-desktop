@@ -461,6 +461,16 @@ fn send_event(
                 .into(),
             ]),
         ),
+        AppEvent::BackgroundTaskChanged { task_id, state } => {
+            connection.send_notification(protocol::SessionNotification::new(
+                session_id.clone(),
+                protocol::SessionUpdate::AgentThoughtChunk(protocol::ContentChunk::new(
+                    protocol::ContentBlock::Text(protocol::TextContent::new(format!(
+                        "[background {task_id}] {state}"
+                    ))),
+                )),
+            ))
+        }
         _ => Ok(()),
     }
 }

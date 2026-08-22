@@ -190,6 +190,7 @@ impl Tool for McpTool {
             truncated,
             changed_paths: Vec::new(),
             diff: None,
+            background: None,
         })
     }
 }

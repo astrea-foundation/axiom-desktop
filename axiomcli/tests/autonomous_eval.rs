@@ -149,6 +149,100 @@ async fn deterministic_agent_edits_runs_tests_and_reports_completion() {
 }
 
 #[tokio::test]
+async fn deterministic_agent_observes_failure_repairs_and_reruns() {
+    let root = tempdir().expect("workspace");
+    std::fs::write(
+        root.path().join("Cargo.toml"),
+        "[package]\nname='repair-eval'\nversion='0.1.0'\nedition='2024'\n",
+    )
+    .expect("manifest");
+    std::fs::create_dir(root.path().join("src")).expect("src");
+    std::fs::write(
+        root.path().join("src/lib.rs"),
+        "pub fn answer() -> u8 { 0 }\n#[test]\nfn correct() { assert_eq!(answer(), 42); }\n",
+    )
+    .expect("source");
+    let source_hash = Workspace::new(root.path())
+        .expect("workspace")
+        .read("src/lib.rs", 1, 100, 4096)
+        .expect("read")
+        .sha256;
+    let provider = Arc::new(ScriptedProvider {
+        turns: Mutex::new(VecDeque::from([
+            call(
+                "test-failing",
+                "run_command",
+                &json!({"program":"cargo", "args":["test"], "env":{"NO_COLOR":"1"}, "timeout_secs":60}),
+            ),
+            call(
+                "repair",
+                "apply_patch",
+                &json!({"edits":[{
+                    "operation":"update",
+                    "path":"src/lib.rs",
+                    "expected_sha256":source_hash,
+                    "content":"pub fn answer() -> u8 { 42 }\n#[test]\nfn correct() { assert_eq!(answer(), 42); }\n"
+                }]}),
+            ),
+            call(
+                "test-passing",
+                "run_command",
+                &json!({"program":"cargo", "args":["test"], "env":{"NO_COLOR":"1"}, "timeout_secs":60}),
+            ),
+            AssistantTurn {
+                text:
+                    "The first test exposed the defect; the repair is applied and the rerun passes."
+                        .into(),
+                tool_calls: Vec::new(),
+            },
+        ])),
+    });
+    let engine = AgentEngine::new(
+        provider,
+        Arc::new(default_registry(32 * 1024, "http://127.0.0.1:8888").expect("tools")),
+        "scripted",
+        8,
+    );
+    let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+    engine
+        .run(
+            TurnContext {
+                session_id: SessionId::new(),
+                turn_id: TurnId::new(),
+                cwd: root.path().to_path_buf(),
+                permission_profile: PermissionProfile::Workspace,
+                approval: None,
+            },
+            "Diagnose and repair the failing test".into(),
+            events_tx,
+            CancellationToken::new(),
+        )
+        .await
+        .expect("agent run");
+    let mut failed_first = false;
+    let mut passed_second = false;
+    while let Ok(event) = events_rx.try_recv() {
+        match event {
+            AppEvent::ToolCompleted { call_id, success } if call_id == "test-failing" => {
+                failed_first = !success;
+            }
+            AppEvent::ToolCompleted { call_id, success } if call_id == "test-passing" => {
+                passed_second = success;
+            }
+            _ => {}
+        }
+    }
+    assert!(
+        failed_first,
+        "the agent must observe a real failing test first"
+    );
+    assert!(
+        passed_second,
+        "the repaired test must pass on the real rerun"
+    );
+}
+
+#[tokio::test]
 async fn adversarial_out_of_root_edit_is_rejected_without_side_effect() {
     let root = tempdir().expect("workspace");
     let outside = tempdir().expect("outside");

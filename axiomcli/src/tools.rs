@@ -1,4 +1,9 @@
-use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeMap, HashMap},
+    path::PathBuf,
+    sync::Arc,
+    time::Duration,
+};
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -27,6 +32,7 @@ pub struct ToolResult {
     pub truncated: bool,
     pub changed_paths: Vec<PathBuf>,
     pub diff: Option<String>,
+    pub background: Option<(String, String)>,
 }
 
 impl ToolResult {
@@ -38,6 +44,7 @@ impl ToolResult {
             truncated: false,
             changed_paths: Vec::new(),
             diff: None,
+            background: None,
         }
     }
 }
@@ -154,13 +161,24 @@ pub fn default_registry(max_output_bytes: usize, searxng_url: &str) -> Result<To
     registry.register(Arc::new(RunCommand {
         processes: processes.clone(),
     }))?;
+    registry.register(Arc::new(RunShell {
+        processes: processes.clone(),
+    }))?;
     registry.register(Arc::new(StartBackground {
+        processes: processes.clone(),
+    }))?;
+    registry.register(Arc::new(ListBackground {
         processes: processes.clone(),
     }))?;
     registry.register(Arc::new(BackgroundStatus {
         processes: processes.clone(),
     }))?;
-    registry.register(Arc::new(StopBackground { processes }))?;
+    registry.register(Arc::new(WaitBackground {
+        processes: processes.clone(),
+    }))?;
+    registry.register(Arc::new(StopBackground {
+        processes: processes.clone(),
+    }))?;
     registry.register(Arc::new(WebSearch {
         provider: SearxngClient::new(searxng_url, Duration::from_secs(30), 20)?,
     }))?;
@@ -469,6 +487,7 @@ impl Tool for InspectGit {
             truncated: inspection.truncated,
             changed_paths: Vec::new(),
             diff: None,
+            background: None,
         })
     }
 }
@@ -573,6 +592,7 @@ impl Tool for ReadFile {
             truncated: read.truncated,
             changed_paths: Vec::new(),
             diff: None,
+            background: None,
         })
     }
 }
@@ -676,6 +696,7 @@ impl Tool for ApplyPatch {
             truncated: outcome.diff_truncated,
             changed_paths: outcome.changed_paths.clone(),
             diff: Some(outcome.diff),
+            background: None,
         })
     }
 }
@@ -731,6 +752,7 @@ impl Tool for ReplaceText {
             truncated: false,
             changed_paths: vec![result.path],
             diff: Some(result.diff),
+            background: None,
         })
     }
 }
@@ -741,6 +763,10 @@ struct CommandArgs {
     program: String,
     #[serde(default)]
     args: Vec<String>,
+    #[serde(default)]
+    cwd: PathBuf,
+    #[serde(default)]
+    env: BTreeMap<String, String>,
     #[serde(default = "default_timeout")]
     timeout_secs: u64,
 }
@@ -750,17 +776,41 @@ fn default_timeout() -> u64 {
 
 fn command_schema() -> Value {
     schema(
-        json!({"program": {"type": "string", "minLength": 1}, "args": {"type": "array", "items": {"type": "string"}}, "timeout_secs": {"type": "integer", "minimum": 1, "maximum": 3600}}),
+        json!({
+            "program": {"type": "string", "minLength": 1},
+            "args": {"type": "array", "items": {"type": "string"}},
+            "cwd": {"type": "string", "description": "Workspace-relative working directory; defaults to the workspace root."},
+            "env": {
+                "type": "object",
+                "additionalProperties": {"type": "string"},
+                "description": "Explicit allowlisted child settings (CI, RUST_BACKTRACE, RUST_LOG, NODE_ENV, CARGO_TERM_COLOR, NO_COLOR)."
+            },
+            "timeout_secs": {"type": "integer", "minimum": 1, "maximum": 3600}
+        }),
         &["program"],
     )
 }
 
-fn command_effect(args: &CommandArgs) -> Effect {
-    Effect::Process {
+fn command_effect(context: &ToolContext, args: &CommandArgs, shell: bool) -> Result<Effect> {
+    let root = workspace(context)?.root().to_path_buf();
+    let cwd = if args.cwd.as_os_str().is_empty() {
+        root
+    } else if args.cwd.is_absolute() {
+        args.cwd.clone()
+    } else {
+        root.join(&args.cwd)
+    };
+    Ok(Effect::Process {
         program: args.program.clone(),
         args: args.args.clone(),
-        shell: false,
-    }
+        shell,
+        cwd,
+        env: args
+            .env
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect(),
+    })
 }
 
 struct RunCommand {
@@ -778,9 +828,9 @@ impl Tool for RunCommand {
     fn parameters(&self) -> Value {
         command_schema()
     }
-    fn effects(&self, _context: &ToolContext, arguments: &Value) -> Result<Vec<Effect>> {
+    fn effects(&self, context: &ToolContext, arguments: &Value) -> Result<Vec<Effect>> {
         let args: CommandArgs = parse(self.name(), arguments.clone())?;
-        Ok(vec![command_effect(&args)])
+        Ok(vec![command_effect(context, &args, false)?])
     }
     async fn execute(
         &self,
@@ -796,6 +846,8 @@ impl Tool for RunCommand {
                 &ProcessRequest {
                     program: args.program,
                     args: args.args,
+                    cwd: args.cwd,
+                    env: args.env,
                     timeout_secs: args.timeout_secs,
                 },
                 cancellation,
@@ -807,6 +859,85 @@ impl Tool for RunCommand {
             truncated: outcome.truncated,
             changed_paths: Vec::new(),
             diff: None,
+            background: None,
+        })
+    }
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ShellArgs {
+    command: String,
+    #[serde(default)]
+    cwd: PathBuf,
+    #[serde(default)]
+    env: BTreeMap<String, String>,
+    #[serde(default = "default_timeout")]
+    timeout_secs: u64,
+}
+
+struct RunShell {
+    processes: ProcessManager,
+}
+
+#[async_trait]
+impl Tool for RunShell {
+    fn name(&self) -> &'static str {
+        "run_shell"
+    }
+    fn description(&self) -> &'static str {
+        "Run an explicitly higher-risk shell script in the isolated workspace. Shell execution always requires approval."
+    }
+    fn parameters(&self) -> Value {
+        schema(
+            json!({
+                "command": {"type": "string", "minLength": 1},
+                "cwd": {"type": "string"},
+                "env": {"type": "object", "additionalProperties": {"type": "string"}},
+                "timeout_secs": {"type": "integer", "minimum": 1, "maximum": 3600}
+            }),
+            &["command"],
+        )
+    }
+    fn effects(&self, context: &ToolContext, arguments: &Value) -> Result<Vec<Effect>> {
+        let args: ShellArgs = parse(self.name(), arguments.clone())?;
+        let command = CommandArgs {
+            program: "sh".into(),
+            args: vec!["-lc".into(), args.command],
+            cwd: args.cwd,
+            env: args.env,
+            timeout_secs: args.timeout_secs,
+        };
+        Ok(vec![command_effect(context, &command, true)?])
+    }
+    async fn execute(
+        &self,
+        context: &ToolContext,
+        arguments: Value,
+        cancellation: CancellationToken,
+    ) -> Result<ToolResult> {
+        let args: ShellArgs = parse(self.name(), arguments)?;
+        let outcome = self
+            .processes
+            .run(
+                &workspace(context)?,
+                &ProcessRequest {
+                    program: "sh".into(),
+                    args: vec!["-lc".into(), args.command],
+                    cwd: args.cwd,
+                    env: args.env,
+                    timeout_secs: args.timeout_secs,
+                },
+                cancellation,
+            )
+            .await?;
+        Ok(ToolResult {
+            content: serde_json::to_string_pretty(&outcome)?,
+            success: outcome.exit_code == Some(0),
+            truncated: outcome.truncated,
+            changed_paths: Vec::new(),
+            diff: None,
+            background: None,
         })
     }
 }
@@ -826,9 +957,9 @@ impl Tool for StartBackground {
     fn parameters(&self) -> Value {
         command_schema()
     }
-    fn effects(&self, _context: &ToolContext, arguments: &Value) -> Result<Vec<Effect>> {
+    fn effects(&self, context: &ToolContext, arguments: &Value) -> Result<Vec<Effect>> {
         let args: CommandArgs = parse(self.name(), arguments.clone())?;
-        Ok(vec![command_effect(&args)])
+        Ok(vec![command_effect(context, &args, false)?])
     }
     async fn execute(
         &self,
@@ -844,13 +975,20 @@ impl Tool for StartBackground {
                 ProcessRequest {
                     program: args.program,
                     args: args.args,
+                    cwd: args.cwd,
+                    env: args.env,
                     timeout_secs: args.timeout_secs,
                 },
             )
-            .await;
-        Ok(ToolResult::success(
-            json!({"task_id": id, "state": "running"}).to_string(),
-        ))
+            .await?;
+        Ok(ToolResult {
+            content: json!({"task_id": id, "state": "running"}).to_string(),
+            success: true,
+            truncated: false,
+            changed_paths: Vec::new(),
+            diff: None,
+            background: Some((id, "running".into())),
+        })
     }
 }
 
@@ -862,6 +1000,42 @@ struct TaskArgs {
 
 fn task_schema() -> Value {
     schema(json!({"task_id": {"type": "string"}}), &["task_id"])
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EmptyArgs {}
+
+struct ListBackground {
+    processes: ProcessManager,
+}
+
+#[async_trait]
+impl Tool for ListBackground {
+    fn name(&self) -> &'static str {
+        "background_list"
+    }
+    fn description(&self) -> &'static str {
+        "List all bounded background tasks and their current state."
+    }
+    fn parameters(&self) -> Value {
+        schema(json!({}), &[])
+    }
+    fn effects(&self, _context: &ToolContext, arguments: &Value) -> Result<Vec<Effect>> {
+        let _: EmptyArgs = parse(self.name(), arguments.clone())?;
+        Ok(Vec::new())
+    }
+    async fn execute(
+        &self,
+        _context: &ToolContext,
+        arguments: Value,
+        _cancellation: CancellationToken,
+    ) -> Result<ToolResult> {
+        let _: EmptyArgs = parse(self.name(), arguments)?;
+        Ok(ToolResult::success(serde_json::to_string_pretty(
+            &self.processes.list().await,
+        )?))
+    }
 }
 
 struct BackgroundStatus {
@@ -892,9 +1066,74 @@ impl Tool for BackgroundStatus {
         _cancellation: CancellationToken,
     ) -> Result<ToolResult> {
         let args: TaskArgs = parse(self.name(), arguments)?;
-        Ok(ToolResult::success(serde_json::to_string_pretty(
-            &self.processes.snapshot(&args.task_id).await?,
-        )?))
+        let snapshot = self.processes.snapshot(&args.task_id).await?;
+        Ok(ToolResult {
+            content: serde_json::to_string_pretty(&snapshot)?,
+            success: true,
+            truncated: snapshot.truncated,
+            changed_paths: Vec::new(),
+            diff: None,
+            background: Some((snapshot.id, snapshot.state)),
+        })
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WaitTaskArgs {
+    task_id: String,
+    #[serde(default = "default_timeout")]
+    timeout_secs: u64,
+}
+
+struct WaitBackground {
+    processes: ProcessManager,
+}
+
+#[async_trait]
+impl Tool for WaitBackground {
+    fn name(&self) -> &'static str {
+        "background_wait"
+    }
+    fn description(&self) -> &'static str {
+        "Wait for a background task to finish, subject to a bounded wait timeout."
+    }
+    fn parameters(&self) -> Value {
+        schema(
+            json!({
+                "task_id": {"type": "string"},
+                "timeout_secs": {"type": "integer", "minimum": 1, "maximum": 3600}
+            }),
+            &["task_id"],
+        )
+    }
+    fn effects(&self, _context: &ToolContext, arguments: &Value) -> Result<Vec<Effect>> {
+        let _: WaitTaskArgs = parse(self.name(), arguments.clone())?;
+        Ok(Vec::new())
+    }
+    async fn execute(
+        &self,
+        _context: &ToolContext,
+        arguments: Value,
+        cancellation: CancellationToken,
+    ) -> Result<ToolResult> {
+        let args: WaitTaskArgs = parse(self.name(), arguments)?;
+        let wait = self.processes.wait(&args.task_id, args.timeout_secs);
+        let snapshot = tokio::select! {
+            () = cancellation.cancelled() => return Err(AxiomError::Cancelled),
+            snapshot = wait => snapshot?,
+        };
+        Ok(ToolResult {
+            content: serde_json::to_string_pretty(&snapshot)?,
+            success: snapshot
+                .outcome
+                .as_ref()
+                .is_some_and(|outcome| outcome.exit_code == Some(0)),
+            truncated: snapshot.truncated,
+            changed_paths: Vec::new(),
+            diff: None,
+            background: Some((snapshot.id, snapshot.state)),
+        })
     }
 }
 
@@ -990,6 +1229,7 @@ impl Tool for FetchUrl {
             truncated: result.truncated,
             changed_paths: Vec::new(),
             diff: None,
+            background: None,
         })
     }
 }
@@ -1005,12 +1245,14 @@ impl Tool for StopBackground {
     fn parameters(&self) -> Value {
         task_schema()
     }
-    fn effects(&self, _context: &ToolContext, arguments: &Value) -> Result<Vec<Effect>> {
+    fn effects(&self, context: &ToolContext, arguments: &Value) -> Result<Vec<Effect>> {
         let args: TaskArgs = parse(self.name(), arguments.clone())?;
         Ok(vec![Effect::Process {
             program: "axiomcli:stop_background".into(),
             args: vec![args.task_id],
             shell: false,
+            cwd: workspace(context)?.root().to_path_buf(),
+            env: Vec::new(),
         }])
     }
     async fn execute(
@@ -1021,9 +1263,14 @@ impl Tool for StopBackground {
     ) -> Result<ToolResult> {
         let args: TaskArgs = parse(self.name(), arguments)?;
         self.processes.stop(&args.task_id).await?;
-        Ok(ToolResult::success(
-            json!({"task_id": args.task_id, "state": "stopping"}).to_string(),
-        ))
+        Ok(ToolResult {
+            content: json!({"task_id": args.task_id, "state": "stopping"}).to_string(),
+            success: true,
+            truncated: false,
+            changed_paths: Vec::new(),
+            diff: None,
+            background: Some((args.task_id, "stopping".into())),
+        })
     }
 }
 

@@ -1,10 +1,13 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     fs::{File, OpenOptions},
     io::{Read as _, Write as _},
     path::{Component, Path, PathBuf},
     process::Stdio,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::Duration,
 };
 
@@ -17,7 +20,7 @@ use similar::{ChangeTag, TextDiff};
 use tokio::{
     io::{AsyncRead, AsyncReadExt as _},
     process::Command,
-    sync::Mutex,
+    sync::{Mutex, watch},
 };
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -1223,6 +1226,10 @@ fn is_executable(_metadata: &std::fs::Metadata) -> bool {
 pub struct ProcessRequest {
     pub program: String,
     pub args: Vec<String>,
+    #[serde(default)]
+    pub cwd: PathBuf,
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
     pub timeout_secs: u64,
 }
 
@@ -1238,6 +1245,9 @@ pub struct ProcessOutcome {
 pub struct BackgroundSnapshot {
     pub id: String,
     pub state: String,
+    pub stdout: String,
+    pub stderr: String,
+    pub truncated: bool,
     pub outcome: Option<ProcessOutcome>,
 }
 
@@ -1245,12 +1255,20 @@ pub struct BackgroundSnapshot {
 struct BackgroundTask {
     cancellation: CancellationToken,
     state: Arc<Mutex<BackgroundSnapshot>>,
+    completion: watch::Receiver<String>,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct ProcessManager {
     tasks: Arc<Mutex<HashMap<String, BackgroundTask>>>,
     max_output_bytes: usize,
+    max_background_tasks: usize,
+}
+
+impl Default for ProcessManager {
+    fn default() -> Self {
+        Self::new(64 * 1024)
+    }
 }
 
 impl ProcessManager {
@@ -1259,6 +1277,7 @@ impl ProcessManager {
         Self {
             tasks: Arc::new(Mutex::new(HashMap::new())),
             max_output_bytes: max_output_bytes.max(1024),
+            max_background_tasks: 32,
         }
     }
 
@@ -1268,23 +1287,50 @@ impl ProcessManager {
         request: &ProcessRequest,
         cancellation: CancellationToken,
     ) -> Result<ProcessOutcome> {
+        self.run_inner(workspace, request, cancellation, None).await
+    }
+
+    async fn run_inner(
+        &self,
+        workspace: &Workspace,
+        request: &ProcessRequest,
+        cancellation: CancellationToken,
+        live: Option<Arc<Mutex<BackgroundSnapshot>>>,
+    ) -> Result<ProcessOutcome> {
         if request.program.trim().is_empty() {
             return Err(AxiomError::Tool("program cannot be empty".into()));
         }
-        let mut command = Command::new(&request.program);
+        if request.program.contains('\0')
+            || request.args.iter().any(|argument| argument.contains('\0'))
+        {
+            return Err(AxiomError::Tool(
+                "program and arguments must not contain NUL bytes".into(),
+            ));
+        }
+        for (key, value) in &request.env {
+            if !crate::policy::is_allowed_child_env_key(key) || value.contains('\0') {
+                return Err(AxiomError::Tool(format!(
+                    "child environment variable `{key}` is not allowlisted"
+                )));
+            }
+        }
+        let cwd = if request.cwd.as_os_str().is_empty() {
+            workspace.root().to_path_buf()
+        } else {
+            workspace.resolve_existing(&request.cwd)?
+        };
+        if !cwd.is_dir() {
+            return Err(AxiomError::Tool(format!(
+                "process cwd is not a directory: {}",
+                cwd.display()
+            )));
+        }
+        let mut command = sandboxed_command(workspace, &cwd, request)?;
         command
-            .args(&request.args)
-            .current_dir(workspace.root())
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .env_clear();
-        for variable in ["PATH", "LANG", "LC_ALL", "TERM"] {
-            if let Ok(value) = std::env::var(variable) {
-                command.env(variable, value);
-            }
-        }
+            .kill_on_drop(true);
         #[cfg(unix)]
         {
             command.process_group(0);
@@ -1299,9 +1345,22 @@ impl ProcessManager {
             .stderr
             .take()
             .ok_or_else(|| AxiomError::Tool("missing stderr pipe".into()))?;
+        let retained = Arc::new(AtomicUsize::new(0));
         let max = self.max_output_bytes;
-        let stdout_task = tokio::spawn(read_bounded(stdout, max));
-        let stderr_task = tokio::spawn(read_bounded(stderr, max));
+        let stdout_task = tokio::spawn(read_bounded(
+            stdout,
+            max,
+            retained.clone(),
+            live.clone(),
+            OutputStream::Stdout,
+        ));
+        let stderr_task = tokio::spawn(read_bounded(
+            stderr,
+            max,
+            retained,
+            live,
+            OutputStream::Stderr,
+        ));
         let timeout = Duration::from_secs(request.timeout_secs.clamp(1, 3600));
         let status = tokio::select! {
             () = cancellation.cancelled() => {
@@ -1315,42 +1374,62 @@ impl ProcessManager {
                 return Err(AxiomError::Tool(format!("process timed out after {} seconds", request.timeout_secs)));
             }
         };
-        let (stdout, stdout_truncated) = stdout_task
+        let (mut stdout, stdout_truncated) = stdout_task
             .await
             .map_err(|error| AxiomError::Tool(error.to_string()))??;
-        let (stderr, stderr_truncated) = stderr_task
+        let (mut stderr, stderr_truncated) = stderr_task
             .await
             .map_err(|error| AxiomError::Tool(error.to_string()))??;
+        let mut encoding_truncated = false;
+        stdout = truncate_utf8(&stdout, self.max_output_bytes, &mut encoding_truncated);
+        let remaining = self.max_output_bytes.saturating_sub(stdout.len());
+        stderr = truncate_utf8(&stderr, remaining, &mut encoding_truncated);
         Ok(ProcessOutcome {
             exit_code: status.code(),
             stdout,
             stderr,
-            truncated: stdout_truncated || stderr_truncated,
+            truncated: stdout_truncated || stderr_truncated || encoding_truncated,
         })
     }
 
-    pub async fn start(&self, workspace: Workspace, request: ProcessRequest) -> String {
+    pub async fn start(&self, workspace: Workspace, request: ProcessRequest) -> Result<String> {
+        if self.tasks.lock().await.len() >= self.max_background_tasks {
+            return Err(AxiomError::Tool(format!(
+                "background task limit reached ({})",
+                self.max_background_tasks
+            )));
+        }
         let id = Uuid::new_v4().to_string();
         let cancellation = CancellationToken::new();
         let state = Arc::new(Mutex::new(BackgroundSnapshot {
             id: id.clone(),
             state: "running".into(),
+            stdout: String::new(),
+            stderr: String::new(),
+            truncated: false,
             outcome: None,
         }));
+        let (completion_tx, completion) = watch::channel("running".to_owned());
         self.tasks.lock().await.insert(
             id.clone(),
             BackgroundTask {
                 cancellation: cancellation.clone(),
                 state: state.clone(),
+                completion,
             },
         );
         let manager = self.clone();
         tokio::spawn(async move {
-            let outcome = manager.run(&workspace, &request, cancellation).await;
+            let outcome = manager
+                .run_inner(&workspace, &request, cancellation, Some(state.clone()))
+                .await;
             let mut snapshot = state.lock().await;
             match outcome {
                 Ok(outcome) => {
                     snapshot.state = "completed".into();
+                    snapshot.stdout.clone_from(&outcome.stdout);
+                    snapshot.stderr.clone_from(&outcome.stderr);
+                    snapshot.truncated = outcome.truncated;
                     snapshot.outcome = Some(outcome);
                 }
                 Err(AxiomError::Cancelled) => snapshot.state = "cancelled".into(),
@@ -1358,8 +1437,9 @@ impl ProcessManager {
                     snapshot.state = format!("failed: {error}");
                 }
             }
+            let _ = completion_tx.send(snapshot.state.clone());
         });
-        id
+        Ok(id)
     }
 
     pub async fn snapshot(&self, id: &str) -> Result<BackgroundSnapshot> {
@@ -1383,13 +1463,64 @@ impl ProcessManager {
             .cloned()
             .ok_or_else(|| AxiomError::Tool(format!("unknown background task `{id}`")))?;
         task.cancellation.cancel();
+        drop(task);
+        let _ = self.wait(id, 10).await?;
         Ok(())
     }
+
+    pub async fn list(&self) -> Vec<BackgroundSnapshot> {
+        let states = self
+            .tasks
+            .lock()
+            .await
+            .values()
+            .map(|task| task.state.clone())
+            .collect::<Vec<_>>();
+        let mut snapshots = Vec::with_capacity(states.len());
+        for state in states {
+            snapshots.push(state.lock().await.clone());
+        }
+        snapshots.sort_by(|left, right| left.id.cmp(&right.id));
+        snapshots
+    }
+
+    pub async fn wait(&self, id: &str, timeout_secs: u64) -> Result<BackgroundSnapshot> {
+        let mut completion = self
+            .tasks
+            .lock()
+            .await
+            .get(id)
+            .map(|task| task.completion.clone())
+            .ok_or_else(|| AxiomError::Tool(format!("unknown background task `{id}`")))?;
+        if completion.borrow().as_str() == "running" {
+            tokio::time::timeout(
+                Duration::from_secs(timeout_secs.clamp(1, 3600)),
+                completion.changed(),
+            )
+            .await
+            .map_err(|_| {
+                AxiomError::Tool(format!(
+                    "background wait timed out after {timeout_secs} seconds"
+                ))
+            })?
+            .map_err(|_| AxiomError::Tool("background task watcher closed".into()))?;
+        }
+        self.snapshot(id).await
+    }
+}
+
+#[derive(Clone, Copy)]
+enum OutputStream {
+    Stdout,
+    Stderr,
 }
 
 async fn read_bounded(
     mut reader: impl AsyncRead + Unpin,
     max_bytes: usize,
+    retained_bytes: Arc<AtomicUsize>,
+    live: Option<Arc<Mutex<BackgroundSnapshot>>>,
+    stream: OutputStream,
 ) -> Result<(String, bool)> {
     let mut retained = Vec::new();
     let mut buffer = [0_u8; 8192];
@@ -1399,15 +1530,187 @@ async fn read_bounded(
         if read == 0 {
             break;
         }
-        let remaining = max_bytes.saturating_sub(retained.len());
-        retained.extend_from_slice(&buffer[..read.min(remaining)]);
-        truncated |= read > remaining;
+        let accepted = reserve_output(&retained_bytes, max_bytes, read);
+        retained.extend_from_slice(&buffer[..accepted]);
+        truncated |= accepted < read;
+        if let Some(live) = &live {
+            let chunk = sanitize_terminal(&String::from_utf8_lossy(&buffer[..accepted]));
+            let mut snapshot = live.lock().await;
+            match stream {
+                OutputStream::Stdout => snapshot.stdout.push_str(&chunk),
+                OutputStream::Stderr => snapshot.stderr.push_str(&chunk),
+            }
+            snapshot.truncated |= accepted < read;
+        }
     }
-    let text = String::from_utf8_lossy(&retained)
-        .chars()
-        .filter(|character| *character == '\n' || *character == '\t' || !character.is_control())
-        .collect();
+    let text = sanitize_terminal(&String::from_utf8_lossy(&retained));
     Ok((text, truncated))
+}
+
+fn reserve_output(retained: &AtomicUsize, maximum: usize, requested: usize) -> usize {
+    let mut current = retained.load(Ordering::Relaxed);
+    loop {
+        let accepted = requested.min(maximum.saturating_sub(current));
+        match retained.compare_exchange_weak(
+            current,
+            current.saturating_add(accepted),
+            Ordering::AcqRel,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => return accepted,
+            Err(actual) => current = actual,
+        }
+    }
+}
+
+fn sanitize_terminal(input: &str) -> String {
+    let mut output = String::with_capacity(input.len());
+    let mut characters = input.chars().peekable();
+    while let Some(character) = characters.next() {
+        if character == '\u{1b}' {
+            match characters.peek().copied() {
+                Some('[') => {
+                    characters.next();
+                    for next in characters.by_ref() {
+                        if ('@'..='~').contains(&next) {
+                            break;
+                        }
+                    }
+                }
+                Some(']') => {
+                    characters.next();
+                    while let Some(next) = characters.next() {
+                        if next == '\u{7}' {
+                            break;
+                        }
+                        if next == '\u{1b}' && characters.peek() == Some(&'\\') {
+                            characters.next();
+                            break;
+                        }
+                    }
+                }
+                Some(_) => {
+                    characters.next();
+                }
+                None => {}
+            }
+        } else if character == '\n' || character == '\t' || !character.is_control() {
+            output.push(character);
+        }
+    }
+    output
+}
+
+fn sandboxed_command(
+    workspace: &Workspace,
+    cwd: &Path,
+    request: &ProcessRequest,
+) -> Result<Command> {
+    #[cfg(target_os = "linux")]
+    {
+        let bwrap = Path::new("/usr/bin/bwrap");
+        if !bwrap.is_file() {
+            return Err(AxiomError::Tool(
+                "process isolation requires /usr/bin/bwrap on Linux".into(),
+            ));
+        }
+        let mut command = Command::new(bwrap);
+        command.env_clear().args([
+            "--die-with-parent",
+            "--unshare-all",
+            "--clearenv",
+            "--ro-bind",
+            "/usr",
+            "/usr",
+            "--ro-bind",
+            "/etc",
+            "/etc",
+            "--proc",
+            "/proc",
+            "--dev",
+            "/dev",
+            "--tmpfs",
+            "/tmp",
+            "--dir",
+            "/tmp/axiom-home",
+            "--dir",
+            "/tmp/cargo-home",
+            "--dir",
+            "/opt",
+            "--dir",
+            "/opt/axiomcli",
+        ]);
+        for system_path in ["/bin", "/lib", "/lib64", "/sbin"] {
+            if Path::new(system_path).exists() {
+                command.args(["--ro-bind", system_path, system_path]);
+            }
+        }
+        command.args([
+            "--bind",
+            &workspace.root().to_string_lossy(),
+            &workspace.root().to_string_lossy(),
+            "--chdir",
+            &cwd.to_string_lossy(),
+            "--setenv",
+            "HOME",
+            "/tmp/axiom-home",
+            "--setenv",
+            "CARGO_HOME",
+            "/tmp/cargo-home",
+            "--setenv",
+            "PATH",
+            "/opt/axiomcli/cargo-bin:/usr/bin:/bin",
+            "--setenv",
+            "LANG",
+            "C.UTF-8",
+        ]);
+        bind_development_cache(&mut command);
+        for (key, value) in &request.env {
+            command.args(["--setenv", key, value]);
+        }
+        command.arg("--").arg(&request.program).args(&request.args);
+        Ok(command)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let mut command = Command::new(&request.program);
+        command
+            .args(&request.args)
+            .current_dir(cwd)
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("LANG", "C.UTF-8");
+        for (key, value) in &request.env {
+            command.env(key, value);
+        }
+        Ok(command)
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn bind_development_cache(command: &mut Command) {
+    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+        return;
+    };
+    let cargo = home.join(".cargo");
+    let mounts = [
+        (cargo.join("bin"), PathBuf::from("/opt/axiomcli/cargo-bin")),
+        (home.join(".rustup"), PathBuf::from("/opt/axiomcli/rustup")),
+        (
+            cargo.join("registry"),
+            PathBuf::from("/tmp/cargo-home/registry"),
+        ),
+        (cargo.join("git"), PathBuf::from("/tmp/cargo-home/git")),
+    ];
+    for (source, target) in mounts {
+        if source.exists() {
+            command.arg("--ro-bind").arg(source).arg(target);
+        }
+    }
+    if home.join(".rustup").exists() {
+        command.args(["--setenv", "RUSTUP_HOME", "/opt/axiomcli/rustup"]);
+    }
 }
 
 async fn terminate_process_group(pid: Option<u32>, child: &mut tokio::process::Child) {
@@ -1906,6 +2209,8 @@ mod tests {
                 &ProcessRequest {
                     program: "sh".into(),
                     args: vec!["-c".into(), "yes x | head -c 4096".into()],
+                    cwd: PathBuf::new(),
+                    env: BTreeMap::new(),
                     timeout_secs: 5,
                 },
                 CancellationToken::new(),
@@ -1921,6 +2226,8 @@ mod tests {
                 &ProcessRequest {
                     program: "printf".into(),
                     args: vec!["\u{1b}[31mred\n".into()],
+                    cwd: PathBuf::new(),
+                    env: BTreeMap::new(),
                     timeout_secs: 5,
                 },
                 CancellationToken::new(),
@@ -1928,5 +2235,169 @@ mod tests {
             .await
             .expect("escaped process");
         assert!(!escaped.stdout.contains('\u{1b}'));
+        assert!(!escaped.stdout.contains("[31m"));
+    }
+
+    fn process_request(program: &str, args: &[&str]) -> ProcessRequest {
+        ProcessRequest {
+            program: program.into(),
+            args: args.iter().map(|argument| (*argument).into()).collect(),
+            cwd: PathBuf::new(),
+            env: BTreeMap::new(),
+            timeout_secs: 5,
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn process_isolated_from_network_host_files_and_credentials() {
+        let root = tempdir().expect("root");
+        let workspace = Workspace::new(root.path()).expect("workspace");
+        let manager = ProcessManager::new(4096);
+
+        let host_read = manager
+            .run(
+                &workspace,
+                &process_request("sh", &["-c", "test ! -e /home && test ! -e /root"]),
+                CancellationToken::new(),
+            )
+            .await
+            .expect("host boundary");
+        assert_eq!(host_read.exit_code, Some(0));
+
+        // Credential-shaped variables are absent from the deliberately tiny
+        // child environment, even when callers have them in their environment.
+        let environment = manager
+            .run(
+                &workspace,
+                &process_request("sh", &["-c", "printf '%s' \"${AXIOM_API_KEY-unset}\""]),
+                CancellationToken::new(),
+            )
+            .await
+            .expect("environment");
+        assert_eq!(environment.stdout, "unset");
+
+        let network = manager
+            .run(
+                &workspace,
+                &process_request(
+                    "python3",
+                    &[
+                        "-c",
+                        "import socket; socket.socket().connect(('1.1.1.1', 53))",
+                    ],
+                ),
+                CancellationToken::new(),
+            )
+            .await
+            .expect("network attempt returns an outcome");
+        assert_ne!(network.exit_code, Some(0));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn process_cwd_and_environment_are_explicit_and_allowlisted() {
+        let root = tempdir().expect("root");
+        std::fs::create_dir(root.path().join("nested")).expect("nested");
+        let workspace = Workspace::new(root.path()).expect("workspace");
+        let manager = ProcessManager::new(4096);
+        let mut request = process_request("sh", &["-c", "printf '%s:%s' \"$PWD\" \"$CI\""]);
+        request.cwd = PathBuf::from("nested");
+        request.env.insert("CI".into(), "true".into());
+        let outcome = manager
+            .run(&workspace, &request, CancellationToken::new())
+            .await
+            .expect("process");
+        assert_eq!(outcome.exit_code, Some(0));
+        assert_eq!(
+            outcome.stdout,
+            format!("{}:true", root.path().join("nested").display())
+        );
+
+        request.env.insert("AXIOM_API_KEY".into(), "blocked".into());
+        assert!(
+            manager
+                .run(&workspace, &request, CancellationToken::new())
+                .await
+                .is_err()
+        );
+        request.env.clear();
+        request.cwd = PathBuf::from("..");
+        assert!(
+            manager
+                .run(&workspace, &request, CancellationToken::new())
+                .await
+                .is_err()
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn cancellation_terminates_the_process_tree() {
+        let root = tempdir().expect("root");
+        let workspace = Workspace::new(root.path()).expect("workspace");
+        let manager = ProcessManager::new(4096);
+        let cancellation = CancellationToken::new();
+        let cancel = cancellation.clone();
+        let request = process_request(
+            "sh",
+            &["-c", "(sleep 1; printf survived > child-survived) & wait"],
+        );
+        let run = manager.run(&workspace, &request, cancellation);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            cancel.cancel();
+        });
+        assert!(matches!(run.await, Err(AxiomError::Cancelled)));
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        assert!(!root.path().join("child-survived").exists());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn timeout_invalid_bytes_and_background_lifecycle_are_recoverable() {
+        let root = tempdir().expect("root");
+        let workspace = Workspace::new(root.path()).expect("workspace");
+        let manager = ProcessManager::new(1024);
+
+        let mut timeout = process_request("sleep", &["5"]);
+        timeout.timeout_secs = 1;
+        assert!(
+            manager
+                .run(&workspace, &timeout, CancellationToken::new())
+                .await
+                .is_err()
+        );
+
+        let invalid = manager
+            .run(
+                &workspace,
+                &process_request(
+                    "python3",
+                    &["-c", "import os; os.write(1, b'\\xff\\xfe\\x1b[31mred')"],
+                ),
+                CancellationToken::new(),
+            )
+            .await
+            .expect("invalid bytes");
+        assert!(!invalid.stdout.contains('\u{1b}'));
+        assert!(!invalid.stdout.contains("[31m"));
+        assert!(invalid.stdout.len() <= 1024);
+
+        let id = manager
+            .start(
+                workspace.clone(),
+                process_request("sh", &["-c", "printf start; sleep 5"]),
+            )
+            .await
+            .expect("start");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let running = manager.snapshot(&id).await.expect("snapshot");
+        assert_eq!(running.state, "running");
+        assert!(running.stdout.contains("start"));
+        assert!(manager.list().await.iter().any(|task| task.id == id));
+        manager.stop(&id).await.expect("stop");
+        let stopped = manager.snapshot(&id).await.expect("stopped snapshot");
+        assert_eq!(stopped.state, "cancelled");
     }
 }

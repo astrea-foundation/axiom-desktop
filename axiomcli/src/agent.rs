@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use std::{
-    collections::{BTreeSet, HashMap, HashSet},
+    collections::{BTreeSet, HashMap},
     path::PathBuf,
     sync::Arc,
     time::Duration,
@@ -348,7 +348,7 @@ impl TurnRunner for AgentEngine {
                 })
         };
         messages.push(ChatMessage::text(ChatRole::User, prompt));
-        let mut seen_calls = HashSet::new();
+        let mut last_call = None;
 
         for step in 0..self.limits.max_steps {
             if cancellation.is_cancelled() {
@@ -402,12 +402,13 @@ impl TurnRunner for AgentEngine {
 
             for call in assistant.tool_calls {
                 let signature = format!("{}:{}", call.function.name, call.function.arguments);
-                if !seen_calls.insert(signature) {
+                if last_call.as_ref() == Some(&signature) {
                     return Err(AxiomError::Tool(format!(
                         "model repeated identical tool call `{}`",
                         call.function.name
                     )));
                 }
+                last_call = Some(signature);
                 let arguments: serde_json::Value = match serde_json::from_str(
                     &call.function.arguments,
                 ) {
@@ -499,6 +500,7 @@ impl TurnRunner for AgentEngine {
                         truncated: false,
                         changed_paths: Vec::new(),
                         diff: None,
+                        background: None,
                     },
                 };
                 let (bounded_content, additionally_truncated) =
@@ -534,6 +536,14 @@ impl TurnRunner for AgentEngine {
                     events
                         .send(AppEvent::WorkspaceChanged {
                             paths: tool_result.changed_paths.clone(),
+                        })
+                        .map_err(|_| AxiomError::Cancelled)?;
+                }
+                if let Some((task_id, state)) = &tool_result.background {
+                    events
+                        .send(AppEvent::BackgroundTaskChanged {
+                            task_id: task_id.clone(),
+                            state: state.clone(),
                         })
                         .map_err(|_| AxiomError::Cancelled)?;
                 }
