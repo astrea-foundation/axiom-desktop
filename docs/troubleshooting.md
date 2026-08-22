@@ -29,7 +29,8 @@ those caches read-only into the sandbox.
 ## Search fails
 
 Run `scripts/searxng-dev start` and then `scripts/searxng-dev query "test"` in a
-source checkout, or point `searxng_url` at the managed Axiom SearXNG service.
+source checkout, or point `searxng_url` at a SearXNG service you operate or
+otherwise trust. A hosted Axiom service is not part of this repository.
 Individual upstream engines can throttle or time out. Empty results and engine
 warnings are returned honestly. `fetch_url` rejecting a loopback/private target
 is expected security behavior.
@@ -65,3 +66,8 @@ operation, and—when offered—`e`/`p` grant an exact or prefix scope for the
 current session. Configured asks/denials and hard workspace boundaries cannot
 be overridden by a session grant. Headless mode cannot answer approvals and
 therefore fails them closed.
+
+To persist a restrictive repository rule through the explicit configuration
+flow, use `axiomcli permissions add-project-rule --action ask|deny --effect ...`.
+This command can only add `ask` or `deny` rules; project configuration cannot
+grant authority.

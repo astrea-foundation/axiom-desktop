@@ -4,12 +4,13 @@ use anyhow::Context as _;
 use axiomcli::{
     AxiomError,
     agent::{
-        AgentEngine, AgentLimits, BlockingTurnRunner, EchoTurnRunner, QuestionTurnRunner,
-        TurnContext, TurnRunner, WorkspaceEditTurnRunner,
+        APP_EVENT_QUEUE_CAPACITY, AgentEngine, AgentLimits, BlockingTurnRunner, EchoTurnRunner,
+        PlanReviewTurnRunner, QuestionTurnRunner, TurnContext, TurnRunner, WorkspaceEditTurnRunner,
     },
-    app::{AppEvent, SessionId, TurnId},
+    app::{AppCommand, AppEvent, Origin, Runtime, SessionId},
     config::Config,
     planning::PlanArtifact,
+    policy::{EffectClass, PolicyRule, RuleAction},
     provider::{AxiomProvider, InferenceProvider},
     session::{ExportOptions, RetentionPolicy, SessionStore},
     tools::default_registry,
@@ -64,6 +65,28 @@ enum Command {
         cwd: Option<PathBuf>,
         #[command(subcommand)]
         action: PlanAction,
+    },
+    /// Add restrictive, reviewable policy rules to a project's configuration.
+    Permissions {
+        #[command(subcommand)]
+        action: PermissionAction,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum PermissionAction {
+    /// Persist an `ask` or `deny` rule; project rules can never grant authority.
+    AddProjectRule {
+        #[arg(long)]
+        cwd: Option<PathBuf>,
+        #[arg(long, value_enum)]
+        action: RuleAction,
+        #[arg(long, value_enum)]
+        effect: Option<EffectClass>,
+        #[arg(long)]
+        resource_prefix: Option<String>,
+        #[arg(long)]
+        reason: Option<String>,
     },
 }
 
@@ -164,6 +187,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::Sessions { action } => manage_sessions(action),
         Command::Plans { cwd, action } => manage_plans(&resolve_cwd(cwd)?, action),
+        Command::Permissions { action } => manage_permissions(action),
         Command::Tui { cwd, resume, plan } => {
             let store = open_store()?;
             let resume = resume
@@ -220,6 +244,7 @@ async fn main() -> anyhow::Result<()> {
                 resolve_cwd(cwd)?,
                 profile,
                 prompt,
+                open_store()?,
             )
             .await
         }
@@ -331,6 +356,38 @@ async fn doctor(config: &Config) {
     }
 }
 
+fn manage_permissions(action: PermissionAction) -> anyhow::Result<()> {
+    match action {
+        PermissionAction::AddProjectRule {
+            cwd,
+            action,
+            effect,
+            resource_prefix,
+            reason,
+        } => {
+            anyhow::ensure!(
+                resource_prefix.is_none() || effect.is_some(),
+                "--resource-prefix requires --effect"
+            );
+            let root = resolve_cwd(cwd)?;
+            let path = Config::add_project_rule(
+                &root,
+                PolicyRule {
+                    action,
+                    effect,
+                    resource_prefix,
+                    reason,
+                },
+            )?;
+            println!(
+                "Added a restrictive project rule to {}. It can require approval or deny an operation; it cannot grant authority.",
+                path.display()
+            );
+        }
+    }
+    Ok(())
+}
+
 fn session_path() -> Option<PathBuf> {
     Config::data_dir().map(|directory| directory.join("sessions.sqlite3"))
 }
@@ -426,6 +483,7 @@ async fn build_runner(config: &Config) -> anyhow::Result<Arc<dyn TurnRunner>> {
             Ok("blocking") => return Ok(Arc::new(BlockingTurnRunner)),
             Ok("questions") => return Ok(Arc::new(QuestionTurnRunner)),
             Ok("workspace_edit") => return Ok(Arc::new(WorkspaceEditTurnRunner)),
+            Ok("plan_review") => return Ok(Arc::new(PlanReviewTurnRunner)),
             _ => {}
         }
     }
@@ -470,11 +528,33 @@ async fn run_headless(
     cwd: PathBuf,
     profile: axiomcli::app::PermissionProfile,
     prompt: String,
+    store: SessionStore,
 ) -> anyhow::Result<()> {
-    let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+    let runtime = Runtime::new(APP_EVENT_QUEUE_CAPACITY);
+    let session_id = runtime.session_id();
+    let turn_id = runtime.turn_id();
+    let created = runtime
+        .dispatch(AppCommand::CreateSession {
+            session_id: session_id.clone(),
+            cwd: cwd.clone(),
+            origin: Origin::Headless,
+            profile,
+        })
+        .await?;
+    store.append_all(&created)?;
+    let submitted = runtime
+        .dispatch(AppCommand::SubmitPrompt {
+            session_id: session_id.clone(),
+            turn_id: turn_id.clone(),
+            text: prompt.clone(),
+        })
+        .await?;
+    store.append_all(&submitted)?;
+
+    let (events_tx, mut events_rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
     let context = TurnContext {
-        session_id: SessionId::new(),
-        turn_id: TurnId::new(),
+        session_id: session_id.clone(),
+        turn_id: turn_id.clone(),
         cwd,
         permission_profile: profile,
         approval: None,
@@ -483,29 +563,57 @@ async fn run_headless(
     let cancellation = CancellationToken::new();
     let run = runner.run(context, prompt, events_tx, cancellation.clone());
     tokio::pin!(run);
-    loop {
+    let result = loop {
         tokio::select! {
             result = &mut run => {
                 if result.is_err() {
                     cancellation.cancel();
                 }
-                result.map_err(anyhow::Error::from)?;
-                while let Ok(event) = events_rx.try_recv() {
-                    print_headless_event(event);
-                }
-                return Ok(());
+                break result;
             }
             event = events_rx.recv() => {
                 if let Some(event) = event {
-                    print_headless_event(event);
+                    record_headless_event(&runtime, &store, &session_id, event).await?;
                 }
             }
             _ = tokio::signal::ctrl_c() => {
                 cancellation.cancel();
-                return Err(anyhow::Error::from(AxiomError::Cancelled));
             },
         }
+    };
+    while let Ok(event) = events_rx.try_recv() {
+        record_headless_event(&runtime, &store, &session_id, event).await?;
     }
+
+    let terminal = match &result {
+        Ok(()) => AppCommand::FinishTurn {
+            session_id: session_id.clone(),
+            turn_id,
+        },
+        Err(AxiomError::Cancelled) => AppCommand::CancelTurn {
+            session_id: session_id.clone(),
+            turn_id,
+        },
+        Err(error) => AppCommand::FailTurn {
+            session_id: session_id.clone(),
+            turn_id,
+            message: error.to_string(),
+        },
+    };
+    store.append_all(&runtime.dispatch(terminal).await?)?;
+    result.map_err(anyhow::Error::from)
+}
+
+async fn record_headless_event(
+    runtime: &Runtime,
+    store: &SessionStore,
+    session_id: &SessionId,
+    event: AppEvent,
+) -> anyhow::Result<()> {
+    print_headless_event(event.clone());
+    let envelope = runtime.emit(session_id.clone(), event).await?;
+    store.append(&envelope)?;
+    Ok(())
 }
 
 fn print_headless_event(event: AppEvent) {

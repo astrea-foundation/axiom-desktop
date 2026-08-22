@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, sync::Arc, time::Duration};
 use async_trait::async_trait;
 use axiomcli::{
     Result,
-    agent::{AgentEngine, AgentLimits, TurnContext, TurnRunner},
+    agent::{APP_EVENT_QUEUE_CAPACITY, AgentEngine, AgentLimits, TurnContext, TurnRunner},
     app::{AppCommand, AppEvent, Origin, PermissionProfile, Runtime, SessionId, TurnId},
     provider::{AssistantTurn, InferenceProvider, InferenceRequest, ProviderEvent},
     session::{ExportOptions, SessionStore},
@@ -88,7 +88,18 @@ async fn long_stream_and_many_transcript_entries_stay_within_recorded_budgets() 
             max_wall_time: Duration::from_secs(10),
         },
     );
-    let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+    let (events_tx, mut events_rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
+    let collector = tokio::spawn(async move {
+        let mut deltas = 0;
+        let mut retained_bytes = 0;
+        while let Some(event) = events_rx.recv().await {
+            if let AppEvent::TextDelta { text, .. } = event {
+                deltas += 1;
+                retained_bytes += text.len();
+            }
+        }
+        (deltas, retained_bytes)
+    });
     let started = std::time::Instant::now();
     engine
         .run(
@@ -106,14 +117,7 @@ async fn long_stream_and_many_transcript_entries_stay_within_recorded_budgets() 
         )
         .await
         .expect("long stream");
-    let mut deltas = 0;
-    let mut retained_bytes = 0;
-    while let Ok(event) = events_rx.try_recv() {
-        if let AppEvent::TextDelta { text, .. } = event {
-            deltas += 1;
-            retained_bytes += text.len();
-        }
-    }
+    let (deltas, retained_bytes) = collector.await.expect("event collector");
     assert_eq!(deltas, CHUNKS);
     assert_eq!(retained_bytes, CHUNKS * 30);
     assert!(started.elapsed() < Duration::from_secs(10));

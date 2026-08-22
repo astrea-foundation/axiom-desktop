@@ -11,6 +11,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     AxiomError, Result,
     app::{AppEvent, EventEnvelope, PermissionProfile, QuestionRequest, SessionId, TurnId},
+    planning::{PlanArtifact, PlanState},
     policy::{
         ApprovalHandler, ApprovalRequest, ApprovalResponse, DecisionKind, PolicyEngine, PolicyRule,
     },
@@ -20,6 +21,11 @@ use crate::{
     tools::{ToolContext, ToolRegistry},
     workspace::Workspace,
 };
+
+/// Capacity shared by adapter-facing agent event queues. A slow front end
+/// applies backpressure to the turn instead of allowing an unbounded stream to
+/// consume memory.
+pub const APP_EVENT_QUEUE_CAPACITY: usize = 256;
 
 #[derive(Clone)]
 pub struct TurnContext {
@@ -72,7 +78,7 @@ pub trait TurnRunner: Send + Sync {
         &self,
         context: TurnContext,
         prompt: String,
-        events: mpsc::UnboundedSender<AppEvent>,
+        events: mpsc::Sender<AppEvent>,
         cancellation: CancellationToken,
     ) -> Result<()>;
 }
@@ -114,7 +120,7 @@ impl TurnRunner for EchoTurnRunner {
         &self,
         context: TurnContext,
         prompt: String,
-        events: mpsc::UnboundedSender<AppEvent>,
+        events: mpsc::Sender<AppEvent>,
         cancellation: CancellationToken,
     ) -> Result<()> {
         if cancellation.is_cancelled() {
@@ -125,12 +131,14 @@ impl TurnRunner for EchoTurnRunner {
                 connected: true,
                 detail: "deterministic test runner".into(),
             })
+            .await
             .map_err(|_| crate::AxiomError::Cancelled)?;
         events
             .send(AppEvent::TextDelta {
                 turn_id: context.turn_id,
                 text: format!("AxiomCLI received: {prompt}"),
             })
+            .await
             .map_err(|_| crate::AxiomError::Cancelled)?;
         Ok(())
     }
@@ -146,7 +154,7 @@ impl TurnRunner for BlockingTurnRunner {
         &self,
         _context: TurnContext,
         _prompt: String,
-        _events: mpsc::UnboundedSender<AppEvent>,
+        _events: mpsc::Sender<AppEvent>,
         cancellation: CancellationToken,
     ) -> Result<()> {
         cancellation.cancelled().await;
@@ -164,7 +172,7 @@ impl TurnRunner for QuestionTurnRunner {
         &self,
         context: TurnContext,
         _prompt: String,
-        events: mpsc::UnboundedSender<AppEvent>,
+        events: mpsc::Sender<AppEvent>,
         cancellation: CancellationToken,
     ) -> Result<()> {
         let request = QuestionRequest {
@@ -188,6 +196,7 @@ impl TurnRunner for QuestionTurnRunner {
             .send(AppEvent::QuestionsAsked {
                 request: request.clone(),
             })
+            .await
             .map_err(|_| AxiomError::Cancelled)?;
         let handler = context.questions.ok_or_else(|| {
             AxiomError::Protocol("structured question handler is unavailable".into())
@@ -199,12 +208,14 @@ impl TurnRunner for QuestionTurnRunner {
                 request_id: request.request_id,
                 answers: answers.clone(),
             })
+            .await
             .map_err(|_| AxiomError::Cancelled)?;
         events
             .send(AppEvent::TextDelta {
                 turn_id: context.turn_id,
                 text: serde_json::to_string(&answers)?,
             })
+            .await
             .map_err(|_| AxiomError::Cancelled)?;
         Ok(())
     }
@@ -221,7 +232,7 @@ impl TurnRunner for WorkspaceEditTurnRunner {
         &self,
         context: TurnContext,
         _prompt: String,
-        events: mpsc::UnboundedSender<AppEvent>,
+        events: mpsc::Sender<AppEvent>,
         cancellation: CancellationToken,
     ) -> Result<()> {
         if cancellation.is_cancelled() {
@@ -248,12 +259,14 @@ impl TurnRunner for WorkspaceEditTurnRunner {
                 name: "replace_text".into(),
                 arguments,
             })
+            .await
             .map_err(|_| AxiomError::Cancelled)?;
         events
             .send(AppEvent::ToolStarted {
                 call_id: call_id.clone(),
                 name: "replace_text".into(),
             })
+            .await
             .map_err(|_| AxiomError::Cancelled)?;
         let outcome = Workspace::new(&context.cwd)?.apply_replacement(
             "frontend.txt",
@@ -267,17 +280,20 @@ impl TurnRunner for WorkspaceEditTurnRunner {
                 content: "updated frontend.txt".into(),
                 truncated: false,
             })
+            .await
             .map_err(|_| AxiomError::Cancelled)?;
         events
             .send(AppEvent::ToolCompleted {
                 call_id: call_id.clone(),
                 success: true,
             })
+            .await
             .map_err(|_| AxiomError::Cancelled)?;
         events
             .send(AppEvent::WorkspaceChanged {
                 paths: vec![outcome.path],
             })
+            .await
             .map_err(|_| AxiomError::Cancelled)?;
         events
             .send(AppEvent::DiffAvailable {
@@ -285,12 +301,125 @@ impl TurnRunner for WorkspaceEditTurnRunner {
                 diff: outcome.diff,
                 truncated: false,
             })
+            .await
             .map_err(|_| AxiomError::Cancelled)?;
         events
             .send(AppEvent::TextDelta {
                 turn_id: context.turn_id,
                 text: "Updated frontend.txt through the shared turn contract.".into(),
             })
+            .await
+            .map_err(|_| AxiomError::Cancelled)?;
+        Ok(())
+    }
+}
+
+/// Debug-build-only plan review fixture used to prove stable ACP plan updates,
+/// structured review input, and durable line comments.
+#[derive(Debug, Default)]
+pub struct PlanReviewTurnRunner;
+
+#[async_trait]
+impl TurnRunner for PlanReviewTurnRunner {
+    async fn run(
+        &self,
+        context: TurnContext,
+        _prompt: String,
+        events: mpsc::Sender<AppEvent>,
+        cancellation: CancellationToken,
+    ) -> Result<()> {
+        let mut plan = PlanArtifact::new("# Fixture plan\n\n1. Inspect\n2. Implement");
+        plan.save(&context.cwd)?;
+        plan.propose()?;
+        plan.save(&context.cwd)?;
+        events
+            .send(AppEvent::PlanProposed {
+                plan_id: plan.id.clone(),
+                revision: plan.revision,
+                markdown: plan.markdown.clone(),
+            })
+            .await
+            .map_err(|_| AxiomError::Cancelled)?;
+        let request = QuestionRequest {
+            request_id: format!("plan-review:{}:r{}", plan.id, plan.revision),
+            questions: vec![
+                crate::app::QuestionSpec {
+                    id: "decision".into(),
+                    prompt: "Review this plan".into(),
+                    options: vec![
+                        "approve".into(),
+                        "request_revision".into(),
+                        "abandon".into(),
+                    ],
+                    multiple: false,
+                },
+                crate::app::QuestionSpec {
+                    id: "line_range".into(),
+                    prompt: "Revision line/range".into(),
+                    options: Vec::new(),
+                    multiple: false,
+                },
+                crate::app::QuestionSpec {
+                    id: "comment".into(),
+                    prompt: "Revision comment".into(),
+                    options: Vec::new(),
+                    multiple: false,
+                },
+            ],
+        };
+        events
+            .send(AppEvent::QuestionsAsked {
+                request: request.clone(),
+            })
+            .await
+            .map_err(|_| AxiomError::Cancelled)?;
+        let handler = context.questions.ok_or_else(|| {
+            AxiomError::Protocol("structured plan review handler is unavailable".into())
+        })?;
+        let answers = validate_answers(
+            &request,
+            handler.request(request.clone(), cancellation).await?,
+        )?;
+        events
+            .send(AppEvent::QuestionsAnswered {
+                request_id: request.request_id,
+                answers: answers.clone(),
+            })
+            .await
+            .map_err(|_| AxiomError::Cancelled)?;
+        let decision = answers["decision"][0].as_str();
+        match decision {
+            "approve" => plan.approve()?,
+            "abandon" => plan.abandon()?,
+            "request_revision" => {
+                let line = answers["line_range"][0].parse::<usize>().map_err(|_| {
+                    AxiomError::Tool("fixture line_range must be one line number".into())
+                })?;
+                plan.request_revision(line, line, answers["comment"][0].clone())?;
+            }
+            _ => return Err(AxiomError::Tool("unknown fixture plan decision".into())),
+        }
+        plan.save(&context.cwd)?;
+        let decision = match plan.state {
+            PlanState::Approved => "approved",
+            PlanState::RevisionRequested => "revision_requested",
+            PlanState::Abandoned => "abandoned",
+            _ => return Err(AxiomError::Tool("fixture plan was not reviewed".into())),
+        };
+        events
+            .send(AppEvent::PlanReviewed {
+                plan_id: plan.id,
+                revision: plan.revision,
+                decision: decision.into(),
+            })
+            .await
+            .map_err(|_| AxiomError::Cancelled)?;
+        events
+            .send(AppEvent::TextDelta {
+                turn_id: context.turn_id,
+                text: format!("Plan review recorded: {decision}"),
+            })
+            .await
             .map_err(|_| AxiomError::Cancelled)?;
         Ok(())
     }
@@ -381,7 +510,7 @@ impl AgentEngine {
         &self,
         request: InferenceRequest,
         context: &TurnContext,
-        output: &mpsc::UnboundedSender<AppEvent>,
+        output: &mpsc::Sender<AppEvent>,
         cancellation: CancellationToken,
     ) -> Result<AssistantTurn> {
         let (provider_tx, mut provider_rx) = mpsc::channel(64);
@@ -394,12 +523,12 @@ impl AgentEngine {
                 result = &mut future => break result,
                 event = provider_rx.recv() => {
                     let Some(event) = event else { continue };
-                    forward_provider_event(output, &context.turn_id, event)?;
+                    forward_provider_event(output, &context.turn_id, event).await?;
                 }
             }
         };
         while let Ok(event) = provider_rx.try_recv() {
-            forward_provider_event(output, &context.turn_id, event)?;
+            forward_provider_event(output, &context.turn_id, event).await?;
         }
         result
     }
@@ -410,7 +539,7 @@ impl AgentEngine {
         tool_context: &ToolContext,
         tool_name: &str,
         arguments: &serde_json::Value,
-        events: &mpsc::UnboundedSender<AppEvent>,
+        events: &mpsc::Sender<AppEvent>,
         cancellation: CancellationToken,
     ) -> Result<()> {
         let policy = self.policy_for(context).await?;
@@ -428,6 +557,7 @@ impl AgentEngine {
                             request_id: request.request_id.clone(),
                             explanation: request.explanation.clone(),
                         })
+                        .await
                         .map_err(|_| AxiomError::Cancelled)?;
                     let response = if let Some(handler) = &context.approval {
                         let result = tokio::select! {
@@ -446,6 +576,7 @@ impl AgentEngine {
                                         allowed: false,
                                         choice: Some("failed_closed".into()),
                                     })
+                                    .await
                                     .map_err(|_| AxiomError::Cancelled)?;
                                 return Err(error);
                             }
@@ -461,6 +592,7 @@ impl AgentEngine {
                                 allowed: false,
                                 choice: Some("rejected_scope".into()),
                             })
+                            .await
                             .map_err(|_| AxiomError::Cancelled)?;
                         return Err(error);
                     }
@@ -470,6 +602,7 @@ impl AgentEngine {
                             allowed,
                             choice: Some(response.choice.as_str().into()),
                         })
+                        .await
                         .map_err(|_| AxiomError::Cancelled)?;
                     if !allowed {
                         return Err(AxiomError::PermissionDenied(format!(
@@ -611,7 +744,7 @@ impl TurnRunner for AgentEngine {
         &self,
         context: TurnContext,
         prompt: String,
-        events: mpsc::UnboundedSender<AppEvent>,
+        events: mpsc::Sender<AppEvent>,
         cancellation: CancellationToken,
     ) -> Result<()> {
         let deadline = tokio::time::Instant::now() + self.limits.max_wall_time;
@@ -620,6 +753,7 @@ impl TurnRunner for AgentEngine {
                 connected: false,
                 detail: format!("Connecting to {} · UNATTESTED DEVELOPMENT", self.model),
             })
+            .await
             .map_err(|_| AxiomError::Cancelled)?;
         let mut messages = {
             let histories = self.histories.lock().await;
@@ -656,6 +790,7 @@ impl TurnRunner for AgentEngine {
                     completed: Some(u64::try_from(step).unwrap_or(u64::MAX)),
                     total: Some(u64::try_from(self.limits.max_steps).unwrap_or(u64::MAX)),
                 })
+                .await
                 .map_err(|_| AxiomError::Cancelled)?;
             enforce_context_budget(
                 &messages,
@@ -716,7 +851,8 @@ impl TurnRunner for AgentEngine {
                             &call,
                             serde_json::json!({"invalid_json": call.function.arguments}),
                             &message,
-                        )?;
+                        )
+                        .await?;
                         messages.push(tool_error_message(call.id, &call.function.name, &message));
                         continue;
                     }
@@ -728,8 +864,10 @@ impl TurnRunner for AgentEngine {
                         name: call.function.name.clone(),
                         arguments: arguments.clone(),
                     })
+                    .await
                     .map_err(|_| AxiomError::Cancelled)?;
                 let tool_context = ToolContext {
+                    session_id: context.session_id.clone(),
                     cwd: context.cwd.clone(),
                     permission_profile: context.permission_profile,
                 };
@@ -753,12 +891,14 @@ impl TurnRunner for AgentEngine {
                             content: error.to_string(),
                             truncated: false,
                         })
+                        .await
                         .map_err(|_| AxiomError::Cancelled)?;
                     events
                         .send(AppEvent::ToolCompleted {
                             call_id: call.id.clone(),
                             success: false,
                         })
+                        .await
                         .map_err(|_| AxiomError::Cancelled)?;
                     messages.push(tool_error_message(
                         call.id,
@@ -772,13 +912,14 @@ impl TurnRunner for AgentEngine {
                         call_id: call.id.clone(),
                         name: call.function.name.clone(),
                     })
+                    .await
                     .map_err(|_| AxiomError::Cancelled)?;
                 let result = tokio::time::timeout_at(
                     deadline,
                     self.tools.execute(
                         &call.function.name,
                         &tool_context,
-                        arguments,
+                        arguments.clone(),
                         cancellation.clone(),
                     ),
                 )
@@ -798,13 +939,17 @@ impl TurnRunner for AgentEngine {
                     },
                 };
                 for event in std::mem::take(&mut tool_result.events) {
-                    events.send(event).map_err(|_| AxiomError::Cancelled)?;
+                    events
+                        .send(event)
+                        .await
+                        .map_err(|_| AxiomError::Cancelled)?;
                 }
                 if let Some(request) = tool_result.questions.take() {
                     events
                         .send(AppEvent::QuestionsAsked {
                             request: request.clone(),
                         })
+                        .await
                         .map_err(|_| AxiomError::Cancelled)?;
                     let answer = if let Some(handler) = &context.questions {
                         tokio::select! {
@@ -823,9 +968,32 @@ impl TurnRunner for AgentEngine {
                                     request_id: request.request_id,
                                     answers: answers.clone(),
                                 })
+                                .await
                                 .map_err(|_| AxiomError::Cancelled)?;
-                            tool_result.content = serde_json::to_string_pretty(&answers)?;
-                            tool_result.success = true;
+                            match self.tools.complete_interaction(
+                                &call.function.name,
+                                &tool_context,
+                                &arguments,
+                                &answers,
+                            ) {
+                                Ok(Some(mut completed)) => {
+                                    for event in std::mem::take(&mut completed.events) {
+                                        events
+                                            .send(event)
+                                            .await
+                                            .map_err(|_| AxiomError::Cancelled)?;
+                                    }
+                                    tool_result = completed;
+                                }
+                                Ok(None) => {
+                                    tool_result.content = serde_json::to_string_pretty(&answers)?;
+                                    tool_result.success = true;
+                                }
+                                Err(error) => {
+                                    tool_result.content = error.to_string();
+                                    tool_result.success = false;
+                                }
+                            }
                         }
                         Err(AxiomError::Cancelled) => return Err(AxiomError::Cancelled),
                         Err(error) => {
@@ -850,12 +1018,14 @@ impl TurnRunner for AgentEngine {
                         content: tool_result.content.clone(),
                         truncated: tool_result.truncated,
                     })
+                    .await
                     .map_err(|_| AxiomError::Cancelled)?;
                 events
                     .send(AppEvent::ToolCompleted {
                         call_id: call.id.clone(),
                         success: tool_result.success,
                     })
+                    .await
                     .map_err(|_| AxiomError::Cancelled)?;
                 if !tool_result.changed_paths.is_empty() {
                     self.change_sets
@@ -868,6 +1038,7 @@ impl TurnRunner for AgentEngine {
                         .send(AppEvent::WorkspaceChanged {
                             paths: tool_result.changed_paths.clone(),
                         })
+                        .await
                         .map_err(|_| AxiomError::Cancelled)?;
                 }
                 if let Some((task_id, state)) = &tool_result.background {
@@ -876,6 +1047,7 @@ impl TurnRunner for AgentEngine {
                             task_id: task_id.clone(),
                             state: state.clone(),
                         })
+                        .await
                         .map_err(|_| AxiomError::Cancelled)?;
                 }
                 if let Some(diff) = &tool_result.diff {
@@ -885,6 +1057,7 @@ impl TurnRunner for AgentEngine {
                             diff: diff.clone(),
                             truncated: tool_result.truncated,
                         })
+                        .await
                         .map_err(|_| AxiomError::Cancelled)?;
                 }
                 messages.push(ChatMessage {
@@ -1002,8 +1175,8 @@ fn tool_error_message(call_id: String, name: &str, message: &str) -> ChatMessage
     }
 }
 
-fn emit_repairable_tool_failure(
-    events: &mpsc::UnboundedSender<AppEvent>,
+async fn emit_repairable_tool_failure(
+    events: &mpsc::Sender<AppEvent>,
     turn_id: &TurnId,
     call: &crate::provider::ToolCall,
     arguments: serde_json::Value,
@@ -1016,6 +1189,7 @@ fn emit_repairable_tool_failure(
             name: call.function.name.clone(),
             arguments,
         })
+        .await
         .map_err(|_| AxiomError::Cancelled)?;
     events
         .send(AppEvent::ToolOutput {
@@ -1023,12 +1197,14 @@ fn emit_repairable_tool_failure(
             content: message.to_owned(),
             truncated: false,
         })
+        .await
         .map_err(|_| AxiomError::Cancelled)?;
     events
         .send(AppEvent::ToolCompleted {
             call_id: call.id.clone(),
             success: false,
         })
+        .await
         .map_err(|_| AxiomError::Cancelled)
 }
 
@@ -1038,8 +1214,8 @@ fn untrusted_tool_result(name: &str, content: &str) -> String {
     )
 }
 
-fn forward_provider_event(
-    output: &mpsc::UnboundedSender<AppEvent>,
+async fn forward_provider_event(
+    output: &mpsc::Sender<AppEvent>,
     turn_id: &TurnId,
     event: ProviderEvent,
 ) -> Result<()> {
@@ -1063,7 +1239,7 @@ fn forward_provider_event(
             output_tokens,
         },
     };
-    output.send(event).map_err(|_| AxiomError::Cancelled)
+    output.send(event).await.map_err(|_| AxiomError::Cancelled)
 }
 
 fn system_prompt(cwd: &std::path::Path) -> String {
@@ -1207,7 +1383,7 @@ mod engine_tests {
         }
     }
 
-    fn drain(rx: &mut mpsc::UnboundedReceiver<AppEvent>) -> Vec<AppEvent> {
+    fn drain(rx: &mut mpsc::Receiver<AppEvent>) -> Vec<AppEvent> {
         let mut events = Vec::new();
         while let Ok(event) = rx.try_recv() {
             events.push(event);
@@ -1246,7 +1422,7 @@ mod engine_tests {
             tool_calls: Vec::new(),
         }]));
         let engine = AgentEngine::new(provider, Arc::new(ToolRegistry::new()), "test", 3);
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
         engine
             .run(context(), "hello".into(), tx, CancellationToken::new())
             .await
@@ -1284,7 +1460,7 @@ mod engine_tests {
         let mut turn_context = context();
         turn_context.cwd = tempfile::tempdir().expect("workspace").keep();
         turn_context.questions = Some(Arc::new(TestQuestions));
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
         engine
             .run(turn_context, "ask".into(), tx, CancellationToken::new())
             .await
@@ -1363,7 +1539,7 @@ mod engine_tests {
             .restore_session(&session_id, &events)
             .await
             .expect("restore");
-        let (tx, _rx) = mpsc::unbounded_channel();
+        let (tx, _rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
         engine
             .run(
                 TurnContext {
@@ -1409,7 +1585,7 @@ mod engine_tests {
             },
         ]));
         let engine = AgentEngine::new(provider, Arc::new(ToolRegistry::new()), "test", 3);
-        let (tx, _rx) = mpsc::unbounded_channel();
+        let (tx, _rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
         let result = engine
             .run(context(), "hello".into(), tx, CancellationToken::new())
             .await;
@@ -1434,7 +1610,7 @@ mod engine_tests {
             },
         ]));
         let engine = AgentEngine::new(provider, tools, "test", 3);
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
         engine
             .run(context(), "use tools".into(), tx, CancellationToken::new())
             .await
@@ -1477,7 +1653,7 @@ mod engine_tests {
                 },
             ]));
             let engine = AgentEngine::new(provider.clone(), tools, "test", 3);
-            let (tx, mut rx) = mpsc::unbounded_channel();
+            let (tx, mut rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
             engine
                 .run(context(), "recover".into(), tx, CancellationToken::new())
                 .await
@@ -1518,7 +1694,7 @@ mod engine_tests {
             max_wall_time: Duration::from_secs(2),
         };
         let engine = AgentEngine::with_limits(provider.clone(), tools, "test", limits);
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
         engine
             .run(context(), "bounded".into(), tx, CancellationToken::new())
             .await
@@ -1572,7 +1748,7 @@ mod engine_tests {
         ));
         let cancellation = CancellationToken::new();
         let child = cancellation.clone();
-        let (tx, _rx) = mpsc::unbounded_channel();
+        let (tx, _rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
         let task =
             tokio::spawn(async move { engine.run(context(), "cancel".into(), tx, child).await });
         tokio::task::yield_now().await;
@@ -1599,7 +1775,7 @@ mod engine_tests {
             "test",
             limits,
         );
-        let (tx, _rx) = mpsc::unbounded_channel();
+        let (tx, _rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
         let error = engine
             .run(context(), "too large".into(), tx, CancellationToken::new())
             .await
@@ -1620,7 +1796,7 @@ mod engine_tests {
             "test",
             limits,
         );
-        let (tx, _rx) = mpsc::unbounded_channel();
+        let (tx, _rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
         let error = engine
             .run(context(), "timeout".into(), tx, CancellationToken::new())
             .await
@@ -1632,7 +1808,7 @@ mod engine_tests {
             tool_calls: vec![tool_call("only", "missing", "{}")],
         }]));
         let engine = AgentEngine::new(provider, Arc::new(ToolRegistry::new()), "test", 1);
-        let (tx, _rx) = mpsc::unbounded_channel();
+        let (tx, _rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
         let error = engine
             .run(context(), "step".into(), tx, CancellationToken::new())
             .await
@@ -1754,7 +1930,7 @@ mod engine_tests {
             requests: AtomicUsize::new(0),
         });
         let engine = AgentEngine::new(provider, Arc::new(registry), "test", 4);
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
         let mut turn_context = context();
         turn_context.cwd = root.path().to_path_buf();
         turn_context.approval = Some(approval.clone());
@@ -1795,7 +1971,7 @@ mod engine_tests {
             }))
             .expect("register");
         let engine = AgentEngine::new(provider, Arc::new(registry), "test", 2);
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
         let mut turn_context = context();
         turn_context.cwd = root.path().to_path_buf();
         turn_context.approval = Some(Arc::new(FailedApproval));
@@ -1849,7 +2025,7 @@ mod engine_tests {
             ));
             let cancellation = CancellationToken::new();
             let child = cancellation.clone();
-            let (tx, mut rx) = mpsc::unbounded_channel();
+            let (tx, mut rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
             let mut turn_context = context();
             turn_context.cwd = root.path().to_path_buf();
             turn_context.approval = Some(Arc::new(NeverApproval));

@@ -23,7 +23,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     AxiomError, Result,
-    agent::{QuestionHandler, TurnContext, TurnRunner},
+    agent::{APP_EVENT_QUEUE_CAPACITY, QuestionHandler, TurnContext, TurnRunner},
     app::{
         AppCommand, AppEvent, Origin, PermissionProfile, QuestionRequest, Runtime, SessionId,
         TurnId,
@@ -337,6 +337,29 @@ impl TuiState {
             AppEvent::ProgressUpdated { message, .. } => {
                 self.status = sanitize_terminal_text(message);
             }
+            AppEvent::TaskListUpdated { items } => {
+                self.push_entry(
+                    EntryKind::System,
+                    format!(
+                        "TASKS\n{}",
+                        items
+                            .iter()
+                            .map(|item| format!(
+                                "[{}] {} · {}",
+                                match item.status {
+                                    crate::app::TaskStatus::Pending => " ",
+                                    crate::app::TaskStatus::InProgress => ">",
+                                    crate::app::TaskStatus::Completed => "x",
+                                },
+                                sanitize_terminal_text(&item.title),
+                                sanitize_terminal_text(&item.id)
+                            ))
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    ),
+                    items.len() > 8,
+                );
+            }
             AppEvent::DiffAvailable {
                 diff, truncated, ..
             } => {
@@ -600,7 +623,7 @@ enum UiMessage {
 
 #[derive(Clone)]
 struct TuiApproval {
-    tx: mpsc::UnboundedSender<UiMessage>,
+    tx: mpsc::Sender<UiMessage>,
 }
 
 #[async_trait]
@@ -613,6 +636,7 @@ impl ApprovalHandler for TuiApproval {
         let (tx, rx) = oneshot::channel();
         self.tx
             .send(UiMessage::Approval(request, tx))
+            .await
             .map_err(|_| AxiomError::Cancelled)?;
         tokio::select! {
             () = cancellation.cancelled() => Err(AxiomError::Cancelled),
@@ -623,7 +647,7 @@ impl ApprovalHandler for TuiApproval {
 
 #[derive(Clone)]
 struct TuiQuestions {
-    tx: mpsc::UnboundedSender<UiMessage>,
+    tx: mpsc::Sender<UiMessage>,
 }
 
 #[async_trait]
@@ -636,6 +660,7 @@ impl QuestionHandler for TuiQuestions {
         let (tx, rx) = oneshot::channel();
         self.tx
             .send(UiMessage::Questions(request, tx))
+            .await
             .map_err(|_| AxiomError::Cancelled)?;
         tokio::select! {
             () = cancellation.cancelled() => Err(AxiomError::Cancelled),
@@ -830,7 +855,7 @@ pub async fn run(
     };
 
     let mut input_events = EventStream::new();
-    let (ui_tx, mut ui_rx) = mpsc::unbounded_channel();
+    let (ui_tx, mut ui_rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
     let mut cancellation: Option<CancellationToken> = None;
     let mut pending_approval: Option<(ApprovalRequest, oneshot::Sender<ApprovalResponse>)> = None;
     let mut pending_questions: Option<PendingQuestions> = None;
@@ -1019,16 +1044,16 @@ pub async fn run(
                                         questions: Some(Arc::new(TuiQuestions { tx: task_tx.clone() })),
                                     };
                                     tokio::spawn(async move {
-                                        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+                                        let (event_tx, mut event_rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
                                         let forwarding = task_tx.clone();
                                         let forward = tokio::spawn(async move {
                                             while let Some(event) = event_rx.recv().await {
-                                                let _ = forwarding.send(UiMessage::Event(event));
+                                                let _ = forwarding.send(UiMessage::Event(event)).await;
                                             }
                                         });
                                         let result = task_runner.run(context, prompt, event_tx, token).await;
                                         let _ = forward.await;
-                                        let _ = task_tx.send(UiMessage::Done(turn_id, result));
+                                        let _ = task_tx.send(UiMessage::Done(turn_id, result)).await;
                                     });
                                 }
                                 KeyCode::Char(character) if state.focus == Focus::Composer && (!state.running || key.modifiers.is_empty()) => state.input.push(character),
@@ -1556,6 +1581,13 @@ mod tests {
                 completed: Some(1),
                 total: Some(2),
             },
+            AppEvent::TaskListUpdated {
+                items: vec![crate::app::TaskItem {
+                    id: "inspect".into(),
+                    title: "Inspect blossom files".into(),
+                    status: crate::app::TaskStatus::InProgress,
+                }],
+            },
             AppEvent::ToolProposed {
                 turn_id: turn.clone(),
                 call_id: "c1".into(),
@@ -1754,7 +1786,7 @@ mod tests {
 
     #[tokio::test]
     async fn dropped_tui_approval_surface_fails_closed() {
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
         let handler = TuiApproval { tx };
         let request = ApprovalRequest {
             request_id: "request".into(),

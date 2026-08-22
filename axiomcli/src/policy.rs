@@ -29,6 +29,10 @@ pub enum Effect {
         cwd: PathBuf,
         env: Vec<(String, String)>,
     },
+    RepositoryMutation {
+        operation: String,
+        cwd: PathBuf,
+    },
     Network {
         url: String,
     },
@@ -40,21 +44,26 @@ pub enum Effect {
     ScopeChange {
         scope: String,
     },
+    CredentialAccess {
+        service: String,
+    },
     PlanWrite {
         path: PathBuf,
     },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "snake_case")]
 pub enum EffectClass {
     FileRead,
     FileWrite,
     FileDelete,
     Process,
+    RepositoryMutation,
     Network,
     Mcp,
     ScopeChange,
+    CredentialAccess,
     PlanWrite,
 }
 
@@ -65,15 +74,17 @@ impl EffectClass {
             Effect::FileWrite { .. } => Self::FileWrite,
             Effect::FileDelete { .. } => Self::FileDelete,
             Effect::Process { .. } => Self::Process,
+            Effect::RepositoryMutation { .. } => Self::RepositoryMutation,
             Effect::Network { .. } => Self::Network,
             Effect::Mcp { .. } => Self::Mcp,
             Effect::ScopeChange { .. } => Self::ScopeChange,
+            Effect::CredentialAccess { .. } => Self::CredentialAccess,
             Effect::PlanWrite { .. } => Self::PlanWrite,
         }
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "snake_case")]
 pub enum RuleAction {
     Ask,
@@ -491,6 +502,18 @@ impl PolicyEngine {
                     env,
                 })
             }
+            Effect::RepositoryMutation { operation, cwd } => {
+                let operation = operation.trim().to_owned();
+                if operation.is_empty() || operation.contains('\0') {
+                    return Err(AxiomError::PermissionDenied(
+                        "repository mutation must have a non-empty/NUL-free operation".into(),
+                    ));
+                }
+                Ok(Effect::RepositoryMutation {
+                    operation,
+                    cwd: self.normalize_path(cwd),
+                })
+            }
             Effect::Network { url } => {
                 let mut parsed = reqwest::Url::parse(&url).map_err(|error| {
                     AxiomError::PermissionDenied(format!("invalid network destination: {error}"))
@@ -541,6 +564,15 @@ impl PolicyEngine {
                 }
                 Ok(Effect::ScopeChange { scope })
             }
+            Effect::CredentialAccess { service } => {
+                let service = service.trim().to_owned();
+                if service.is_empty() || service.contains('\0') {
+                    return Err(AxiomError::PermissionDenied(
+                        "credential service must be non-empty and NUL-free".into(),
+                    ));
+                }
+                Ok(Effect::CredentialAccess { service })
+            }
             Effect::PlanWrite { path } => Ok(Effect::PlanWrite {
                 path: self.normalize_path(path),
             }),
@@ -590,6 +622,18 @@ impl PolicyEngine {
                     cwd.display()
                 ))
             }
+            Effect::RepositoryMutation { cwd, .. }
+                if !self.roots.iter().any(|root| cwd.starts_with(root)) =>
+            {
+                Some(format!(
+                    "repository mutation cwd {} is outside authorized workspace roots",
+                    cwd.display()
+                ))
+            }
+            Effect::CredentialAccess { .. } => Some(
+                "credential/keychain access is unavailable in this early release and hard-denied"
+                    .into(),
+            ),
             Effect::Process { program, .. }
                 if matches!(
                     program.rsplit('/').next().unwrap_or(program),
@@ -645,9 +689,11 @@ fn normalize_rule(mut rule: PolicyRule, root: &Path) -> Result<PolicyRule> {
             url.set_fragment(None);
             url.to_string()
         }
-        EffectClass::Process | EffectClass::Mcp | EffectClass::ScopeChange => {
-            prefix.trim().to_owned()
-        }
+        EffectClass::Process
+        | EffectClass::RepositoryMutation
+        | EffectClass::Mcp
+        | EffectClass::ScopeChange
+        | EffectClass::CredentialAccess => prefix.trim().to_owned(),
     };
     if normalized.is_empty() {
         return Err(AxiomError::Config(
@@ -692,6 +738,16 @@ fn profile_default(
         (_, Effect::ScopeChange { .. }) => (
             DecisionKind::Ask,
             "scope expansion always requires approval",
+            false,
+        ),
+        (_, Effect::CredentialAccess { .. }) => (
+            DecisionKind::Deny,
+            "credential access is not available",
+            false,
+        ),
+        (_, Effect::RepositoryMutation { .. }) => (
+            DecisionKind::Ask,
+            "repository mutation requires approval",
             false,
         ),
         (PermissionProfile::Confirm, _) => {
@@ -771,7 +827,11 @@ fn suggested_prefix(effect: &Effect) -> Option<ScopedGrant> {
             server: server.clone(),
             side_effecting: *side_effecting,
         }),
-        Effect::Process { .. } | Effect::ScopeChange { .. } | Effect::PlanWrite { .. } => None,
+        Effect::Process { .. }
+        | Effect::RepositoryMutation { .. }
+        | Effect::ScopeChange { .. }
+        | Effect::CredentialAccess { .. }
+        | Effect::PlanWrite { .. } => None,
     }
 }
 
@@ -813,9 +873,11 @@ fn effect_matches_prefix(effect: &Effect, prefix: &str) -> bool {
         | Effect::FileDelete { path }
         | Effect::PlanWrite { path } => path.starts_with(Path::new(prefix)),
         Effect::Process { program, .. } => program.starts_with(prefix),
+        Effect::RepositoryMutation { operation, .. } => operation.starts_with(prefix),
         Effect::Network { url } => url.starts_with(prefix),
         Effect::Mcp { server, tool, .. } => format!("{server}/{tool}").starts_with(prefix),
         Effect::ScopeChange { scope } => scope.starts_with(prefix),
+        Effect::CredentialAccess { service } => service.starts_with(prefix),
     }
 }
 
@@ -912,6 +974,9 @@ pub fn describe_effect(effect: &Effect) -> String {
             }
         ),
         Effect::Network { url } => format!("connect to {url}"),
+        Effect::RepositoryMutation { operation, cwd } => {
+            format!("mutate repository with `{operation}` in {}", cwd.display())
+        }
         Effect::Mcp {
             server,
             tool,
@@ -925,6 +990,7 @@ pub fn describe_effect(effect: &Effect) -> String {
             }
         ),
         Effect::ScopeChange { scope } => format!("expand scope: {scope}"),
+        Effect::CredentialAccess { service } => format!("access credentials for {service}"),
         Effect::PlanWrite { path } => format!("update plan artifact {}", path.display()),
     }
 }
@@ -976,6 +1042,10 @@ mod tests {
                 cwd: root.path().to_path_buf(),
                 env: Vec::new(),
             },
+            Effect::RepositoryMutation {
+                operation: "git commit".into(),
+                cwd: root.path().to_path_buf(),
+            },
             Effect::Network {
                 url: "https://example.com/search#fragment".into(),
             },
@@ -983,6 +1053,9 @@ mod tests {
                 server: "fixture".into(),
                 tool: "read".into(),
                 side_effecting: false,
+            },
+            Effect::CredentialAccess {
+                service: "fixture-keychain".into(),
             },
             Effect::PlanWrite {
                 path: root.path().join(".axiomcli/plans/test.json"),
@@ -1004,18 +1077,33 @@ mod tests {
                             .explanation
                             .contains(&describe_effect(&request.effect))
                     );
-                    policy
-                        .apply_approval(
-                            &request,
-                            ApprovalResponse {
-                                choice: ApprovalChoice::AllowExactSession,
-                            },
-                        )
-                        .expect("grant");
-                    assert_eq!(
-                        policy.evaluate(profile, request.effect).kind,
-                        DecisionKind::Allow
-                    );
+                    if request.allow_session_grants {
+                        policy
+                            .apply_approval(
+                                &request,
+                                ApprovalResponse {
+                                    choice: ApprovalChoice::AllowExactSession,
+                                },
+                            )
+                            .expect("grant");
+                        assert_eq!(
+                            policy.evaluate(profile, request.effect).kind,
+                            DecisionKind::Allow
+                        );
+                    } else {
+                        policy
+                            .apply_approval(
+                                &request,
+                                ApprovalResponse {
+                                    choice: ApprovalChoice::AllowOnce,
+                                },
+                            )
+                            .expect("one-shot approval");
+                        assert_eq!(
+                            policy.evaluate(profile, request.effect).kind,
+                            DecisionKind::Ask
+                        );
+                    }
                 }
             }
         }

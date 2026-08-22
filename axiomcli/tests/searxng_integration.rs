@@ -10,7 +10,7 @@ use std::{
 use async_trait::async_trait;
 use axiomcli::{
     Result,
-    agent::{AgentEngine, TurnContext, TurnRunner},
+    agent::{APP_EVENT_QUEUE_CAPACITY, AgentEngine, TurnContext, TurnRunner},
     app::{AppEvent, PermissionProfile, SessionId, TurnId},
     provider::{
         AssistantTurn, ChatRole, FunctionCall, InferenceProvider, InferenceRequest, ProviderEvent,
@@ -179,7 +179,7 @@ async fn real_service_lifecycle_failure_modes_and_agent_citations() {
         "citation-fixture",
         4,
     );
-    let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+    let (events_tx, mut events_rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
     engine
         .run(
             TurnContext {

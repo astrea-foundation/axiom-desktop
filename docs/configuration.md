@@ -66,6 +66,15 @@ disable animation, reduce budgets, narrow the permission profile, and add
 select plan mode, broaden a trusted profile, increase a budget, replace trusted
 rules, or define an allow rule.
 
+Use the explicit writer instead of hand-editing when adding a restriction:
+
+```text
+axiomcli permissions add-project-rule --action ask --effect network \
+  --resource-prefix https://example.com/ --reason "review this destination"
+```
+
+The command appends atomically and accepts only `ask` or `deny`.
+
 ## Environment
 
 | Variable | Meaning |

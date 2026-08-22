@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     fmt,
     path::PathBuf,
     str::FromStr,
@@ -296,6 +296,9 @@ pub enum AppEvent {
         completed: Option<u64>,
         total: Option<u64>,
     },
+    TaskListUpdated {
+        items: Vec<TaskItem>,
+    },
     ToolProposed {
         turn_id: TurnId,
         call_id: String,
@@ -389,6 +392,21 @@ pub enum AppEvent {
     SessionClosed,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskStatus {
+    Pending,
+    InProgress,
+    Completed,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskItem {
+    pub id: String,
+    pub title: String,
+    pub status: TaskStatus,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QuestionSpec {
     pub id: String,
@@ -434,6 +452,7 @@ pub struct SessionState {
     pub profile: PermissionProfile,
     pub lifecycle: SessionLifecycle,
     pub active_turn: Option<TurnId>,
+    terminal_turns: HashSet<TurnId>,
     pub pending_permission: Option<String>,
     pub pending_question: Option<String>,
 }
@@ -488,6 +507,7 @@ impl Kernel {
                         profile,
                         lifecycle: SessionLifecycle::Ready,
                         active_turn: None,
+                        terminal_turns: HashSet::new(),
                         pending_permission: None,
                         pending_question: None,
                     },
@@ -523,6 +543,7 @@ impl Kernel {
                         profile,
                         lifecycle: SessionLifecycle::Ready,
                         active_turn: None,
+                        terminal_turns: HashSet::new(),
                         pending_permission: None,
                         pending_question: None,
                     },
@@ -548,6 +569,11 @@ impl Kernel {
                     return Err(AxiomError::InvalidTransition(format!(
                         "session is {:?}, not ready",
                         session.lifecycle
+                    )));
+                }
+                if session.terminal_turns.contains(&turn_id) {
+                    return Err(AxiomError::InvalidTransition(format!(
+                        "turn {turn_id} is already terminal and cannot run again"
                     )));
                 }
                 session.lifecycle = SessionLifecycle::Running;
@@ -798,6 +824,7 @@ impl Kernel {
         }
         session.lifecycle = SessionLifecycle::Ready;
         session.active_turn = None;
+        session.terminal_turns.insert(turn_id.clone());
         session.pending_permission = None;
         session.pending_question = None;
         Ok(())
@@ -843,6 +870,7 @@ fn replay_event(state: &mut Option<SessionState>, id: &SessionId, event: &AppEve
                     profile: *profile,
                     lifecycle: SessionLifecycle::Ready,
                     active_turn: None,
+                    terminal_turns: HashSet::new(),
                     pending_permission: None,
                     pending_question: None,
                 });
@@ -894,8 +922,20 @@ fn replay_event(state: &mut Option<SessionState>, id: &SessionId, event: &AppEve
             turn_id: Some(_), ..
         } => {
             if let Some(session) = state.as_mut() {
+                let terminal_turn = match event {
+                    AppEvent::TurnCompleted { turn_id }
+                    | AppEvent::TurnCancelled { turn_id }
+                    | AppEvent::ErrorRaised {
+                        turn_id: Some(turn_id),
+                        ..
+                    } => Some(turn_id.clone()),
+                    _ => None,
+                };
                 session.lifecycle = SessionLifecycle::Ready;
                 session.active_turn = None;
+                if let Some(turn_id) = terminal_turn {
+                    session.terminal_turns.insert(turn_id);
+                }
                 session.pending_permission = None;
                 session.pending_question = None;
             }
@@ -1180,6 +1220,7 @@ mod tests {
         enum Candidate {
             Submit,
             Finish,
+            Fail,
             Cancel,
             Resolve,
             Answer,
@@ -1196,6 +1237,7 @@ mod tests {
         let candidates = [
             Candidate::Submit,
             Candidate::Finish,
+            Candidate::Fail,
             Candidate::Cancel,
             Candidate::Resolve,
             Candidate::Answer,
@@ -1228,6 +1270,11 @@ mod tests {
                         session_id: session.clone(),
                         turn_id: turn.clone(),
                     },
+                    Candidate::Fail => AppCommand::FailTurn {
+                        session_id: session.clone(),
+                        turn_id: turn.clone(),
+                        message: "fixture failure".into(),
+                    },
                     Candidate::Cancel => AppCommand::CancelTurn {
                         session_id: session.clone(),
                         turn_id: turn.clone(),
@@ -1257,13 +1304,16 @@ mod tests {
                         Candidate::Submit | Candidate::Profile | Candidate::Close,
                     ) | (
                         SessionLifecycle::Running,
-                        Candidate::Finish | Candidate::Cancel
+                        Candidate::Finish | Candidate::Fail | Candidate::Cancel
                     ) | (
                         SessionLifecycle::WaitingForApproval,
-                        Candidate::Finish | Candidate::Cancel | Candidate::Resolve,
+                        Candidate::Finish
+                            | Candidate::Fail
+                            | Candidate::Cancel
+                            | Candidate::Resolve,
                     ) | (
                         SessionLifecycle::WaitingForAnswer,
-                        Candidate::Finish | Candidate::Cancel | Candidate::Answer,
+                        Candidate::Finish | Candidate::Fail | Candidate::Cancel | Candidate::Answer,
                     )
                 );
                 assert_eq!(
@@ -1288,8 +1338,18 @@ mod tests {
                 AppCommand::FinishTurn { session_id: session.clone(), turn_id: terminal_turn.clone() }
             };
             kernel.apply(envelope(terminal, 602)).expect("terminal");
-            let replay = AppCommand::FinishTurn { session_id: session, turn_id: terminal_turn };
+            let replay = AppCommand::FinishTurn {
+                session_id: session.clone(),
+                turn_id: terminal_turn.clone(),
+            };
             proptest::prop_assert!(kernel.apply(envelope(replay, 603)).is_err());
+
+            let rerun = AppCommand::SubmitPrompt {
+                session_id: session,
+                turn_id: terminal_turn,
+                text: "attempt to revive a terminal turn".into(),
+            };
+            proptest::prop_assert!(kernel.apply(envelope(rerun, 604)).is_err());
         }
     }
 

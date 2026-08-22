@@ -26,6 +26,7 @@ cargo run -p axiomcli -- exec "inspect this repository"
 cargo run -p axiomcli -- acp
 cargo run -p axiomcli -- sessions list
 cargo run -p axiomcli -- plans list
+cargo run -p axiomcli -- permissions add-project-rule --action ask --effect network
 ```
 
 `axiomcli acp` reserves stdout for newline-delimited ACP JSON-RPC. Logs and
@@ -75,7 +76,12 @@ Do not put API keys in repository configuration or command-line arguments.
 - `workspace`: in-root edits and a narrow development-command allowlist are
   automatic; network, MCP, deletion, and other programs ask.
 - `autonomous`: normalized in-scope operations are automatic, while shell and
-deletion remain confirmation-gated and hard denials still win.
+  deletion remain confirmation-gated and hard denials still win.
+
+Repository mutations such as `git commit`, `reset`, `checkout`, and unknown Git
+subcommands are separately classified and require one-shot confirmation in
+every mutating profile. Credential/keychain access is represented explicitly
+and hard-denied in this early release.
 
 Use `axiomcli tui --plan` or `axiomcli exec --plan "..."` for plan mode.
 Review durable plans with `axiomcli plans list/show/comment/request-revision/
@@ -86,6 +92,11 @@ Agents can ask up to three structured questions. The TUI uses a separate answer
 composer so an in-progress message draft is preserved. ACP maps questions to
 form elicitation when the client advertises that currently unstable ACP
 capability; unsupported clients fail the question closed.
+
+The agent tool surface also exposes a bounded session-scoped text-file diff and
+structured task/checklist progress. Plan proposals pause for approve, revision,
+or abandon input through the same TUI/ACP question path; revision comments are
+stored with line ranges.
 
 The model proposes operations but never authorizes them. Structured tools,
 canonical paths, process groups, output caps, SSRF checks, and the policy engine
@@ -133,12 +144,17 @@ on demand; only explicitly trusted read-only tools can be retried, and only when
 their schema is unchanged. Calls with possible side effects are never replayed
 after an ambiguous disconnect. MCP output is labeled untrusted, redacted, and
 bounded before it reaches either front end.
+The configured executable itself is trusted user-selected local code and starts
+with user authority; its protocol data and claims remain untrusted. Repository
+configuration cannot add MCP executables.
 
 Session journals are redacted SQLite records under the platform data directory.
 `sessions list/show/export/rename/archive/unarchive/prune` manages them. Use
 `axiomcli tui --resume SESSION_ID` to restore a transcript and bounded model
 context. ACP advertises `session/load` when its durable store opens. Interrupted
 actions are reported as unknown and never replayed.
+Headless `exec` uses the same runtime and creates a durable terminal turn rather
+than bypassing the event journal.
 
 ## Known early-version limits
 
@@ -159,7 +175,7 @@ actions are reported as unknown and never replayed.
 
 ```text
 cargo fmt --all --check
-cargo check --workspace --all-targets
+cargo check --workspace --all-targets --all-features
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
 cargo deny check

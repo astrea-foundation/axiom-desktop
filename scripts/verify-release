@@ -39,12 +39,17 @@ for required in \
   share/doc/axiomcli/LICENSE \
   share/doc/axiomcli/THIRD_PARTY.md \
   share/doc/axiomcli/THIRD_PARTY-LICENSES.tsv \
+  share/doc/axiomcli/third-party/MANIFEST.tsv \
   share/doc/axiomcli/BUILD-METADATA; do
   if [[ ! -f $package_root/$required ]]; then
     echo "release artifact is missing $required" >&2
     exit 1
   fi
 done
+if [[ $(find "$package_root/share/doc/axiomcli/third-party" -mindepth 2 -type f | wc -l) -eq 0 ]]; then
+  echo "release artifact contains no dependency license or notice files" >&2
+  exit 1
+fi
 if grep -aREq 'axm_[A-Za-z0-9_-]{20,}' "$package_root"; then
   echo "release artifact contains a value shaped like an Axiom credential" >&2
   exit 1

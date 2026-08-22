@@ -15,8 +15,12 @@ missing.
 `web_search` contacts the configured SearXNG service. Search terms and ordinary
 HTTP metadata are therefore visible to that service and to whatever upstream
 engines it uses. `fetch_url` is performed locally, with local/private/metadata
-destinations and redirect pivots rejected. Configured MCP servers are local
-child processes and receive only their explicit call arguments.
+destinations and redirect pivots rejected. A configured MCP executable is
+trusted user-selected local code and starts with that user's host authority;
+therefore MCP commands are accepted only from trusted user configuration, not
+repository configuration. Once connected, server descriptions, schemas,
+results, and side-effect claims remain untrusted. Tool calls receive only their
+explicit protocol arguments from AxiomCLI.
 
 Session events are stored in a local SQLite database under the platform data
 directory. AxiomCLI redacts known secret shapes before persistence, bounds

@@ -107,6 +107,12 @@ fn release_archive_is_reproducible_signed_installable_and_cleanly_uninstalled() 
         .expect("version output"),
         "axiomcli 0.1.0\n"
     );
+    assert!(
+        prefix
+            .join("share/doc/axiomcli/third-party/MANIFEST.tsv")
+            .is_file(),
+        "installed dependency notice manifest is missing"
+    );
     if Path::new("/usr/bin/bwrap").is_file() {
         run(
             Command::new("/usr/bin/bwrap").args([

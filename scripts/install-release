@@ -17,9 +17,7 @@ package_root=$(find "$staging" -mindepth 1 -maxdepth 1 -type d -print -quit)
 
 install -d "$prefix/bin" "$prefix/share/doc/axiomcli" "$prefix/share/axiomcli"
 install -m 0755 "$package_root/bin/axiomcli" "$prefix/bin/axiomcli"
-for document in "$package_root"/share/doc/axiomcli/*; do
-  install -m 0644 "$document" "$prefix/share/doc/axiomcli/$(basename "$document")"
-done
+cp -a "$package_root/share/doc/axiomcli/." "$prefix/share/doc/axiomcli/"
 printf '%s\n' \
   "$prefix/bin/axiomcli" \
   "$prefix/share/doc/axiomcli" \

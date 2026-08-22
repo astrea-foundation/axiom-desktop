@@ -42,6 +42,51 @@ install -m 0644 "$workspace_root/LICENSE" "$package_root/share/doc/axiomcli/LICE
 install -m 0644 "$workspace_root/THIRD_PARTY.md" "$package_root/share/doc/axiomcli/THIRD_PARTY.md"
 cargo deny --manifest-path "$workspace_root/Cargo.toml" list --format tsv \
   > "$package_root/share/doc/axiomcli/THIRD_PARTY-LICENSES.tsv"
+
+if ! command -v jq >/dev/null 2>&1; then
+  echo "jq is required to collect dependency license and notice files" >&2
+  exit 1
+fi
+third_party_files="$package_root/share/doc/axiomcli/third-party"
+mkdir -p "$third_party_files"
+third_party_manifest="$third_party_files/MANIFEST.tsv"
+printf 'crate\tversion\tdeclared_license\tincluded_file\n' > "$third_party_manifest"
+metadata=$(cargo metadata --manifest-path "$workspace_root/Cargo.toml" --locked --format-version 1)
+while IFS=$'\t' read -r crate_name crate_version declared_license manifest_path; do
+  crate_root=$(dirname "$manifest_path")
+  destination="$third_party_files/$crate_name-$crate_version"
+  found=false
+  while IFS= read -r -d '' notice; do
+    if ! $found; then
+      mkdir -p "$destination"
+      found=true
+    fi
+    notice_name=$(basename "$notice")
+    install -m 0644 "$notice" "$destination/$notice_name"
+    printf '%s\t%s\t%s\t%s/%s\n' \
+      "$crate_name" "$crate_version" "$declared_license" \
+      "$crate_name-$crate_version" "$notice_name" >> "$third_party_manifest"
+  done < <(
+    find -L "$crate_root" -maxdepth 1 -type f \
+      \( -iname 'LICENSE*' -o -iname 'COPYING*' -o -iname 'NOTICE*' \) \
+      -print0 | sort -z
+  )
+  if ! $found; then
+    printf '%s\t%s\t%s\t%s\n' \
+      "$crate_name" "$crate_version" "$declared_license" '(metadata only)' \
+      >> "$third_party_manifest"
+  fi
+done < <(
+  jq -r '
+    .workspace_members as $workspace
+    | [.packages[]
+       | select(.id as $id | ($workspace | index($id) | not))]
+    | sort_by(.name, .version)
+    | .[]
+    | [.name, .version, (.license // "UNKNOWN"), .manifest_path]
+    | @tsv
+  ' <<< "$metadata"
+)
 install -m 0644 "$workspace_root/README.md" "$package_root/share/doc/axiomcli/README.md"
 install -m 0644 "$workspace_root/docs/acp-compatibility.md" "$package_root/share/doc/axiomcli/acp-compatibility.md"
 install -m 0644 "$workspace_root/docs/configuration.md" "$package_root/share/doc/axiomcli/configuration.md"

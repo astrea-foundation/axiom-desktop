@@ -14,6 +14,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{AxiomError, Result};
 
+const MAX_SEARCH_QUERY_BYTES: usize = 8 * 1024;
+const MAX_SEARCH_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SearchResult {
     pub title: String,
@@ -84,6 +87,11 @@ impl SearchProvider for SearxngClient {
         if query.trim().is_empty() {
             return Err(AxiomError::Tool("search query cannot be empty".into()));
         }
+        if query.len() > MAX_SEARCH_QUERY_BYTES {
+            return Err(AxiomError::Tool(format!(
+                "search query exceeds {MAX_SEARCH_QUERY_BYTES} bytes"
+            )));
+        }
         let endpoint = self
             .base_url
             .join("search")
@@ -107,9 +115,14 @@ impl SearchProvider for SearxngClient {
                 response.status()
             )));
         }
-        let payload: SearxResponse = response
-            .json()
-            .await
+        let payload = read_bounded_response(
+            response,
+            MAX_SEARCH_RESPONSE_BYTES,
+            &cancellation,
+            "SearXNG response",
+        )
+        .await?;
+        let payload: SearxResponse = serde_json::from_slice(&payload)
             .map_err(|error| AxiomError::Provider(format!("invalid SearXNG JSON: {error}")))?;
         let mut seen = HashSet::new();
         let mut results = Vec::new();
@@ -158,6 +171,38 @@ impl SearchProvider for SearxngClient {
         }
         Ok(SearchReport { results, warnings })
     }
+}
+
+async fn read_bounded_response(
+    response: reqwest::Response,
+    maximum: usize,
+    cancellation: &CancellationToken,
+    label: &str,
+) -> Result<Vec<u8>> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > maximum as u64)
+    {
+        return Err(AxiomError::Provider(format!(
+            "{label} exceeds {maximum} bytes"
+        )));
+    }
+    let mut bytes = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = tokio::select! {
+        () = cancellation.cancelled() => return Err(AxiomError::Cancelled),
+        chunk = stream.next() => chunk,
+    } {
+        let chunk =
+            chunk.map_err(|error| AxiomError::Provider(format!("{label} failed: {error}")))?;
+        if bytes.len().saturating_add(chunk.len()) > maximum {
+            return Err(AxiomError::Provider(format!(
+                "{label} exceeds {maximum} bytes"
+            )));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
 }
 
 #[derive(Deserialize)]
@@ -482,6 +527,8 @@ fn strip_html(input: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use axum::{Router, routing::get};
+
     use super::*;
 
     #[test]
@@ -565,5 +612,37 @@ mod tests {
             strip_html("<h1>Hello</h1><p>cherry tree</p>"),
             "Hello cherry tree"
         );
+    }
+
+    #[tokio::test]
+    async fn search_query_and_raw_response_are_bounded_before_json_parsing() {
+        let unavailable =
+            SearxngClient::new("http://127.0.0.1:9", Duration::from_secs(1), 10).expect("client");
+        let oversized_query = "q".repeat(MAX_SEARCH_QUERY_BYTES + 1);
+        let error = unavailable
+            .search(&oversized_query, CancellationToken::new())
+            .await
+            .expect_err("oversized query must fail before the request");
+        assert!(error.to_string().contains("query exceeds"));
+
+        let app = Router::new().route(
+            "/search",
+            get(|| async { vec![b'x'; MAX_SEARCH_RESPONSE_BYTES + 1] }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener");
+        let address = listener.local_addr().expect("address");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("test service");
+        });
+        let client = SearxngClient::new(&format!("http://{address}"), Duration::from_secs(5), 10)
+            .expect("client");
+        let error = client
+            .search("bounded response", CancellationToken::new())
+            .await
+            .expect_err("oversized raw response must fail");
+        assert!(error.to_string().contains("response exceeds"));
+        server.abort();
     }
 }

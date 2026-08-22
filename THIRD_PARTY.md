@@ -5,8 +5,12 @@ AxiomCLI is original code built on third-party Rust crates recorded exactly in
 inventory and license policy.
 
 Release archives include `THIRD_PARTY-LICENSES.tsv`, mechanically generated
-from the locked dependency graph by Cargo Deny, alongside this explanatory
-notice and the project’s Apache-2.0 license.
+from the locked dependency graph by Cargo Deny. They also include the license,
+copying, and notice files shipped at the root of every resolved dependency
+package under `third-party/`, with a deterministic `MANIFEST.tsv`. Dependencies
+that publish license metadata but no corresponding file are explicitly marked
+`(metadata only)` in that manifest. These materials are packaged alongside this
+explanatory notice and the project’s Apache-2.0 license.
 
 Notable protocol/runtime libraries include Ratatui/Crossterm, Tokio, Reqwest,
 the official Agent Client Protocol Rust SDK, the official Rust MCP SDK,

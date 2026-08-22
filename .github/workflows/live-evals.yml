@@ -29,8 +29,7 @@ jobs:
       - name: Run budgeted live evaluation
         shell: bash
         run: |
-          if [[ -z "$AXIOM_LIVE_BASE_URL" || -z "$AXIOM_LIVE_MODEL" ]]; then
-            echo "::notice::Live evaluation secrets are not configured; no live gate was run."
-            exit 0
-          fi
+          test -n "$AXIOM_API_KEY"
+          test -n "$AXIOM_LIVE_BASE_URL"
+          test -n "$AXIOM_LIVE_MODEL"
           scripts/axiomcli-eval live

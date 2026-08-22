@@ -62,8 +62,9 @@ local AxiomIO development proxy and `glm-5-2`:
 
 Observed max/min latency ratio was 1.38. A release candidate is blocked by a
 wrong answer, mutation, policy escape, tool/step/latency budget failure, or a
-variance failure. The scheduled workflow is bounded to 15 minutes and reports
-an explicit no-gate notice when repository evaluation credentials are absent.
+variance failure. The scheduled workflow is bounded to 15 minutes and fails
+when its required endpoint/model/key secrets are absent. Tagged release
+packaging has the same mandatory live gate.
 
 ## Real integration lane
 

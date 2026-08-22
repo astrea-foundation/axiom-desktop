@@ -1,4 +1,11 @@
-use std::{collections::HashSet, path::PathBuf, str::FromStr, time::Duration};
+use std::{
+    collections::HashSet,
+    fs::OpenOptions,
+    io::Write as _,
+    path::{Path, PathBuf},
+    str::FromStr,
+    time::Duration,
+};
 
 use clap::ValueEnum;
 use directories::ProjectDirs;
@@ -324,6 +331,67 @@ impl Config {
         ProjectDirs::from("ai", "AxiomAI", "axiomcli")
             .map(|dirs| dirs.data_local_dir().to_path_buf())
     }
+
+    /// Persist one restrictive project policy rule through an explicit user
+    /// action. Project configuration can only add `ask`/`deny` rules, never an
+    /// authority-granting rule.
+    pub fn add_project_rule(workspace: &Path, rule: PolicyRule) -> Result<PathBuf> {
+        rule.validate()?;
+        let root = workspace.canonicalize()?;
+        let directory = root.join(".axiomcli");
+        std::fs::create_dir_all(&directory)?;
+        let directory = directory.canonicalize()?;
+        if !directory.starts_with(&root) {
+            return Err(AxiomError::OutsideWorkspace(directory));
+        }
+        let path = directory.join("config.toml");
+        if path.exists() {
+            let metadata = std::fs::symlink_metadata(&path)?;
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                return Err(AxiomError::Config(
+                    "project config must be a regular non-symlink file".into(),
+                ));
+            }
+        }
+        let mut document = if path.exists() {
+            toml::from_str::<toml::Value>(&std::fs::read_to_string(&path)?)
+                .map_err(|error| AxiomError::Config(format!("{}: {error}", path.display())))?
+        } else {
+            toml::Value::Table(toml::map::Map::new())
+        };
+        let table = document.as_table_mut().ok_or_else(|| {
+            AxiomError::Config("project configuration root must be a TOML table".into())
+        })?;
+        let encoded = toml::Value::try_from(rule)
+            .map_err(|error| AxiomError::Config(format!("cannot encode policy rule: {error}")))?;
+        match table.get_mut("policy_rules") {
+            Some(toml::Value::Array(rules)) => rules.push(encoded),
+            Some(_) => {
+                return Err(AxiomError::Config(
+                    "project policy_rules must be an array of tables".into(),
+                ));
+            }
+            None => {
+                table.insert("policy_rules".into(), toml::Value::Array(vec![encoded]));
+            }
+        }
+        let temporary = directory.join(format!(".config.{}.tmp", uuid::Uuid::new_v4()));
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&temporary)?;
+        let encoded = toml::to_string_pretty(&document).map_err(|error| {
+            AxiomError::Config(format!("cannot encode project config: {error}"))
+        })?;
+        file.write_all(encoded.as_bytes())?;
+        file.sync_all()?;
+        std::fs::rename(&temporary, &path)?;
+        Ok(path)
+    }
 }
 
 fn valid_endpoint(url: &reqwest::Url) -> bool {
@@ -433,5 +501,35 @@ mod tests {
             toml::from_str::<ConfigLayer>("[[policy_rules]]\naction='allow'\neffect='process'\n")
                 .is_err()
         );
+    }
+
+    #[test]
+    fn explicit_project_rule_flow_appends_only_restrictive_rules() {
+        let root = tempfile::tempdir().expect("workspace");
+        let path = Config::add_project_rule(
+            root.path(),
+            PolicyRule {
+                action: crate::policy::RuleAction::Ask,
+                effect: Some(crate::policy::EffectClass::Network),
+                resource_prefix: Some("https://example.com/".into()),
+                reason: Some("fixture review".into()),
+            },
+        )
+        .expect("first rule");
+        Config::add_project_rule(
+            root.path(),
+            PolicyRule {
+                action: crate::policy::RuleAction::Deny,
+                effect: Some(crate::policy::EffectClass::CredentialAccess),
+                resource_prefix: None,
+                reason: Some("never read credentials".into()),
+            },
+        )
+        .expect("second rule");
+        let layer: ConfigLayer = read_layer(&path).expect("project layer");
+        let rules = layer.policy_rules.expect("rules");
+        assert_eq!(rules.len(), 2);
+        assert_eq!(rules[0].action, crate::policy::RuleAction::Ask);
+        assert_eq!(rules[1].action, crate::policy::RuleAction::Deny);
     }
 }

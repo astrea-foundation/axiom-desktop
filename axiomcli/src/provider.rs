@@ -1,7 +1,6 @@
 use std::{collections::BTreeMap, time::Duration};
 
 use async_trait::async_trait;
-use eventsource_stream::Eventsource as _;
 use futures::StreamExt as _;
 use secrecy::{ExposeSecret as _, SecretString};
 use serde::{Deserialize, Serialize};
@@ -9,6 +8,11 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::{AxiomError, Result, audit::redact_text};
+
+const MAX_PROVIDER_ERROR_BYTES: usize = 4 * 1024;
+const MAX_MODEL_CATALOG_BYTES: usize = 4 * 1024 * 1024;
+const MAX_PROVIDER_SSE_EVENT_BYTES: usize = 1024 * 1024;
+const MAX_PROVIDER_STREAM_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -210,10 +214,19 @@ impl AxiomProvider {
                         retry_delay(attempt, retry_after, request_id, cancellation).await?;
                         continue;
                     }
-                    let detail = response
-                        .text()
-                        .await
-                        .unwrap_or_else(|_| "unreadable response".into());
+                    let detail =
+                        read_response_prefix(response, MAX_PROVIDER_ERROR_BYTES, cancellation)
+                            .await
+                            .map_or_else(
+                                |_| "unreadable response".into(),
+                                |(bytes, truncated)| {
+                                    format!(
+                                        "{}{}",
+                                        String::from_utf8_lossy(&bytes),
+                                        if truncated { "…" } else { "" }
+                                    )
+                                },
+                            );
                     return Err(provider_http_error(status, &detail));
                 }
                 Err(error)
@@ -332,77 +345,57 @@ impl InferenceProvider for AxiomProvider {
         let response = self
             .send_with_retry(&body, &request_id, &cancellation)
             .await?;
-        let _ = events
+        events
             .send(ProviderEvent::Status {
                 connected: true,
                 detail: "Axiom development inference connected · UNATTESTED".into(),
             })
-            .await;
+            .await
+            .map_err(|_| AxiomError::Cancelled)?;
 
-        let mut stream = response.bytes_stream().eventsource();
+        let mut stream = response.bytes_stream();
         let mut text = String::new();
         let mut partial_calls: BTreeMap<usize, PartialToolCall> = BTreeMap::new();
         let mut saw_done = false;
         let mut stream_bytes = 0_usize;
+        let mut event_buffer = Vec::new();
         loop {
             let next = tokio::select! {
                 () = cancellation.cancelled() => return Err(AxiomError::Cancelled),
                 next = stream.next() => next,
             };
             let Some(event) = next else { break };
-            let event = event.map_err(|error| AxiomError::Provider(error.to_string()))?;
-            if event.data.trim() == "[DONE]" {
-                saw_done = true;
-                break;
-            }
-            if event.data.len() > 1024 * 1024 {
-                return Err(AxiomError::Provider(
-                    "provider SSE event exceeded 1 MiB".into(),
-                ));
-            }
-            stream_bytes = stream_bytes.saturating_add(event.data.len());
-            if stream_bytes > 16 * 1024 * 1024 {
+            let bytes = event.map_err(|error| AxiomError::Provider(error.to_string()))?;
+            stream_bytes = stream_bytes.saturating_add(bytes.len());
+            if stream_bytes > MAX_PROVIDER_STREAM_BYTES {
                 return Err(AxiomError::Provider(
                     "provider stream exceeded the 16 MiB turn limit".into(),
                 ));
             }
-            let chunk: StreamChunk = serde_json::from_str(&event.data)
-                .map_err(|error| AxiomError::Provider(format!("invalid SSE chunk: {error}")))?;
-            for choice in chunk.choices {
-                if let Some(delta) = choice.delta.content {
-                    text.push_str(&delta);
-                    let _ = events.send(ProviderEvent::TextDelta(delta)).await;
+            event_buffer.extend_from_slice(&bytes);
+            while let Some((boundary, delimiter_bytes)) = sse_boundary(&event_buffer) {
+                if boundary > MAX_PROVIDER_SSE_EVENT_BYTES {
+                    return Err(AxiomError::Provider(
+                        "provider SSE event exceeded 1 MiB".into(),
+                    ));
                 }
-                if let Some(delta) = choice.delta.reasoning_content {
-                    let _ = events.send(ProviderEvent::ReasoningDelta(delta)).await;
-                }
-                for delta in choice.delta.tool_calls {
-                    if delta.index >= 1024 {
-                        return Err(AxiomError::Provider(
-                            "provider returned more than 1,024 indexed tool calls".into(),
-                        ));
-                    }
-                    let call = partial_calls.entry(delta.index).or_default();
-                    if let Some(id) = delta.id {
-                        call.id = id;
-                    }
-                    if let Some(function) = delta.function {
-                        if let Some(name) = function.name {
-                            call.name.push_str(&name);
-                        }
-                        if let Some(arguments) = function.arguments {
-                            call.arguments.push_str(&arguments);
-                        }
-                    }
+                let remainder = event_buffer.split_off(boundary.saturating_add(delimiter_bytes));
+                let raw_event = std::mem::replace(&mut event_buffer, remainder);
+                let raw_event = &raw_event[..boundary];
+                if let Some(data) = sse_data(raw_event)?
+                    && process_stream_data(&data, &mut text, &mut partial_calls, &events).await?
+                {
+                    saw_done = true;
+                    break;
                 }
             }
-            if let Some(usage) = chunk.usage {
-                let _ = events
-                    .send(ProviderEvent::Usage {
-                        input_tokens: usage.prompt_tokens,
-                        output_tokens: usage.completion_tokens,
-                    })
-                    .await;
+            if saw_done {
+                break;
+            }
+            if event_buffer.len() > MAX_PROVIDER_SSE_EVENT_BYTES {
+                return Err(AxiomError::Provider(
+                    "provider SSE event exceeded 1 MiB".into(),
+                ));
             }
         }
 
@@ -441,12 +434,28 @@ impl InferenceProvider for AxiomProvider {
         };
         if !response.status().is_success() {
             let status = response.status();
-            let detail = response.text().await.unwrap_or_default();
+            let detail = read_response_prefix(response, MAX_PROVIDER_ERROR_BYTES, &cancellation)
+                .await
+                .map_or_else(
+                    |_| "unreadable response".into(),
+                    |(bytes, truncated)| {
+                        format!(
+                            "{}{}",
+                            String::from_utf8_lossy(&bytes),
+                            if truncated { "…" } else { "" }
+                        )
+                    },
+                );
             return Err(provider_http_error(status, &detail));
         }
-        let models = response
-            .json::<ModelsResponse>()
-            .await
+        let (payload, truncated) =
+            read_response_prefix(response, MAX_MODEL_CATALOG_BYTES, &cancellation).await?;
+        if truncated {
+            return Err(AxiomError::Provider(format!(
+                "provider model catalog exceeded {MAX_MODEL_CATALOG_BYTES} bytes"
+            )));
+        }
+        let models = serde_json::from_slice::<ModelsResponse>(&payload)
             .map_err(|error| AxiomError::Provider(format!("invalid model catalog: {error}")))?
             .data;
         if models.len() > 10_000 {
@@ -456,6 +465,114 @@ impl InferenceProvider for AxiomProvider {
         }
         Ok(models)
     }
+}
+
+async fn read_response_prefix(
+    response: reqwest::Response,
+    maximum: usize,
+    cancellation: &CancellationToken,
+) -> Result<(Vec<u8>, bool)> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > maximum as u64)
+    {
+        return Ok((Vec::new(), true));
+    }
+    let mut bytes = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = tokio::select! {
+        () = cancellation.cancelled() => return Err(AxiomError::Cancelled),
+        chunk = stream.next() => chunk,
+    } {
+        let chunk = chunk.map_err(|error| AxiomError::Provider(error.to_string()))?;
+        let remaining = maximum.saturating_sub(bytes.len());
+        bytes.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+        if chunk.len() > remaining {
+            return Ok((bytes, true));
+        }
+    }
+    Ok((bytes, false))
+}
+
+fn sse_boundary(bytes: &[u8]) -> Option<(usize, usize)> {
+    let lf = bytes.windows(2).position(|window| window == b"\n\n");
+    let crlf = bytes.windows(4).position(|window| window == b"\r\n\r\n");
+    match (lf, crlf) {
+        (Some(left), Some(right)) if left <= right => Some((left, 2)),
+        (Some(_) | None, Some(right)) => Some((right, 4)),
+        (Some(left), None) => Some((left, 2)),
+        (None, None) => None,
+    }
+}
+
+fn sse_data(raw: &[u8]) -> Result<Option<String>> {
+    let raw = std::str::from_utf8(raw)
+        .map_err(|_| AxiomError::Provider("provider SSE event was not valid UTF-8".into()))?;
+    let mut data = Vec::new();
+    for line in raw.lines() {
+        let line = line.trim_end_matches('\r');
+        if let Some(value) = line.strip_prefix("data:") {
+            data.push(value.strip_prefix(' ').unwrap_or(value));
+        }
+    }
+    Ok((!data.is_empty()).then(|| data.join("\n")))
+}
+
+async fn process_stream_data(
+    data: &str,
+    text: &mut String,
+    partial_calls: &mut BTreeMap<usize, PartialToolCall>,
+    events: &mpsc::Sender<ProviderEvent>,
+) -> Result<bool> {
+    if data.trim() == "[DONE]" {
+        return Ok(true);
+    }
+    let chunk: StreamChunk = serde_json::from_str(data)
+        .map_err(|error| AxiomError::Provider(format!("invalid SSE chunk: {error}")))?;
+    for choice in chunk.choices {
+        if let Some(delta) = choice.delta.content {
+            text.push_str(&delta);
+            events
+                .send(ProviderEvent::TextDelta(delta))
+                .await
+                .map_err(|_| AxiomError::Cancelled)?;
+        }
+        if let Some(delta) = choice.delta.reasoning_content {
+            events
+                .send(ProviderEvent::ReasoningDelta(delta))
+                .await
+                .map_err(|_| AxiomError::Cancelled)?;
+        }
+        for delta in choice.delta.tool_calls {
+            if delta.index >= 1024 {
+                return Err(AxiomError::Provider(
+                    "provider returned more than 1,024 indexed tool calls".into(),
+                ));
+            }
+            let call = partial_calls.entry(delta.index).or_default();
+            if let Some(id) = delta.id {
+                call.id = id;
+            }
+            if let Some(function) = delta.function {
+                if let Some(name) = function.name {
+                    call.name.push_str(&name);
+                }
+                if let Some(arguments) = function.arguments {
+                    call.arguments.push_str(&arguments);
+                }
+            }
+        }
+    }
+    if let Some(usage) = chunk.usage {
+        events
+            .send(ProviderEvent::Usage {
+                input_tokens: usage.prompt_tokens,
+                output_tokens: usage.completion_tokens,
+            })
+            .await
+            .map_err(|_| AxiomError::Cancelled)?;
+    }
+    Ok(false)
 }
 
 fn is_retryable_status(status: reqwest::StatusCode) -> bool {
@@ -650,6 +767,34 @@ mod tests {
         server.abort();
     }
 
+    #[tokio::test]
+    async fn raw_sse_event_is_bounded_before_json_parsing() {
+        let app = Router::new().route(
+            "/v1/chat/completions",
+            post(|| async {
+                let mut body = b"data: ".to_vec();
+                body.extend(std::iter::repeat_n(b'x', MAX_PROVIDER_SSE_EVENT_BYTES + 1));
+                body.extend_from_slice(b"\n\n");
+                ([(header::CONTENT_TYPE, "text/event-stream")], body)
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener");
+        let address = listener.local_addr().expect("address");
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.expect("server") });
+        let provider =
+            AxiomProvider::new(format!("http://{address}/v1"), None, Duration::from_secs(5))
+                .expect("provider");
+        let (tx, _rx) = mpsc::channel(64);
+        let error = provider
+            .stream(request("test"), tx, CancellationToken::new())
+            .await
+            .expect_err("oversized event");
+        assert!(error.to_string().contains("SSE event exceeded"));
+        server.abort();
+    }
+
     #[derive(Default)]
     struct RetryState {
         attempts: AtomicUsize,
@@ -776,6 +921,28 @@ mod tests {
                 }
             ]
         );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn raw_model_catalog_is_bounded_before_json_parsing() {
+        let app = Router::new().route(
+            "/v1/models",
+            get(|| async { vec![b'x'; MAX_MODEL_CATALOG_BYTES + 1] }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener");
+        let address = listener.local_addr().expect("address");
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.expect("server") });
+        let provider =
+            AxiomProvider::new(format!("http://{address}/v1"), None, Duration::from_secs(5))
+                .expect("provider");
+        let error = provider
+            .models(CancellationToken::new())
+            .await
+            .expect_err("oversized catalog");
+        assert!(error.to_string().contains("catalog exceeded"));
         server.abort();
     }
 

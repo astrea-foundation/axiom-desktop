@@ -7,12 +7,15 @@ mode=${1:-deterministic}
 cd "$workspace_root"
 
 run_deterministic() {
-  cargo test -p axiomcli --test autonomous_eval
-  cargo test -p axiomcli --test evaluation_suite original_multilanguage_evaluation_set_is_repeatable_from_clean_fixtures
-  cargo test -p axiomcli --test soak
-  cargo test -p axiomcli --test acp_transcript
-  cargo test -p axiomcli --test tui_pty
-  cargo test -p axiomcli --test mcp_integration
+  for repetition in 1 2; do
+    echo "deterministic evaluation repetition ${repetition}/2"
+    cargo test -p axiomcli --test autonomous_eval
+    cargo test -p axiomcli --test evaluation_suite original_multilanguage_evaluation_set_is_repeatable_from_clean_fixtures
+    cargo test -p axiomcli --test soak
+    cargo test -p axiomcli --test acp_transcript
+    cargo test -p axiomcli --test tui_pty
+    cargo test -p axiomcli --test mcp_integration
+  done
 }
 
 run_live_model() {

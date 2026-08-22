@@ -16,7 +16,7 @@ not advertised.
 | `session/request_permission` | supported | normalized policy effect → allow-once/deny options | cancellation, timeout, and disconnect fail closed |
 | tool calls and updates | supported | typed proposal, pending/running, output, and terminal status | IDs remain stable for a call |
 | structured questions | supported when client advertises unstable form elicitation | one AxiomCLI multi-question request → one `elicitation/create` form plus attention updates | decline, cancellation, invalid shape, or unsupported capability fails closed |
-| plan activity | supported as shared updates | proposed/reviewed plans → labeled thought updates; plan tools retain normal tool lifecycle | approval is artifact state, never execution authority |
+| task/checklist and plan activity | supported as shared updates | task lists and proposed/reviewed plans → stable ACP `plan` updates; review input uses one structured elicitation form; plan tools retain normal tool lifecycle | review comments are persisted; approval is artifact state, never execution authority |
 | `session/load` | supported and advertised when durable storage opens | stable ACP ID → journal restore, transcript update replay, provider-context reconstruction | cwd identity mismatch/corruption fails closed; interrupted side effects are reported unknown and never replayed |
 | MCP servers in session | not advertised | trusted-user-configured stdio MCP servers are namespaced and policy-controlled; their calls use the normal ACP tool lifecycle | per-session ACP MCP configuration is deferred; transport messages never enter ACP stdout |
 | custom extensions | unsupported | none | unknown requests receive standard protocol errors |

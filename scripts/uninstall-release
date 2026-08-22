@@ -8,6 +8,7 @@ if [[ -z $prefix || $prefix == / ]]; then
 fi
 
 rm -f -- "$prefix/bin/axiomcli"
+rm -rf -- "$prefix/share/doc/axiomcli/third-party"
 for document in \
   LICENSE THIRD_PARTY.md THIRD_PARTY-LICENSES.tsv README.md acp-compatibility.md configuration.md \
   privacy.md troubleshooting.md versioning.md BUILD-METADATA; do

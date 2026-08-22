@@ -15,7 +15,7 @@ use tokio::sync::{Mutex, mpsc};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    agent::{QuestionHandler, TurnRunner},
+    agent::{APP_EVENT_QUEUE_CAPACITY, QuestionHandler, TurnRunner},
     app::{
         AppCommand, AppEvent, Origin, PermissionProfile, QuestionRequest, Runtime, SessionId,
         TurnId,
@@ -412,7 +412,7 @@ pub async fn serve_stdio(
                 let task_store = prompt_store.clone();
                 let task_elicitation = supports_elicitation.clone();
                 connection.spawn(async move {
-                    let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+                    let (events_tx, mut events_rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
                     let run = task_runner.run(
                         crate::agent::TurnContext {
                             session_id: internal_id.clone(),
@@ -608,6 +608,33 @@ fn send_event(
                 )),
             )),
         )),
+        AppEvent::TaskListUpdated { items } => {
+            connection.send_notification(protocol::SessionNotification::new(
+                session_id.clone(),
+                protocol::SessionUpdate::Plan(protocol::Plan::new(
+                    items
+                        .into_iter()
+                        .map(|item| {
+                            protocol::PlanEntry::new(
+                                format!("{} · {}", item.id, item.title),
+                                protocol::PlanEntryPriority::Medium,
+                                match item.status {
+                                    crate::app::TaskStatus::Pending => {
+                                        protocol::PlanEntryStatus::Pending
+                                    }
+                                    crate::app::TaskStatus::InProgress => {
+                                        protocol::PlanEntryStatus::InProgress
+                                    }
+                                    crate::app::TaskStatus::Completed => {
+                                        protocol::PlanEntryStatus::Completed
+                                    }
+                                },
+                            )
+                        })
+                        .collect(),
+                )),
+            ))
+        }
         AppEvent::ToolProposed {
             call_id,
             name,
@@ -705,11 +732,11 @@ fn send_event(
             markdown,
         } => connection.send_notification(protocol::SessionNotification::new(
             session_id.clone(),
-            protocol::SessionUpdate::AgentThoughtChunk(protocol::ContentChunk::new(
-                protocol::ContentBlock::Text(protocol::TextContent::new(format!(
-                    "[plan {plan_id} r{revision} proposed]\n{markdown}"
-                ))),
-            )),
+            protocol::SessionUpdate::Plan(protocol::Plan::new(vec![protocol::PlanEntry::new(
+                format!("{plan_id} r{revision}\n{markdown}"),
+                protocol::PlanEntryPriority::High,
+                protocol::PlanEntryStatus::Pending,
+            )])),
         )),
         AppEvent::PlanReviewed {
             plan_id,
@@ -717,11 +744,15 @@ fn send_event(
             decision,
         } => connection.send_notification(protocol::SessionNotification::new(
             session_id.clone(),
-            protocol::SessionUpdate::AgentThoughtChunk(protocol::ContentChunk::new(
-                protocol::ContentBlock::Text(protocol::TextContent::new(format!(
-                    "[plan {plan_id} r{revision}] {decision}"
-                ))),
-            )),
+            protocol::SessionUpdate::Plan(protocol::Plan::new(vec![protocol::PlanEntry::new(
+                format!("{plan_id} r{revision}: {decision}"),
+                protocol::PlanEntryPriority::High,
+                if decision == "approved" || decision == "abandoned" {
+                    protocol::PlanEntryStatus::Completed
+                } else {
+                    protocol::PlanEntryStatus::InProgress
+                },
+            )])),
         )),
         _ => Ok(()),
     }

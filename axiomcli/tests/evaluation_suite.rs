@@ -8,7 +8,7 @@ use std::{
 use async_trait::async_trait;
 use axiomcli::{
     Result,
-    agent::{AgentEngine, AgentLimits, TurnContext, TurnRunner},
+    agent::{APP_EVENT_QUEUE_CAPACITY, AgentEngine, AgentLimits, TurnContext, TurnRunner},
     app::{AppEvent, PermissionProfile, SessionId, TurnId},
     provider::{
         AssistantTurn, AxiomProvider, FunctionCall, InferenceProvider, InferenceRequest,
@@ -148,7 +148,7 @@ async fn run_agent(
             max_wall_time: Duration::from_secs(30),
         },
     );
-    let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+    let (events_tx, mut events_rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
     let started = Instant::now();
     engine
         .run(
@@ -472,7 +472,7 @@ async fn live_model_investigation_baseline_is_budgeted_and_non_mutating() {
                 max_wall_time: Duration::from_secs(120),
             },
         );
-        let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+        let (events_tx, mut events_rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
         let started = Instant::now();
         engine
             .run(

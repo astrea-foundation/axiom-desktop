@@ -1,5 +1,6 @@
 use std::{path::Path, process::Stdio, time::Duration};
 
+use axiomcli::planning::{PlanArtifact, PlanState};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use tokio::{
@@ -207,6 +208,60 @@ async fn structured_questions_map_to_acp_elicitation_and_shared_updates() {
     }
     assert!(saw_question_update);
     assert!(saw_answer);
+    acp.close().await;
+}
+
+#[tokio::test]
+async fn plan_review_uses_standard_acp_plan_updates_and_persists_line_comments() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let mut acp = AcpProcess::spawn("plan_review");
+    acp.initialize_with_capabilities(json!({"elicitation":{"form":{}}}))
+        .await;
+    let session = acp.new_session(2, workspace.path()).await;
+    acp.send(&json!({
+        "jsonrpc":"2.0","id":3,"method":"session/prompt",
+        "params":{"sessionId":session,"prompt":[{"type":"text","text":"review plan"}]}
+    }))
+    .await;
+    let mut plan_updates = 0;
+    loop {
+        let value = acp.read().await;
+        if value["method"] == "session/update"
+            && value["params"]["update"]["sessionUpdate"] == "plan"
+        {
+            plan_updates += 1;
+            assert!(
+                value["params"]["update"]["entries"]
+                    .as_array()
+                    .is_some_and(|entries| !entries.is_empty())
+            );
+        }
+        if value["method"] == "elicitation/create" {
+            let id = value["id"].clone();
+            acp.send(&json!({
+                "jsonrpc":"2.0","id":id,
+                "result":{"action":"accept","content":{
+                    "decision":"request_revision",
+                    "line_range":"4",
+                    "comment":"Add a verification step"
+                }}
+            }))
+            .await;
+        }
+        if value.get("id").and_then(Value::as_i64) == Some(3) {
+            assert_eq!(value["result"]["stopReason"], "end_turn");
+            break;
+        }
+    }
+    assert_eq!(
+        plan_updates, 2,
+        "proposal and review must both use ACP plans"
+    );
+    let plans = PlanArtifact::list(workspace.path()).expect("persisted plans");
+    assert_eq!(plans.len(), 1);
+    assert_eq!(plans[0].state, PlanState::RevisionRequested);
+    assert_eq!(plans[0].comments[0].start_line, 4);
+    assert_eq!(plans[0].comments[0].text, "Add a verification step");
     acp.close().await;
 }
 

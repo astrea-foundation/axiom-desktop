@@ -1,6 +1,12 @@
 #![cfg(unix)]
 
-use std::{io::Write as _, path::Path, sync::mpsc, thread, time::Duration};
+use std::{
+    io::{Read as _, Write as _},
+    path::Path,
+    sync::mpsc,
+    thread,
+    time::Duration,
+};
 
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
@@ -43,12 +49,23 @@ fn run_tui_at(
     drop(pair.slave);
 
     let mut reader = pair.master.try_clone_reader().expect("PTY reader");
-    let (output_tx, output_rx) = mpsc::channel();
+    let (output_tx, output_rx) = mpsc::channel::<Vec<u8>>();
     let reader_thread = thread::spawn(move || {
-        let mut output = Vec::new();
-        std::io::copy(&mut reader, &mut output).expect("read PTY");
-        let _ = output_tx.send(String::from_utf8_lossy(&output).into_owned());
+        let mut buffer = [0_u8; 4096];
+        loop {
+            match reader.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(read) => {
+                    if output_tx.send(buffer[..read].to_vec()).is_err() {
+                        break;
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => break,
+            }
+        }
     });
+    let mut output = Vec::new();
 
     let mut writer = pair.master.take_writer().expect("PTY writer");
     // Crossterm asks the terminal for its cursor position while initializing.
@@ -67,20 +84,41 @@ fn run_tui_at(
         })
         .expect("resize PTY");
     if !panic_probe {
+        // "view" is clipped to "vi" at 60 columns and appears in full only
+        // after the 100-column resize, proving the input loop is active.
+        wait_for_output(
+            &output_rx,
+            &mut output,
+            b"view",
+            "resized interactive screen",
+        );
         writer.write_all(b"probe\r").expect("submit prompt");
         writer.flush().expect("flush prompt");
-        thread::sleep(Duration::from_millis(250));
         if runner == "blocking" {
+            wait_for_output(&output_rx, &mut output, b"Working", "blocking turn");
             writer.write_all(&[3]).expect("Ctrl+C");
             writer.flush().expect("flush Ctrl+C");
             thread::sleep(Duration::from_millis(180));
         } else if runner == "questions" {
+            wait_for_output(&output_rx, &mut output, b"1=cherry", "first question");
             writer.write_all(b"1\r").expect("first answer");
             writer.flush().expect("flush first answer");
-            thread::sleep(Duration::from_millis(120));
             writer.write_all(b"compact\r").expect("second answer");
             writer.flush().expect("flush second answer");
             thread::sleep(Duration::from_millis(180));
+        } else if runner == "plan_review" {
+            wait_for_output(&output_rx, &mut output, b"1=approve", "review decision");
+            writer.write_all(b"2\r").expect("revision decision");
+            writer.flush().expect("flush revision decision");
+            writer.write_all(b"4\r").expect("revision line");
+            writer.flush().expect("flush revision line");
+            writer
+                .write_all(b"Add a verification step\r")
+                .expect("revision comment");
+            writer.flush().expect("flush revision comment");
+            thread::sleep(Duration::from_millis(180));
+        } else {
+            thread::sleep(Duration::from_millis(250));
         }
     }
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
@@ -99,11 +137,32 @@ fn run_tui_at(
         thread::sleep(Duration::from_millis(80));
     };
     drop(writer);
-    let output = output_rx
-        .recv_timeout(Duration::from_secs(5))
-        .expect("PTY reader completion");
     reader_thread.join().expect("reader thread");
+    while let Ok(chunk) = output_rx.try_recv() {
+        output.extend_from_slice(&chunk);
+    }
+    let output = String::from_utf8_lossy(&output).into_owned();
     (output, status.success())
+}
+
+fn wait_for_output(
+    receiver: &mpsc::Receiver<Vec<u8>>,
+    output: &mut Vec<u8>,
+    needle: &[u8],
+    label: &str,
+) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !output.windows(needle.len()).any(|window| window == needle) {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        assert!(!remaining.is_zero(), "timed out waiting for {label}");
+        let chunk = receiver.recv_timeout(remaining).unwrap_or_else(|error| {
+            panic!(
+                "failed while waiting for {label}: {error}; output: {:?}",
+                String::from_utf8_lossy(output)
+            )
+        });
+        output.extend_from_slice(&chunk);
+    }
 }
 
 #[test]
@@ -135,6 +194,31 @@ fn structured_questions_use_a_separate_tui_answer_composer() {
         "question surface was not rendered: {output:?}"
     );
     assert!(output.contains("\u{1b}[?1049l"));
+}
+
+#[test]
+fn plan_review_is_interactive_in_the_tui_and_persists_line_comments() {
+    let state = tempfile::tempdir().expect("state");
+    let workspace = tempfile::tempdir().expect("workspace");
+    let cwd = workspace.path().to_string_lossy().into_owned();
+    let (output, success) = run_tui_at("plan_review", false, state.path(), &["--cwd", &cwd]);
+    assert!(success, "TUI plan fixture failed: {output:?}");
+    assert!(
+        output.contains("PLAN r1"),
+        "plan was not rendered: {output:?}"
+    );
+    assert!(
+        output.contains("revision_requested"),
+        "review result was not rendered: {output:?}"
+    );
+    let plans = axiomcli::planning::PlanArtifact::list(workspace.path()).expect("plans");
+    assert_eq!(plans.len(), 1);
+    assert_eq!(
+        plans[0].state,
+        axiomcli::planning::PlanState::RevisionRequested
+    );
+    assert_eq!(plans[0].comments[0].start_line, 4);
+    assert_eq!(plans[0].comments[0].text, "Add a verification step");
 }
 
 #[test]

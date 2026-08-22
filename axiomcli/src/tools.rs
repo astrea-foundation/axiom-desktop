@@ -1,18 +1,19 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     path::PathBuf,
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use similar::{ChangeTag, TextDiff};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
     AxiomError, Result,
-    app::{AppEvent, PermissionProfile, QuestionRequest, QuestionSpec},
+    app::{AppEvent, PermissionProfile, QuestionRequest, QuestionSpec, SessionId, TaskItem},
     planning::PlanArtifact,
     policy::Effect,
     provider::{FunctionDefinition, ToolDefinition},
@@ -22,6 +23,7 @@ use crate::{
 
 #[derive(Clone, Debug)]
 pub struct ToolContext {
+    pub session_id: SessionId,
     pub cwd: PathBuf,
     pub permission_profile: PermissionProfile,
 }
@@ -69,9 +71,200 @@ pub trait Tool: Send + Sync {
     ) -> Result<ToolResult>;
 }
 
-#[derive(Default)]
 pub struct ToolRegistry {
     tools: HashMap<String, Arc<dyn Tool>>,
+    changes: Arc<SessionChanges>,
+}
+
+#[derive(Debug)]
+struct SessionChanges {
+    maximum_bytes: usize,
+    sessions: Mutex<HashMap<SessionId, SessionDiff>>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct SessionDiff {
+    root: Option<PathBuf>,
+    baseline: BTreeMap<PathBuf, String>,
+    baseline_truncated: bool,
+    paths: BTreeSet<PathBuf>,
+    patches: Vec<String>,
+    retained_bytes: usize,
+    truncated: bool,
+}
+
+impl SessionChanges {
+    fn new(maximum_bytes: usize) -> Self {
+        Self {
+            maximum_bytes: maximum_bytes.max(1024),
+            sessions: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn record(&self, session_id: &SessionId, result: &ToolResult) {
+        if result.changed_paths.is_empty() && result.diff.is_none() {
+            return;
+        }
+        let mut sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = sessions.entry(session_id.clone()).or_default();
+        state.paths.extend(result.changed_paths.iter().cloned());
+        if let Some(diff) = &result.diff {
+            let remaining = self.maximum_bytes.saturating_sub(state.retained_bytes);
+            if remaining == 0 {
+                state.truncated = true;
+                return;
+            }
+            let (patch, truncated) = truncate_tool_text(diff, remaining);
+            state.retained_bytes = state.retained_bytes.saturating_add(patch.len());
+            state.patches.push(patch);
+            state.truncated |= truncated || result.truncated;
+        }
+    }
+
+    fn ensure_baseline(&self, context: &ToolContext) {
+        let mut sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if sessions.contains_key(&context.session_id) {
+            return;
+        }
+        let (baseline, truncated) = snapshot_workspace(&context.cwd);
+        sessions.insert(
+            context.session_id.clone(),
+            SessionDiff {
+                root: Some(context.cwd.clone()),
+                baseline,
+                baseline_truncated: truncated,
+                ..SessionDiff::default()
+            },
+        );
+    }
+
+    fn render(&self, context: &ToolContext) -> (Vec<PathBuf>, String, bool) {
+        let sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(state) = sessions.get(&context.session_id).cloned() else {
+            return (Vec::new(), String::new(), false);
+        };
+        drop(sessions);
+        let root_matches = state.root.as_deref() == Some(context.cwd.as_path());
+        let (current, current_truncated) = snapshot_workspace(&context.cwd);
+        let mut paths = state.paths;
+        let mut diff = String::new();
+        let candidates: BTreeSet<_> = state
+            .baseline
+            .keys()
+            .chain(current.keys())
+            .cloned()
+            .collect();
+        for path in candidates {
+            let before = state.baseline.get(&path).map(String::as_str);
+            let after = current.get(&path).map(String::as_str);
+            if before == after {
+                continue;
+            }
+            paths.insert(path.clone());
+            diff.push_str(&session_file_diff(&path, before, after));
+            if diff.len() > self.maximum_bytes {
+                break;
+            }
+        }
+        if diff.is_empty() && !state.patches.is_empty() {
+            diff = state.patches.join("\n");
+        }
+        let (diff, output_truncated) = truncate_tool_text(&diff, self.maximum_bytes);
+        (
+            paths.into_iter().collect(),
+            diff,
+            state.truncated
+                || state.baseline_truncated
+                || current_truncated
+                || output_truncated
+                || !root_matches,
+        )
+    }
+}
+
+fn snapshot_workspace(root: &std::path::Path) -> (BTreeMap<PathBuf, String>, bool) {
+    const MAX_FILES: usize = 10_000;
+    const MAX_FILE_BYTES: usize = 2 * 1024 * 1024;
+    const MAX_TOTAL_BYTES: usize = 16 * 1024 * 1024;
+    let Ok(workspace) = Workspace::new(root) else {
+        return (BTreeMap::new(), true);
+    };
+    let Ok(paths) = workspace.glob("**/*", MAX_FILES.saturating_add(1), false) else {
+        return (BTreeMap::new(), true);
+    };
+    let mut snapshot = BTreeMap::new();
+    let mut total = 0_usize;
+    let mut truncated = paths.len() > MAX_FILES;
+    for path in paths.into_iter().take(MAX_FILES) {
+        let Ok(metadata) = workspace.metadata(&path) else {
+            truncated = true;
+            continue;
+        };
+        if metadata.kind != "file" || metadata.size_bytes > MAX_FILE_BYTES as u64 {
+            continue;
+        }
+        let Ok(read) = workspace.read(&path, 1, usize::MAX, MAX_FILE_BYTES) else {
+            continue;
+        };
+        if read.truncated || total.saturating_add(read.content.len()) > MAX_TOTAL_BYTES {
+            truncated = true;
+            continue;
+        }
+        total = total.saturating_add(read.content.len());
+        snapshot.insert(path, read.content);
+    }
+    (snapshot, truncated)
+}
+
+fn session_file_diff(path: &std::path::Path, before: Option<&str>, after: Option<&str>) -> String {
+    let before_exists = before.is_some();
+    let after_exists = after.is_some();
+    let before = before.unwrap_or_default();
+    let after = after.unwrap_or_default();
+    let mut output = format!(
+        "diff --axiomcli a/{0} b/{0}\n--- {1}\n+++ {2}\n",
+        path.display(),
+        if before_exists { "a" } else { "/dev/null" },
+        if after_exists { "b" } else { "/dev/null" },
+    );
+    for change in TextDiff::from_lines(before, after).iter_all_changes() {
+        output.push(match change.tag() {
+            ChangeTag::Delete => '-',
+            ChangeTag::Insert => '+',
+            ChangeTag::Equal => ' ',
+        });
+        output.push_str(change.value());
+    }
+    output
+}
+
+fn truncate_tool_text(input: &str, maximum: usize) -> (String, bool) {
+    if input.len() <= maximum {
+        return (input.to_owned(), false);
+    }
+    let mut end = maximum.min(input.len());
+    while end > 0 && !input.is_char_boundary(end) {
+        end -= 1;
+    }
+    (input[..end].to_owned(), true)
+}
+
+impl Default for ToolRegistry {
+    fn default() -> Self {
+        Self {
+            tools: HashMap::new(),
+            changes: Arc::new(SessionChanges::new(128 * 1024)),
+        }
+    }
 }
 
 impl std::fmt::Debug for ToolRegistry {
@@ -79,7 +272,7 @@ impl std::fmt::Debug for ToolRegistry {
         formatter
             .debug_struct("ToolRegistry")
             .field("names", &self.tools.keys().collect::<Vec<_>>())
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -133,9 +326,65 @@ impl ToolRegistry {
         arguments: Value,
         cancellation: CancellationToken,
     ) -> Result<ToolResult> {
-        self.tool(name)?
+        if tracks_workspace_changes(name) {
+            self.changes.ensure_baseline(context);
+        }
+        let result = self
+            .tool(name)?
             .execute(context, arguments, cancellation)
-            .await
+            .await?;
+        self.changes.record(&context.session_id, &result);
+        Ok(result)
+    }
+
+    pub fn complete_interaction(
+        &self,
+        name: &str,
+        context: &ToolContext,
+        arguments: &Value,
+        answers: &BTreeMap<String, Vec<String>>,
+    ) -> Result<Option<ToolResult>> {
+        if name != "plan_propose" {
+            return Ok(None);
+        }
+        let args: PlanIdArgs = parse(name, arguments.clone())?;
+        let mut plan = PlanArtifact::load(&context.cwd, &args.plan_id)?;
+        let decision = one_answer(answers, "decision")?;
+        match decision {
+            "approve" => plan.approve()?,
+            "abandon" => plan.abandon()?,
+            "request_revision" => {
+                let line_range = one_answer(answers, "line_range")?;
+                let (start, end) =
+                    parse_plan_line_range(line_range, plan.markdown.lines().count())?;
+                let comment = one_answer(answers, "comment")?;
+                if comment == "-" {
+                    return Err(AxiomError::Tool(
+                        "a revision request requires a line comment".into(),
+                    ));
+                }
+                plan.request_revision(start, end, comment.to_owned())?;
+            }
+            _ => return Err(AxiomError::Tool("unknown plan review decision".into())),
+        }
+        plan.save(&context.cwd)?;
+        let decision = match plan.state {
+            crate::planning::PlanState::Approved => "approved",
+            crate::planning::PlanState::RevisionRequested => "revision_requested",
+            crate::planning::PlanState::Abandoned => "abandoned",
+            _ => {
+                return Err(AxiomError::Tool(
+                    "plan review did not reach a reviewed state".into(),
+                ));
+            }
+        };
+        let mut result = ToolResult::success(serde_json::to_string_pretty(&plan)?);
+        result.events.push(AppEvent::PlanReviewed {
+            plan_id: plan.id,
+            revision: plan.revision,
+            decision: decision.into(),
+        });
+        Ok(Some(result))
     }
 
     fn tool(&self, name: &str) -> Result<&Arc<dyn Tool>> {
@@ -145,9 +394,60 @@ impl ToolRegistry {
     }
 }
 
+fn tracks_workspace_changes(name: &str) -> bool {
+    matches!(
+        name,
+        "apply_patch"
+            | "replace_text"
+            | "run_command"
+            | "run_shell"
+            | "start_background"
+            | "view_session_diff"
+            | "plan_create"
+            | "plan_revise"
+            | "plan_propose"
+    )
+}
+
+fn one_answer<'a>(answers: &'a BTreeMap<String, Vec<String>>, id: &str) -> Result<&'a str> {
+    answers
+        .get(id)
+        .and_then(|values| values.first())
+        .map(String::as_str)
+        .ok_or_else(|| AxiomError::Tool(format!("missing plan review answer `{id}`")))
+}
+
+fn parse_plan_line_range(value: &str, line_count: usize) -> Result<(usize, usize)> {
+    let line_count = line_count.max(1);
+    if value.trim().eq_ignore_ascii_case("all") || value.trim() == "-" {
+        return Ok((1, line_count));
+    }
+    let (start, end) = value
+        .split_once('-')
+        .map_or((value, value), |(start, end)| (start, end));
+    let start = start
+        .trim()
+        .parse::<usize>()
+        .map_err(|_| AxiomError::Tool("plan line range must be N, N-M, or all".into()))?;
+    let end = end
+        .trim()
+        .parse::<usize>()
+        .map_err(|_| AxiomError::Tool("plan line range must be N, N-M, or all".into()))?;
+    if start == 0 || end < start || end > line_count {
+        return Err(AxiomError::Tool(format!(
+            "plan line range must be within 1-{line_count}"
+        )));
+    }
+    Ok((start, end))
+}
+
 pub fn default_registry(max_output_bytes: usize, searxng_url: &str) -> Result<ToolRegistry> {
     let processes = ProcessManager::new(max_output_bytes);
-    let mut registry = ToolRegistry::new();
+    let changes = Arc::new(SessionChanges::new(max_output_bytes));
+    let mut registry = ToolRegistry {
+        tools: HashMap::new(),
+        changes: changes.clone(),
+    };
     registry.register(Arc::new(ListFiles))?;
     registry.register(Arc::new(GlobFiles))?;
     registry.register(Arc::new(SearchText))?;
@@ -159,6 +459,7 @@ pub fn default_registry(max_output_bytes: usize, searxng_url: &str) -> Result<To
     registry.register(Arc::new(InspectGit {
         max_bytes: max_output_bytes,
     }))?;
+    registry.register(Arc::new(ViewSessionDiff { changes }))?;
     registry.register(Arc::new(ApplyPatch {
         max_diff_bytes: max_output_bytes,
     }))?;
@@ -194,6 +495,7 @@ pub fn default_registry(max_output_bytes: usize, searxng_url: &str) -> Result<To
     registry.register(Arc::new(RevisePlan))?;
     registry.register(Arc::new(ProposePlan))?;
     registry.register(Arc::new(AskUserQuestions))?;
+    registry.register(Arc::new(UpdateProgress))?;
     Ok(registry)
 }
 
@@ -494,6 +796,57 @@ impl Tool for InspectGit {
             content: serde_json::to_string_pretty(&inspection)?,
             success: true,
             truncated: inspection.truncated,
+            changed_paths: Vec::new(),
+            diff: None,
+            background: None,
+            events: Vec::new(),
+            questions: None,
+        })
+    }
+}
+
+struct ViewSessionDiff {
+    changes: Arc<SessionChanges>,
+}
+
+#[async_trait]
+impl Tool for ViewSessionDiff {
+    fn name(&self) -> &'static str {
+        "view_session_diff"
+    }
+
+    fn description(&self) -> &'static str {
+        "View the bounded diffs and paths produced by transactional edit tools in this session."
+    }
+
+    fn parameters(&self) -> Value {
+        schema(json!({}), &[])
+    }
+
+    fn effects(&self, context: &ToolContext, arguments: &Value) -> Result<Vec<Effect>> {
+        let _: BTreeMap<String, Value> = parse(self.name(), arguments.clone())?;
+        Ok(vec![Effect::FileRead {
+            path: workspace(context)?.root().to_path_buf(),
+        }])
+    }
+
+    async fn execute(
+        &self,
+        context: &ToolContext,
+        arguments: Value,
+        _cancellation: CancellationToken,
+    ) -> Result<ToolResult> {
+        let _: BTreeMap<String, Value> = parse(self.name(), arguments)?;
+        let (paths, diff, truncated) = self.changes.render(context);
+        Ok(ToolResult {
+            content: serde_json::to_string_pretty(&json!({
+                "paths": paths,
+                "diff": diff,
+                "truncated": truncated,
+                "scope": "bounded text-file changes since this session's first tool call; transactional edit previews are retained as a fallback"
+            }))?,
+            success: true,
+            truncated,
             changed_paths: Vec::new(),
             diff: None,
             background: None,
@@ -808,7 +1161,7 @@ fn command_schema() -> Value {
     )
 }
 
-fn command_effect(context: &ToolContext, args: &CommandArgs, shell: bool) -> Result<Effect> {
+fn command_effects(context: &ToolContext, args: &CommandArgs, shell: bool) -> Result<Vec<Effect>> {
     let root = workspace(context)?.root().to_path_buf();
     let cwd = if args.cwd.as_os_str().is_empty() {
         root
@@ -817,17 +1170,77 @@ fn command_effect(context: &ToolContext, args: &CommandArgs, shell: bool) -> Res
     } else {
         root.join(&args.cwd)
     };
-    Ok(Effect::Process {
+    let process = Effect::Process {
         program: args.program.clone(),
         args: args.args.clone(),
         shell,
-        cwd,
+        cwd: cwd.clone(),
         env: args
             .env
             .iter()
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect(),
-    })
+    };
+    let mut effects = vec![process];
+    if let Some(operation) = repository_mutation(&args.program, &args.args, shell) {
+        effects.push(Effect::RepositoryMutation { operation, cwd });
+    }
+    Ok(effects)
+}
+
+fn repository_mutation(program: &str, args: &[String], shell: bool) -> Option<String> {
+    if shell {
+        let script = args.last()?;
+        let words = shell_words::split(script).ok()?;
+        for (index, word) in words.iter().enumerate() {
+            if word.rsplit('/').next() == Some("git") {
+                let command = git_subcommand(&words[index.saturating_add(1)..]);
+                if command.is_none_or(|command| !is_read_only_git_command(command)) {
+                    return Some(format!("git {}", command.unwrap_or("unknown")));
+                }
+            }
+        }
+        return None;
+    }
+    if program.rsplit('/').next() != Some("git") {
+        return None;
+    }
+    let command = git_subcommand(args);
+    command
+        .is_none_or(|command| !is_read_only_git_command(command))
+        .then(|| format!("git {}", command.unwrap_or("unknown")))
+}
+
+fn git_subcommand(args: &[String]) -> Option<&str> {
+    let mut index = 0;
+    while index < args.len() {
+        let argument = args[index].as_str();
+        if matches!(argument, "-C" | "--git-dir" | "--work-tree" | "--namespace") {
+            index = index.saturating_add(2);
+        } else if argument.starts_with('-') {
+            index = index.saturating_add(1);
+        } else {
+            return Some(argument);
+        }
+    }
+    None
+}
+
+fn is_read_only_git_command(command: &str) -> bool {
+    matches!(
+        command,
+        "status"
+            | "diff"
+            | "log"
+            | "show"
+            | "blame"
+            | "grep"
+            | "rev-parse"
+            | "ls-files"
+            | "ls-tree"
+            | "cat-file"
+            | "describe"
+    )
 }
 
 struct RunCommand {
@@ -847,7 +1260,7 @@ impl Tool for RunCommand {
     }
     fn effects(&self, context: &ToolContext, arguments: &Value) -> Result<Vec<Effect>> {
         let args: CommandArgs = parse(self.name(), arguments.clone())?;
-        Ok(vec![command_effect(context, &args, false)?])
+        command_effects(context, &args, false)
     }
     async fn execute(
         &self,
@@ -927,7 +1340,7 @@ impl Tool for RunShell {
             env: args.env,
             timeout_secs: args.timeout_secs,
         };
-        Ok(vec![command_effect(context, &command, true)?])
+        command_effects(context, &command, true)
     }
     async fn execute(
         &self,
@@ -980,7 +1393,7 @@ impl Tool for StartBackground {
     }
     fn effects(&self, context: &ToolContext, arguments: &Value) -> Result<Vec<Effect>> {
         let args: CommandArgs = parse(self.name(), arguments.clone())?;
-        Ok(vec![command_effect(context, &args, false)?])
+        command_effects(context, &args, false)
     }
     async fn execute(
         &self,
@@ -1439,9 +1852,36 @@ impl Tool for ProposePlan {
         plan.save(&context.cwd)?;
         let mut result = ToolResult::success(serde_json::to_string_pretty(&plan)?);
         result.events.push(AppEvent::PlanProposed {
-            plan_id: plan.id,
+            plan_id: plan.id.clone(),
             revision: plan.revision,
-            markdown: plan.markdown,
+            markdown: plan.markdown.clone(),
+        });
+        result.questions = Some(QuestionRequest {
+            request_id: format!("plan-review:{}:r{}", plan.id, plan.revision),
+            questions: vec![
+                QuestionSpec {
+                    id: "decision".into(),
+                    prompt: "Review this plan".into(),
+                    options: vec![
+                        "approve".into(),
+                        "request_revision".into(),
+                        "abandon".into(),
+                    ],
+                    multiple: false,
+                },
+                QuestionSpec {
+                    id: "line_range".into(),
+                    prompt: "Revision line/range (N, N-M, or all; use - otherwise)".into(),
+                    options: Vec::new(),
+                    multiple: false,
+                },
+                QuestionSpec {
+                    id: "comment".into(),
+                    prompt: "Revision comment (use - when not requesting a revision)".into(),
+                    options: Vec::new(),
+                    multiple: false,
+                },
+            ],
         });
         Ok(result)
     }
@@ -1527,6 +1967,120 @@ fn validate_question_args(args: AskQuestionsArgs) -> Result<AskQuestionsArgs> {
     Ok(args)
 }
 
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UpdateProgressArgs {
+    message: String,
+    #[serde(default)]
+    completed: Option<u64>,
+    #[serde(default)]
+    total: Option<u64>,
+    #[serde(default)]
+    tasks: Vec<TaskItem>,
+}
+
+struct UpdateProgress;
+
+#[async_trait]
+impl Tool for UpdateProgress {
+    fn name(&self) -> &'static str {
+        "update_progress"
+    }
+
+    fn description(&self) -> &'static str {
+        "Report bounded progress and replace the current task/checklist state with stable task IDs."
+    }
+
+    fn parameters(&self) -> Value {
+        schema(
+            json!({
+                "message": {"type":"string", "minLength":1, "maxLength":1024},
+                "completed": {"type":"integer", "minimum":0},
+                "total": {"type":"integer", "minimum":1},
+                "tasks": {
+                    "type":"array",
+                    "maxItems":100,
+                    "items": {
+                        "type":"object",
+                        "additionalProperties":false,
+                        "properties": {
+                            "id":{"type":"string", "minLength":1, "maxLength":128},
+                            "title":{"type":"string", "minLength":1, "maxLength":512},
+                            "status":{"type":"string", "enum":["pending", "in_progress", "completed"]}
+                        },
+                        "required":["id", "title", "status"]
+                    }
+                }
+            }),
+            &["message"],
+        )
+    }
+
+    fn effects(&self, _context: &ToolContext, arguments: &Value) -> Result<Vec<Effect>> {
+        validate_progress(parse(self.name(), arguments.clone())?)?;
+        Ok(Vec::new())
+    }
+
+    async fn execute(
+        &self,
+        _context: &ToolContext,
+        arguments: Value,
+        _cancellation: CancellationToken,
+    ) -> Result<ToolResult> {
+        let args = validate_progress(parse(self.name(), arguments)?)?;
+        let mut result = ToolResult::success("progress recorded");
+        if !args.tasks.is_empty() {
+            result.events.push(AppEvent::TaskListUpdated {
+                items: args.tasks.clone(),
+            });
+        }
+        result.events.push(AppEvent::ProgressUpdated {
+            message: args.message,
+            completed: args.completed,
+            total: args.total,
+        });
+        Ok(result)
+    }
+}
+
+fn validate_progress(args: UpdateProgressArgs) -> Result<UpdateProgressArgs> {
+    if args.message.trim().is_empty() || args.message.len() > 1024 {
+        return Err(AxiomError::Tool(
+            "progress message must contain 1-1024 bytes".into(),
+        ));
+    }
+    if args
+        .completed
+        .zip(args.total)
+        .is_some_and(|(done, total)| done > total)
+    {
+        return Err(AxiomError::Tool(
+            "progress completed count cannot exceed total".into(),
+        ));
+    }
+    if args.completed.is_some() != args.total.is_some() {
+        return Err(AxiomError::Tool(
+            "progress completed and total must be supplied together".into(),
+        ));
+    }
+    if args.tasks.len() > 100 {
+        return Err(AxiomError::Tool("progress has more than 100 tasks".into()));
+    }
+    let mut ids = std::collections::HashSet::new();
+    if args.tasks.iter().any(|task| {
+        task.id.trim().is_empty()
+            || task.id.len() > 128
+            || task.title.trim().is_empty()
+            || task.title.len() > 512
+            || !ids.insert(task.id.clone())
+    }) {
+        return Err(AxiomError::Tool(
+            "tasks require unique bounded non-empty IDs and titles".into(),
+        ));
+    }
+    Ok(args)
+}
+
 #[cfg(test)]
 mod tests {
     use tempfile::tempdir;
@@ -1564,6 +2118,7 @@ mod tests {
     async fn registry_rejects_duplicates_and_unknown_tools() {
         let root = tempdir().expect("root");
         let context = ToolContext {
+            session_id: SessionId::new(),
             cwd: root.path().to_path_buf(),
             permission_profile: PermissionProfile::Confirm,
         };
@@ -1583,6 +2138,7 @@ mod tests {
         let root = tempdir().expect("root");
         std::fs::write(root.path().join("hello.txt"), "hello\n").expect("fixture");
         let context = ToolContext {
+            session_id: SessionId::new(),
             cwd: root.path().to_path_buf(),
             permission_profile: PermissionProfile::Workspace,
         };
@@ -1611,12 +2167,55 @@ mod tests {
             std::fs::read_to_string(root.path().join("hello.txt")).expect("result"),
             "cherry\n"
         );
+        let session_diff = registry
+            .execute(
+                "view_session_diff",
+                &context,
+                json!({}),
+                CancellationToken::new(),
+            )
+            .await
+            .expect("session diff");
+        assert!(session_diff.content.contains("hello.txt"));
+        assert!(session_diff.content.contains("cherry"));
+
+        let other_session = ToolContext {
+            session_id: SessionId::new(),
+            ..context.clone()
+        };
+        let empty = registry
+            .execute(
+                "view_session_diff",
+                &other_session,
+                json!({}),
+                CancellationToken::new(),
+            )
+            .await
+            .expect("isolated session diff");
+        assert!(!empty.content.contains("hello.txt"));
+        std::fs::write(
+            root.path().join("process-created.txt"),
+            "created by process\n",
+        )
+        .expect("simulated process change");
+        let detected = registry
+            .execute(
+                "view_session_diff",
+                &other_session,
+                json!({}),
+                CancellationToken::new(),
+            )
+            .await
+            .expect("detected process diff");
+        assert!(detected.content.contains("process-created.txt"));
+        assert!(detected.content.contains("created by process"));
     }
 
     #[tokio::test]
     async fn plan_tools_persist_revision_and_emit_review_event() {
         let root = tempdir().expect("root");
         let context = ToolContext {
+            session_id: SessionId::new(),
             cwd: root.path().to_path_buf(),
             permission_profile: PermissionProfile::Plan,
         };
@@ -1657,8 +2256,40 @@ mod tests {
             [AppEvent::PlanProposed { plan_id, revision: 1, .. }] if plan_id == id
         ));
         assert_eq!(
+            proposed
+                .questions
+                .as_ref()
+                .expect("review questions")
+                .questions
+                .len(),
+            3
+        );
+        assert_eq!(
             PlanArtifact::load(root.path(), id).expect("load").state,
             crate::planning::PlanState::Proposed
+        );
+        let reviewed = registry
+            .complete_interaction(
+                "plan_propose",
+                &context,
+                &json!({"plan_id":id}),
+                &BTreeMap::from([
+                    ("decision".into(), vec!["approve".into()]),
+                    ("line_range".into(), vec!["-".into()]),
+                    ("comment".into(), vec!["-".into()]),
+                ]),
+            )
+            .expect("review completion")
+            .expect("plan completion");
+        assert!(matches!(
+            reviewed.events.as_slice(),
+            [AppEvent::PlanReviewed { plan_id, revision: 1, decision }] if plan_id == id && decision == "approved"
+        ));
+        assert_eq!(
+            PlanArtifact::load(root.path(), id)
+                .expect("load approved")
+                .state,
+            crate::planning::PlanState::Approved
         );
 
         let file_write = registry
@@ -1673,11 +2304,45 @@ mod tests {
         }));
     }
 
+    #[tokio::test]
+    async fn progress_tool_emits_structured_checklist_and_progress_events() {
+        let root = tempdir().expect("root");
+        let context = ToolContext {
+            session_id: SessionId::new(),
+            cwd: root.path().to_path_buf(),
+            permission_profile: PermissionProfile::Observe,
+        };
+        let registry = default_registry(4096, "http://127.0.0.1:8888").expect("registry");
+        let result = registry
+            .execute(
+                "update_progress",
+                &context,
+                json!({
+                    "message":"Implementing the parser",
+                    "completed":1,
+                    "total":2,
+                    "tasks":[
+                        {"id":"inspect", "title":"Inspect inputs", "status":"completed"},
+                        {"id":"implement", "title":"Implement parser", "status":"in_progress"}
+                    ]
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .expect("progress");
+        assert!(matches!(
+            result.events.as_slice(),
+            [AppEvent::TaskListUpdated { items }, AppEvent::ProgressUpdated { completed: Some(1), total: Some(2), .. }]
+                if items.len() == 2
+        ));
+    }
+
     #[test]
     fn observe_profile_allows_intelligence_but_denies_side_effect_surfaces() {
         let root = tempdir().expect("root");
         std::fs::write(root.path().join("file.txt"), "content").expect("fixture");
         let context = ToolContext {
+            session_id: SessionId::new(),
             cwd: root.path().to_path_buf(),
             permission_profile: PermissionProfile::Observe,
         };
@@ -1726,5 +2391,58 @@ mod tests {
             std::fs::read_to_string(root.path().join("file.txt")).expect("unchanged"),
             "content"
         );
+    }
+
+    #[test]
+    fn git_mutations_are_separate_confirmation_gated_effects() {
+        let root = tempdir().expect("root");
+        let context = ToolContext {
+            session_id: SessionId::new(),
+            cwd: root.path().to_path_buf(),
+            permission_profile: PermissionProfile::Autonomous,
+        };
+        let registry = default_registry(4096, "http://127.0.0.1:8888").expect("registry");
+        let policy = PolicyEngine::for_workspace(root.path()).expect("policy");
+
+        let read_effects = registry
+            .effects(
+                "run_command",
+                &context,
+                &json!({"program":"git", "args":["status"]}),
+            )
+            .expect("read effects");
+        assert_eq!(read_effects.len(), 1);
+
+        for (arguments, shell) in [
+            (
+                json!({"program":"git", "args":["commit", "-m", "fixture"]}),
+                false,
+            ),
+            (
+                json!({"program":"git", "args":["unknown-subcommand"]}),
+                false,
+            ),
+            (
+                json!({"program":"sh", "args":["-lc", "git reset --hard HEAD"], "cwd":""}),
+                true,
+            ),
+        ] {
+            let effects = command_effects(
+                &context,
+                &parse::<CommandArgs>("fixture", arguments).expect("arguments"),
+                shell,
+            )
+            .expect("effects");
+            assert!(
+                effects
+                    .iter()
+                    .any(|effect| matches!(effect, Effect::RepositoryMutation { .. }))
+            );
+            assert!(effects.into_iter().any(|effect| {
+                matches!(effect, Effect::RepositoryMutation { .. })
+                    && policy.evaluate(PermissionProfile::Autonomous, effect).kind
+                        == DecisionKind::Ask
+            }));
+        }
     }
 }

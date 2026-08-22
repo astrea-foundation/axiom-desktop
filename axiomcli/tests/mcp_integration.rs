@@ -200,6 +200,7 @@ fn config(mode: &str, state: Option<&Path>, read_only: bool) -> McpServerConfig 
 
 fn context(temp: &TempDir) -> ToolContext {
     ToolContext {
+        session_id: axiomcli::app::SessionId::new(),
         cwd: temp.path().to_path_buf(),
         permission_profile: PermissionProfile::Workspace,
     }

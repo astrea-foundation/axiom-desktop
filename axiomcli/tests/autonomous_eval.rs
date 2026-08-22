@@ -3,7 +3,7 @@ use std::{collections::VecDeque, path::PathBuf, sync::Arc};
 use async_trait::async_trait;
 use axiomcli::{
     Result,
-    agent::{AgentEngine, TurnContext, TurnRunner},
+    agent::{APP_EVENT_QUEUE_CAPACITY, AgentEngine, TurnContext, TurnRunner},
     app::{AppEvent, PermissionProfile, SessionId, TurnId},
     provider::{
         AssistantTurn, FunctionCall, InferenceProvider, InferenceRequest, ProviderEvent, ToolCall,
@@ -101,7 +101,7 @@ async fn deterministic_agent_edits_runs_tests_and_reports_completion() {
         "scripted",
         8,
     );
-    let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+    let (events_tx, mut events_rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
     let session_id = SessionId::new();
     engine
         .run(
@@ -204,7 +204,7 @@ async fn deterministic_agent_observes_failure_repairs_and_reruns() {
         "scripted",
         8,
     );
-    let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+    let (events_tx, mut events_rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
     engine
         .run(
             TurnContext {
@@ -269,7 +269,7 @@ async fn adversarial_out_of_root_edit_is_rejected_without_side_effect() {
         "scripted",
         4,
     );
-    let (events_tx, _events_rx) = mpsc::unbounded_channel();
+    let (events_tx, _events_rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
     engine
         .run(
             TurnContext {

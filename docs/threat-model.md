@@ -11,8 +11,10 @@
 
 ## Trust boundaries
 
-The model, fetched web pages, MCP servers, ACP clients, repository contents,
-tool output, and terminal input are untrusted. The Rust policy engine decides
+The model, fetched web pages, MCP protocol data, ACP clients, repository contents,
+tool output, and terminal input are untrusted. A configured MCP executable is
+separately treated as trusted user-selected local code at process startup; it
+cannot be introduced by repository configuration. The Rust policy engine decides
 whether normalized effects may run. A user approval is authority only for the
 operation and scope shown in the approval request.
 
@@ -35,6 +37,7 @@ it secure or silently imply that later TEE/E2EE guarantees already apply.
 | Event/output memory exhaustion | Bounded channels, transcript/tool limits, backpressure and truncation markers |
 | Crash after side effect | Journal start/completion; unknown operations are not replayed |
 | Persistent rule broadens authority | Explicit scope and confirmation; deny outranks all allows |
+| Configured MCP executable has host authority | Only trusted user config may launch it; protocol data and side-effect claims remain untrusted and calls stay policy-controlled |
 
 ## Deferred threats
 
