@@ -230,18 +230,27 @@ async fn build_runner(config: &Config) -> anyhow::Result<Arc<dyn TurnRunner>> {
     {
         tools.register(tool)?;
     }
-    Ok(Arc::new(AgentEngine::with_limits(
-        Arc::new(provider),
-        Arc::new(tools),
-        config.model.clone(),
-        AgentLimits {
-            max_steps: config.max_agent_steps,
-            max_context_bytes: config.max_context_bytes,
-            max_context_tokens: config.max_context_tokens,
-            max_tool_output_bytes: config.max_tool_output_bytes,
-            max_wall_time: std::time::Duration::from_secs(config.max_turn_secs),
-        },
-    )))
+    let policy_rules = config
+        .policy_rules
+        .iter()
+        .chain(&config.project_policy_rules)
+        .cloned()
+        .collect();
+    Ok(Arc::new(
+        AgentEngine::with_limits(
+            Arc::new(provider),
+            Arc::new(tools),
+            config.model.clone(),
+            AgentLimits {
+                max_steps: config.max_agent_steps,
+                max_context_bytes: config.max_context_bytes,
+                max_context_tokens: config.max_context_tokens,
+                max_tool_output_bytes: config.max_tool_output_bytes,
+                max_wall_time: std::time::Duration::from_secs(config.max_turn_secs),
+            },
+        )
+        .with_policy_rules(policy_rules),
+    ))
 }
 
 fn resolve_cwd(cwd: Option<PathBuf>) -> anyhow::Result<PathBuf> {
