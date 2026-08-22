@@ -1,63 +1,121 @@
-use std::{collections::HashMap, fmt, path::PathBuf, str::FromStr, sync::Arc};
+use std::{
+    collections::HashMap,
+    fmt,
+    path::PathBuf,
+    str::FromStr,
+    sync::{
+        Arc, Mutex as StdMutex,
+        atomic::{AtomicU64, Ordering},
+    },
+};
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeDelta, Utc};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, broadcast};
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::{AxiomError, Result};
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct SessionId(Uuid);
+macro_rules! typed_uuid {
+    ($name:ident) => {
+        #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+        #[serde(transparent)]
+        pub struct $name(Uuid);
 
-impl SessionId {
+        impl $name {
+            #[must_use]
+            pub fn new() -> Self {
+                Self(Uuid::new_v4())
+            }
+
+            #[must_use]
+            pub const fn from_uuid(value: Uuid) -> Self {
+                Self(value)
+            }
+        }
+
+        impl Default for $name {
+            fn default() -> Self {
+                Self::new()
+            }
+        }
+
+        impl fmt::Display for $name {
+            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                self.0.fmt(formatter)
+            }
+        }
+
+        impl FromStr for $name {
+            type Err = uuid::Error;
+
+            fn from_str(input: &str) -> std::result::Result<Self, Self::Err> {
+                Uuid::parse_str(input).map(Self)
+            }
+        }
+    };
+}
+
+typed_uuid!(SessionId);
+typed_uuid!(TurnId);
+typed_uuid!(CorrelationId);
+
+/// Injectable runtime entropy and time. Production uses OS randomness and UTC;
+/// deterministic tests use [`DeterministicServices`].
+pub trait RuntimeServices: Send + Sync {
+    fn next_uuid(&self) -> Uuid;
+    fn now(&self) -> DateTime<Utc>;
+}
+
+#[derive(Debug, Default)]
+pub struct SystemServices;
+
+impl RuntimeServices for SystemServices {
+    fn next_uuid(&self) -> Uuid {
+        Uuid::new_v4()
+    }
+
+    fn now(&self) -> DateTime<Utc> {
+        Utc::now()
+    }
+}
+
+/// Stable source for golden traces. UUIDs are derived from a monotonically
+/// increasing counter and timestamps advance one millisecond per event.
+#[derive(Debug)]
+pub struct DeterministicServices {
+    counter: AtomicU64,
+    epoch: DateTime<Utc>,
+    clock: StdMutex<u64>,
+}
+
+impl DeterministicServices {
     #[must_use]
-    pub fn new() -> Self {
-        Self(Uuid::new_v4())
+    pub fn new(epoch: DateTime<Utc>) -> Self {
+        Self {
+            counter: AtomicU64::new(1),
+            epoch,
+            clock: StdMutex::new(0),
+        }
     }
 }
 
-impl Default for SessionId {
-    fn default() -> Self {
-        Self::new()
+impl RuntimeServices for DeterministicServices {
+    fn next_uuid(&self) -> Uuid {
+        let value = self.counter.fetch_add(1, Ordering::Relaxed);
+        Uuid::from_u128(u128::from(value))
     }
-}
 
-impl fmt::Display for SessionId {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(formatter)
-    }
-}
-
-impl FromStr for SessionId {
-    type Err = uuid::Error;
-
-    fn from_str(input: &str) -> std::result::Result<Self, Self::Err> {
-        Uuid::parse_str(input).map(Self)
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct TurnId(Uuid);
-
-impl TurnId {
-    #[must_use]
-    pub fn new() -> Self {
-        Self(Uuid::new_v4())
-    }
-}
-
-impl Default for TurnId {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl fmt::Display for TurnId {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(formatter)
+    fn now(&self) -> DateTime<Utc> {
+        let mut tick = self
+            .clock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let current =
+            self.epoch + TimeDelta::milliseconds(i64::try_from(*tick).unwrap_or(i64::MAX));
+        *tick = tick.saturating_add(1);
+        current
     }
 }
 
@@ -83,13 +141,12 @@ pub enum PermissionProfile {
 
 impl fmt::Display for PermissionProfile {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let value = match self {
+        formatter.write_str(match self {
             Self::Observe => "observe",
             Self::Confirm => "confirm",
             Self::Workspace => "workspace",
             Self::Autonomous => "autonomous",
-        };
-        formatter.write_str(value)
+        })
     }
 }
 
@@ -128,6 +185,12 @@ pub enum AppCommand {
         origin: Origin,
         profile: PermissionProfile,
     },
+    ResumeSession {
+        session_id: SessionId,
+        cwd: PathBuf,
+        origin: Origin,
+        profile: PermissionProfile,
+    },
     SubmitPrompt {
         session_id: SessionId,
         turn_id: TurnId,
@@ -146,6 +209,16 @@ pub enum AppCommand {
         turn_id: TurnId,
         message: String,
     },
+    ResolvePermission {
+        session_id: SessionId,
+        request_id: String,
+        allowed: bool,
+    },
+    AnswerQuestion {
+        session_id: SessionId,
+        question_id: String,
+        answers: Vec<String>,
+    },
     ChangePermissionProfile {
         session_id: SessionId,
         profile: PermissionProfile,
@@ -160,20 +233,38 @@ impl AppCommand {
     pub fn session_id(&self) -> &SessionId {
         match self {
             Self::CreateSession { session_id, .. }
+            | Self::ResumeSession { session_id, .. }
             | Self::SubmitPrompt { session_id, .. }
             | Self::CancelTurn { session_id, .. }
             | Self::FinishTurn { session_id, .. }
             | Self::FailTurn { session_id, .. }
+            | Self::ResolvePermission { session_id, .. }
+            | Self::AnswerQuestion { session_id, .. }
             | Self::ChangePermissionProfile { session_id, .. }
             | Self::CloseSession { session_id } => session_id,
         }
     }
 }
 
+/// Non-persisted delivery metadata. Every command reaches the kernel with a
+/// correlation ID, origin and cancellation context.
+#[derive(Clone, Debug)]
+pub struct CommandEnvelope {
+    pub correlation_id: CorrelationId,
+    pub origin: Origin,
+    pub cancellation: CancellationToken,
+    pub command: AppCommand,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum AppEvent {
     SessionCreated {
+        cwd: PathBuf,
+        origin: Origin,
+        profile: PermissionProfile,
+    },
+    SessionResumed {
         cwd: PathBuf,
         origin: Origin,
         profile: PermissionProfile,
@@ -196,6 +287,11 @@ pub enum AppEvent {
     UsageUpdated {
         input_tokens: u64,
         output_tokens: u64,
+    },
+    ProgressUpdated {
+        message: String,
+        completed: Option<u64>,
+        total: Option<u64>,
     },
     ToolProposed {
         turn_id: TurnId,
@@ -227,13 +323,29 @@ pub enum AppEvent {
     WorkspaceChanged {
         paths: Vec<PathBuf>,
     },
+    DiffAvailable {
+        call_id: String,
+        diff: String,
+        truncated: bool,
+    },
     QuestionAsked {
         question_id: String,
         prompt: String,
         options: Vec<String>,
     },
+    QuestionAnswered {
+        question_id: String,
+        answers: Vec<String>,
+    },
     PlanProposed {
+        plan_id: String,
+        revision: u64,
         markdown: String,
+    },
+    PlanReviewed {
+        plan_id: String,
+        revision: u64,
+        decision: String,
     },
     BackgroundTaskChanged {
         task_id: String,
@@ -248,6 +360,9 @@ pub enum AppEvent {
     },
     SecurityStatusChanged {
         state: SecurityStatus,
+    },
+    WarningRaised {
+        message: String,
     },
     TurnCompleted {
         turn_id: TurnId,
@@ -275,11 +390,15 @@ pub struct EventEnvelope {
     pub schema_version: u32,
     pub sequence: u64,
     pub occurred_at: DateTime<Utc>,
+    #[serde(default)]
+    pub correlation_id: CorrelationId,
+    #[serde(default)]
+    pub origin: Origin,
     pub session_id: SessionId,
     pub event: AppEvent,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SessionState {
     pub id: SessionId,
     pub cwd: PathBuf,
@@ -287,18 +406,40 @@ pub struct SessionState {
     pub profile: PermissionProfile,
     pub lifecycle: SessionLifecycle,
     pub active_turn: Option<TurnId>,
+    pub pending_permission: Option<String>,
+    pub pending_question: Option<String>,
 }
 
-#[derive(Default)]
 pub struct Kernel {
     sessions: HashMap<SessionId, SessionState>,
     next_sequence: u64,
+    services: Arc<dyn RuntimeServices>,
+}
+
+impl Default for Kernel {
+    fn default() -> Self {
+        Self::with_services(Arc::new(SystemServices))
+    }
 }
 
 impl Kernel {
-    pub fn apply(&mut self, command: AppCommand) -> Result<Vec<EventEnvelope>> {
-        let session_id = command.session_id().clone();
-        let events = match command {
+    #[must_use]
+    pub fn with_services(services: Arc<dyn RuntimeServices>) -> Self {
+        Self {
+            sessions: HashMap::new(),
+            next_sequence: 0,
+            services,
+        }
+    }
+
+    pub fn apply(&mut self, request: CommandEnvelope) -> Result<Vec<EventEnvelope>> {
+        if request.cancellation.is_cancelled() {
+            return Err(AxiomError::Cancelled);
+        }
+        let correlation_id = request.correlation_id;
+        let origin = request.origin;
+        let session_id = request.command.session_id().clone();
+        let events = match request.command {
             AppCommand::CreateSession {
                 session_id,
                 cwd,
@@ -313,12 +454,14 @@ impl Kernel {
                 self.sessions.insert(
                     session_id.clone(),
                     SessionState {
-                        id: session_id.clone(),
+                        id: session_id,
                         cwd: cwd.clone(),
                         origin,
                         profile,
                         lifecycle: SessionLifecycle::Ready,
                         active_turn: None,
+                        pending_permission: None,
+                        pending_question: None,
                     },
                 );
                 vec![
@@ -331,6 +474,36 @@ impl Kernel {
                         state: SecurityStatus::UnattestedDevelopment,
                     },
                 ]
+            }
+            AppCommand::ResumeSession {
+                session_id,
+                cwd,
+                origin,
+                profile,
+            } => {
+                if self.sessions.contains_key(&session_id) {
+                    return Err(AxiomError::InvalidTransition(format!(
+                        "session {session_id} is already loaded"
+                    )));
+                }
+                self.sessions.insert(
+                    session_id.clone(),
+                    SessionState {
+                        id: session_id,
+                        cwd: cwd.clone(),
+                        origin,
+                        profile,
+                        lifecycle: SessionLifecycle::Ready,
+                        active_turn: None,
+                        pending_permission: None,
+                        pending_question: None,
+                    },
+                );
+                vec![AppEvent::SessionResumed {
+                    cwd,
+                    origin,
+                    profile,
+                }]
             }
             AppCommand::SubmitPrompt {
                 session_id,
@@ -363,18 +536,14 @@ impl Kernel {
                 session_id,
                 turn_id,
             } => {
-                let session = self.require_active_turn(&session_id, &turn_id)?;
-                session.lifecycle = SessionLifecycle::Ready;
-                session.active_turn = None;
+                self.finish_active(&session_id, &turn_id)?;
                 vec![AppEvent::TurnCancelled { turn_id }]
             }
             AppCommand::FinishTurn {
                 session_id,
                 turn_id,
             } => {
-                let session = self.require_active_turn(&session_id, &turn_id)?;
-                session.lifecycle = SessionLifecycle::Ready;
-                session.active_turn = None;
+                self.finish_active(&session_id, &turn_id)?;
                 vec![AppEvent::TurnCompleted { turn_id }]
             }
             AppCommand::FailTurn {
@@ -382,12 +551,51 @@ impl Kernel {
                 turn_id,
                 message,
             } => {
-                let session = self.require_active_turn(&session_id, &turn_id)?;
-                session.lifecycle = SessionLifecycle::Ready;
-                session.active_turn = None;
+                self.finish_active(&session_id, &turn_id)?;
                 vec![AppEvent::ErrorRaised {
                     turn_id: Some(turn_id),
                     message,
+                }]
+            }
+            AppCommand::ResolvePermission {
+                session_id,
+                request_id,
+                allowed,
+            } => {
+                let session = self.session_mut(&session_id)?;
+                if session.lifecycle != SessionLifecycle::WaitingForApproval
+                    || session.pending_permission.as_deref() != Some(&request_id)
+                {
+                    return Err(AxiomError::InvalidTransition(format!(
+                        "permission {request_id} is not pending"
+                    )));
+                }
+                session.lifecycle = SessionLifecycle::Running;
+                session.pending_permission = None;
+                vec![AppEvent::PermissionResolved {
+                    request_id,
+                    allowed,
+                }]
+            }
+            AppCommand::AnswerQuestion {
+                session_id,
+                question_id,
+                answers,
+            } => {
+                let session = self.session_mut(&session_id)?;
+                if answers.is_empty()
+                    || session.lifecycle != SessionLifecycle::WaitingForAnswer
+                    || session.pending_question.as_deref() != Some(&question_id)
+                {
+                    return Err(AxiomError::InvalidTransition(format!(
+                        "question {question_id} is not pending or has no answer"
+                    )));
+                }
+                session.lifecycle = SessionLifecycle::Running;
+                session.pending_question = None;
+                vec![AppEvent::QuestionAnswered {
+                    question_id,
+                    answers,
                 }]
             }
             AppCommand::ChangePermissionProfile {
@@ -395,9 +603,9 @@ impl Kernel {
                 profile,
             } => {
                 let session = self.session_mut(&session_id)?;
-                if session.lifecycle == SessionLifecycle::Closed {
+                if session.lifecycle != SessionLifecycle::Ready {
                     return Err(AxiomError::InvalidTransition(
-                        "closed session cannot change profile".into(),
+                        "permission profile may change only while the session is ready".into(),
                     ));
                 }
                 session.profile = profile;
@@ -405,9 +613,9 @@ impl Kernel {
             }
             AppCommand::CloseSession { session_id } => {
                 let session = self.session_mut(&session_id)?;
-                if session.active_turn.is_some() {
+                if session.lifecycle != SessionLifecycle::Ready {
                     return Err(AxiomError::InvalidTransition(
-                        "cancel the active turn before closing the session".into(),
+                        "session must be ready before it can close".into(),
                     ));
                 }
                 session.lifecycle = SessionLifecycle::Closed;
@@ -417,7 +625,7 @@ impl Kernel {
 
         Ok(events
             .into_iter()
-            .map(|event| self.envelope(session_id.clone(), event))
+            .map(|event| self.envelope(session_id.clone(), correlation_id.clone(), origin, event))
             .collect())
     }
 
@@ -426,11 +634,66 @@ impl Kernel {
         self.sessions.get(id)
     }
 
-    pub fn record(&mut self, session_id: SessionId, event: AppEvent) -> Result<EventEnvelope> {
-        if !self.sessions.contains_key(&session_id) {
-            return Err(AxiomError::SessionNotFound(session_id.to_string()));
+    pub fn record(
+        &mut self,
+        session_id: SessionId,
+        correlation_id: CorrelationId,
+        origin: Origin,
+        event: AppEvent,
+    ) -> Result<EventEnvelope> {
+        let session = self.session_mut(&session_id)?;
+        match &event {
+            AppEvent::PermissionRequired { request_id, .. } => {
+                if session.lifecycle != SessionLifecycle::Running {
+                    return Err(AxiomError::InvalidTransition(
+                        "permission can be requested only during a running turn".into(),
+                    ));
+                }
+                session.lifecycle = SessionLifecycle::WaitingForApproval;
+                session.pending_permission = Some(request_id.clone());
+            }
+            AppEvent::QuestionAsked { question_id, .. } => {
+                if session.lifecycle != SessionLifecycle::Running {
+                    return Err(AxiomError::InvalidTransition(
+                        "question can be asked only during a running turn".into(),
+                    ));
+                }
+                session.lifecycle = SessionLifecycle::WaitingForAnswer;
+                session.pending_question = Some(question_id.clone());
+            }
+            _ => {}
         }
-        Ok(self.envelope(session_id, event))
+        Ok(self.envelope(session_id, correlation_id, origin, event))
+    }
+
+    pub fn restore_from_events(&mut self, events: &[EventEnvelope]) -> Result<SessionState> {
+        let first = events.first().ok_or_else(|| {
+            AxiomError::InvalidTransition("cannot restore an empty event stream".into())
+        })?;
+        let id = first.session_id.clone();
+        let mut state: Option<SessionState> = None;
+        for envelope in events {
+            if envelope.session_id != id {
+                return Err(AxiomError::InvalidTransition(
+                    "restore stream contains multiple sessions".into(),
+                ));
+            }
+            self.next_sequence = self.next_sequence.max(envelope.sequence);
+            replay_event(&mut state, &id, &envelope.event)?;
+        }
+        let mut state = state.ok_or_else(|| {
+            AxiomError::InvalidTransition("restore stream has no session creation".into())
+        })?;
+        if state.lifecycle != SessionLifecycle::Closed {
+            // Unknown in-flight work is never replayed. Recovery exposes a ready
+            // session and the journal retains the interrupted evidence.
+            state.lifecycle = SessionLifecycle::Ready;
+            state.active_turn = None;
+            state.pending_permission = None;
+            state.pending_question = None;
+        }
+        self.sessions.insert(id, state.clone());
+        Ok(state)
     }
 
     fn session_mut(&mut self, id: &SessionId) -> Result<&mut SessionState> {
@@ -439,50 +702,188 @@ impl Kernel {
             .ok_or_else(|| AxiomError::SessionNotFound(id.to_string()))
     }
 
-    fn require_active_turn(
-        &mut self,
-        session_id: &SessionId,
-        turn_id: &TurnId,
-    ) -> Result<&mut SessionState> {
+    fn finish_active(&mut self, session_id: &SessionId, turn_id: &TurnId) -> Result<()> {
         let session = self.session_mut(session_id)?;
-        if session.active_turn.as_ref() != Some(turn_id) {
+        if session.active_turn.as_ref() != Some(turn_id)
+            || !matches!(
+                session.lifecycle,
+                SessionLifecycle::Running
+                    | SessionLifecycle::WaitingForApproval
+                    | SessionLifecycle::WaitingForAnswer
+            )
+        {
             return Err(AxiomError::InvalidTransition(format!(
                 "turn {turn_id} is not active"
             )));
         }
-        Ok(session)
+        session.lifecycle = SessionLifecycle::Ready;
+        session.active_turn = None;
+        session.pending_permission = None;
+        session.pending_question = None;
+        Ok(())
     }
 
-    fn envelope(&mut self, session_id: SessionId, event: AppEvent) -> EventEnvelope {
+    fn envelope(
+        &mut self,
+        session_id: SessionId,
+        correlation_id: CorrelationId,
+        origin: Origin,
+        event: AppEvent,
+    ) -> EventEnvelope {
         self.next_sequence += 1;
         EventEnvelope {
-            schema_version: 1,
+            schema_version: 2,
             sequence: self.next_sequence,
-            occurred_at: Utc::now(),
+            occurred_at: self.services.now(),
+            correlation_id,
+            origin,
             session_id,
             event,
         }
     }
 }
 
+fn replay_event(state: &mut Option<SessionState>, id: &SessionId, event: &AppEvent) -> Result<()> {
+    match event {
+        AppEvent::SessionCreated {
+            cwd,
+            origin,
+            profile,
+        }
+        | AppEvent::SessionResumed {
+            cwd,
+            origin,
+            profile,
+        } => {
+            if state.is_none() {
+                *state = Some(SessionState {
+                    id: id.clone(),
+                    cwd: cwd.clone(),
+                    origin: *origin,
+                    profile: *profile,
+                    lifecycle: SessionLifecycle::Ready,
+                    active_turn: None,
+                    pending_permission: None,
+                    pending_question: None,
+                });
+            }
+        }
+        AppEvent::TurnStarted { turn_id } => {
+            let session = state.as_mut().ok_or_else(|| {
+                AxiomError::InvalidTransition("turn precedes session creation".into())
+            })?;
+            session.lifecycle = SessionLifecycle::Running;
+            session.active_turn = Some(turn_id.clone());
+        }
+        AppEvent::PermissionRequired { request_id, .. } => {
+            let session = state.as_mut().ok_or_else(|| {
+                AxiomError::InvalidTransition("permission precedes session creation".into())
+            })?;
+            session.lifecycle = SessionLifecycle::WaitingForApproval;
+            session.pending_permission = Some(request_id.clone());
+        }
+        AppEvent::PermissionResolved { .. } => {
+            if let Some(session) = state.as_mut() {
+                session.lifecycle = SessionLifecycle::Running;
+                session.pending_permission = None;
+            }
+        }
+        AppEvent::QuestionAsked { question_id, .. } => {
+            let session = state.as_mut().ok_or_else(|| {
+                AxiomError::InvalidTransition("question precedes session creation".into())
+            })?;
+            session.lifecycle = SessionLifecycle::WaitingForAnswer;
+            session.pending_question = Some(question_id.clone());
+        }
+        AppEvent::QuestionAnswered { .. } => {
+            if let Some(session) = state.as_mut() {
+                session.lifecycle = SessionLifecycle::Running;
+                session.pending_question = None;
+            }
+        }
+        AppEvent::TurnCompleted { .. }
+        | AppEvent::TurnCancelled { .. }
+        | AppEvent::ErrorRaised {
+            turn_id: Some(_), ..
+        } => {
+            if let Some(session) = state.as_mut() {
+                session.lifecycle = SessionLifecycle::Ready;
+                session.active_turn = None;
+                session.pending_permission = None;
+                session.pending_question = None;
+            }
+        }
+        AppEvent::PermissionProfileChanged { profile } => {
+            if let Some(session) = state.as_mut() {
+                session.profile = *profile;
+            }
+        }
+        AppEvent::SessionClosed => {
+            if let Some(session) = state.as_mut() {
+                session.lifecycle = SessionLifecycle::Closed;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 #[derive(Clone)]
 pub struct Runtime {
     kernel: Arc<Mutex<Kernel>>,
     events: broadcast::Sender<EventEnvelope>,
+    services: Arc<dyn RuntimeServices>,
 }
 
 impl Runtime {
     #[must_use]
     pub fn new(event_capacity: usize) -> Self {
+        Self::with_services(event_capacity, Arc::new(SystemServices))
+    }
+
+    #[must_use]
+    pub fn with_services(event_capacity: usize, services: Arc<dyn RuntimeServices>) -> Self {
         let (events, _) = broadcast::channel(event_capacity.max(1));
         Self {
-            kernel: Arc::new(Mutex::new(Kernel::default())),
+            kernel: Arc::new(Mutex::new(Kernel::with_services(services.clone()))),
             events,
+            services,
         }
     }
 
+    #[must_use]
+    pub fn session_id(&self) -> SessionId {
+        SessionId::from_uuid(self.services.next_uuid())
+    }
+
+    #[must_use]
+    pub fn turn_id(&self) -> TurnId {
+        TurnId::from_uuid(self.services.next_uuid())
+    }
+
     pub async fn dispatch(&self, command: AppCommand) -> Result<Vec<EventEnvelope>> {
-        let events = self.kernel.lock().await.apply(command)?;
+        let origin = match &command {
+            AppCommand::CreateSession { origin, .. } | AppCommand::ResumeSession { origin, .. } => {
+                *origin
+            }
+            _ => self
+                .kernel
+                .lock()
+                .await
+                .session(command.session_id())
+                .map_or(Origin::Test, |session| session.origin),
+        };
+        self.dispatch_request(CommandEnvelope {
+            correlation_id: CorrelationId::from_uuid(self.services.next_uuid()),
+            origin,
+            cancellation: CancellationToken::new(),
+            command,
+        })
+        .await
+    }
+
+    pub async fn dispatch_request(&self, request: CommandEnvelope) -> Result<Vec<EventEnvelope>> {
+        let events = self.kernel.lock().await.apply(request)?;
         for event in &events {
             let _ = self.events.send(event.clone());
         }
@@ -490,9 +891,25 @@ impl Runtime {
     }
 
     pub async fn emit(&self, session_id: SessionId, event: AppEvent) -> Result<EventEnvelope> {
-        let event = self.kernel.lock().await.record(session_id, event)?;
+        let (origin, correlation_id) = {
+            let kernel = self.kernel.lock().await;
+            let origin = kernel
+                .session(&session_id)
+                .ok_or_else(|| AxiomError::SessionNotFound(session_id.to_string()))?
+                .origin;
+            (origin, CorrelationId::from_uuid(self.services.next_uuid()))
+        };
+        let event = self
+            .kernel
+            .lock()
+            .await
+            .record(session_id, correlation_id, origin, event)?;
         let _ = self.events.send(event.clone());
         Ok(event)
+    }
+
+    pub async fn restore(&self, events: &[EventEnvelope]) -> Result<SessionState> {
+        self.kernel.lock().await.restore_from_events(events)
     }
 
     #[must_use]
@@ -503,102 +920,409 @@ impl Runtime {
 
 #[cfg(test)]
 mod tests {
+    use chrono::TimeZone as _;
+
     use super::*;
 
+    fn services() -> Arc<DeterministicServices> {
+        Arc::new(DeterministicServices::new(
+            Utc.with_ymd_and_hms(2026, 8, 22, 0, 0, 0)
+                .single()
+                .expect("epoch"),
+        ))
+    }
+
+    fn envelope(command: AppCommand, number: u128) -> CommandEnvelope {
+        CommandEnvelope {
+            correlation_id: CorrelationId::from_uuid(Uuid::from_u128(number)),
+            origin: Origin::Test,
+            cancellation: CancellationToken::new(),
+            command,
+        }
+    }
+
     fn create(kernel: &mut Kernel) -> SessionId {
-        let session_id = SessionId::new();
+        let session_id = SessionId::from_uuid(Uuid::from_u128(100));
         kernel
-            .apply(AppCommand::CreateSession {
-                session_id: session_id.clone(),
-                cwd: PathBuf::from("/tmp/example"),
-                origin: Origin::Test,
-                profile: PermissionProfile::Confirm,
-            })
+            .apply(envelope(
+                AppCommand::CreateSession {
+                    session_id: session_id.clone(),
+                    cwd: PathBuf::from("/tmp/example"),
+                    origin: Origin::Test,
+                    profile: PermissionProfile::Confirm,
+                },
+                1,
+            ))
             .expect("create session");
         session_id
     }
 
     #[test]
-    fn turn_lifecycle_is_monotonic() {
-        let mut kernel = Kernel::default();
+    fn transition_table_rejects_invalid_ready_running_waiting_and_closed_paths() {
+        let mut kernel = Kernel::with_services(services());
         let session_id = create(&mut kernel);
-        let turn_id = TurnId::new();
+        let turn_id = TurnId::from_uuid(Uuid::from_u128(200));
+
+        assert!(
+            kernel
+                .apply(envelope(
+                    AppCommand::FinishTurn {
+                        session_id: session_id.clone(),
+                        turn_id: turn_id.clone()
+                    },
+                    2
+                ))
+                .is_err()
+        );
         kernel
-            .apply(AppCommand::SubmitPrompt {
-                session_id: session_id.clone(),
-                turn_id: turn_id.clone(),
-                text: "hello".into(),
-            })
+            .apply(envelope(
+                AppCommand::SubmitPrompt {
+                    session_id: session_id.clone(),
+                    turn_id: turn_id.clone(),
+                    text: "hello".into(),
+                },
+                3,
+            ))
             .expect("submit");
+        assert!(
+            kernel
+                .apply(envelope(
+                    AppCommand::SubmitPrompt {
+                        session_id: session_id.clone(),
+                        turn_id: TurnId::new(),
+                        text: "overlap".into()
+                    },
+                    4
+                ))
+                .is_err()
+        );
+        assert!(
+            kernel
+                .apply(envelope(
+                    AppCommand::ChangePermissionProfile {
+                        session_id: session_id.clone(),
+                        profile: PermissionProfile::Observe
+                    },
+                    5
+                ))
+                .is_err()
+        );
+
         kernel
-            .apply(AppCommand::FinishTurn {
-                session_id: session_id.clone(),
-                turn_id: turn_id.clone(),
-            })
+            .record(
+                session_id.clone(),
+                CorrelationId::new(),
+                Origin::Test,
+                AppEvent::PermissionRequired {
+                    request_id: "approval".into(),
+                    explanation: "write x".into(),
+                },
+            )
+            .expect("pending");
+        assert_eq!(
+            kernel.session(&session_id).expect("state").lifecycle,
+            SessionLifecycle::WaitingForApproval
+        );
+        assert!(
+            kernel
+                .apply(envelope(
+                    AppCommand::ResolvePermission {
+                        session_id: session_id.clone(),
+                        request_id: "wrong".into(),
+                        allowed: true
+                    },
+                    6
+                ))
+                .is_err()
+        );
+        kernel
+            .apply(envelope(
+                AppCommand::ResolvePermission {
+                    session_id: session_id.clone(),
+                    request_id: "approval".into(),
+                    allowed: false,
+                },
+                7,
+            ))
+            .expect("resolve");
+        kernel
+            .apply(envelope(
+                AppCommand::FinishTurn {
+                    session_id: session_id.clone(),
+                    turn_id: turn_id.clone(),
+                },
+                8,
+            ))
             .expect("finish");
         assert!(
             kernel
-                .apply(AppCommand::FinishTurn {
-                    session_id,
-                    turn_id
-                })
+                .apply(envelope(
+                    AppCommand::FinishTurn {
+                        session_id: session_id.clone(),
+                        turn_id
+                    },
+                    9
+                ))
                 .is_err()
         );
-    }
-
-    #[test]
-    fn cannot_overlap_turns() {
-        let mut kernel = Kernel::default();
-        let session_id = create(&mut kernel);
         kernel
-            .apply(AppCommand::SubmitPrompt {
-                session_id: session_id.clone(),
-                turn_id: TurnId::new(),
-                text: "first".into(),
-            })
-            .expect("first prompt");
+            .apply(envelope(
+                AppCommand::CloseSession {
+                    session_id: session_id.clone(),
+                },
+                10,
+            ))
+            .expect("close");
         assert!(
             kernel
-                .apply(AppCommand::SubmitPrompt {
-                    session_id,
-                    turn_id: TurnId::new(),
-                    text: "second".into(),
-                })
+                .apply(envelope(
+                    AppCommand::SubmitPrompt {
+                        session_id,
+                        turn_id: TurnId::new(),
+                        text: "after close".into()
+                    },
+                    11
+                ))
                 .is_err()
         );
     }
 
     #[test]
-    fn empty_prompt_is_rejected() {
-        let mut kernel = Kernel::default();
-        let session_id = create(&mut kernel);
-        assert!(
-            kernel
-                .apply(AppCommand::SubmitPrompt {
-                    session_id,
-                    turn_id: TurnId::new(),
-                    text: "  ".into(),
-                })
-                .is_err()
-        );
+    fn command_state_matrix_is_fail_closed() {
+        #[derive(Clone, Copy)]
+        enum Candidate {
+            Submit,
+            Finish,
+            Cancel,
+            Resolve,
+            Answer,
+            Profile,
+            Close,
+        }
+        let states = [
+            SessionLifecycle::Ready,
+            SessionLifecycle::Running,
+            SessionLifecycle::WaitingForApproval,
+            SessionLifecycle::WaitingForAnswer,
+            SessionLifecycle::Closed,
+        ];
+        let candidates = [
+            Candidate::Submit,
+            Candidate::Finish,
+            Candidate::Cancel,
+            Candidate::Resolve,
+            Candidate::Answer,
+            Candidate::Profile,
+            Candidate::Close,
+        ];
+        for state in states {
+            for candidate in candidates {
+                let mut kernel = Kernel::with_services(services());
+                let session = create(&mut kernel);
+                let turn = TurnId::from_uuid(Uuid::from_u128(400));
+                {
+                    let current = kernel.sessions.get_mut(&session).expect("session");
+                    current.lifecycle = state;
+                    current.active_turn =
+                        (!matches!(state, SessionLifecycle::Ready | SessionLifecycle::Closed))
+                            .then(|| turn.clone());
+                    current.pending_permission =
+                        (state == SessionLifecycle::WaitingForApproval).then(|| "approval".into());
+                    current.pending_question =
+                        (state == SessionLifecycle::WaitingForAnswer).then(|| "question".into());
+                }
+                let command = match candidate {
+                    Candidate::Submit => AppCommand::SubmitPrompt {
+                        session_id: session.clone(),
+                        turn_id: TurnId::new(),
+                        text: "next".into(),
+                    },
+                    Candidate::Finish => AppCommand::FinishTurn {
+                        session_id: session.clone(),
+                        turn_id: turn.clone(),
+                    },
+                    Candidate::Cancel => AppCommand::CancelTurn {
+                        session_id: session.clone(),
+                        turn_id: turn.clone(),
+                    },
+                    Candidate::Resolve => AppCommand::ResolvePermission {
+                        session_id: session.clone(),
+                        request_id: "approval".into(),
+                        allowed: true,
+                    },
+                    Candidate::Answer => AppCommand::AnswerQuestion {
+                        session_id: session.clone(),
+                        question_id: "question".into(),
+                        answers: vec!["answer".into()],
+                    },
+                    Candidate::Profile => AppCommand::ChangePermissionProfile {
+                        session_id: session.clone(),
+                        profile: PermissionProfile::Observe,
+                    },
+                    Candidate::Close => AppCommand::CloseSession {
+                        session_id: session.clone(),
+                    },
+                };
+                let expected = matches!(
+                    (state, candidate),
+                    (
+                        SessionLifecycle::Ready,
+                        Candidate::Submit | Candidate::Profile | Candidate::Close,
+                    ) | (
+                        SessionLifecycle::Running,
+                        Candidate::Finish | Candidate::Cancel
+                    ) | (
+                        SessionLifecycle::WaitingForApproval,
+                        Candidate::Finish | Candidate::Cancel | Candidate::Resolve,
+                    ) | (
+                        SessionLifecycle::WaitingForAnswer,
+                        Candidate::Finish | Candidate::Cancel | Candidate::Answer,
+                    )
+                );
+                assert_eq!(
+                    kernel.apply(envelope(command, 500)).is_ok(),
+                    expected,
+                    "unexpected result for {state:?}"
+                );
+            }
+        }
     }
 
-    #[tokio::test]
-    async fn runtime_broadcasts_ordered_events() {
-        let runtime = Runtime::new(16);
-        let mut receiver = runtime.subscribe();
-        let session_id = SessionId::new();
-        runtime
-            .dispatch(AppCommand::CreateSession {
-                session_id,
+    proptest::proptest! {
+        #[test]
+        fn terminal_turn_id_never_becomes_active_again(cancel in proptest::bool::ANY) {
+            let mut kernel = Kernel::with_services(services());
+            let session = create(&mut kernel);
+            let terminal_turn = TurnId::from_uuid(Uuid::from_u128(600));
+            kernel.apply(envelope(AppCommand::SubmitPrompt { session_id: session.clone(), turn_id: terminal_turn.clone(), text: "work".into() }, 601)).expect("submit");
+            let terminal = if cancel {
+                AppCommand::CancelTurn { session_id: session.clone(), turn_id: terminal_turn.clone() }
+            } else {
+                AppCommand::FinishTurn { session_id: session.clone(), turn_id: terminal_turn.clone() }
+            };
+            kernel.apply(envelope(terminal, 602)).expect("terminal");
+            let replay = AppCommand::FinishTurn { session_id: session, turn_id: terminal_turn };
+            proptest::prop_assert!(kernel.apply(envelope(replay, 603)).is_err());
+        }
+    }
+
+    #[test]
+    fn cancelled_command_has_no_state_or_event_effect() {
+        let mut kernel = Kernel::with_services(services());
+        let token = CancellationToken::new();
+        token.cancel();
+        let id = SessionId::new();
+        let result = kernel.apply(CommandEnvelope {
+            correlation_id: CorrelationId::new(),
+            origin: Origin::Test,
+            cancellation: token,
+            command: AppCommand::CreateSession {
+                session_id: id.clone(),
                 cwd: PathBuf::from("."),
                 origin: Origin::Test,
                 profile: PermissionProfile::Confirm,
-            })
-            .await
-            .expect("dispatch");
-        let first = receiver.recv().await.expect("first event");
-        let second = receiver.recv().await.expect("second event");
-        assert_eq!(first.sequence + 1, second.sequence);
+            },
+        });
+        assert!(matches!(result, Err(AxiomError::Cancelled)));
+        assert!(kernel.session(&id).is_none());
+    }
+
+    #[test]
+    fn golden_command_stream_is_reproducible() {
+        fn run() -> Vec<EventEnvelope> {
+            let mut kernel = Kernel::with_services(services());
+            let session = SessionId::from_uuid(Uuid::from_u128(20));
+            let turn = TurnId::from_uuid(Uuid::from_u128(21));
+            let mut events = kernel
+                .apply(envelope(
+                    AppCommand::CreateSession {
+                        session_id: session.clone(),
+                        cwd: PathBuf::from("/work"),
+                        origin: Origin::Test,
+                        profile: PermissionProfile::Observe,
+                    },
+                    30,
+                ))
+                .expect("create");
+            events.extend(
+                kernel
+                    .apply(envelope(
+                        AppCommand::SubmitPrompt {
+                            session_id: session.clone(),
+                            turn_id: turn.clone(),
+                            text: "inspect".into(),
+                        },
+                        31,
+                    ))
+                    .expect("prompt"),
+            );
+            events.extend(
+                kernel
+                    .apply(envelope(
+                        AppCommand::FinishTurn {
+                            session_id: session,
+                            turn_id: turn,
+                        },
+                        32,
+                    ))
+                    .expect("finish"),
+            );
+            events
+        }
+        assert_eq!(run(), run());
+    }
+
+    #[test]
+    fn replay_marks_inflight_work_ready_without_replaying_it() {
+        let mut source = Kernel::with_services(services());
+        let session = create(&mut source);
+        let turn = TurnId::new();
+        let events = source
+            .apply(envelope(
+                AppCommand::SubmitPrompt {
+                    session_id: session.clone(),
+                    turn_id: turn,
+                    text: "work".into(),
+                },
+                20,
+            ))
+            .expect("submit");
+        let mut all = Vec::new();
+        let mut initial = Kernel::with_services(services())
+            .apply(envelope(
+                AppCommand::CreateSession {
+                    session_id: session.clone(),
+                    cwd: PathBuf::from("/tmp/example"),
+                    origin: Origin::Test,
+                    profile: PermissionProfile::Confirm,
+                },
+                1,
+            ))
+            .expect("initial");
+        all.append(&mut initial);
+        all.extend(events);
+        let mut restored = Kernel::with_services(services());
+        let state = restored.restore_from_events(&all).expect("restore");
+        assert_eq!(state.lifecycle, SessionLifecycle::Ready);
+        assert!(state.active_turn.is_none());
+    }
+
+    #[tokio::test]
+    async fn slow_or_dropped_subscribers_do_not_block_dispatch() {
+        let runtime = Runtime::with_services(1, services());
+        let _slow = runtime.subscribe();
+        let id = runtime.session_id();
+        tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            runtime.dispatch(AppCommand::CreateSession {
+                session_id: id,
+                cwd: PathBuf::from("."),
+                origin: Origin::Test,
+                profile: PermissionProfile::Confirm,
+            }),
+        )
+        .await
+        .expect("not blocked")
+        .expect("dispatch");
     }
 }

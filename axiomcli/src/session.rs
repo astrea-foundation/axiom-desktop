@@ -299,7 +299,7 @@ fn storage_error(error: rusqlite::Error) -> AxiomError {
 mod tests {
     use chrono::Utc;
 
-    use crate::app::{Origin, PermissionProfile};
+    use crate::app::{CorrelationId, Origin, PermissionProfile};
 
     use super::*;
 
@@ -308,6 +308,8 @@ mod tests {
             schema_version: 1,
             sequence,
             occurred_at: Utc::now(),
+            correlation_id: CorrelationId::new(),
+            origin: Origin::Test,
             session_id: id.clone(),
             event: AppEvent::SessionCreated {
                 cwd: PathBuf::from("/tmp/project"),
@@ -327,6 +329,8 @@ mod tests {
                 schema_version: 1,
                 sequence: 2,
                 occurred_at: Utc::now(),
+                correlation_id: CorrelationId::new(),
+                origin: Origin::Test,
                 session_id: id.clone(),
                 event: AppEvent::TurnStarted {
                     turn_id: crate::app::TurnId::new(),
@@ -356,6 +360,8 @@ mod tests {
                 schema_version: 1,
                 sequence: 2,
                 occurred_at: Utc::now(),
+                correlation_id: CorrelationId::new(),
+                origin: Origin::Test,
                 session_id: id.clone(),
                 event: AppEvent::PromptAccepted {
                     turn_id: crate::app::TurnId::new(),
