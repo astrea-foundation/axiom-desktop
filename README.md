@@ -1,0 +1,178 @@
+# AxiomCLI
+
+AxiomCLI is an early Rust coding agent with a terminal interface and an Agent
+Client Protocol (ACP) control mode. It is intentionally under active design:
+interfaces are small, configuration is explicit, and compatibility promises do
+not begin until a tagged release says otherwise.
+
+This repository contains the CLI/TUI only. It does not contain an Electron or
+desktop application.
+
+## Development status
+
+The implementation follows the gated plan in
+[`docs/axiomcli-implementation-plan.md`](docs/axiomcli-implementation-plan.md).
+All applicable Stage 00–15 gates pass for the early Linux x86-64 GNU release
+candidate. Each stage has an evidence-backed review record under `docs/reviews/`.
+Production TEE/E2EE and the desktop application remain separate future work.
+
+## Commands
+
+```text
+cargo run -p axiomcli -- --help
+cargo run -p axiomcli -- doctor
+cargo run -p axiomcli -- tui
+cargo run -p axiomcli -- exec "inspect this repository"
+cargo run -p axiomcli -- acp
+cargo run -p axiomcli -- sessions list
+cargo run -p axiomcli -- plans list
+```
+
+`axiomcli acp` reserves stdout for newline-delimited ACP JSON-RPC. Logs and
+diagnostics go to stderr.
+
+The TUI uses the current terminal viewport (it does not resize the terminal).
+It needs at least 42×10 cells. Press `?` for its keyboard/mouse reference;
+transcript search, folding, entry/diff viewing, reduced motion, ASCII, and
+no-color modes are built in.
+
+## Installation
+
+Development installs can use `cargo install --locked --path axiomcli`. The
+supported release artifact is currently Linux x86-64 GNU:
+
+```text
+scripts/verify-release dist/axiomcli-VERSION-x86_64-unknown-linux-gnu.tar.gz \
+  dist/axiomcli-VERSION-x86_64-unknown-linux-gnu.tar.gz.asc
+scripts/install-release dist/axiomcli-VERSION-x86_64-unknown-linux-gnu.tar.gz PREFIX
+scripts/uninstall-release PREFIX
+```
+
+See [`docs/releasing.md`](docs/releasing.md) for reproducible packaging and
+signing, and [`docs/configuration.md`](docs/configuration.md),
+[`docs/privacy.md`](docs/privacy.md), and
+[`docs/troubleshooting.md`](docs/troubleshooting.md) for operation details.
+
+## Provider configuration
+
+Development inference uses an OpenAI-compatible chat-completions endpoint. It
+does not claim TEE attestation or E2EE.
+
+```text
+AXIOM_API_KEY=...                 when required by the configured endpoint
+AXIOM_BASE_URL=http://127.0.0.1:8484/v1
+AXIOM_MODEL=your-model-id
+```
+
+Do not put API keys in repository configuration or command-line arguments.
+
+## Permission profiles
+
+- `plan`: workspace reads plus writes to revisioned `.axiomcli/plans` artifacts;
+  all code edits, processes, network, and MCP calls are deterministically denied.
+- `observe`: workspace reads only; mutation, processes, network, and MCP denied.
+- `confirm`: reads are automatic; every other effect asks the TUI/ACP client.
+- `workspace`: in-root edits and a narrow development-command allowlist are
+  automatic; network, MCP, deletion, and other programs ask.
+- `autonomous`: normalized in-scope operations are automatic, while shell and
+deletion remain confirmation-gated and hard denials still win.
+
+Use `axiomcli tui --plan` or `axiomcli exec --plan "..."` for plan mode.
+Review durable plans with `axiomcli plans list/show/comment/request-revision/
+revise/propose/approve/abandon`. Plan approval changes artifact state; it does
+not itself execute the plan or grant broader authority.
+
+Agents can ask up to three structured questions. The TUI uses a separate answer
+composer so an in-progress message draft is preserved. ACP maps questions to
+form elicitation when the client advertises that currently unstable ACP
+capability; unsupported clients fail the question closed.
+
+The model proposes operations but never authorizes them. Structured tools,
+canonical paths, process groups, output caps, SSRF checks, and the policy engine
+remain outside model control. Shell execution is a separate, explicitly
+higher-risk tool and always requires approval.
+
+## Real SearXNG integration
+
+Web search uses a real SearXNG process, not a fake response server. The
+development lifecycle is reproducible and loopback-only:
+
+```text
+scripts/searxng-dev bootstrap
+scripts/searxng-dev start
+scripts/searxng-dev query "Rust programming language"
+scripts/searxng-dev integration-test
+scripts/searxng-dev stop
+```
+
+See [`dev/searxng/README.md`](dev/searxng/README.md). `fetch_url` runs on the
+user's machine and rejects local, private, metadata, and redirect-pivot
+destinations.
+
+## Configuration
+
+Precedence is defaults → trusted user config → `.axiomcli/config.toml` →
+environment. Layers merge by field, but repository-controlled project config
+may only narrow permissions/budgets and cannot set endpoints or launch MCP
+commands. `axiomcli doctor` prints the platform-specific trusted user config
+path. Example user configuration:
+
+```toml
+permission_profile = "workspace"
+searxng_url = "http://127.0.0.1:8888"
+
+[[mcp_servers]]
+name = "example"
+command = "example-mcp-server"
+args = []
+read_only_tools = ["lookup"] # explicit user trust; server hints do not grant it
+```
+
+Configured MCP servers are discovered over stdio. A crashed server reconnects
+on demand; only explicitly trusted read-only tools can be retried, and only when
+their schema is unchanged. Calls with possible side effects are never replayed
+after an ambiguous disconnect. MCP output is labeled untrusted, redacted, and
+bounded before it reaches either front end.
+
+Session journals are redacted SQLite records under the platform data directory.
+`sessions list/show/export/rename/archive/unarchive/prune` manages them. Use
+`axiomcli tui --resume SESSION_ID` to restore a transcript and bounded model
+context. ACP advertises `session/load` when its durable store opens. Interrupted
+actions are reported as unknown and never replayed.
+
+## Known early-version limits
+
+- Development inference is plainly labeled `UNATTESTED DEV`; TEE/E2EE is later.
+- Linux is the currently exercised development platform.
+- ACP v1 and durable `session/load` are supported. Per-session MCP configuration
+  is not advertised yet; MCP servers come only from trusted user configuration.
+- SearXNG upstream engines can throttle or fail independently.
+- Background process work is limited to four concurrent children. It has
+  independent IDs, time/output budgets, ordered provenance, and inherits parent
+  cancellation. Subagents are deliberately not implemented yet.
+- The release package supports Linux x86-64 GNU only. macOS and Windows remain
+  unsupported until their sandbox, PTY, and installer gates match Linux.
+- Active TUI transcript content is retained in memory until the session closes;
+  durable exports and loads are bounded.
+
+## Quality checks
+
+```text
+cargo fmt --all --check
+cargo check --workspace --all-targets
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-features
+cargo deny check
+```
+
+The required deterministic evaluation lane is
+`scripts/axiomcli-eval deterministic`. Budgeted live-model and full real-service
+runs are opt-in via `scripts/axiomcli-eval live|full`; see
+[`docs/evaluations.md`](docs/evaluations.md) for scoring and the recorded
+baseline.
+
+## Reference policy
+
+Other coding agents are behavioral references only. AxiomCLI code and tests are
+written from its own contracts; reference code is not copied or mechanically
+ported. See the plan's clean-room policy and repository inventory.

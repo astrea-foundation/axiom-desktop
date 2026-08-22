@@ -1,0 +1,1270 @@
+use std::{
+    path::{Path, PathBuf},
+    sync::{Arc, RwLock},
+};
+
+use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
+use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
+
+use crate::{AxiomError, Result, app::PermissionProfile};
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum Effect {
+    FileRead {
+        path: PathBuf,
+    },
+    FileWrite {
+        path: PathBuf,
+    },
+    FileDelete {
+        path: PathBuf,
+    },
+    Process {
+        program: String,
+        args: Vec<String>,
+        shell: bool,
+        cwd: PathBuf,
+        env: Vec<(String, String)>,
+    },
+    Network {
+        url: String,
+    },
+    Mcp {
+        server: String,
+        tool: String,
+        side_effecting: bool,
+    },
+    ScopeChange {
+        scope: String,
+    },
+    PlanWrite {
+        path: PathBuf,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EffectClass {
+    FileRead,
+    FileWrite,
+    FileDelete,
+    Process,
+    Network,
+    Mcp,
+    ScopeChange,
+    PlanWrite,
+}
+
+impl EffectClass {
+    const fn of(effect: &Effect) -> Self {
+        match effect {
+            Effect::FileRead { .. } => Self::FileRead,
+            Effect::FileWrite { .. } => Self::FileWrite,
+            Effect::FileDelete { .. } => Self::FileDelete,
+            Effect::Process { .. } => Self::Process,
+            Effect::Network { .. } => Self::Network,
+            Effect::Mcp { .. } => Self::Mcp,
+            Effect::ScopeChange { .. } => Self::ScopeChange,
+            Effect::PlanWrite { .. } => Self::PlanWrite,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuleAction {
+    Ask,
+    Deny,
+}
+
+/// A trusted-user or project restriction. Early `AxiomCLI` intentionally accepts
+/// only `ask` and `deny` rules: a repository may narrow authority, but it cannot
+/// grant itself more authority.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PolicyRule {
+    pub action: RuleAction,
+    #[serde(default)]
+    pub effect: Option<EffectClass>,
+    #[serde(default)]
+    pub resource_prefix: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+impl PolicyRule {
+    pub fn validate(&self) -> Result<()> {
+        if self
+            .resource_prefix
+            .as_ref()
+            .is_some_and(|value| value.is_empty() || value.contains('\0'))
+        {
+            return Err(AxiomError::Config(
+                "policy rule resource_prefix must be non-empty and contain no NUL".into(),
+            ));
+        }
+        if self
+            .reason
+            .as_ref()
+            .is_some_and(|value| value.trim().is_empty() || value.contains('\0'))
+        {
+            return Err(AxiomError::Config(
+                "policy rule reason must be non-empty and contain no NUL".into(),
+            ));
+        }
+        if self.resource_prefix.is_some() && self.effect.is_none() {
+            return Err(AxiomError::Config(
+                "policy rules with resource_prefix must select an effect class".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn matches(&self, effect: &Effect) -> bool {
+        if self
+            .effect
+            .is_some_and(|class| class != EffectClass::of(effect))
+        {
+            return false;
+        }
+        self.resource_prefix
+            .as_deref()
+            .is_none_or(|prefix| effect_matches_prefix(effect, prefix))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DecisionKind {
+    Allow,
+    Ask,
+    Deny,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PolicyDecision {
+    pub kind: DecisionKind,
+    pub explanation: String,
+    pub normalized_effect: Effect,
+    /// False for an explicit configured `ask`: such a rule must remain an ask
+    /// even after another operation was approved for the session.
+    pub session_grant_allowed: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalChoice {
+    Deny,
+    AllowOnce,
+    AllowExactSession,
+    AllowPrefixSession,
+}
+
+impl ApprovalChoice {
+    #[must_use]
+    pub const fn is_allowed(self) -> bool {
+        !matches!(self, Self::Deny)
+    }
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Deny => "deny",
+            Self::AllowOnce => "allow_once",
+            Self::AllowExactSession => "allow_exact_session",
+            Self::AllowPrefixSession => "allow_prefix_session",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApprovalResponse {
+    pub choice: ApprovalChoice,
+}
+
+impl ApprovalResponse {
+    #[must_use]
+    pub const fn deny() -> Self {
+        Self {
+            choice: ApprovalChoice::Deny,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApprovalRequest {
+    pub request_id: String,
+    pub explanation: String,
+    pub effect: Effect,
+    pub allow_session_grants: bool,
+    pub suggested_prefix_scope: Option<String>,
+}
+
+impl ApprovalRequest {
+    #[must_use]
+    pub fn new(decision: &PolicyDecision) -> Self {
+        Self {
+            request_id: Uuid::new_v4().to_string(),
+            explanation: format!(
+                "{}: {}",
+                decision.explanation,
+                describe_effect(&decision.normalized_effect)
+            ),
+            effect: decision.normalized_effect.clone(),
+            allow_session_grants: decision.session_grant_allowed,
+            suggested_prefix_scope: decision
+                .session_grant_allowed
+                .then(|| suggested_prefix(&decision.normalized_effect))
+                .flatten()
+                .map(|scope| describe_grant(&scope)),
+        }
+    }
+}
+
+#[async_trait]
+pub trait ApprovalHandler: Send + Sync {
+    async fn request(
+        &self,
+        request: ApprovalRequest,
+        cancellation: CancellationToken,
+    ) -> Result<ApprovalResponse>;
+}
+
+#[derive(Debug, Default)]
+pub struct DenyApproval;
+
+#[async_trait]
+impl ApprovalHandler for DenyApproval {
+    async fn request(
+        &self,
+        _request: ApprovalRequest,
+        _cancellation: CancellationToken,
+    ) -> Result<ApprovalResponse> {
+        Ok(ApprovalResponse::deny())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ScopedGrant {
+    Exact(Effect),
+    FilePrefix {
+        class: EffectClass,
+        path: PathBuf,
+    },
+    NetworkOrigin(String),
+    McpServer {
+        server: String,
+        side_effecting: bool,
+    },
+}
+
+impl ScopedGrant {
+    fn matches(&self, effect: &Effect) -> bool {
+        match (self, effect) {
+            (Self::Exact(granted), requested) => granted == requested,
+            (Self::FilePrefix { class, path }, requested) => {
+                *class == EffectClass::of(requested)
+                    && effect_path(requested).is_some_and(|requested| requested.starts_with(path))
+            }
+            (Self::NetworkOrigin(origin), Effect::Network { url }) => {
+                network_origin(url).as_deref() == Some(origin)
+            }
+            (
+                Self::McpServer {
+                    server,
+                    side_effecting,
+                },
+                Effect::Mcp {
+                    server: requested_server,
+                    side_effecting: requested_side_effecting,
+                    ..
+                },
+            ) => server == requested_server && side_effecting == requested_side_effecting,
+            _ => false,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct PolicyEngine {
+    roots: Vec<PathBuf>,
+    rules: Vec<PolicyRule>,
+    grants: Arc<RwLock<Vec<ScopedGrant>>>,
+}
+
+impl PolicyEngine {
+    pub fn for_workspace(root: &Path) -> Result<Self> {
+        Self::for_workspace_with_rules(root, Vec::new())
+    }
+
+    pub fn for_workspace_with_rules(root: &Path, rules: Vec<PolicyRule>) -> Result<Self> {
+        let root = root.canonicalize()?;
+        let rules = rules
+            .into_iter()
+            .map(|rule| normalize_rule(rule, &root))
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Self {
+            roots: vec![root],
+            rules,
+            grants: Arc::new(RwLock::new(Vec::new())),
+        })
+    }
+
+    #[must_use]
+    pub fn evaluate(&self, profile: PermissionProfile, effect: Effect) -> PolicyDecision {
+        let normalized = match self.normalize(effect.clone()) {
+            Ok(effect) => effect,
+            Err(error) => return decision(DecisionKind::Deny, error.to_string(), effect, false),
+        };
+        if let Some(reason) = self.hard_denial(&normalized) {
+            return decision(DecisionKind::Deny, reason, normalized, false);
+        }
+
+        let matches: Vec<_> = self
+            .rules
+            .iter()
+            .filter(|rule| rule.matches(&normalized))
+            .collect();
+        if let Some(rule) = matches.iter().find(|rule| rule.action == RuleAction::Deny) {
+            return decision(
+                DecisionKind::Deny,
+                rule.reason
+                    .clone()
+                    .unwrap_or_else(|| "denied by a configured policy rule".into()),
+                normalized,
+                false,
+            );
+        }
+
+        // Read-only profiles are hard constraints. A repository-supplied `ask`
+        // rule cannot turn a prohibited mutation into an approval prompt.
+        if profile == PermissionProfile::Plan
+            && !matches!(
+                normalized,
+                Effect::FileRead { .. } | Effect::PlanWrite { .. }
+            )
+        {
+            return decision(
+                DecisionKind::Deny,
+                "plan mode is read-only outside its revisioned plan artifact".into(),
+                normalized,
+                false,
+            );
+        }
+        if profile == PermissionProfile::Observe && !matches!(normalized, Effect::FileRead { .. }) {
+            return decision(
+                DecisionKind::Deny,
+                "observe mode is read-only".into(),
+                normalized,
+                false,
+            );
+        }
+
+        if let Some(rule) = matches.iter().find(|rule| rule.action == RuleAction::Ask) {
+            return decision(
+                DecisionKind::Ask,
+                rule.reason
+                    .clone()
+                    .unwrap_or_else(|| "approval required by a configured policy rule".into()),
+                normalized,
+                false,
+            );
+        }
+
+        if self
+            .grants
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .any(|grant| grant.matches(&normalized))
+        {
+            return decision(
+                DecisionKind::Allow,
+                "allowed by a narrow session grant".into(),
+                normalized,
+                true,
+            );
+        }
+
+        let (kind, explanation, grantable) = profile_default(profile, &normalized);
+        decision(kind, explanation.into(), normalized, grantable)
+    }
+
+    pub fn apply_approval(
+        &self,
+        request: &ApprovalRequest,
+        response: ApprovalResponse,
+    ) -> Result<()> {
+        match response.choice {
+            ApprovalChoice::Deny | ApprovalChoice::AllowOnce => Ok(()),
+            ApprovalChoice::AllowExactSession | ApprovalChoice::AllowPrefixSession
+                if !request.allow_session_grants =>
+            {
+                Err(AxiomError::PermissionDenied(
+                    "this configured approval cannot be converted into a session grant".into(),
+                ))
+            }
+            ApprovalChoice::AllowExactSession => {
+                self.ensure_grantable(&request.effect)?;
+                self.grants
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(ScopedGrant::Exact(request.effect.clone()));
+                Ok(())
+            }
+            ApprovalChoice::AllowPrefixSession => {
+                self.ensure_grantable(&request.effect)?;
+                let scope = suggested_prefix(&request.effect).ok_or_else(|| {
+                    AxiomError::PermissionDenied(
+                        "this operation has no safe predefined prefix scope".into(),
+                    )
+                })?;
+                self.grants
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(scope);
+                Ok(())
+            }
+        }
+    }
+
+    fn ensure_grantable(&self, effect: &Effect) -> Result<()> {
+        let normalized = self.normalize(effect.clone())?;
+        if let Some(reason) = self.hard_denial(&normalized) {
+            return Err(AxiomError::PermissionDenied(reason));
+        }
+        if self.rules.iter().any(|rule| {
+            rule.matches(&normalized) && matches!(rule.action, RuleAction::Ask | RuleAction::Deny)
+        }) {
+            return Err(AxiomError::PermissionDenied(
+                "configured ask/deny rules cannot be overridden by a session grant".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn normalize(&self, effect: Effect) -> Result<Effect> {
+        match effect {
+            Effect::FileRead { path } => Ok(Effect::FileRead {
+                path: self.normalize_path(path),
+            }),
+            Effect::FileWrite { path } => Ok(Effect::FileWrite {
+                path: self.normalize_path(path),
+            }),
+            Effect::FileDelete { path } => Ok(Effect::FileDelete {
+                path: self.normalize_path(path),
+            }),
+            Effect::Process {
+                program,
+                args,
+                shell,
+                cwd,
+                mut env,
+            } => {
+                let program = program.trim().to_owned();
+                if program.is_empty()
+                    || program.contains('\0')
+                    || args.iter().any(|argument| argument.contains('\0'))
+                    || env.iter().any(|(key, value)| {
+                        !is_allowed_child_env_key(key) || key.contains('\0') || value.contains('\0')
+                    })
+                {
+                    return Err(AxiomError::PermissionDenied(
+                        "process program/arguments/environment are invalid or not allowlisted"
+                            .into(),
+                    ));
+                }
+                env.sort();
+                env.dedup_by(|left, right| left.0 == right.0);
+                let basename = program.rsplit('/').next().unwrap_or(&program);
+                let shell = shell
+                    || (matches!(basename, "sh" | "bash" | "zsh" | "fish" | "dash")
+                        && args.first().is_some_and(|argument| argument == "-c"));
+                Ok(Effect::Process {
+                    program,
+                    args,
+                    shell,
+                    cwd: self.normalize_path(cwd),
+                    env,
+                })
+            }
+            Effect::Network { url } => {
+                let mut parsed = reqwest::Url::parse(&url).map_err(|error| {
+                    AxiomError::PermissionDenied(format!("invalid network destination: {error}"))
+                })?;
+                if !matches!(parsed.scheme(), "http" | "https")
+                    || !parsed.username().is_empty()
+                    || parsed.password().is_some()
+                    || parsed.host_str().is_none()
+                {
+                    return Err(AxiomError::PermissionDenied(
+                        "network destinations require an http(s) URL without embedded credentials"
+                            .into(),
+                    ));
+                }
+                parsed.set_fragment(None);
+                Ok(Effect::Network {
+                    url: parsed.to_string(),
+                })
+            }
+            Effect::Mcp {
+                server,
+                tool,
+                side_effecting,
+            } => {
+                let server = server.trim().to_owned();
+                let tool = tool.trim().to_owned();
+                if server.is_empty()
+                    || tool.is_empty()
+                    || server.contains('\0')
+                    || tool.contains('\0')
+                {
+                    return Err(AxiomError::PermissionDenied(
+                        "MCP server and tool names must be non-empty/NUL-free".into(),
+                    ));
+                }
+                Ok(Effect::Mcp {
+                    server,
+                    tool,
+                    side_effecting,
+                })
+            }
+            Effect::ScopeChange { scope } => {
+                let scope = scope.trim().to_owned();
+                if scope.is_empty() || scope.contains('\0') {
+                    return Err(AxiomError::PermissionDenied(
+                        "scope changes must have a non-empty/NUL-free identity".into(),
+                    ));
+                }
+                Ok(Effect::ScopeChange { scope })
+            }
+            Effect::PlanWrite { path } => Ok(Effect::PlanWrite {
+                path: self.normalize_path(path),
+            }),
+        }
+    }
+
+    fn normalize_path(&self, path: PathBuf) -> PathBuf {
+        let absolute = if path.is_absolute() {
+            path
+        } else {
+            self.roots[0].join(path)
+        };
+        normalize_for_policy(&absolute)
+    }
+
+    fn hard_denial(&self, effect: &Effect) -> Option<String> {
+        match effect {
+            Effect::FileRead { path }
+            | Effect::FileWrite { path }
+            | Effect::FileDelete { path } => {
+                if self.roots.iter().any(|root| path.starts_with(root)) {
+                    None
+                } else {
+                    Some(format!(
+                        "{} is outside authorized workspace roots",
+                        path.display()
+                    ))
+                }
+            }
+            Effect::PlanWrite { path } => {
+                if self
+                    .roots
+                    .iter()
+                    .any(|root| path.starts_with(root.join(".axiomcli/plans")))
+                {
+                    None
+                } else {
+                    Some(format!(
+                        "{} is outside the dedicated plan artifact directory",
+                        path.display()
+                    ))
+                }
+            }
+            Effect::Process { cwd, .. } if !self.roots.iter().any(|root| cwd.starts_with(root)) => {
+                Some(format!(
+                    "process cwd {} is outside authorized workspace roots",
+                    cwd.display()
+                ))
+            }
+            Effect::Process { program, .. }
+                if matches!(
+                    program.rsplit('/').next().unwrap_or(program),
+                    "sudo"
+                        | "doas"
+                        | "su"
+                        | "mount"
+                        | "umount"
+                        | "mkfs"
+                        | "shutdown"
+                        | "reboot"
+                        | "poweroff"
+                ) =>
+            {
+                Some(format!(
+                    "privileged/destructive program `{program}` is hard-denied"
+                ))
+            }
+            _ => None,
+        }
+    }
+}
+
+fn normalize_rule(mut rule: PolicyRule, root: &Path) -> Result<PolicyRule> {
+    rule.validate()?;
+    let Some(prefix) = rule.resource_prefix.take() else {
+        return Ok(rule);
+    };
+    let normalized = match rule.effect.expect("validated effect for prefix") {
+        EffectClass::FileRead
+        | EffectClass::FileWrite
+        | EffectClass::FileDelete
+        | EffectClass::PlanWrite => {
+            let path = PathBuf::from(prefix);
+            let absolute = if path.is_absolute() {
+                path
+            } else {
+                root.join(path)
+            };
+            normalize_for_policy(&absolute)
+                .to_string_lossy()
+                .into_owned()
+        }
+        EffectClass::Network => {
+            let mut url = reqwest::Url::parse(&prefix).map_err(|error| {
+                AxiomError::Config(format!("invalid network policy prefix: {error}"))
+            })?;
+            if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+                return Err(AxiomError::Config(
+                    "network policy prefixes require an http(s) URL".into(),
+                ));
+            }
+            url.set_fragment(None);
+            url.to_string()
+        }
+        EffectClass::Process | EffectClass::Mcp | EffectClass::ScopeChange => {
+            prefix.trim().to_owned()
+        }
+    };
+    if normalized.is_empty() {
+        return Err(AxiomError::Config(
+            "normalized policy resource prefix cannot be empty".into(),
+        ));
+    }
+    rule.resource_prefix = Some(normalized);
+    Ok(rule)
+}
+
+fn decision(
+    kind: DecisionKind,
+    explanation: String,
+    normalized_effect: Effect,
+    session_grant_allowed: bool,
+) -> PolicyDecision {
+    PolicyDecision {
+        kind,
+        explanation,
+        normalized_effect,
+        session_grant_allowed,
+    }
+}
+
+fn profile_default(
+    profile: PermissionProfile,
+    effect: &Effect,
+) -> (DecisionKind, &'static str, bool) {
+    match (profile, effect) {
+        (_, Effect::FileRead { .. }) => (DecisionKind::Allow, "workspace read", false),
+        (PermissionProfile::Plan, Effect::PlanWrite { .. }) => (
+            DecisionKind::Allow,
+            "plan mode permits the revisioned plan artifact",
+            false,
+        ),
+        (PermissionProfile::Plan, _) => (
+            DecisionKind::Deny,
+            "plan mode is read-only outside its revisioned plan artifact",
+            false,
+        ),
+        (PermissionProfile::Observe, _) => (DecisionKind::Deny, "observe mode is read-only", false),
+        (_, Effect::ScopeChange { .. }) => (
+            DecisionKind::Ask,
+            "scope expansion always requires approval",
+            false,
+        ),
+        (PermissionProfile::Confirm, _) => {
+            (DecisionKind::Ask, "confirm mode requires approval", true)
+        }
+        (PermissionProfile::Workspace, Effect::FileWrite { .. }) => (
+            DecisionKind::Allow,
+            "workspace mode permits in-root edits",
+            false,
+        ),
+        (PermissionProfile::Workspace, Effect::FileDelete { .. }) => {
+            (DecisionKind::Ask, "file deletion requires approval", true)
+        }
+        (
+            PermissionProfile::Workspace,
+            Effect::Mcp {
+                side_effecting: false,
+                ..
+            },
+        ) => (
+            DecisionKind::Allow,
+            "explicitly trusted read-only MCP tool",
+            false,
+        ),
+        (
+            PermissionProfile::Workspace,
+            Effect::Process {
+                program,
+                args,
+                shell: false,
+                ..
+            },
+        ) if is_workspace_program_allowed(program, args) => (
+            DecisionKind::Allow,
+            "allowlisted development command",
+            false,
+        ),
+        (PermissionProfile::Workspace, _) => (
+            DecisionKind::Ask,
+            "operation exceeds workspace defaults",
+            true,
+        ),
+        (PermissionProfile::Autonomous, Effect::Process { shell: true, .. }) => (
+            DecisionKind::Ask,
+            "shell interpretation always requires approval",
+            true,
+        ),
+        (PermissionProfile::Autonomous, Effect::FileDelete { .. }) => (
+            DecisionKind::Ask,
+            "deletion remains confirmation-gated",
+            true,
+        ),
+        (PermissionProfile::Autonomous, _) => {
+            (DecisionKind::Allow, "allowed by autonomous profile", false)
+        }
+    }
+}
+
+fn suggested_prefix(effect: &Effect) -> Option<ScopedGrant> {
+    match effect {
+        Effect::FileRead { path } | Effect::FileWrite { path } | Effect::FileDelete { path } => {
+            Some(ScopedGrant::FilePrefix {
+                class: EffectClass::of(effect),
+                path: if path.is_dir() {
+                    path.clone()
+                } else {
+                    path.parent()?.to_path_buf()
+                },
+            })
+        }
+        Effect::Network { url } => network_origin(url).map(ScopedGrant::NetworkOrigin),
+        Effect::Mcp {
+            server,
+            side_effecting,
+            ..
+        } => Some(ScopedGrant::McpServer {
+            server: server.clone(),
+            side_effecting: *side_effecting,
+        }),
+        Effect::Process { .. } | Effect::ScopeChange { .. } | Effect::PlanWrite { .. } => None,
+    }
+}
+
+fn describe_grant(grant: &ScopedGrant) -> String {
+    match grant {
+        ScopedGrant::Exact(effect) => format!("exactly {}", describe_effect(effect)),
+        ScopedGrant::FilePrefix { class, path } => {
+            format!("{class:?} within {}", path.display())
+        }
+        ScopedGrant::NetworkOrigin(origin) => format!("network origin {origin}"),
+        ScopedGrant::McpServer {
+            server,
+            side_effecting,
+        } => format!(
+            "MCP server {server} ({})",
+            if *side_effecting {
+                "side-effecting tools"
+            } else {
+                "read-only tools"
+            }
+        ),
+    }
+}
+
+fn effect_path(effect: &Effect) -> Option<&Path> {
+    match effect {
+        Effect::FileRead { path }
+        | Effect::FileWrite { path }
+        | Effect::FileDelete { path }
+        | Effect::PlanWrite { path } => Some(path),
+        _ => None,
+    }
+}
+
+fn effect_matches_prefix(effect: &Effect, prefix: &str) -> bool {
+    match effect {
+        Effect::FileRead { path }
+        | Effect::FileWrite { path }
+        | Effect::FileDelete { path }
+        | Effect::PlanWrite { path } => path.starts_with(Path::new(prefix)),
+        Effect::Process { program, .. } => program.starts_with(prefix),
+        Effect::Network { url } => url.starts_with(prefix),
+        Effect::Mcp { server, tool, .. } => format!("{server}/{tool}").starts_with(prefix),
+        Effect::ScopeChange { scope } => scope.starts_with(prefix),
+    }
+}
+
+fn network_origin(url: &str) -> Option<String> {
+    let parsed = reqwest::Url::parse(url).ok()?;
+    let host = parsed.host_str()?;
+    let port = parsed
+        .port()
+        .map(|port| format!(":{port}"))
+        .unwrap_or_default();
+    Some(format!("{}://{host}{port}", parsed.scheme()))
+}
+
+fn normalize_for_policy(path: &Path) -> PathBuf {
+    if path.exists() {
+        return path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    }
+    let mut ancestor = path;
+    let mut missing = Vec::new();
+    while !ancestor.exists() {
+        if let Some(name) = ancestor.file_name() {
+            missing.push(name.to_owned());
+        }
+        let Some(parent) = ancestor.parent() else {
+            return path.to_path_buf();
+        };
+        ancestor = parent;
+    }
+    let mut normalized = ancestor
+        .canonicalize()
+        .unwrap_or_else(|_| ancestor.to_path_buf());
+    for component in missing.iter().rev() {
+        normalized.push(component);
+    }
+    normalized
+}
+
+fn is_workspace_program_allowed(program: &str, args: &[String]) -> bool {
+    let program = program.rsplit('/').next().unwrap_or(program);
+    match program {
+        "cargo" => matches!(
+            args.first().map(String::as_str),
+            Some("check" | "test" | "fmt" | "clippy")
+        ),
+        "npm" | "pnpm" | "yarn" => matches!(args.first().map(String::as_str), Some("test" | "run")),
+        "git" => matches!(
+            args.first().map(String::as_str),
+            Some("status" | "diff" | "log" | "show")
+        ),
+        _ => false,
+    }
+}
+
+#[must_use]
+pub fn is_allowed_child_env_key(key: &str) -> bool {
+    matches!(
+        key,
+        "CI" | "RUST_BACKTRACE" | "RUST_LOG" | "NODE_ENV" | "CARGO_TERM_COLOR" | "NO_COLOR"
+    )
+}
+
+#[must_use]
+pub fn describe_effect(effect: &Effect) -> String {
+    match effect {
+        Effect::FileRead { path } => format!("read {}", path.display()),
+        Effect::FileWrite { path } => format!("write {}", path.display()),
+        Effect::FileDelete { path } => format!("delete {}", path.display()),
+        Effect::Process {
+            program,
+            args,
+            shell,
+            cwd,
+            env,
+        } => format!(
+            "run {}{}{} in {}{}",
+            if *shell { "shell " } else { "" },
+            program,
+            if args.is_empty() {
+                String::new()
+            } else {
+                format!(" {}", args.join(" "))
+            },
+            cwd.display(),
+            if env.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    " with environment {}",
+                    env.iter()
+                        .map(|(key, _)| key.as_str())
+                        .collect::<Vec<_>>()
+                        .join(",")
+                )
+            }
+        ),
+        Effect::Network { url } => format!("connect to {url}"),
+        Effect::Mcp {
+            server,
+            tool,
+            side_effecting,
+        } => format!(
+            "call MCP {server}/{tool} ({})",
+            if *side_effecting {
+                "side effects declared"
+            } else {
+                "read-only declared"
+            }
+        ),
+        Effect::ScopeChange { scope } => format!("expand scope: {scope}"),
+        Effect::PlanWrite { path } => format!("update plan artifact {}", path.display()),
+    }
+}
+
+pub fn require_allowed(decision: &PolicyDecision) -> Result<()> {
+    match decision.kind {
+        DecisionKind::Allow => Ok(()),
+        DecisionKind::Ask => Err(AxiomError::ApprovalRequired(decision.explanation.clone())),
+        DecisionKind::Deny => Err(AxiomError::PermissionDenied(decision.explanation.clone())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use proptest::prelude::*;
+    use tempfile::tempdir;
+
+    use super::*;
+
+    fn profiles() -> [PermissionProfile; 5] {
+        [
+            PermissionProfile::Plan,
+            PermissionProfile::Observe,
+            PermissionProfile::Confirm,
+            PermissionProfile::Workspace,
+            PermissionProfile::Autonomous,
+        ]
+    }
+
+    #[test]
+    fn table_covers_profiles_effects_rules_and_scopes() {
+        let root = tempdir().expect("root");
+        let path = root.path().join("src/lib.rs");
+        let effects = [
+            Effect::FileRead { path: path.clone() },
+            Effect::FileWrite { path: path.clone() },
+            Effect::FileDelete { path: path.clone() },
+            Effect::Process {
+                program: "cargo".into(),
+                args: vec!["test".into()],
+                shell: false,
+                cwd: root.path().to_path_buf(),
+                env: Vec::new(),
+            },
+            Effect::Process {
+                program: "echo hi".into(),
+                args: Vec::new(),
+                shell: true,
+                cwd: root.path().to_path_buf(),
+                env: Vec::new(),
+            },
+            Effect::Network {
+                url: "https://example.com/search#fragment".into(),
+            },
+            Effect::Mcp {
+                server: "fixture".into(),
+                tool: "read".into(),
+                side_effecting: false,
+            },
+            Effect::PlanWrite {
+                path: root.path().join(".axiomcli/plans/test.json"),
+            },
+        ];
+        for profile in profiles() {
+            let policy = PolicyEngine::for_workspace(root.path()).expect("policy");
+            for effect in &effects {
+                let decision = policy.evaluate(profile, effect.clone());
+                assert_eq!(
+                    EffectClass::of(&decision.normalized_effect),
+                    EffectClass::of(effect)
+                );
+                assert!(!decision.explanation.is_empty());
+                if decision.kind == DecisionKind::Ask {
+                    let request = ApprovalRequest::new(&decision);
+                    assert!(
+                        request
+                            .explanation
+                            .contains(&describe_effect(&request.effect))
+                    );
+                    policy
+                        .apply_approval(
+                            &request,
+                            ApprovalResponse {
+                                choice: ApprovalChoice::AllowExactSession,
+                            },
+                        )
+                        .expect("grant");
+                    assert_eq!(
+                        policy.evaluate(profile, request.effect).kind,
+                        DecisionKind::Allow
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn plan_profile_is_a_hard_read_only_intersection() {
+        let root = tempdir().expect("root");
+        let policy = PolicyEngine::for_workspace_with_rules(
+            root.path(),
+            vec![PolicyRule {
+                action: RuleAction::Ask,
+                effect: Some(EffectClass::FileWrite),
+                resource_prefix: None,
+                reason: None,
+            }],
+        )
+        .expect("policy");
+        assert_eq!(
+            policy
+                .evaluate(
+                    PermissionProfile::Plan,
+                    Effect::FileRead {
+                        path: root.path().join("src/lib.rs")
+                    }
+                )
+                .kind,
+            DecisionKind::Allow
+        );
+        assert_eq!(
+            policy
+                .evaluate(
+                    PermissionProfile::Plan,
+                    Effect::PlanWrite {
+                        path: root.path().join(".axiomcli/plans/p.json")
+                    }
+                )
+                .kind,
+            DecisionKind::Allow
+        );
+        assert_eq!(
+            policy
+                .evaluate(
+                    PermissionProfile::Plan,
+                    Effect::FileWrite {
+                        path: root.path().join("src/lib.rs")
+                    }
+                )
+                .kind,
+            DecisionKind::Deny
+        );
+    }
+
+    #[test]
+    fn deny_and_explicit_ask_precede_grants_regardless_of_rule_order() {
+        let root = tempdir().expect("root");
+        let path = root.path().join("file.rs");
+        let deny = PolicyRule {
+            action: RuleAction::Deny,
+            effect: Some(EffectClass::FileWrite),
+            resource_prefix: None,
+            reason: Some("configured deny".into()),
+        };
+        let ask = PolicyRule {
+            action: RuleAction::Ask,
+            effect: Some(EffectClass::FileWrite),
+            resource_prefix: None,
+            reason: Some("configured ask".into()),
+        };
+        for rules in [vec![deny.clone(), ask.clone()], vec![ask, deny]] {
+            let policy =
+                PolicyEngine::for_workspace_with_rules(root.path(), rules).expect("policy");
+            assert_eq!(
+                policy
+                    .evaluate(
+                        PermissionProfile::Autonomous,
+                        Effect::FileWrite { path: path.clone() }
+                    )
+                    .kind,
+                DecisionKind::Deny
+            );
+        }
+    }
+
+    #[test]
+    fn exact_and_prefix_grants_do_not_cross_effect_or_resource_scope() {
+        let root = tempdir().expect("root");
+        let policy = PolicyEngine::for_workspace(root.path()).expect("policy");
+        let first = root.path().join("src/one.rs");
+        let second = root.path().join("src/two.rs");
+        let outside_scope = root.path().join("tests/one.rs");
+        let decision = policy.evaluate(
+            PermissionProfile::Confirm,
+            Effect::FileWrite {
+                path: first.clone(),
+            },
+        );
+        let request = ApprovalRequest::new(&decision);
+        policy
+            .apply_approval(
+                &request,
+                ApprovalResponse {
+                    choice: ApprovalChoice::AllowPrefixSession,
+                },
+            )
+            .expect("prefix grant");
+        assert_eq!(
+            policy
+                .evaluate(
+                    PermissionProfile::Confirm,
+                    Effect::FileWrite { path: second }
+                )
+                .kind,
+            DecisionKind::Allow
+        );
+        assert_eq!(
+            policy
+                .evaluate(
+                    PermissionProfile::Confirm,
+                    Effect::FileDelete { path: first }
+                )
+                .kind,
+            DecisionKind::Ask
+        );
+        assert_eq!(
+            policy
+                .evaluate(
+                    PermissionProfile::Confirm,
+                    Effect::FileWrite {
+                        path: outside_scope
+                    }
+                )
+                .kind,
+            DecisionKind::Ask
+        );
+    }
+
+    #[test]
+    fn configured_ask_cannot_be_self_broadened_into_a_grant() {
+        let root = tempdir().expect("root");
+        let policy = PolicyEngine::for_workspace_with_rules(
+            root.path(),
+            vec![PolicyRule {
+                action: RuleAction::Ask,
+                effect: Some(EffectClass::Network),
+                resource_prefix: None,
+                reason: None,
+            }],
+        )
+        .expect("policy");
+        let decision = policy.evaluate(
+            PermissionProfile::Autonomous,
+            Effect::Network {
+                url: "https://example.com/a".into(),
+            },
+        );
+        let request = ApprovalRequest::new(&decision);
+        assert!(!request.allow_session_grants);
+        assert!(
+            policy
+                .apply_approval(
+                    &request,
+                    ApprovalResponse {
+                        choice: ApprovalChoice::AllowExactSession,
+                    },
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn hard_denials_and_normalization_fail_closed_for_every_profile() {
+        let root = tempdir().expect("root");
+        let policy = PolicyEngine::for_workspace(root.path()).expect("policy");
+        for profile in profiles() {
+            for effect in [
+                Effect::FileWrite {
+                    path: root.path().parent().expect("parent").join("escape.txt"),
+                },
+                Effect::Process {
+                    program: "sudo".into(),
+                    args: vec!["true".into()],
+                    shell: false,
+                    cwd: root.path().to_path_buf(),
+                    env: Vec::new(),
+                },
+                Effect::Network {
+                    url: "file:///etc/passwd".into(),
+                },
+            ] {
+                assert_eq!(policy.evaluate(profile, effect).kind, DecisionKind::Deny);
+            }
+        }
+    }
+
+    #[test]
+    fn shell_interpretation_is_detected_and_always_higher_risk() {
+        let root = tempdir().expect("root");
+        let policy = PolicyEngine::for_workspace(root.path()).expect("policy");
+        let disguised_shell = Effect::Process {
+            program: "/usr/bin/sh".into(),
+            args: vec!["-c".into(), "cargo test".into()],
+            shell: false,
+            cwd: root.path().to_path_buf(),
+            env: Vec::new(),
+        };
+        let decision = policy.evaluate(PermissionProfile::Autonomous, disguised_shell);
+        assert_eq!(decision.kind, DecisionKind::Ask);
+        assert!(matches!(
+            decision.normalized_effect,
+            Effect::Process { shell: true, .. }
+        ));
+
+        let structured = Effect::Process {
+            program: "cargo".into(),
+            args: vec!["test".into()],
+            shell: false,
+            cwd: root.path().to_path_buf(),
+            env: vec![("CI".into(), "true".into())],
+        };
+        assert_eq!(
+            policy
+                .evaluate(PermissionProfile::Workspace, structured)
+                .kind,
+            DecisionKind::Allow
+        );
+    }
+
+    proptest! {
+        #[test]
+        fn deny_wins_for_arbitrary_rule_order(order in proptest::collection::vec(any::<bool>(), 1..32)) {
+            let root = tempdir().expect("root");
+            let mut rules: Vec<_> = order.into_iter().map(|deny| PolicyRule {
+                action: if deny { RuleAction::Deny } else { RuleAction::Ask },
+                effect: Some(EffectClass::Network),
+                resource_prefix: None,
+                reason: None,
+            }).collect();
+            rules.push(PolicyRule {
+                action: RuleAction::Deny,
+                effect: Some(EffectClass::Network),
+                resource_prefix: None,
+                reason: None,
+            });
+            let policy = PolicyEngine::for_workspace_with_rules(root.path(), rules).expect("policy");
+            prop_assert_eq!(
+                policy.evaluate(PermissionProfile::Autonomous, Effect::Network { url: "https://example.com".into() }).kind,
+                DecisionKind::Deny
+            );
+        }
+    }
+}
