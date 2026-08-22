@@ -92,13 +92,14 @@ fn run_tui_at(
             b"view",
             "resized interactive screen",
         );
+        // SGR mouse coordinates are one-based; row 28 is inside the
+        // composer after the PTY has resized to 100x30.
+        writer.write_all(b"\x1b[<0;5;28M").expect("click composer");
+        writer.flush().expect("flush composer click");
         writer.write_all(b"probe\r").expect("submit prompt");
         writer.flush().expect("flush prompt");
         if runner == "blocking" {
             wait_for_output(&output_rx, &mut output, b"Working", "blocking turn");
-            writer.write_all(&[3]).expect("Ctrl+C");
-            writer.flush().expect("flush Ctrl+C");
-            thread::sleep(Duration::from_millis(180));
         } else if runner == "questions" {
             wait_for_output(&output_rx, &mut output, b"1=cherry", "first question");
             writer.write_all(b"1\r").expect("first answer");
@@ -121,6 +122,36 @@ fn run_tui_at(
             thread::sleep(Duration::from_millis(250));
         }
     }
+    if !panic_probe {
+        writer.write_all(&[27]).expect("escape");
+        writer.flush().expect("flush escape");
+        wait_for_output(
+            &output_rx,
+            &mut output,
+            b"\x1b[?25l",
+            "hidden cursor after cleared focus",
+        );
+        assert!(
+            child.try_wait().expect("poll after escape").is_none(),
+            "Escape unexpectedly exited the TUI"
+        );
+
+        writer.write_all(&[3]).expect("first Ctrl+C");
+        writer.flush().expect("flush first Ctrl+C");
+        wait_for_output(
+            &output_rx,
+            &mut output,
+            b"Ctrl+C again",
+            "exit confirmation",
+        );
+        assert!(
+            child.try_wait().expect("poll after first Ctrl+C").is_none(),
+            "the first Ctrl+C unexpectedly exited the TUI"
+        );
+        writer.write_all(&[3]).expect("second Ctrl+C");
+        writer.flush().expect("flush second Ctrl+C");
+    }
+
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     let status = loop {
         if let Some(status) = child.try_wait().expect("poll TUI") {
@@ -129,10 +160,6 @@ fn run_tui_at(
         if std::time::Instant::now() >= deadline {
             child.kill().expect("kill stuck TUI");
             panic!("TUI did not exit before the PTY test deadline");
-        }
-        if !panic_probe {
-            writer.write_all(&[27]).expect("escape");
-            writer.flush().expect("flush escape");
         }
         thread::sleep(Duration::from_millis(80));
     };
@@ -166,7 +193,7 @@ fn wait_for_output(
 }
 
 #[test]
-fn resize_prompt_and_quit_restore_the_terminal() {
+fn resize_prompt_and_double_ctrl_c_restore_the_terminal() {
     let (output, success) = run_tui("echo", false);
     assert!(success, "TUI failed; output: {output:?}");
     assert!(output.contains("AXIOMCLI"));
@@ -178,10 +205,10 @@ fn resize_prompt_and_quit_restore_the_terminal() {
 }
 
 #[test]
-fn cancellation_restores_the_terminal() {
+fn double_ctrl_c_exits_active_work_and_restores_the_terminal() {
     let (output, success) = run_tui("blocking", false);
     assert!(success, "TUI failed; output: {output:?}");
-    assert!(output.contains("Cancelling") || output.contains("Cancelled"));
+    assert!(output.contains("Ctrl+C again"));
     assert!(output.contains("\u{1b}[?1049l"));
 }
 
@@ -204,7 +231,7 @@ fn plan_review_is_interactive_in_the_tui_and_persists_line_comments() {
     let (output, success) = run_tui_at("plan_review", false, state.path(), &["--cwd", &cwd]);
     assert!(success, "TUI plan fixture failed: {output:?}");
     assert!(
-        output.contains("PLAN r1"),
+        output.contains("PLAN") && output.contains("r1") && output.contains("Waiting"),
         "plan was not rendered: {output:?}"
     );
     assert!(
@@ -273,7 +300,10 @@ fn workspace_edit_reaches_the_expected_tui_semantics_and_final_workspace() {
         "after\n"
     );
     assert!(output.contains("replace_text"), "missing tool identity");
-    assert!(output.contains("frontend.txt"), "missing workspace path");
+    assert!(
+        output.contains("Edited") || output.contains("Changed"),
+        "missing folded workspace-change summary"
+    );
     let listed = std::process::Command::new(env!("CARGO_BIN_EXE_axiomcli"))
         .args(["sessions", "list"])
         .env("XDG_CONFIG_HOME", state.path().join("config"))
@@ -357,8 +387,15 @@ fn idle_tui_stays_within_linux_memory_and_cpu_budgets() {
         second_ticks.saturating_sub(first_ticks)
     );
 
-    writer.write_all(&[27]).expect("quit TUI");
-    writer.flush().expect("flush quit");
+    writer.write_all(&[3]).expect("first Ctrl+C");
+    writer.flush().expect("flush first Ctrl+C");
+    thread::sleep(Duration::from_millis(100));
+    assert!(
+        child.try_wait().expect("poll after first Ctrl+C").is_none(),
+        "the first Ctrl+C unexpectedly exited the idle TUI"
+    );
+    writer.write_all(&[3]).expect("second Ctrl+C");
+    writer.flush().expect("flush second Ctrl+C");
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     loop {
         if child.try_wait().expect("poll TUI").is_some() {

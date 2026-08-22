@@ -10,3 +10,17 @@
 .axiomcli/
 .searxng/
 .cache/
+
+# Editor and local development artifacts
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.log
+*.tmp
+
+# Coverage and profiler output
+coverage/
+*.profraw
+lcov.info

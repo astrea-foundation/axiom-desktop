@@ -81,11 +81,11 @@ async fn long_stream_and_many_transcript_entries_stay_within_recorded_budgets() 
         Arc::new(ToolRegistry::new()),
         "soak",
         AgentLimits {
-            max_steps: 1,
+            max_steps: Some(1),
             max_context_bytes: 2 * 1024 * 1024,
             max_context_tokens: 512 * 1024,
             max_tool_output_bytes: 4096,
-            max_wall_time: Duration::from_secs(10),
+            max_wall_time: Some(Duration::from_secs(10)),
         },
     );
     let (events_tx, mut events_rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);

@@ -16,11 +16,9 @@ model = "glm-5-2"
 base_url = "http://127.0.0.1:8484/v1"
 permission_profile = "confirm"
 searxng_url = "http://127.0.0.1:8888"
-max_agent_steps = 24
 max_context_bytes = 2097152
 max_context_tokens = 262144
 max_tool_output_bytes = 131072
-max_turn_secs = 900
 request_timeout_secs = 120
 animation = true
 
@@ -46,17 +44,28 @@ Limits are validated as follows:
 
 | Key | Valid range/default |
 |---|---|
-| `max_agent_steps` | 1–256; default 24 |
+| `max_agent_steps` | Optional 1–256; disabled when omitted (default) |
 | `max_context_bytes` | 4 KiB–64 MiB; default 2 MiB |
 | `max_context_tokens` | 1 Ki–4 Mi tokens; default 256 Ki |
 | `max_tool_output_bytes` | 1 KiB–64 MiB; default 128 KiB |
-| `max_turn_secs` | 1–86,400; default 900 |
+| `max_turn_secs` | Optional 1–86,400; disabled when omitted (default) |
 | `request_timeout_secs` | 1–3,600; default 120 |
 
 `base_url` and `searxng_url` must be HTTP(S) URLs. MCP names must be unique;
 name and command cannot be empty. A listed `read_only_tools` entry is an
 explicit user trust decision. An MCP server’s own annotation never grants that
 classification.
+
+Agent-step and whole-turn time limits are off by default. To opt into them,
+add numeric values to the trusted user configuration, for example:
+
+```toml
+max_agent_steps = 64
+max_turn_secs = 3600
+```
+
+These are execution safeguards only. AxiomCLI does not display step counts or
+time-limit counters in the conversation UI.
 
 ## Repository file
 
@@ -88,6 +97,11 @@ The command appends atomically and accepts only `ask` or `deny`.
 | `NO_COLOR` | disables color when present |
 | `AXIOMCLI_ASCII=1` | replaces decorative Unicode glyphs |
 | `AXIOMCLI_REDUCED_MOTION=1` | disables animation |
+
+With animation enabled, active task cards and the status row redraw only while
+foreground/background work or a short completion transition is active. The
+blossom uses a weighted rest/bloom/hold/wilt cadence rather than a constant-rate
+spinner. Reduced-motion mode renders the same state with a static glyph.
 
 Child development commands do not inherit the parent environment. Only the
 small key allowlist implemented by the process boundary can be set per command.

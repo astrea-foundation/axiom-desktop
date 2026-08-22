@@ -34,8 +34,16 @@ diagnostics go to stderr.
 
 The TUI uses the current terminal viewport (it does not resize the terminal).
 It needs at least 42×10 cells. Press `?` for its keyboard/mouse reference;
-transcript search, folding, entry/diff viewing, reduced motion, ASCII, and
-no-color modes are built in.
+search, task-detail folding, entry/diff viewing, reduced motion, ASCII, and
+no-color modes are built in. Each prompt is presented as one task that updates
+in place: checklist progress and compact tool summaries remain visible while
+raw reasoning, arguments, output, and diffs stay in expandable details. The
+assistant's final Markdown response remains attached to that task.
+
+Active work uses a small cherry-blossom animation and a moving accent rail. Its
+weighted cycle rests, blooms, holds, and quickly wilts instead of advancing at
+a mechanically uniform speed. `AXIOMCLI_REDUCED_MOTION=1` keeps a static flower;
+`AXIOMCLI_ASCII=1` uses an equivalent `. * o O` sequence.
 
 ## Installation
 

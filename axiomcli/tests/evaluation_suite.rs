@@ -141,11 +141,11 @@ async fn run_agent(
         Arc::new(default_registry(32 * 1024, "http://127.0.0.1:9").expect("tools")),
         "deterministic-evaluation",
         AgentLimits {
-            max_steps: 12,
+            max_steps: Some(12),
             max_context_bytes: 256 * 1024,
             max_context_tokens: 64 * 1024,
             max_tool_output_bytes: 32 * 1024,
-            max_wall_time: Duration::from_secs(30),
+            max_wall_time: Some(Duration::from_secs(30)),
         },
     );
     let (events_tx, mut events_rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
@@ -465,11 +465,11 @@ async fn live_model_investigation_baseline_is_budgeted_and_non_mutating() {
             Arc::new(default_registry(32 * 1024, "http://127.0.0.1:9").expect("tools")),
             model.clone(),
             AgentLimits {
-                max_steps: 6,
+                max_steps: Some(6),
                 max_context_bytes: 256 * 1024,
                 max_context_tokens: 64 * 1024,
                 max_tool_output_bytes: 32 * 1024,
-                max_wall_time: Duration::from_secs(120),
+                max_wall_time: Some(Duration::from_secs(120)),
             },
         );
         let (events_tx, mut events_rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);

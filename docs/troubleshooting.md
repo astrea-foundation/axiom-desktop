@@ -55,9 +55,13 @@ stops before the damaged event rather than deleting evidence.
 
 The minimum useful viewport is 42×10 cells. Press `?` for keyboard help. Set
 `AXIOMCLI_COLOR=none`, `NO_COLOR=1`, `AXIOMCLI_ASCII=1`, or
-`AXIOMCLI_REDUCED_MOTION=1` for accessibility/compatibility. `Esc` closes an
-overlay or exits an idle TUI; `Ctrl+C` cancels active work. Terminal restoration
-is guarded across normal exit, cancellation, and panic.
+`AXIOMCLI_REDUCED_MOTION=1` for accessibility/compatibility. `Esc` clears the
+current focus or closes a temporary overlay. Press `Ctrl+C` twice consecutively
+to exit; the first press displays a confirmation in the status line. Terminal
+restoration is guarded across normal exit and panic. Use `Ctrl+F` to search the
+work history, including folded task details; `/` is reserved for a future
+command menu. Press `Tab` to focus the work history, then `Enter` to show or
+hide a selected task's reasoning/tool details, or `v` for the full viewer.
 
 ## Permission was denied
 

@@ -510,7 +510,7 @@ async fn build_runner(config: &Config) -> anyhow::Result<Arc<dyn TurnRunner>> {
                 max_context_bytes: config.max_context_bytes,
                 max_context_tokens: config.max_context_tokens,
                 max_tool_output_bytes: config.max_tool_output_bytes,
-                max_wall_time: std::time::Duration::from_secs(config.max_turn_secs),
+                max_wall_time: config.max_turn_secs.map(std::time::Duration::from_secs),
             },
         )
         .with_policy_rules(policy_rules),

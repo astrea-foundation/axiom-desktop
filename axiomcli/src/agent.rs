@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
+    future::Future,
     path::PathBuf,
     sync::Arc,
     time::Duration,
@@ -83,29 +84,28 @@ pub trait TurnRunner: Send + Sync {
     ) -> Result<()>;
 }
 
-/// Explicit, replaceable safety budgets for one agent turn. These defaults are
-/// intentionally conservative development values, not a promise of final
-/// product limits.
+/// Explicit, replaceable safety budgets for one agent turn. Step and wall-time
+/// limits are opt-in; context and output bounds remain mandatory memory guards.
 #[derive(Clone, Copy, Debug)]
 pub struct AgentLimits {
-    pub max_steps: usize,
+    pub max_steps: Option<usize>,
     pub max_context_bytes: usize,
     pub max_context_tokens: usize,
     pub max_tool_output_bytes: usize,
-    pub max_wall_time: Duration,
+    pub max_wall_time: Option<Duration>,
 }
 
 impl AgentLimits {
     #[must_use]
     pub fn development(max_steps: usize) -> Self {
         Self {
-            max_steps: max_steps.max(1),
+            max_steps: Some(max_steps.max(1)),
             max_context_bytes: 2 * 1024 * 1024,
             // This is a deterministic local estimate used only as a safety
             // ceiling; provider-reported usage remains authoritative.
             max_context_tokens: 256 * 1024,
             max_tool_output_bytes: 128 * 1024,
-            max_wall_time: Duration::from_secs(15 * 60),
+            max_wall_time: Some(Duration::from_secs(15 * 60)),
         }
     }
 }
@@ -470,7 +470,7 @@ impl AgentEngine {
             tools,
             model: model.into(),
             limits: AgentLimits {
-                max_steps: limits.max_steps.max(1),
+                max_steps: limits.max_steps.map(|steps| steps.max(1)),
                 ..limits
             },
             histories: Mutex::new(HashMap::new()),
@@ -747,7 +747,10 @@ impl TurnRunner for AgentEngine {
         events: mpsc::Sender<AppEvent>,
         cancellation: CancellationToken,
     ) -> Result<()> {
-        let deadline = tokio::time::Instant::now() + self.limits.max_wall_time;
+        let deadline = self
+            .limits
+            .max_wall_time
+            .map(|limit| (tokio::time::Instant::now() + limit, limit));
         events
             .send(AppEvent::ProviderStatusChanged {
                 connected: false,
@@ -776,28 +779,25 @@ impl TurnRunner for AgentEngine {
         messages.push(ChatMessage::text(ChatRole::User, prompt));
         let mut last_call = None;
 
-        for step in 0..self.limits.max_steps {
+        let mut step = 0_usize;
+        loop {
+            if let Some(max_steps) = self.limits.max_steps
+                && step >= max_steps
+            {
+                return Err(AxiomError::Provider(format!(
+                    "agent reached its {max_steps}-step limit"
+                )));
+            }
+            step = step.saturating_add(1);
             if cancellation.is_cancelled() {
                 return Err(AxiomError::Cancelled);
             }
-            events
-                .send(AppEvent::ProgressUpdated {
-                    message: format!(
-                        "Agent step {} of {}",
-                        step.saturating_add(1),
-                        self.limits.max_steps
-                    ),
-                    completed: Some(u64::try_from(step).unwrap_or(u64::MAX)),
-                    total: Some(u64::try_from(self.limits.max_steps).unwrap_or(u64::MAX)),
-                })
-                .await
-                .map_err(|_| AxiomError::Cancelled)?;
             enforce_context_budget(
                 &messages,
                 self.limits.max_context_bytes,
                 self.limits.max_context_tokens,
             )?;
-            let assistant = tokio::time::timeout_at(
+            let assistant = before_optional_deadline(
                 deadline,
                 self.provider_turn(
                     InferenceRequest {
@@ -810,8 +810,7 @@ impl TurnRunner for AgentEngine {
                     cancellation.clone(),
                 ),
             )
-            .await
-            .map_err(|_| wall_clock_error(self.limits.max_wall_time))??;
+            .await??;
 
             messages.push(ChatMessage {
                 role: ChatRole::Assistant,
@@ -871,7 +870,7 @@ impl TurnRunner for AgentEngine {
                     cwd: context.cwd.clone(),
                     permission_profile: context.permission_profile,
                 };
-                let authorization = tokio::time::timeout_at(
+                let authorization = before_optional_deadline(
                     deadline,
                     self.authorize(
                         &context,
@@ -882,8 +881,7 @@ impl TurnRunner for AgentEngine {
                         cancellation.clone(),
                     ),
                 )
-                .await
-                .map_err(|_| wall_clock_error(self.limits.max_wall_time))?;
+                .await?;
                 if let Err(error) = authorization {
                     events
                         .send(AppEvent::ToolOutput {
@@ -914,7 +912,7 @@ impl TurnRunner for AgentEngine {
                     })
                     .await
                     .map_err(|_| AxiomError::Cancelled)?;
-                let result = tokio::time::timeout_at(
+                let result = before_optional_deadline(
                     deadline,
                     self.tools.execute(
                         &call.function.name,
@@ -923,8 +921,7 @@ impl TurnRunner for AgentEngine {
                         cancellation.clone(),
                     ),
                 )
-                .await
-                .map_err(|_| wall_clock_error(self.limits.max_wall_time))?;
+                .await?;
                 let mut tool_result = match result {
                     Ok(result) => result,
                     Err(error) => crate::tools::ToolResult {
@@ -1068,10 +1065,6 @@ impl TurnRunner for AgentEngine {
                 });
             }
         }
-        Err(AxiomError::Provider(format!(
-            "agent reached its {}-step limit",
-            self.limits.max_steps
-        )))
     }
 }
 
@@ -1164,6 +1157,21 @@ fn wall_clock_error(limit: Duration) -> AxiomError {
         "agent turn exceeded its {}-second wall-clock budget",
         limit.as_secs_f64()
     ))
+}
+
+async fn before_optional_deadline<F, T>(
+    deadline: Option<(tokio::time::Instant, Duration)>,
+    future: F,
+) -> Result<T>
+where
+    F: Future<Output = T>,
+{
+    match deadline {
+        Some((deadline, limit)) => tokio::time::timeout_at(deadline, future)
+            .await
+            .map_err(|_| wall_clock_error(limit)),
+        None => Ok(future.await),
+    }
 }
 
 fn tool_error_message(call_id: String, name: &str, message: &str) -> ChatMessage {
@@ -1431,11 +1439,16 @@ mod engine_tests {
             rx.recv().await,
             Some(AppEvent::ProviderStatusChanged { .. })
         ));
+        let events = drain(&mut rx);
         assert!(
-            drain(&mut rx)
+            events
                 .iter()
                 .any(|event| matches!(event, AppEvent::TextDelta { .. }))
         );
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            AppEvent::ProgressUpdated { message, .. } if message.starts_with("Agent step")
+        )));
     }
 
     #[tokio::test]
@@ -1687,11 +1700,11 @@ mod engine_tests {
             },
         ]));
         let limits = AgentLimits {
-            max_steps: 3,
+            max_steps: Some(3),
             max_context_bytes: 4096,
             max_context_tokens: 4096,
             max_tool_output_bytes: 41,
-            max_wall_time: Duration::from_secs(2),
+            max_wall_time: Some(Duration::from_secs(2)),
         };
         let engine = AgentEngine::with_limits(provider.clone(), tools, "test", limits);
         let (tx, mut rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
@@ -1762,11 +1775,11 @@ mod engine_tests {
     #[tokio::test]
     async fn byte_token_step_and_wall_clock_budgets_are_enforced() {
         let limits = AgentLimits {
-            max_steps: 1,
+            max_steps: Some(1),
             max_context_bytes: 1,
             max_context_tokens: 1,
             max_tool_output_bytes: 1,
-            max_wall_time: Duration::from_secs(1),
+            max_wall_time: Some(Duration::from_secs(1)),
         };
         let provider = Arc::new(ScriptedProvider::new(vec![]));
         let engine = AgentEngine::with_limits(
@@ -1784,11 +1797,11 @@ mod engine_tests {
         assert!(provider.requests.lock().await.is_empty());
 
         let limits = AgentLimits {
-            max_steps: 1,
+            max_steps: Some(1),
             max_context_bytes: 4096,
             max_context_tokens: 4096,
             max_tool_output_bytes: 1024,
-            max_wall_time: Duration::from_millis(10),
+            max_wall_time: Some(Duration::from_millis(10)),
         };
         let engine = AgentEngine::with_limits(
             Arc::new(NeverProvider),
@@ -1814,6 +1827,48 @@ mod engine_tests {
             .await
             .expect_err("step budget");
         assert!(error.to_string().contains("1-step limit"));
+    }
+
+    #[tokio::test]
+    async fn disabled_step_limit_allows_more_than_the_former_default() {
+        let mut turns = (0..30)
+            .map(|index| AssistantTurn {
+                text: String::new(),
+                tool_calls: vec![tool_call(
+                    &format!("call-{index}"),
+                    "missing",
+                    &format!(r#"{{"index":{index}}}"#),
+                )],
+            })
+            .collect::<Vec<_>>();
+        turns.push(AssistantTurn {
+            text: "finished".into(),
+            tool_calls: Vec::new(),
+        });
+        let provider = Arc::new(ScriptedProvider::new(turns));
+        let engine = AgentEngine::with_limits(
+            provider.clone(),
+            Arc::new(ToolRegistry::new()),
+            "test",
+            AgentLimits {
+                max_steps: None,
+                max_context_bytes: 256 * 1024,
+                max_context_tokens: 64 * 1024,
+                max_tool_output_bytes: 1024,
+                max_wall_time: None,
+            },
+        );
+        let (tx, _rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
+        engine
+            .run(
+                context(),
+                "long workflow".into(),
+                tx,
+                CancellationToken::new(),
+            )
+            .await
+            .expect("unlimited run");
+        assert_eq!(provider.requests.lock().await.len(), 31);
     }
 
     struct ApprovalTool {
@@ -2011,11 +2066,11 @@ mod engine_tests {
                 tool_calls: vec![tool_call("pending", "approval_fixture", r#"{"nonce":1}"#)],
             }]));
             let limits = AgentLimits {
-                max_steps: 2,
+                max_steps: Some(2),
                 max_context_bytes: 4096,
                 max_context_tokens: 4096,
                 max_tool_output_bytes: 1024,
-                max_wall_time: Duration::from_millis(20),
+                max_wall_time: Some(Duration::from_millis(20)),
             };
             let engine = Arc::new(AgentEngine::with_limits(
                 provider,

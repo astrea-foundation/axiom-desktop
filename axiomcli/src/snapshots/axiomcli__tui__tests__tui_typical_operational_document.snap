@@ -1,24 +1,25 @@
 ---
 source: axiomcli/src/tui.rs
+assertion_line: 3095
 expression: "render_symbols(80, 20, &state)"
 ---
-AXIOMCLI · /work/axiomcli                    UNATTESTED DEV · glm-test · confirm
-
+  AXIOMCLI  /work/axiomcli                 UNATTESTED DEV   glm-test · confirm
 ────────────────────────────────────────────────────────────────────────────────
-profile.
 
- › YOU
-  Inspect the repository
+  ▪ SYSTEM
+    AxiomCLI is ready. Local actions are controlled by the selected permission
+    profile.
 
- ◆ AXIOM
-  I’ll inspect the relevant files.
+  › YOU
+    Inspect the repository
 
- ◆ TOOL
-  src/main.rs
-  src/lib.rs
+  ✓ AXIOM  Complete
+    │ ✓ Read 1 item
+    │
+    │ I’ll inspect the relevant files.
 
-o Responding…
-┌ › Message ───────────────────────────────────────────────────────────────────┐
-│                                                                              │
-└──────────────────────────────────────────────────────────────────────────────┘
-Enter send/toggle · Tab focus · j/k scroll · / search · v view · ? help
+  ○ Task complete
+
+    ›
+
+  Enter send/toggle · Tab focus · j/k scroll · Ctrl+F search · v view · ? help

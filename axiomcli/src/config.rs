@@ -41,11 +41,11 @@ pub struct Config {
     pub base_url: String,
     pub permission_profile: PermissionProfile,
     pub searxng_url: String,
-    pub max_agent_steps: usize,
+    pub max_agent_steps: Option<usize>,
     pub max_context_bytes: usize,
     pub max_context_tokens: usize,
     pub max_tool_output_bytes: usize,
-    pub max_turn_secs: u64,
+    pub max_turn_secs: Option<u64>,
     pub request_timeout_secs: u64,
     pub animation: bool,
     pub policy_rules: Vec<PolicyRule>,
@@ -102,7 +102,7 @@ impl ConfigLayer {
             config.searxng_url = value;
         }
         if let Some(value) = self.max_agent_steps {
-            config.max_agent_steps = value;
+            config.max_agent_steps = Some(value);
         }
         if let Some(value) = self.max_context_bytes {
             config.max_context_bytes = value;
@@ -114,7 +114,7 @@ impl ConfigLayer {
             config.max_tool_output_bytes = value;
         }
         if let Some(value) = self.max_turn_secs {
-            config.max_turn_secs = value;
+            config.max_turn_secs = Some(value);
         }
         if let Some(value) = self.request_timeout_secs {
             config.request_timeout_secs = value;
@@ -155,7 +155,11 @@ impl ConfigLayer {
             config.model = value;
         }
         if let Some(value) = self.max_agent_steps {
-            config.max_agent_steps = value.min(config.max_agent_steps);
+            config.max_agent_steps = Some(
+                config
+                    .max_agent_steps
+                    .map_or(value, |trusted| value.min(trusted)),
+            );
         }
         if let Some(value) = self.max_context_bytes {
             config.max_context_bytes = value.min(config.max_context_bytes);
@@ -167,7 +171,11 @@ impl ConfigLayer {
             config.max_tool_output_bytes = value.min(config.max_tool_output_bytes);
         }
         if let Some(value) = self.max_turn_secs {
-            config.max_turn_secs = value.min(config.max_turn_secs);
+            config.max_turn_secs = Some(
+                config
+                    .max_turn_secs
+                    .map_or(value, |trusted| value.min(trusted)),
+            );
         }
         if let Some(value) = self.request_timeout_secs {
             config.request_timeout_secs = value.min(config.request_timeout_secs);
@@ -199,11 +207,11 @@ impl Default for Config {
             base_url: "http://127.0.0.1:8484/v1".into(),
             permission_profile: PermissionProfile::Confirm,
             searxng_url: "http://127.0.0.1:8888".into(),
-            max_agent_steps: 24,
+            max_agent_steps: None,
             max_context_bytes: 2 * 1024 * 1024,
             max_context_tokens: 256 * 1024,
             max_tool_output_bytes: 128 * 1024,
-            max_turn_secs: 15 * 60,
+            max_turn_secs: None,
             request_timeout_secs: 120,
             animation: true,
             policy_rules: Vec::new(),
@@ -245,9 +253,11 @@ impl Config {
         if self.model.trim().is_empty() {
             return Err(AxiomError::Config("model cannot be empty".into()));
         }
-        if self.max_agent_steps == 0 || self.max_agent_steps > 256 {
+        if let Some(max_agent_steps) = self.max_agent_steps
+            && (max_agent_steps == 0 || max_agent_steps > 256)
+        {
             return Err(AxiomError::Config(
-                "max_agent_steps must be between 1 and 256".into(),
+                "max_agent_steps must be between 1 and 256 when enabled".into(),
             ));
         }
         if !(1024..=64 * 1024 * 1024).contains(&self.max_tool_output_bytes) {
@@ -265,9 +275,11 @@ impl Config {
                 "max_context_tokens must be between 1024 and 4194304".into(),
             ));
         }
-        if self.max_turn_secs == 0 || self.max_turn_secs > 24 * 60 * 60 {
+        if let Some(max_turn_secs) = self.max_turn_secs
+            && (max_turn_secs == 0 || max_turn_secs > 24 * 60 * 60)
+        {
             return Err(AxiomError::Config(
-                "max_turn_secs must be between 1 and 86400".into(),
+                "max_turn_secs must be between 1 and 86400 when enabled".into(),
             ));
         }
         if !(1..=3600).contains(&self.request_timeout_secs) {
@@ -464,6 +476,45 @@ mod tests {
         assert_eq!(config.model, "cherry");
         assert_eq!(config.permission_profile, PermissionProfile::Confirm);
         assert_eq!(config.searxng_url, "http://127.0.0.1:8888");
+    }
+
+    #[test]
+    fn agent_step_and_wall_time_limits_default_off_and_can_be_enabled() {
+        let mut config = Config::default();
+        assert_eq!(config.max_agent_steps, None);
+        assert_eq!(config.max_turn_secs, None);
+
+        let trusted: ConfigLayer =
+            toml::from_str("max_agent_steps = 64\nmax_turn_secs = 3600\n").expect("layer");
+        trusted.apply_trusted(&mut config);
+        assert_eq!(config.max_agent_steps, Some(64));
+        assert_eq!(config.max_turn_secs, Some(3600));
+        config.validate().expect("enabled optional limits");
+    }
+
+    #[test]
+    fn project_limits_can_only_add_or_narrow_optional_limits() {
+        let mut unlimited = Config::default();
+        let project: ConfigLayer =
+            toml::from_str("max_agent_steps = 40\nmax_turn_secs = 1200\n").expect("layer");
+        project
+            .apply_project(&mut unlimited)
+            .expect("project adds restriction");
+        assert_eq!(unlimited.max_agent_steps, Some(40));
+        assert_eq!(unlimited.max_turn_secs, Some(1200));
+
+        let mut limited = Config {
+            max_agent_steps: Some(20),
+            max_turn_secs: Some(600),
+            ..Config::default()
+        };
+        let project: ConfigLayer =
+            toml::from_str("max_agent_steps = 40\nmax_turn_secs = 1200\n").expect("layer");
+        project
+            .apply_project(&mut limited)
+            .expect("project preserves tighter trusted limits");
+        assert_eq!(limited.max_agent_steps, Some(20));
+        assert_eq!(limited.max_turn_secs, Some(600));
     }
 
     #[test]
