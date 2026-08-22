@@ -16,7 +16,7 @@ not advertised.
 | `session/request_permission` | supported | normalized policy effect → allow-once/deny options | cancellation, timeout, and disconnect fail closed |
 | tool calls and updates | supported | typed proposal, pending/running, output, and terminal status | IDs remain stable for a call |
 | `session/load` | supported and advertised when durable storage opens | stable ACP ID → journal restore, transcript update replay, provider-context reconstruction | cwd identity mismatch/corruption fails closed; interrupted side effects are reported unknown and never replayed |
-| MCP servers in session | not advertised | project-configured stdio MCP servers are namespaced and policy-controlled | per-session ACP MCP configuration is deferred |
+| MCP servers in session | not advertised | trusted-user-configured stdio MCP servers are namespaced and policy-controlled; their calls use the normal ACP tool lifecycle | per-session ACP MCP configuration is deferred; transport messages never enter ACP stdout |
 | custom extensions | unsupported | none | unknown requests receive standard protocol errors |
 
 ACP mode reserves stdout for protocol frames. All logs are routed to stderr.

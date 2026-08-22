@@ -91,6 +91,12 @@ args = []
 read_only_tools = ["lookup"] # explicit user trust; server hints do not grant it
 ```
 
+Configured MCP servers are discovered over stdio. A crashed server reconnects
+on demand; only explicitly trusted read-only tools can be retried, and only when
+their schema is unchanged. Calls with possible side effects are never replayed
+after an ambiguous disconnect. MCP output is labeled untrusted, redacted, and
+bounded before it reaches either front end.
+
 Session journals are redacted SQLite records under the platform data directory.
 `sessions list/show/export/rename/archive/unarchive/prune` manages them. Use
 `axiomcli tui --resume SESSION_ID` to restore a transcript and bounded model
@@ -101,8 +107,8 @@ actions are reported as unknown and never replayed.
 
 - Development inference is plainly labeled `UNATTESTED DEV`; TEE/E2EE is later.
 - Linux is the currently exercised development platform.
-- ACP v1 is supported; per-session MCP configuration and `session/load` are not
-  advertised yet.
+- ACP v1 and durable `session/load` are supported. Per-session MCP configuration
+  is not advertised yet; MCP servers come only from trusted user configuration.
 - SearXNG upstream engines can throttle or fail independently.
 - The TUI is intentionally compact; richer transcript search/diff navigation
   and release installers remain pre-1.0 work.

@@ -60,9 +60,11 @@ fn looks_like_secret(token: &str) -> bool {
             '"' | '\'' | '`' | '(' | ')' | '[' | ']' | ',' | ';'
         )
     });
-    ["axm_", "sk-", "ghp_", "github_pat_"]
-        .iter()
-        .any(|prefix| token.starts_with(prefix) && token.len() > prefix.len() + 8)
+    ["axm_", "sk-", "ghp_", "github_pat_"].iter().any(|prefix| {
+        token
+            .find(prefix)
+            .is_some_and(|offset| token.len() - offset > prefix.len() + 8)
+    })
 }
 
 #[cfg(test)]
