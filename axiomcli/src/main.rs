@@ -4,10 +4,12 @@ use anyhow::Context as _;
 use axiomcli::{
     AxiomError,
     agent::{
-        AgentEngine, AgentLimits, BlockingTurnRunner, EchoTurnRunner, TurnContext, TurnRunner,
+        AgentEngine, AgentLimits, BlockingTurnRunner, EchoTurnRunner, QuestionTurnRunner,
+        TurnContext, TurnRunner,
     },
     app::{AppEvent, SessionId, TurnId},
     config::Config,
+    planning::PlanArtifact,
     provider::{AxiomProvider, InferenceProvider},
     session::{ExportOptions, RetentionPolicy, SessionStore},
     tools::default_registry,
@@ -32,12 +34,18 @@ enum Command {
         /// Resume a durable session by ID. Its original workspace identity is enforced.
         #[arg(long)]
         resume: Option<String>,
+        /// Run with deterministic read-only plan policy; only plan artifacts may be written.
+        #[arg(long)]
+        plan: bool,
     },
     /// Run one prompt without a terminal interface.
     Exec {
         prompt: String,
         #[arg(long)]
         cwd: Option<PathBuf>,
+        /// Run with deterministic read-only plan policy; only plan artifacts may be written.
+        #[arg(long)]
+        plan: bool,
     },
     /// Serve Agent Client Protocol over stdin/stdout.
     Acp,
@@ -49,6 +57,47 @@ enum Command {
     Sessions {
         #[command(subcommand)]
         action: SessionAction,
+    },
+    /// Inspect and review persisted workspace plans.
+    Plans {
+        #[arg(long)]
+        cwd: Option<PathBuf>,
+        #[command(subcommand)]
+        action: PlanAction,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum PlanAction {
+    List,
+    Show {
+        id: String,
+    },
+    Comment {
+        id: String,
+        start_line: usize,
+        end_line: usize,
+        text: String,
+    },
+    RequestRevision {
+        id: String,
+        start_line: usize,
+        end_line: usize,
+        text: String,
+    },
+    Revise {
+        id: String,
+        expected_revision: u64,
+        markdown: String,
+    },
+    Propose {
+        id: String,
+    },
+    Approve {
+        id: String,
+    },
+    Abandon {
+        id: String,
     },
 }
 
@@ -99,6 +148,7 @@ async fn main() -> anyhow::Result<()> {
     match cli.command.unwrap_or(Command::Tui {
         cwd: None,
         resume: None,
+        plan: false,
     }) {
         Command::Doctor => {
             doctor(&config).await;
@@ -113,7 +163,8 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Command::Sessions { action } => manage_sessions(action),
-        Command::Tui { cwd, resume } => {
+        Command::Plans { cwd, action } => manage_plans(&resolve_cwd(cwd)?, action),
+        Command::Tui { cwd, resume, plan } => {
             let store = open_store()?;
             let resume = resume
                 .map(|id| SessionId::from_str(&id).context("invalid session ID"))
@@ -130,12 +181,21 @@ async fn main() -> anyhow::Result<()> {
                         "--cwd does not match the resumed session workspace"
                     );
                 }
-                (
-                    saved,
-                    axiomcli::app::PermissionProfile::from_str(&summary.profile)?,
-                )
+                let profile = axiomcli::app::PermissionProfile::from_str(&summary.profile)?;
+                anyhow::ensure!(
+                    !plan || profile == axiomcli::app::PermissionProfile::Plan,
+                    "--plan cannot change the permission profile of a resumed session"
+                );
+                (saved, profile)
             } else {
-                (resolve_cwd(cwd)?, config.permission_profile)
+                (
+                    resolve_cwd(cwd)?,
+                    if plan {
+                        axiomcli::app::PermissionProfile::Plan
+                    } else {
+                        config.permission_profile
+                    },
+                )
             };
             axiomcli::tui::run(
                 build_runner(&config).await?,
@@ -149,11 +209,16 @@ async fn main() -> anyhow::Result<()> {
             .await
             .map_err(anyhow::Error::from)
         }
-        Command::Exec { prompt, cwd } => {
+        Command::Exec { prompt, cwd, plan } => {
+            let profile = if plan {
+                axiomcli::app::PermissionProfile::Plan
+            } else {
+                config.permission_profile
+            };
             run_headless(
                 build_runner(&config).await?,
                 resolve_cwd(cwd)?,
-                &config,
+                profile,
                 prompt,
             )
             .await
@@ -166,6 +231,67 @@ async fn main() -> anyhow::Result<()> {
         .await
         .map_err(anyhow::Error::from),
     }
+}
+
+fn manage_plans(cwd: &std::path::Path, action: PlanAction) -> anyhow::Result<()> {
+    match action {
+        PlanAction::List => {
+            for plan in PlanArtifact::list(cwd)? {
+                println!("{}\tr{}\t{:?}", plan.id, plan.revision, plan.state);
+            }
+        }
+        PlanAction::Show { id } => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&PlanArtifact::load(cwd, &id)?)?
+            );
+        }
+        PlanAction::Comment {
+            id,
+            start_line,
+            end_line,
+            text,
+        } => {
+            let mut plan = PlanArtifact::load(cwd, &id)?;
+            plan.comment(start_line, end_line, text)?;
+            plan.save(cwd)?;
+        }
+        PlanAction::RequestRevision {
+            id,
+            start_line,
+            end_line,
+            text,
+        } => {
+            let mut plan = PlanArtifact::load(cwd, &id)?;
+            plan.request_revision(start_line, end_line, text)?;
+            plan.save(cwd)?;
+        }
+        PlanAction::Revise {
+            id,
+            expected_revision,
+            markdown,
+        } => {
+            let mut plan = PlanArtifact::load(cwd, &id)?;
+            plan.revise(expected_revision, markdown)?;
+            plan.save(cwd)?;
+        }
+        PlanAction::Propose { id } => {
+            let mut plan = PlanArtifact::load(cwd, &id)?;
+            plan.propose()?;
+            plan.save(cwd)?;
+        }
+        PlanAction::Approve { id } => {
+            let mut plan = PlanArtifact::load(cwd, &id)?;
+            plan.approve()?;
+            plan.save(cwd)?;
+        }
+        PlanAction::Abandon { id } => {
+            let mut plan = PlanArtifact::load(cwd, &id)?;
+            plan.abandon()?;
+            plan.save(cwd)?;
+        }
+    }
+    Ok(())
 }
 
 fn init_tracing(acp_mode: bool) {
@@ -298,6 +424,7 @@ async fn build_runner(config: &Config) -> anyhow::Result<Arc<dyn TurnRunner>> {
         match std::env::var("AXIOMCLI_TEST_RUNNER").as_deref() {
             Ok("echo") => return Ok(Arc::new(EchoTurnRunner)),
             Ok("blocking") => return Ok(Arc::new(BlockingTurnRunner)),
+            Ok("questions") => return Ok(Arc::new(QuestionTurnRunner)),
             _ => {}
         }
     }
@@ -340,7 +467,7 @@ fn resolve_cwd(cwd: Option<PathBuf>) -> anyhow::Result<PathBuf> {
 async fn run_headless(
     runner: Arc<dyn TurnRunner>,
     cwd: PathBuf,
-    config: &Config,
+    profile: axiomcli::app::PermissionProfile,
     prompt: String,
 ) -> anyhow::Result<()> {
     let (events_tx, mut events_rx) = mpsc::unbounded_channel();
@@ -348,14 +475,19 @@ async fn run_headless(
         session_id: SessionId::new(),
         turn_id: TurnId::new(),
         cwd,
-        permission_profile: config.permission_profile,
+        permission_profile: profile,
         approval: None,
+        questions: None,
     };
-    let run = runner.run(context, prompt, events_tx, CancellationToken::new());
+    let cancellation = CancellationToken::new();
+    let run = runner.run(context, prompt, events_tx, cancellation.clone());
     tokio::pin!(run);
     loop {
         tokio::select! {
             result = &mut run => {
+                if result.is_err() {
+                    cancellation.cancel();
+                }
                 result.map_err(anyhow::Error::from)?;
                 while let Ok(event) = events_rx.try_recv() {
                     print_headless_event(event);
@@ -367,7 +499,10 @@ async fn run_headless(
                     print_headless_event(event);
                 }
             }
-            _ = tokio::signal::ctrl_c() => return Err(anyhow::Error::from(AxiomError::Cancelled)),
+            _ = tokio::signal::ctrl_c() => {
+                cancellation.cancel();
+                return Err(anyhow::Error::from(AxiomError::Cancelled));
+            },
         }
     }
 }

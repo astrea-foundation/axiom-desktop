@@ -1,4 +1,12 @@
-use std::{collections::HashMap, path::PathBuf, str::FromStr as _, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashMap},
+    path::PathBuf,
+    str::FromStr as _,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 use agent_client_protocol::schema::{ProtocolVersion, v1 as protocol};
 use agent_client_protocol::{Agent, Client, ConnectionTo, Responder, Stdio};
@@ -7,8 +15,11 @@ use tokio::sync::{Mutex, mpsc};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    agent::TurnRunner,
-    app::{AppCommand, AppEvent, Origin, PermissionProfile, Runtime, SessionId, TurnId},
+    agent::{QuestionHandler, TurnRunner},
+    app::{
+        AppCommand, AppEvent, Origin, PermissionProfile, QuestionRequest, Runtime, SessionId,
+        TurnId,
+    },
     policy::{ApprovalChoice, ApprovalHandler, ApprovalRequest, ApprovalResponse},
     session::SessionStore,
 };
@@ -97,6 +108,80 @@ impl ApprovalHandler for AcpApproval {
     }
 }
 
+#[derive(Clone)]
+struct AcpQuestions {
+    connection: ConnectionTo<Client>,
+    session_id: protocol::SessionId,
+    supported: Arc<AtomicBool>,
+}
+
+#[async_trait]
+impl QuestionHandler for AcpQuestions {
+    async fn request(
+        &self,
+        request: QuestionRequest,
+        cancellation: CancellationToken,
+    ) -> crate::Result<BTreeMap<String, Vec<String>>> {
+        if !self.supported.load(Ordering::Acquire) {
+            return Err(crate::AxiomError::Protocol(
+                "ACP client did not advertise structured elicitation support".into(),
+            ));
+        }
+        let mut schema = protocol::ElicitationSchema::new().title("AxiomCLI questions");
+        for question in &request.questions {
+            if question.multiple {
+                schema = schema.property(
+                    question.id.clone(),
+                    protocol::MultiSelectPropertySchema::new(question.options.clone())
+                        .title(question.prompt.clone())
+                        .min_items(1_u64)
+                        .max_items(u64::try_from(question.options.len()).unwrap_or(u64::MAX)),
+                    true,
+                );
+            } else {
+                let mut property = protocol::StringPropertySchema::new()
+                    .title(question.prompt.clone())
+                    .min_length(1_u32);
+                if !question.options.is_empty() {
+                    property = property.enum_values(question.options.clone());
+                }
+                schema = schema.property(question.id.clone(), property, true);
+            }
+        }
+        let mode = protocol::ElicitationFormMode::new(
+            protocol::ElicitationSessionScope::new(self.session_id.clone()),
+            schema,
+        );
+        let response = tokio::select! {
+            () = cancellation.cancelled() => return Err(crate::AxiomError::Cancelled),
+            response = self.connection.send_request(protocol::CreateElicitationRequest::new(
+                mode,
+                format!("AxiomCLI needs {} answer(s) to continue", request.questions.len()),
+            )).block_task() => response.map_err(|error| crate::AxiomError::Protocol(error.to_string()))?,
+        };
+        let protocol::ElicitationAction::Accept(accepted) = response.action else {
+            return Err(crate::AxiomError::Cancelled);
+        };
+        let content = accepted.content.ok_or_else(|| {
+            crate::AxiomError::Protocol("ACP elicitation returned no content".into())
+        })?;
+        let mut answers = BTreeMap::new();
+        for (id, value) in content {
+            let values = match value {
+                protocol::ElicitationContentValue::String(value) => vec![value],
+                protocol::ElicitationContentValue::StringArray(values) => values,
+                _ => {
+                    return Err(crate::AxiomError::Protocol(format!(
+                        "ACP elicitation field `{id}` returned a non-text value"
+                    )));
+                }
+            };
+            answers.insert(id, values);
+        }
+        Ok(answers)
+    }
+}
+
 /// Serve ACP v1 over stdio. Stdout is owned by the protocol transport.
 pub async fn serve_stdio(
     runner: Arc<dyn TurnRunner>,
@@ -118,14 +203,20 @@ pub async fn serve_stdio(
     let load_runtime = runtime.clone();
     let load_runner = runner.clone();
     let supports_load = load_store.is_some();
+    let supports_elicitation = Arc::new(AtomicBool::new(false));
+    let initialize_elicitation = supports_elicitation.clone();
 
     Agent
         .builder()
         .name("axiomcli")
         .on_receive_request(
-            async move |_request: protocol::InitializeRequest,
+            async move |request: protocol::InitializeRequest,
                         responder: Responder<protocol::InitializeResponse>,
                         _connection| {
+                initialize_elicitation.store(
+                    request.client_capabilities.elicitation.as_ref().is_some_and(|value| value.form.is_some()),
+                    Ordering::Release,
+                );
                 responder.respond(
                     protocol::InitializeResponse::new(ProtocolVersion::V1)
                     .agent_capabilities(
@@ -319,6 +410,7 @@ pub async fn serve_stdio(
                 let task_runner = runner.clone();
                 let task_connection = connection.clone();
                 let task_store = prompt_store.clone();
+                let task_elicitation = supports_elicitation.clone();
                 connection.spawn(async move {
                     let (events_tx, mut events_rx) = mpsc::unbounded_channel();
                     let run = task_runner.run(
@@ -330,6 +422,11 @@ pub async fn serve_stdio(
                             approval: Some(Arc::new(AcpApproval {
                                 connection: task_connection.clone(),
                                 session_id: session_id.clone(),
+                            })),
+                            questions: Some(Arc::new(AcpQuestions {
+                                connection: task_connection.clone(),
+                                session_id: session_id.clone(),
+                                supported: task_elicitation,
                             })),
                         },
                         prompt,
@@ -351,6 +448,9 @@ pub async fn serve_stdio(
                             }
                         }
                     };
+                    if result.is_err() {
+                        cancellation.cancel();
+                    }
                     while let Ok(event) = events_rx.try_recv() {
                         let envelope = task_runtime
                             .emit(internal_id.clone(), event.clone())
@@ -577,6 +677,52 @@ fn send_event(
                 )),
             ))
         }
+        AppEvent::QuestionsAsked { request } => {
+            connection.send_notification(protocol::SessionNotification::new(
+                session_id.clone(),
+                protocol::SessionUpdate::AgentThoughtChunk(protocol::ContentChunk::new(
+                    protocol::ContentBlock::Text(protocol::TextContent::new(format!(
+                        "[attention {}] {} structured question(s)",
+                        request.request_id,
+                        request.questions.len()
+                    ))),
+                )),
+            ))
+        }
+        AppEvent::QuestionsAnswered { request_id, .. } => {
+            connection.send_notification(protocol::SessionNotification::new(
+                session_id.clone(),
+                protocol::SessionUpdate::AgentThoughtChunk(protocol::ContentChunk::new(
+                    protocol::ContentBlock::Text(protocol::TextContent::new(format!(
+                        "[attention {request_id}] answered"
+                    ))),
+                )),
+            ))
+        }
+        AppEvent::PlanProposed {
+            plan_id,
+            revision,
+            markdown,
+        } => connection.send_notification(protocol::SessionNotification::new(
+            session_id.clone(),
+            protocol::SessionUpdate::AgentThoughtChunk(protocol::ContentChunk::new(
+                protocol::ContentBlock::Text(protocol::TextContent::new(format!(
+                    "[plan {plan_id} r{revision} proposed]\n{markdown}"
+                ))),
+            )),
+        )),
+        AppEvent::PlanReviewed {
+            plan_id,
+            revision,
+            decision,
+        } => connection.send_notification(protocol::SessionNotification::new(
+            session_id.clone(),
+            protocol::SessionUpdate::AgentThoughtChunk(protocol::ContentChunk::new(
+                protocol::ContentBlock::Text(protocol::TextContent::new(format!(
+                    "[plan {plan_id} r{revision}] {decision}"
+                ))),
+            )),
+        )),
         _ => Ok(()),
     }
 }

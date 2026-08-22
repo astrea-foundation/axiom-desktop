@@ -12,7 +12,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     AxiomError, Result,
-    app::PermissionProfile,
+    app::{AppEvent, PermissionProfile, QuestionRequest, QuestionSpec},
+    planning::PlanArtifact,
     policy::Effect,
     provider::{FunctionDefinition, ToolDefinition},
     web::{SafeFetcher, SearchProvider, SearxngClient},
@@ -33,6 +34,8 @@ pub struct ToolResult {
     pub changed_paths: Vec<PathBuf>,
     pub diff: Option<String>,
     pub background: Option<(String, String)>,
+    pub events: Vec<AppEvent>,
+    pub questions: Option<QuestionRequest>,
 }
 
 impl ToolResult {
@@ -45,6 +48,8 @@ impl ToolResult {
             changed_paths: Vec::new(),
             diff: None,
             background: None,
+            events: Vec::new(),
+            questions: None,
         }
     }
 }
@@ -185,6 +190,10 @@ pub fn default_registry(max_output_bytes: usize, searxng_url: &str) -> Result<To
     registry.register(Arc::new(FetchUrl {
         fetcher: SafeFetcher::new(Duration::from_secs(30), max_output_bytes),
     }))?;
+    registry.register(Arc::new(CreatePlan))?;
+    registry.register(Arc::new(RevisePlan))?;
+    registry.register(Arc::new(ProposePlan))?;
+    registry.register(Arc::new(AskUserQuestions))?;
     Ok(registry)
 }
 
@@ -488,6 +497,8 @@ impl Tool for InspectGit {
             changed_paths: Vec::new(),
             diff: None,
             background: None,
+            events: Vec::new(),
+            questions: None,
         })
     }
 }
@@ -593,6 +604,8 @@ impl Tool for ReadFile {
             changed_paths: Vec::new(),
             diff: None,
             background: None,
+            events: Vec::new(),
+            questions: None,
         })
     }
 }
@@ -697,6 +710,8 @@ impl Tool for ApplyPatch {
             changed_paths: outcome.changed_paths.clone(),
             diff: Some(outcome.diff),
             background: None,
+            events: Vec::new(),
+            questions: None,
         })
     }
 }
@@ -753,6 +768,8 @@ impl Tool for ReplaceText {
             changed_paths: vec![result.path],
             diff: Some(result.diff),
             background: None,
+            events: Vec::new(),
+            questions: None,
         })
     }
 }
@@ -860,6 +877,8 @@ impl Tool for RunCommand {
             changed_paths: Vec::new(),
             diff: None,
             background: None,
+            events: Vec::new(),
+            questions: None,
         })
     }
 }
@@ -938,6 +957,8 @@ impl Tool for RunShell {
             changed_paths: Vec::new(),
             diff: None,
             background: None,
+            events: Vec::new(),
+            questions: None,
         })
     }
 }
@@ -965,7 +986,7 @@ impl Tool for StartBackground {
         &self,
         context: &ToolContext,
         arguments: Value,
-        _cancellation: CancellationToken,
+        cancellation: CancellationToken,
     ) -> Result<ToolResult> {
         let args: CommandArgs = parse(self.name(), arguments)?;
         let id = self
@@ -979,6 +1000,8 @@ impl Tool for StartBackground {
                     env: args.env,
                     timeout_secs: args.timeout_secs,
                 },
+                cancellation,
+                context.permission_profile.to_string(),
             )
             .await?;
         Ok(ToolResult {
@@ -988,6 +1011,8 @@ impl Tool for StartBackground {
             changed_paths: Vec::new(),
             diff: None,
             background: Some((id, "running".into())),
+            events: Vec::new(),
+            questions: None,
         })
     }
 }
@@ -1074,6 +1099,8 @@ impl Tool for BackgroundStatus {
             changed_paths: Vec::new(),
             diff: None,
             background: Some((snapshot.id, snapshot.state)),
+            events: Vec::new(),
+            questions: None,
         })
     }
 }
@@ -1133,6 +1160,8 @@ impl Tool for WaitBackground {
             changed_paths: Vec::new(),
             diff: None,
             background: Some((snapshot.id, snapshot.state)),
+            events: Vec::new(),
+            questions: None,
         })
     }
 }
@@ -1231,6 +1260,8 @@ impl Tool for FetchUrl {
             changed_paths: Vec::new(),
             diff: None,
             background: None,
+            events: Vec::new(),
+            questions: None,
         })
     }
 }
@@ -1271,8 +1302,229 @@ impl Tool for StopBackground {
             changed_paths: Vec::new(),
             diff: None,
             background: Some((args.task_id, "stopping".into())),
+            events: Vec::new(),
+            questions: None,
         })
     }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CreatePlanArgs {
+    markdown: String,
+}
+
+struct CreatePlan;
+
+#[async_trait]
+impl Tool for CreatePlan {
+    fn name(&self) -> &'static str {
+        "plan_create"
+    }
+    fn description(&self) -> &'static str {
+        "Create a revisioned draft plan artifact. In plan mode this is the only writable surface."
+    }
+    fn parameters(&self) -> Value {
+        schema(
+            json!({"markdown": {"type": "string", "minLength": 1}}),
+            &["markdown"],
+        )
+    }
+    fn effects(&self, context: &ToolContext, arguments: &Value) -> Result<Vec<Effect>> {
+        let _: CreatePlanArgs = parse(self.name(), arguments.clone())?;
+        Ok(vec![Effect::PlanWrite {
+            path: PlanArtifact::policy_path(&context.cwd, None),
+        }])
+    }
+    async fn execute(
+        &self,
+        context: &ToolContext,
+        arguments: Value,
+        _cancellation: CancellationToken,
+    ) -> Result<ToolResult> {
+        let args: CreatePlanArgs = parse(self.name(), arguments)?;
+        let plan = PlanArtifact::new(args.markdown);
+        let path = plan.save(&context.cwd)?;
+        Ok(ToolResult::success(serde_json::to_string_pretty(&json!({
+            "plan_id": plan.id,
+            "revision": plan.revision,
+            "state": plan.state,
+            "path": path,
+        }))?))
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RevisePlanArgs {
+    plan_id: String,
+    expected_revision: u64,
+    markdown: String,
+}
+
+struct RevisePlan;
+
+#[async_trait]
+impl Tool for RevisePlan {
+    fn name(&self) -> &'static str {
+        "plan_revise"
+    }
+    fn description(&self) -> &'static str {
+        "Revise a draft or revision-requested plan using optimistic revision control."
+    }
+    fn parameters(&self) -> Value {
+        schema(
+            json!({
+                "plan_id": {"type":"string"},
+                "expected_revision": {"type":"integer", "minimum":1},
+                "markdown": {"type":"string", "minLength":1}
+            }),
+            &["plan_id", "expected_revision", "markdown"],
+        )
+    }
+    fn effects(&self, context: &ToolContext, arguments: &Value) -> Result<Vec<Effect>> {
+        let args: RevisePlanArgs = parse(self.name(), arguments.clone())?;
+        Ok(vec![Effect::PlanWrite {
+            path: PlanArtifact::policy_path(&context.cwd, Some(&args.plan_id)),
+        }])
+    }
+    async fn execute(
+        &self,
+        context: &ToolContext,
+        arguments: Value,
+        _cancellation: CancellationToken,
+    ) -> Result<ToolResult> {
+        let args: RevisePlanArgs = parse(self.name(), arguments)?;
+        let mut plan = PlanArtifact::load(&context.cwd, &args.plan_id)?;
+        plan.revise(args.expected_revision, args.markdown)?;
+        plan.save(&context.cwd)?;
+        Ok(ToolResult::success(serde_json::to_string_pretty(&plan)?))
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PlanIdArgs {
+    plan_id: String,
+}
+
+struct ProposePlan;
+
+#[async_trait]
+impl Tool for ProposePlan {
+    fn name(&self) -> &'static str {
+        "plan_propose"
+    }
+    fn description(&self) -> &'static str {
+        "Propose a draft plan for human review without granting execution authority."
+    }
+    fn parameters(&self) -> Value {
+        schema(json!({"plan_id": {"type":"string"}}), &["plan_id"])
+    }
+    fn effects(&self, context: &ToolContext, arguments: &Value) -> Result<Vec<Effect>> {
+        let args: PlanIdArgs = parse(self.name(), arguments.clone())?;
+        Ok(vec![Effect::PlanWrite {
+            path: PlanArtifact::policy_path(&context.cwd, Some(&args.plan_id)),
+        }])
+    }
+    async fn execute(
+        &self,
+        context: &ToolContext,
+        arguments: Value,
+        _cancellation: CancellationToken,
+    ) -> Result<ToolResult> {
+        let args: PlanIdArgs = parse(self.name(), arguments)?;
+        let mut plan = PlanArtifact::load(&context.cwd, &args.plan_id)?;
+        plan.propose()?;
+        plan.save(&context.cwd)?;
+        let mut result = ToolResult::success(serde_json::to_string_pretty(&plan)?);
+        result.events.push(AppEvent::PlanProposed {
+            plan_id: plan.id,
+            revision: plan.revision,
+            markdown: plan.markdown,
+        });
+        Ok(result)
+    }
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AskQuestionsArgs {
+    questions: Vec<QuestionSpec>,
+}
+
+struct AskUserQuestions;
+
+#[async_trait]
+impl Tool for AskUserQuestions {
+    fn name(&self) -> &'static str {
+        "ask_user_questions"
+    }
+    fn description(&self) -> &'static str {
+        "Ask up to three concise structured questions and wait for validated user answers."
+    }
+    fn parameters(&self) -> Value {
+        schema(
+            json!({"questions": {
+                "type":"array", "minItems":1, "maxItems":3,
+                "items": {"type":"object", "additionalProperties":false,
+                    "properties": {
+                        "id":{"type":"string"},
+                        "prompt":{"type":"string"},
+                        "options":{"type":"array", "maxItems":5, "items":{"type":"string"}},
+                        "multiple":{"type":"boolean"}
+                    },
+                    "required":["id","prompt"]
+                }
+            }}),
+            &["questions"],
+        )
+    }
+    fn effects(&self, _context: &ToolContext, arguments: &Value) -> Result<Vec<Effect>> {
+        validate_question_args(parse(self.name(), arguments.clone())?)?;
+        Ok(Vec::new())
+    }
+    async fn execute(
+        &self,
+        _context: &ToolContext,
+        arguments: Value,
+        _cancellation: CancellationToken,
+    ) -> Result<ToolResult> {
+        let args: AskQuestionsArgs = parse(self.name(), arguments)?;
+        validate_question_args(args.clone())?;
+        let mut result = ToolResult::success("waiting for structured answers");
+        result.questions = Some(QuestionRequest {
+            request_id: uuid::Uuid::new_v4().to_string(),
+            questions: args.questions,
+        });
+        Ok(result)
+    }
+}
+
+fn validate_question_args(args: AskQuestionsArgs) -> Result<AskQuestionsArgs> {
+    if args.questions.is_empty() || args.questions.len() > 3 {
+        return Err(AxiomError::Tool(
+            "ask_user_questions requires 1-3 questions".into(),
+        ));
+    }
+    let mut ids = std::collections::HashSet::new();
+    for question in &args.questions {
+        if question.id.trim().is_empty()
+            || question.prompt.trim().is_empty()
+            || question.options.len() > 5
+            || question
+                .options
+                .iter()
+                .any(|option| option.trim().is_empty())
+            || !ids.insert(question.id.clone())
+        {
+            return Err(AxiomError::Tool(
+                "questions require unique non-empty IDs/prompts and at most five non-empty options"
+                    .into(),
+            ));
+        }
+    }
+    Ok(args)
 }
 
 #[cfg(test)]
@@ -1359,6 +1611,66 @@ mod tests {
             std::fs::read_to_string(root.path().join("hello.txt")).expect("result"),
             "cherry\n"
         );
+    }
+
+    #[tokio::test]
+    async fn plan_tools_persist_revision_and_emit_review_event() {
+        let root = tempdir().expect("root");
+        let context = ToolContext {
+            cwd: root.path().to_path_buf(),
+            permission_profile: PermissionProfile::Plan,
+        };
+        let registry = default_registry(4096, "http://127.0.0.1:8888").expect("registry");
+        let policy = PolicyEngine::for_workspace(root.path()).expect("policy");
+        let create_args = json!({"markdown":"# Plan\n\n1. Inspect"});
+        for effect in registry
+            .effects("plan_create", &context, &create_args)
+            .expect("effect")
+        {
+            assert_eq!(
+                policy.evaluate(PermissionProfile::Plan, effect).kind,
+                DecisionKind::Allow
+            );
+        }
+        let created = registry
+            .execute(
+                "plan_create",
+                &context,
+                create_args,
+                CancellationToken::new(),
+            )
+            .await
+            .expect("create");
+        let created: Value = serde_json::from_str(&created.content).expect("created json");
+        let id = created["plan_id"].as_str().expect("plan id");
+        let proposed = registry
+            .execute(
+                "plan_propose",
+                &context,
+                json!({"plan_id":id}),
+                CancellationToken::new(),
+            )
+            .await
+            .expect("propose");
+        assert!(matches!(
+            proposed.events.as_slice(),
+            [AppEvent::PlanProposed { plan_id, revision: 1, .. }] if plan_id == id
+        ));
+        assert_eq!(
+            PlanArtifact::load(root.path(), id).expect("load").state,
+            crate::planning::PlanState::Proposed
+        );
+
+        let file_write = registry
+            .effects(
+                "replace_text",
+                &context,
+                &json!({"path":"anything", "old":"a", "new":"b"}),
+            )
+            .expect("write effect");
+        assert!(file_write.into_iter().all(|effect| {
+            policy.evaluate(PermissionProfile::Plan, effect).kind == DecisionKind::Deny
+        }));
     }
 
     #[test]

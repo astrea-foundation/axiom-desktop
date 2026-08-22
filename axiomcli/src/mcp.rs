@@ -395,6 +395,8 @@ impl Tool for McpTool {
             changed_paths: Vec::new(),
             diff: None,
             background: None,
+            events: Vec::new(),
+            questions: None,
         })
     }
 }

@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     fmt,
     path::PathBuf,
     str::FromStr,
@@ -132,6 +132,7 @@ pub enum Origin {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PermissionProfile {
+    Plan,
     Observe,
     #[default]
     Confirm,
@@ -142,6 +143,7 @@ pub enum PermissionProfile {
 impl fmt::Display for PermissionProfile {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
+            Self::Plan => "plan",
             Self::Observe => "observe",
             Self::Confirm => "confirm",
             Self::Workspace => "workspace",
@@ -155,6 +157,7 @@ impl FromStr for PermissionProfile {
 
     fn from_str(input: &str) -> Result<Self> {
         match input {
+            "plan" => Ok(Self::Plan),
             "observe" => Ok(Self::Observe),
             "confirm" => Ok(Self::Confirm),
             "workspace" => Ok(Self::Workspace),
@@ -339,6 +342,13 @@ pub enum AppEvent {
         question_id: String,
         answers: Vec<String>,
     },
+    QuestionsAsked {
+        request: QuestionRequest,
+    },
+    QuestionsAnswered {
+        request_id: String,
+        answers: BTreeMap<String, Vec<String>>,
+    },
     PlanProposed {
         plan_id: String,
         revision: u64,
@@ -377,6 +387,22 @@ pub enum AppEvent {
         message: String,
     },
     SessionClosed,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuestionSpec {
+    pub id: String,
+    pub prompt: String,
+    #[serde(default)]
+    pub options: Vec<String>,
+    #[serde(default)]
+    pub multiple: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuestionRequest {
+    pub request_id: String,
+    pub questions: Vec<QuestionSpec>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -675,6 +701,16 @@ impl Kernel {
                 session.lifecycle = SessionLifecycle::WaitingForAnswer;
                 session.pending_question = Some(question_id.clone());
             }
+            AppEvent::QuestionsAsked { request } => {
+                if session.lifecycle != SessionLifecycle::Running || request.questions.is_empty() {
+                    return Err(AxiomError::InvalidTransition(
+                        "structured questions require a running turn and a non-empty request"
+                            .into(),
+                    ));
+                }
+                session.lifecycle = SessionLifecycle::WaitingForAnswer;
+                session.pending_question = Some(request.request_id.clone());
+            }
             AppEvent::QuestionAnswered {
                 question_id,
                 answers,
@@ -685,6 +721,21 @@ impl Kernel {
                 {
                     return Err(AxiomError::InvalidTransition(format!(
                         "question {question_id} is not pending or has no answer"
+                    )));
+                }
+                session.lifecycle = SessionLifecycle::Running;
+                session.pending_question = None;
+            }
+            AppEvent::QuestionsAnswered {
+                request_id,
+                answers,
+            } => {
+                if answers.is_empty()
+                    || session.lifecycle != SessionLifecycle::WaitingForAnswer
+                    || session.pending_question.as_deref() != Some(request_id)
+                {
+                    return Err(AxiomError::InvalidTransition(format!(
+                        "question request {request_id} is not pending or has no answers"
                     )));
                 }
                 session.lifecycle = SessionLifecycle::Running;
@@ -824,7 +875,14 @@ fn replay_event(state: &mut Option<SessionState>, id: &SessionId, event: &AppEve
             session.lifecycle = SessionLifecycle::WaitingForAnswer;
             session.pending_question = Some(question_id.clone());
         }
-        AppEvent::QuestionAnswered { .. } => {
+        AppEvent::QuestionsAsked { request } => {
+            let session = state.as_mut().ok_or_else(|| {
+                AxiomError::InvalidTransition("questions precede session creation".into())
+            })?;
+            session.lifecycle = SessionLifecycle::WaitingForAnswer;
+            session.pending_question = Some(request.request_id.clone());
+        }
+        AppEvent::QuestionAnswered { .. } | AppEvent::QuestionsAnswered { .. } => {
             if let Some(session) = state.as_mut() {
                 session.lifecycle = SessionLifecycle::Running;
                 session.pending_question = None;

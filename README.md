@@ -43,12 +43,24 @@ Do not put API keys in repository configuration or command-line arguments.
 
 ## Permission profiles
 
+- `plan`: workspace reads plus writes to revisioned `.axiomcli/plans` artifacts;
+  all code edits, processes, network, and MCP calls are deterministically denied.
 - `observe`: workspace reads only; mutation, processes, network, and MCP denied.
 - `confirm`: reads are automatic; every other effect asks the TUI/ACP client.
 - `workspace`: in-root edits and a narrow development-command allowlist are
   automatic; network, MCP, deletion, and other programs ask.
 - `autonomous`: normalized in-scope operations are automatic, while shell and
-  deletion remain confirmation-gated and hard denials still win.
+deletion remain confirmation-gated and hard denials still win.
+
+Use `axiomcli tui --plan` or `axiomcli exec --plan "..."` for plan mode.
+Review durable plans with `axiomcli plans list/show/comment/request-revision/
+revise/propose/approve/abandon`. Plan approval changes artifact state; it does
+not itself execute the plan or grant broader authority.
+
+Agents can ask up to three structured questions. The TUI uses a separate answer
+composer so an in-progress message draft is preserved. ACP maps questions to
+form elicitation when the client advertises that currently unstable ACP
+capability; unsupported clients fail the question closed.
 
 The model proposes operations but never authorizes them. Structured tools,
 canonical paths, process groups, output caps, SSRF checks, and the policy engine
@@ -110,6 +122,9 @@ actions are reported as unknown and never replayed.
 - ACP v1 and durable `session/load` are supported. Per-session MCP configuration
   is not advertised yet; MCP servers come only from trusted user configuration.
 - SearXNG upstream engines can throttle or fail independently.
+- Background process work is limited to four concurrent children. It has
+  independent IDs, time/output budgets, ordered provenance, and inherits parent
+  cancellation. Subagents are deliberately not implemented yet.
 - The TUI is intentionally compact; richer transcript search/diff navigation
   and release installers remain pre-1.0 work.
 

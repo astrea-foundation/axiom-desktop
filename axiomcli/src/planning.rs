@@ -1,4 +1,8 @@
-use std::path::{Path, PathBuf};
+use std::{
+    fs::OpenOptions,
+    io::Write as _,
+    path::{Path, PathBuf},
+};
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -10,6 +14,7 @@ use crate::{AxiomError, Result};
 pub enum PlanState {
     Draft,
     Proposed,
+    RevisionRequested,
     Approved,
     Abandoned,
 }
@@ -55,6 +60,22 @@ impl PlanArtifact {
         self.transition(PlanState::Abandoned)
     }
 
+    pub fn request_revision(
+        &mut self,
+        start_line: usize,
+        end_line: usize,
+        text: String,
+    ) -> Result<()> {
+        if self.state != PlanState::Proposed {
+            return Err(AxiomError::InvalidTransition(
+                "only a proposed plan can receive a revision request".into(),
+            ));
+        }
+        self.comment(start_line, end_line, text)?;
+        self.state = PlanState::RevisionRequested;
+        Ok(())
+    }
+
     pub fn revise(&mut self, expected_revision: u64, markdown: String) -> Result<()> {
         if self.revision != expected_revision {
             return Err(AxiomError::InvalidTransition(format!(
@@ -67,6 +88,7 @@ impl PlanArtifact {
                 "terminal plan cannot be revised".into(),
             ));
         }
+        validate_markdown(&markdown)?;
         self.markdown = markdown;
         self.revision = self.revision.saturating_add(1);
         self.state = PlanState::Draft;
@@ -75,7 +97,11 @@ impl PlanArtifact {
 
     pub fn comment(&mut self, start_line: usize, end_line: usize, text: String) -> Result<()> {
         let line_count = self.markdown.lines().count().max(1);
-        if start_line == 0 || end_line < start_line || end_line > line_count {
+        if text.trim().is_empty()
+            || start_line == 0
+            || end_line < start_line
+            || end_line > line_count
+        {
             return Err(AxiomError::InvalidTransition(
                 "plan comment range is invalid".into(),
             ));
@@ -90,12 +116,26 @@ impl PlanArtifact {
     }
 
     pub fn save(&self, workspace: &Path) -> Result<PathBuf> {
+        validate_markdown(&self.markdown)?;
         let root = workspace.canonicalize()?;
         let directory = root.join(".axiomcli/plans");
         std::fs::create_dir_all(&directory)?;
+        let directory = directory.canonicalize()?;
+        if !directory.starts_with(&root) {
+            return Err(AxiomError::OutsideWorkspace(directory));
+        }
         let path = directory.join(format!("{}.json", self.id));
         let temporary = directory.join(format!(".{}.{}.tmp", self.id, Uuid::new_v4()));
-        std::fs::write(&temporary, serde_json::to_vec_pretty(self)?)?;
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&temporary)?;
+        file.write_all(&serde_json::to_vec_pretty(self)?)?;
+        file.sync_all()?;
         std::fs::rename(&temporary, &path)?;
         Ok(path)
     }
@@ -113,7 +153,47 @@ impl PlanArtifact {
         if !path.starts_with(&root) {
             return Err(AxiomError::OutsideWorkspace(path));
         }
-        serde_json::from_slice(&std::fs::read(path)?).map_err(Into::into)
+        let plan: Self = serde_json::from_slice(&std::fs::read(path)?)?;
+        if plan.id != id {
+            return Err(AxiomError::Storage(
+                "plan file identity does not match its requested ID".into(),
+            ));
+        }
+        validate_markdown(&plan.markdown)?;
+        Ok(plan)
+    }
+
+    pub fn list(workspace: &Path) -> Result<Vec<Self>> {
+        let root = workspace.canonicalize()?;
+        let directory = root.join(".axiomcli/plans");
+        if !directory.exists() {
+            return Ok(Vec::new());
+        }
+        let directory = directory.canonicalize()?;
+        if !directory.starts_with(&root) {
+            return Err(AxiomError::OutsideWorkspace(directory));
+        }
+        let mut plans = Vec::new();
+        for entry in std::fs::read_dir(directory)? {
+            let entry = entry?;
+            if entry
+                .path()
+                .extension()
+                .is_some_and(|extension| extension == "json")
+            {
+                let value: Self = serde_json::from_slice(&std::fs::read(entry.path())?)?;
+                plans.push(value);
+            }
+        }
+        plans.sort_by(|left, right| left.id.cmp(&right.id));
+        Ok(plans)
+    }
+
+    #[must_use]
+    pub fn policy_path(workspace: &Path, id: Option<&str>) -> PathBuf {
+        workspace
+            .join(".axiomcli/plans")
+            .join(format!("{}.json", id.unwrap_or("new-plan")))
     }
 
     fn transition(&mut self, target: PlanState) -> Result<()> {
@@ -121,7 +201,10 @@ impl PlanArtifact {
             (self.state, target),
             (PlanState::Draft, PlanState::Proposed)
                 | (PlanState::Proposed, PlanState::Approved)
-                | (PlanState::Draft | PlanState::Proposed, PlanState::Abandoned)
+                | (
+                    PlanState::Draft | PlanState::Proposed | PlanState::RevisionRequested,
+                    PlanState::Abandoned
+                )
         );
         if !allowed {
             return Err(AxiomError::InvalidTransition(format!(
@@ -132,6 +215,20 @@ impl PlanArtifact {
         self.state = target;
         Ok(())
     }
+}
+
+fn validate_markdown(markdown: &str) -> Result<()> {
+    if markdown.trim().is_empty() {
+        return Err(AxiomError::InvalidTransition(
+            "plan markdown cannot be empty".into(),
+        ));
+    }
+    if markdown.len() > 1024 * 1024 {
+        return Err(AxiomError::InvalidTransition(
+            "plan markdown exceeds the 1 MiB development limit".into(),
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -146,6 +243,8 @@ mod tests {
         let mut plan = PlanArtifact::new("one\ntwo");
         plan.comment(2, 2, "change this".into()).expect("comment");
         plan.propose().expect("propose");
+        plan.request_revision(2, 2, "be specific".into())
+            .expect("request revision");
         plan.revise(1, "one\nrevised".into()).expect("revise");
         plan.propose().expect("propose again");
         plan.approve().expect("approve");
@@ -153,5 +252,6 @@ mod tests {
         let restored = PlanArtifact::load(root.path(), &plan.id).expect("load");
         assert_eq!(restored, plan);
         assert!(plan.revise(2, "no".into()).is_err());
+        assert_eq!(PlanArtifact::list(root.path()).expect("list"), vec![plan]);
     }
 }

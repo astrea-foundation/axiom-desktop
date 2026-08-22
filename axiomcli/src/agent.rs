@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     path::PathBuf,
     sync::Arc,
     time::Duration,
@@ -10,7 +10,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     AxiomError, Result,
-    app::{AppEvent, EventEnvelope, PermissionProfile, SessionId, TurnId},
+    app::{AppEvent, EventEnvelope, PermissionProfile, QuestionRequest, SessionId, TurnId},
     policy::{
         ApprovalHandler, ApprovalRequest, ApprovalResponse, DecisionKind, PolicyEngine, PolicyRule,
     },
@@ -27,6 +27,7 @@ pub struct TurnContext {
     pub cwd: PathBuf,
     pub permission_profile: PermissionProfile,
     pub approval: Option<Arc<dyn ApprovalHandler>>,
+    pub questions: Option<Arc<dyn QuestionHandler>>,
 }
 
 impl std::fmt::Debug for TurnContext {
@@ -38,8 +39,18 @@ impl std::fmt::Debug for TurnContext {
             .field("cwd", &self.cwd)
             .field("permission_profile", &self.permission_profile)
             .field("has_approval_handler", &self.approval.is_some())
+            .field("has_question_handler", &self.questions.is_some())
             .finish()
     }
+}
+
+#[async_trait]
+pub trait QuestionHandler: Send + Sync {
+    async fn request(
+        &self,
+        request: QuestionRequest,
+        cancellation: CancellationToken,
+    ) -> Result<BTreeMap<String, Vec<String>>>;
 }
 
 /// Adapter-independent execution of one already-accepted turn.
@@ -139,6 +150,62 @@ impl TurnRunner for BlockingTurnRunner {
     ) -> Result<()> {
         cancellation.cancelled().await;
         Err(AxiomError::Cancelled)
+    }
+}
+
+/// Debug-build-only structured-input fixture for front-end contract tests.
+#[derive(Debug, Default)]
+pub struct QuestionTurnRunner;
+
+#[async_trait]
+impl TurnRunner for QuestionTurnRunner {
+    async fn run(
+        &self,
+        context: TurnContext,
+        _prompt: String,
+        events: mpsc::UnboundedSender<AppEvent>,
+        cancellation: CancellationToken,
+    ) -> Result<()> {
+        let request = QuestionRequest {
+            request_id: "question-fixture".into(),
+            questions: vec![
+                crate::app::QuestionSpec {
+                    id: "theme".into(),
+                    prompt: "Choose a theme".into(),
+                    options: vec!["cherry".into(), "plain".into()],
+                    multiple: false,
+                },
+                crate::app::QuestionSpec {
+                    id: "note".into(),
+                    prompt: "Add a note".into(),
+                    options: Vec::new(),
+                    multiple: false,
+                },
+            ],
+        };
+        events
+            .send(AppEvent::QuestionsAsked {
+                request: request.clone(),
+            })
+            .map_err(|_| AxiomError::Cancelled)?;
+        let handler = context.questions.ok_or_else(|| {
+            AxiomError::Protocol("structured question handler is unavailable".into())
+        })?;
+        let answers = handler.request(request.clone(), cancellation).await?;
+        let answers = validate_answers(&request, answers)?;
+        events
+            .send(AppEvent::QuestionsAnswered {
+                request_id: request.request_id,
+                answers: answers.clone(),
+            })
+            .map_err(|_| AxiomError::Cancelled)?;
+        events
+            .send(AppEvent::TextDelta {
+                turn_id: context.turn_id,
+                text: serde_json::to_string(&answers)?,
+            })
+            .map_err(|_| AxiomError::Cancelled)?;
+        Ok(())
     }
 }
 
@@ -479,6 +546,12 @@ impl TurnRunner for AgentEngine {
                     )]
                 })
         };
+        if context.permission_profile == PermissionProfile::Plan {
+            messages.push(ChatMessage::text(
+                ChatRole::System,
+                "PLAN MODE: inspect the workspace read-only, ask concise structured questions when needed, create/revise a persisted plan artifact, and propose it for human review. Policy—not this message—blocks all other writes and execution.",
+            ));
+        }
         messages.push(ChatMessage::text(ChatRole::User, prompt));
         let mut last_call = None;
 
@@ -633,8 +706,47 @@ impl TurnRunner for AgentEngine {
                         changed_paths: Vec::new(),
                         diff: None,
                         background: None,
+                        events: Vec::new(),
+                        questions: None,
                     },
                 };
+                for event in std::mem::take(&mut tool_result.events) {
+                    events.send(event).map_err(|_| AxiomError::Cancelled)?;
+                }
+                if let Some(request) = tool_result.questions.take() {
+                    events
+                        .send(AppEvent::QuestionsAsked {
+                            request: request.clone(),
+                        })
+                        .map_err(|_| AxiomError::Cancelled)?;
+                    let answer = if let Some(handler) = &context.questions {
+                        tokio::select! {
+                            () = cancellation.cancelled() => Err(AxiomError::Cancelled),
+                            answer = handler.request(request.clone(), cancellation.clone()) => answer,
+                        }
+                    } else {
+                        Err(AxiomError::Tool(
+                            "this front end cannot answer structured questions".into(),
+                        ))
+                    };
+                    match answer.and_then(|answers| validate_answers(&request, answers)) {
+                        Ok(answers) => {
+                            events
+                                .send(AppEvent::QuestionsAnswered {
+                                    request_id: request.request_id,
+                                    answers: answers.clone(),
+                                })
+                                .map_err(|_| AxiomError::Cancelled)?;
+                            tool_result.content = serde_json::to_string_pretty(&answers)?;
+                            tool_result.success = true;
+                        }
+                        Err(AxiomError::Cancelled) => return Err(AxiomError::Cancelled),
+                        Err(error) => {
+                            tool_result.content = error.to_string();
+                            tool_result.success = false;
+                        }
+                    }
+                }
                 let (bounded_content, additionally_truncated) =
                     truncate_utf8(&tool_result.content, self.limits.max_tool_output_bytes);
                 tool_result.content = bounded_content;
@@ -701,6 +813,37 @@ impl TurnRunner for AgentEngine {
             self.limits.max_steps
         )))
     }
+}
+
+fn validate_answers(
+    request: &QuestionRequest,
+    answers: BTreeMap<String, Vec<String>>,
+) -> Result<BTreeMap<String, Vec<String>>> {
+    if answers.len() != request.questions.len() {
+        return Err(AxiomError::Tool(
+            "structured question response is incomplete".into(),
+        ));
+    }
+    for question in &request.questions {
+        let values = answers
+            .get(&question.id)
+            .ok_or_else(|| AxiomError::Tool(format!("missing answer for `{}`", question.id)))?;
+        if values.is_empty() || (!question.multiple && values.len() != 1) {
+            return Err(AxiomError::Tool(format!(
+                "invalid answer count for `{}`",
+                question.id
+            )));
+        }
+        if !question.options.is_empty()
+            && values.iter().any(|value| !question.options.contains(value))
+        {
+            return Err(AxiomError::Tool(format!(
+                "answer for `{}` is not one of its options",
+                question.id
+            )));
+        }
+    }
+    Ok(answers)
 }
 
 fn serialized_message_bytes(messages: &[ChatMessage]) -> Result<usize> {
@@ -973,6 +1116,7 @@ mod engine_tests {
             cwd: PathBuf::from("."),
             permission_profile: PermissionProfile::Confirm,
             approval: None,
+            questions: None,
         }
     }
 
@@ -982,6 +1126,30 @@ mod engine_tests {
             events.push(event);
         }
         events
+    }
+
+    struct TestQuestions;
+
+    #[async_trait]
+    impl QuestionHandler for TestQuestions {
+        async fn request(
+            &self,
+            request: QuestionRequest,
+            _cancellation: CancellationToken,
+        ) -> Result<BTreeMap<String, Vec<String>>> {
+            Ok(request
+                .questions
+                .into_iter()
+                .map(|question| {
+                    let answer = question
+                        .options
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| "free answer".into());
+                    (question.id, vec![answer])
+                })
+                .collect())
+        }
     }
 
     #[tokio::test]
@@ -1005,6 +1173,45 @@ mod engine_tests {
                 .iter()
                 .any(|event| matches!(event, AppEvent::TextDelta { .. }))
         );
+    }
+
+    #[tokio::test]
+    async fn structured_questions_round_trip_through_shared_events() {
+        let provider = Arc::new(ScriptedProvider::new(vec![
+            AssistantTurn {
+                text: String::new(),
+                tool_calls: vec![tool_call(
+                    "questions",
+                    "ask_user_questions",
+                    r#"{"questions":[{"id":"style","prompt":"Which style?","options":["compact","verbose"],"multiple":false},{"id":"note","prompt":"Any note?","options":[],"multiple":false}]}"#,
+                )],
+            },
+            AssistantTurn {
+                text: "answered".into(),
+                tool_calls: Vec::new(),
+            },
+        ]));
+        let registry =
+            crate::tools::default_registry(4096, "http://127.0.0.1:8888").expect("registry");
+        let engine = AgentEngine::new(provider, Arc::new(registry), "test", 2);
+        let mut turn_context = context();
+        turn_context.cwd = tempfile::tempdir().expect("workspace").keep();
+        turn_context.questions = Some(Arc::new(TestQuestions));
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        engine
+            .run(turn_context, "ask".into(), tx, CancellationToken::new())
+            .await
+            .expect("run");
+        let events = drain(&mut rx);
+        assert!(events.iter().any(|event| matches!(
+            event,
+            AppEvent::QuestionsAsked { request } if request.questions.len() == 2
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            AppEvent::QuestionsAnswered { answers, .. }
+                if answers.get("style") == Some(&vec!["compact".into()])
+        )));
     }
 
     #[tokio::test]
@@ -1078,6 +1285,7 @@ mod engine_tests {
                     cwd: PathBuf::from("/tmp/resume-fixture"),
                     permission_profile: PermissionProfile::Confirm,
                     approval: None,
+                    questions: None,
                 },
                 "what do you remember?".into(),
                 tx,

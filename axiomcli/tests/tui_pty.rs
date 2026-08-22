@@ -71,6 +71,13 @@ fn run_tui_at(
             writer.write_all(&[3]).expect("Ctrl+C");
             writer.flush().expect("flush Ctrl+C");
             thread::sleep(Duration::from_millis(180));
+        } else if runner == "questions" {
+            writer.write_all(b"1\r").expect("first answer");
+            writer.flush().expect("flush first answer");
+            thread::sleep(Duration::from_millis(120));
+            writer.write_all(b"compact\r").expect("second answer");
+            writer.flush().expect("flush second answer");
+            thread::sleep(Duration::from_millis(180));
         }
     }
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
@@ -113,6 +120,17 @@ fn cancellation_restores_the_terminal() {
     let (output, success) = run_tui("blocking", false);
     assert!(success, "TUI failed; output: {output:?}");
     assert!(output.contains("Cancelling") || output.contains("Cancelled"));
+    assert!(output.contains("\u{1b}[?1049l"));
+}
+
+#[test]
+fn structured_questions_use_a_separate_tui_answer_composer() {
+    let (output, success) = run_tui("questions", false);
+    assert!(success, "TUI failed; output: {output:?}");
+    assert!(
+        output.contains("1=cherry") && output.contains("\"theme\":[\"cherry\"]"),
+        "question surface was not rendered: {output:?}"
+    );
     assert!(output.contains("\u{1b}[?1049l"));
 }
 

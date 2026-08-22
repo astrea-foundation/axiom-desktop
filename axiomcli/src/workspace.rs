@@ -6,7 +6,7 @@ use std::{
     process::Stdio,
     sync::{
         Arc,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -20,7 +20,7 @@ use similar::{ChangeTag, TextDiff};
 use tokio::{
     io::{AsyncRead, AsyncReadExt as _},
     process::Command,
-    sync::{Mutex, watch},
+    sync::{Mutex, Semaphore, watch},
 };
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -1244,7 +1244,11 @@ pub struct ProcessOutcome {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BackgroundSnapshot {
     pub id: String,
+    pub sequence: u64,
     pub state: String,
+    pub program: String,
+    pub cwd: PathBuf,
+    pub permission_profile: String,
     pub stdout: String,
     pub stderr: String,
     pub truncated: bool,
@@ -1262,7 +1266,8 @@ struct BackgroundTask {
 pub struct ProcessManager {
     tasks: Arc<Mutex<HashMap<String, BackgroundTask>>>,
     max_output_bytes: usize,
-    max_background_tasks: usize,
+    slots: Arc<Semaphore>,
+    next_sequence: Arc<AtomicU64>,
 }
 
 impl Default for ProcessManager {
@@ -1277,7 +1282,8 @@ impl ProcessManager {
         Self {
             tasks: Arc::new(Mutex::new(HashMap::new())),
             max_output_bytes: max_output_bytes.max(1024),
-            max_background_tasks: 32,
+            slots: Arc::new(Semaphore::new(4)),
+            next_sequence: Arc::new(AtomicU64::new(1)),
         }
     }
 
@@ -1392,18 +1398,33 @@ impl ProcessManager {
         })
     }
 
-    pub async fn start(&self, workspace: Workspace, request: ProcessRequest) -> Result<String> {
-        if self.tasks.lock().await.len() >= self.max_background_tasks {
-            return Err(AxiomError::Tool(format!(
-                "background task limit reached ({})",
-                self.max_background_tasks
-            )));
-        }
+    pub async fn start(
+        &self,
+        workspace: Workspace,
+        request: ProcessRequest,
+        parent: CancellationToken,
+        permission_profile: String,
+    ) -> Result<String> {
+        let permit = self
+            .slots
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| AxiomError::Tool("background concurrency limit reached (4)".into()))?;
         let id = Uuid::new_v4().to_string();
-        let cancellation = CancellationToken::new();
+        let cancellation = parent.child_token();
+        let sequence = self.next_sequence.fetch_add(1, Ordering::Relaxed);
+        let cwd = if request.cwd.as_os_str().is_empty() {
+            workspace.root().to_path_buf()
+        } else {
+            workspace.resolve_existing(&request.cwd)?
+        };
         let state = Arc::new(Mutex::new(BackgroundSnapshot {
             id: id.clone(),
+            sequence,
             state: "running".into(),
+            program: request.program.clone(),
+            cwd,
+            permission_profile,
             stdout: String::new(),
             stderr: String::new(),
             truncated: false,
@@ -1420,6 +1441,7 @@ impl ProcessManager {
         );
         let manager = self.clone();
         tokio::spawn(async move {
+            let _permit = permit;
             let outcome = manager
                 .run_inner(&workspace, &request, cancellation, Some(state.clone()))
                 .await;
@@ -1480,7 +1502,7 @@ impl ProcessManager {
         for state in states {
             snapshots.push(state.lock().await.clone());
         }
-        snapshots.sort_by(|left, right| left.id.cmp(&right.id));
+        snapshots.sort_by_key(|snapshot| snapshot.sequence);
         snapshots
     }
 
@@ -2388,6 +2410,8 @@ mod tests {
             .start(
                 workspace.clone(),
                 process_request("sh", &["-c", "printf start; sleep 5"]),
+                CancellationToken::new(),
+                "test".into(),
             )
             .await
             .expect("start");
@@ -2399,5 +2423,44 @@ mod tests {
         manager.stop(&id).await.expect("stop");
         let stopped = manager.snapshot(&id).await.expect("stopped snapshot");
         assert_eq!(stopped.state, "cancelled");
+
+        let mut active = Vec::new();
+        for _ in 0..4 {
+            let parent = CancellationToken::new();
+            let id = manager
+                .start(
+                    workspace.clone(),
+                    process_request("sleep", &["5"]),
+                    parent.clone(),
+                    "workspace".into(),
+                )
+                .await
+                .expect("bounded slot");
+            active.push((id, parent));
+        }
+        let overflow = manager
+            .start(
+                workspace.clone(),
+                process_request("sleep", &["5"]),
+                CancellationToken::new(),
+                "workspace".into(),
+            )
+            .await
+            .expect_err("fifth concurrent task is rejected");
+        assert!(overflow.to_string().contains("concurrency limit"));
+
+        active[0].1.cancel();
+        let cancelled = manager.wait(&active[0].0, 2).await.expect("parent cancel");
+        assert_eq!(cancelled.state, "cancelled");
+        assert_eq!(cancelled.permission_profile, "workspace");
+        for (id, _) in active.iter().skip(1) {
+            manager.stop(id).await.expect("cleanup");
+        }
+        let ordered = manager.list().await;
+        assert!(
+            ordered
+                .windows(2)
+                .all(|pair| pair[0].sequence < pair[1].sequence)
+        );
     }
 }

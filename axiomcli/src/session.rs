@@ -590,6 +590,7 @@ fn recovery_from_events(
     let mut active_turns = HashSet::new();
     let mut active_tools = HashMap::new();
     let mut background = HashMap::new();
+    let mut pending_questions = HashSet::new();
     let mut changed_paths = BTreeSet::new();
     for envelope in events {
         match &envelope.event {
@@ -622,6 +623,18 @@ fn recovery_from_events(
                     background.insert(task_id.clone(), state.clone());
                 }
             }
+            AppEvent::QuestionAsked { question_id, .. } => {
+                pending_questions.insert(question_id.clone());
+            }
+            AppEvent::QuestionAnswered { question_id, .. } => {
+                pending_questions.remove(question_id);
+            }
+            AppEvent::QuestionsAsked { request } => {
+                pending_questions.insert(request.request_id.clone());
+            }
+            AppEvent::QuestionsAnswered { request_id, .. } => {
+                pending_questions.remove(request_id);
+            }
             _ => {}
         }
     }
@@ -640,6 +653,15 @@ fn recovery_from_events(
                 call_id: task_id,
                 name: "background_process".into(),
                 status: format!("unknown_after_restart (last state: {state})"),
+            }),
+    );
+    interrupted_tools.extend(
+        pending_questions
+            .into_iter()
+            .map(|request_id| InterruptedTool {
+                call_id: request_id,
+                name: "structured_question".into(),
+                status: "cancelled_by_restart".into(),
             }),
     );
     interrupted_tools.sort_by(|left, right| left.call_id.cmp(&right.call_id));

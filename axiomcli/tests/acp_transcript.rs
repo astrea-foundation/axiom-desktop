@@ -83,13 +83,17 @@ impl AcpProcess {
     }
 
     async fn initialize(&mut self) {
+        self.initialize_with_capabilities(json!({})).await;
+    }
+
+    async fn initialize_with_capabilities(&mut self, capabilities: Value) {
         self.send(&json!({
             "jsonrpc": "2.0",
             "id": 1,
             "method": "initialize",
             "params": {
                 "protocolVersion": 1,
-                "clientCapabilities": {},
+                "clientCapabilities": capabilities,
                 "clientInfo": {"name": "axiomcli-conformance", "version": "1"}
             }
         }))
@@ -121,6 +125,51 @@ impl AcpProcess {
             .expect("wait ACP");
         assert!(status.success());
     }
+}
+
+#[tokio::test]
+async fn structured_questions_map_to_acp_elicitation_and_shared_updates() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let mut acp = AcpProcess::spawn("questions");
+    acp.initialize_with_capabilities(json!({"elicitation":{"form":{}}}))
+        .await;
+    let session = acp.new_session(2, workspace.path()).await;
+    acp.send(&json!({
+        "jsonrpc":"2.0","id":3,"method":"session/prompt",
+        "params":{"sessionId":session,"prompt":[{"type":"text","text":"ask me"}]}
+    }))
+    .await;
+    let mut saw_question_update = false;
+    let mut saw_answer = false;
+    loop {
+        let value = acp.read().await;
+        if value["method"] == "session/update" {
+            saw_question_update |= value.to_string().contains("structured question");
+            saw_answer |= value.to_string().contains("cherry");
+        }
+        if value["method"] == "elicitation/create" {
+            let id = value["id"].clone();
+            assert_eq!(
+                value["params"]["requestedSchema"]["required"]
+                    .as_array()
+                    .expect("required")
+                    .len(),
+                2
+            );
+            acp.send(&json!({
+                "jsonrpc":"2.0","id":id,
+                "result":{"action":"accept","content":{"theme":"cherry","note":"keep it compact"}}
+            }))
+            .await;
+        }
+        if value.get("id").and_then(Value::as_i64) == Some(3) {
+            assert_eq!(value["result"]["stopReason"], "end_turn");
+            break;
+        }
+    }
+    assert!(saw_question_update);
+    assert!(saw_answer);
+    acp.close().await;
 }
 
 #[tokio::test]

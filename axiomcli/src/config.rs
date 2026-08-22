@@ -131,6 +131,12 @@ impl ConfigLayer {
             ));
         }
         if let Some(profile) = self.permission_profile {
+            if profile == PermissionProfile::Plan {
+                return Err(AxiomError::Config(
+                    "project config cannot enable plan artifact writes; use --plan or trusted user configuration"
+                        .into(),
+                ));
+            }
             if profile_rank(profile) > profile_rank(config.permission_profile) {
                 return Err(AxiomError::Config(
                     "project config cannot broaden the trusted permission profile".into(),
@@ -171,10 +177,11 @@ impl ConfigLayer {
 
 const fn profile_rank(profile: PermissionProfile) -> u8 {
     match profile {
-        PermissionProfile::Observe => 0,
-        PermissionProfile::Confirm => 1,
-        PermissionProfile::Workspace => 2,
-        PermissionProfile::Autonomous => 3,
+        PermissionProfile::Plan => 0,
+        PermissionProfile::Observe => 1,
+        PermissionProfile::Confirm => 2,
+        PermissionProfile::Workspace => 3,
+        PermissionProfile::Autonomous => 4,
     }
 }
 

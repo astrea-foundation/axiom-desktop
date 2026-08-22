@@ -1,4 +1,4 @@
-use std::{env, fmt::Write as _, io, path::PathBuf, sync::Arc};
+use std::{collections::BTreeMap, env, fmt::Write as _, io, path::PathBuf, sync::Arc};
 
 use async_trait::async_trait;
 use crossterm::{
@@ -23,8 +23,11 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     AxiomError, Result,
-    agent::{TurnContext, TurnRunner},
-    app::{AppCommand, AppEvent, Origin, PermissionProfile, Runtime, SessionId, TurnId},
+    agent::{QuestionHandler, TurnContext, TurnRunner},
+    app::{
+        AppCommand, AppEvent, Origin, PermissionProfile, QuestionRequest, Runtime, SessionId,
+        TurnId,
+    },
     policy::{ApprovalChoice, ApprovalHandler, ApprovalRequest, ApprovalResponse},
     session::SessionStore,
 };
@@ -195,6 +198,9 @@ pub struct TuiState {
     overlay_scroll: u16,
     options: TuiOptions,
     next_entry_id: u64,
+    pending_attention: BTreeMap<String, String>,
+    answer_input: String,
+    answer_prompt: Option<String>,
 }
 
 impl TuiState {
@@ -240,6 +246,9 @@ impl TuiState {
             overlay_scroll: 0,
             options,
             next_entry_id: 2,
+            pending_attention: BTreeMap::new(),
+            answer_input: String::new(),
+            answer_prompt: None,
         }
     }
 
@@ -305,8 +314,17 @@ impl TuiState {
                     "Tool failed".into()
                 };
             }
-            AppEvent::PermissionRequired { explanation, .. } => {
+            AppEvent::PermissionRequired {
+                request_id,
+                explanation,
+            } => {
+                self.pending_attention
+                    .insert(format!("permission:{request_id}"), explanation.clone());
                 self.status = format!("Permission required: {explanation}");
+            }
+            AppEvent::PermissionResolved { request_id, .. } => {
+                self.pending_attention
+                    .remove(&format!("permission:{request_id}"));
             }
             AppEvent::ProviderStatusChanged { connected, detail } => {
                 self.status = if *connected {
@@ -349,9 +367,38 @@ impl TuiState {
                     false,
                 );
             }
+            AppEvent::QuestionsAsked { request } => {
+                self.pending_attention.insert(
+                    format!("question:{}", request.request_id),
+                    format!("{} question(s)", request.questions.len()),
+                );
+                self.push_entry(
+                    EntryKind::System,
+                    format!(
+                        "QUESTIONS\n{}",
+                        request
+                            .questions
+                            .iter()
+                            .map(|question| sanitize_terminal_text(&question.prompt))
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    ),
+                    false,
+                );
+            }
+            AppEvent::QuestionsAnswered { request_id, .. } => {
+                self.pending_attention
+                    .remove(&format!("question:{request_id}"));
+            }
             AppEvent::PlanProposed {
-                revision, markdown, ..
+                plan_id,
+                revision,
+                markdown,
             } => {
+                self.pending_attention.insert(
+                    format!("plan:{plan_id}"),
+                    format!("plan r{revision} review"),
+                );
                 self.push_entry(
                     EntryKind::System,
                     format!("PLAN r{revision}\n{}", sanitize_terminal_text(markdown)),
@@ -359,11 +406,20 @@ impl TuiState {
                 );
             }
             AppEvent::BackgroundTaskChanged { task_id, state } => {
+                let key = format!("background:{task_id}");
+                if state == "running" || state == "stopping" {
+                    self.pending_attention.insert(key, state.clone());
+                } else {
+                    self.pending_attention.remove(&key);
+                }
                 self.push_entry(
                     EntryKind::Tool,
                     format!("BACKGROUND {task_id}: {}", sanitize_terminal_text(state)),
                     false,
                 );
+            }
+            AppEvent::PlanReviewed { plan_id, .. } => {
+                self.pending_attention.remove(&format!("plan:{plan_id}"));
             }
             AppEvent::WarningRaised { message } => {
                 self.push_entry(
@@ -536,6 +592,10 @@ enum UiMessage {
     Event(AppEvent),
     Done(TurnId, Result<()>),
     Approval(ApprovalRequest, oneshot::Sender<ApprovalResponse>),
+    Questions(
+        QuestionRequest,
+        oneshot::Sender<Result<BTreeMap<String, Vec<String>>>>,
+    ),
 }
 
 #[derive(Clone)]
@@ -559,6 +619,87 @@ impl ApprovalHandler for TuiApproval {
             response = rx => Ok(response.unwrap_or_else(|_| ApprovalResponse::deny())),
         }
     }
+}
+
+#[derive(Clone)]
+struct TuiQuestions {
+    tx: mpsc::UnboundedSender<UiMessage>,
+}
+
+#[async_trait]
+impl QuestionHandler for TuiQuestions {
+    async fn request(
+        &self,
+        request: QuestionRequest,
+        cancellation: CancellationToken,
+    ) -> Result<BTreeMap<String, Vec<String>>> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(UiMessage::Questions(request, tx))
+            .map_err(|_| AxiomError::Cancelled)?;
+        tokio::select! {
+            () = cancellation.cancelled() => Err(AxiomError::Cancelled),
+            response = rx => response.unwrap_or(Err(AxiomError::Cancelled)),
+        }
+    }
+}
+
+struct PendingQuestions {
+    request: QuestionRequest,
+    index: usize,
+    answers: BTreeMap<String, Vec<String>>,
+    response: oneshot::Sender<Result<BTreeMap<String, Vec<String>>>>,
+}
+
+fn question_status(pending: &PendingQuestions) -> String {
+    let question = &pending.request.questions[pending.index];
+    let options = question
+        .options
+        .iter()
+        .enumerate()
+        .map(|(index, option)| format!("{}={option}", index + 1))
+        .collect::<Vec<_>>()
+        .join(" · ");
+    format!(
+        "Question {}/{}: {}{}",
+        pending.index + 1,
+        pending.request.questions.len(),
+        question.prompt,
+        if options.is_empty() {
+            String::new()
+        } else {
+            format!(" · {options}")
+        }
+    )
+}
+
+fn parse_tui_answer(input: &str, question: &crate::app::QuestionSpec) -> Result<Vec<String>> {
+    let values: Vec<_> = input
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            value
+                .parse::<usize>()
+                .ok()
+                .and_then(|index| question.options.get(index.saturating_sub(1)))
+                .cloned()
+                .unwrap_or_else(|| value.to_owned())
+        })
+        .collect();
+    if values.is_empty() || (!question.multiple && values.len() != 1) {
+        return Err(AxiomError::Tool(
+            "enter one answer, or comma-separated answers when multiple selections are allowed"
+                .into(),
+        ));
+    }
+    if !question.options.is_empty() && values.iter().any(|value| !question.options.contains(value))
+    {
+        return Err(AxiomError::Tool(
+            "answer must be one of the numbered options".into(),
+        ));
+    }
+    Ok(values)
 }
 
 fn approval_status(request: &ApprovalRequest) -> String {
@@ -692,6 +833,7 @@ pub async fn run(
     let (ui_tx, mut ui_rx) = mpsc::unbounded_channel();
     let mut cancellation: Option<CancellationToken> = None;
     let mut pending_approval: Option<(ApprovalRequest, oneshot::Sender<ApprovalResponse>)> = None;
+    let mut pending_questions: Option<PendingQuestions> = None;
 
     assert!(
         !(cfg!(debug_assertions) && env::var("AXIOMCLI_TEST_TUI_PANIC").as_deref() == Ok("1")),
@@ -705,7 +847,51 @@ pub async fn run(
                 let Some(Ok(event)) = maybe_event else { break };
                 match event {
                     Event::Key(key) if key.kind == KeyEventKind::Press => {
-                        if let Some((request, _)) = &pending_approval {
+                        if pending_questions.is_some() {
+                            match key.code {
+                                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                    let pending = pending_questions.take().expect("pending questions exist");
+                                    let _ = pending.response.send(Err(AxiomError::Cancelled));
+                                    state.answer_input.clear();
+                                    state.answer_prompt = None;
+                                    if let Some(token) = &cancellation {
+                                        token.cancel();
+                                    }
+                                }
+                                KeyCode::Esc => {
+                                    let pending = pending_questions.take().expect("pending questions exist");
+                                    let _ = pending.response.send(Err(AxiomError::Cancelled));
+                                    state.answer_input.clear();
+                                    state.answer_prompt = None;
+                                }
+                                KeyCode::Enter => {
+                                    let pending = pending_questions.as_mut().expect("pending questions exist");
+                                    let question = &pending.request.questions[pending.index];
+                                    match parse_tui_answer(&state.answer_input, question) {
+                                        Ok(values) => {
+                                            pending.answers.insert(question.id.clone(), values);
+                                            pending.index += 1;
+                                            state.answer_input.clear();
+                                            if pending.index == pending.request.questions.len() {
+                                                let completed = pending_questions.take().expect("pending questions exist");
+                                                let _ = completed.response.send(Ok(completed.answers));
+                                                state.answer_prompt = None;
+                                                state.status = "Answers submitted".into();
+                                            } else {
+                                                state.answer_prompt = Some(question_status(pending));
+                                                state.status = state.answer_prompt.clone().unwrap_or_default();
+                                            }
+                                        }
+                                        Err(error) => state.status = error.to_string(),
+                                    }
+                                }
+                                KeyCode::Backspace => { state.answer_input.pop(); }
+                                KeyCode::Char(character) if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT => {
+                                    state.answer_input.push(character);
+                                }
+                                _ => {}
+                            }
+                        } else if let Some((request, _)) = &pending_approval {
                             match key.code {
                                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                                     let (_, response) = pending_approval.take().expect("pending approval exists");
@@ -830,6 +1016,7 @@ pub async fn run(
                                         cwd: cwd.clone(),
                                         permission_profile: profile,
                                         approval: Some(Arc::new(TuiApproval { tx: task_tx.clone() })),
+                                        questions: Some(Arc::new(TuiQuestions { tx: task_tx.clone() })),
                                     };
                                     tokio::spawn(async move {
                                         let (event_tx, mut event_rx) = mpsc::unbounded_channel();
@@ -889,7 +1076,17 @@ pub async fn run(
                         state.apply(&event);
                     }
                     UiMessage::Done(turn_id, result) => {
+                        if result.is_err()
+                            && let Some(token) = &cancellation
+                        {
+                            token.cancel();
+                        }
                         pending_approval = None;
+                        if let Some(pending) = pending_questions.take() {
+                            let _ = pending.response.send(Err(AxiomError::Cancelled));
+                        }
+                        state.answer_input.clear();
+                        state.answer_prompt = None;
                         cancellation = None;
                         let command = match result {
                             Ok(()) => AppCommand::FinishTurn { session_id: session_id.clone(), turn_id },
@@ -907,6 +1104,24 @@ pub async fn run(
                     UiMessage::Approval(request, response) => {
                         state.status = approval_status(&request);
                         pending_approval = Some((request, response));
+                    }
+                    UiMessage::Questions(request, response) => {
+                        if pending_questions.is_some() {
+                            let _ = response.send(Err(AxiomError::InvalidTransition(
+                                "another question request is already pending".into(),
+                            )));
+                        } else {
+                            let pending = PendingQuestions {
+                                request,
+                                index: 0,
+                                answers: BTreeMap::new(),
+                                response,
+                            };
+                            state.answer_input.clear();
+                            state.answer_prompt = Some(question_status(&pending));
+                            state.status = state.answer_prompt.clone().unwrap_or_default();
+                            pending_questions = Some(pending);
+                        }
                     }
                 }
             }
@@ -981,8 +1196,14 @@ pub fn render(frame: &mut Frame<'_>, state: &TuiState) {
             state.search_query,
             state.search_matches.len()
         )
-    } else {
+    } else if state.pending_attention.is_empty() {
         state.status.clone()
+    } else {
+        format!(
+            "{} · {} pending",
+            state.status,
+            state.pending_attention.len()
+        )
     };
     frame.render_widget(
         Paragraph::new(Line::from(vec![
@@ -1001,21 +1222,29 @@ pub fn render(frame: &mut Frame<'_>, state: &TuiState) {
         rows[2],
     );
     frame.render_widget(
-        Paragraph::new(state.input.as_str())
-            .style(Style::default().fg(theme.text).bg(theme.surface))
-            .block(
-                Block::default()
-                    .title(Span::styled(
-                        " › Message ",
-                        Style::default().fg(theme.cherry_bright),
-                    ))
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(if state.running {
-                        theme.cherry_deep
+        Paragraph::new(if state.answer_prompt.is_some() {
+            state.answer_input.as_str()
+        } else {
+            state.input.as_str()
+        })
+        .style(Style::default().fg(theme.text).bg(theme.surface))
+        .block(
+            Block::default()
+                .title(Span::styled(
+                    if state.answer_prompt.is_some() {
+                        " › Answer (draft message preserved) "
                     } else {
-                        theme.cherry
-                    })),
-            ),
+                        " › Message "
+                    },
+                    Style::default().fg(theme.cherry_bright),
+                ))
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(if state.running {
+                    theme.cherry_deep
+                } else {
+                    theme.cherry
+                })),
+        ),
         rows[3],
     );
     frame.render_widget(
@@ -1152,6 +1381,45 @@ mod tests {
     #[test]
     fn strips_terminal_control_sequences() {
         assert_eq!(sanitize_terminal_text("ok\u{1b}[31mred\u{7}"), "ok[31mred");
+    }
+
+    #[test]
+    fn pending_attention_is_ordered_and_does_not_replace_message_draft() {
+        let mut state = TuiState::new(
+            PathBuf::from("/tmp/project"),
+            "model".into(),
+            PermissionProfile::Workspace,
+        );
+        state.input = "unfinished draft".into();
+        state.apply(&AppEvent::BackgroundTaskChanged {
+            task_id: "z-task".into(),
+            state: "running".into(),
+        });
+        state.apply(&AppEvent::QuestionsAsked {
+            request: QuestionRequest {
+                request_id: "a-question".into(),
+                questions: vec![crate::app::QuestionSpec {
+                    id: "one".into(),
+                    prompt: "Choose".into(),
+                    options: vec!["yes".into(), "no".into()],
+                    multiple: false,
+                }],
+            },
+        });
+        assert_eq!(state.input, "unfinished draft");
+        let keys = state.pending_attention.keys().cloned().collect::<Vec<_>>();
+        assert_eq!(
+            keys,
+            vec![
+                "background:z-task".to_owned(),
+                "question:a-question".to_owned()
+            ]
+        );
+        state.apply(&AppEvent::QuestionsAnswered {
+            request_id: "a-question".into(),
+            answers: BTreeMap::from([("one".into(), vec!["yes".into()])]),
+        });
+        assert_eq!(state.pending_attention.len(), 1);
     }
 
     #[test]

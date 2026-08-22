@@ -188,6 +188,7 @@ async fn real_service_lifecycle_failure_modes_and_agent_citations() {
                 cwd: PathBuf::from(workspace.path()),
                 permission_profile: PermissionProfile::Autonomous,
                 approval: None,
+                questions: None,
             },
             "Research Rust and cite a source".into(),
             events_tx,

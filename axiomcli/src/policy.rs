@@ -40,6 +40,9 @@ pub enum Effect {
     ScopeChange {
         scope: String,
     },
+    PlanWrite {
+        path: PathBuf,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -52,6 +55,7 @@ pub enum EffectClass {
     Network,
     Mcp,
     ScopeChange,
+    PlanWrite,
 }
 
 impl EffectClass {
@@ -64,6 +68,7 @@ impl EffectClass {
             Effect::Network { .. } => Self::Network,
             Effect::Mcp { .. } => Self::Mcp,
             Effect::ScopeChange { .. } => Self::ScopeChange,
+            Effect::PlanWrite { .. } => Self::PlanWrite,
         }
     }
 }
@@ -334,8 +339,21 @@ impl PolicyEngine {
             );
         }
 
-        // Observe is a hard read-only profile. A repository-supplied `ask` rule
-        // cannot turn a prohibited mutation into an approval prompt.
+        // Read-only profiles are hard constraints. A repository-supplied `ask`
+        // rule cannot turn a prohibited mutation into an approval prompt.
+        if profile == PermissionProfile::Plan
+            && !matches!(
+                normalized,
+                Effect::FileRead { .. } | Effect::PlanWrite { .. }
+            )
+        {
+            return decision(
+                DecisionKind::Deny,
+                "plan mode is read-only outside its revisioned plan artifact".into(),
+                normalized,
+                false,
+            );
+        }
         if profile == PermissionProfile::Observe && !matches!(normalized, Effect::FileRead { .. }) {
             return decision(
                 DecisionKind::Deny,
@@ -523,6 +541,9 @@ impl PolicyEngine {
                 }
                 Ok(Effect::ScopeChange { scope })
             }
+            Effect::PlanWrite { path } => Ok(Effect::PlanWrite {
+                path: self.normalize_path(path),
+            }),
         }
     }
 
@@ -545,6 +566,20 @@ impl PolicyEngine {
                 } else {
                     Some(format!(
                         "{} is outside authorized workspace roots",
+                        path.display()
+                    ))
+                }
+            }
+            Effect::PlanWrite { path } => {
+                if self
+                    .roots
+                    .iter()
+                    .any(|root| path.starts_with(root.join(".axiomcli/plans")))
+                {
+                    None
+                } else {
+                    Some(format!(
+                        "{} is outside the dedicated plan artifact directory",
                         path.display()
                     ))
                 }
@@ -584,7 +619,10 @@ fn normalize_rule(mut rule: PolicyRule, root: &Path) -> Result<PolicyRule> {
         return Ok(rule);
     };
     let normalized = match rule.effect.expect("validated effect for prefix") {
-        EffectClass::FileRead | EffectClass::FileWrite | EffectClass::FileDelete => {
+        EffectClass::FileRead
+        | EffectClass::FileWrite
+        | EffectClass::FileDelete
+        | EffectClass::PlanWrite => {
             let path = PathBuf::from(prefix);
             let absolute = if path.is_absolute() {
                 path
@@ -640,6 +678,16 @@ fn profile_default(
 ) -> (DecisionKind, &'static str, bool) {
     match (profile, effect) {
         (_, Effect::FileRead { .. }) => (DecisionKind::Allow, "workspace read", false),
+        (PermissionProfile::Plan, Effect::PlanWrite { .. }) => (
+            DecisionKind::Allow,
+            "plan mode permits the revisioned plan artifact",
+            false,
+        ),
+        (PermissionProfile::Plan, _) => (
+            DecisionKind::Deny,
+            "plan mode is read-only outside its revisioned plan artifact",
+            false,
+        ),
         (PermissionProfile::Observe, _) => (DecisionKind::Deny, "observe mode is read-only", false),
         (_, Effect::ScopeChange { .. }) => (
             DecisionKind::Ask,
@@ -723,7 +771,7 @@ fn suggested_prefix(effect: &Effect) -> Option<ScopedGrant> {
             server: server.clone(),
             side_effecting: *side_effecting,
         }),
-        Effect::Process { .. } | Effect::ScopeChange { .. } => None,
+        Effect::Process { .. } | Effect::ScopeChange { .. } | Effect::PlanWrite { .. } => None,
     }
 }
 
@@ -750,18 +798,20 @@ fn describe_grant(grant: &ScopedGrant) -> String {
 
 fn effect_path(effect: &Effect) -> Option<&Path> {
     match effect {
-        Effect::FileRead { path } | Effect::FileWrite { path } | Effect::FileDelete { path } => {
-            Some(path)
-        }
+        Effect::FileRead { path }
+        | Effect::FileWrite { path }
+        | Effect::FileDelete { path }
+        | Effect::PlanWrite { path } => Some(path),
         _ => None,
     }
 }
 
 fn effect_matches_prefix(effect: &Effect, prefix: &str) -> bool {
     match effect {
-        Effect::FileRead { path } | Effect::FileWrite { path } | Effect::FileDelete { path } => {
-            path.starts_with(Path::new(prefix))
-        }
+        Effect::FileRead { path }
+        | Effect::FileWrite { path }
+        | Effect::FileDelete { path }
+        | Effect::PlanWrite { path } => path.starts_with(Path::new(prefix)),
         Effect::Process { program, .. } => program.starts_with(prefix),
         Effect::Network { url } => url.starts_with(prefix),
         Effect::Mcp { server, tool, .. } => format!("{server}/{tool}").starts_with(prefix),
@@ -875,6 +925,7 @@ pub fn describe_effect(effect: &Effect) -> String {
             }
         ),
         Effect::ScopeChange { scope } => format!("expand scope: {scope}"),
+        Effect::PlanWrite { path } => format!("update plan artifact {}", path.display()),
     }
 }
 
@@ -893,8 +944,9 @@ mod tests {
 
     use super::*;
 
-    fn profiles() -> [PermissionProfile; 4] {
+    fn profiles() -> [PermissionProfile; 5] {
         [
+            PermissionProfile::Plan,
             PermissionProfile::Observe,
             PermissionProfile::Confirm,
             PermissionProfile::Workspace,
@@ -932,6 +984,9 @@ mod tests {
                 tool: "read".into(),
                 side_effecting: false,
             },
+            Effect::PlanWrite {
+                path: root.path().join(".axiomcli/plans/test.json"),
+            },
         ];
         for profile in profiles() {
             let policy = PolicyEngine::for_workspace(root.path()).expect("policy");
@@ -964,6 +1019,54 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn plan_profile_is_a_hard_read_only_intersection() {
+        let root = tempdir().expect("root");
+        let policy = PolicyEngine::for_workspace_with_rules(
+            root.path(),
+            vec![PolicyRule {
+                action: RuleAction::Ask,
+                effect: Some(EffectClass::FileWrite),
+                resource_prefix: None,
+                reason: None,
+            }],
+        )
+        .expect("policy");
+        assert_eq!(
+            policy
+                .evaluate(
+                    PermissionProfile::Plan,
+                    Effect::FileRead {
+                        path: root.path().join("src/lib.rs")
+                    }
+                )
+                .kind,
+            DecisionKind::Allow
+        );
+        assert_eq!(
+            policy
+                .evaluate(
+                    PermissionProfile::Plan,
+                    Effect::PlanWrite {
+                        path: root.path().join(".axiomcli/plans/p.json")
+                    }
+                )
+                .kind,
+            DecisionKind::Allow
+        );
+        assert_eq!(
+            policy
+                .evaluate(
+                    PermissionProfile::Plan,
+                    Effect::FileWrite {
+                        path: root.path().join("src/lib.rs")
+                    }
+                )
+                .kind,
+            DecisionKind::Deny
+        );
     }
 
     #[test]
