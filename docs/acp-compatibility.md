@@ -15,7 +15,7 @@ not advertised.
 | `session/cancel` | supported | cancels the active turn token | fail-closed; returns `cancelled` from prompt |
 | `session/request_permission` | supported | normalized policy effect → allow-once/deny options | cancellation, timeout, and disconnect fail closed |
 | tool calls and updates | supported | typed proposal, pending/running, output, and terminal status | IDs remain stable for a call |
-| `session/load` | not advertised | journals can be inspected locally; conversational resume is deferred | interrupted side effects are never replayed |
+| `session/load` | supported and advertised when durable storage opens | stable ACP ID → journal restore, transcript update replay, provider-context reconstruction | cwd identity mismatch/corruption fails closed; interrupted side effects are reported unknown and never replayed |
 | MCP servers in session | not advertised | project-configured stdio MCP servers are namespaced and policy-controlled | per-session ACP MCP configuration is deferred |
 | custom extensions | unsupported | none | unknown requests receive standard protocol errors |
 

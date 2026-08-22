@@ -11,17 +11,26 @@ struct AcpProcess {
     child: Child,
     stdin: Option<ChildStdin>,
     stdout: Lines<BufReader<ChildStdout>>,
-    _state: TempDir,
+    _state: Option<TempDir>,
 }
 
 impl AcpProcess {
     fn spawn(runner: &str) -> Self {
         let state = tempfile::tempdir().expect("isolated ACP state");
+        let path = state.path().to_path_buf();
+        Self::spawn_inner(runner, &path, Some(state))
+    }
+
+    fn spawn_with_state(runner: &str, state: &Path) -> Self {
+        Self::spawn_inner(runner, state, None)
+    }
+
+    fn spawn_inner(runner: &str, state_path: &Path, state: Option<TempDir>) -> Self {
         let mut child = Command::new(env!("CARGO_BIN_EXE_axiomcli"))
             .arg("acp")
             .env("AXIOMCLI_TEST_RUNNER", runner)
-            .env("XDG_CONFIG_HOME", state.path().join("config"))
-            .env("XDG_DATA_HOME", state.path().join("data"))
+            .env("XDG_CONFIG_HOME", state_path.join("config"))
+            .env("XDG_DATA_HOME", state_path.join("data"))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -87,6 +96,7 @@ impl AcpProcess {
         .await;
         let response = self.response(1).await;
         assert_eq!(response["result"]["protocolVersion"], 1);
+        assert_eq!(response["result"]["agentCapabilities"]["loadSession"], true);
     }
 
     async fn new_session(&mut self, id: i64, cwd: &Path) -> String {
@@ -111,6 +121,57 @@ impl AcpProcess {
             .expect("wait ACP");
         assert!(status.success());
     }
+}
+
+#[tokio::test]
+async fn durable_session_load_keeps_identity_replays_history_and_continues() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let state = tempfile::tempdir().expect("shared state");
+    let session = {
+        let mut first = AcpProcess::spawn_with_state("echo", state.path());
+        first.initialize().await;
+        let session = first.new_session(2, workspace.path()).await;
+        first
+            .send(&json!({
+                "jsonrpc":"2.0","id":3,"method":"session/prompt",
+                "params":{"sessionId":session,"prompt":[{"type":"text","text":"persist me"}]}
+            }))
+            .await;
+        let response = first.response(3).await;
+        assert_eq!(response["result"]["stopReason"], "end_turn");
+        first.close().await;
+        session
+    };
+
+    let mut resumed = AcpProcess::spawn_with_state("echo", state.path());
+    resumed.initialize().await;
+    resumed
+        .send(&json!({
+            "jsonrpc":"2.0","id":2,"method":"session/load",
+            "params":{"sessionId":session,"cwd":workspace.path(),"mcpServers":[]}
+        }))
+        .await;
+    let mut replayed = false;
+    loop {
+        let value = resumed.read().await;
+        replayed |= value["method"] == "session/update" && value.to_string().contains("persist me");
+        if value.get("id").and_then(Value::as_i64) == Some(2) {
+            assert!(value.get("result").is_some(), "load failed: {value}");
+            break;
+        }
+    }
+    assert!(replayed, "load must replay journaled transcript updates");
+    resumed
+        .send(&json!({
+            "jsonrpc":"2.0","id":3,"method":"session/prompt",
+            "params":{"sessionId":session,"prompt":[{"type":"text","text":"continue"}]}
+        }))
+        .await;
+    assert_eq!(
+        resumed.response(3).await["result"]["stopReason"],
+        "end_turn"
+    );
+    resumed.close().await;
 }
 
 #[tokio::test]

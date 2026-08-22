@@ -1,4 +1,4 @@
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use std::{collections::HashMap, path::PathBuf, str::FromStr as _, sync::Arc};
 
 use agent_client_protocol::schema::{ProtocolVersion, v1 as protocol};
 use agent_client_protocol::{Agent, Client, ConnectionTo, Responder, Stdio};
@@ -17,6 +17,7 @@ use crate::{
 struct AcpSession {
     internal_id: SessionId,
     cwd: PathBuf,
+    profile: PermissionProfile,
     active_turn: Option<TurnId>,
     cancellation: Option<CancellationToken>,
 }
@@ -111,7 +112,12 @@ pub async fn serve_stdio(
     let prompt_runtime = runtime.clone();
     let cancel_sessions = sessions.clone();
     let new_store = store.clone();
+    let load_store = store.clone();
     let prompt_store = store;
+    let load_sessions = sessions.clone();
+    let load_runtime = runtime.clone();
+    let load_runner = runner.clone();
+    let supports_load = load_store.is_some();
 
     Agent
         .builder()
@@ -122,7 +128,9 @@ pub async fn serve_stdio(
                         _connection| {
                 responder.respond(
                     protocol::InitializeResponse::new(ProtocolVersion::V1)
-                    .agent_capabilities(protocol::AgentCapabilities::new())
+                    .agent_capabilities(
+                        protocol::AgentCapabilities::new().load_session(supports_load),
+                    )
                     .agent_info(
                         protocol::Implementation::new("axiomcli", env!("CARGO_PKG_VERSION"))
                             .title("AxiomCLI"),
@@ -163,11 +171,105 @@ pub async fn serve_stdio(
                     AcpSession {
                         internal_id,
                         cwd,
+                        profile,
                         active_turn: None,
                         cancellation: None,
                     },
                 );
                 responder.respond(protocol::NewSessionResponse::new(external_id))
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |request: protocol::LoadSessionRequest,
+                        responder: Responder<protocol::LoadSessionResponse>,
+                        connection: ConnectionTo<Client>| {
+                let Some(store) = &load_store else {
+                    return responder.respond_with_internal_error(
+                        "durable session loading is unavailable",
+                    );
+                };
+                if !request.cwd.is_absolute() {
+                    return responder
+                        .respond_with_internal_error("ACP session cwd must be absolute");
+                }
+                let external_id = request.session_id.clone();
+                if load_sessions.lock().await.contains_key(&external_id) {
+                    return responder.respond_with_internal_error("ACP session is already loaded");
+                }
+                let internal_id = SessionId::from_str(request.session_id.0.as_ref())
+                    .map_err(|_| agent_client_protocol::util::internal_error("invalid session ID"))?;
+                let summary = store.summary(&internal_id).map_err(agent_error)?;
+                let requested_cwd = request.cwd.canonicalize().map_err(|error| {
+                    agent_client_protocol::util::internal_error(format!(
+                        "cannot open ACP workspace: {error}"
+                    ))
+                })?;
+                let saved_cwd = summary.cwd.canonicalize().map_err(|error| {
+                    agent_client_protocol::util::internal_error(format!(
+                        "saved ACP workspace is unavailable: {error}"
+                    ))
+                })?;
+                if requested_cwd != saved_cwd {
+                    return responder.respond_with_internal_error(
+                        "ACP load cwd does not match the session workspace identity",
+                    );
+                }
+                let loaded = store.load_recovering(&internal_id).map_err(agent_error)?;
+                if let Some(warning) = loaded.warnings.first() {
+                    return responder.respond_with_internal_error(warning.clone());
+                }
+                let restored = load_runtime
+                    .restore(&loaded.events)
+                    .await
+                    .map_err(agent_error)?;
+                load_runner
+                    .restore_session(&internal_id, &loaded.events)
+                    .await
+                    .map_err(agent_error)?;
+                for envelope in &loaded.events {
+                    send_event(
+                        &connection,
+                        &external_id,
+                        envelope.event.clone(),
+                    )?;
+                }
+                let resumed = load_runtime
+                    .emit(
+                        internal_id.clone(),
+                        AppEvent::SessionResumed {
+                            cwd: saved_cwd.clone(),
+                            origin: Origin::Acp,
+                            profile: restored.profile,
+                        },
+                    )
+                    .await
+                    .map_err(agent_error)?;
+                store.append(&resumed).map_err(agent_error)?;
+                let recovery = store.recovery_status(&internal_id).map_err(agent_error)?;
+                if recovery.interrupted_turns > 0 || !recovery.interrupted_tools.is_empty() {
+                    connection.send_notification(protocol::SessionNotification::new(
+                        external_id.clone(),
+                        protocol::SessionUpdate::AgentThoughtChunk(protocol::ContentChunk::new(
+                            protocol::ContentBlock::Text(protocol::TextContent::new(format!(
+                                "[recovery] {} interrupted turn(s), {} operation(s) unknown; nothing replayed",
+                                recovery.interrupted_turns,
+                                recovery.interrupted_tools.len()
+                            ))),
+                        )),
+                    ))?;
+                }
+                load_sessions.lock().await.insert(
+                    external_id,
+                    AcpSession {
+                        internal_id,
+                        cwd: saved_cwd,
+                        profile: restored.profile,
+                        active_turn: None,
+                        cancellation: None,
+                    },
+                );
+                responder.respond(protocol::LoadSessionResponse::new())
             },
             agent_client_protocol::on_receive_request!(),
         )
@@ -182,7 +284,7 @@ pub async fn serve_stdio(
                 let session_id = request.session_id.clone();
                 let turn_id = TurnId::new();
                 let cancellation = CancellationToken::new();
-                let (internal_id, cwd) = {
+                let (internal_id, cwd, session_profile) = {
                     let mut sessions = prompt_sessions.lock().await;
                     let Some(session) = sessions.get_mut(&session_id) else {
                         return responder.respond_with_internal_error("unknown ACP session");
@@ -193,7 +295,11 @@ pub async fn serve_stdio(
                     }
                     session.active_turn = Some(turn_id.clone());
                     session.cancellation = Some(cancellation.clone());
-                    (session.internal_id.clone(), session.cwd.clone())
+                    (
+                        session.internal_id.clone(),
+                        session.cwd.clone(),
+                        session.profile,
+                    )
                 };
 
                 let submitted = prompt_runtime
@@ -220,7 +326,7 @@ pub async fn serve_stdio(
                             session_id: internal_id.clone(),
                             turn_id: turn_id.clone(),
                             cwd,
-                            permission_profile: profile,
+                            permission_profile: session_profile,
                             approval: Some(Arc::new(AcpApproval {
                                 connection: task_connection.clone(),
                                 session_id: session_id.clone(),

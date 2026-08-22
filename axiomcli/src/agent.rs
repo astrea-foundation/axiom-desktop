@@ -10,7 +10,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     AxiomError, Result,
-    app::{AppEvent, PermissionProfile, SessionId, TurnId},
+    app::{AppEvent, EventEnvelope, PermissionProfile, SessionId, TurnId},
     policy::{
         ApprovalHandler, ApprovalRequest, ApprovalResponse, DecisionKind, PolicyEngine, PolicyRule,
     },
@@ -45,6 +45,17 @@ impl std::fmt::Debug for TurnContext {
 /// Adapter-independent execution of one already-accepted turn.
 #[async_trait]
 pub trait TurnRunner: Send + Sync {
+    /// Restore durable conversational context for a previously journaled
+    /// session. The default is intentionally a no-op for stateless test and
+    /// embedding runners.
+    async fn restore_session(
+        &self,
+        _session_id: &SessionId,
+        _events: &[EventEnvelope],
+    ) -> Result<()> {
+        Ok(())
+    }
+
     async fn run(
         &self,
         context: TurnContext,
@@ -321,6 +332,127 @@ impl AgentEngine {
 
 #[async_trait]
 impl TurnRunner for AgentEngine {
+    async fn restore_session(
+        &self,
+        session_id: &SessionId,
+        events: &[EventEnvelope],
+    ) -> Result<()> {
+        let mut messages = vec![ChatMessage::text(
+            ChatRole::System,
+            events
+                .iter()
+                .find_map(|envelope| match &envelope.event {
+                    AppEvent::SessionCreated { cwd, .. } | AppEvent::SessionResumed { cwd, .. } => {
+                        Some(system_prompt(cwd))
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| system_prompt(std::path::Path::new("."))),
+        )];
+        let mut changed_paths = BTreeSet::new();
+        let mut active_turns = BTreeSet::new();
+        let mut active_tools = BTreeSet::new();
+        let mut tool_names = HashMap::new();
+        for envelope in events {
+            match &envelope.event {
+                AppEvent::PromptAccepted { text, .. } => {
+                    messages.push(ChatMessage::text(ChatRole::User, text.clone()));
+                }
+                AppEvent::TextDelta { text, .. } => {
+                    if let Some(message) = messages.last_mut().filter(|message| {
+                        message.role == ChatRole::Assistant && message.tool_calls.is_empty()
+                    }) {
+                        message.content.push_str(text);
+                    } else {
+                        messages.push(ChatMessage::text(ChatRole::Assistant, text.clone()));
+                    }
+                }
+                AppEvent::ToolProposed {
+                    call_id,
+                    name,
+                    arguments,
+                    ..
+                } => {
+                    tool_names.insert(call_id.clone(), name.clone());
+                    let call = crate::provider::ToolCall {
+                        id: call_id.clone(),
+                        kind: "function".into(),
+                        function: crate::provider::FunctionCall {
+                            name: name.clone(),
+                            arguments: serde_json::to_string(arguments)?,
+                        },
+                    };
+                    if let Some(message) = messages
+                        .last_mut()
+                        .filter(|message| message.role == ChatRole::Assistant)
+                    {
+                        message.tool_calls.push(call);
+                    } else {
+                        messages.push(ChatMessage {
+                            role: ChatRole::Assistant,
+                            content: String::new(),
+                            tool_call_id: None,
+                            tool_calls: vec![call],
+                        });
+                    }
+                }
+                AppEvent::ToolOutput {
+                    call_id, content, ..
+                } => messages.push(ChatMessage {
+                    role: ChatRole::Tool,
+                    content: untrusted_tool_result(
+                        tool_names
+                            .get(call_id)
+                            .map_or("restored_tool", String::as_str),
+                        content,
+                    ),
+                    tool_call_id: Some(call_id.clone()),
+                    tool_calls: Vec::new(),
+                }),
+                AppEvent::TurnStarted { turn_id } => {
+                    active_turns.insert(turn_id.to_string());
+                }
+                AppEvent::TurnCompleted { turn_id }
+                | AppEvent::TurnCancelled { turn_id }
+                | AppEvent::ErrorRaised {
+                    turn_id: Some(turn_id),
+                    ..
+                } => {
+                    active_turns.remove(&turn_id.to_string());
+                }
+                AppEvent::ToolStarted { call_id, .. } => {
+                    active_tools.insert(call_id.clone());
+                }
+                AppEvent::ToolCompleted { call_id, .. } => {
+                    active_tools.remove(call_id);
+                }
+                AppEvent::WorkspaceChanged { paths } => {
+                    changed_paths.extend(paths.iter().cloned());
+                }
+                _ => {}
+            }
+        }
+        if !active_turns.is_empty() || !active_tools.is_empty() {
+            messages.push(ChatMessage::text(
+                ChatRole::System,
+                "The previous process ended during active work. Any unfinished tool side effect has unknown status and must be inspected; do not replay it automatically.",
+            ));
+        }
+        let target_bytes = self.limits.max_context_bytes.saturating_mul(3) / 4;
+        while messages.len() > 2 && serialized_message_bytes(&messages)? > target_bytes {
+            messages.remove(1);
+        }
+        self.histories
+            .lock()
+            .await
+            .insert(session_id.clone(), messages);
+        self.change_sets
+            .lock()
+            .await
+            .insert(session_id.clone(), changed_paths);
+        Ok(())
+    }
+
     async fn run(
         &self,
         context: TurnContext,
@@ -571,6 +703,10 @@ impl TurnRunner for AgentEngine {
     }
 }
 
+fn serialized_message_bytes(messages: &[ChatMessage]) -> Result<usize> {
+    Ok(serde_json::to_vec(messages)?.len())
+}
+
 fn enforce_context_budget(
     messages: &[ChatMessage],
     max_bytes: usize,
@@ -716,6 +852,7 @@ mod engine_tests {
 
     use crate::provider::{FunctionCall, ProviderEvent, ToolCall};
     use crate::{
+        app::{CorrelationId, Origin},
         policy::Effect,
         tools::{Tool, ToolResult},
     };
@@ -868,6 +1005,92 @@ mod engine_tests {
                 .iter()
                 .any(|event| matches!(event, AppEvent::TextDelta { .. }))
         );
+    }
+
+    #[tokio::test]
+    async fn restored_conversation_is_used_without_replaying_interrupted_tools() {
+        let provider = Arc::new(ScriptedProvider::new(vec![AssistantTurn {
+            text: "continued".into(),
+            tool_calls: Vec::new(),
+        }]));
+        let (tools, executions) = fake_registry("must not execute", false);
+        let engine = AgentEngine::new(provider.clone(), tools, "test", 3);
+        let session_id = SessionId::new();
+        let old_turn = TurnId::new();
+        let events = vec![
+            EventEnvelope {
+                schema_version: 2,
+                sequence: 1,
+                occurred_at: chrono::Utc::now(),
+                correlation_id: CorrelationId::new(),
+                origin: Origin::Test,
+                session_id: session_id.clone(),
+                event: AppEvent::SessionCreated {
+                    cwd: PathBuf::from("/tmp/resume-fixture"),
+                    origin: Origin::Test,
+                    profile: PermissionProfile::Confirm,
+                },
+            },
+            EventEnvelope {
+                schema_version: 2,
+                sequence: 2,
+                occurred_at: chrono::Utc::now(),
+                correlation_id: CorrelationId::new(),
+                origin: Origin::Test,
+                session_id: session_id.clone(),
+                event: AppEvent::PromptAccepted {
+                    turn_id: old_turn.clone(),
+                    text: "remember cherry".into(),
+                },
+            },
+            EventEnvelope {
+                schema_version: 2,
+                sequence: 3,
+                occurred_at: chrono::Utc::now(),
+                correlation_id: CorrelationId::new(),
+                origin: Origin::Test,
+                session_id: session_id.clone(),
+                event: AppEvent::TurnStarted { turn_id: old_turn },
+            },
+            EventEnvelope {
+                schema_version: 2,
+                sequence: 4,
+                occurred_at: chrono::Utc::now(),
+                correlation_id: CorrelationId::new(),
+                origin: Origin::Test,
+                session_id: session_id.clone(),
+                event: AppEvent::ToolStarted {
+                    call_id: "interrupted".into(),
+                    name: "fake".into(),
+                },
+            },
+        ];
+        engine
+            .restore_session(&session_id, &events)
+            .await
+            .expect("restore");
+        let (tx, _rx) = mpsc::unbounded_channel();
+        engine
+            .run(
+                TurnContext {
+                    session_id,
+                    turn_id: TurnId::new(),
+                    cwd: PathBuf::from("/tmp/resume-fixture"),
+                    permission_profile: PermissionProfile::Confirm,
+                    approval: None,
+                },
+                "what do you remember?".into(),
+                tx,
+                CancellationToken::new(),
+            )
+            .await
+            .expect("continued run");
+        assert_eq!(executions.load(Ordering::SeqCst), 0);
+        let requests = provider.requests.lock().await;
+        let serialized = serde_json::to_string(&requests[0].messages).expect("messages");
+        assert!(serialized.contains("remember cherry"));
+        assert!(serialized.contains("unknown status"));
+        assert!(serialized.contains("what do you remember?"));
     }
 
     #[tokio::test]

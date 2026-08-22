@@ -24,7 +24,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     AxiomError, Result,
     agent::{TurnContext, TurnRunner},
-    app::{AppCommand, AppEvent, Origin, PermissionProfile, Runtime, TurnId},
+    app::{AppCommand, AppEvent, Origin, PermissionProfile, Runtime, SessionId, TurnId},
     policy::{ApprovalChoice, ApprovalHandler, ApprovalRequest, ApprovalResponse},
     session::SessionStore,
 };
@@ -597,6 +597,7 @@ pub async fn run(
     profile: PermissionProfile,
     options: TuiOptions,
     store: Option<SessionStore>,
+    resume: Option<SessionId>,
 ) -> Result<()> {
     let cwd = cwd.canonicalize()?;
     let _guard = TerminalGuard::enter()?;
@@ -605,22 +606,87 @@ pub async fn run(
     terminal.clear()?;
 
     let runtime = Runtime::new(512);
-    let session_id = runtime.session_id();
-    let created = runtime
-        .dispatch(AppCommand::CreateSession {
-            session_id: session_id.clone(),
-            cwd: cwd.clone(),
-            origin: Origin::Tui,
-            profile,
-        })
-        .await?;
-    if let Some(store) = &store {
-        store.append_all(&created)?;
-    }
     let mut state = TuiState::with_options(cwd.clone(), model, profile, options);
-    for event in created {
-        state.apply(&event.event);
-    }
+    let session_id = if let Some(session_id) = resume {
+        let store = store
+            .as_ref()
+            .ok_or_else(|| AxiomError::Storage("session resume requires a durable store".into()))?;
+        let summary = store.summary(&session_id)?;
+        if summary.cwd.canonicalize()? != cwd {
+            return Err(AxiomError::Storage(format!(
+                "resume cwd does not match journaled workspace {}",
+                summary.cwd.display()
+            )));
+        }
+        let loaded = store.load_recovering(&session_id)?;
+        runtime.restore(&loaded.events).await?;
+        runner.restore_session(&session_id, &loaded.events).await?;
+        for envelope in &loaded.events {
+            state.apply(&envelope.event);
+        }
+        state.running = false;
+        state.status = "Resumed · no interrupted actions replayed".into();
+        let resumed = runtime
+            .emit(
+                session_id.clone(),
+                AppEvent::SessionResumed {
+                    cwd: cwd.clone(),
+                    origin: Origin::Tui,
+                    profile,
+                },
+            )
+            .await?;
+        store.append(&resumed)?;
+        state.apply(&resumed.event);
+        let recovery = store.recovery_status(&session_id)?;
+        let mut notices = loaded.warnings;
+        if recovery.interrupted_turns > 0 || !recovery.interrupted_tools.is_empty() {
+            notices.push(format!(
+                "Recovered {} interrupted turn(s) and {} tool/task operation(s) with unknown status; nothing was replayed.",
+                recovery.interrupted_turns,
+                recovery.interrupted_tools.len()
+            ));
+        }
+        if !recovery.changed_paths.is_empty() {
+            notices.push(format!(
+                "Workspace changes recorded in this session: {}",
+                recovery
+                    .changed_paths
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        if summary.history_truncated {
+            notices.push("Older session history was removed by retention policy.".into());
+        }
+        for message in notices {
+            let warning = runtime
+                .emit(session_id.clone(), AppEvent::WarningRaised { message })
+                .await?;
+            store.append(&warning)?;
+            state.apply(&warning.event);
+        }
+        session_id
+    } else {
+        let session_id = runtime.session_id();
+        let created = runtime
+            .dispatch(AppCommand::CreateSession {
+                session_id: session_id.clone(),
+                cwd: cwd.clone(),
+                origin: Origin::Tui,
+                profile,
+            })
+            .await?;
+        if let Some(store) = &store {
+            store.append_all(&created)?;
+        }
+        for event in created {
+            state.apply(&event.event);
+        }
+        session_id
+    };
 
     let mut input_events = EventStream::new();
     let (ui_tx, mut ui_rx) = mpsc::unbounded_channel();

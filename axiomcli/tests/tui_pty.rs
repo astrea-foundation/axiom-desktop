@@ -1,10 +1,20 @@
 #![cfg(unix)]
 
-use std::{io::Write as _, sync::mpsc, thread, time::Duration};
+use std::{io::Write as _, path::Path, sync::mpsc, thread, time::Duration};
 
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
 fn run_tui(runner: &str, panic_probe: bool) -> (String, bool) {
+    let state = tempfile::tempdir().expect("isolated TUI state");
+    run_tui_at(runner, panic_probe, state.path(), &[])
+}
+
+fn run_tui_at(
+    runner: &str,
+    panic_probe: bool,
+    state_path: &Path,
+    extra_args: &[&str],
+) -> (String, bool) {
     let pair = native_pty_system()
         .openpty(PtySize {
             rows: 14,
@@ -13,14 +23,16 @@ fn run_tui(runner: &str, panic_probe: bool) -> (String, bool) {
             pixel_height: 0,
         })
         .expect("open PTY");
-    let state = tempfile::tempdir().expect("isolated TUI state");
     let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_axiomcli"));
     command.arg("tui");
+    for argument in extra_args {
+        command.arg(argument);
+    }
     command.env("AXIOMCLI_TEST_RUNNER", runner);
     command.env("AXIOMCLI_ASCII", "1");
     command.env("NO_COLOR", "1");
-    command.env("XDG_CONFIG_HOME", state.path().join("config"));
-    command.env("XDG_DATA_HOME", state.path().join("data"));
+    command.env("XDG_CONFIG_HOME", state_path.join("config"));
+    command.env("XDG_DATA_HOME", state_path.join("data"));
     if panic_probe {
         command.env("AXIOMCLI_TEST_TUI_PANIC", "1");
     }
@@ -113,4 +125,32 @@ fn panic_unwinds_the_terminal_guard() {
         "panic output: {output:?}"
     );
     assert!(output.contains("\u{1b}[?1049l"));
+}
+
+#[test]
+fn durable_tui_session_resumes_in_the_same_workspace() {
+    let state = tempfile::tempdir().expect("shared TUI state");
+    let (first_output, first_success) = run_tui_at("echo", false, state.path(), &[]);
+    assert!(first_success, "first TUI failed: {first_output:?}");
+    let listed = std::process::Command::new(env!("CARGO_BIN_EXE_axiomcli"))
+        .args(["sessions", "list"])
+        .env("XDG_CONFIG_HOME", state.path().join("config"))
+        .env("XDG_DATA_HOME", state.path().join("data"))
+        .output()
+        .expect("list sessions");
+    assert!(listed.status.success());
+    let stdout = String::from_utf8(listed.stdout).expect("session list utf8");
+    let id = stdout
+        .lines()
+        .next()
+        .and_then(|line| line.split('\t').next())
+        .expect("session ID");
+    let (resumed_output, resumed_success) =
+        run_tui_at("echo", false, state.path(), &["--resume", id]);
+    assert!(resumed_success, "resumed TUI failed: {resumed_output:?}");
+    assert!(
+        resumed_output.contains("Resumed")
+            || resumed_output.contains("no interrupted actions replayed"),
+        "resume state was not rendered: {resumed_output:?}"
+    );
 }

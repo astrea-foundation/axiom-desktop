@@ -9,7 +9,7 @@ use axiomcli::{
     app::{AppEvent, SessionId, TurnId},
     config::Config,
     provider::{AxiomProvider, InferenceProvider},
-    session::SessionStore,
+    session::{ExportOptions, RetentionPolicy, SessionStore},
     tools::default_registry,
 };
 use clap::{Parser, Subcommand};
@@ -29,6 +29,9 @@ enum Command {
     Tui {
         #[arg(long)]
         cwd: Option<PathBuf>,
+        /// Resume a durable session by ID. Its original workspace identity is enforced.
+        #[arg(long)]
+        resume: Option<String>,
     },
     /// Run one prompt without a terminal interface.
     Exec {
@@ -58,6 +61,15 @@ enum SessionAction {
     Show {
         id: String,
     },
+    Export {
+        id: String,
+        #[arg(long)]
+        omit_prompts: bool,
+        #[arg(long)]
+        omit_tool_output: bool,
+        #[arg(long, default_value_t = 10_000)]
+        max_events: usize,
+    },
     Rename {
         id: String,
         title: String,
@@ -68,6 +80,14 @@ enum SessionAction {
     Unarchive {
         id: String,
     },
+    /// Apply explicit local journal retention limits.
+    Prune {
+        #[arg(long, default_value_t = 10_000)]
+        max_events_per_session: usize,
+        /// Permanently delete archived sessions older than this many days.
+        #[arg(long)]
+        delete_archived_older_than_days: Option<i64>,
+    },
 }
 
 #[tokio::main]
@@ -76,7 +96,10 @@ async fn main() -> anyhow::Result<()> {
     let config = Config::load().context("failed to load AxiomCLI configuration")?;
     init_tracing(matches!(cli.command, Some(Command::Acp)));
 
-    match cli.command.unwrap_or(Command::Tui { cwd: None }) {
+    match cli.command.unwrap_or(Command::Tui {
+        cwd: None,
+        resume: None,
+    }) {
         Command::Doctor => {
             doctor(&config).await;
             Ok(())
@@ -90,15 +113,38 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Command::Sessions { action } => manage_sessions(action),
-        Command::Tui { cwd } => {
-            let cwd = resolve_cwd(cwd)?;
+        Command::Tui { cwd, resume } => {
+            let store = open_store()?;
+            let resume = resume
+                .map(|id| SessionId::from_str(&id).context("invalid session ID"))
+                .transpose()?;
+            let (cwd, profile) = if let Some(id) = &resume {
+                let summary = store.summary(id)?;
+                let saved = summary.cwd.canonicalize().with_context(|| {
+                    format!("saved workspace is unavailable: {}", summary.cwd.display())
+                })?;
+                if let Some(requested) = cwd {
+                    let requested = resolve_cwd(Some(requested))?;
+                    anyhow::ensure!(
+                        requested == saved,
+                        "--cwd does not match the resumed session workspace"
+                    );
+                }
+                (
+                    saved,
+                    axiomcli::app::PermissionProfile::from_str(&summary.profile)?,
+                )
+            } else {
+                (resolve_cwd(cwd)?, config.permission_profile)
+            };
             axiomcli::tui::run(
                 build_runner(&config).await?,
                 cwd,
                 config.model.clone(),
-                config.permission_profile,
+                profile,
                 axiomcli::tui::TuiOptions::from_environment(config.animation),
-                Some(open_store()?),
+                Some(store),
+                resume,
             )
             .await
             .map_err(anyhow::Error::from)
@@ -193,6 +239,25 @@ fn manage_sessions(action: SessionAction) -> anyhow::Result<()> {
                 );
             }
         }
+        SessionAction::Export {
+            id,
+            omit_prompts,
+            omit_tool_output,
+            max_events,
+        } => {
+            let id = SessionId::from_str(&id).context("invalid session ID")?;
+            println!(
+                "{}",
+                store.export_with_options(
+                    &id,
+                    ExportOptions {
+                        include_prompts: !omit_prompts,
+                        include_tool_output: !omit_tool_output,
+                        max_events,
+                    },
+                )?
+            );
+        }
         SessionAction::Rename { id, title } => {
             store.rename(
                 &SessionId::from_str(&id).context("invalid session ID")?,
@@ -210,6 +275,19 @@ fn manage_sessions(action: SessionAction) -> anyhow::Result<()> {
                 &SessionId::from_str(&id).context("invalid session ID")?,
                 false,
             )?;
+        }
+        SessionAction::Prune {
+            max_events_per_session,
+            delete_archived_older_than_days,
+        } => {
+            let report = store.apply_retention(RetentionPolicy {
+                max_events_per_session,
+                delete_archived_older_than_days,
+            })?;
+            println!(
+                "deleted {} archived session(s) and {} old event(s)",
+                report.deleted_sessions, report.deleted_events
+            );
         }
     }
     Ok(())

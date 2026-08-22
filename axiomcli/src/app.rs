@@ -713,14 +713,14 @@ impl Kernel {
         let mut state = state.ok_or_else(|| {
             AxiomError::InvalidTransition("restore stream has no session creation".into())
         })?;
-        if state.lifecycle != SessionLifecycle::Closed {
-            // Unknown in-flight work is never replayed. Recovery exposes a ready
-            // session and the journal retains the interrupted evidence.
-            state.lifecycle = SessionLifecycle::Ready;
-            state.active_turn = None;
-            state.pending_permission = None;
-            state.pending_question = None;
-        }
+        // A close event records that the previous front end shut down; it does
+        // not tombstone a durable session. Unknown in-flight work is never
+        // replayed. Every successfully restored session resumes ready and the
+        // journal retains interrupted evidence for the recovery surface.
+        state.lifecycle = SessionLifecycle::Ready;
+        state.active_turn = None;
+        state.pending_permission = None;
+        state.pending_question = None;
         self.sessions.insert(id, state.clone());
         Ok(state)
     }
