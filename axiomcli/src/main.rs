@@ -6,7 +6,7 @@ use axiomcli::{
     agent::{AgentEngine, BlockingTurnRunner, EchoTurnRunner, TurnContext, TurnRunner},
     app::{AppEvent, SessionId, TurnId},
     config::Config,
-    provider::AxiomProvider,
+    provider::{AxiomProvider, InferenceProvider},
     session::SessionStore,
     tools::default_registry,
 };
@@ -38,6 +38,8 @@ enum Command {
     Acp,
     /// Check configuration and local dependencies.
     Doctor,
+    /// List models exposed by the configured development endpoint.
+    Models,
     /// Inspect and manage durable local session journals.
     Sessions {
         #[command(subcommand)]
@@ -75,6 +77,14 @@ async fn main() -> anyhow::Result<()> {
     match cli.command.unwrap_or(Command::Tui { cwd: None }) {
         Command::Doctor => {
             doctor(&config).await;
+            Ok(())
+        }
+        Command::Models => {
+            let provider =
+                AxiomProvider::from_environment(&config.base_url, config.request_timeout())?;
+            for model in provider.models(CancellationToken::new()).await? {
+                println!("{}", model.id);
+            }
             Ok(())
         }
         Command::Sessions { action } => manage_sessions(action),

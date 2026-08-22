@@ -229,6 +229,12 @@ impl TurnRunner for AgentEngine {
         cancellation: CancellationToken,
     ) -> Result<()> {
         let started_at = tokio::time::Instant::now();
+        events
+            .send(AppEvent::ProviderStatusChanged {
+                connected: false,
+                detail: format!("Connecting to {} · UNATTESTED DEVELOPMENT", self.model),
+            })
+            .map_err(|_| AxiomError::Cancelled)?;
         let mut messages = {
             let histories = self.histories.lock().await;
             histories
@@ -430,6 +436,9 @@ fn forward_provider_event(
     event: ProviderEvent,
 ) -> Result<()> {
     let event = match event {
+        ProviderEvent::Status { connected, detail } => {
+            AppEvent::ProviderStatusChanged { connected, detail }
+        }
         ProviderEvent::TextDelta(text) => AppEvent::TextDelta {
             turn_id: turn_id.clone(),
             text,
@@ -506,6 +515,10 @@ mod engine_tests {
             )
             .await
             .expect("run");
+        assert!(matches!(
+            rx.recv().await,
+            Some(AppEvent::ProviderStatusChanged { .. })
+        ));
         assert!(matches!(rx.recv().await, Some(AppEvent::TextDelta { .. })));
     }
 

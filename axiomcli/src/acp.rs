@@ -347,6 +347,21 @@ fn send_event(
                 )),
             ))
         }
+        AppEvent::ProviderStatusChanged { connected, detail } => {
+            connection.send_notification(protocol::SessionNotification::new(
+                session_id.clone(),
+                protocol::SessionUpdate::AgentThoughtChunk(protocol::ContentChunk::new(
+                    protocol::ContentBlock::Text(protocol::TextContent::new(format!(
+                        "[{}] {detail}",
+                        if connected {
+                            "provider"
+                        } else {
+                            "provider status"
+                        }
+                    ))),
+                )),
+            ))
+        }
         AppEvent::ToolProposed {
             call_id,
             name,
