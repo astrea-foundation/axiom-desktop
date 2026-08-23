@@ -3,10 +3,12 @@ resolver = "3"
 members = [
     "apps/axiomcli",
     "crates/axiom-inference",
+    "crates/axiom-secure-client",
 ]
 default-members = [
     "apps/axiomcli",
     "crates/axiom-inference",
+    "crates/axiom-secure-client",
 ]
 
 [workspace.package]
@@ -16,6 +18,7 @@ rust-version = "1.88"
 
 [workspace.dependencies]
 axiom-inference = { version = "0.1.0", path = "crates/axiom-inference" }
+axiom-secure-client = { version = "0.1.0", path = "crates/axiom-secure-client" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

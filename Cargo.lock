@@ -310,6 +310,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "axiom-secure-client"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "axiom-inference",
+ "secrecy",
+ "serde",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-util",
+ "url",
+]
+
+[[package]]
 name = "axiomcli"
 version = "0.1.0"
 dependencies = [

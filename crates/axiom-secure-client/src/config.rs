@@ -1,0 +1,152 @@
+use std::{net::IpAddr, time::Duration};
+
+use url::Url;
+
+use crate::{Result, SecureClientError};
+
+#[derive(Clone, Debug)]
+pub struct SecureClientConfig {
+    pub relay_base_url: Url,
+    pub request_timeout: Duration,
+    pub attestation_timeout: Duration,
+    pub limits: SecureClientLimits,
+    pub endpoint_policy: EndpointPolicy,
+}
+
+impl SecureClientConfig {
+    pub fn new(relay_base_url: &str) -> Result<Self> {
+        let relay_base_url = Url::parse(relay_base_url)
+            .map_err(|_| SecureClientError::configuration("invalid relay URL"))?;
+        if relay_base_url.scheme() != "https" {
+            return Err(SecureClientError::configuration(
+                "production relay URL must use HTTPS",
+            ));
+        }
+        Ok(Self {
+            relay_base_url,
+            request_timeout: Duration::from_secs(120),
+            attestation_timeout: Duration::from_secs(60),
+            limits: SecureClientLimits::default(),
+            endpoint_policy: EndpointPolicy::default(),
+        })
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct SecureClientLimits {
+    pub model_catalog_bytes: usize,
+    pub attestation_report_bytes: usize,
+    pub relay_error_bytes: usize,
+    pub relay_sse_event_bytes: usize,
+    pub relay_stream_bytes: usize,
+    pub serialized_relay_request_bytes: usize,
+}
+
+impl Default for SecureClientLimits {
+    fn default() -> Self {
+        Self {
+            model_catalog_bytes: 4 * 1024 * 1024,
+            attestation_report_bytes: 2 * 1024 * 1024,
+            relay_error_bytes: 4 * 1024,
+            relay_sse_event_bytes: 1024 * 1024,
+            relay_stream_bytes: 16 * 1024 * 1024,
+            serialized_relay_request_bytes: 2 * 1024 * 1024,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct EndpointPolicy {
+    pub require_https: bool,
+    pub reject_local_addresses: bool,
+    pub allow_redirects: bool,
+}
+
+impl Default for EndpointPolicy {
+    fn default() -> Self {
+        Self {
+            require_https: true,
+            reject_local_addresses: true,
+            allow_redirects: false,
+        }
+    }
+}
+
+impl EndpointPolicy {
+    pub fn validate_provider_url(&self, value: &str) -> Result<Url> {
+        let url =
+            Url::parse(value).map_err(|_| SecureClientError::catalog("provider URL is invalid"))?;
+        if self.require_https && url.scheme() != "https" {
+            return Err(SecureClientError::catalog("provider URL must use HTTPS"));
+        }
+        if !url.username().is_empty() || url.password().is_some() {
+            return Err(SecureClientError::catalog(
+                "provider URL must not include credentials",
+            ));
+        }
+        if self.reject_local_addresses {
+            if matches!(url.host_str(), Some("localhost")) {
+                return Err(SecureClientError::catalog(
+                    "provider URL must not target localhost",
+                ));
+            }
+            if let Ok(address) = url.host_str().unwrap_or_default().parse::<IpAddr>()
+                && !is_public_address(address)
+            {
+                return Err(SecureClientError::catalog(
+                    "provider URL must use a public address",
+                ));
+            }
+        }
+        Ok(url)
+    }
+}
+
+fn is_public_address(address: IpAddr) -> bool {
+    match address {
+        IpAddr::V4(address) => {
+            !(address.is_private()
+                || address.is_loopback()
+                || address.is_link_local()
+                || address.is_broadcast()
+                || address.is_documentation()
+                || address.is_unspecified())
+        }
+        IpAddr::V6(address) => {
+            !(address.is_loopback()
+                || address.is_unspecified()
+                || address.is_unique_local()
+                || address.is_unicast_link_local())
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{EndpointPolicy, SecureClientConfig};
+
+    #[test]
+    fn production_config_and_provider_urls_require_https() {
+        assert!(SecureClientConfig::new("http://api.axiom.stream").is_err());
+        assert!(SecureClientConfig::new("https://api.axiom.stream").is_ok());
+
+        let policy = EndpointPolicy::default();
+        assert!(
+            policy
+                .validate_provider_url("https://model.completions.near.ai/v1")
+                .is_ok()
+        );
+        for rejected in [
+            "http://model.example/v1",
+            "https://localhost/v1",
+            "https://127.0.0.1/v1",
+            "https://169.254.169.254/latest",
+            "https://user:password@example.com/v1",
+        ] {
+            assert!(
+                policy.validate_provider_url(rejected).is_err(),
+                "{rejected}"
+            );
+        }
+    }
+}
