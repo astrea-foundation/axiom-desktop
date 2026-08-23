@@ -8,6 +8,9 @@
 - local process and network authority
 - session history and audit information
 - correctness of permission decisions
+- plaintext prompts, conversation history, model responses, and tool context
+- Axiom API credentials and ephemeral inference key material
+- integrity of model selection and provider security evidence
 
 ## Trust boundaries
 
@@ -20,6 +23,39 @@ operation and scope shown in the approval request.
 
 Development Axiom inference is unattested. The implementation must never label
 it secure or silently imply that later TEE/E2EE guarantees already apply.
+
+## Production inference trust boundary
+
+The Axiom relay, model catalog, provider endpoints, DNS, TLS peers, attestation
+payloads, Intel/NVIDIA collateral services, and encrypted stream metadata are
+untrusted inputs. Production inference accepts a provider key only after the
+local secure client verifies fresh evidence, the selected model, and the exact
+live TLS SPKI binding. The provider-specific implementation owns this complete
+chain and returns only an opaque verified session.
+
+The Axiom relay is trusted for authentication, billing, routing, and
+availability, but not with message plaintext. It may receive ciphertext,
+provider/model identifiers, public keys, protocol metadata, request parameters,
+usage, and terminal status. It must not receive plaintext messages, reasoning,
+refusals, tool names/descriptions/schemas/arguments/results, or model output.
+
+Valid vendor evidence and endpoint binding do not by themselves prove an
+Axiom-approved software measurement. Until an approved workload allowlist is
+enforced, security evidence must describe the narrower verified claims rather
+than implying approved-code identity.
+
+## Local proxy trust boundary
+
+`axiom-proxy` is a user-local plaintext endpoint because OpenAI-compatible
+clients do not implement Axiom E2EE. It binds only to loopback and requires a
+separate local credential. Any local process holding that credential can submit
+plaintext to the proxy, so process isolation and credential distribution remain
+part of the desktop threat model. The proxy never gives its Axiom credential to
+the client and never executes requested tools.
+
+Tool definitions, model-proposed calls, and tool results are encrypted by the
+secure transport. Tool execution authority remains with AxiomCLI or the
+external coding client and its deterministic permission system.
 
 ## Principal threats and early mitigations
 
@@ -34,6 +70,13 @@ it secure or silently imply that later TEE/E2EE guarantees already apply.
 | Web/MCP prompt injection | Delimit as untrusted tool data; never interpret it as policy |
 | ACP client disconnects during approval | Fail closed; do not convert disconnection into approval |
 | Credential exposure | Environment/secret wrapper, redacted tracing, deny child inheritance by default |
+| Relay observes prompts or tool context | Encrypt every secret-bearing field locally; sentinel scans over serialized relay requests and logs |
+| Malicious catalog chooses wrong provider/endpoint | Match compiled provider/protocol versions; HTTPS/public-address policy; verify fresh evidence rather than trusting catalog keys |
+| Replayed or substituted attestation | Fresh nonce, expected model, signing-key/report-data binding, exact live TLS SPKI binding |
+| Genuine hardware runs unapproved workload | Expose the distinction; add an approved measurement/manifest allowlist before claiming approved-runtime identity |
+| Ciphertext/stream tampering | AEAD authentication, bounded typed parsing, strict event ordering, fail closed on missing terminal event |
+| Local client steals Axiom credential | Separate proxy credential; never inherit or expose the upstream credential to clients |
+| Proxy exposed beyond the machine | Loopback-only binding in the initial product; non-loopback configuration rejected |
 | Event/output memory exhaustion | Bounded channels, transcript/tool limits, backpressure and truncation markers |
 | Crash after side effect | Journal start/completion; unknown operations are not replayed |
 | Persistent rule broadens authority | Explicit scope and confirmation; deny outranks all allows |
@@ -41,7 +84,8 @@ it secure or silently imply that later TEE/E2EE guarantees already apply.
 
 ## Deferred threats
 
-- Production attestation and E2EE require a separate protocol-specific review.
+- Production attestation and E2EE remain unreleased until every stage in the
+  secure-inference plan passes its protocol-specific review.
 - OS-level sandbox availability differs by platform and will supplement, not
   replace, application policy.
 - Multi-user remote ACP transports are not supported by the first version.
