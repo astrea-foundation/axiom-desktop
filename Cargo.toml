@@ -1,11 +1,21 @@
 [workspace]
 resolver = "3"
-members = ["axiomcli"]
+members = [
+    "apps/axiomcli",
+    "crates/axiom-inference",
+]
+default-members = [
+    "apps/axiomcli",
+    "crates/axiom-inference",
+]
 
 [workspace.package]
 edition = "2024"
 license = "Apache-2.0"
 rust-version = "1.88"
+
+[workspace.dependencies]
+axiom-inference = { version = "0.1.0", path = "crates/axiom-inference" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

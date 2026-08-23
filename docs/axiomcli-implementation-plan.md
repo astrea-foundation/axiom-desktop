@@ -407,13 +407,13 @@ details are adapters around the core.
 ### 5.1 Initial crate strategy
 
 Do not begin with a large collection of tiny crates. Start with explicit Rust
-modules inside `axiomcli`, enforce dependency directions, and extract crates
+modules inside `apps/axiomcli`, enforce dependency directions, and extract crates
 only when the boundaries have tests and at least two real consumers.
 
 Expected modules:
 
 ```text
-axiomcli/src/
+apps/axiomcli/src/
   main.rs                 CLI parsing and composition root only
   app/                    Runtime commands, events, IDs, state machine
   agent/                  Turn loop, context assembly, tool-call orchestration

@@ -1,5 +1,5 @@
 ---
-source: axiomcli/src/tui.rs
+source: apps/axiomcli/src/tui.rs
 assertion_line: 3447
 expression: "render_symbols(80, 20, &state)"
 ---

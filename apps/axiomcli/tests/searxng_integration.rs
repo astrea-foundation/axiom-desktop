@@ -31,6 +31,7 @@ impl SearxngService {
     async fn start(settings: &str) -> Self {
         let project = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
+            .and_then(Path::parent)
             .expect("workspace root");
         let listener = TcpListener::bind("127.0.0.1:0").expect("reserve port");
         let port = listener.local_addr().expect("local address").port();

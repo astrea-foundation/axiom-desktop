@@ -6475,7 +6475,7 @@ mod tests {
     #[ignore = "writes preview frames for visual review rather than asserting"]
     fn tui_preview_frames() {
         let directory =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../target/tui-preview");
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/tui-preview");
         std::fs::create_dir_all(&directory).expect("preview directory");
         for (name, width, height, state) in preview_scenarios() {
             let backend = TestBackend::new(width, height);
@@ -6734,7 +6734,7 @@ mod tests {
                 turn_id: details_turn.clone(),
                 call_id: "search-reducer".into(),
                 name: "search_files".into(),
-                arguments: serde_json::json!({"query": "call_id", "path": "axiomcli/src/tui"}),
+                arguments: serde_json::json!({"query": "call_id", "path": "apps/axiomcli/src/tui"}),
             },
             AppEvent::ToolStarted {
                 call_id: "search-reducer".into(),
@@ -6742,7 +6742,7 @@ mod tests {
             },
             AppEvent::ToolOutput {
                 call_id: "search-reducer".into(),
-                content: "axiomcli/src/tui.rs:511\naxiomcli/src/tui/task.rs:142".into(),
+                content: "apps/axiomcli/src/tui.rs:511\napps/axiomcli/src/tui/task.rs:142".into(),
                 truncated: false,
             },
             AppEvent::ToolCompleted {
@@ -6753,7 +6753,7 @@ mod tests {
                 turn_id: details_turn.clone(),
                 call_id: "patch-reducer".into(),
                 name: "apply_patch".into(),
-                arguments: serde_json::json!({"path": "axiomcli/src/tui.rs"}),
+                arguments: serde_json::json!({"path": "apps/axiomcli/src/tui.rs"}),
             },
             AppEvent::ToolStarted {
                 call_id: "patch-reducer".into(),

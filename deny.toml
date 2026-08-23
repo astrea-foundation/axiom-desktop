@@ -1,6 +1,9 @@
 [advisories]
 version = 2
 yanked = "deny"
+ignore = [
+  { id = "RUSTSEC-2025-0141", reason = "bincode 1 is unmaintained but is required transitively by syntect 5.3 embedded syntax/theme dumps; remove when syntect ships a replacement" },
+]
 
 [licenses]
 version = 2

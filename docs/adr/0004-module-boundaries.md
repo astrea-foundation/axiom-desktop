@@ -1,6 +1,6 @@
 # ADR 0004: Modules before crates
 
-Status: accepted for the early implementation
+Status: superseded by ADR 0009 for the product monorepo
 
 ## Decision
 

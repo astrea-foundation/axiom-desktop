@@ -1,12 +1,32 @@
-# AxiomCLI
+# AxiomAI
 
-AxiomCLI is an early Rust coding agent with a terminal interface and an Agent
-Client Protocol (ACP) control mode. It is intentionally under active design:
-interfaces are small, configuration is explicit, and compatibility promises do
-not begin until a tagged release says otherwise.
+This repository is the AxiomAI product monorepo. Rust applications live under
+`apps/`, reusable Rust contracts and infrastructure live under `crates/`, and
+future JavaScript packages live under `packages/`.
 
-This repository contains the CLI/TUI only. It does not contain an Electron or
-desktop application.
+The implemented application today is AxiomCLI: an early Rust coding agent with
+a terminal interface and an Agent Client Protocol (ACP) control mode. The
+standalone proxy and Electron desktop directories currently document their
+intended boundaries; they do not contain product implementations yet.
+
+## Workspace layout
+
+```text
+apps/
+  axiomcli/       Coding-agent TUI, headless CLI, and ACP server
+  axiom-proxy/    Reserved for the local OpenAI-compatible Rust sidecar
+  desktop/        Reserved for the Electron application
+crates/
+  axiom-inference/  Transport-independent inference contracts
+packages/
+  sidecar-protocol/ Reserved for generated/shared desktop control types
+```
+
+The proxy and AxiomCLI will share the eventual secure Axiom client rather than
+routing the TUI through a localhost proxy. See
+[`docs/adr/0009-monorepo-and-secure-client-boundaries.md`](docs/adr/0009-monorepo-and-secure-client-boundaries.md).
+Implementation is governed by the gated
+[`Axiom secure inference and proxy plan`](docs/axiom-secure-inference-and-proxy-plan.md).
 
 ## Development status
 
@@ -87,7 +107,7 @@ equivalent `. * o O` sequence.
 
 ## Installation
 
-Development installs can use `cargo install --locked --path axiomcli`. The
+Development installs can use `cargo install --locked --path apps/axiomcli`. The
 supported release artifact is currently Linux x86-64 GNU:
 
 ```text
