@@ -29,6 +29,7 @@ use crate::{AxiomError, Result, config::Config};
 
 const KEYRING_SERVICE: &str = "stream.axiom.axiomcli";
 const KEYRING_ACCOUNT: &str = "inference-api-key";
+const CLIENT_ID_FILENAME: &str = "client-id";
 const API_KEY_PREFIX: &str = "axm_";
 const COMPLETION_CODE_PREFIX: &str = "axc_";
 const MAX_HTTP_REQUEST_BYTES: usize = 16 * 1024;
@@ -71,6 +72,10 @@ trait CredentialStore: Send + Sync {
     fn load(&self) -> std::result::Result<Option<String>, String>;
     fn save(&self, credential: &str) -> std::result::Result<(), String>;
     fn delete(&self) -> std::result::Result<(), String>;
+
+    fn client_id_path(&self) -> Option<PathBuf> {
+        client_id_path()
+    }
 }
 
 #[derive(Debug)]
@@ -401,12 +406,20 @@ impl AuthManager {
         let state = random_urlsafe(32)?;
         let code_challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
         let callback_uri = format!("http://127.0.0.1:{port}/callback");
+        let client_id_path = self
+            .store
+            .client_id_path()
+            .ok_or_else(|| AxiomError::Storage("platform data directory is unavailable".into()))?;
+        let client_id = load_or_create_client_id(&client_id_path)?;
+        let client_name = client_name(&client_id);
         let response = self
             .client
             .post(self.endpoint("/api/v1/auth/cli/authorizations"))
             .json(&CreateAuthorizationRequest {
                 code_challenge,
                 callback_uri,
+                client_id,
+                client_name,
             })
             .send()
             .await
@@ -745,6 +758,82 @@ fn random_urlsafe(size: usize) -> Result<String> {
     Ok(URL_SAFE_NO_PAD.encode(bytes))
 }
 
+fn client_id_path() -> Option<PathBuf> {
+    Config::data_dir().map(|directory| directory.join("identity").join(CLIENT_ID_FILENAME))
+}
+
+fn load_or_create_client_id(path: &Path) -> Result<String> {
+    match read_client_id(path) {
+        Ok(client_id) => return Ok(client_id),
+        Err(AxiomError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+
+    let directory = path.parent().ok_or_else(|| {
+        AxiomError::Storage("local AxiomCLI installation identity path is invalid".into())
+    })?;
+    fs::create_dir_all(directory)?;
+    set_directory_permissions(directory)?;
+
+    let client_id = random_urlsafe(32)?;
+    let mut options = OpenOptions::new();
+    options.create_new(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    match options.open(path) {
+        Ok(mut file) => {
+            file.write_all(client_id.as_bytes())?;
+            file.write_all(b"\n")?;
+            file.sync_all()?;
+            set_file_permissions(path)?;
+            Ok(client_id)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => read_client_id(path),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn read_client_id(path: &Path) -> Result<String> {
+    let client_id = fs::read_to_string(path)?;
+    set_file_permissions(path)?;
+    let client_id = client_id.trim();
+    if !(32..=128).contains(&client_id.len())
+        || !client_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    {
+        return Err(AxiomError::Storage(format!(
+            "local AxiomCLI installation identity at {} is invalid",
+            path.display()
+        )));
+    }
+    Ok(client_id.to_owned())
+}
+
+fn client_name(client_id: &str) -> String {
+    let hostname = std::env::var("HOSTNAME")
+        .ok()
+        .or_else(|| std::env::var("COMPUTERNAME").ok())
+        .or_else(|| fs::read_to_string("/etc/hostname").ok())
+        .and_then(|value| sanitize_device_label(&value))
+        .unwrap_or_else(|| format!("{} device", std::env::consts::OS));
+    let suffix = &client_id[client_id.len() - 6..];
+    format!("{hostname} · {suffix}")
+}
+
+fn sanitize_device_label(value: &str) -> Option<String> {
+    let normalized = value
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(71)
+        .collect::<String>();
+    let normalized = normalized.trim();
+    (!normalized.is_empty()).then(|| normalized.to_owned())
+}
+
 fn validate_api_key_shape(value: &str) -> Result<()> {
     if !value.starts_with(API_KEY_PREFIX)
         || !(16..=512).contains(&value.len())
@@ -778,6 +867,8 @@ fn parse_service_url(value: &str, label: &str) -> Result<Url> {
 struct CreateAuthorizationRequest {
     code_challenge: String,
     callback_uri: String,
+    client_id: String,
+    client_name: String,
 }
 
 #[derive(Deserialize)]
@@ -836,8 +927,11 @@ mod tests {
 
     use super::*;
 
-    #[derive(Debug, Default)]
-    struct MemoryStore(Mutex<Option<String>>);
+    #[derive(Debug)]
+    struct MemoryStore {
+        credential: Mutex<Option<String>>,
+        client_id_path: PathBuf,
+    }
 
     impl CredentialStore for MemoryStore {
         fn source(&self) -> CredentialSource {
@@ -845,24 +939,43 @@ mod tests {
         }
 
         fn load(&self) -> std::result::Result<Option<String>, String> {
-            Ok(self.0.lock().expect("credential lock").clone())
+            Ok(self.credential.lock().expect("credential lock").clone())
         }
 
         fn save(&self, credential: &str) -> std::result::Result<(), String> {
-            *self.0.lock().expect("credential lock") = Some(credential.to_owned());
+            *self.credential.lock().expect("credential lock") = Some(credential.to_owned());
             Ok(())
         }
 
         fn delete(&self) -> std::result::Result<(), String> {
-            *self.0.lock().expect("credential lock") = None;
+            *self.credential.lock().expect("credential lock") = None;
             Ok(())
+        }
+
+        fn client_id_path(&self) -> Option<PathBuf> {
+            Some(self.client_id_path.clone())
         }
     }
 
-    #[derive(Debug, Default)]
+    #[derive(Debug)]
     struct MockAuthorizationState {
         challenge: Mutex<Option<String>>,
+        client_ids: Mutex<Vec<String>>,
+        client_names: Mutex<Vec<String>>,
         approved: AtomicBool,
+        identity_directory: tempfile::TempDir,
+    }
+
+    impl Default for MockAuthorizationState {
+        fn default() -> Self {
+            Self {
+                challenge: Mutex::new(None),
+                client_ids: Mutex::new(Vec::new()),
+                client_names: Mutex::new(Vec::new()),
+                approved: AtomicBool::new(false),
+                identity_directory: tempfile::tempdir().expect("identity temp directory"),
+            }
+        }
     }
 
     async fn create_authorization(
@@ -875,6 +988,17 @@ mod tests {
             body["callback_uri"]
                 .as_str()
                 .is_some_and(|value| value.starts_with("http://127.0.0.1:"))
+        );
+        state
+            .client_ids
+            .lock()
+            .expect("client ID lock")
+            .push(body["client_id"].as_str().expect("client ID").to_owned());
+        state.client_names.lock().expect("client name lock").push(
+            body["client_name"]
+                .as_str()
+                .expect("client name")
+                .to_owned(),
         );
         Json(json!({
             "id": "0123456789abcdef0123456789abcdef",
@@ -949,7 +1073,10 @@ mod tests {
         tokio::spawn(async move {
             axum::serve(listener, app).await.expect("mock auth server");
         });
-        let store: Arc<dyn CredentialStore> = Arc::new(MemoryStore::default());
+        let store: Arc<dyn CredentialStore> = Arc::new(MemoryStore {
+            credential: Mutex::new(None),
+            client_id_path: state.identity_directory.path().join(CLIENT_ID_FILENAME),
+        });
         let manager = AuthManager {
             state: Arc::new(RwLock::new(AuthState {
                 credential: None,
@@ -983,6 +1110,20 @@ mod tests {
     }
 
     #[test]
+    fn installation_identity_is_stable_and_has_a_distinct_device_label() {
+        let directory = tempfile::tempdir().expect("identity temp directory");
+        let path = directory.path().join(CLIENT_ID_FILENAME);
+        let first = load_or_create_client_id(&path).expect("create client ID");
+        let second = load_or_create_client_id(&path).expect("reload client ID");
+
+        assert_eq!(first, second);
+        assert_eq!(first.len(), 43);
+        let name = client_name(&first);
+        assert!(name.ends_with(&first[first.len() - 6..]));
+        assert!(name.chars().count() <= 80);
+    }
+
+    #[test]
     fn browser_login_debug_output_redacts_exchange_secrets() {
         let text = format!(
             "{:?}",
@@ -1003,6 +1144,21 @@ mod tests {
         assert!(login.authorization_url().contains("/cli/authorize?"));
         assert!(!login.browser_opened());
         assert!(!manager.has_credential());
+        let first_client_id = state
+            .client_ids
+            .lock()
+            .expect("client ID lock")
+            .first()
+            .expect("client ID request")
+            .clone();
+        let first_client_name = state
+            .client_names
+            .lock()
+            .expect("client name lock")
+            .first()
+            .expect("client name request")
+            .clone();
+        assert!(first_client_name.ends_with(&first_client_id[first_client_id.len() - 6..]));
 
         state.approved.store(true, Ordering::Release);
         let account = tokio::time::timeout(
