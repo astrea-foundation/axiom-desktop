@@ -140,6 +140,51 @@ pub enum PermissionProfile {
     Autonomous,
 }
 
+/// Provider-neutral reasoning preference for a session. Reasoning is always
+/// explicit; legacy journals that stored `auto` deserialize as `medium`. The
+/// current development proxy does not yet transport explicit levels, but this
+/// typed boundary is ready for the direct Axiom transport.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThinkingLevel {
+    Minimal,
+    Low,
+    #[default]
+    #[serde(alias = "auto")]
+    Medium,
+    High,
+    ExtraHigh,
+}
+
+impl fmt::Display for ThinkingLevel {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Minimal => "minimal",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::ExtraHigh => "xhigh",
+        })
+    }
+}
+
+impl FromStr for ThinkingLevel {
+    type Err = AxiomError;
+
+    fn from_str(input: &str) -> Result<Self> {
+        match input {
+            "minimal" => Ok(Self::Minimal),
+            "low" => Ok(Self::Low),
+            "medium" => Ok(Self::Medium),
+            "high" => Ok(Self::High),
+            "xhigh" | "extra-high" | "extra_high" => Ok(Self::ExtraHigh),
+            _ => Err(AxiomError::Config(format!(
+                "unknown thinking level `{input}`"
+            ))),
+        }
+    }
+}
+
 impl fmt::Display for PermissionProfile {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
@@ -212,19 +257,22 @@ pub enum AppCommand {
         turn_id: TurnId,
         message: String,
     },
-    ResolvePermission {
-        session_id: SessionId,
-        request_id: String,
-        allowed: bool,
-    },
-    AnswerQuestion {
-        session_id: SessionId,
-        question_id: String,
-        answers: Vec<String>,
-    },
     ChangePermissionProfile {
         session_id: SessionId,
         profile: PermissionProfile,
+    },
+    ChangeModel {
+        session_id: SessionId,
+        model: String,
+    },
+    ChangeThinkingLevel {
+        session_id: SessionId,
+        level: ThinkingLevel,
+    },
+    RecordContextCompaction {
+        session_id: SessionId,
+        summary: String,
+        messages_before: usize,
     },
     CloseSession {
         session_id: SessionId,
@@ -241,9 +289,10 @@ impl AppCommand {
             | Self::CancelTurn { session_id, .. }
             | Self::FinishTurn { session_id, .. }
             | Self::FailTurn { session_id, .. }
-            | Self::ResolvePermission { session_id, .. }
-            | Self::AnswerQuestion { session_id, .. }
             | Self::ChangePermissionProfile { session_id, .. }
+            | Self::ChangeModel { session_id, .. }
+            | Self::ChangeThinkingLevel { session_id, .. }
+            | Self::RecordContextCompaction { session_id, .. }
             | Self::CloseSession { session_id } => session_id,
         }
     }
@@ -308,6 +357,13 @@ pub enum AppEvent {
     PermissionRequired {
         request_id: String,
         explanation: String,
+        /// Serialized normalized policy effect. Kept provider-neutral so the
+        /// application event journal does not depend on presentation strings.
+        #[serde(default)]
+        effect: serde_json::Value,
+        /// Stable response choices that were actually offered for this request.
+        #[serde(default)]
+        choices: Vec<String>,
     },
     PermissionResolved {
         request_id: String,
@@ -352,6 +408,10 @@ pub enum AppEvent {
         request_id: String,
         answers: BTreeMap<String, Vec<String>>,
     },
+    QuestionsFailed {
+        request_id: String,
+        reason: String,
+    },
     PlanProposed {
         plan_id: String,
         revision: u64,
@@ -368,6 +428,16 @@ pub enum AppEvent {
     },
     PermissionProfileChanged {
         profile: PermissionProfile,
+    },
+    ModelChanged {
+        model: String,
+    },
+    ThinkingLevelChanged {
+        level: ThinkingLevel,
+    },
+    ContextCompacted {
+        summary: String,
+        messages_before: usize,
     },
     ProviderStatusChanged {
         connected: bool,
@@ -415,6 +485,12 @@ pub struct QuestionSpec {
     pub options: Vec<String>,
     #[serde(default)]
     pub multiple: bool,
+    #[serde(default = "question_required")]
+    pub required: bool,
+}
+
+const fn question_required() -> bool {
+    true
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -611,48 +687,6 @@ impl Kernel {
                     message,
                 }]
             }
-            AppCommand::ResolvePermission {
-                session_id,
-                request_id,
-                allowed,
-            } => {
-                let session = self.session_mut(&session_id)?;
-                if session.lifecycle != SessionLifecycle::WaitingForApproval
-                    || session.pending_permission.as_deref() != Some(&request_id)
-                {
-                    return Err(AxiomError::InvalidTransition(format!(
-                        "permission {request_id} is not pending"
-                    )));
-                }
-                session.lifecycle = SessionLifecycle::Running;
-                session.pending_permission = None;
-                vec![AppEvent::PermissionResolved {
-                    request_id,
-                    allowed,
-                    choice: None,
-                }]
-            }
-            AppCommand::AnswerQuestion {
-                session_id,
-                question_id,
-                answers,
-            } => {
-                let session = self.session_mut(&session_id)?;
-                if answers.is_empty()
-                    || session.lifecycle != SessionLifecycle::WaitingForAnswer
-                    || session.pending_question.as_deref() != Some(&question_id)
-                {
-                    return Err(AxiomError::InvalidTransition(format!(
-                        "question {question_id} is not pending or has no answer"
-                    )));
-                }
-                session.lifecycle = SessionLifecycle::Running;
-                session.pending_question = None;
-                vec![AppEvent::QuestionAnswered {
-                    question_id,
-                    answers,
-                }]
-            }
             AppCommand::ChangePermissionProfile {
                 session_id,
                 profile,
@@ -665,6 +699,50 @@ impl Kernel {
                 }
                 session.profile = profile;
                 vec![AppEvent::PermissionProfileChanged { profile }]
+            }
+            AppCommand::ChangeModel { session_id, model } => {
+                if model.trim().is_empty() || model.chars().any(char::is_whitespace) {
+                    return Err(AxiomError::InvalidTransition(
+                        "model ID must be a non-empty value without whitespace".into(),
+                    ));
+                }
+                let session = self.session_mut(&session_id)?;
+                if session.lifecycle != SessionLifecycle::Ready {
+                    return Err(AxiomError::InvalidTransition(
+                        "model may change only while the session is ready".into(),
+                    ));
+                }
+                vec![AppEvent::ModelChanged { model }]
+            }
+            AppCommand::ChangeThinkingLevel { session_id, level } => {
+                let session = self.session_mut(&session_id)?;
+                if session.lifecycle != SessionLifecycle::Ready {
+                    return Err(AxiomError::InvalidTransition(
+                        "thinking level may change only while the session is ready".into(),
+                    ));
+                }
+                vec![AppEvent::ThinkingLevelChanged { level }]
+            }
+            AppCommand::RecordContextCompaction {
+                session_id,
+                summary,
+                messages_before,
+            } => {
+                if summary.trim().is_empty() {
+                    return Err(AxiomError::InvalidTransition(
+                        "compaction summary cannot be empty".into(),
+                    ));
+                }
+                let session = self.session_mut(&session_id)?;
+                if session.lifecycle != SessionLifecycle::Ready {
+                    return Err(AxiomError::InvalidTransition(
+                        "context may be compacted only while the session is ready".into(),
+                    ));
+                }
+                vec![AppEvent::ContextCompacted {
+                    summary,
+                    messages_before,
+                }]
             }
             AppCommand::CloseSession { session_id } => {
                 let session = self.session_mut(&session_id)?;
@@ -754,14 +832,14 @@ impl Kernel {
             }
             AppEvent::QuestionsAnswered {
                 request_id,
-                answers,
-            } => {
-                if answers.is_empty()
-                    || session.lifecycle != SessionLifecycle::WaitingForAnswer
+                answers: _,
+            }
+            | AppEvent::QuestionsFailed { request_id, .. } => {
+                if session.lifecycle != SessionLifecycle::WaitingForAnswer
                     || session.pending_question.as_deref() != Some(request_id)
                 {
                     return Err(AxiomError::InvalidTransition(format!(
-                        "question request {request_id} is not pending or has no answers"
+                        "question request {request_id} is not pending"
                     )));
                 }
                 session.lifecycle = SessionLifecycle::Running;
@@ -839,7 +917,7 @@ impl Kernel {
     ) -> EventEnvelope {
         self.next_sequence += 1;
         EventEnvelope {
-            schema_version: 2,
+            schema_version: 3,
             sequence: self.next_sequence,
             occurred_at: self.services.now(),
             correlation_id,
@@ -910,7 +988,9 @@ fn replay_event(state: &mut Option<SessionState>, id: &SessionId, event: &AppEve
             session.lifecycle = SessionLifecycle::WaitingForAnswer;
             session.pending_question = Some(request.request_id.clone());
         }
-        AppEvent::QuestionAnswered { .. } | AppEvent::QuestionsAnswered { .. } => {
+        AppEvent::QuestionAnswered { .. }
+        | AppEvent::QuestionsAnswered { .. }
+        | AppEvent::QuestionsFailed { .. } => {
             if let Some(session) = state.as_mut() {
                 session.lifecycle = SessionLifecycle::Running;
                 session.pending_question = None;
@@ -1051,6 +1131,19 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn legacy_auto_thinking_deserializes_as_explicit_medium() {
+        assert_eq!(
+            serde_json::from_str::<ThinkingLevel>("\"auto\"").expect("legacy thinking"),
+            ThinkingLevel::Medium
+        );
+        assert_eq!(
+            serde_json::to_string(&ThinkingLevel::Medium).expect("explicit thinking"),
+            "\"medium\""
+        );
+        assert!(ThinkingLevel::from_str("auto").is_err());
+    }
+
     fn services() -> Arc<DeterministicServices> {
         Arc::new(DeterministicServices::new(
             Utc.with_ymd_and_hms(2026, 8, 22, 0, 0, 0)
@@ -1082,6 +1175,68 @@ mod tests {
             ))
             .expect("create session");
         session_id
+    }
+
+    #[test]
+    fn session_setting_and_compaction_commands_are_validated_and_journaled() {
+        let mut kernel = Kernel::with_services(services());
+        let session_id = create(&mut kernel);
+        assert!(
+            kernel
+                .apply(envelope(
+                    AppCommand::ChangeModel {
+                        session_id: session_id.clone(),
+                        model: "bad model".into(),
+                    },
+                    2,
+                ))
+                .is_err()
+        );
+        let model = kernel
+            .apply(envelope(
+                AppCommand::ChangeModel {
+                    session_id: session_id.clone(),
+                    model: "next-model".into(),
+                },
+                3,
+            ))
+            .expect("model");
+        assert!(matches!(
+            model[0].event,
+            AppEvent::ModelChanged { ref model } if model == "next-model"
+        ));
+        let thinking = kernel
+            .apply(envelope(
+                AppCommand::ChangeThinkingLevel {
+                    session_id: session_id.clone(),
+                    level: ThinkingLevel::High,
+                },
+                4,
+            ))
+            .expect("thinking");
+        assert!(matches!(
+            thinking[0].event,
+            AppEvent::ThinkingLevelChanged {
+                level: ThinkingLevel::High
+            }
+        ));
+        let compacted = kernel
+            .apply(envelope(
+                AppCommand::RecordContextCompaction {
+                    session_id,
+                    summary: "successor".into(),
+                    messages_before: 12,
+                },
+                5,
+            ))
+            .expect("compaction");
+        assert!(matches!(
+            compacted[0].event,
+            AppEvent::ContextCompacted {
+                messages_before: 12,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -1143,6 +1298,8 @@ mod tests {
                 AppEvent::PermissionRequired {
                     request_id: "approval".into(),
                     explanation: "write x".into(),
+                    effect: serde_json::json!({"kind":"file_write","path":"x"}),
+                    choices: vec!["allow_once".into(), "deny".into()],
                 },
             )
             .expect("pending");
@@ -1150,27 +1307,17 @@ mod tests {
             kernel.session(&session_id).expect("state").lifecycle,
             SessionLifecycle::WaitingForApproval
         );
-        assert!(
-            kernel
-                .apply(envelope(
-                    AppCommand::ResolvePermission {
-                        session_id: session_id.clone(),
-                        request_id: "wrong".into(),
-                        allowed: true
-                    },
-                    6
-                ))
-                .is_err()
-        );
         kernel
-            .apply(envelope(
-                AppCommand::ResolvePermission {
-                    session_id: session_id.clone(),
+            .record(
+                session_id.clone(),
+                CorrelationId::new(),
+                Origin::Test,
+                AppEvent::PermissionResolved {
                     request_id: "approval".into(),
                     allowed: false,
+                    choice: Some("deny".into()),
                 },
-                7,
-            ))
+            )
             .expect("resolve");
         kernel
             .apply(envelope(
@@ -1222,8 +1369,6 @@ mod tests {
             Finish,
             Fail,
             Cancel,
-            Resolve,
-            Answer,
             Profile,
             Close,
         }
@@ -1239,8 +1384,6 @@ mod tests {
             Candidate::Finish,
             Candidate::Fail,
             Candidate::Cancel,
-            Candidate::Resolve,
-            Candidate::Answer,
             Candidate::Profile,
             Candidate::Close,
         ];
@@ -1279,16 +1422,6 @@ mod tests {
                         session_id: session.clone(),
                         turn_id: turn.clone(),
                     },
-                    Candidate::Resolve => AppCommand::ResolvePermission {
-                        session_id: session.clone(),
-                        request_id: "approval".into(),
-                        allowed: true,
-                    },
-                    Candidate::Answer => AppCommand::AnswerQuestion {
-                        session_id: session.clone(),
-                        question_id: "question".into(),
-                        answers: vec!["answer".into()],
-                    },
                     Candidate::Profile => AppCommand::ChangePermissionProfile {
                         session_id: session.clone(),
                         profile: PermissionProfile::Observe,
@@ -1303,17 +1436,10 @@ mod tests {
                         SessionLifecycle::Ready,
                         Candidate::Submit | Candidate::Profile | Candidate::Close,
                     ) | (
-                        SessionLifecycle::Running,
-                        Candidate::Finish | Candidate::Fail | Candidate::Cancel
-                    ) | (
-                        SessionLifecycle::WaitingForApproval,
-                        Candidate::Finish
-                            | Candidate::Fail
-                            | Candidate::Cancel
-                            | Candidate::Resolve,
-                    ) | (
-                        SessionLifecycle::WaitingForAnswer,
-                        Candidate::Finish | Candidate::Fail | Candidate::Cancel | Candidate::Answer,
+                        SessionLifecycle::Running
+                            | SessionLifecycle::WaitingForApproval
+                            | SessionLifecycle::WaitingForAnswer,
+                        Candidate::Finish | Candidate::Fail | Candidate::Cancel,
                     )
                 );
                 assert_eq!(
@@ -1323,6 +1449,66 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn failed_question_is_terminal_and_later_interactions_can_continue() {
+        let mut kernel = Kernel::with_services(services());
+        let session = create(&mut kernel);
+        let turn = TurnId::new();
+        kernel
+            .apply(envelope(
+                AppCommand::SubmitPrompt {
+                    session_id: session.clone(),
+                    turn_id: turn,
+                    text: "work".into(),
+                },
+                1,
+            ))
+            .expect("submit");
+        kernel
+            .record(
+                session.clone(),
+                CorrelationId::new(),
+                Origin::Test,
+                AppEvent::QuestionsAsked {
+                    request: QuestionRequest {
+                        request_id: "question".into(),
+                        questions: vec![QuestionSpec {
+                            id: "choice".into(),
+                            prompt: "Choose".into(),
+                            options: vec!["one".into()],
+                            multiple: false,
+                            required: true,
+                        }],
+                    },
+                },
+            )
+            .expect("question");
+        kernel
+            .record(
+                session.clone(),
+                CorrelationId::new(),
+                Origin::Test,
+                AppEvent::QuestionsFailed {
+                    request_id: "question".into(),
+                    reason: "client unsupported".into(),
+                },
+            )
+            .expect("terminal question failure");
+        kernel
+            .record(
+                session,
+                CorrelationId::new(),
+                Origin::Test,
+                AppEvent::PermissionRequired {
+                    request_id: "approval".into(),
+                    explanation: "continue".into(),
+                    effect: serde_json::json!({"kind":"network"}),
+                    choices: vec!["allow_once".into(), "deny".into()],
+                },
+            )
+            .expect("later interaction");
     }
 
     proptest::proptest! {

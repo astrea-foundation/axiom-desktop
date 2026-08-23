@@ -233,6 +233,19 @@ impl ApprovalRequest {
                 .map(|scope| describe_grant(&scope)),
         }
     }
+
+    #[must_use]
+    pub fn offered_choices(&self) -> Vec<ApprovalChoice> {
+        let mut choices = vec![ApprovalChoice::AllowOnce];
+        if self.allow_session_grants {
+            choices.push(ApprovalChoice::AllowExactSession);
+        }
+        if self.suggested_prefix_scope.is_some() {
+            choices.push(ApprovalChoice::AllowPrefixSession);
+        }
+        choices.push(ApprovalChoice::Deny);
+        choices
+    }
 }
 
 #[async_trait]

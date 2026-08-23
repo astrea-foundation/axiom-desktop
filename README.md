@@ -40,10 +40,50 @@ in place: checklist progress and compact tool summaries remain visible while
 raw reasoning, arguments, output, and diffs stay in expandable details. The
 assistant's final Markdown response remains attached to that task.
 
-Active work uses a small cherry-blossom animation and a moving accent rail. Its
-weighted cycle rests, blooms, holds, and quickly wilts instead of advancing at
-a mechanically uniform speed. `AXIOMCLI_REDUCED_MOTION=1` keeps a static flower;
-`AXIOMCLI_ASCII=1` uses an equivalent `. * o O` sequence.
+The composer also owns a typed slash-command layer. Slash input is handled by
+the application and is never sent to the model as a prompt:
+
+```text
+/permissions <plan|observe|confirm|workspace|autonomous>
+/model
+/resume
+/delete
+/thinking <minimal|low|medium|high|xhigh>
+/compact [what the successor summary should preserve]
+/help
+```
+
+Pressing `/` from transcript focus returns to the composer with a slash ready.
+While typing a command, `Tab` completes command names and valid
+permission/thinking values; repeated presses cycle matches. Enter on an invalid
+prefix with a valid completion performs that same completion instead of showing
+an error. `/model` loads the configured provider's real model catalog on demand
+and opens a searchable, scrollable picker. Model IDs cannot be entered manually.
+
+`/resume` opens a searchable, scrollable list of saved transcripts from the
+current workspace. Selecting one restores its transcript, model context, and
+session-scoped settings without replaying interrupted actions. A new chat starts
+with the model used for the most recently submitted prompt across AxiomCLI. A
+resumed chat instead restores the model that was active for that transcript's
+latest prompt; selecting a model without subsequently using it does not alter
+either remembered value.
+
+`/delete` opens all saved transcripts except the active one. Space toggles a
+row, Ctrl+A toggles every visible search match, and Enter opens a permanent
+deletion confirmation. The selected rows are deleted together only after `y`.
+
+`/compact` is a real, cancellable inference operation: it exposes no tools,
+creates a successor summary, replaces the model's live conversation context,
+and journals that summary so resume restores the compacted context. Escape
+cancels compaction just like foreground agent work. Repeated compaction is
+lossy, so it is explicit in this early version rather than automatic.
+
+Active task cards use a small cherry-blossom animation and a moving accent rail.
+Its weighted cycle rests, blooms, holds, and quickly wilts instead of advancing
+at a mechanically uniform speed. The composer status row uses a static dot whose
+color reflects active, waiting, successful, cancelled, or failed state.
+`AXIOMCLI_REDUCED_MOTION=1` disables task animation; `AXIOMCLI_ASCII=1` uses an
+equivalent `. * o O` sequence.
 
 ## Installation
 
@@ -96,10 +136,12 @@ Review durable plans with `axiomcli plans list/show/comment/request-revision/
 revise/propose/approve/abandon`. Plan approval changes artifact state; it does
 not itself execute the plan or grant broader authority.
 
-Agents can ask up to three structured questions. The TUI uses a separate answer
-composer so an in-progress message draft is preserved. ACP maps questions to
-form elicitation when the client advertises that currently unstable ACP
-capability; unsupported clients fail the question closed.
+Agents can ask up to three structured questions with required or optional
+answers. The TUI opens a focused interaction card, supports numbered choices,
+paste, and backward navigation, and preserves any in-progress message draft.
+ACP maps the same schema to form elicitation when the client advertises that
+currently unstable capability; unsupported or malformed interactions close
+with an explicit terminal failure instead of leaving the session stuck.
 
 The agent tool surface also exposes a bounded session-scoped text-file diff and
 structured task/checklist progress. Plan proposals pause for approve, revision,
@@ -157,16 +199,31 @@ with user authority; its protocol data and claims remain untrusted. Repository
 configuration cannot add MCP executables.
 
 Session journals are redacted SQLite records under the platform data directory.
-`sessions list/show/export/rename/archive/unarchive/prune` manages them. Use
+`sessions list/show/export/rename/archive/unarchive/prune` and the TUI's
+multi-select `/delete` picker manage them. Use
 `axiomcli tui --resume SESSION_ID` to restore a transcript and bounded model
-context. ACP advertises `session/load` when its durable store opens. Interrupted
-actions are reported as unknown and never replayed.
+context, or use `/resume` in the TUI. After the first prompt is accepted, a
+parallel tool-free inference request creates a short transcript title; it never
+overwrites a title chosen with `sessions rename`. ACP advertises `session/load`
+when its durable store opens. Interrupted actions are reported as unknown and
+never replayed.
 Headless `exec` uses the same runtime and creates a durable terminal turn rather
 than bypassing the event journal.
 
 ## Known early-version limits
 
 - Development inference is plainly labeled `UNATTESTED DEV`; TEE/E2EE is later.
+- `/model` validates selections against the provider's discovered catalog.
+  `/thinking` is always explicit, defaults to `medium`, becomes the default for
+  future chats after it is used for a prompt, and is restored per transcript.
+  The
+  current OpenAI-compatible development proxy has no verified Axiom reasoning-
+  effort contract, so it is not transmitted yet. Direct Axiom transport should
+  map it only after server model metadata defines supported levels.
+- Axiom's current proxy model catalog does not expose authoritative context
+  window sizes. Compaction therefore uses AxiomCLI's configured local context
+  safety budget; context-window percentages and model-aware auto-compaction are
+  deferred until the direct API exposes that metadata.
 - Linux is the currently exercised development platform.
 - ACP v1 and durable `session/load` are supported. Per-session MCP configuration
   is not advertised yet; MCP servers come only from trusted user configuration.

@@ -4,8 +4,9 @@ use anyhow::Context as _;
 use axiomcli::{
     AxiomError,
     agent::{
-        APP_EVENT_QUEUE_CAPACITY, AgentEngine, AgentLimits, BlockingTurnRunner, EchoTurnRunner,
-        PlanReviewTurnRunner, QuestionTurnRunner, TurnContext, TurnRunner, WorkspaceEditTurnRunner,
+        APP_EVENT_QUEUE_CAPACITY, AgentEngine, AgentLimits, ApprovalTurnRunner, BlockingTurnRunner,
+        EchoTurnRunner, PlanReviewTurnRunner, QuestionTurnRunner, TurnContext, TurnRunner,
+        WorkspaceEditTurnRunner,
     },
     app::{AppCommand, AppEvent, Origin, Runtime, SessionId},
     config::Config,
@@ -193,7 +194,7 @@ async fn main() -> anyhow::Result<()> {
             let resume = resume
                 .map(|id| SessionId::from_str(&id).context("invalid session ID"))
                 .transpose()?;
-            let (cwd, profile) = if let Some(id) = &resume {
+            let (cwd, saved_profile) = if let Some(id) = &resume {
                 let summary = store.summary(id)?;
                 let saved = summary.cwd.canonicalize().with_context(|| {
                     format!("saved workspace is unavailable: {}", summary.cwd.display())
@@ -210,23 +211,24 @@ async fn main() -> anyhow::Result<()> {
                     !plan || profile == axiomcli::app::PermissionProfile::Plan,
                     "--plan cannot change the permission profile of a resumed session"
                 );
-                (saved, profile)
+                (saved, Some(profile))
             } else {
-                (
-                    resolve_cwd(cwd)?,
-                    if plan {
-                        axiomcli::app::PermissionProfile::Plan
-                    } else {
-                        config.permission_profile
-                    },
-                )
+                (resolve_cwd(cwd)?, None)
             };
+            let workspace_config = config
+                .for_workspace(&cwd)
+                .context("failed to load workspace configuration")?;
+            let profile = saved_profile.unwrap_or(if plan {
+                axiomcli::app::PermissionProfile::Plan
+            } else {
+                workspace_config.permission_profile
+            });
             axiomcli::tui::run(
-                build_runner(&config).await?,
+                build_runner(&workspace_config).await?,
                 cwd,
-                config.model.clone(),
+                workspace_config.model.clone(),
                 profile,
-                axiomcli::tui::TuiOptions::from_environment(config.animation),
+                axiomcli::tui::TuiOptions::from_environment(workspace_config.animation),
                 Some(store),
                 resume,
             )
@@ -234,15 +236,20 @@ async fn main() -> anyhow::Result<()> {
             .map_err(anyhow::Error::from)
         }
         Command::Exec { prompt, cwd, plan } => {
+            let cwd = resolve_cwd(cwd)?;
+            let workspace_config = config
+                .for_workspace(&cwd)
+                .context("failed to load workspace configuration")?;
             let profile = if plan {
                 axiomcli::app::PermissionProfile::Plan
             } else {
-                config.permission_profile
+                workspace_config.permission_profile
             };
             run_headless(
-                build_runner(&config).await?,
-                resolve_cwd(cwd)?,
+                build_runner(&workspace_config).await?,
+                cwd,
                 profile,
+                workspace_config.model.clone(),
                 prompt,
                 open_store()?,
             )
@@ -250,7 +257,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::Acp => axiomcli::acp::serve_stdio(
             build_runner(&config).await?,
-            config.permission_profile,
+            config.clone(),
             Some(open_store()?),
         )
         .await
@@ -482,6 +489,7 @@ async fn build_runner(config: &Config) -> anyhow::Result<Arc<dyn TurnRunner>> {
             Ok("echo") => return Ok(Arc::new(EchoTurnRunner)),
             Ok("blocking") => return Ok(Arc::new(BlockingTurnRunner)),
             Ok("questions") => return Ok(Arc::new(QuestionTurnRunner)),
+            Ok("approval") => return Ok(Arc::new(ApprovalTurnRunner)),
             Ok("workspace_edit") => return Ok(Arc::new(WorkspaceEditTurnRunner)),
             Ok("plan_review") => return Ok(Arc::new(PlanReviewTurnRunner)),
             _ => {}
@@ -494,12 +502,7 @@ async fn build_runner(config: &Config) -> anyhow::Result<Arc<dyn TurnRunner>> {
     {
         tools.register(tool)?;
     }
-    let policy_rules = config
-        .policy_rules
-        .iter()
-        .chain(&config.project_policy_rules)
-        .cloned()
-        .collect();
+    let policy_rules = config.policy_rules.clone();
     Ok(Arc::new(
         AgentEngine::with_limits(
             Arc::new(provider),
@@ -527,12 +530,19 @@ async fn run_headless(
     runner: Arc<dyn TurnRunner>,
     cwd: PathBuf,
     profile: axiomcli::app::PermissionProfile,
+    configured_model: String,
     prompt: String,
     store: SessionStore,
 ) -> anyhow::Result<()> {
     let runtime = Runtime::new(APP_EVENT_QUEUE_CAPACITY);
     let session_id = runtime.session_id();
     let turn_id = runtime.turn_id();
+    let model = store
+        .last_used_model()?
+        .unwrap_or_else(|| configured_model.clone());
+    let thinking = store
+        .last_used_thinking()?
+        .unwrap_or(axiomcli::app::ThinkingLevel::Medium);
     let created = runtime
         .dispatch(AppCommand::CreateSession {
             session_id: session_id.clone(),
@@ -542,6 +552,26 @@ async fn run_headless(
         })
         .await?;
     store.append_all(&created)?;
+    if model != configured_model {
+        runner.set_model(&session_id, model.clone()).await?;
+    }
+    if thinking != axiomcli::app::ThinkingLevel::Medium {
+        runner.set_thinking_level(&session_id, thinking).await?;
+    }
+    let selected_model = runtime
+        .dispatch(AppCommand::ChangeModel {
+            session_id: session_id.clone(),
+            model: model.clone(),
+        })
+        .await?;
+    store.append_all(&selected_model)?;
+    let selected_thinking = runtime
+        .dispatch(AppCommand::ChangeThinkingLevel {
+            session_id: session_id.clone(),
+            level: thinking,
+        })
+        .await?;
+    store.append_all(&selected_thinking)?;
     let submitted = runtime
         .dispatch(AppCommand::SubmitPrompt {
             session_id: session_id.clone(),
@@ -550,6 +580,20 @@ async fn run_headless(
         })
         .await?;
     store.append_all(&submitted)?;
+    store.set_last_used_model(&model)?;
+    store.set_last_used_thinking(thinking)?;
+
+    let title_runner = runner.clone();
+    let title_store = store.clone();
+    let title_session = session_id.clone();
+    let title_prompt = prompt.clone();
+    let title_task = tokio::spawn(async move {
+        let title = title_runner
+            .generate_title(&title_session, &title_prompt, CancellationToken::new())
+            .await?;
+        title_store.set_title_if_absent(&title_session, &title)?;
+        Ok::<(), AxiomError>(())
+    });
 
     let (events_tx, mut events_rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
     let context = TurnContext {
@@ -601,6 +645,12 @@ async fn run_headless(
         },
     };
     store.append_all(&runtime.dispatch(terminal).await?)?;
+    match tokio::time::timeout(std::time::Duration::from_secs(2), title_task).await {
+        Ok(Ok(Ok(()))) => {}
+        Ok(Ok(Err(error))) => tracing::warn!(%error, "background session title generation failed"),
+        Ok(Err(error)) => tracing::warn!(%error, "background session title task failed"),
+        Err(_) => tracing::warn!("background session title generation did not finish before exit"),
+    }
     result.map_err(anyhow::Error::from)
 }
 

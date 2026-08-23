@@ -1868,18 +1868,21 @@ impl Tool for ProposePlan {
                         "abandon".into(),
                     ],
                     multiple: false,
+                    required: true,
                 },
                 QuestionSpec {
                     id: "line_range".into(),
-                    prompt: "Revision line/range (N, N-M, or all; use - otherwise)".into(),
+                    prompt: "Revision line/range (N, N-M, or all)".into(),
                     options: Vec::new(),
                     multiple: false,
+                    required: false,
                 },
                 QuestionSpec {
                     id: "comment".into(),
-                    prompt: "Revision comment (use - when not requesting a revision)".into(),
+                    prompt: "Revision comment".into(),
                     options: Vec::new(),
                     multiple: false,
+                    required: false,
                 },
             ],
         });
@@ -1912,7 +1915,8 @@ impl Tool for AskUserQuestions {
                         "id":{"type":"string"},
                         "prompt":{"type":"string"},
                         "options":{"type":"array", "maxItems":5, "items":{"type":"string"}},
-                        "multiple":{"type":"boolean"}
+                        "multiple":{"type":"boolean"},
+                        "required":{"type":"boolean", "description":"Whether the user must answer this field; defaults to true"}
                     },
                     "required":["id","prompt"]
                 }
@@ -1956,11 +1960,11 @@ fn validate_question_args(args: AskQuestionsArgs) -> Result<AskQuestionsArgs> {
                 .options
                 .iter()
                 .any(|option| option.trim().is_empty())
+            || (question.multiple && question.options.is_empty())
             || !ids.insert(question.id.clone())
         {
             return Err(AxiomError::Tool(
-                "questions require unique non-empty IDs/prompts and at most five non-empty options"
-                    .into(),
+                "questions require unique non-empty IDs/prompts, at most five non-empty options, and multiple selection requires explicit options".into(),
             ));
         }
     }

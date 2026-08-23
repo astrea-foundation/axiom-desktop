@@ -1,8 +1,12 @@
 # Configuration reference
 
 AxiomCLI merges configuration in this order: built-in defaults, trusted user
-configuration, repository configuration, then the supported environment
-overrides. Unknown TOML keys and invalid values are errors.
+configuration, the selected workspace's repository configuration, then the
+supported environment overrides. Unknown TOML keys and invalid values are
+errors. TUI and `exec` resolve the full project layer after canonicalizing their
+workspace. ACP resolves the permission profile and restrictive policy rules
+independently for every session rather than using the server process's launch
+directory; provider/model/tool construction remains process-wide for now.
 
 On Linux, trusted configuration is normally
 `$XDG_CONFIG_HOME/axiomcli/config.toml` or
@@ -40,6 +44,44 @@ Profiles are `plan`, `observe`, `confirm`, `workspace`, and `autonomous`.
 Resume always restores the journaled profile; command-line flags cannot broaden
 or silently change it.
 
+## Session slash commands
+
+While a TUI session is idle, `/permissions`, `/model`, and `/thinking` change
+session-scoped settings used by subsequent turns. `/model` opens a searchable
+picker populated from the provider's discovered catalog; arbitrary model IDs
+are not accepted. These changes are journaled and restored with the session.
+When an ordinary prompt is submitted, its active model becomes the durable
+application-wide default for future chats. Resume derives the model from the
+latest prompt in the selected transcript, so a later `/model` selection that
+never ran does not change the resumed model. The configured `model` remains the
+fallback when no prompt has established a remembered default.
+Thinking is always one of `minimal`, `low`, `medium`, `high`, or `xhigh`; it
+defaults to `medium`. The thinking level used for an ordinary prompt becomes
+the application-wide default for future chats. Resume explicitly restores the
+selected transcript's final model, thinking level, and permission profile.
+`/resume` opens a searchable picker containing non-archived transcripts whose
+canonical workspace matches the current TUI. ACP clients use native
+`session/load` for the equivalent operation.
+`/delete` lists saved transcripts from every workspace except the active
+transcript. Space toggles one row, Ctrl+A toggles all visible search matches,
+Enter advances to a permanent-deletion warning, and `y` atomically deletes the
+selection.
+`/compact [focus]` uses the current session
+model to summarize live history with an empty tool set, then journals and
+installs that summary as successor context. It can be cancelled with Escape.
+`/help` prints the full command list, and typing `/` opens filtered usage hints.
+
+The first ordinary prompt also starts a parallel, tool-free title request. Its
+short result fills the session title only when one has not already been set;
+failure is non-fatal and does not alter the conversation or its token counter.
+
+The development proxy receives the changed model ID. Thinking level is an
+intentional adapter stub: it is typed, displayed, persisted, and available to
+the agent runtime, but is not serialized into the proxy request because the
+proxy does not currently provide a verified per-model reasoning-effort
+contract. This boundary is intended to be replaced by direct Axiom server
+metadata and transport rather than guessed from model names.
+
 Limits are validated as follows:
 
 | Key | Valid range/default |
@@ -50,6 +92,10 @@ Limits are validated as follows:
 | `max_tool_output_bytes` | 1 KiB–64 MiB; default 128 KiB |
 | `max_turn_secs` | Optional 1–86,400; disabled when omitted (default) |
 | `request_timeout_secs` | 1–3,600; default 120 |
+
+`request_timeout_secs` bounds provider HTTP requests. It does not time out a
+permission card or structured question. Human waits end on a response,
+cancellation/disconnect, or an enabled whole-turn limit.
 
 `base_url` and `searxng_url` must be HTTP(S) URLs. MCP names must be unique;
 name and command cannot be empty. A listed `read_only_tools` entry is an
@@ -98,10 +144,11 @@ The command appends atomically and accepts only `ask` or `deny`.
 | `AXIOMCLI_ASCII=1` | replaces decorative Unicode glyphs |
 | `AXIOMCLI_REDUCED_MOTION=1` | disables animation |
 
-With animation enabled, active task cards and the status row redraw only while
-foreground/background work or a short completion transition is active. The
-blossom uses a weighted rest/bloom/hold/wilt cadence rather than a constant-rate
-spinner. Reduced-motion mode renders the same state with a static glyph.
+With animation enabled, active task cards redraw while foreground/background
+work or a short completion transition is active. The blossom uses a weighted
+rest/bloom/hold/wilt cadence rather than a constant-rate spinner. The composer
+status marker is always static and changes color with current/last terminal
+state. Reduced-motion mode keeps task decoration static as well.
 
 Child development commands do not inherit the parent environment. Only the
 small key allowlist implemented by the process boundary can be set per command.

@@ -229,24 +229,44 @@ impl Config {
         {
             read_layer(&path)?.apply_trusted(&mut config);
         }
-        let project_path = PathBuf::from(".axiomcli/config.toml");
+        apply_environment(&mut config)?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// Apply the untrusted restrictions belonging to `workspace`, rather than
+    /// whichever directory happened to launch the process.
+    pub fn for_workspace(&self, workspace: &Path) -> Result<Self> {
+        let mut config = self.clone();
+        config.project_policy_rules.clear();
+        let project_path = workspace.join(".axiomcli/config.toml");
         if project_path.exists() {
             read_layer(&project_path)?.apply_project(&mut config)?;
         }
-        if let Ok(value) = std::env::var("AXIOM_BASE_URL") {
-            config.base_url = value;
-        }
-        if let Ok(value) = std::env::var("AXIOM_MODEL") {
-            config.model = value;
-        }
-        if let Ok(value) = std::env::var("AXIOM_SEARXNG_URL") {
-            config.searxng_url = value;
-        }
-        if let Ok(value) = std::env::var("AXIOM_PERMISSION_PROFILE") {
-            config.permission_profile = PermissionProfile::from_str(&value)?;
-        }
+        // Environment values are the final trusted override, matching the
+        // documented layer order even though the workspace is selected after
+        // process-wide configuration is initially loaded.
+        apply_environment(&mut config)?;
         config.validate()?;
         Ok(config)
+    }
+
+    /// Read only the current workspace's restrictive policy rules. The agent
+    /// uses this when one ACP process owns sessions for several workspaces.
+    pub fn project_policy_rules_for(workspace: &Path) -> Result<Vec<PolicyRule>> {
+        let project_path = workspace.join(".axiomcli/config.toml");
+        if !project_path.exists() {
+            return Ok(Vec::new());
+        }
+        let layer = read_layer(&project_path)?;
+        // Applying against a maximally permissive trusted profile validates
+        // that the project layer contains no authority-granting settings.
+        let mut config = Config {
+            permission_profile: PermissionProfile::Autonomous,
+            ..Config::default()
+        };
+        layer.apply_project(&mut config)?;
+        Ok(config.project_policy_rules)
     }
 
     pub fn validate(&self) -> Result<()> {
@@ -411,6 +431,22 @@ fn valid_endpoint(url: &reqwest::Url) -> bool {
         && url.host_str().is_some()
         && url.username().is_empty()
         && url.password().is_none()
+}
+
+fn apply_environment(config: &mut Config) -> Result<()> {
+    if let Ok(value) = std::env::var("AXIOM_BASE_URL") {
+        config.base_url = value;
+    }
+    if let Ok(value) = std::env::var("AXIOM_MODEL") {
+        config.model = value;
+    }
+    if let Ok(value) = std::env::var("AXIOM_SEARXNG_URL") {
+        config.searxng_url = value;
+    }
+    if let Ok(value) = std::env::var("AXIOM_PERMISSION_PROFILE") {
+        config.permission_profile = PermissionProfile::from_str(&value)?;
+    }
+    Ok(())
 }
 
 fn read_layer(path: &std::path::Path) -> Result<ConfigLayer> {
@@ -582,5 +618,31 @@ mod tests {
         assert_eq!(rules.len(), 2);
         assert_eq!(rules[0].action, crate::policy::RuleAction::Ask);
         assert_eq!(rules[1].action, crate::policy::RuleAction::Deny);
+    }
+
+    #[test]
+    fn workspace_configuration_is_loaded_from_the_selected_workspace() {
+        let selected = tempfile::tempdir().expect("selected workspace");
+        let launch = tempfile::tempdir().expect("launch workspace");
+        std::fs::create_dir_all(selected.path().join(".axiomcli")).expect("config directory");
+        std::fs::write(
+            selected.path().join(".axiomcli/config.toml"),
+            "permission_profile='observe'\n[[policy_rules]]\naction='ask'\neffect='network'\n",
+        )
+        .expect("project config");
+
+        let trusted = Config::default();
+        let selected_config = trusted
+            .for_workspace(selected.path())
+            .expect("selected config");
+        let launch_config = trusted.for_workspace(launch.path()).expect("launch config");
+
+        assert_eq!(
+            selected_config.permission_profile,
+            PermissionProfile::Observe
+        );
+        assert_eq!(selected_config.project_policy_rules.len(), 1);
+        assert_eq!(launch_config.permission_profile, PermissionProfile::Confirm);
+        assert!(launch_config.project_policy_rules.is_empty());
     }
 }

@@ -448,16 +448,19 @@ Front ends submit typed commands such as:
 - `ResumeSession`
 - `SubmitPrompt`
 - `CancelTurn`
-- `AnswerQuestion`
-- `ResolvePermission`
+- `FinishTurn`
+- `FailTurn`
 - `ChangePermissionProfile`
-- `ApprovePlan`
-- `RequestPlanRevision`
-- `InterruptTask`
-- `Shutdown`
+- `CloseSession`
 
 Every command carries a session ID, origin, correlation ID, and cancellation
 context. Commands that mutate state are idempotent where practical.
+
+Approval decisions and structured answers are asynchronous responses to typed
+`ApprovalHandler` and `QuestionHandler` requests, not independent kernel
+commands. Their request and terminal outcome still pass through the shared
+event journal, so the kernel can enforce one foreground interaction at a time
+without letting a front end manufacture an unrelated answer.
 
 ### 5.3 Core event model
 
@@ -466,10 +469,11 @@ The core publishes versioned events such as:
 - `SessionCreated`, `SessionResumed`, `SessionClosed`
 - `PromptAccepted`, `TurnStarted`, `TurnCancelled`, `TurnCompleted`
 - `TextDelta`, `ReasoningDelta`, `UsageUpdated`
-- `ToolProposed`, `PermissionRequired`, `PermissionResolved`
+- `ToolProposed`, `PermissionRequired` (normalized effect and offered choices),
+  `PermissionResolved`
 - `ToolStarted`, `ToolOutput`, `ToolCompleted`, `ToolFailed`
 - `WorkspaceChanged`, `DiffAvailable`
-- `QuestionAsked`, `QuestionAnswered`
+- `QuestionsAsked`, `QuestionsAnswered`, `QuestionsFailed`
 - `PlanProposed`, `PlanReviewed`
 - `BackgroundTaskChanged`
 - `ProviderStatusChanged`, `SecurityStatusChanged`

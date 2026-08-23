@@ -34,7 +34,14 @@ fn run_tui_at(
     for argument in extra_args {
         command.arg(argument);
     }
-    command.env("AXIOMCLI_TEST_RUNNER", runner);
+    command.env(
+        "AXIOMCLI_TEST_RUNNER",
+        if matches!(runner, "resume" | "remembered_model" | "delete") {
+            "echo"
+        } else {
+            runner
+        },
+    );
     command.env("AXIOMCLI_ASCII", "1");
     command.env("NO_COLOR", "1");
     command.env("XDG_CONFIG_HOME", state_path.join("config"));
@@ -101,14 +108,34 @@ fn run_tui_at(
         if runner == "blocking" {
             wait_for_output(&output_rx, &mut output, b"Working", "blocking turn");
         } else if runner == "questions" {
-            wait_for_output(&output_rx, &mut output, b"1=cherry", "first question");
+            wait_for_output(
+                &output_rx,
+                &mut output,
+                b"Axiom needs your input",
+                "first question",
+            );
             writer.write_all(b"1\r").expect("first answer");
             writer.flush().expect("flush first answer");
             writer.write_all(b"compact\r").expect("second answer");
             writer.flush().expect("flush second answer");
             thread::sleep(Duration::from_millis(180));
+        } else if runner == "approval" {
+            wait_for_output(
+                &output_rx,
+                &mut output,
+                b"Permission required",
+                "approval card",
+            );
+            writer.write_all(b"y").expect("allow once");
+            writer.flush().expect("flush approval");
+            wait_for_output(&output_rx, &mut output, b"allow_once", "approval result");
         } else if runner == "plan_review" {
-            wait_for_output(&output_rx, &mut output, b"1=approve", "review decision");
+            wait_for_output(
+                &output_rx,
+                &mut output,
+                b"Axiom needs your input",
+                "review decision",
+            );
             writer.write_all(b"2\r").expect("revision decision");
             writer.flush().expect("flush revision decision");
             writer.write_all(b"4\r").expect("revision line");
@@ -118,6 +145,105 @@ fn run_tui_at(
                 .expect("revision comment");
             writer.flush().expect("flush revision comment");
             thread::sleep(Duration::from_millis(180));
+        } else if runner == "echo" {
+            // Ratatui delta redraws can place cursor-control bytes inside the
+            // visual status text, so use the deterministic runner's bounded
+            // completion time instead of matching that rendered phrase.
+            thread::sleep(Duration::from_millis(500));
+            // Move to transcript focus, then prove `/` returns to the composer.
+            // The first Enter completes the invalid prefix as if Tab were
+            // pressed; the second executes the completed command.
+            writer
+                .write_all(b"\t/thinking h\r\r")
+                .expect("focus slash composer and complete thinking");
+            writer.flush().expect("flush thinking command");
+            wait_for_output(
+                &output_rx,
+                &mut output,
+                b"Thinking set to high",
+                "slash thinking result",
+            );
+            writer
+                // Start on `plan`, move the highlighted option to `observe`,
+                // accept it, then execute the completed command.
+                .write_all(b"/permissions \x1b[B\r\r")
+                .expect("arrow-select and change permission profile");
+            writer.flush().expect("flush slash command");
+            wait_for_output(
+                &output_rx,
+                &mut output,
+                b"observe",
+                "slash permission result",
+            );
+            writer.write_all(b"/model\r").expect("open model picker");
+            writer.flush().expect("flush model picker command");
+            wait_for_output(&output_rx, &mut output, b"Select model", "model picker");
+            wait_for_output(
+                &output_rx,
+                &mut output,
+                b"grok-code",
+                "loaded model catalog",
+            );
+            writer
+                // SGR wheel-up at a cell inside the picker, followed by Enter.
+                // The default glm model is the second deterministic catalog
+                // entry, so one wheel step selects alternate-model.
+                .write_all(b"\x1b[<64;50;15M\r")
+                .expect("scroll and select model");
+            writer.flush().expect("flush model selection");
+            wait_for_output(
+                &output_rx,
+                &mut output,
+                b"Model changed to alternate-model",
+                "selected model result",
+            );
+            writer
+                .write_all(b"remember this model\r")
+                .expect("submit prompt with selected model");
+            writer.flush().expect("flush selected-model prompt");
+            thread::sleep(Duration::from_millis(300));
+        } else if runner == "delete" {
+            thread::sleep(Duration::from_millis(500));
+            writer.write_all(b"/delete\r").expect("open delete picker");
+            writer.flush().expect("flush delete command");
+            wait_for_output(
+                &output_rx,
+                &mut output,
+                b"Delete transcripts",
+                "delete picker",
+            );
+            writer
+                .write_all(&[1])
+                .expect("select all visible transcripts");
+            writer.flush().expect("flush select all");
+            writer
+                .write_all(b"\r")
+                .expect("continue to deletion confirmation");
+            writer.flush().expect("flush deletion confirmation");
+            wait_for_output(
+                &output_rx,
+                &mut output,
+                b"Permanently delete",
+                "permanent deletion warning",
+            );
+            writer.write_all(b"y").expect("confirm transcript deletion");
+            writer.flush().expect("flush permanent deletion");
+            wait_for_output(&output_rx, &mut output, b"Deleted", "deletion result");
+        } else if runner == "resume" {
+            thread::sleep(Duration::from_millis(500));
+            writer.write_all(b"/resume\r").expect("open resume picker");
+            writer.flush().expect("flush resume command");
+            wait_for_output(
+                &output_rx,
+                &mut output,
+                b"Resume transcript",
+                "resume picker",
+            );
+            writer
+                .write_all(b"Earlier cherry\r")
+                .expect("search and select transcript");
+            writer.flush().expect("flush transcript selection");
+            wait_for_output(&output_rx, &mut output, b"Resumed", "resumed transcript");
         } else {
             thread::sleep(Duration::from_millis(250));
         }
@@ -125,12 +251,21 @@ fn run_tui_at(
     if !panic_probe {
         writer.write_all(&[27]).expect("escape");
         writer.flush().expect("flush escape");
-        wait_for_output(
-            &output_rx,
-            &mut output,
-            b"\x1b[?25l",
-            "hidden cursor after cleared focus",
-        );
+        if runner == "blocking" {
+            wait_for_output(
+                &output_rx,
+                &mut output,
+                b"Cancelled",
+                "turn cancellation after Escape",
+            );
+        } else {
+            wait_for_output(
+                &output_rx,
+                &mut output,
+                b"\x1b[?25l",
+                "hidden cursor after cleared focus",
+            );
+        }
         assert!(
             child.try_wait().expect("poll after escape").is_none(),
             "Escape unexpectedly exited the TUI"
@@ -138,12 +273,10 @@ fn run_tui_at(
 
         writer.write_all(&[3]).expect("first Ctrl+C");
         writer.flush().expect("flush first Ctrl+C");
-        wait_for_output(
-            &output_rx,
-            &mut output,
-            b"Ctrl+C again",
-            "exit confirmation",
-        );
+        // Ratatui may repaint only the changed suffix of "Ctrl+C", inserting
+        // cursor-control bytes inside that visual string. "again" is the
+        // stable, unique contiguous part of the confirmation.
+        wait_for_output(&output_rx, &mut output, b"again", "exit confirmation");
         assert!(
             child.try_wait().expect("poll after first Ctrl+C").is_none(),
             "the first Ctrl+C unexpectedly exited the TUI"
@@ -197,6 +330,23 @@ fn resize_prompt_and_double_ctrl_c_restore_the_terminal() {
     let (output, success) = run_tui("echo", false);
     assert!(success, "TUI failed; output: {output:?}");
     assert!(output.contains("AXIOMCLI"));
+    assert!(output.contains("observe"), "slash command did not render");
+    assert!(
+        output.contains("Thinking set to high"),
+        "invalid Enter completion or slash focus shortcut did not run"
+    );
+    assert!(
+        output.contains("Model changed to alternate-model"),
+        "model picker did not select the wheel-scrolled model"
+    );
+    assert!(
+        output.contains("\u{1b}[?1003l\u{1b}[?1002l\u{1b}[?1015l\u{1b}[?1000h\u{1b}[?1006h"),
+        "focused mouse capture sequence was not emitted"
+    );
+    assert!(
+        !output.contains("\u{1b}[?1003h"),
+        "all-motion mouse reporting should remain disabled"
+    );
     assert!(output.contains("\u{1b}[?1049h"), "alternate screen entered");
     assert!(
         output.contains("\u{1b}[?1049l"),
@@ -205,10 +355,11 @@ fn resize_prompt_and_double_ctrl_c_restore_the_terminal() {
 }
 
 #[test]
-fn double_ctrl_c_exits_active_work_and_restores_the_terminal() {
+fn escape_cancels_active_work_then_double_ctrl_c_exits_and_restores_the_terminal() {
     let (output, success) = run_tui("blocking", false);
     assert!(success, "TUI failed; output: {output:?}");
-    assert!(output.contains("Ctrl+C again"));
+    assert!(output.contains("Cancelled"));
+    assert!(output.contains("Ctrl+C") && output.contains("again"));
     assert!(output.contains("\u{1b}[?1049l"));
 }
 
@@ -217,10 +368,19 @@ fn structured_questions_use_a_separate_tui_answer_composer() {
     let (output, success) = run_tui("questions", false);
     assert!(success, "TUI failed; output: {output:?}");
     assert!(
-        output.contains("1=cherry") && output.contains("\"theme\":[\"cherry\"]"),
+        output.contains("Choose") && output.contains("cherry") && output.contains("compact"),
         "question surface was not rendered: {output:?}"
     );
     assert!(output.contains("\u{1b}[?1049l"));
+}
+
+#[test]
+fn approval_uses_a_visible_tui_card_and_resumes_the_turn() {
+    let (output, success) = run_tui("approval", false);
+    assert!(success, "TUI failed; output: {output:?}");
+    assert!(output.contains("Permission required"));
+    assert!(output.contains("Allow") && output.contains("once"));
+    assert!(output.contains("allow_once"));
 }
 
 #[test]
@@ -231,12 +391,8 @@ fn plan_review_is_interactive_in_the_tui_and_persists_line_comments() {
     let (output, success) = run_tui_at("plan_review", false, state.path(), &["--cwd", &cwd]);
     assert!(success, "TUI plan fixture failed: {output:?}");
     assert!(
-        output.contains("PLAN") && output.contains("r1") && output.contains("Waiting"),
+        output.contains("Inspect") && output.contains("revision_requested"),
         "plan was not rendered: {output:?}"
-    );
-    assert!(
-        output.contains("revision_requested"),
-        "review result was not rendered: {output:?}"
     );
     let plans = axiomcli::planning::PlanArtifact::list(workspace.path()).expect("plans");
     assert_eq!(plans.len(), 1);
@@ -272,6 +428,10 @@ fn durable_tui_session_resumes_in_the_same_workspace() {
         .expect("list sessions");
     assert!(listed.status.success());
     let stdout = String::from_utf8(listed.stdout).expect("session list utf8");
+    assert!(
+        stdout.contains("probe"),
+        "background title was not persisted: {stdout}"
+    );
     let id = stdout
         .lines()
         .next()
@@ -284,6 +444,94 @@ fn durable_tui_session_resumes_in_the_same_workspace() {
         resumed_output.contains("Resumed")
             || resumed_output.contains("no interrupted actions replayed"),
         "resume state was not rendered: {resumed_output:?}"
+    );
+    assert!(
+        resumed_output.contains("alternate-model")
+            && resumed_output.contains("high")
+            && resumed_output.contains("observe"),
+        "resume did not preserve model, thinking, and permissions: {resumed_output:?}"
+    );
+}
+
+#[test]
+fn a_new_tui_session_starts_with_the_last_model_that_ran() {
+    let state = tempfile::tempdir().expect("shared TUI state");
+    let (first_output, first_success) = run_tui_at("echo", false, state.path(), &[]);
+    assert!(first_success, "first TUI failed: {first_output:?}");
+
+    let (next_output, next_success) = run_tui_at("remembered_model", false, state.path(), &[]);
+    assert!(next_success, "next TUI failed: {next_output:?}");
+    assert!(
+        next_output.contains("alternate-model") && next_output.contains("high"),
+        "new session did not start with the last used model and thinking: {next_output:?}"
+    );
+}
+
+#[test]
+fn slash_delete_multiselects_and_permanently_removes_saved_transcripts() {
+    let state = tempfile::tempdir().expect("shared TUI state");
+    for _ in 0..2 {
+        let (output, success) = run_tui_at("echo", false, state.path(), &[]);
+        assert!(success, "fixture TUI failed: {output:?}");
+    }
+
+    let (output, success) = run_tui_at("delete", false, state.path(), &[]);
+    assert!(success, "delete picker TUI failed: {output:?}");
+    assert!(output.contains("Delete transcripts"));
+    assert!(output.contains("Permanently delete"));
+    assert!(output.contains("Deleted"));
+
+    let listed = std::process::Command::new(env!("CARGO_BIN_EXE_axiomcli"))
+        .args(["sessions", "list"])
+        .env("XDG_CONFIG_HOME", state.path().join("config"))
+        .env("XDG_DATA_HOME", state.path().join("data"))
+        .output()
+        .expect("list sessions after deletion");
+    assert!(listed.status.success());
+    assert_eq!(
+        String::from_utf8(listed.stdout)
+            .expect("session list utf8")
+            .lines()
+            .count(),
+        1,
+        "only the active deletion session should remain"
+    );
+}
+
+#[test]
+fn slash_resume_picker_searches_and_restores_a_saved_transcript() {
+    let state = tempfile::tempdir().expect("shared TUI state");
+    let (first_output, first_success) = run_tui_at("echo", false, state.path(), &[]);
+    assert!(first_success, "first TUI failed: {first_output:?}");
+    let listed = std::process::Command::new(env!("CARGO_BIN_EXE_axiomcli"))
+        .args(["sessions", "list"])
+        .env("XDG_CONFIG_HOME", state.path().join("config"))
+        .env("XDG_DATA_HOME", state.path().join("data"))
+        .output()
+        .expect("list sessions");
+    let id = String::from_utf8(listed.stdout)
+        .expect("session list utf8")
+        .lines()
+        .next()
+        .and_then(|line| line.split('\t').next())
+        .expect("session ID")
+        .to_owned();
+    let renamed = std::process::Command::new(env!("CARGO_BIN_EXE_axiomcli"))
+        .args(["sessions", "rename", &id, "Earlier cherry task"])
+        .env("XDG_CONFIG_HOME", state.path().join("config"))
+        .env("XDG_DATA_HOME", state.path().join("data"))
+        .output()
+        .expect("rename session");
+    assert!(renamed.status.success());
+
+    let (output, success) = run_tui_at("resume", false, state.path(), &[]);
+    assert!(success, "resume picker TUI failed: {output:?}");
+    assert!(output.contains("Resume transcript"));
+    assert!(output.contains("Earlier cherry task"));
+    assert!(output.contains("Resumed"));
+    assert!(
+        output.contains("observe"),
+        "saved permission state was not restored"
     );
 }
 

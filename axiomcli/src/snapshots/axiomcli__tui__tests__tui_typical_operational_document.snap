@@ -1,24 +1,24 @@
 ---
 source: axiomcli/src/tui.rs
-assertion_line: 3095
+assertion_line: 3447
 expression: "render_symbols(80, 20, &state)"
 ---
-  AXIOMCLI  /work/axiomcli                 UNATTESTED DEV   glm-test · confirm
+  AXIOMCLI  /work/axiomcli        UNATTESTED DEV   glm-test · medium · confirm
 ────────────────────────────────────────────────────────────────────────────────
 
-  ▪ SYSTEM
-    AxiomCLI is ready. Local actions are controlled by the selected permission
     profile.
 
   › YOU
     Inspect the repository
 
   ✓ AXIOM  Complete
-    │ ✓ Read 1 item
-    │
     │ I’ll inspect the relevant files.
+    │
+    │ ✓ Read src
+    │
+    │ The repository contains a Rust coding agent.
 
-  ○ Task complete
+  ● Task complete                                              117 tokens used
 
     ›
 

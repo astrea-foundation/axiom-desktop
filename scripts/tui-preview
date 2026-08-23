@@ -38,7 +38,8 @@ EMOJI_FONT = "/usr/share/fonts/noto/NotoColorEmoji.ttf"
 EMOJI_STRIKE = 109  # NotoColorEmoji ships a single bitmap size
 FONT_SIZE = 20
 PADDING = 14
-# Matches Theme::for_mode(TrueColor); Color::Reset dumps as null.
+# Simulated host-terminal defaults; Color::Reset dumps as null and inherits
+# these values just as the real TUI inherits the user's terminal background.
 DEFAULT_FG = (238, 238, 242)
 DEFAULT_BG = (16, 16, 19)
 

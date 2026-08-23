@@ -20,17 +20,93 @@ use crate::{
         AppCommand, AppEvent, Origin, PermissionProfile, QuestionRequest, Runtime, SessionId,
         TurnId,
     },
+    config::Config,
     policy::{ApprovalChoice, ApprovalHandler, ApprovalRequest, ApprovalResponse},
-    session::SessionStore,
+    session::{SessionStore, model_for_resume, permission_for_resume, thinking_for_resume},
+    slash::{self, SlashCommand},
 };
+
+fn send_available_commands(
+    connection: &ConnectionTo<Client>,
+    session_id: &protocol::SessionId,
+) -> agent_client_protocol::Result<()> {
+    let commands = slash::COMMANDS
+        .iter()
+        .map(|spec| {
+            let command = protocol::AvailableCommand::new(spec.name, spec.description);
+            if matches!(spec.name, "help" | "model" | "resume" | "delete") {
+                command
+            } else {
+                command.input(protocol::AvailableCommandInput::Unstructured(
+                    protocol::UnstructuredCommandInput::new(spec.usage),
+                ))
+            }
+        })
+        .collect();
+    connection.send_notification(protocol::SessionNotification::new(
+        session_id.clone(),
+        protocol::SessionUpdate::AvailableCommandsUpdate(protocol::AvailableCommandsUpdate::new(
+            commands,
+        )),
+    ))
+}
+
+const MODEL_CONFIG_ID: &str = "model";
+
+fn model_config_option(current: &str, models: &[String]) -> protocol::SessionConfigOption {
+    let mut values = models.to_vec();
+    if !values.iter().any(|model| model == current) {
+        values.push(current.to_owned());
+    }
+    values.sort();
+    values.dedup();
+    protocol::SessionConfigOption::select(
+        MODEL_CONFIG_ID,
+        "Model",
+        current.to_owned(),
+        values
+            .into_iter()
+            .map(|model| protocol::SessionConfigSelectOption::new(model.clone(), model))
+            .collect::<Vec<_>>(),
+    )
+    .description("Model used for subsequent AxiomCLI requests")
+    .category(protocol::SessionConfigOptionCategory::Model)
+}
+
+fn send_model_config_update(
+    connection: &ConnectionTo<Client>,
+    session_id: &protocol::SessionId,
+    current: &str,
+    models: &[String],
+) -> agent_client_protocol::Result<()> {
+    connection.send_notification(protocol::SessionNotification::new(
+        session_id.clone(),
+        protocol::SessionUpdate::ConfigOptionUpdate(protocol::ConfigOptionUpdate::new(vec![
+            model_config_option(current, models),
+        ])),
+    ))
+}
+
+fn slash_help_text() -> String {
+    let lines = slash::COMMANDS
+        .iter()
+        .map(|spec| format!("{} — {}", spec.usage, spec.description))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("AxiomCLI commands:\n{lines}\nCommands run locally and are not model prompts.")
+}
 
 #[derive(Clone)]
 struct AcpSession {
     internal_id: SessionId,
     cwd: PathBuf,
     profile: PermissionProfile,
+    model: String,
+    thinking: crate::app::ThinkingLevel,
+    models: Vec<String>,
     active_turn: Option<TurnId>,
     cancellation: Option<CancellationToken>,
+    has_prompt: bool,
 }
 
 type Sessions = Arc<Mutex<HashMap<protocol::SessionId, AcpSession>>>;
@@ -136,7 +212,7 @@ impl QuestionHandler for AcpQuestions {
                         .title(question.prompt.clone())
                         .min_items(1_u64)
                         .max_items(u64::try_from(question.options.len()).unwrap_or(u64::MAX)),
-                    true,
+                    question.required,
                 );
             } else {
                 let mut property = protocol::StringPropertySchema::new()
@@ -145,7 +221,7 @@ impl QuestionHandler for AcpQuestions {
                 if !question.options.is_empty() {
                     property = property.enum_values(question.options.clone());
                 }
-                schema = schema.property(question.id.clone(), property, true);
+                schema = schema.property(question.id.clone(), property, question.required);
             }
         }
         let mode = protocol::ElicitationFormMode::new(
@@ -185,14 +261,18 @@ impl QuestionHandler for AcpQuestions {
 /// Serve ACP v1 over stdio. Stdout is owned by the protocol transport.
 pub async fn serve_stdio(
     runner: Arc<dyn TurnRunner>,
-    profile: PermissionProfile,
+    config: Config,
     store: Option<SessionStore>,
 ) -> agent_client_protocol::Result<()> {
     let sessions: Sessions = Arc::new(Mutex::new(HashMap::new()));
     let runtime = Runtime::new(512);
+    let default_model = config.model.clone();
+    let default_thinking = crate::app::ThinkingLevel::Medium;
 
     let new_sessions = sessions.clone();
     let new_runtime = runtime.clone();
+    let new_runner = runner.clone();
+    let new_config = config;
     let prompt_sessions = sessions.clone();
     let prompt_runtime = runtime.clone();
     let cancel_sessions = sessions.clone();
@@ -202,6 +282,14 @@ pub async fn serve_stdio(
     let load_sessions = sessions.clone();
     let load_runtime = runtime.clone();
     let load_runner = runner.clone();
+    let new_default_model = default_model.clone();
+    let load_default_model = default_model;
+    let new_default_thinking = default_thinking;
+    let load_default_thinking = default_thinking;
+    let config_sessions = sessions.clone();
+    let config_runtime = runtime.clone();
+    let config_runner = runner.clone();
+    let config_store = prompt_store.clone();
     let supports_load = load_store.is_some();
     let supports_elicitation = Arc::new(AtomicBool::new(false));
     let initialize_elicitation = supports_elicitation.clone();
@@ -233,7 +321,7 @@ pub async fn serve_stdio(
         .on_receive_request(
             async move |request: protocol::NewSessionRequest,
                         responder: Responder<protocol::NewSessionResponse>,
-                        _connection| {
+                        connection: ConnectionTo<Client>| {
                 if !request.cwd.is_absolute() {
                     return responder
                         .respond_with_internal_error("ACP session cwd must be absolute");
@@ -243,7 +331,25 @@ pub async fn serve_stdio(
                         "cannot open ACP workspace: {error}"
                     ))
                 })?;
+                let profile = new_config
+                    .for_workspace(&cwd)
+                    .map_err(agent_error)?
+                    .permission_profile;
                 let internal_id = SessionId::new();
+                let session_model = new_store
+                    .as_ref()
+                    .map(SessionStore::last_used_model)
+                    .transpose()
+                    .map_err(agent_error)?
+                    .flatten()
+                    .unwrap_or_else(|| new_default_model.clone());
+                let session_thinking = new_store
+                    .as_ref()
+                    .map(SessionStore::last_used_thinking)
+                    .transpose()
+                    .map_err(agent_error)?
+                    .flatten()
+                    .unwrap_or(new_default_thinking);
                 let created = new_runtime
                     .dispatch(AppCommand::CreateSession {
                         session_id: internal_id.clone(),
@@ -256,6 +362,40 @@ pub async fn serve_stdio(
                 if let Some(store) = &new_store {
                     store.append_all(&created).map_err(agent_error)?;
                 }
+                if session_model != new_default_model {
+                    new_runner
+                        .set_model(&internal_id, session_model.clone())
+                        .await
+                        .map_err(agent_error)?;
+                }
+                if session_thinking != new_default_thinking {
+                    new_runner
+                        .set_thinking_level(&internal_id, session_thinking)
+                        .await
+                        .map_err(agent_error)?;
+                }
+                let selected_model = new_runtime
+                    .dispatch(AppCommand::ChangeModel {
+                        session_id: internal_id.clone(),
+                        model: session_model.clone(),
+                    })
+                    .await
+                    .map_err(agent_error)?;
+                if let Some(store) = &new_store {
+                    store.append_all(&selected_model).map_err(agent_error)?;
+                }
+                let selected_thinking = new_runtime
+                    .dispatch(AppCommand::ChangeThinkingLevel {
+                        session_id: internal_id.clone(),
+                        level: session_thinking,
+                    })
+                    .await
+                    .map_err(agent_error)?;
+                if let Some(store) = &new_store {
+                    store
+                        .append_all(&selected_thinking)
+                        .map_err(agent_error)?;
+                }
                 let external_id = protocol::SessionId::new(internal_id.to_string());
                 new_sessions.lock().await.insert(
                     external_id.clone(),
@@ -263,11 +403,16 @@ pub async fn serve_stdio(
                         internal_id,
                         cwd,
                         profile,
+                        model: session_model,
+                        thinking: session_thinking,
+                        models: Vec::new(),
                         active_turn: None,
                         cancellation: None,
+                        has_prompt: false,
                     },
                 );
-                responder.respond(protocol::NewSessionResponse::new(external_id))
+                responder.respond(protocol::NewSessionResponse::new(external_id.clone()))?;
+                send_available_commands(&connection, &external_id)
             },
             agent_client_protocol::on_receive_request!(),
         )
@@ -351,16 +496,26 @@ pub async fn serve_stdio(
                     ))?;
                 }
                 load_sessions.lock().await.insert(
-                    external_id,
+                    external_id.clone(),
                     AcpSession {
                         internal_id,
                         cwd: saved_cwd,
-                        profile: restored.profile,
+                        profile: permission_for_resume(&loaded.events, restored.profile),
+                        model: model_for_resume(&loaded.events, &load_default_model),
+                        thinking: thinking_for_resume(
+                            &loaded.events,
+                            load_default_thinking,
+                        ),
+                        models: Vec::new(),
                         active_turn: None,
                         cancellation: None,
+                        has_prompt: loaded.events.iter().any(|envelope| {
+                            matches!(envelope.event, AppEvent::PromptAccepted { .. })
+                        }),
                     },
                 );
-                responder.respond(protocol::LoadSessionResponse::new())
+                responder.respond(protocol::LoadSessionResponse::new())?;
+                send_available_commands(&connection, &external_id)
             },
             agent_client_protocol::on_receive_request!(),
         )
@@ -373,23 +528,261 @@ pub async fn serve_stdio(
                     Err(message) => return responder.respond_with_internal_error(message),
                 };
                 let session_id = request.session_id.clone();
+                if let Some(command) = slash::parse(&prompt) {
+                    let command = match command {
+                        Ok(command) => command,
+                        Err(error) => {
+                            send_text(&connection, &session_id, format!("Command error: {error}"))?;
+                            return responder.respond(protocol::PromptResponse::new(
+                                protocol::StopReason::EndTurn,
+                            ));
+                        }
+                    };
+                    let internal_id = {
+                        let sessions = prompt_sessions.lock().await;
+                        let Some(session) = sessions.get(&session_id) else {
+                            return responder.respond_with_internal_error("unknown ACP session");
+                        };
+                        if session.cancellation.is_some() {
+                            return responder
+                                .respond_with_internal_error("session already has active work");
+                        }
+                        session.internal_id.clone()
+                    };
+                    match command {
+                        SlashCommand::Help => {
+                            send_text(&connection, &session_id, slash_help_text())?;
+                            return responder.respond(protocol::PromptResponse::new(
+                                protocol::StopReason::EndTurn,
+                            ));
+                        }
+                        SlashCommand::Permission(profile) => {
+                            let events = prompt_runtime
+                                .dispatch(AppCommand::ChangePermissionProfile {
+                                    session_id: internal_id,
+                                    profile,
+                                })
+                                .await
+                                .map_err(agent_error)?;
+                            if let Some(store) = &prompt_store {
+                                store.append_all(&events).map_err(agent_error)?;
+                            }
+                            if let Some(session) = prompt_sessions.lock().await.get_mut(&session_id)
+                            {
+                                session.profile = profile;
+                            }
+                            send_text(
+                                &connection,
+                                &session_id,
+                                format!("Permission profile changed to {profile}."),
+                            )?;
+                            return responder.respond(protocol::PromptResponse::new(
+                                protocol::StopReason::EndTurn,
+                            ));
+                        }
+                        SlashCommand::Model => {
+                            let models = runner
+                                .available_models(CancellationToken::new())
+                                .await
+                                .map_err(agent_error)?;
+                            let current = {
+                                let mut sessions = prompt_sessions.lock().await;
+                                let Some(session) = sessions.get_mut(&session_id) else {
+                                    return responder
+                                        .respond_with_internal_error("unknown ACP session");
+                                };
+                                session.models.clone_from(&models);
+                                session.model.clone()
+                            };
+                            send_model_config_update(
+                                &connection,
+                                &session_id,
+                                &current,
+                                &models,
+                            )?;
+                            send_text(
+                                &connection,
+                                &session_id,
+                                "Choose a model using the client model selector.".into(),
+                            )?;
+                            return responder.respond(protocol::PromptResponse::new(
+                                protocol::StopReason::EndTurn,
+                            ));
+                        }
+                        SlashCommand::Resume => {
+                            send_text(
+                                &connection,
+                                &session_id,
+                                "Use your ACP client's session list and session/load support to resume a transcript. The interactive /resume picker is available in the terminal UI."
+                                    .into(),
+                            )?;
+                            return responder.respond(protocol::PromptResponse::new(
+                                protocol::StopReason::EndTurn,
+                            ));
+                        }
+                        SlashCommand::Delete => {
+                            send_text(
+                                &connection,
+                                &session_id,
+                                "The interactive multi-select /delete picker is available in the terminal UI. ACP transcript deletion will use a native client capability when the protocol defines one."
+                                    .into(),
+                            )?;
+                            return responder.respond(protocol::PromptResponse::new(
+                                protocol::StopReason::EndTurn,
+                            ));
+                        }
+                        SlashCommand::Thinking(level) => {
+                            runner
+                                .set_thinking_level(&internal_id, level)
+                                .await
+                                .map_err(agent_error)?;
+                            let events = prompt_runtime
+                                .dispatch(AppCommand::ChangeThinkingLevel {
+                                    session_id: internal_id,
+                                    level,
+                                })
+                                .await
+                                .map_err(agent_error)?;
+                            if let Some(store) = &prompt_store {
+                                store.append_all(&events).map_err(agent_error)?;
+                            }
+                            if let Some(session) = prompt_sessions.lock().await.get_mut(&session_id)
+                            {
+                                session.thinking = level;
+                            }
+                            send_text(
+                                &connection,
+                                &session_id,
+                                format!(
+                                    "Thinking set to {level}; development proxy transport is pending."
+                                ),
+                            )?;
+                            return responder.respond(protocol::PromptResponse::new(
+                                protocol::StopReason::EndTurn,
+                            ));
+                        }
+                        SlashCommand::Compact { focus } => {
+                            let cancellation = CancellationToken::new();
+                            if let Some(session) = prompt_sessions.lock().await.get_mut(&session_id)
+                            {
+                                session.cancellation = Some(cancellation.clone());
+                            }
+                            let task_sessions = prompt_sessions.clone();
+                            let task_runtime = prompt_runtime.clone();
+                            let task_runner = runner.clone();
+                            let task_connection = connection.clone();
+                            let task_store = prompt_store.clone();
+                            connection.spawn(async move {
+                                let (events_tx, mut events_rx) =
+                                    mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
+                                let compact = task_runner.compact(
+                                    &internal_id,
+                                    focus,
+                                    events_tx,
+                                    cancellation.clone(),
+                                );
+                                tokio::pin!(compact);
+                                let result = loop {
+                                    tokio::select! {
+                                        result = &mut compact => break result,
+                                        event = events_rx.recv() => {
+                                            let Some(event) = event else { continue };
+                                            let envelope = task_runtime
+                                                .emit(internal_id.clone(), event.clone())
+                                                .await
+                                                .map_err(agent_error)?;
+                                            if let Some(store) = &task_store {
+                                                store.append(&envelope).map_err(agent_error)?;
+                                            }
+                                            send_event(&task_connection, &session_id, event)?;
+                                        }
+                                    }
+                                };
+                                while let Ok(event) = events_rx.try_recv() {
+                                    let envelope = task_runtime
+                                        .emit(internal_id.clone(), event.clone())
+                                        .await
+                                        .map_err(agent_error)?;
+                                    if let Some(store) = &task_store {
+                                        store.append(&envelope).map_err(agent_error)?;
+                                    }
+                                    send_event(&task_connection, &session_id, event)?;
+                                }
+                                let stop_reason = match result {
+                                    Ok(result) => {
+                                        let events = task_runtime
+                                            .dispatch(AppCommand::RecordContextCompaction {
+                                                session_id: internal_id.clone(),
+                                                summary: result.summary,
+                                                messages_before: result.messages_before,
+                                            })
+                                            .await
+                                            .map_err(agent_error)?;
+                                        if let Some(store) = &task_store {
+                                            store.append_all(&events).map_err(agent_error)?;
+                                        }
+                                        send_text(
+                                            &task_connection,
+                                            &session_id,
+                                            format!(
+                                                "Context compacted from {} conversation message(s).",
+                                                result.messages_before
+                                            ),
+                                        )?;
+                                        protocol::StopReason::EndTurn
+                                    }
+                                    Err(crate::AxiomError::Cancelled) => {
+                                        protocol::StopReason::Cancelled
+                                    }
+                                    Err(error) => {
+                                        send_text(
+                                            &task_connection,
+                                            &session_id,
+                                            format!("AxiomCLI compaction error: {error}"),
+                                        )?;
+                                        protocol::StopReason::EndTurn
+                                    }
+                                };
+                                if let Some(session) =
+                                    task_sessions.lock().await.get_mut(&session_id)
+                                {
+                                    session.cancellation = None;
+                                }
+                                responder.respond(protocol::PromptResponse::new(stop_reason))
+                            })?;
+                            return Ok(());
+                        }
+                    }
+                }
                 let turn_id = TurnId::new();
                 let cancellation = CancellationToken::new();
-                let (internal_id, cwd, session_profile) = {
+                let (
+                    internal_id,
+                    cwd,
+                    session_profile,
+                    session_model,
+                    session_thinking,
+                    should_generate_title,
+                ) = {
                     let mut sessions = prompt_sessions.lock().await;
                     let Some(session) = sessions.get_mut(&session_id) else {
                         return responder.respond_with_internal_error("unknown ACP session");
                     };
-                    if session.active_turn.is_some() {
+                    if session.cancellation.is_some() {
                         return responder
                             .respond_with_internal_error("session already has an active turn");
                     }
                     session.active_turn = Some(turn_id.clone());
                     session.cancellation = Some(cancellation.clone());
+                    let should_generate_title = !session.has_prompt;
+                    session.has_prompt = true;
                     (
                         session.internal_id.clone(),
                         session.cwd.clone(),
                         session.profile,
+                        session.model.clone(),
+                        session.thinking,
+                        should_generate_title,
                     )
                 };
 
@@ -403,6 +796,47 @@ pub async fn serve_stdio(
                     .map_err(agent_error)?;
                 if let Some(store) = &prompt_store {
                     store.append_all(&submitted).map_err(agent_error)?;
+                    store
+                        .set_last_used_model(&session_model)
+                        .map_err(agent_error)?;
+                    store
+                        .set_last_used_thinking(session_thinking)
+                        .map_err(agent_error)?;
+                }
+
+                if should_generate_title
+                    && let Some(title_store) = prompt_store.clone()
+                {
+                    let title_runner = runner.clone();
+                    let title_session = internal_id.clone();
+                    let title_prompt = prompt.clone();
+                    tokio::spawn(async move {
+                        match title_runner
+                            .generate_title(
+                                &title_session,
+                                &title_prompt,
+                                CancellationToken::new(),
+                            )
+                            .await
+                        {
+                            Ok(title) => {
+                                if let Err(error) =
+                                    title_store.set_title_if_absent(&title_session, &title)
+                                {
+                                    tracing::warn!(
+                                        session_id = %title_session,
+                                        %error,
+                                        "could not persist generated ACP session title"
+                                    );
+                                }
+                            }
+                            Err(error) => tracing::warn!(
+                                session_id = %title_session,
+                                %error,
+                                "background ACP session title generation failed"
+                            ),
+                        }
+                    });
                 }
 
                 let task_sessions = prompt_sessions.clone();
@@ -519,6 +953,58 @@ pub async fn serve_stdio(
             },
             agent_client_protocol::on_receive_request!(),
         )
+        .on_receive_request(
+            async move |request: protocol::SetSessionConfigOptionRequest,
+                        responder: Responder<protocol::SetSessionConfigOptionResponse>,
+                        _connection| {
+                if request.config_id.0.as_ref() != MODEL_CONFIG_ID {
+                    return responder.respond_with_internal_error("unknown session config option");
+                }
+                let Some(value) = request.value.as_value_id() else {
+                    return responder
+                        .respond_with_internal_error("model config requires a selected value ID");
+                };
+                let model = value.0.to_string();
+                let (internal_id, models) = {
+                    let sessions = config_sessions.lock().await;
+                    let Some(session) = sessions.get(&request.session_id) else {
+                        return responder.respond_with_internal_error("unknown ACP session");
+                    };
+                    if session.cancellation.is_some() {
+                        return responder.respond_with_internal_error(
+                            "cannot change model while the session has active work",
+                        );
+                    }
+                    if !session.models.iter().any(|candidate| candidate == &model) {
+                        return responder.respond_with_internal_error(
+                            "model is not in the provider catalog",
+                        );
+                    }
+                    (session.internal_id.clone(), session.models.clone())
+                };
+                config_runner
+                    .set_model(&internal_id, model.clone())
+                    .await
+                    .map_err(agent_error)?;
+                let events = config_runtime
+                    .dispatch(AppCommand::ChangeModel {
+                        session_id: internal_id,
+                        model: model.clone(),
+                    })
+                    .await
+                    .map_err(agent_error)?;
+                if let Some(store) = &config_store {
+                    store.append_all(&events).map_err(agent_error)?;
+                }
+                if let Some(session) = config_sessions.lock().await.get_mut(&request.session_id) {
+                    session.model.clone_from(&model);
+                }
+                responder.respond(protocol::SetSessionConfigOptionResponse::new(vec![
+                    model_config_option(&model, &models),
+                ]))
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
         .on_receive_notification(
             async move |notification: protocol::CancelNotification, _connection| {
                 if let Some(token) = cancel_sessions
@@ -576,6 +1062,26 @@ fn send_event(
                 )),
             ))
         }
+        AppEvent::PermissionProfileChanged { profile } => send_text(
+            connection,
+            session_id,
+            format!("[settings] permission profile: {profile}"),
+        ),
+        AppEvent::ModelChanged { model } => {
+            send_text(connection, session_id, format!("[settings] model: {model}"))
+        }
+        AppEvent::ThinkingLevelChanged { level } => send_text(
+            connection,
+            session_id,
+            format!("[settings] thinking: {level} (proxy transport pending)"),
+        ),
+        AppEvent::ContextCompacted {
+            messages_before, ..
+        } => send_text(
+            connection,
+            session_id,
+            format!("[context] compacted {messages_before} conversation message(s)"),
+        ),
         AppEvent::ProviderStatusChanged { connected, detail } => {
             connection.send_notification(protocol::SessionNotification::new(
                 session_id.clone(),
@@ -722,6 +1228,16 @@ fn send_event(
                 protocol::SessionUpdate::AgentThoughtChunk(protocol::ContentChunk::new(
                     protocol::ContentBlock::Text(protocol::TextContent::new(format!(
                         "[attention {request_id}] answered"
+                    ))),
+                )),
+            ))
+        }
+        AppEvent::QuestionsFailed { request_id, reason } => {
+            connection.send_notification(protocol::SessionNotification::new(
+                session_id.clone(),
+                protocol::SessionUpdate::AgentThoughtChunk(protocol::ContentChunk::new(
+                    protocol::ContentBlock::Text(protocol::TextContent::new(format!(
+                        "[attention {request_id}] closed without answers: {reason}"
                     ))),
                 )),
             ))

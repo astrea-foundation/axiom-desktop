@@ -91,9 +91,20 @@ impl ToolView {
         }
     }
 
-    pub(super) fn completed_label(&self) -> String {
-        completed_tool_label(&self.name)
+    pub(super) fn timeline_label(&self) -> String {
+        tool_timeline_label(&self.name, &self.arguments, self.phase)
     }
+}
+
+#[derive(Clone, Debug)]
+pub(super) enum TaskTimelineItem {
+    Response {
+        text: String,
+        markdown: Box<RefCell<StreamingMarkdownRenderer>>,
+    },
+    Tool {
+        call_id: String,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -105,13 +116,13 @@ pub(super) struct TaskRunView {
     pub(super) reasoning: String,
     pub(super) response: String,
     pub(super) tools: Vec<ToolView>,
+    pub(super) timeline: Vec<TaskTimelineItem>,
     pub(super) tasks: Vec<TaskItem>,
     pub(super) changed_paths: Vec<PathBuf>,
     pub(super) error: Option<String>,
     pub(super) error_detail: Option<String>,
     pub(super) started_at: Instant,
     pub(super) finished_at: Option<Instant>,
-    pub(super) response_markdown: RefCell<StreamingMarkdownRenderer>,
 }
 
 impl TaskRunView {
@@ -124,13 +135,13 @@ impl TaskRunView {
             reasoning: String::new(),
             response: String::new(),
             tools: Vec::new(),
+            timeline: Vec::new(),
             tasks: Vec::new(),
             changed_paths: Vec::new(),
             error: None,
             error_detail: None,
             started_at: Instant::now(),
             finished_at: None,
-            response_markdown: RefCell::default(),
         }
     }
 
@@ -158,6 +169,21 @@ impl TaskRunView {
         self.tools.iter_mut().find(|tool| tool.call_id == call_id)
     }
 
+    pub(super) fn append_response(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        self.response.push_str(text);
+        if let Some(TaskTimelineItem::Response { text: response, .. }) = self.timeline.last_mut() {
+            response.push_str(text);
+        } else {
+            self.timeline.push(TaskTimelineItem::Response {
+                text: text.to_owned(),
+                markdown: Box::new(RefCell::default()),
+            });
+        }
+    }
+
     pub(super) fn ensure_tool(
         &mut self,
         call_id: &str,
@@ -176,6 +202,9 @@ impl TaskRunView {
             name.to_owned(),
             arguments,
         ));
+        self.timeline.push(TaskTimelineItem::Tool {
+            call_id: call_id.to_owned(),
+        });
         self.tools.last_mut().expect("tool was just inserted")
     }
 
@@ -184,64 +213,6 @@ impl TaskRunView {
             .iter()
             .rev()
             .find(|tool| !tool.phase.is_terminal())
-    }
-
-    pub(super) fn recent_completed_tools(&self, limit: usize) -> Vec<&ToolView> {
-        let completed = self
-            .tools
-            .iter()
-            .filter(|tool| tool.phase.is_terminal())
-            .collect::<Vec<_>>();
-        completed
-            .into_iter()
-            .rev()
-            .take(limit)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect()
-    }
-
-    pub(super) fn completion_summary(&self) -> String {
-        let mut read = 0_usize;
-        let mut searched = 0_usize;
-        let mut ran = 0_usize;
-        let mut changed = 0_usize;
-        let mut used = 0_usize;
-        for tool in self
-            .tools
-            .iter()
-            .filter(|tool| tool.phase == ToolPhase::Completed)
-        {
-            match classify_tool(&tool.name) {
-                ToolClass::Read => read += 1,
-                ToolClass::Search => searched += 1,
-                ToolClass::Run => ran += 1,
-                ToolClass::Change => changed += 1,
-                ToolClass::Other => used += 1,
-            }
-        }
-        if !self.changed_paths.is_empty() {
-            changed = changed.max(self.changed_paths.len());
-        }
-
-        let mut parts = Vec::new();
-        push_count(&mut parts, read, "Read", "item", "items");
-        push_count(&mut parts, searched, "Searched", "source", "sources");
-        push_count(&mut parts, ran, "Ran", "command", "commands");
-        push_count(&mut parts, changed, "Changed", "file", "files");
-        push_count(&mut parts, used, "Used", "tool", "tools");
-        let failed = self
-            .tools
-            .iter()
-            .filter(|tool| tool.phase == ToolPhase::Failed)
-            .count();
-        push_count(&mut parts, failed, "Failed", "tool", "tools");
-        if parts.is_empty() {
-            "Finished the request".into()
-        } else {
-            parts.join(" · ")
-        }
     }
 
     pub(super) fn searchable_text(&self) -> String {
@@ -377,28 +348,62 @@ fn active_tool_label(name: &str) -> String {
     }
 }
 
-fn completed_tool_label(name: &str) -> String {
-    match classify_tool(name) {
-        ToolClass::Read => "Read files".into(),
-        ToolClass::Search if name.to_ascii_lowercase().contains("web") => "Searched the web".into(),
-        ToolClass::Search => "Searched the workspace".into(),
-        ToolClass::Run => "Ran a command".into(),
-        ToolClass::Change => "Edited files".into(),
-        ToolClass::Other => format!("Used {}", humanize_name(name)),
+fn tool_timeline_label(name: &str, arguments: &Value, phase: ToolPhase) -> String {
+    let target = tool_target(arguments);
+    let class = classify_tool(name);
+    let action = match (phase, class) {
+        (ToolPhase::Proposed | ToolPhase::Running, ToolClass::Read) => "Reading",
+        (ToolPhase::Proposed | ToolPhase::Running, ToolClass::Search) => "Searching",
+        (ToolPhase::Proposed | ToolPhase::Running, ToolClass::Run) => "Running",
+        (ToolPhase::Proposed | ToolPhase::Running, ToolClass::Change) => "Editing",
+        (ToolPhase::Proposed | ToolPhase::Running, ToolClass::Other) => "Using",
+        (ToolPhase::Completed, ToolClass::Read) => "Read",
+        (ToolPhase::Completed, ToolClass::Search) => "Searched",
+        (ToolPhase::Completed, ToolClass::Run) => "Ran",
+        (ToolPhase::Completed, ToolClass::Change) => "Edited",
+        (ToolPhase::Completed, ToolClass::Other) => "Used",
+        (ToolPhase::Failed, ToolClass::Read) => "Failed to read",
+        (ToolPhase::Failed, ToolClass::Search) => "Failed to search",
+        (ToolPhase::Failed, ToolClass::Run) => "Failed to run",
+        (ToolPhase::Failed, ToolClass::Change) => "Failed to edit",
+        (ToolPhase::Failed, ToolClass::Other) => "Failed to use",
+    };
+    let subject = match class {
+        ToolClass::Read => target.unwrap_or_else(|| "files".into()),
+        ToolClass::Search if name.to_ascii_lowercase().contains("web") => {
+            target.map_or_else(|| "the web".into(), |target| format!("the web · {target}"))
+        }
+        ToolClass::Search => target.map_or_else(
+            || "the workspace".into(),
+            |target| format!("the workspace · {target}"),
+        ),
+        ToolClass::Run => "a command".into(),
+        ToolClass::Change => target.unwrap_or_else(|| "files".into()),
+        ToolClass::Other => humanize_name(name),
+    };
+    format!("{action} {subject}")
+}
+
+fn tool_target(arguments: &Value) -> Option<String> {
+    let object = arguments.as_object()?;
+    for key in ["path", "query", "pattern", "url", "glob"] {
+        if let Some(value) = object.get(key).and_then(Value::as_str) {
+            let value = value.split_whitespace().collect::<Vec<_>>().join(" ");
+            if !value.is_empty() {
+                let mut characters = value.chars();
+                let mut compact = characters.by_ref().take(120).collect::<String>();
+                if characters.next().is_some() {
+                    compact.push('…');
+                }
+                return Some(compact);
+            }
+        }
     }
+    None
 }
 
 fn humanize_name(name: &str) -> String {
     name.replace(['_', '-'], " ")
-}
-
-fn push_count(parts: &mut Vec<String>, count: usize, verb: &str, singular: &str, plural: &str) {
-    if count > 0 {
-        parts.push(format!(
-            "{verb} {count} {}",
-            if count == 1 { singular } else { plural }
-        ));
-    }
 }
 
 #[cfg(test)]
@@ -406,20 +411,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn completion_summary_folds_tools_into_human_verbs() {
+    fn response_and_tools_keep_their_chronological_positions() {
         let mut task = TaskRunView::new(TurnId::new(), "verify".into());
-        for (id, name) in [
-            ("read-1", "read_file"),
-            ("read-2", "list_files"),
-            ("run-1", "shell"),
-            ("edit-1", "apply_patch"),
-        ] {
-            task.ensure_tool(id, name, Value::Null).phase = ToolPhase::Completed;
-        }
-        assert_eq!(
-            task.completion_summary(),
-            "Read 2 items · Ran 1 command · Changed 1 file"
-        );
+        task.append_response("I’ll read it.");
+        task.ensure_tool(
+            "read-1",
+            "read_file",
+            serde_json::json!({"path": "README.md"}),
+        )
+        .phase = ToolPhase::Completed;
+        task.append_response("Here is the answer.");
+
+        assert!(matches!(
+            task.timeline[0],
+            TaskTimelineItem::Response { .. }
+        ));
+        assert!(matches!(task.timeline[1], TaskTimelineItem::Tool { .. }));
+        assert!(matches!(
+            task.timeline[2],
+            TaskTimelineItem::Response { .. }
+        ));
+        assert_eq!(task.tools[0].timeline_label(), "Read README.md");
     }
 
     #[test]

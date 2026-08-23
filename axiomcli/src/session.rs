@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
     path::{Path, PathBuf},
+    str::FromStr as _,
     sync::{Arc, Mutex, MutexGuard},
 };
 
@@ -10,11 +11,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     AxiomError, Result,
-    app::{AppEvent, EventEnvelope, SessionId},
+    app::{AppEvent, EventEnvelope, PermissionProfile, SessionId, ThinkingLevel},
     audit::redact_value,
 };
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 const MAX_EVENTS_PER_LOAD: usize = 100_000;
 const SNAPSHOT_INTERVAL: u64 = 64;
 const MAX_SNAPSHOT_BYTES: usize = 256 * 1024;
@@ -189,6 +190,16 @@ impl SessionStore {
                 params![id, now],
             )
             .map_err(storage_error)?;
+        if let AppEvent::PermissionProfileChanged { profile }
+        | AppEvent::SessionResumed { profile, .. } = &envelope.event
+        {
+            transaction
+                .execute(
+                    "UPDATE sessions SET profile=?2 WHERE id=?1",
+                    params![id, profile.to_string()],
+                )
+                .map_err(storage_error)?;
+        }
         transaction.commit().map_err(storage_error)?;
         drop(connection);
         let snapshot_due = envelope.sequence.is_multiple_of(SNAPSHOT_INTERVAL)
@@ -213,6 +224,78 @@ impl SessionStore {
         for envelope in envelopes {
             self.append(envelope)?;
         }
+        Ok(())
+    }
+
+    /// The model used by the most recently submitted prompt in any adapter.
+    /// This is an application preference, separate from per-session events.
+    pub fn last_used_model(&self) -> Result<Option<String>> {
+        self.lock()?
+            .query_row(
+                "SELECT value FROM app_settings WHERE key='last_used_model'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .map(Some)
+            .or_else(|error| match error {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(storage_error(other)),
+            })
+    }
+
+    pub fn set_last_used_model(&self, model: &str) -> Result<()> {
+        let model = model.trim();
+        if model.is_empty() || model.len() > 256 || model.chars().any(char::is_whitespace) {
+            return Err(AxiomError::Storage(
+                "last-used model must be a non-empty model ID without whitespace".into(),
+            ));
+        }
+        self.lock()?
+            .execute(
+                "INSERT INTO app_settings(key, value, updated_at)
+                 VALUES ('last_used_model', ?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+                params![model, Utc::now().to_rfc3339()],
+            )
+            .map_err(storage_error)?;
+        Ok(())
+    }
+
+    /// The explicit reasoning level used by the most recently submitted
+    /// prompt in any adapter.
+    pub fn last_used_thinking(&self) -> Result<Option<ThinkingLevel>> {
+        let value = self
+            .lock()?
+            .query_row(
+                "SELECT value FROM app_settings WHERE key='last_used_thinking'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .map(Some)
+            .or_else(|error| match error {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(storage_error(other)),
+            })?;
+        value
+            .map(|value| {
+                ThinkingLevel::from_str(&value).map_err(|_| {
+                    AxiomError::Storage(format!(
+                        "stored last-used thinking level `{value}` is invalid"
+                    ))
+                })
+            })
+            .transpose()
+    }
+
+    pub fn set_last_used_thinking(&self, level: ThinkingLevel) -> Result<()> {
+        self.lock()?
+            .execute(
+                "INSERT INTO app_settings(key, value, updated_at)
+                 VALUES ('last_used_thinking', ?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+                params![level.to_string(), Utc::now().to_rfc3339()],
+            )
+            .map_err(storage_error)?;
         Ok(())
     }
 
@@ -327,6 +410,38 @@ impl SessionStore {
         ensure_changed(id, changed)
     }
 
+    /// Set an automatically generated title without overwriting a title the
+    /// user (or another adapter) already chose. Returns `true` when the title
+    /// was stored and `false` when this session was already titled.
+    pub fn set_title_if_absent(&self, id: &SessionId, title: &str) -> Result<bool> {
+        let title = title.trim();
+        if title.is_empty() {
+            return Err(AxiomError::Storage("session title cannot be empty".into()));
+        }
+        let connection = self.lock()?;
+        let changed = connection
+            .execute(
+                "UPDATE sessions SET title=?2, updated_at=?3 WHERE id=?1 AND title IS NULL",
+                params![id.to_string(), title, Utc::now().to_rfc3339()],
+            )
+            .map_err(storage_error)?;
+        if changed > 0 {
+            return Ok(true);
+        }
+        let exists: bool = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sessions WHERE id=?1)",
+                [id.to_string()],
+                |row| row.get(0),
+            )
+            .map_err(storage_error)?;
+        if exists {
+            Ok(false)
+        } else {
+            Err(AxiomError::SessionNotFound(id.to_string()))
+        }
+    }
+
     pub fn archive(&self, id: &SessionId, archived: bool) -> Result<()> {
         let changed = self
             .lock()?
@@ -336,6 +451,27 @@ impl SessionStore {
             )
             .map_err(storage_error)?;
         ensure_changed(id, changed)
+    }
+
+    /// Permanently remove explicitly selected transcript IDs. Callers are
+    /// responsible for user confirmation and for excluding their active
+    /// session. The transaction makes multi-selection all-or-nothing.
+    pub fn delete_sessions(&self, ids: &[SessionId]) -> Result<usize> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction().map_err(storage_error)?;
+        let mut deleted = 0_usize;
+        for id in ids {
+            deleted = deleted.saturating_add(
+                transaction
+                    .execute("DELETE FROM sessions WHERE id=?1", [id.to_string()])
+                    .map_err(storage_error)?,
+            );
+        }
+        transaction.commit().map_err(storage_error)?;
+        Ok(deleted)
     }
 
     pub fn export(&self, id: &SessionId) -> Result<String> {
@@ -561,6 +697,23 @@ impl SessionStore {
                 .map_err(storage_error)?;
             transaction.commit().map_err(storage_error)?;
         }
+        let version: i64 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .map_err(storage_error)?;
+        if version == 2 {
+            let transaction = connection.transaction().map_err(storage_error)?;
+            transaction
+                .execute_batch(
+                    "CREATE TABLE app_settings(
+                       key TEXT PRIMARY KEY,
+                       value TEXT NOT NULL,
+                       updated_at TEXT NOT NULL
+                     );
+                     PRAGMA user_version=3;",
+                )
+                .map_err(storage_error)?;
+            transaction.commit().map_err(storage_error)?;
+        }
         Ok(())
     }
 
@@ -582,6 +735,51 @@ impl SessionStore {
     }
 }
 
+/// Return the model that was active when the latest prompt was accepted.
+/// Model selections made after that prompt are deliberately ignored. Sessions
+/// without prompts retain their latest selected model.
+#[must_use]
+pub fn model_for_resume(events: &[EventEnvelope], fallback: &str) -> String {
+    let mut active = fallback.to_owned();
+    let mut last_used = None;
+    for envelope in events {
+        match &envelope.event {
+            AppEvent::ModelChanged { model } => active.clone_from(model),
+            AppEvent::PromptAccepted { .. } => last_used = Some(active.clone()),
+            _ => {}
+        }
+    }
+    last_used.unwrap_or(active)
+}
+
+/// Return the latest explicit reasoning level selected for this transcript.
+#[must_use]
+pub fn thinking_for_resume(events: &[EventEnvelope], fallback: ThinkingLevel) -> ThinkingLevel {
+    events.iter().fold(fallback, |level, envelope| {
+        if let AppEvent::ThinkingLevelChanged { level } = &envelope.event {
+            *level
+        } else {
+            level
+        }
+    })
+}
+
+/// Return the permission profile active at the end of this transcript.
+#[must_use]
+pub fn permission_for_resume(
+    events: &[EventEnvelope],
+    fallback: PermissionProfile,
+) -> PermissionProfile {
+    events
+        .iter()
+        .fold(fallback, |profile, envelope| match &envelope.event {
+            AppEvent::SessionCreated { profile, .. }
+            | AppEvent::SessionResumed { profile, .. }
+            | AppEvent::PermissionProfileChanged { profile } => *profile,
+            _ => profile,
+        })
+}
+
 fn recovery_from_events(
     id: &SessionId,
     events: &[EventEnvelope],
@@ -590,6 +788,7 @@ fn recovery_from_events(
     let mut active_turns = HashSet::new();
     let mut active_tools = HashMap::new();
     let mut background = HashMap::new();
+    let mut pending_permissions = HashSet::new();
     let mut pending_questions = HashSet::new();
     let mut changed_paths = BTreeSet::new();
     for envelope in events {
@@ -623,6 +822,12 @@ fn recovery_from_events(
                     background.insert(task_id.clone(), state.clone());
                 }
             }
+            AppEvent::PermissionRequired { request_id, .. } => {
+                pending_permissions.insert(request_id.clone());
+            }
+            AppEvent::PermissionResolved { request_id, .. } => {
+                pending_permissions.remove(request_id);
+            }
             AppEvent::QuestionAsked { question_id, .. } => {
                 pending_questions.insert(question_id.clone());
             }
@@ -632,7 +837,8 @@ fn recovery_from_events(
             AppEvent::QuestionsAsked { request } => {
                 pending_questions.insert(request.request_id.clone());
             }
-            AppEvent::QuestionsAnswered { request_id, .. } => {
+            AppEvent::QuestionsAnswered { request_id, .. }
+            | AppEvent::QuestionsFailed { request_id, .. } => {
                 pending_questions.remove(request_id);
             }
             _ => {}
@@ -653,6 +859,15 @@ fn recovery_from_events(
                 call_id: task_id,
                 name: "background_process".into(),
                 status: format!("unknown_after_restart (last state: {state})"),
+            }),
+    );
+    interrupted_tools.extend(
+        pending_permissions
+            .into_iter()
+            .map(|request_id| InterruptedTool {
+                call_id: request_id,
+                name: "permission_request".into(),
+                status: "cancelled_by_restart".into(),
             }),
     );
     interrupted_tools.extend(
@@ -767,6 +982,214 @@ mod tests {
         store.rename(&id, "Cherry task").expect("rename");
         store.archive(&id, true).expect("archive");
         assert!(store.list(false).expect("list").is_empty());
+    }
+
+    #[test]
+    fn generated_title_only_fills_an_untitled_session() {
+        let store = SessionStore::in_memory().expect("store");
+        let id = SessionId::new();
+        store.append(&created(&id, 1)).expect("create");
+
+        assert!(
+            store
+                .set_title_if_absent(&id, "  First useful title  ")
+                .expect("set initial title")
+        );
+        assert_eq!(
+            store.summary(&id).expect("summary").title.as_deref(),
+            Some("First useful title")
+        );
+        assert!(
+            !store
+                .set_title_if_absent(&id, "Late replacement")
+                .expect("preserve title")
+        );
+        assert_eq!(
+            store.summary(&id).expect("summary").title.as_deref(),
+            Some("First useful title")
+        );
+    }
+
+    #[test]
+    fn last_used_model_preference_is_validated_and_replaced() {
+        let store = SessionStore::in_memory().expect("store");
+        assert_eq!(store.last_used_model().expect("empty preference"), None);
+        store.set_last_used_model("glm-5-2").expect("initial model");
+        assert_eq!(
+            store
+                .last_used_model()
+                .expect("stored preference")
+                .as_deref(),
+            Some("glm-5-2")
+        );
+        store
+            .set_last_used_model("grok-code")
+            .expect("replacement model");
+        assert_eq!(
+            store
+                .last_used_model()
+                .expect("replaced preference")
+                .as_deref(),
+            Some("grok-code")
+        );
+        assert!(store.set_last_used_model("not a model id").is_err());
+    }
+
+    #[test]
+    fn last_used_thinking_is_explicit_and_replaced() {
+        let store = SessionStore::in_memory().expect("store");
+        assert_eq!(store.last_used_thinking().expect("empty preference"), None);
+        store
+            .set_last_used_thinking(ThinkingLevel::Medium)
+            .expect("initial thinking");
+        assert_eq!(
+            store.last_used_thinking().expect("stored preference"),
+            Some(ThinkingLevel::Medium)
+        );
+        store
+            .set_last_used_thinking(ThinkingLevel::ExtraHigh)
+            .expect("replacement thinking");
+        assert_eq!(
+            store.last_used_thinking().expect("replaced preference"),
+            Some(ThinkingLevel::ExtraHigh)
+        );
+    }
+
+    #[test]
+    fn explicit_session_deletion_is_atomic_and_cascades_events() {
+        let store = SessionStore::in_memory().expect("store");
+        let first = SessionId::new();
+        let second = SessionId::new();
+        store.append(&created(&first, 1)).expect("first session");
+        store.append(&created(&second, 1)).expect("second session");
+
+        assert_eq!(
+            store
+                .delete_sessions(std::slice::from_ref(&first))
+                .expect("delete selected session"),
+            1
+        );
+        assert!(matches!(
+            store.summary(&first),
+            Err(AxiomError::SessionNotFound(_))
+        ));
+        assert_eq!(
+            store.summary(&second).expect("preserved session").id,
+            second.to_string()
+        );
+        let remaining_events: i64 = store
+            .lock()
+            .expect("lock")
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE session_id=?1",
+                [first.to_string()],
+                |row| row.get(0),
+            )
+            .expect("count cascaded event rows");
+        assert_eq!(remaining_events, 0);
+    }
+
+    #[test]
+    fn resume_model_tracks_the_latest_prompt_not_an_unused_selection() {
+        let id = SessionId::new();
+        let first_turn = crate::app::TurnId::new();
+        let second_turn = crate::app::TurnId::new();
+        let mut events = vec![
+            created(&id, 1),
+            event(
+                &id,
+                2,
+                AppEvent::ModelChanged {
+                    model: "first-model".into(),
+                },
+            ),
+            event(
+                &id,
+                3,
+                AppEvent::PromptAccepted {
+                    turn_id: first_turn,
+                    text: "first prompt".into(),
+                },
+            ),
+            event(
+                &id,
+                4,
+                AppEvent::ModelChanged {
+                    model: "selected-but-unused".into(),
+                },
+            ),
+        ];
+        assert_eq!(model_for_resume(&events, "fallback"), "first-model");
+
+        events.push(event(
+            &id,
+            5,
+            AppEvent::PromptAccepted {
+                turn_id: second_turn,
+                text: "second prompt".into(),
+            },
+        ));
+        assert_eq!(model_for_resume(&events, "fallback"), "selected-but-unused");
+    }
+
+    #[test]
+    fn resume_settings_keep_latest_thinking_and_permissions() {
+        let id = SessionId::new();
+        let events = vec![
+            created(&id, 1),
+            event(
+                &id,
+                2,
+                AppEvent::ThinkingLevelChanged {
+                    level: ThinkingLevel::High,
+                },
+            ),
+            event(
+                &id,
+                3,
+                AppEvent::PermissionProfileChanged {
+                    profile: PermissionProfile::Workspace,
+                },
+            ),
+        ];
+        assert_eq!(
+            thinking_for_resume(&events, ThinkingLevel::Medium),
+            ThinkingLevel::High
+        );
+        assert_eq!(
+            permission_for_resume(&events, PermissionProfile::Confirm),
+            PermissionProfile::Workspace
+        );
+        let store = SessionStore::in_memory().expect("store");
+        store.append_all(&events).expect("persist settings");
+        assert_eq!(
+            store.summary(&id).expect("updated summary").profile,
+            "workspace"
+        );
+    }
+
+    #[test]
+    fn recovery_reports_interrupted_permission_requests() {
+        let store = SessionStore::in_memory().expect("store");
+        let id = SessionId::new();
+        store.append(&created(&id, 1)).expect("create");
+        store
+            .append(&event(
+                &id,
+                2,
+                AppEvent::PermissionRequired {
+                    request_id: "permission-1".into(),
+                    explanation: "write fixture".into(),
+                    effect: serde_json::json!({"kind":"file_write","path":"fixture"}),
+                    choices: vec!["allow_once".into(), "deny".into()],
+                },
+            ))
+            .expect("permission");
+
+        let recovery = store.recovery_status(&id).expect("recovery");
+        assert_eq!(recovery.interrupted_tools.len(), 1);
+        assert_eq!(recovery.interrupted_tools[0].name, "permission_request");
+        assert_eq!(recovery.interrupted_tools[0].status, "cancelled_by_restart");
     }
 
     #[test]
@@ -933,7 +1356,7 @@ mod tests {
     }
 
     #[test]
-    fn v0_and_v1_migrate_transactionally_and_future_schema_is_rejected() {
+    fn v0_v1_and_v2_migrate_transactionally_and_future_schema_is_rejected() {
         let directory = tempdir().expect("state");
         let fresh = directory.path().join("fresh.sqlite3");
         let store = SessionStore::open(&fresh).expect("v0 migration");
@@ -974,6 +1397,44 @@ mod tests {
                 .expect("version"),
             SCHEMA_VERSION
         );
+
+        let v2 = directory.path().join("v2.sqlite3");
+        let connection = Connection::open(&v2).expect("v2 fixture");
+        connection
+            .execute_batch(
+                "CREATE TABLE sessions(
+                   id TEXT PRIMARY KEY, title TEXT, cwd TEXT NOT NULL, origin TEXT NOT NULL,
+                   profile TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                   archived INTEGER NOT NULL DEFAULT 0,
+                   history_truncated INTEGER NOT NULL DEFAULT 0
+                 );
+                 CREATE TABLE events(
+                   session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                   sequence INTEGER NOT NULL, occurred_at TEXT NOT NULL, payload TEXT NOT NULL,
+                   PRIMARY KEY(session_id, sequence)
+                 );
+                 CREATE TABLE snapshots(
+                   session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                   sequence INTEGER NOT NULL, created_at TEXT NOT NULL, payload TEXT NOT NULL,
+                   PRIMARY KEY(session_id, sequence)
+                 );
+                 CREATE INDEX idx_sessions_updated ON sessions(updated_at DESC);
+                 PRAGMA user_version=2;",
+            )
+            .expect("v2 schema");
+        drop(connection);
+        let migrated = SessionStore::open(&v2).expect("v2 migration");
+        assert_eq!(
+            migrated
+                .lock()
+                .expect("lock")
+                .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+                .expect("version"),
+            SCHEMA_VERSION
+        );
+        migrated
+            .set_last_used_model("migration-model")
+            .expect("new settings table");
 
         let broken = directory.path().join("broken-v1.sqlite3");
         let connection = Connection::open(&broken).expect("broken fixture");

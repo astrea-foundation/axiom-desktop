@@ -132,6 +132,138 @@ impl AcpProcess {
 }
 
 #[tokio::test]
+async fn slash_commands_are_advertised_and_execute_outside_model_turns() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let mut acp = AcpProcess::spawn("echo");
+    acp.initialize().await;
+    let session = acp.new_session(2, workspace.path()).await;
+    let update = acp.read().await;
+    assert_eq!(update["method"], "session/update");
+    let commands = update["params"]["update"]["availableCommands"]
+        .as_array()
+        .expect("available commands");
+    let names = commands
+        .iter()
+        .filter_map(|command| command["name"].as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        names,
+        vec![
+            "permissions",
+            "compact",
+            "model",
+            "resume",
+            "delete",
+            "thinking",
+            "help"
+        ]
+    );
+    let model_command = commands
+        .iter()
+        .find(|command| command["name"] == "model")
+        .expect("model command");
+    assert!(
+        model_command.get("input").is_none(),
+        "/model must not advertise a typed ID argument"
+    );
+    let resume_command = commands
+        .iter()
+        .find(|command| command["name"] == "resume")
+        .expect("resume command");
+    assert!(
+        resume_command.get("input").is_none(),
+        "/resume must not advertise a typed argument"
+    );
+    let delete_command = commands
+        .iter()
+        .find(|command| command["name"] == "delete")
+        .expect("delete command");
+    assert!(
+        delete_command.get("input").is_none(),
+        "/delete must not advertise a typed argument"
+    );
+
+    acp.send(&json!({
+        "jsonrpc":"2.0","id":3,"method":"session/prompt",
+        "params":{"sessionId":session,"prompt":[{"type":"text","text":"/permissions observe"}]}
+    }))
+    .await;
+    let mut transcript = String::new();
+    loop {
+        let value = acp.read().await;
+        transcript.push_str(&value.to_string());
+        if value.get("id").and_then(Value::as_i64) == Some(3) {
+            assert_eq!(value["result"]["stopReason"], "end_turn");
+            break;
+        }
+    }
+    assert!(transcript.contains("Permission profile changed to observe"));
+    assert!(!transcript.contains("Echo:"));
+
+    acp.send(&json!({
+        "jsonrpc":"2.0","id":4,"method":"session/prompt",
+        "params":{"sessionId":session,"prompt":[{"type":"text","text":"/model"}]}
+    }))
+    .await;
+    let mut model_picker = String::new();
+    loop {
+        let value = acp.read().await;
+        model_picker.push_str(&value.to_string());
+        if value.get("id").and_then(Value::as_i64) == Some(4) {
+            assert_eq!(value["result"]["stopReason"], "end_turn");
+            break;
+        }
+    }
+    assert!(model_picker.contains("configOptions"));
+    assert!(model_picker.contains("alternate-model"));
+    assert!(model_picker.contains("Choose a model using the client model selector"));
+
+    acp.send(&json!({
+        "jsonrpc":"2.0","id":5,"method":"session/set_config_option",
+        "params":{"sessionId":session,"configId":"model","value":"alternate-model"}
+    }))
+    .await;
+    let selected = acp.response(5).await;
+    assert_eq!(
+        selected["result"]["configOptions"][0]["currentValue"],
+        "alternate-model"
+    );
+
+    acp.send(&json!({
+        "jsonrpc":"2.0","id":6,"method":"session/prompt",
+        "params":{"sessionId":session,"prompt":[{"type":"text","text":"/model arbitrary-id"}]}
+    }))
+    .await;
+    let mut invalid_model = String::new();
+    loop {
+        let value = acp.read().await;
+        invalid_model.push_str(&value.to_string());
+        if value.get("id").and_then(Value::as_i64) == Some(6) {
+            break;
+        }
+    }
+    assert!(invalid_model.contains("Command error"));
+    assert!(invalid_model.contains("/model"));
+
+    acp.send(&json!({
+        "jsonrpc":"2.0","id":7,"method":"session/prompt",
+        "params":{"sessionId":session,"prompt":[{"type":"text","text":"/help"}]}
+    }))
+    .await;
+    let mut help = String::new();
+    loop {
+        let value = acp.read().await;
+        help.push_str(&value.to_string());
+        if value.get("id").and_then(Value::as_i64) == Some(7) {
+            break;
+        }
+    }
+    assert!(help.contains("/compact"));
+    assert!(help.contains("not model prompts"));
+    acp.close().await;
+}
+
+#[tokio::test]
 async fn workspace_edit_reaches_the_expected_acp_semantics_and_final_workspace() {
     let workspace = tempfile::tempdir().expect("workspace");
     std::fs::write(workspace.path().join("frontend.txt"), "before\n").expect("fixture");
@@ -212,6 +344,81 @@ async fn structured_questions_map_to_acp_elicitation_and_shared_updates() {
 }
 
 #[tokio::test]
+async fn approval_maps_all_narrow_choices_and_resumes_the_acp_turn() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let mut acp = AcpProcess::spawn("approval");
+    acp.initialize().await;
+    let session = acp.new_session(2, workspace.path()).await;
+    acp.send(&json!({
+        "jsonrpc":"2.0","id":3,"method":"session/prompt",
+        "params":{"sessionId":session,"prompt":[{"type":"text","text":"request approval"}]}
+    }))
+    .await;
+    let mut saw_result = false;
+    loop {
+        let value = acp.read().await;
+        if value["method"] == "session/request_permission" {
+            let options = value["params"]["options"]
+                .as_array()
+                .expect("permission options");
+            let ids = options
+                .iter()
+                .filter_map(|option| option["optionId"].as_str())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                ids,
+                vec![
+                    "allow_once",
+                    "allow_exact_session",
+                    "allow_prefix_session",
+                    "reject_once"
+                ]
+            );
+            acp.send(&json!({
+                "jsonrpc":"2.0","id":value["id"],
+                "result":{"outcome":{"outcome":"selected","optionId":"allow_once"}}
+            }))
+            .await;
+        }
+        if value["method"] == "session/update" {
+            saw_result |= value.to_string().contains("Approval response: allow_once");
+        }
+        if value.get("id").and_then(Value::as_i64) == Some(3) {
+            assert_eq!(value["result"]["stopReason"], "end_turn");
+            break;
+        }
+    }
+    assert!(saw_result);
+    acp.close().await;
+}
+
+#[tokio::test]
+async fn unsupported_structured_questions_close_cleanly_instead_of_sticking() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let mut acp = AcpProcess::spawn("questions");
+    acp.initialize().await;
+    let session = acp.new_session(2, workspace.path()).await;
+    acp.send(&json!({
+        "jsonrpc":"2.0","id":3,"method":"session/prompt",
+        "params":{"sessionId":session,"prompt":[{"type":"text","text":"ask me"}]}
+    }))
+    .await;
+    let mut saw_closed_attention = false;
+    loop {
+        let value = acp.read().await;
+        if value["method"] == "session/update" {
+            saw_closed_attention |= value.to_string().contains("closed without answers");
+        }
+        if value.get("id").and_then(Value::as_i64) == Some(3) {
+            assert_eq!(value["result"]["stopReason"], "end_turn");
+            break;
+        }
+    }
+    assert!(saw_closed_attention);
+    acp.close().await;
+}
+
+#[tokio::test]
 async fn plan_review_uses_standard_acp_plan_updates_and_persists_line_comments() {
     let workspace = tempfile::tempdir().expect("workspace");
     let mut acp = AcpProcess::spawn("plan_review");
@@ -262,6 +469,43 @@ async fn plan_review_uses_standard_acp_plan_updates_and_persists_line_comments()
     assert_eq!(plans[0].state, PlanState::RevisionRequested);
     assert_eq!(plans[0].comments[0].start_line, 4);
     assert_eq!(plans[0].comments[0].text, "Add a verification step");
+    acp.close().await;
+}
+
+#[tokio::test]
+async fn plan_approval_does_not_require_revision_only_fields() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let mut acp = AcpProcess::spawn("plan_review");
+    acp.initialize_with_capabilities(json!({"elicitation":{"form":{}}}))
+        .await;
+    let session = acp.new_session(2, workspace.path()).await;
+    acp.send(&json!({
+        "jsonrpc":"2.0","id":3,"method":"session/prompt",
+        "params":{"sessionId":session,"prompt":[{"type":"text","text":"approve plan"}]}
+    }))
+    .await;
+    loop {
+        let value = acp.read().await;
+        if value["method"] == "elicitation/create" {
+            let required = value["params"]["requestedSchema"]["required"]
+                .as_array()
+                .expect("required fields");
+            assert_eq!(required, &[json!("decision")]);
+            acp.send(&json!({
+                "jsonrpc":"2.0","id":value["id"],
+                "result":{"action":"accept","content":{"decision":"approve"}}
+            }))
+            .await;
+        }
+        if value.get("id").and_then(Value::as_i64) == Some(3) {
+            assert_eq!(value["result"]["stopReason"], "end_turn");
+            break;
+        }
+    }
+    let plans = PlanArtifact::list(workspace.path()).expect("persisted plans");
+    assert_eq!(plans.len(), 1);
+    assert_eq!(plans[0].state, PlanState::Approved);
+    assert!(plans[0].comments.is_empty());
     acp.close().await;
 }
 

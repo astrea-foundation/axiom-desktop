@@ -11,6 +11,7 @@ pub mod planning;
 pub mod policy;
 pub mod provider;
 pub mod session;
+pub mod slash;
 pub mod tools;
 pub mod tui;
 pub mod web;
