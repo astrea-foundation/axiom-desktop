@@ -256,6 +256,14 @@ async fn chat_completions(
         .into_response());
     }
 
+    eprintln!(
+        "{}",
+        serde_json::json!({
+            "event":"request_stream_open",
+            "request_id":id,
+            "model_id":model_id,
+        })
+    );
     let (output_tx, output_rx) = mpsc::channel::<Bytes>(STREAM_CHANNEL_CAPACITY);
     tokio::spawn(async move {
         let _permit = permit;
