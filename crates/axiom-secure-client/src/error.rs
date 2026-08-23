@@ -40,4 +40,12 @@ impl SecureClientError {
     pub(crate) const fn cancelled() -> Self {
         Self::new(ProviderFailureKind::Cancelled, "operation cancelled")
     }
+
+    pub(crate) const fn attestation(detail: &'static str) -> Self {
+        Self::new(ProviderFailureKind::AttestationRejected, detail)
+    }
+
+    pub(crate) const fn session(detail: &'static str) -> Self {
+        Self::new(ProviderFailureKind::SessionEstablishment, detail)
+    }
 }

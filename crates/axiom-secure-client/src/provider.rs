@@ -7,7 +7,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{Result, SecureClientError, SecurityEvidence, TrustPolicy};
 
-mod sealed {
+pub(crate) mod sealed {
     pub trait Provider {}
     pub trait Session {}
 }
@@ -50,6 +50,12 @@ pub struct ProviderRegistry {
 }
 
 impl ProviderRegistry {
+    pub fn production(config: crate::SecureClientConfig) -> Result<Self> {
+        Self::new([
+            Arc::new(crate::providers::near::NearProvider::new(config)) as Arc<dyn SecureProvider>
+        ])
+    }
+
     pub fn new(providers: impl IntoIterator<Item = Arc<dyn SecureProvider>>) -> Result<Self> {
         let mut registry = Self::default();
         for provider in providers {

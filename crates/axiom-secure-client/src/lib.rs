@@ -5,6 +5,7 @@
 
 mod config;
 mod error;
+mod http;
 mod provider;
 mod providers;
 mod security;

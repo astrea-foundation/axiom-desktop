@@ -1865,15 +1865,11 @@ async fn forward_provider_event(
         ProviderEvent::Status { connected, detail } => {
             AppEvent::ProviderStatusChanged { connected, detail }
         }
-        ProviderEvent::TextDelta(text) => AppEvent::TextDelta {
+        ProviderEvent::TextDelta(text) | ProviderEvent::RefusalDelta(text) => AppEvent::TextDelta {
             turn_id: turn_id.clone(),
             text,
         },
         ProviderEvent::ReasoningDelta(text) => AppEvent::ReasoningDelta {
-            turn_id: turn_id.clone(),
-            text,
-        },
-        ProviderEvent::RefusalDelta(text) => AppEvent::TextDelta {
             turn_id: turn_id.clone(),
             text,
         },

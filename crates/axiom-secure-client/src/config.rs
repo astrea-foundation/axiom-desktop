@@ -36,6 +36,11 @@ impl SecureClientConfig {
 pub struct SecureClientLimits {
     pub model_catalog_bytes: usize,
     pub attestation_report_bytes: usize,
+    pub attestation_quote_bytes: usize,
+    pub nvidia_evidence_bytes: usize,
+    pub nvidia_jwt_bytes: usize,
+    pub nvidia_jwks_bytes: usize,
+    pub intel_collateral_bytes: usize,
     pub relay_error_bytes: usize,
     pub relay_sse_event_bytes: usize,
     pub relay_stream_bytes: usize,
@@ -47,6 +52,11 @@ impl Default for SecureClientLimits {
         Self {
             model_catalog_bytes: 4 * 1024 * 1024,
             attestation_report_bytes: 2 * 1024 * 1024,
+            attestation_quote_bytes: 256 * 1024,
+            nvidia_evidence_bytes: 1024 * 1024,
+            nvidia_jwt_bytes: 256 * 1024,
+            nvidia_jwks_bytes: 256 * 1024,
+            intel_collateral_bytes: 2 * 1024 * 1024,
             relay_error_bytes: 4 * 1024,
             relay_sse_event_bytes: 1024 * 1024,
             relay_stream_bytes: 16 * 1024 * 1024,
@@ -102,21 +112,30 @@ impl EndpointPolicy {
     }
 }
 
-fn is_public_address(address: IpAddr) -> bool {
+pub(crate) fn is_public_address(address: IpAddr) -> bool {
     match address {
         IpAddr::V4(address) => {
+            let octets = address.octets();
             !(address.is_private()
                 || address.is_loopback()
                 || address.is_link_local()
                 || address.is_broadcast()
                 || address.is_documentation()
-                || address.is_unspecified())
+                || address.is_unspecified()
+                || address.is_multicast()
+                || octets[0] == 0
+                || (octets[0] == 100 && (64..=127).contains(&octets[1]))
+                || (octets[0] == 192 && octets[1] == 0 && octets[2] == 0)
+                || (octets[0] == 198 && (18..=19).contains(&octets[1]))
+                || octets[0] >= 240)
         }
         IpAddr::V6(address) => {
             !(address.is_loopback()
                 || address.is_unspecified()
                 || address.is_unique_local()
-                || address.is_unicast_link_local())
+                || address.is_unicast_link_local()
+                || address.is_multicast()
+                || matches!(address.segments(), [0x2001, 0x0db8, ..]))
         }
     }
 }
@@ -141,6 +160,9 @@ mod tests {
             "https://localhost/v1",
             "https://127.0.0.1/v1",
             "https://169.254.169.254/latest",
+            "https://100.64.0.1/v1",
+            "https://198.18.0.1/v1",
+            "https://224.0.0.1/v1",
             "https://user:password@example.com/v1",
         ] {
             assert!(

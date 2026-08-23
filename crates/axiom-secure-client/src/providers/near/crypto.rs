@@ -42,6 +42,10 @@ impl Ed25519PublicKey {
     pub(crate) fn to_hex(self) -> String {
         hex::encode(self.0)
     }
+
+    pub(crate) const fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
 }
 
 impl std::fmt::Debug for Ed25519PublicKey {
