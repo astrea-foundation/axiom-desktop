@@ -1,16 +1,19 @@
+use std::sync::Arc;
+
 use async_trait::async_trait;
-use axiom_inference::{AssistantTurn, InferenceRequest, ModelInfo, ProviderEvent};
+use axiom_inference::{InferenceRequest, InferenceResponse, ModelInfo, ProviderEvent};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    Result, SecureClientConfig, SecureClientError, SecureProvider, SecurityEvidence, TrustPolicy,
-    VerifiedSession, provider::sealed,
+    ApiCredential, Result, SecureClientConfig, SecureClientError, SecureProvider, SecurityEvidence,
+    TrustPolicy, VerifiedSession, provider::sealed,
 };
 
 pub(crate) mod attestation;
 #[allow(dead_code)]
 pub(crate) mod crypto;
+mod inference;
 
 pub(crate) const PROVIDER_ID: &str = "near";
 pub(crate) const E2EE_PROTOCOL: &str = "near-v2";
@@ -19,11 +22,12 @@ pub(crate) const ATTESTATION_PROTOCOL: &str = "near-tdx-nvidia-v1";
 
 pub(crate) struct NearProvider {
     config: SecureClientConfig,
+    credential: Arc<ApiCredential>,
 }
 
 impl NearProvider {
-    pub(crate) const fn new(config: SecureClientConfig) -> Self {
-        Self { config }
+    pub(crate) const fn new(config: SecureClientConfig, credential: Arc<ApiCredential>) -> Self {
+        Self { config, credential }
     }
 }
 
@@ -53,6 +57,12 @@ impl SecureProvider for NearProvider {
         Ok(())
     }
 
+    fn populate_capabilities(&self, model: &mut ModelInfo) {
+        model.supports_tools = true;
+        model.supports_parallel_tools = true;
+        model.supports_streaming = true;
+    }
+
     async fn establish(
         &self,
         model: &ModelInfo,
@@ -72,14 +82,19 @@ impl SecureProvider for NearProvider {
         Ok(Box::new(NearVerifiedSession {
             evidence: verified.evidence,
             model_key: verified.model_key,
+            config: self.config.clone(),
+            credential: Arc::clone(&self.credential),
+            model: model.clone(),
         }))
     }
 }
 
 struct NearVerifiedSession {
     evidence: SecurityEvidence,
-    #[allow(dead_code)]
     model_key: crypto::Ed25519PublicKey,
+    config: SecureClientConfig,
+    credential: Arc<ApiCredential>,
+    model: ModelInfo,
 }
 
 impl sealed::Session for NearVerifiedSession {}
@@ -94,10 +109,16 @@ impl VerifiedSession for NearVerifiedSession {
         &mut self,
         _request: InferenceRequest,
         _cancellation: CancellationToken,
-    ) -> Result<AssistantTurn> {
-        Err(SecureClientError::session(
-            "encrypted relay transport is not connected yet",
-        ))
+    ) -> Result<InferenceResponse> {
+        inference::complete(
+            &self.config,
+            &self.credential,
+            &self.model,
+            self.model_key,
+            _request,
+            &_cancellation,
+        )
+        .await
     }
 
     async fn stream(
@@ -105,10 +126,17 @@ impl VerifiedSession for NearVerifiedSession {
         _request: InferenceRequest,
         _events: mpsc::Sender<ProviderEvent>,
         _cancellation: CancellationToken,
-    ) -> Result<AssistantTurn> {
-        Err(SecureClientError::session(
-            "encrypted relay transport is not connected yet",
-        ))
+    ) -> Result<InferenceResponse> {
+        inference::stream(
+            &self.config,
+            &self.credential,
+            &self.model,
+            self.model_key,
+            _request,
+            _events,
+            &_cancellation,
+        )
+        .await
     }
 }
 
@@ -124,7 +152,7 @@ mod tests {
 
     #[test]
     fn provider_rejects_every_contract_mismatch() {
-        let provider = NearProvider::new(config());
+        let provider = NearProvider::new(config(), Arc::new(ApiCredential::new("test")));
         let valid = ModelInfo {
             id: "model-id".into(),
             provider_id: PROVIDER_ID.into(),

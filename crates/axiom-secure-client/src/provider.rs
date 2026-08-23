@@ -1,11 +1,11 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use async_trait::async_trait;
-use axiom_inference::{AssistantTurn, InferenceRequest, ModelInfo, ProviderEvent};
+use axiom_inference::{InferenceRequest, InferenceResponse, ModelInfo, ProviderEvent};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::{Result, SecureClientError, SecurityEvidence, TrustPolicy};
+use crate::{ApiCredential, Result, SecureClientError, SecurityEvidence, TrustPolicy};
 
 pub(crate) mod sealed {
     pub trait Provider {}
@@ -20,14 +20,14 @@ pub trait VerifiedSession: sealed::Session + Send {
         &mut self,
         request: InferenceRequest,
         cancellation: CancellationToken,
-    ) -> Result<AssistantTurn>;
+    ) -> Result<InferenceResponse>;
 
     async fn stream(
         &mut self,
         request: InferenceRequest,
         events: mpsc::Sender<ProviderEvent>,
         cancellation: CancellationToken,
-    ) -> Result<AssistantTurn>;
+    ) -> Result<InferenceResponse>;
 }
 
 #[async_trait]
@@ -35,6 +35,8 @@ pub trait SecureProvider: sealed::Provider + Send + Sync {
     fn id(&self) -> &'static str;
 
     fn supports(&self, model: &ModelInfo) -> Result<()>;
+
+    fn populate_capabilities(&self, model: &mut ModelInfo);
 
     async fn establish(
         &self,
@@ -50,10 +52,13 @@ pub struct ProviderRegistry {
 }
 
 impl ProviderRegistry {
-    pub fn production(config: crate::SecureClientConfig) -> Result<Self> {
-        Self::new([
-            Arc::new(crate::providers::near::NearProvider::new(config)) as Arc<dyn SecureProvider>
-        ])
+    pub fn production(
+        config: crate::SecureClientConfig,
+        credential: Arc<ApiCredential>,
+    ) -> Result<Self> {
+        Self::new([Arc::new(crate::providers::near::NearProvider::new(
+            config, credential,
+        )) as Arc<dyn SecureProvider>])
     }
 
     pub fn new(providers: impl IntoIterator<Item = Arc<dyn SecureProvider>>) -> Result<Self> {
@@ -79,6 +84,12 @@ impl ProviderRegistry {
         Ok(provider)
     }
 
+    pub(crate) fn validate_model(&self, model: &mut ModelInfo) -> Result<()> {
+        let provider = self.resolve(model)?;
+        provider.populate_capabilities(model);
+        Ok(())
+    }
+
     pub async fn establish(
         &self,
         model: &ModelInfo,
@@ -98,7 +109,7 @@ mod tests {
     use super::{ProviderRegistry, SecureProvider, VerifiedSession};
     use crate::{Result, SecureClientError, SecurityEvidence, TrustPolicy};
     use async_trait::async_trait;
-    use axiom_inference::{AssistantTurn, InferenceRequest, ModelInfo, ProviderEvent};
+    use axiom_inference::{InferenceRequest, InferenceResponse, ModelInfo, ProviderEvent};
     use std::sync::Arc;
     use tokio::sync::mpsc;
     use tokio_util::sync::CancellationToken;
@@ -121,6 +132,10 @@ mod tests {
                     "provider contract does not match model",
                 ))
             }
+        }
+
+        fn populate_capabilities(&self, model: &mut ModelInfo) {
+            model.supports_streaming = true;
         }
 
         async fn establish(
@@ -155,7 +170,7 @@ mod tests {
             &mut self,
             _request: InferenceRequest,
             _cancellation: CancellationToken,
-        ) -> Result<AssistantTurn> {
+        ) -> Result<InferenceResponse> {
             unreachable!()
         }
 
@@ -164,7 +179,7 @@ mod tests {
             _request: InferenceRequest,
             _events: mpsc::Sender<ProviderEvent>,
             _cancellation: CancellationToken,
-        ) -> Result<AssistantTurn> {
+        ) -> Result<InferenceResponse> {
             unreachable!()
         }
     }

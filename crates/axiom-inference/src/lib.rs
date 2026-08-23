@@ -22,6 +22,7 @@ pub const MAX_TOOL_ARGUMENTS_BYTES: usize = 262_000;
 #[serde(rename_all = "lowercase")]
 pub enum ChatRole {
     System,
+    Developer,
     User,
     Assistant,
     Tool,
@@ -520,6 +521,15 @@ pub enum ProviderEvent {
 pub struct AssistantTurn {
     pub text: String,
     pub tool_calls: Vec<ToolCall>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct InferenceResponse {
+    pub assistant: AssistantTurn,
+    pub reasoning: Option<String>,
+    pub refusal: Option<String>,
+    pub usage: Usage,
+    pub finish_reason: Option<FinishReason>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
