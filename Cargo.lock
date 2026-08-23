@@ -371,6 +371,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "axiom-openai-compat"
+version = "0.1.0"
+dependencies = [
+ "axiom-inference",
+ "proptest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "axiom-secure-client"
 version = "0.1.0"
 dependencies = [
