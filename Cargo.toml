@@ -2,12 +2,14 @@
 resolver = "3"
 members = [
     "apps/axiomcli",
+    "apps/axiom-proxy",
     "crates/axiom-inference",
     "crates/axiom-openai-compat",
     "crates/axiom-secure-client",
 ]
 default-members = [
     "apps/axiomcli",
+    "apps/axiom-proxy",
     "crates/axiom-inference",
     "crates/axiom-openai-compat",
     "crates/axiom-secure-client",

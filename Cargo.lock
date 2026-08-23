@@ -382,6 +382,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "axiom-proxy"
+version = "0.1.0"
+dependencies = [
+ "axiom-inference",
+ "axiom-openai-compat",
+ "axiom-secure-client",
+ "axum",
+ "clap",
+ "futures-util",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "subtle",
+ "tokio",
+ "tokio-util",
+ "uuid",
+]
+
+[[package]]
 name = "axiom-secure-client"
 version = "0.1.0"
 dependencies = [
