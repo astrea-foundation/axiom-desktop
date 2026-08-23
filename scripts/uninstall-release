@@ -8,6 +8,7 @@ if [[ -z $prefix || $prefix == / ]]; then
 fi
 
 rm -f -- "$prefix/bin/axiomcli"
+rm -f -- "$prefix/bin/axiom-proxy"
 rm -rf -- "$prefix/share/doc/axiomcli/third-party"
 for document in \
   LICENSE THIRD_PARTY.md THIRD_PARTY-LICENSES.tsv README.md acp-compatibility.md configuration.md \
@@ -21,4 +22,4 @@ rmdir "$prefix/share/doc" 2>/dev/null || true
 rmdir "$prefix/share" 2>/dev/null || true
 rmdir "$prefix/bin" 2>/dev/null || true
 rmdir "$prefix" 2>/dev/null || true
-echo "removed AxiomCLI program files; user configuration and session data were preserved"
+echo "removed AxiomCLI and proxy program files; user configuration and session data were preserved"

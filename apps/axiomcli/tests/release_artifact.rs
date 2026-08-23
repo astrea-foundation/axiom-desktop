@@ -22,11 +22,17 @@ fn run(command: &mut Command, label: &str) -> std::process::Output {
     output
 }
 
-fn package(stub: &Path, dist: &Path, gpg_home: Option<&Path>) -> std::path::PathBuf {
+fn package(
+    cli_stub: &Path,
+    proxy_stub: &Path,
+    dist: &Path,
+    gpg_home: Option<&Path>,
+) -> std::path::PathBuf {
     let mut command = Command::new(workspace_root().join("scripts/package-release"));
     command
         .env("AXIOMCLI_DIST_DIR", dist)
-        .env("AXIOMCLI_PACKAGE_BINARY", stub)
+        .env("AXIOMCLI_PACKAGE_BINARY", cli_stub)
+        .env("AXIOM_PROXY_PACKAGE_BINARY", proxy_stub)
         .env("SOURCE_DATE_EPOCH", "1700000000");
     if let Some(gpg_home) = gpg_home {
         command
@@ -42,16 +48,24 @@ fn package(stub: &Path, dist: &Path, gpg_home: Option<&Path>) -> std::path::Path
 #[test]
 fn release_archive_is_reproducible_signed_installable_and_cleanly_uninstalled() {
     let fixture = tempfile::tempdir().expect("fixture");
-    let stub = fixture.path().join("axiomcli");
-    std::fs::write(&stub, "#!/usr/bin/bash\nprintf 'axiomcli 0.1.0\\n'\n")
+    let cli_stub = fixture.path().join("axiomcli");
+    std::fs::write(&cli_stub, "#!/usr/bin/bash\nprintf 'axiomcli 0.1.0\\n'\n")
         .expect("write executable fixture");
-    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))
+    std::fs::set_permissions(&cli_stub, std::fs::Permissions::from_mode(0o755))
         .expect("make fixture executable");
+    let proxy_stub = fixture.path().join("axiom-proxy");
+    std::fs::write(
+        &proxy_stub,
+        "#!/usr/bin/bash\nprintf 'axiom-proxy 0.1.0\\n'\n",
+    )
+    .expect("write proxy executable fixture");
+    std::fs::set_permissions(&proxy_stub, std::fs::Permissions::from_mode(0o755))
+        .expect("make proxy fixture executable");
 
     let first_dist = fixture.path().join("dist-a");
     let second_dist = fixture.path().join("dist-b");
-    let first = package(&stub, &first_dist, None);
-    let second = package(&stub, &second_dist, None);
+    let first = package(&cli_stub, &proxy_stub, &first_dist, None);
+    let second = package(&cli_stub, &proxy_stub, &second_dist, None);
     assert_eq!(
         std::fs::read(&first).expect("first archive"),
         std::fs::read(&second).expect("second archive"),
@@ -78,7 +92,7 @@ fn release_archive_is_reproducible_signed_installable_and_cleanly_uninstalled() 
         "create ephemeral signing key",
     );
     let signed_dist = fixture.path().join("dist-signed");
-    let signed = package(&stub, &signed_dist, Some(&gpg_home));
+    let signed = package(&cli_stub, &proxy_stub, &signed_dist, Some(&gpg_home));
     let signature = signed.with_extension("gz.asc");
     assert!(signature.is_file(), "detached signature missing");
     run(
@@ -107,6 +121,18 @@ fn release_archive_is_reproducible_signed_installable_and_cleanly_uninstalled() 
         )
         .expect("version output"),
         "axiomcli 0.1.0\n"
+    );
+    let installed_proxy = prefix.join("bin/axiom-proxy");
+    assert_eq!(
+        String::from_utf8(
+            run(
+                Command::new(&installed_proxy).arg("--version"),
+                "start installed proxy sidecar"
+            )
+            .stdout
+        )
+        .expect("proxy version output"),
+        "axiom-proxy 0.1.0\n"
     );
     assert!(
         prefix
@@ -155,5 +181,6 @@ fn release_archive_is_reproducible_signed_installable_and_cleanly_uninstalled() 
         "uninstall release",
     );
     assert!(!installed.exists());
+    assert!(!installed_proxy.exists());
     assert!(!prefix.join("share/doc/axiomcli").exists());
 }

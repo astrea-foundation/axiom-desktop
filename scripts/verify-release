@@ -36,6 +36,7 @@ tar -xzf "$archive" -C "$inspection"
 package_root="$inspection/$(head -n1 <<<"$entries" | cut -d/ -f1)"
 for required in \
   bin/axiomcli \
+  bin/axiom-proxy \
   share/doc/axiomcli/LICENSE \
   share/doc/axiomcli/THIRD_PARTY.md \
   share/doc/axiomcli/THIRD_PARTY-LICENSES.tsv \
@@ -55,4 +56,5 @@ if grep -aREq 'axm_[A-Za-z0-9_-]{20,}' "$package_root"; then
   exit 1
 fi
 "$package_root/bin/axiomcli" --version >/dev/null
+"$package_root/bin/axiom-proxy" --version >/dev/null
 echo "verified $archive_name"

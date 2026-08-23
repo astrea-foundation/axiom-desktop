@@ -21,23 +21,34 @@ if [[ $host != "x86_64-unknown-linux-gnu" ]]; then
 fi
 
 if [[ -n ${AXIOMCLI_PACKAGE_BINARY:-} ]]; then
-  binary=$AXIOMCLI_PACKAGE_BINARY
+  cli_binary=$AXIOMCLI_PACKAGE_BINARY
 else
-  cargo build --manifest-path "$workspace_root/Cargo.toml" --locked --release -p axiomcli
-  binary="$workspace_root/target/release/axiomcli"
+  cargo build --manifest-path "$workspace_root/Cargo.toml" --locked --release \
+    -p axiomcli -p axiom-proxy
+  cli_binary="$workspace_root/target/release/axiomcli"
 fi
-if [[ ! -x $binary ]]; then
-  echo "release binary is missing or not executable: $binary" >&2
+if [[ -n ${AXIOM_PROXY_PACKAGE_BINARY:-} ]]; then
+  proxy_binary=$AXIOM_PROXY_PACKAGE_BINARY
+else
+  proxy_binary="$workspace_root/target/release/axiom-proxy"
+fi
+if [[ ! -x $cli_binary ]]; then
+  echo "AxiomCLI release binary is missing or not executable: $cli_binary" >&2
+  exit 1
+fi
+if [[ ! -x $proxy_binary ]]; then
+  echo "proxy release binary is missing or not executable: $proxy_binary" >&2
   exit 1
 fi
 
 mkdir -p "$dist_dir"
 staging=$(mktemp -d "${TMPDIR:-/tmp}/axiomcli-package.XXXXXX")
 trap 'rm -rf -- "$staging"' EXIT
-package_name="axiomcli-$version-$host"
+package_name="axiomai-$version-$host"
 package_root="$staging/$package_name"
 mkdir -p "$package_root/bin" "$package_root/share/doc/axiomcli"
-install -m 0755 "$binary" "$package_root/bin/axiomcli"
+install -m 0755 "$cli_binary" "$package_root/bin/axiomcli"
+install -m 0755 "$proxy_binary" "$package_root/bin/axiom-proxy"
 install -m 0644 "$workspace_root/LICENSE" "$package_root/share/doc/axiomcli/LICENSE"
 install -m 0644 "$workspace_root/THIRD_PARTY.md" "$package_root/share/doc/axiomcli/THIRD_PARTY.md"
 cargo deny --manifest-path "$workspace_root/Cargo.toml" list --format tsv \
@@ -93,7 +104,7 @@ install -m 0644 "$workspace_root/docs/configuration.md" "$package_root/share/doc
 install -m 0644 "$workspace_root/docs/privacy.md" "$package_root/share/doc/axiomcli/privacy.md"
 install -m 0644 "$workspace_root/docs/troubleshooting.md" "$package_root/share/doc/axiomcli/troubleshooting.md"
 install -m 0644 "$workspace_root/docs/versioning.md" "$package_root/share/doc/axiomcli/versioning.md"
-printf 'name=axiomcli\nversion=%s\ntarget=%s\nsource_date_epoch=%s\n' \
+printf 'name=axiomai\nversion=%s\ntarget=%s\nsource_date_epoch=%s\ncomponents=axiomcli,axiom-proxy\n' \
   "$version" "$host" "$source_date_epoch" \
   > "$package_root/share/doc/axiomcli/BUILD-METADATA"
 
