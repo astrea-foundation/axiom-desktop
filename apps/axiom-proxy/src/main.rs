@@ -112,6 +112,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|_| "AXIOM_PROXY_TOKEN is required and may only be supplied by environment")?;
     validate_local_token(&local_token)?;
 
+    #[cfg(feature = "test-fixture")]
+    let mut secure_config = if std::env::var("AXIOM_TEST_FIXTURE").as_deref() == Ok("1") {
+        SecureClientConfig::new_test_fixture(&arguments.axiom_base_url)?
+    } else {
+        SecureClientConfig::new(&arguments.axiom_base_url)?
+    };
+    #[cfg(not(feature = "test-fixture"))]
     let mut secure_config = SecureClientConfig::new(&arguments.axiom_base_url)?;
     secure_config.request_timeout = Duration::from_secs(arguments.request_timeout_secs);
     let state = Arc::new(AppState {

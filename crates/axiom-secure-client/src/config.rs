@@ -11,6 +11,7 @@ pub struct SecureClientConfig {
     pub attestation_timeout: Duration,
     pub limits: SecureClientLimits,
     pub endpoint_policy: EndpointPolicy,
+    test_fixture: bool,
 }
 
 impl SecureClientConfig {
@@ -28,7 +29,41 @@ impl SecureClientConfig {
             attestation_timeout: Duration::from_secs(60),
             limits: SecureClientLimits::default(),
             endpoint_policy: EndpointPolicy::default(),
+            test_fixture: false,
         })
+    }
+
+    /// Construct configuration for the deterministic local encrypted fixture.
+    ///
+    /// This constructor is not compiled into normal builds. The caller must
+    /// still perform a separate runtime opt-in so a test binary cannot be
+    /// selected accidentally.
+    #[cfg(feature = "test-fixture")]
+    pub fn new_test_fixture(relay_base_url: &str) -> Result<Self> {
+        let relay_base_url = Url::parse(relay_base_url)
+            .map_err(|_| SecureClientError::configuration("invalid fixture relay URL"))?;
+        if !matches!(relay_base_url.scheme(), "http" | "https") {
+            return Err(SecureClientError::configuration(
+                "fixture relay URL must use HTTP or HTTPS",
+            ));
+        }
+        Ok(Self {
+            relay_base_url,
+            request_timeout: Duration::from_secs(15),
+            attestation_timeout: Duration::from_secs(10),
+            limits: SecureClientLimits::default(),
+            endpoint_policy: EndpointPolicy {
+                require_https: false,
+                reject_local_addresses: false,
+                allow_redirects: false,
+            },
+            test_fixture: true,
+        })
+    }
+
+    #[cfg(feature = "test-fixture")]
+    pub(crate) const fn uses_test_fixture(&self) -> bool {
+        self.test_fixture
     }
 }
 

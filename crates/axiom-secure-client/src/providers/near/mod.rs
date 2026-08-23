@@ -13,7 +13,7 @@ use crate::{
 pub(crate) mod attestation;
 #[allow(dead_code)]
 pub(crate) mod crypto;
-mod inference;
+pub(crate) mod inference;
 
 pub(crate) const PROVIDER_ID: &str = "near";
 pub(crate) const E2EE_PROTOCOL: &str = "near-v2";

@@ -19,6 +19,14 @@ pub use error::{Result, SecureClientError};
 pub use provider::{ProviderRegistry, SecureProvider, VerifiedSession};
 pub use security::{EvidenceCheck, EvidenceClaim, SecurityEvidence, SecurityState, TrustPolicy};
 
+/// Cryptographic helpers for the deterministic process-level fixture.
+///
+/// This module is absent from production builds. It exists so integration
+/// tests can act as an independent encrypted provider without duplicating the
+/// protocol implementation in the proxy crate.
+#[cfg(feature = "test-fixture")]
+pub mod test_support;
+
 use std::sync::Arc;
 
 use secrecy::{ExposeSecret, SecretString};

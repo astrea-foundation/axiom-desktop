@@ -21,12 +21,12 @@ use crate::{
     },
 };
 
-use super::{E2EE_PROTOCOL, ENCRYPTION_VERSION, crypto};
+use super::crypto;
 
 const INFERENCE_ENCRYPTION: &str = "provider_e2ee_v2";
 const MAX_PLAINTEXT_STREAM_BYTES: usize = 16 * 1024 * 1024;
 
-pub(super) async fn complete(
+pub(crate) async fn complete(
     config: &SecureClientConfig,
     credential: &ApiCredential,
     model: &ModelInfo,
@@ -41,7 +41,7 @@ pub(super) async fn complete(
     decrypt_completion(model, &identity, completion)
 }
 
-pub(super) async fn stream(
+pub(crate) async fn stream(
     config: &SecureClientConfig,
     credential: &ApiCredential,
     model: &ModelInfo,
@@ -188,8 +188,8 @@ fn build_request(
     };
     let relay = RelayChatRequest {
         model_id: model.id.clone(),
-        encryption_version: ENCRYPTION_VERSION,
-        e2ee_protocol: E2EE_PROTOCOL.to_owned(),
+        encryption_version: model.e2ee_encryption_version,
+        e2ee_protocol: model.e2ee_protocol.clone(),
         client_public_key_hex: identity.public_key_hex(),
         model_public_key_hex: model_key.to_hex(),
         encrypted_messages,
