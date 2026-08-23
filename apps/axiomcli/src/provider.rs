@@ -7,10 +7,12 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+use axiom_secure_client::{ApiCredential, SecureClient, SecureClientConfig, TrustPolicy};
+
 use crate::{AxiomError, Result, audit::redact_text};
 pub use axiom_inference::{
     AssistantTurn, ChatMessage, ChatRole, FunctionCall, FunctionDefinition, InferenceRequest,
-    ModelInfo, ProviderEvent, ProviderFailureKind, ToolCall, ToolDefinition,
+    ModelInfo, ProviderEvent, ProviderFailureKind, ProviderSecurityState, ToolCall, ToolDefinition,
 };
 
 const MAX_PROVIDER_ERROR_BYTES: usize = 4 * 1024;
@@ -31,6 +33,146 @@ pub trait InferenceProvider: Send + Sync {
         Err(AxiomError::Provider(
             "provider does not support model discovery".into(),
         ))
+    }
+}
+
+/// Production provider: model discovery, attestation, and E2EE all happen in
+/// this process. The local tool runtime remains a separate policy boundary.
+pub struct SecureAxiomProvider {
+    client: SecureClient,
+}
+
+impl SecureAxiomProvider {
+    pub fn new(relay_base_url: &str, api_key: String, timeout: Duration) -> Result<Self> {
+        let mut config = SecureClientConfig::new(relay_base_url)
+            .map_err(|error| AxiomError::Config(error.safe_detail().to_owned()))?;
+        config.request_timeout = timeout;
+        Ok(Self {
+            client: SecureClient::new(config, ApiCredential::new(api_key))
+                .map_err(map_secure_error)?,
+        })
+    }
+
+    pub fn from_environment(relay_base_url: &str, timeout: Duration) -> Result<Self> {
+        let api_key = std::env::var("AXIOM_API_KEY").map_err(|_| {
+            AxiomError::Config("AXIOM_API_KEY is required for secure inference".to_owned())
+        })?;
+        Self::new(relay_base_url, api_key, timeout)
+    }
+}
+
+impl std::fmt::Debug for SecureAxiomProvider {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SecureAxiomProvider")
+            .field("client", &self.client)
+            .finish()
+    }
+}
+
+#[async_trait]
+impl InferenceProvider for SecureAxiomProvider {
+    async fn stream(
+        &self,
+        request: InferenceRequest,
+        events: mpsc::Sender<ProviderEvent>,
+        cancellation: CancellationToken,
+    ) -> Result<AssistantTurn> {
+        send_provider_event(
+            &events,
+            ProviderEvent::SecurityState(ProviderSecurityState::Verifying),
+            &cancellation,
+        )
+        .await?;
+        send_provider_event(
+            &events,
+            ProviderEvent::Status {
+                connected: true,
+                detail: "Verifying model attestation and secure endpoint binding".to_owned(),
+            },
+            &cancellation,
+        )
+        .await?;
+        let models = match self.client.models(cancellation.clone()).await {
+            Ok(models) => models,
+            Err(error) => {
+                send_security_failure(&events, &cancellation, &error).await;
+                return Err(map_secure_error(error));
+            }
+        };
+        let model = models
+            .iter()
+            .find(|model| model.id == request.model)
+            .ok_or_else(|| {
+                AxiomError::Provider("selected secure model is unavailable".to_owned())
+            })?;
+        let established = self
+            .client
+            .establish(model, &TrustPolicy::default(), cancellation.clone())
+            .await;
+        let mut session = match established {
+            Ok(session) => session,
+            Err(error) => {
+                send_security_failure(&events, &cancellation, &error).await;
+                return Err(map_secure_error(error));
+            }
+        };
+        send_provider_event(
+            &events,
+            ProviderEvent::SecurityState(ProviderSecurityState::Verified),
+            &cancellation,
+        )
+        .await?;
+        let response = session
+            .stream(request, events, cancellation)
+            .await
+            .map_err(map_secure_error)?;
+        Ok(response.assistant)
+    }
+
+    async fn models(&self, cancellation: CancellationToken) -> Result<Vec<ModelInfo>> {
+        self.client
+            .models(cancellation)
+            .await
+            .map_err(map_secure_error)
+    }
+}
+
+async fn send_provider_event(
+    events: &mpsc::Sender<ProviderEvent>,
+    event: ProviderEvent,
+    cancellation: &CancellationToken,
+) -> Result<()> {
+    tokio::select! {
+        () = cancellation.cancelled() => Err(AxiomError::Cancelled),
+        result = events.send(event) => result.map_err(|_| AxiomError::Cancelled),
+    }
+}
+
+async fn send_security_failure(
+    events: &mpsc::Sender<ProviderEvent>,
+    cancellation: &CancellationToken,
+    error: &axiom_secure_client::SecureClientError,
+) {
+    if error.kind() != ProviderFailureKind::Cancelled {
+        let _ = send_provider_event(
+            events,
+            ProviderEvent::SecurityState(ProviderSecurityState::Failed),
+            cancellation,
+        )
+        .await;
+    }
+}
+
+#[allow(clippy::needless_pass_by_value)]
+fn map_secure_error(error: axiom_secure_client::SecureClientError) -> AxiomError {
+    match error.kind() {
+        ProviderFailureKind::Cancelled => AxiomError::Cancelled,
+        ProviderFailureKind::InsufficientCredit => AxiomError::Provider(
+            "HTTP 402 Payment Required: insufficient credit; visit axiom.stream to top up"
+                .to_owned(),
+        ),
+        kind => AxiomError::Provider(format!("{kind:?}: {}", error.safe_detail())),
     }
 }
 
@@ -236,6 +378,11 @@ impl InferenceProvider for AxiomProvider {
         events: mpsc::Sender<ProviderEvent>,
         cancellation: CancellationToken,
     ) -> Result<AssistantTurn> {
+        let _ = events
+            .send(ProviderEvent::SecurityState(
+                ProviderSecurityState::UnattestedDevelopment,
+            ))
+            .await;
         let body = WireRequest {
             model: &request.model,
             messages: &request.messages,
@@ -618,6 +765,12 @@ mod tests {
         assert_eq!(turn.text, "hello world");
         assert!(matches!(
             rx.recv().await,
+            Some(ProviderEvent::SecurityState(
+                ProviderSecurityState::UnattestedDevelopment
+            ))
+        ));
+        assert!(matches!(
+            rx.recv().await,
             Some(ProviderEvent::Status {
                 connected: true,
                 ..
@@ -791,7 +944,7 @@ mod tests {
             .await
             .expect_err("authentication failure");
         let message = error.to_string();
-        assert!(message.contains("Authentication"));
+        assert!(message.contains("Authentication"), "{message}");
         assert!(!message.contains("axm_"));
         assert_eq!(attempts.load(Ordering::SeqCst), 1);
         server.abort();
@@ -883,6 +1036,25 @@ mod tests {
             Err(AxiomError::Cancelled)
         ));
         server.abort();
+    }
+
+    #[test]
+    fn secure_provider_redacts_credentials_and_preserves_credit_classification() {
+        let provider = SecureAxiomProvider::new(
+            "https://api.axiom.stream",
+            "axm_secure_test_value".to_owned(),
+            Duration::from_secs(30),
+        )
+        .expect("secure provider");
+        assert!(!format!("{provider:?}").contains("axm_secure_test_value"));
+
+        let error = map_secure_error(axiom_secure_client::SecureClientError::new(
+            ProviderFailureKind::InsufficientCredit,
+            "Axiom credit is exhausted",
+        ));
+        let rendered = error.to_string();
+        assert!(rendered.contains("402 Payment Required"));
+        assert!(rendered.contains("insufficient credit"));
     }
 
     /// Executes one low-cost turn through the configured real Axiom-compatible

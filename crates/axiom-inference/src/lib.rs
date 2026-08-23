@@ -502,6 +502,7 @@ fn merge_stable(
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProviderEvent {
+    SecurityState(ProviderSecurityState),
     Status {
         connected: bool,
         detail: String,
@@ -515,6 +516,15 @@ pub enum ProviderEvent {
         output_tokens: u64,
     },
     Finished(FinishReason),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProviderSecurityState {
+    Unverified,
+    Verifying,
+    Verified,
+    Failed,
+    UnattestedDevelopment,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]

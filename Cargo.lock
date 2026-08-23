@@ -413,6 +413,7 @@ dependencies = [
  "assert_cmd",
  "async-trait",
  "axiom-inference",
+ "axiom-secure-client",
  "axum",
  "chrono",
  "clap",

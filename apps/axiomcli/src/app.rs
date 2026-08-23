@@ -142,8 +142,8 @@ pub enum PermissionProfile {
 
 /// Provider-neutral reasoning preference for a session. Reasoning is always
 /// explicit; legacy journals that stored `auto` deserialize as `medium`. The
-/// current development proxy does not yet transport explicit levels, but this
-/// typed boundary is ready for the direct Axiom transport.
+/// direct secure Axiom transport validates the selected value against model
+/// catalog capabilities before sending it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ThinkingLevel {
@@ -502,6 +502,8 @@ pub struct QuestionRequest {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SecurityStatus {
+    Unverified,
+    Verifying,
     UnattestedDevelopment,
     Verified,
     Failed,

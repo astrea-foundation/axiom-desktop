@@ -17,7 +17,7 @@ the session database location for the current platform.
 
 ```toml
 model = "glm-5-2"
-base_url = "http://127.0.0.1:8484/v1"
+base_url = "https://api.axiom.stream"
 permission_profile = "confirm"
 searxng_url = "http://127.0.0.1:8888"
 max_context_bytes = 2097152
@@ -75,12 +75,11 @@ The first ordinary prompt also starts a parallel, tool-free title request. Its
 short result fills the session title only when one has not already been set;
 failure is non-fatal and does not alter the conversation or its token counter.
 
-The development proxy receives the changed model ID. Thinking level is an
-intentional adapter stub: it is typed, displayed, persisted, and available to
-the agent runtime, but is not serialized into the proxy request because the
-proxy does not currently provide a verified per-model reasoning-effort
-contract. This boundary is intended to be replaced by direct Axiom server
-metadata and transport rather than guessed from model names.
+The direct secure client validates the changed model ID against Axiom's signed-in
+catalog, establishes a fresh verified provider session for each inference, and
+sends the explicit thinking level only when the selected model advertises it.
+Unsupported model/thinking combinations fail locally rather than being guessed
+from model names.
 
 Limits are validated as follows:
 
@@ -134,8 +133,8 @@ The command appends atomically and accepts only `ask` or `deny`.
 
 | Variable | Meaning |
 |---|---|
-| `AXIOM_API_KEY` | optional provider bearer credential; never put it in TOML or argv |
-| `AXIOM_BASE_URL` | trusted provider URL override |
+| `AXIOM_API_KEY` | required Axiom bearer credential; never put it in TOML or argv |
+| `AXIOM_BASE_URL` | trusted Axiom relay override; defaults to `https://api.axiom.stream` |
 | `AXIOM_MODEL` | model override |
 | `AXIOM_SEARXNG_URL` | SearXNG URL override |
 | `AXIOM_PERMISSION_PROFILE` | permission-profile override |
@@ -143,6 +142,11 @@ The command appends atomically and accepts only `ask` or `deny`.
 | `NO_COLOR` | disables color when present |
 | `AXIOMCLI_ASCII=1` | replaces decorative Unicode glyphs |
 | `AXIOMCLI_REDUCED_MOTION=1` | disables animation |
+
+The old unattested adapter is not part of the default build. For deliberate
+local protocol development only, compile with `development-provider` and set
+`AXIOMCLI_UNATTESTED_DEV=1`. Never distribute that feature as a production
+binary.
 
 With animation enabled, active task cards redraw while foreground/background
 work or a short completion transition is active. The blossom uses a weighted

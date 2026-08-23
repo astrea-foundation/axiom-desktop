@@ -653,9 +653,7 @@ pub async fn serve_stdio(
                             send_text(
                                 &connection,
                                 &session_id,
-                                format!(
-                                    "Thinking set to {level}; development proxy transport is pending."
-                                ),
+                                format!("Thinking set to {level}."),
                             )?;
                             return responder.respond(protocol::PromptResponse::new(
                                 protocol::StopReason::EndTurn,

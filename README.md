@@ -124,16 +124,20 @@ signing, and [`docs/configuration.md`](docs/configuration.md),
 
 ## Provider configuration
 
-Development inference uses an OpenAI-compatible chat-completions endpoint. It
-does not claim TEE attestation or E2EE.
+Production AxiomCLI talks directly to Axiom's relay. It discovers the selected
+model, verifies current TEE evidence locally, binds the attested model key to
+the live provider TLS endpoint, and encrypts inference end to end in-process.
 
 ```text
-AXIOM_API_KEY=...                 when required by the configured endpoint
-AXIOM_BASE_URL=http://127.0.0.1:8484/v1
+AXIOM_API_KEY=...                 required; never put it in repository config
+AXIOM_BASE_URL=https://api.axiom.stream
 AXIOM_MODEL=your-model-id
 ```
 
 Do not put API keys in repository configuration or command-line arguments.
+The legacy OpenAI-compatible development adapter is available only in builds
+compiled with `--features development-provider` and only when
+`AXIOMCLI_UNATTESTED_DEV=1`; the TUI labels that path `UNATTESTED DEV`.
 
 ## Permission profiles
 
@@ -232,18 +236,15 @@ than bypassing the event journal.
 
 ## Known early-version limits
 
-- Development inference is plainly labeled `UNATTESTED DEV`; TEE/E2EE is later.
+- Production inference verifies the current provider attestation per request;
+  attestation caching and approved-workload measurement allowlists are later.
 - `/model` validates selections against the provider's discovered catalog.
   `/thinking` is always explicit, defaults to `medium`, becomes the default for
   future chats after it is used for a prompt, and is restored per transcript.
-  The
-  current OpenAI-compatible development proxy has no verified Axiom reasoning-
-  effort contract, so it is not transmitted yet. Direct Axiom transport should
-  map it only after server model metadata defines supported levels.
-- Axiom's current proxy model catalog does not expose authoritative context
-  window sizes. Compaction therefore uses AxiomCLI's configured local context
-  safety budget; context-window percentages and model-aware auto-compaction are
-  deferred until the direct API exposes that metadata.
+  Unsupported levels are rejected against the selected model's catalog entry.
+- Axiom's relay catalog now supplies authoritative context limits to the secure
+  client. The TUI still uses its configured local compaction safety budget and
+  does not yet render a model-relative context percentage.
 - Linux is the currently exercised development platform.
 - ACP v1 and durable `session/load` are supported. Per-session MCP configuration
   is not advertised yet; MCP servers come only from trusted user configuration.

@@ -3,7 +3,7 @@ source: apps/axiomcli/src/tui.rs
 assertion_line: 3447
 expression: "render_symbols(80, 20, &state)"
 ---
-  AXIOMCLI  /work/axiomcli        UNATTESTED DEV   glm-test · medium · confirm
+  AXIOMCLI  /work/axiomcli          NOT VERIFIED   glm-test · medium · confirm
 ────────────────────────────────────────────────────────────────────────────────
 
     profile.

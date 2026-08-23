@@ -1,6 +1,8 @@
 use std::{path::PathBuf, str::FromStr as _, sync::Arc};
 
 use anyhow::Context as _;
+#[cfg(feature = "development-provider")]
+use axiomcli::provider::AxiomProvider;
 use axiomcli::{
     AxiomError,
     agent::{
@@ -12,7 +14,7 @@ use axiomcli::{
     config::Config,
     planning::PlanArtifact,
     policy::{EffectClass, PolicyRule, RuleAction},
-    provider::{AxiomProvider, InferenceProvider},
+    provider::{InferenceProvider, SecureAxiomProvider},
     session::{ExportOptions, RetentionPolicy, SessionStore},
     tools::default_registry,
 };
@@ -179,8 +181,7 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Command::Models => {
-            let provider =
-                AxiomProvider::from_environment(&config.base_url, config.request_timeout())?;
+            let provider = build_provider(&config)?;
             for model in provider.models(CancellationToken::new()).await? {
                 println!("{}", model.id);
             }
@@ -338,10 +339,10 @@ fn init_tracing(acp_mode: bool) {
 }
 
 async fn doctor(config: &Config) {
-    println!("AxiomCLI development diagnostics");
+    println!("AxiomCLI diagnostics");
     println!("model: {}", config.model);
     println!("base URL: {}", config.base_url);
-    println!("security: unattested development");
+    println!("security: local attestation and E2EE required per inference request");
     println!("permission profile: {}", config.permission_profile);
     println!("SearXNG: {}", config.searxng_url);
     let endpoint = format!("{}/", config.searxng_url.trim_end_matches('/'));
@@ -495,7 +496,7 @@ async fn build_runner(config: &Config) -> anyhow::Result<Arc<dyn TurnRunner>> {
             _ => {}
         }
     }
-    let provider = AxiomProvider::from_environment(&config.base_url, config.request_timeout())?;
+    let provider = build_provider(config)?;
     let mut tools = default_registry(config.max_tool_output_bytes, &config.searxng_url)?;
     for tool in
         axiomcli::mcp::connect_tools(&config.mcp_servers, config.max_tool_output_bytes).await?
@@ -505,7 +506,7 @@ async fn build_runner(config: &Config) -> anyhow::Result<Arc<dyn TurnRunner>> {
     let policy_rules = config.policy_rules.clone();
     Ok(Arc::new(
         AgentEngine::with_limits(
-            Arc::new(provider),
+            provider,
             Arc::new(tools),
             config.model.clone(),
             AgentLimits {
@@ -518,6 +519,20 @@ async fn build_runner(config: &Config) -> anyhow::Result<Arc<dyn TurnRunner>> {
         )
         .with_policy_rules(policy_rules),
     ))
+}
+
+fn build_provider(config: &Config) -> anyhow::Result<Arc<dyn InferenceProvider>> {
+    #[cfg(feature = "development-provider")]
+    if std::env::var("AXIOMCLI_UNATTESTED_DEV").as_deref() == Ok("1") {
+        return Ok(Arc::new(AxiomProvider::from_environment(
+            &config.base_url,
+            config.request_timeout(),
+        )?));
+    }
+    Ok(Arc::new(SecureAxiomProvider::from_environment(
+        &config.base_url,
+        config.request_timeout(),
+    )?))
 }
 
 fn resolve_cwd(cwd: Option<PathBuf>) -> anyhow::Result<PathBuf> {

@@ -12,8 +12,8 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     AxiomError, Result,
     app::{
-        AppEvent, EventEnvelope, PermissionProfile, QuestionRequest, SessionId, ThinkingLevel,
-        TurnId,
+        AppEvent, EventEnvelope, PermissionProfile, QuestionRequest, SecurityStatus, SessionId,
+        ThinkingLevel, TurnId,
     },
     planning::{PlanArtifact, PlanState},
     policy::{
@@ -1067,8 +1067,8 @@ impl TurnRunner for AgentEngine {
             .map(|limit| (tokio::time::Instant::now() + limit, limit));
         events
             .send(AppEvent::ProviderStatusChanged {
-                connected: false,
-                detail: format!("Connecting to {} · UNATTESTED DEVELOPMENT", settings.model),
+                connected: true,
+                detail: format!("Preparing inference for {}", settings.model),
             })
             .await
             .map_err(|_| AxiomError::Cancelled)?;
@@ -1862,6 +1862,17 @@ async fn forward_provider_event(
     event: ProviderEvent,
 ) -> Result<()> {
     let event = match event {
+        ProviderEvent::SecurityState(state) => AppEvent::SecurityStatusChanged {
+            state: match state {
+                axiom_inference::ProviderSecurityState::Unverified => SecurityStatus::Unverified,
+                axiom_inference::ProviderSecurityState::Verifying => SecurityStatus::Verifying,
+                axiom_inference::ProviderSecurityState::Verified => SecurityStatus::Verified,
+                axiom_inference::ProviderSecurityState::Failed => SecurityStatus::Failed,
+                axiom_inference::ProviderSecurityState::UnattestedDevelopment => {
+                    SecurityStatus::UnattestedDevelopment
+                }
+            },
+        },
         ProviderEvent::Status { connected, detail } => {
             AppEvent::ProviderStatusChanged { connected, detail }
         }
@@ -1893,6 +1904,17 @@ async fn forward_compaction_provider_event(
     event: ProviderEvent,
 ) -> Result<()> {
     let event = match event {
+        ProviderEvent::SecurityState(state) => Some(AppEvent::SecurityStatusChanged {
+            state: match state {
+                axiom_inference::ProviderSecurityState::Unverified => SecurityStatus::Unverified,
+                axiom_inference::ProviderSecurityState::Verifying => SecurityStatus::Verifying,
+                axiom_inference::ProviderSecurityState::Verified => SecurityStatus::Verified,
+                axiom_inference::ProviderSecurityState::Failed => SecurityStatus::Failed,
+                axiom_inference::ProviderSecurityState::UnattestedDevelopment => {
+                    SecurityStatus::UnattestedDevelopment
+                }
+            },
+        }),
         ProviderEvent::Status { connected, detail } => {
             Some(AppEvent::ProviderStatusChanged { connected, detail })
         }

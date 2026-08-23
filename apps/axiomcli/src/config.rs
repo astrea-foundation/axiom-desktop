@@ -204,7 +204,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             model: "glm-5-2".into(),
-            base_url: "http://127.0.0.1:8484/v1".into(),
+            base_url: "https://api.axiom.stream".into(),
             permission_profile: PermissionProfile::Confirm,
             searxng_url: "http://127.0.0.1:8888".into(),
             max_agent_steps: None,

@@ -535,7 +535,7 @@ impl TuiState {
             slash_selection: 0,
             slash_selection_moved: false,
             profile,
-            security: "UNATTESTED DEV",
+            security: "NOT VERIFIED",
             input: String::new(),
             entries: vec![Entry {
                 id: 1,
@@ -948,8 +948,7 @@ impl TuiState {
             }
             AppEvent::ThinkingLevelChanged { level } => {
                 self.thinking = *level;
-                self.status =
-                    format!("Thinking set to {level} · development proxy transport pending");
+                self.status = format!("Thinking set to {level}");
             }
             AppEvent::ContextCompacted {
                 messages_before, ..
@@ -1135,6 +1134,8 @@ impl TuiState {
             }
             AppEvent::SecurityStatusChanged { state } => {
                 self.security = match state {
+                    crate::app::SecurityStatus::Unverified => "NOT VERIFIED",
+                    crate::app::SecurityStatus::Verifying => "VERIFYING",
                     crate::app::SecurityStatus::UnattestedDevelopment => "UNATTESTED DEV",
                     crate::app::SecurityStatus::Verified => "SECURE",
                     crate::app::SecurityStatus::Failed => "SECURITY FAILED",
@@ -5883,7 +5884,7 @@ mod tests {
                     .map(ratatui::buffer::Cell::symbol)
                     .collect::<String>();
                 assert!(contents.contains("AXIOMCLI"));
-                assert!(contents.contains("UNATTESTED DEV"));
+                assert!(contents.contains("NOT VERIFIED"));
                 if mode == ColorMode::NoColor {
                     assert!(
                         terminal
