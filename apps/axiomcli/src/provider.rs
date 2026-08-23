@@ -557,11 +557,11 @@ mod tests {
     use serde_json::json;
 
     fn request(model: &str) -> InferenceRequest {
-        InferenceRequest {
-            model: model.into(),
-            messages: vec![ChatMessage::text(ChatRole::User, "hello")],
-            tools: Vec::new(),
-        }
+        InferenceRequest::streaming(
+            model,
+            vec![ChatMessage::text(ChatRole::User, "hello")],
+            Vec::new(),
+        )
     }
 
     #[test]
@@ -818,10 +818,12 @@ mod tests {
                 .expect("models"),
             vec![
                 ModelInfo {
-                    id: "cherry-1".into()
+                    id: "cherry-1".into(),
+                    ..ModelInfo::default()
                 },
                 ModelInfo {
-                    id: "cherry-2".into()
+                    id: "cherry-2".into(),
+                    ..ModelInfo::default()
                 }
             ]
         );
@@ -897,14 +899,14 @@ mod tests {
         let (tx, _rx) = mpsc::channel(64);
         let turn = provider
             .stream(
-                InferenceRequest {
+                InferenceRequest::streaming(
                     model,
-                    messages: vec![ChatMessage::text(
+                    vec![ChatMessage::text(
                         ChatRole::User,
                         "Reply with the single word cherry.",
                     )],
-                    tools: Vec::new(),
-                },
+                    Vec::new(),
+                ),
                 tx,
                 CancellationToken::new(),
             )

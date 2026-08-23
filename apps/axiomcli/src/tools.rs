@@ -298,11 +298,12 @@ impl ToolRegistry {
             .tools
             .values()
             .map(|tool| ToolDefinition {
-                kind: "function",
+                kind: "function".into(),
                 function: FunctionDefinition {
                     name: tool.name().into(),
                     description: tool.description().into(),
                     parameters: tool.parameters(),
+                    strict: None,
                 },
             })
             .collect();
