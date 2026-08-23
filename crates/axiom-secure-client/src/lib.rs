@@ -6,6 +6,7 @@
 mod config;
 mod error;
 mod provider;
+mod providers;
 mod security;
 
 pub use config::{EndpointPolicy, SecureClientConfig, SecureClientLimits};
