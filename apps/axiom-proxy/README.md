@@ -27,3 +27,15 @@ go to stderr. Only numeric loopback bind addresses are accepted.
 Local clients authenticate with `Authorization: Bearer $AXIOM_PROXY_TOKEN`.
 They never receive the upstream Axiom credential. The proxy translates tool
 semantics but never executes or authorizes a tool.
+
+The local HTTP hop is plaintext by design and is protected by loopback binding,
+the independent bearer token, and the user's operating-system process boundary.
+The remote hop is never downgraded: every request performs fresh local provider
+attestation, establishes E2EE to the verified model key, and fails closed when
+evidence, TLS binding, encryption, stream ordering, or decryption is invalid.
+
+The packaged Linux sidecar remains dormant until a supervisor starts it. A
+desktop supervisor should generate the local token, pass both secrets through
+the child environment, parse exactly one readiness JSON object from stdout,
+consume metadata-only JSON logs from stderr, and terminate the child when the
+proxy toggle or application shuts down.

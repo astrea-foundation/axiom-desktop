@@ -55,7 +55,7 @@ enum Command {
     Acp,
     /// Check configuration and local dependencies.
     Doctor,
-    /// List models exposed by the configured development endpoint.
+    /// List models exposed by the configured secure Axiom service.
     Models,
     /// Inspect and manage durable local session journals.
     Sessions {

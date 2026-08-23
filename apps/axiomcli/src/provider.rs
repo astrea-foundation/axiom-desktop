@@ -1,24 +1,22 @@
-use std::{collections::BTreeMap, time::Duration};
+use std::time::Duration;
 
 use async_trait::async_trait;
+#[cfg(any(test, feature = "development-provider"))]
 use futures::StreamExt as _;
+#[cfg(any(test, feature = "development-provider"))]
 use secrecy::{ExposeSecret as _, SecretString};
+#[cfg(any(test, feature = "development-provider"))]
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use axiom_secure_client::{ApiCredential, SecureClient, SecureClientConfig, TrustPolicy};
 
-use crate::{AxiomError, Result, audit::redact_text};
+use crate::{AxiomError, Result};
 pub use axiom_inference::{
     AssistantTurn, ChatMessage, ChatRole, FunctionCall, FunctionDefinition, InferenceRequest,
     ModelInfo, ProviderEvent, ProviderFailureKind, ProviderSecurityState, ToolCall, ToolDefinition,
 };
-
-const MAX_PROVIDER_ERROR_BYTES: usize = 4 * 1024;
-const MAX_MODEL_CATALOG_BYTES: usize = 4 * 1024 * 1024;
-const MAX_PROVIDER_SSE_EVENT_BYTES: usize = 1024 * 1024;
-const MAX_PROVIDER_STREAM_BYTES: usize = 16 * 1024 * 1024;
 
 #[async_trait]
 pub trait InferenceProvider: Send + Sync {
@@ -176,515 +174,539 @@ fn map_secure_error(error: axiom_secure_client::SecureClientError) -> AxiomError
     }
 }
 
-pub struct AxiomProvider {
-    client: reqwest::Client,
-    base_url: String,
-    api_key: Option<SecretString>,
-}
+#[cfg(any(test, feature = "development-provider"))]
+mod development_provider {
+    use std::collections::BTreeMap;
 
-impl std::fmt::Debug for AxiomProvider {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("AxiomProvider")
-            .field("base_url", &self.base_url)
-            .field("api_key", &self.api_key.as_ref().map(|_| "[REDACTED]"))
-            .finish_non_exhaustive()
-    }
-}
+    use crate::audit::redact_text;
 
-impl AxiomProvider {
-    pub fn new(
-        base_url: impl Into<String>,
-        api_key: Option<String>,
-        timeout: Duration,
-    ) -> Result<Self> {
-        let base_url = base_url.into().trim_end_matches('/').to_owned();
-        reqwest::Url::parse(&base_url)
-            .map_err(|error| AxiomError::Config(format!("invalid provider URL: {error}")))?;
-        let client = reqwest::Client::builder()
-            .timeout(timeout)
-            .redirect(reqwest::redirect::Policy::limited(3))
-            .build()
-            .map_err(|error| AxiomError::Provider(error.to_string()))?;
-        Ok(Self {
-            client,
-            base_url,
-            api_key: api_key.map(|value| SecretString::new(value.into_boxed_str())),
-        })
+    use super::*;
+
+    const MAX_PROVIDER_ERROR_BYTES: usize = 4 * 1024;
+    pub(super) const MAX_MODEL_CATALOG_BYTES: usize = 4 * 1024 * 1024;
+    pub(super) const MAX_PROVIDER_SSE_EVENT_BYTES: usize = 1024 * 1024;
+    const MAX_PROVIDER_STREAM_BYTES: usize = 16 * 1024 * 1024;
+
+    pub struct AxiomProvider {
+        client: reqwest::Client,
+        base_url: String,
+        api_key: Option<SecretString>,
     }
 
-    pub fn from_environment(base_url: impl Into<String>, timeout: Duration) -> Result<Self> {
-        Self::new(base_url, std::env::var("AXIOM_API_KEY").ok(), timeout)
-    }
-
-    fn endpoint(&self) -> String {
-        format!("{}/chat/completions", self.base_url)
-    }
-
-    fn models_endpoint(&self) -> String {
-        format!("{}/models", self.base_url)
-    }
-
-    fn authenticated(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-        if let Some(api_key) = &self.api_key {
-            builder.bearer_auth(api_key.expose_secret())
-        } else {
-            builder
+    impl std::fmt::Debug for AxiomProvider {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter
+                .debug_struct("AxiomProvider")
+                .field("base_url", &self.base_url)
+                .field("api_key", &self.api_key.as_ref().map(|_| "[REDACTED]"))
+                .finish_non_exhaustive()
         }
     }
 
-    async fn send_with_retry(
-        &self,
-        body: &WireRequest<'_>,
-        request_id: &str,
-        cancellation: &CancellationToken,
-    ) -> Result<reqwest::Response> {
-        const ATTEMPTS: usize = 3;
-        for attempt in 0..ATTEMPTS {
-            let builder = self
-                .client
-                .post(self.endpoint())
-                .header("Idempotency-Key", request_id)
-                .header("X-AxiomCLI-Request-ID", request_id)
-                .json(body);
-            let response = tokio::select! {
-                () = cancellation.cancelled() => return Err(AxiomError::Cancelled),
-                response = self.authenticated(builder).send() => response,
-            };
-            match response {
-                Ok(response) if response.status().is_success() => return Ok(response),
-                Ok(response) => {
-                    let status = response.status();
-                    let retry_after = parse_retry_after(response.headers());
-                    if is_retryable_status(status) && attempt + 1 < ATTEMPTS {
-                        retry_delay(attempt, retry_after, request_id, cancellation).await?;
-                        continue;
-                    }
-                    let detail =
-                        read_response_prefix(response, MAX_PROVIDER_ERROR_BYTES, cancellation)
-                            .await
-                            .map_or_else(
-                                |_| "unreadable response".into(),
-                                |(bytes, truncated)| {
-                                    format!(
-                                        "{}{}",
-                                        String::from_utf8_lossy(&bytes),
-                                        if truncated { "…" } else { "" }
-                                    )
-                                },
-                            );
-                    return Err(provider_http_error(status, &detail));
-                }
-                Err(error)
-                    if (error.is_connect() || error.is_timeout()) && attempt + 1 < ATTEMPTS =>
-                {
-                    retry_delay(attempt, None, request_id, cancellation).await?;
-                }
-                Err(error) => {
-                    return Err(AxiomError::Provider(format!(
-                        "{}: {}",
-                        if error.is_timeout() {
-                            "transient timeout"
-                        } else if error.is_connect() {
-                            "transient connection failure"
-                        } else {
-                            "request failure"
-                        },
-                        error
-                    )));
-                }
-            }
-        }
-        Err(AxiomError::Provider("retry budget exhausted".into()))
-    }
-}
-
-#[derive(Serialize)]
-struct WireRequest<'a> {
-    model: &'a str,
-    messages: &'a [ChatMessage],
-    stream: bool,
-    stream_options: StreamOptions,
-    #[serde(skip_serializing_if = "tools_are_empty")]
-    tools: &'a [ToolDefinition],
-}
-
-fn tools_are_empty(tools: &&[ToolDefinition]) -> bool {
-    tools.is_empty()
-}
-
-#[derive(Serialize)]
-struct StreamOptions {
-    include_usage: bool,
-}
-
-#[derive(Debug, Deserialize)]
-struct ModelsResponse {
-    #[serde(default)]
-    data: Vec<ModelInfo>,
-}
-
-#[derive(Debug, Deserialize)]
-struct StreamChunk {
-    #[serde(default)]
-    choices: Vec<Choice>,
-    usage: Option<Usage>,
-}
-
-#[derive(Debug, Deserialize)]
-struct Choice {
-    delta: Delta,
-}
-
-#[derive(Debug, Default, Deserialize)]
-struct Delta {
-    content: Option<String>,
-    reasoning_content: Option<String>,
-    #[serde(default)]
-    tool_calls: Vec<ToolCallDelta>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ToolCallDelta {
-    index: usize,
-    id: Option<String>,
-    function: Option<FunctionDelta>,
-}
-
-#[derive(Debug, Deserialize)]
-struct FunctionDelta {
-    name: Option<String>,
-    arguments: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct Usage {
-    prompt_tokens: u64,
-    completion_tokens: u64,
-}
-
-#[derive(Default)]
-struct PartialToolCall {
-    id: String,
-    name: String,
-    arguments: String,
-}
-
-#[async_trait]
-impl InferenceProvider for AxiomProvider {
-    async fn stream(
-        &self,
-        request: InferenceRequest,
-        events: mpsc::Sender<ProviderEvent>,
-        cancellation: CancellationToken,
-    ) -> Result<AssistantTurn> {
-        let _ = events
-            .send(ProviderEvent::SecurityState(
-                ProviderSecurityState::UnattestedDevelopment,
-            ))
-            .await;
-        let body = WireRequest {
-            model: &request.model,
-            messages: &request.messages,
-            stream: true,
-            stream_options: StreamOptions {
-                include_usage: true,
-            },
-            tools: &request.tools,
-        };
-        let request_id = uuid::Uuid::new_v4().to_string();
-        let response = self
-            .send_with_retry(&body, &request_id, &cancellation)
-            .await?;
-        events
-            .send(ProviderEvent::Status {
-                connected: true,
-                detail: "Axiom development inference connected · UNATTESTED".into(),
+    impl AxiomProvider {
+        pub fn new(
+            base_url: impl Into<String>,
+            api_key: Option<String>,
+            timeout: Duration,
+        ) -> Result<Self> {
+            let base_url = base_url.into().trim_end_matches('/').to_owned();
+            reqwest::Url::parse(&base_url)
+                .map_err(|error| AxiomError::Config(format!("invalid provider URL: {error}")))?;
+            let client = reqwest::Client::builder()
+                .timeout(timeout)
+                .redirect(reqwest::redirect::Policy::limited(3))
+                .build()
+                .map_err(|error| AxiomError::Provider(error.to_string()))?;
+            Ok(Self {
+                client,
+                base_url,
+                api_key: api_key.map(|value| SecretString::new(value.into_boxed_str())),
             })
-            .await
-            .map_err(|_| AxiomError::Cancelled)?;
+        }
 
-        let mut stream = response.bytes_stream();
-        let mut text = String::new();
-        let mut partial_calls: BTreeMap<usize, PartialToolCall> = BTreeMap::new();
-        let mut saw_done = false;
-        let mut stream_bytes = 0_usize;
-        let mut event_buffer = Vec::new();
-        loop {
-            let next = tokio::select! {
-                () = cancellation.cancelled() => return Err(AxiomError::Cancelled),
-                next = stream.next() => next,
-            };
-            let Some(event) = next else { break };
-            let bytes = event.map_err(|error| AxiomError::Provider(error.to_string()))?;
-            stream_bytes = stream_bytes.saturating_add(bytes.len());
-            if stream_bytes > MAX_PROVIDER_STREAM_BYTES {
-                return Err(AxiomError::Provider(
-                    "provider stream exceeded the 16 MiB turn limit".into(),
-                ));
+        #[cfg(feature = "development-provider")]
+        pub fn from_environment(base_url: impl Into<String>, timeout: Duration) -> Result<Self> {
+            Self::new(base_url, std::env::var("AXIOM_API_KEY").ok(), timeout)
+        }
+
+        fn endpoint(&self) -> String {
+            format!("{}/chat/completions", self.base_url)
+        }
+
+        fn models_endpoint(&self) -> String {
+            format!("{}/models", self.base_url)
+        }
+
+        fn authenticated(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+            if let Some(api_key) = &self.api_key {
+                builder.bearer_auth(api_key.expose_secret())
+            } else {
+                builder
             }
-            event_buffer.extend_from_slice(&bytes);
-            while let Some((boundary, delimiter_bytes)) = sse_boundary(&event_buffer) {
-                if boundary > MAX_PROVIDER_SSE_EVENT_BYTES {
+        }
+
+        async fn send_with_retry(
+            &self,
+            body: &WireRequest<'_>,
+            request_id: &str,
+            cancellation: &CancellationToken,
+        ) -> Result<reqwest::Response> {
+            const ATTEMPTS: usize = 3;
+            for attempt in 0..ATTEMPTS {
+                let builder = self
+                    .client
+                    .post(self.endpoint())
+                    .header("Idempotency-Key", request_id)
+                    .header("X-AxiomCLI-Request-ID", request_id)
+                    .json(body);
+                let response = tokio::select! {
+                    () = cancellation.cancelled() => return Err(AxiomError::Cancelled),
+                    response = self.authenticated(builder).send() => response,
+                };
+                match response {
+                    Ok(response) if response.status().is_success() => return Ok(response),
+                    Ok(response) => {
+                        let status = response.status();
+                        let retry_after = parse_retry_after(response.headers());
+                        if is_retryable_status(status) && attempt + 1 < ATTEMPTS {
+                            retry_delay(attempt, retry_after, request_id, cancellation).await?;
+                            continue;
+                        }
+                        let detail =
+                            read_response_prefix(response, MAX_PROVIDER_ERROR_BYTES, cancellation)
+                                .await
+                                .map_or_else(
+                                    |_| "unreadable response".into(),
+                                    |(bytes, truncated)| {
+                                        format!(
+                                            "{}{}",
+                                            String::from_utf8_lossy(&bytes),
+                                            if truncated { "…" } else { "" }
+                                        )
+                                    },
+                                );
+                        return Err(provider_http_error(status, &detail));
+                    }
+                    Err(error)
+                        if (error.is_connect() || error.is_timeout()) && attempt + 1 < ATTEMPTS =>
+                    {
+                        retry_delay(attempt, None, request_id, cancellation).await?;
+                    }
+                    Err(error) => {
+                        return Err(AxiomError::Provider(format!(
+                            "{}: {}",
+                            if error.is_timeout() {
+                                "transient timeout"
+                            } else if error.is_connect() {
+                                "transient connection failure"
+                            } else {
+                                "request failure"
+                            },
+                            error
+                        )));
+                    }
+                }
+            }
+            Err(AxiomError::Provider("retry budget exhausted".into()))
+        }
+    }
+
+    #[derive(Serialize)]
+    struct WireRequest<'a> {
+        model: &'a str,
+        messages: &'a [ChatMessage],
+        stream: bool,
+        stream_options: StreamOptions,
+        #[serde(skip_serializing_if = "tools_are_empty")]
+        tools: &'a [ToolDefinition],
+    }
+
+    fn tools_are_empty(tools: &&[ToolDefinition]) -> bool {
+        tools.is_empty()
+    }
+
+    #[derive(Serialize)]
+    struct StreamOptions {
+        include_usage: bool,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct ModelsResponse {
+        #[serde(default)]
+        data: Vec<ModelInfo>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct StreamChunk {
+        #[serde(default)]
+        choices: Vec<Choice>,
+        usage: Option<Usage>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct Choice {
+        delta: Delta,
+    }
+
+    #[derive(Debug, Default, Deserialize)]
+    struct Delta {
+        content: Option<String>,
+        reasoning_content: Option<String>,
+        #[serde(default)]
+        tool_calls: Vec<ToolCallDelta>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct ToolCallDelta {
+        index: usize,
+        id: Option<String>,
+        function: Option<FunctionDelta>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct FunctionDelta {
+        name: Option<String>,
+        arguments: Option<String>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct Usage {
+        prompt_tokens: u64,
+        completion_tokens: u64,
+    }
+
+    #[derive(Default)]
+    struct PartialToolCall {
+        id: String,
+        name: String,
+        arguments: String,
+    }
+
+    #[async_trait]
+    impl InferenceProvider for AxiomProvider {
+        async fn stream(
+            &self,
+            request: InferenceRequest,
+            events: mpsc::Sender<ProviderEvent>,
+            cancellation: CancellationToken,
+        ) -> Result<AssistantTurn> {
+            let _ = events
+                .send(ProviderEvent::SecurityState(
+                    ProviderSecurityState::UnattestedDevelopment,
+                ))
+                .await;
+            let body = WireRequest {
+                model: &request.model,
+                messages: &request.messages,
+                stream: true,
+                stream_options: StreamOptions {
+                    include_usage: true,
+                },
+                tools: &request.tools,
+            };
+            let request_id = uuid::Uuid::new_v4().to_string();
+            let response = self
+                .send_with_retry(&body, &request_id, &cancellation)
+                .await?;
+            events
+                .send(ProviderEvent::Status {
+                    connected: true,
+                    detail: "Axiom development inference connected · UNATTESTED".into(),
+                })
+                .await
+                .map_err(|_| AxiomError::Cancelled)?;
+
+            let mut stream = response.bytes_stream();
+            let mut text = String::new();
+            let mut partial_calls: BTreeMap<usize, PartialToolCall> = BTreeMap::new();
+            let mut saw_done = false;
+            let mut stream_bytes = 0_usize;
+            let mut event_buffer = Vec::new();
+            loop {
+                let next = tokio::select! {
+                    () = cancellation.cancelled() => return Err(AxiomError::Cancelled),
+                    next = stream.next() => next,
+                };
+                let Some(event) = next else { break };
+                let bytes = event.map_err(|error| AxiomError::Provider(error.to_string()))?;
+                stream_bytes = stream_bytes.saturating_add(bytes.len());
+                if stream_bytes > MAX_PROVIDER_STREAM_BYTES {
+                    return Err(AxiomError::Provider(
+                        "provider stream exceeded the 16 MiB turn limit".into(),
+                    ));
+                }
+                event_buffer.extend_from_slice(&bytes);
+                while let Some((boundary, delimiter_bytes)) = sse_boundary(&event_buffer) {
+                    if boundary > MAX_PROVIDER_SSE_EVENT_BYTES {
+                        return Err(AxiomError::Provider(
+                            "provider SSE event exceeded 1 MiB".into(),
+                        ));
+                    }
+                    let remainder =
+                        event_buffer.split_off(boundary.saturating_add(delimiter_bytes));
+                    let raw_event = std::mem::replace(&mut event_buffer, remainder);
+                    let raw_event = &raw_event[..boundary];
+                    if let Some(data) = sse_data(raw_event)?
+                        && process_stream_data(&data, &mut text, &mut partial_calls, &events)
+                            .await?
+                    {
+                        saw_done = true;
+                        break;
+                    }
+                }
+                if saw_done {
+                    break;
+                }
+                if event_buffer.len() > MAX_PROVIDER_SSE_EVENT_BYTES {
                     return Err(AxiomError::Provider(
                         "provider SSE event exceeded 1 MiB".into(),
                     ));
                 }
-                let remainder = event_buffer.split_off(boundary.saturating_add(delimiter_bytes));
-                let raw_event = std::mem::replace(&mut event_buffer, remainder);
-                let raw_event = &raw_event[..boundary];
-                if let Some(data) = sse_data(raw_event)?
-                    && process_stream_data(&data, &mut text, &mut partial_calls, &events).await?
-                {
-                    saw_done = true;
-                    break;
-                }
             }
-            if saw_done {
-                break;
-            }
-            if event_buffer.len() > MAX_PROVIDER_SSE_EVENT_BYTES {
+
+            if !saw_done {
                 return Err(AxiomError::Provider(
-                    "provider SSE event exceeded 1 MiB".into(),
+                    "provider stream ended before [DONE]".into(),
                 ));
             }
+
+            let tool_calls = partial_calls
+                .into_values()
+                .map(|call| {
+                    if call.id.is_empty() || call.name.is_empty() {
+                        return Err(AxiomError::Provider(
+                            "provider returned an incomplete tool call".into(),
+                        ));
+                    }
+                    Ok(ToolCall {
+                        id: call.id,
+                        kind: "function".into(),
+                        function: FunctionCall {
+                            name: call.name,
+                            arguments: call.arguments,
+                        },
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            Ok(AssistantTurn { text, tool_calls })
         }
 
-        if !saw_done {
-            return Err(AxiomError::Provider(
-                "provider stream ended before [DONE]".into(),
-            ));
+        async fn models(&self, cancellation: CancellationToken) -> Result<Vec<ModelInfo>> {
+            let request = self.authenticated(self.client.get(self.models_endpoint()));
+            let response = tokio::select! {
+                () = cancellation.cancelled() => return Err(AxiomError::Cancelled),
+                response = request.send() => response.map_err(|error| AxiomError::Provider(error.to_string()))?,
+            };
+            if !response.status().is_success() {
+                let status = response.status();
+                let detail =
+                    read_response_prefix(response, MAX_PROVIDER_ERROR_BYTES, &cancellation)
+                        .await
+                        .map_or_else(
+                            |_| "unreadable response".into(),
+                            |(bytes, truncated)| {
+                                format!(
+                                    "{}{}",
+                                    String::from_utf8_lossy(&bytes),
+                                    if truncated { "…" } else { "" }
+                                )
+                            },
+                        );
+                return Err(provider_http_error(status, &detail));
+            }
+            let (payload, truncated) =
+                read_response_prefix(response, MAX_MODEL_CATALOG_BYTES, &cancellation).await?;
+            if truncated {
+                return Err(AxiomError::Provider(format!(
+                    "provider model catalog exceeded {MAX_MODEL_CATALOG_BYTES} bytes"
+                )));
+            }
+            let models = serde_json::from_slice::<ModelsResponse>(&payload)
+                .map_err(|error| AxiomError::Provider(format!("invalid model catalog: {error}")))?
+                .data;
+            if models.len() > 10_000 {
+                return Err(AxiomError::Provider(
+                    "provider model catalog exceeded 10,000 entries".into(),
+                ));
+            }
+            Ok(models)
         }
+    }
 
-        let tool_calls = partial_calls
-            .into_values()
-            .map(|call| {
-                if call.id.is_empty() || call.name.is_empty() {
+    async fn read_response_prefix(
+        response: reqwest::Response,
+        maximum: usize,
+        cancellation: &CancellationToken,
+    ) -> Result<(Vec<u8>, bool)> {
+        if response
+            .content_length()
+            .is_some_and(|length| length > maximum as u64)
+        {
+            return Ok((Vec::new(), true));
+        }
+        let mut bytes = Vec::new();
+        let mut stream = response.bytes_stream();
+        while let Some(chunk) = tokio::select! {
+            () = cancellation.cancelled() => return Err(AxiomError::Cancelled),
+            chunk = stream.next() => chunk,
+        } {
+            let chunk = chunk.map_err(|error| AxiomError::Provider(error.to_string()))?;
+            let remaining = maximum.saturating_sub(bytes.len());
+            bytes.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+            if chunk.len() > remaining {
+                return Ok((bytes, true));
+            }
+        }
+        Ok((bytes, false))
+    }
+
+    fn sse_boundary(bytes: &[u8]) -> Option<(usize, usize)> {
+        let lf = bytes.windows(2).position(|window| window == b"\n\n");
+        let crlf = bytes.windows(4).position(|window| window == b"\r\n\r\n");
+        match (lf, crlf) {
+            (Some(left), Some(right)) if left <= right => Some((left, 2)),
+            (Some(_) | None, Some(right)) => Some((right, 4)),
+            (Some(left), None) => Some((left, 2)),
+            (None, None) => None,
+        }
+    }
+
+    fn sse_data(raw: &[u8]) -> Result<Option<String>> {
+        let raw = std::str::from_utf8(raw)
+            .map_err(|_| AxiomError::Provider("provider SSE event was not valid UTF-8".into()))?;
+        let mut data = Vec::new();
+        for line in raw.lines() {
+            let line = line.trim_end_matches('\r');
+            if let Some(value) = line.strip_prefix("data:") {
+                data.push(value.strip_prefix(' ').unwrap_or(value));
+            }
+        }
+        Ok((!data.is_empty()).then(|| data.join("\n")))
+    }
+
+    async fn process_stream_data(
+        data: &str,
+        text: &mut String,
+        partial_calls: &mut BTreeMap<usize, PartialToolCall>,
+        events: &mpsc::Sender<ProviderEvent>,
+    ) -> Result<bool> {
+        if data.trim() == "[DONE]" {
+            return Ok(true);
+        }
+        let chunk: StreamChunk = serde_json::from_str(data)
+            .map_err(|error| AxiomError::Provider(format!("invalid SSE chunk: {error}")))?;
+        for choice in chunk.choices {
+            if let Some(delta) = choice.delta.content {
+                text.push_str(&delta);
+                events
+                    .send(ProviderEvent::TextDelta(delta))
+                    .await
+                    .map_err(|_| AxiomError::Cancelled)?;
+            }
+            if let Some(delta) = choice.delta.reasoning_content {
+                events
+                    .send(ProviderEvent::ReasoningDelta(delta))
+                    .await
+                    .map_err(|_| AxiomError::Cancelled)?;
+            }
+            for delta in choice.delta.tool_calls {
+                if delta.index >= 1024 {
                     return Err(AxiomError::Provider(
-                        "provider returned an incomplete tool call".into(),
+                        "provider returned more than 1,024 indexed tool calls".into(),
                     ));
                 }
-                Ok(ToolCall {
-                    id: call.id,
-                    kind: "function".into(),
-                    function: FunctionCall {
-                        name: call.name,
-                        arguments: call.arguments,
-                    },
+                let call = partial_calls.entry(delta.index).or_default();
+                if let Some(id) = delta.id {
+                    call.id = id;
+                }
+                if let Some(function) = delta.function {
+                    if let Some(name) = function.name {
+                        call.name.push_str(&name);
+                    }
+                    if let Some(arguments) = function.arguments {
+                        call.arguments.push_str(&arguments);
+                    }
+                }
+            }
+        }
+        if let Some(usage) = chunk.usage {
+            events
+                .send(ProviderEvent::Usage {
+                    input_tokens: usage.prompt_tokens,
+                    output_tokens: usage.completion_tokens,
                 })
-            })
-            .collect::<Result<Vec<_>>>()?;
-        Ok(AssistantTurn { text, tool_calls })
-    }
-
-    async fn models(&self, cancellation: CancellationToken) -> Result<Vec<ModelInfo>> {
-        let request = self.authenticated(self.client.get(self.models_endpoint()));
-        let response = tokio::select! {
-            () = cancellation.cancelled() => return Err(AxiomError::Cancelled),
-            response = request.send() => response.map_err(|error| AxiomError::Provider(error.to_string()))?,
-        };
-        if !response.status().is_success() {
-            let status = response.status();
-            let detail = read_response_prefix(response, MAX_PROVIDER_ERROR_BYTES, &cancellation)
-                .await
-                .map_or_else(
-                    |_| "unreadable response".into(),
-                    |(bytes, truncated)| {
-                        format!(
-                            "{}{}",
-                            String::from_utf8_lossy(&bytes),
-                            if truncated { "…" } else { "" }
-                        )
-                    },
-                );
-            return Err(provider_http_error(status, &detail));
-        }
-        let (payload, truncated) =
-            read_response_prefix(response, MAX_MODEL_CATALOG_BYTES, &cancellation).await?;
-        if truncated {
-            return Err(AxiomError::Provider(format!(
-                "provider model catalog exceeded {MAX_MODEL_CATALOG_BYTES} bytes"
-            )));
-        }
-        let models = serde_json::from_slice::<ModelsResponse>(&payload)
-            .map_err(|error| AxiomError::Provider(format!("invalid model catalog: {error}")))?
-            .data;
-        if models.len() > 10_000 {
-            return Err(AxiomError::Provider(
-                "provider model catalog exceeded 10,000 entries".into(),
-            ));
-        }
-        Ok(models)
-    }
-}
-
-async fn read_response_prefix(
-    response: reqwest::Response,
-    maximum: usize,
-    cancellation: &CancellationToken,
-) -> Result<(Vec<u8>, bool)> {
-    if response
-        .content_length()
-        .is_some_and(|length| length > maximum as u64)
-    {
-        return Ok((Vec::new(), true));
-    }
-    let mut bytes = Vec::new();
-    let mut stream = response.bytes_stream();
-    while let Some(chunk) = tokio::select! {
-        () = cancellation.cancelled() => return Err(AxiomError::Cancelled),
-        chunk = stream.next() => chunk,
-    } {
-        let chunk = chunk.map_err(|error| AxiomError::Provider(error.to_string()))?;
-        let remaining = maximum.saturating_sub(bytes.len());
-        bytes.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
-        if chunk.len() > remaining {
-            return Ok((bytes, true));
-        }
-    }
-    Ok((bytes, false))
-}
-
-fn sse_boundary(bytes: &[u8]) -> Option<(usize, usize)> {
-    let lf = bytes.windows(2).position(|window| window == b"\n\n");
-    let crlf = bytes.windows(4).position(|window| window == b"\r\n\r\n");
-    match (lf, crlf) {
-        (Some(left), Some(right)) if left <= right => Some((left, 2)),
-        (Some(_) | None, Some(right)) => Some((right, 4)),
-        (Some(left), None) => Some((left, 2)),
-        (None, None) => None,
-    }
-}
-
-fn sse_data(raw: &[u8]) -> Result<Option<String>> {
-    let raw = std::str::from_utf8(raw)
-        .map_err(|_| AxiomError::Provider("provider SSE event was not valid UTF-8".into()))?;
-    let mut data = Vec::new();
-    for line in raw.lines() {
-        let line = line.trim_end_matches('\r');
-        if let Some(value) = line.strip_prefix("data:") {
-            data.push(value.strip_prefix(' ').unwrap_or(value));
-        }
-    }
-    Ok((!data.is_empty()).then(|| data.join("\n")))
-}
-
-async fn process_stream_data(
-    data: &str,
-    text: &mut String,
-    partial_calls: &mut BTreeMap<usize, PartialToolCall>,
-    events: &mpsc::Sender<ProviderEvent>,
-) -> Result<bool> {
-    if data.trim() == "[DONE]" {
-        return Ok(true);
-    }
-    let chunk: StreamChunk = serde_json::from_str(data)
-        .map_err(|error| AxiomError::Provider(format!("invalid SSE chunk: {error}")))?;
-    for choice in chunk.choices {
-        if let Some(delta) = choice.delta.content {
-            text.push_str(&delta);
-            events
-                .send(ProviderEvent::TextDelta(delta))
                 .await
                 .map_err(|_| AxiomError::Cancelled)?;
         }
-        if let Some(delta) = choice.delta.reasoning_content {
-            events
-                .send(ProviderEvent::ReasoningDelta(delta))
-                .await
-                .map_err(|_| AxiomError::Cancelled)?;
-        }
-        for delta in choice.delta.tool_calls {
-            if delta.index >= 1024 {
-                return Err(AxiomError::Provider(
-                    "provider returned more than 1,024 indexed tool calls".into(),
-                ));
-            }
-            let call = partial_calls.entry(delta.index).or_default();
-            if let Some(id) = delta.id {
-                call.id = id;
-            }
-            if let Some(function) = delta.function {
-                if let Some(name) = function.name {
-                    call.name.push_str(&name);
-                }
-                if let Some(arguments) = function.arguments {
-                    call.arguments.push_str(&arguments);
-                }
-            }
+        Ok(false)
+    }
+
+    fn is_retryable_status(status: reqwest::StatusCode) -> bool {
+        matches!(status.as_u16(), 429 | 502 | 503 | 504)
+    }
+
+    #[must_use]
+    pub fn classify_provider_status(status: reqwest::StatusCode) -> ProviderFailureKind {
+        match status.as_u16() {
+            401 | 403 => ProviderFailureKind::Authentication,
+            429 => ProviderFailureKind::RateLimited,
+            502..=504 => ProviderFailureKind::Transient,
+            400..=499 => ProviderFailureKind::InvalidRequest,
+            _ => ProviderFailureKind::InvalidResponse,
         }
     }
-    if let Some(usage) = chunk.usage {
-        events
-            .send(ProviderEvent::Usage {
-                input_tokens: usage.prompt_tokens,
-                output_tokens: usage.completion_tokens,
-            })
-            .await
-            .map_err(|_| AxiomError::Cancelled)?;
+
+    fn provider_http_error(status: reqwest::StatusCode, detail: &str) -> AxiomError {
+        AxiomError::Provider(format!(
+            "{:?} HTTP {status}: {}",
+            classify_provider_status(status),
+            truncate(&redact_text(detail), 4096)
+        ))
     }
-    Ok(false)
-}
 
-fn is_retryable_status(status: reqwest::StatusCode) -> bool {
-    matches!(status.as_u16(), 429 | 502 | 503 | 504)
-}
-
-#[must_use]
-pub fn classify_provider_status(status: reqwest::StatusCode) -> ProviderFailureKind {
-    match status.as_u16() {
-        401 | 403 => ProviderFailureKind::Authentication,
-        429 => ProviderFailureKind::RateLimited,
-        502..=504 => ProviderFailureKind::Transient,
-        400..=499 => ProviderFailureKind::InvalidRequest,
-        _ => ProviderFailureKind::InvalidResponse,
+    fn parse_retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+        headers
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok())
+            .map(|seconds| Duration::from_secs(seconds.min(30)))
     }
-}
 
-fn provider_http_error(status: reqwest::StatusCode, detail: &str) -> AxiomError {
-    AxiomError::Provider(format!(
-        "{:?} HTTP {status}: {}",
-        classify_provider_status(status),
-        truncate(&redact_text(detail), 4096)
-    ))
-}
+    async fn retry_delay(
+        attempt: usize,
+        retry_after: Option<Duration>,
+        request_id: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<()> {
+        let jitter = request_id
+            .bytes()
+            .fold(0_u64, |total, byte| total.wrapping_add(u64::from(byte)))
+            % 83;
+        let exponential = 100_u64.saturating_mul(1_u64 << attempt.min(8));
+        let delay = retry_after.unwrap_or_else(|| Duration::from_millis(exponential + jitter));
+        tokio::select! {
+            () = cancellation.cancelled() => Err(AxiomError::Cancelled),
+            () = tokio::time::sleep(delay) => Ok(()),
+        }
+    }
 
-fn parse_retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
-    headers
-        .get(reqwest::header::RETRY_AFTER)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse::<u64>().ok())
-        .map(|seconds| Duration::from_secs(seconds.min(30)))
-}
-
-async fn retry_delay(
-    attempt: usize,
-    retry_after: Option<Duration>,
-    request_id: &str,
-    cancellation: &CancellationToken,
-) -> Result<()> {
-    let jitter = request_id
-        .bytes()
-        .fold(0_u64, |total, byte| total.wrapping_add(u64::from(byte)))
-        % 83;
-    let exponential = 100_u64.saturating_mul(1_u64 << attempt.min(8));
-    let delay = retry_after.unwrap_or_else(|| Duration::from_millis(exponential + jitter));
-    tokio::select! {
-        () = cancellation.cancelled() => Err(AxiomError::Cancelled),
-        () = tokio::time::sleep(delay) => Ok(()),
+    pub(super) fn truncate(input: &str, max_bytes: usize) -> String {
+        if input.len() <= max_bytes {
+            return input.into();
+        }
+        let mut end = max_bytes;
+        while !input.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}…", &input[..end])
     }
 }
 
-fn truncate(input: &str, max_bytes: usize) -> String {
-    if input.len() <= max_bytes {
-        return input.into();
-    }
-    let mut end = max_bytes;
-    while !input.is_char_boundary(end) {
-        end -= 1;
-    }
-    format!("{}…", &input[..end])
-}
+#[cfg(feature = "development-provider")]
+pub use development_provider::AxiomProvider;
+
+#[cfg(test)]
+use development_provider::*;
 
 #[cfg(test)]
 mod tests {

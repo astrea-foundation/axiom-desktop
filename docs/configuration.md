@@ -143,10 +143,21 @@ The command appends atomically and accepts only `ask` or `deny`.
 | `AXIOMCLI_ASCII=1` | replaces decorative Unicode glyphs |
 | `AXIOMCLI_REDUCED_MOTION=1` | disables animation |
 
+`axiom-proxy` is configured separately because the future desktop app will
+supervise it as a sidecar:
+
+| Variable | Meaning |
+|---|---|
+| `AXIOM_API_KEY` | upstream Axiom credential, held only by the sidecar |
+| `AXIOM_PROXY_TOKEN` | independent 32+ byte local-client bearer token |
+| `AXIOM_BASE_URL` | Axiom relay URL; defaults to `https://api.axiom.stream` |
+| `AXIOM_PROXY_BIND` | numeric loopback address; defaults to `127.0.0.1:8484` |
+| `AXIOM_PROXY_MAX_CONCURRENCY` | bounded simultaneous requests; defaults to 8 |
+
 The old unattested adapter is not part of the default build. For deliberate
 local protocol development only, compile with `development-provider` and set
 `AXIOMCLI_UNATTESTED_DEV=1`. Never distribute that feature as a production
-binary.
+binary. See the provider migration note for the exact quarantine boundary.
 
 With animation enabled, active task cards redraw while foreground/background
 work or a short completion transition is active. The blossom uses a weighted

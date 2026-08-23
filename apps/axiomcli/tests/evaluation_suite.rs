@@ -11,8 +11,8 @@ use axiomcli::{
     agent::{APP_EVENT_QUEUE_CAPACITY, AgentEngine, AgentLimits, TurnContext, TurnRunner},
     app::{AppEvent, PermissionProfile, SessionId, TurnId},
     provider::{
-        AssistantTurn, AxiomProvider, FunctionCall, InferenceProvider, InferenceRequest,
-        ProviderEvent, ToolCall,
+        AssistantTurn, FunctionCall, InferenceProvider, InferenceRequest, ProviderEvent,
+        SecureAxiomProvider, ToolCall,
     },
     tools::default_registry,
     workspace::Workspace,
@@ -457,7 +457,7 @@ async fn live_model_investigation_baseline_is_budgeted_and_non_mutating() {
         .expect("fixture");
         let before = hash(root.path(), "docs/fixture.md");
         let provider = Arc::new(
-            AxiomProvider::from_environment(&base_url, Duration::from_secs(90))
+            SecureAxiomProvider::from_environment(&base_url, Duration::from_secs(90))
                 .expect("live provider"),
         );
         let engine = AgentEngine::with_limits(

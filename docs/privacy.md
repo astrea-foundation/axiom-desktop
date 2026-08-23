@@ -1,9 +1,30 @@
 # Privacy behavior
 
-AxiomCLI is currently an unattested development client. Prompts, selected
-workspace content, tool schemas, and tool results needed for a turn are sent to
-the configured inference endpoint. The current build does not provide TEE
-attestation or end-to-end encryption and never labels this connection secure.
+AxiomCLI's default build performs provider attestation and end-to-end
+encryption directly in-process through `axiom-secure-client`; it does not route
+inference through the local proxy. For each inference request it fetches fresh
+evidence, verifies the nonce, selected model, provider signing key, Intel and
+NVIDIA evidence, and exact live TLS SPKI binding, then encrypts secret-bearing
+fields to the verified model key. An attestation, binding, encryption, or
+decryption failure stops the request without a plaintext or TLS-only fallback.
+
+The Axiom relay necessarily sees authentication, billing, routing, provider and
+model identifiers, public client key material, ciphertext, bounded inference
+parameters, usage, and terminal status. It must not see plaintext prompts,
+conversation content, reasoning, refusals, model output, tool names,
+descriptions, schemas, arguments, or results. Current evidence verifies genuine
+hardware and the runtime-provided workload manifest, but does not yet enforce
+an Axiom-approved workload measurement allowlist. Status text and audit
+evidence preserve that distinction.
+
+`axiom-proxy` accepts plaintext OpenAI-compatible requests from authenticated
+clients on loopback, then uses the same secure client for the remote hop. A
+local process holding `AXIOM_PROXY_TOKEN` can submit and receive that plaintext;
+the operating-system process boundary and careful token distribution are
+therefore part of the local trust model. The sidecar never gives clients
+`AXIOM_API_KEY`, never executes model-proposed tools, and rejects non-loopback
+bind addresses. It emits metadata-only lifecycle records to stderr and a
+bounded readiness object to stdout.
 
 Local reads, edits, Git inspection, and process execution happen on the user’s
 machine. On supported Linux builds, child commands run through Bubblewrap with
@@ -36,4 +57,12 @@ manually only when permanent local-data deletion is intended.
 
 Provider credentials are accepted only through `AXIOM_API_KEY`, wrapped as a
 secret in memory, redacted from debug output, excluded from child environments,
-and absent from deterministic tests and release artifacts.
+and absent from deterministic tests and release artifacts. Proxy clients use a
+separate generated `AXIOM_PROXY_TOKEN`. Ordinary logs, panic messages, security
+receipts, and desktop control messages must contain only bounded metadata and
+fingerprints—not credentials, key pairs, shared secrets, ciphertext dumps,
+plaintext request/response fields, or raw attestation artifacts.
+
+The legacy plaintext provider is compiled only for tests or with the explicit
+`development-provider` Cargo feature. Selecting it also requires
+`AXIOMCLI_UNATTESTED_DEV=1`; default and packaged binaries cannot select it.

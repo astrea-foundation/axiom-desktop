@@ -21,8 +21,10 @@ cannot be introduced by repository configuration. The Rust policy engine decides
 whether normalized effects may run. A user approval is authority only for the
 operation and scope shown in the approval request.
 
-Development Axiom inference is unattested. The implementation must never label
-it secure or silently imply that later TEE/E2EE guarantees already apply.
+The default inference implementation is the secure provider. The old plaintext
+adapter is absent from default/package selection and requires both a deliberate
+Cargo feature and runtime opt-in; that mode must always report
+`UNATTESTED DEV`.
 
 ## Production inference trust boundary
 
@@ -84,8 +86,8 @@ external coding client and its deterministic permission system.
 
 ## Deferred threats
 
-- Production attestation and E2EE remain unreleased until every stage in the
-  secure-inference plan passes its protocol-specific review.
+- Approved Axiom workload measurement/manifest allowlisting is not enforced
+  yet. Current evidence must not be described as approved-code identity.
 - OS-level sandbox availability differs by platform and will supplement, not
   replace, application policy.
 - Multi-user remote ACP transports are not supported by the first version.
@@ -93,7 +95,7 @@ external coding client and its deterministic permission system.
 
 ## Release-candidate security audit
 
-Reviewed 2026-08-22 for the supported Linux x86-64 GNU development release.
+Reviewed 2026-08-23 for the supported Linux x86-64 GNU early release candidate.
 Severity refers to impact inside the advertised scope; a passing row means the
 control and its regression evidence are present, not that the underlying model
 or external service is trusted.
@@ -111,9 +113,10 @@ or external service is trusted.
 | Terminal control injection | high | closed: content sanitization, no raw model ANSI, snapshots and PTY restoration tests |
 | Resource exhaustion from streams/tools/journals | high | closed to recorded bounds: step/context/output/time caps, bounded exports, soak gates |
 | Dependency/advisory/license or artifact tampering | high | closed: lockfile, Cargo Deny, reproducible tar, SHA-256, detached signature verification, license inventory |
+| Malformed secure-provider wire input | high | closed to recorded bounds: ciphertext/evidence/SSE/request/tool-fragment fuzz entry points, properties, fixture negatives |
+| Proxy stream/cancellation resource leak | high | closed on Linux: process soak checks bounded file descriptors and resident memory after completed/cancelled streams |
 
 No blocker/high-severity item remains open within this release’s stated scope.
-Unattested plaintext inference is an explicit product limitation rather than a
-silently accepted secure path: this build says `UNATTESTED DEV`, and production
-TEE/E2EE remains a separate future security program. Local journals are not
+The remaining workload-allowlist limitation is disclosed independently of the
+verified vendor evidence and endpoint/key bindings. Local journals are not
 encrypted by AxiomCLI and are documented as relying on OS/disk protection.

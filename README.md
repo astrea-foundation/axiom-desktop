@@ -4,26 +4,29 @@ This repository is the AxiomAI product monorepo. Rust applications live under
 `apps/`, reusable Rust contracts and infrastructure live under `crates/`, and
 future JavaScript packages live under `packages/`.
 
-The implemented application today is AxiomCLI: an early Rust coding agent with
-a terminal interface and an Agent Client Protocol (ACP) control mode. The
-standalone proxy and Electron desktop directories currently document their
-intended boundaries; they do not contain product implementations yet.
+The implemented applications today are AxiomCLI—an early Rust coding agent with
+a terminal interface and Agent Client Protocol (ACP) control mode—and
+`axiom-proxy`, an authenticated loopback OpenAI-compatible sidecar. The Electron
+desktop directory still documents its future boundary and contains no product
+implementation yet.
 
 ## Workspace layout
 
 ```text
 apps/
   axiomcli/       Coding-agent TUI, headless CLI, and ACP server
-  axiom-proxy/    Reserved for the local OpenAI-compatible Rust sidecar
+  axiom-proxy/    Local OpenAI-compatible Rust sidecar
   desktop/        Reserved for the Electron application
 crates/
-  axiom-inference/  Transport-independent inference contracts
+  axiom-inference/      Transport-independent inference contracts
+  axiom-openai-compat/  Pure OpenAI wire translation
+  axiom-secure-client/  Provider-modular attestation and E2EE
 packages/
   sidecar-protocol/ Reserved for generated/shared desktop control types
 ```
 
-The proxy and AxiomCLI will share the eventual secure Axiom client rather than
-routing the TUI through a localhost proxy. See
+The proxy and AxiomCLI share the secure Axiom client; the TUI performs secure
+inference directly rather than routing through localhost. See
 [`docs/adr/0009-monorepo-and-secure-client-boundaries.md`](docs/adr/0009-monorepo-and-secure-client-boundaries.md).
 Implementation is governed by the gated
 [`Axiom secure inference and proxy plan`](docs/axiom-secure-inference-and-proxy-plan.md).
@@ -32,9 +35,11 @@ Implementation is governed by the gated
 
 The implementation follows the gated plan in
 [`docs/axiomcli-implementation-plan.md`](docs/axiomcli-implementation-plan.md).
-All applicable Stage 00–15 gates pass for the early Linux x86-64 GNU release
-candidate. Each stage has an evidence-backed review record under `docs/reviews/`.
-Production TEE/E2EE and the desktop application remain separate future work.
+Stages 00–15 pass; Stage 16 hardening is implemented and awaits its completion
+audit. Each passed stage has an evidence-backed review under `docs/reviews/`.
+The current secure path verifies provider hardware, model/key identity, and the
+live TLS endpoint and applies E2EE; an approved workload allowlist and the
+desktop application remain future work.
 
 ## Commands
 
@@ -47,6 +52,7 @@ cargo run -p axiomcli -- acp
 cargo run -p axiomcli -- sessions list
 cargo run -p axiomcli -- plans list
 cargo run -p axiomcli -- permissions add-project-rule --action ask --effect network
+cargo run -p axiom-proxy -- --help
 ```
 
 `axiomcli acp` reserves stdout for newline-delimited ACP JSON-RPC. Logs and
@@ -265,6 +271,7 @@ cargo check --workspace --all-targets --all-features
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
 cargo deny check
+cargo check --manifest-path fuzz/Cargo.toml --bins
 ```
 
 The required deterministic evaluation lane is

@@ -107,7 +107,7 @@ pub trait TurnRunner: Send + Sync {
         ))
     }
 
-    /// Store a provider-neutral reasoning preference. The development Axiom
+    /// Store a provider-neutral reasoning preference. The Axiom
     /// proxy adapter intentionally does not serialize this yet.
     async fn set_thinking_level(
         &self,
