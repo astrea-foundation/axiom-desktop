@@ -3,7 +3,6 @@ use std::time::Duration;
 use async_trait::async_trait;
 #[cfg(any(test, feature = "development-provider"))]
 use futures::StreamExt as _;
-#[cfg(any(test, feature = "development-provider"))]
 use secrecy::{ExposeSecret as _, SecretString};
 #[cfg(any(test, feature = "development-provider"))]
 use serde::{Deserialize, Serialize};
@@ -12,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 
 use axiom_secure_client::{ApiCredential, SecureClient, SecureClientConfig, TrustPolicy};
 
-use crate::{AxiomError, Result};
+use crate::{AxiomError, Result, auth::AuthManager};
 pub use axiom_inference::{
     AssistantTurn, ChatMessage, ChatRole, FunctionCall, FunctionDefinition, InferenceRequest,
     ModelInfo, ProviderEvent, ProviderFailureKind, ProviderSecurityState, ToolCall, ToolDefinition,
@@ -37,7 +36,22 @@ pub trait InferenceProvider: Send + Sync {
 /// Production provider: model discovery, attestation, and E2EE all happen in
 /// this process. The local tool runtime remains a separate policy boundary.
 pub struct SecureAxiomProvider {
-    client: SecureClient,
+    config: SecureClientConfig,
+    credential: ProviderCredential,
+}
+
+enum ProviderCredential {
+    Fixed(SecretString),
+    Managed(AuthManager),
+}
+
+impl std::fmt::Debug for ProviderCredential {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Fixed(_) => formatter.write_str("Fixed([REDACTED])"),
+            Self::Managed(manager) => formatter.debug_tuple("Managed").field(manager).finish(),
+        }
+    }
 }
 
 impl SecureAxiomProvider {
@@ -46,8 +60,18 @@ impl SecureAxiomProvider {
             .map_err(|error| AxiomError::Config(error.safe_detail().to_owned()))?;
         config.request_timeout = timeout;
         Ok(Self {
-            client: SecureClient::new(config, ApiCredential::new(api_key))
-                .map_err(map_secure_error)?,
+            config,
+            credential: ProviderCredential::Fixed(SecretString::from(api_key)),
+        })
+    }
+
+    pub fn with_auth(relay_base_url: &str, auth: AuthManager, timeout: Duration) -> Result<Self> {
+        let mut config = SecureClientConfig::new(relay_base_url)
+            .map_err(|error| AxiomError::Config(error.safe_detail().to_owned()))?;
+        config.request_timeout = timeout;
+        Ok(Self {
+            config,
+            credential: ProviderCredential::Managed(auth),
         })
     }
 
@@ -57,13 +81,22 @@ impl SecureAxiomProvider {
         })?;
         Self::new(relay_base_url, api_key, timeout)
     }
+
+    fn client(&self) -> Result<SecureClient> {
+        let value = match &self.credential {
+            ProviderCredential::Fixed(value) => value.expose_secret().to_owned(),
+            ProviderCredential::Managed(manager) => manager.credential()?,
+        };
+        SecureClient::new(self.config.clone(), ApiCredential::new(value)).map_err(map_secure_error)
+    }
 }
 
 impl std::fmt::Debug for SecureAxiomProvider {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("SecureAxiomProvider")
-            .field("client", &self.client)
+            .field("config", &self.config)
+            .field("credential", &self.credential)
             .finish()
     }
 }
@@ -91,7 +124,8 @@ impl InferenceProvider for SecureAxiomProvider {
             &cancellation,
         )
         .await?;
-        let models = match self.client.models(cancellation.clone()).await {
+        let client = self.client()?;
+        let models = match client.models(cancellation.clone()).await {
             Ok(models) => models,
             Err(error) => {
                 send_security_failure(&events, &cancellation, &error).await;
@@ -104,8 +138,7 @@ impl InferenceProvider for SecureAxiomProvider {
             .ok_or_else(|| {
                 AxiomError::Provider("selected secure model is unavailable".to_owned())
             })?;
-        let established = self
-            .client
+        let established = client
             .establish(model, &TrustPolicy::default(), cancellation.clone())
             .await;
         let mut session = match established {
@@ -129,7 +162,7 @@ impl InferenceProvider for SecureAxiomProvider {
     }
 
     async fn models(&self, cancellation: CancellationToken) -> Result<Vec<ModelInfo>> {
-        self.client
+        self.client()?
             .models(cancellation)
             .await
             .map_err(map_secure_error)

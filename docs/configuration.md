@@ -69,6 +69,10 @@ selection.
 `/compact [focus]` uses the current session
 model to summarize live history with an empty tool set, then journals and
 installs that summary as successor context. It can be cancelled with Escape.
+`/login` opens a choice between browser authorization, an existing API key, or
+a one-time browser completion code. `/account` validates the current credential without revealing it, and
+`/logout` clears a persisted credential. Login state is application-wide and is
+never written to a session journal.
 `/help` prints the full command list, and typing `/` opens filtered usage hints.
 
 The first ordinary prompt also starts a parallel, tool-free title request. Its
@@ -133,11 +137,13 @@ The command appends atomically and accepts only `ask` or `deny`.
 
 | Variable | Meaning |
 |---|---|
-| `AXIOM_API_KEY` | required Axiom bearer credential; never put it in TOML or argv |
+| `AXIOM_API_KEY` | optional Axiom bearer override for automation; takes precedence over persisted login and must never be put in TOML or argv |
 | `AXIOM_BASE_URL` | trusted Axiom relay override; defaults to `https://api.axiom.stream` |
+| `AXIOM_WEB_URL` | trusted browser-login website; defaults to `https://axiom.stream` |
 | `AXIOM_MODEL` | model override |
 | `AXIOM_SEARXNG_URL` | SearXNG URL override |
 | `AXIOM_PERMISSION_PROFILE` | permission-profile override |
+| `AXIOMCLI_CREDENTIAL_STORE` | `keyring` or `file`; normally keyring with an owner-only file fallback |
 | `AXIOMCLI_COLOR` | `truecolor`, `256`, `16`, or `none` |
 | `NO_COLOR` | disables color when present |
 | `AXIOMCLI_ASCII=1` | replaces decorative Unicode glyphs |
@@ -158,6 +164,15 @@ The old unattested adapter is not part of the default build. For deliberate
 local protocol development only, compile with `development-provider` and set
 `AXIOMCLI_UNATTESTED_DEV=1`. Never distribute that feature as a production
 binary. See the provider migration note for the exact quarantine boundary.
+
+At startup, the AxiomCLI TUI validates a discovered credential with Axiom. A
+rejected or revoked persisted credential is removed and the TUI opens the login
+surface; an `AXIOM_API_KEY` override must instead be unset by the caller. A
+temporary network failure is reported but does not erase the credential.
+Browser authorization listens on a random `127.0.0.1` port and
+expires after the server-defined short lifetime. The protected-file fallback is
+stored beneath the platform data directory with `0700` directory and `0600`
+file permissions on Unix. Prefer the system keyring on shared machines.
 
 With animation enabled, active task cards redraw while foreground/background
 work or a short completion transition is active. The blossom uses a weighted

@@ -40,6 +40,7 @@ use crate::{
         AppCommand, AppEvent, Origin, PermissionProfile, QuestionRequest, Runtime, SessionId,
         ThinkingLevel, TurnId,
     },
+    auth::{AccountStatus, AuthManager, BrowserLogin, ValidationStatus},
     policy::{ApprovalChoice, ApprovalHandler, ApprovalRequest, ApprovalResponse, describe_effect},
     session::{
         SessionStore, SessionSummary, model_for_resume, permission_for_resume, thinking_for_resume,
@@ -366,6 +367,11 @@ fn is_search_shortcut(key: &KeyEvent) -> bool {
     key.code == KeyCode::Char('f') && key.modifiers.contains(KeyModifiers::CONTROL)
 }
 
+fn uses_deterministic_test_runner() -> bool {
+    cfg!(debug_assertions)
+        && env::var("AXIOMCLI_TEST_RUNNER").is_ok_and(|value| !value.trim().is_empty())
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Overlay {
     Entry(usize),
@@ -386,6 +392,52 @@ enum Overlay {
         marked: BTreeSet<String>,
         confirming: bool,
     },
+    Auth(AuthOverlay),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AuthPasteKind {
+    ApiKey,
+    CompletionCode,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct SecretInput(String);
+
+impl std::fmt::Debug for SecretInput {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_tuple("SecretInput")
+            .field(&format_args!(
+                "[REDACTED; {} chars]",
+                self.0.chars().count()
+            ))
+            .finish()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum AuthOverlay {
+    Menu {
+        selected: usize,
+        message: Option<String>,
+    },
+    Starting,
+    Browser {
+        user_code: String,
+        authorization_url: String,
+        browser_opened: bool,
+    },
+    Paste {
+        kind: AuthPasteKind,
+        input: SecretInput,
+    },
+    Checking {
+        label: &'static str,
+    },
+    Account {
+        status: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -403,6 +455,13 @@ pub struct TuiOptions {
     pub color_mode: ColorMode,
     pub ascii: bool,
     pub animation: bool,
+}
+
+pub struct TuiLaunch {
+    pub options: TuiOptions,
+    pub store: Option<SessionStore>,
+    pub resume: Option<SessionId>,
+    pub auth: AuthManager,
 }
 
 impl TuiOptions {
@@ -578,6 +637,41 @@ impl TuiState {
             transition_ticks: 0,
             compacting: false,
             has_prompt: false,
+        }
+    }
+
+    fn open_login(&mut self, message: Option<String>) {
+        self.overlay = Some(Overlay::Auth(AuthOverlay::Menu {
+            selected: 0,
+            message,
+        }));
+        self.overlay_scroll = 0;
+        self.status = "Sign in to Axiom".into();
+        self.status_tone = StatusTone::Waiting;
+    }
+
+    fn auth_menu_move(&mut self, amount: isize) {
+        let Some(Overlay::Auth(AuthOverlay::Menu { selected, .. })) = &mut self.overlay else {
+            return;
+        };
+        *selected = usize::try_from(
+            (isize::try_from(*selected).unwrap_or_default() + amount).rem_euclid(4),
+        )
+        .unwrap_or_default();
+    }
+
+    fn auth_secret_push(&mut self, text: &str) {
+        if let Some(Overlay::Auth(AuthOverlay::Paste { input, .. })) = &mut self.overlay {
+            let remaining = 512_usize.saturating_sub(input.0.len());
+            input
+                .0
+                .push_str(&text.chars().take(remaining).collect::<String>());
+        }
+    }
+
+    fn auth_secret_pop(&mut self) {
+        if let Some(Overlay::Auth(AuthOverlay::Paste { input, .. })) = &mut self.overlay {
+            input.0.pop();
         }
     }
 
@@ -1745,7 +1839,17 @@ impl TuiState {
 
     fn should_animate(&self) -> bool {
         self.options.animation
-            && (self.running || self.transition_ticks > 0 || self.has_background_activity())
+            && (self.running
+                || self.transition_ticks > 0
+                || self.has_background_activity()
+                || matches!(
+                    self.overlay,
+                    Some(Overlay::Auth(
+                        AuthOverlay::Starting
+                            | AuthOverlay::Browser { .. }
+                            | AuthOverlay::Checking { .. }
+                    ))
+                ))
     }
 
     fn show_startup(&self) -> bool {
@@ -2337,6 +2441,15 @@ fn show_slash_error(state: &mut TuiState, message: &str) {
     state.push_entry(EntryKind::Error, format!("COMMAND ERROR\n{message}"), false);
 }
 
+fn account_status_text(account: &AccountStatus) -> String {
+    format!(
+        "Credential: {}\nKey ID: {}\nStored in: {}",
+        sanitize_terminal_text(&account.key_name),
+        sanitize_terminal_text(&account.key_id),
+        account.source.label(),
+    )
+}
+
 enum UiMessage {
     Event(AppEvent),
     Done(TurnId, Result<()>),
@@ -2348,6 +2461,16 @@ enum UiMessage {
         QuestionRequest,
         oneshot::Sender<Result<BTreeMap<String, Vec<String>>>>,
     ),
+    BrowserLoginStarted(Box<Result<BrowserLogin>>),
+    AuthCompleted(Result<AccountStatus>),
+    AuthValidated(ValidationPurpose, ValidationStatus),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ValidationPurpose {
+    Startup,
+    Login,
+    Account,
 }
 
 #[derive(Clone)]
@@ -2619,10 +2742,14 @@ pub async fn run(
     cwd: PathBuf,
     model: String,
     profile: PermissionProfile,
-    options: TuiOptions,
-    store: Option<SessionStore>,
-    resume: Option<SessionId>,
+    launch: TuiLaunch,
 ) -> Result<()> {
+    let TuiLaunch {
+        options,
+        store,
+        resume,
+        auth,
+    } = launch;
     let cwd = cwd.canonicalize()?;
     let default_model = model.clone();
     let default_thinking = ThinkingLevel::Medium;
@@ -2724,11 +2851,34 @@ pub async fn run(
     let mut input_events = EventStream::new();
     let (ui_tx, mut ui_rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
     let mut cancellation: Option<CancellationToken> = None;
+    let mut auth_cancellation: Option<CancellationToken> = None;
+    let mut startup_auth_pending = false;
     let mut active_turn: Option<TurnId> = None;
     let mut pending_approval: Option<(ApprovalRequest, oneshot::Sender<ApprovalResponse>)> = None;
     let mut pending_questions: Option<PendingQuestions> = None;
     let mut animation_ticks = tokio::time::interval(ANIMATION_TICK);
     animation_ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    if uses_deterministic_test_runner() {
+        if state.status == "Ready" {
+            state.status = "Ready · deterministic development runner".into();
+        }
+    } else if auth.has_credential() {
+        startup_auth_pending = true;
+        state.status = "Checking Axiom authorization…".into();
+        let validation_auth = auth.clone();
+        let validation_tx = ui_tx.clone();
+        tokio::spawn(async move {
+            let status = validation_auth.validate().await;
+            let _ = validation_tx
+                .send(UiMessage::AuthValidated(ValidationPurpose::Startup, status))
+                .await;
+        });
+    } else {
+        state.open_login(Some(
+            "Connect an Axiom account before starting a task.".into(),
+        ));
+    }
 
     assert!(
         !(cfg!(debug_assertions) && env::var("AXIOMCLI_TEST_TUI_PANIC").as_deref() == Ok("1")),
@@ -2867,6 +3017,154 @@ pub async fn run(
                                 _ => {
                                     state.status = approval_status(request);
                                 }
+                            }
+                        } else if matches!(state.overlay, Some(Overlay::Auth(_))) {
+                            state.exit_armed = false;
+                            match &state.overlay {
+                                Some(Overlay::Auth(AuthOverlay::Menu { .. })) => match key.code {
+                                    KeyCode::Esc => state.overlay = None,
+                                    KeyCode::Up => state.auth_menu_move(-1),
+                                    KeyCode::Down => state.auth_menu_move(1),
+                                    KeyCode::Enter => {
+                                        let selected = match &state.overlay {
+                                            Some(Overlay::Auth(AuthOverlay::Menu { selected, .. })) => *selected,
+                                            _ => 0,
+                                        };
+                                        match selected {
+                                            0 => {
+                                                state.overlay = Some(Overlay::Auth(AuthOverlay::Starting));
+                                                state.status = "Opening secure browser authorization…".into();
+                                                let token = CancellationToken::new();
+                                                auth_cancellation = Some(token.clone());
+                                                let login_auth = auth.clone();
+                                                let login_tx = ui_tx.clone();
+                                                tokio::spawn(async move {
+                                                    let result = tokio::select! {
+                                                        () = token.cancelled() => Err(AxiomError::Cancelled),
+                                                        result = login_auth.start_browser_login() => result,
+                                                    };
+                                                    let _ = login_tx
+                                                        .send(UiMessage::BrowserLoginStarted(Box::new(result)))
+                                                        .await;
+                                                });
+                                            }
+                                            1 => {
+                                                state.overlay = Some(Overlay::Auth(AuthOverlay::Paste {
+                                                    kind: AuthPasteKind::ApiKey,
+                                                    input: SecretInput(String::new()),
+                                                }));
+                                                state.status = "Paste an Axiom authorization key".into();
+                                            }
+                                            2 => {
+                                                state.overlay = Some(Overlay::Auth(AuthOverlay::Paste {
+                                                    kind: AuthPasteKind::CompletionCode,
+                                                    input: SecretInput(String::new()),
+                                                }));
+                                                state.status = "Paste the one-time browser code".into();
+                                            }
+                                            _ => state.overlay = None,
+                                        }
+                                    }
+                                    _ => {}
+                                },
+                                Some(Overlay::Auth(AuthOverlay::Starting)) => {
+                                    if key.code == KeyCode::Esc {
+                                        if let Some(token) = auth_cancellation.take() {
+                                            token.cancel();
+                                        }
+                                        state.open_login(Some("Browser sign-in cancelled.".into()));
+                                    }
+                                }
+                                Some(Overlay::Auth(AuthOverlay::Browser { .. })) => match key.code {
+                                    KeyCode::Esc => {
+                                        if let Some(token) = auth_cancellation.take() {
+                                            token.cancel();
+                                        }
+                                        state.open_login(Some("Browser sign-in cancelled.".into()));
+                                    }
+                                    KeyCode::Char('p' | 'P') => {
+                                        if let Some(token) = auth_cancellation.take() {
+                                            token.cancel();
+                                        }
+                                        state.overlay = Some(Overlay::Auth(AuthOverlay::Paste {
+                                            kind: AuthPasteKind::CompletionCode,
+                                            input: SecretInput(String::new()),
+                                        }));
+                                        state.status = "Paste the one-time browser code".into();
+                                    }
+                                    KeyCode::Char('o' | 'O') => {
+                                        if let Some(Overlay::Auth(AuthOverlay::Browser {
+                                            authorization_url,
+                                            ..
+                                        })) = &state.overlay
+                                        {
+                                            let _ = open::that_detached(authorization_url);
+                                        }
+                                    }
+                                    _ => {}
+                                },
+                                Some(Overlay::Auth(AuthOverlay::Paste { .. })) => match key.code {
+                                    KeyCode::Esc => state.open_login(None),
+                                    KeyCode::Backspace => state.auth_secret_pop(),
+                                    KeyCode::Enter => {
+                                        let (kind, value) = match &mut state.overlay {
+                                            Some(Overlay::Auth(AuthOverlay::Paste { kind, input })) => {
+                                                (*kind, std::mem::take(&mut input.0))
+                                            }
+                                            _ => unreachable!("auth paste overlay is active"),
+                                        };
+                                        if value.trim().is_empty() {
+                                            state.open_login(Some("No authorization value was entered.".into()));
+                                        } else if kind == AuthPasteKind::ApiKey {
+                                            match auth.save_pasted_key(&value) {
+                                                Ok(()) => {
+                                                    state.overlay = Some(Overlay::Auth(AuthOverlay::Checking {
+                                                        label: "Checking authorization key…",
+                                                    }));
+                                                    let validation_auth = auth.clone();
+                                                    let validation_tx = ui_tx.clone();
+                                                    tokio::spawn(async move {
+                                                        let status = validation_auth.validate().await;
+                                                        let _ = validation_tx
+                                                            .send(UiMessage::AuthValidated(
+                                                                ValidationPurpose::Login,
+                                                                status,
+                                                            ))
+                                                            .await;
+                                                    });
+                                                }
+                                                Err(error) => state.open_login(Some(error.to_string())),
+                                            }
+                                        } else {
+                                            state.overlay = Some(Overlay::Auth(AuthOverlay::Checking {
+                                                label: "Exchanging one-time browser code…",
+                                            }));
+                                            let completion_auth = auth.clone();
+                                            let completion_tx = ui_tx.clone();
+                                            tokio::spawn(async move {
+                                                let result = completion_auth.complete_with_code(&value).await;
+                                                let _ = completion_tx
+                                                    .send(UiMessage::AuthCompleted(result))
+                                                    .await;
+                                            });
+                                        }
+                                    }
+                                    KeyCode::Char(character)
+                                        if key.modifiers.is_empty()
+                                            || key.modifiers == KeyModifiers::SHIFT =>
+                                    {
+                                        state.auth_secret_push(&character.to_string());
+                                    }
+                                    _ => {}
+                                },
+                                Some(Overlay::Auth(
+                                    AuthOverlay::Checking { .. } | AuthOverlay::Account { .. },
+                                )) => {
+                                    if matches!(key.code, KeyCode::Esc | KeyCode::Enter) {
+                                        state.overlay = None;
+                                    }
+                                }
+                                _ => {}
                             }
                         } else if matches!(state.overlay, Some(Overlay::ModelPicker { .. })) {
                             state.exit_armed = false;
@@ -3273,6 +3571,49 @@ pub async fn run(
                                                     Err(error) => show_slash_error(&mut state, &error.to_string()),
                                                 }
                                             }
+                                            Ok(SlashCommand::Login) => {
+                                                state.open_login(None);
+                                            }
+                                            Ok(SlashCommand::Logout) => {
+                                                if let Some(token) = auth_cancellation.take() {
+                                                    token.cancel();
+                                                }
+                                                match auth.logout() {
+                                                    Ok(()) => {
+                                                        state.overlay = None;
+                                                        state.status = "Signed out of Axiom".into();
+                                                        state.status_tone = StatusTone::Neutral;
+                                                        state.push_entry(
+                                                            EntryKind::System,
+                                                            "AXIOM ACCOUNT\nSigned out. Saved authorization was removed from this computer."
+                                                                .into(),
+                                                            false,
+                                                        );
+                                                    }
+                                                    Err(error) => show_slash_error(
+                                                        &mut state,
+                                                        &error.to_string(),
+                                                    ),
+                                                }
+                                            }
+                                            Ok(SlashCommand::Account) => {
+                                                state.overlay = Some(Overlay::Auth(
+                                                    AuthOverlay::Checking {
+                                                        label: "Checking Axiom authorization…",
+                                                    },
+                                                ));
+                                                let validation_auth = auth.clone();
+                                                let validation_tx = ui_tx.clone();
+                                                tokio::spawn(async move {
+                                                    let status = validation_auth.validate().await;
+                                                    let _ = validation_tx
+                                                        .send(UiMessage::AuthValidated(
+                                                            ValidationPurpose::Account,
+                                                            status,
+                                                        ))
+                                                        .await;
+                                                });
+                                            }
                                             Ok(SlashCommand::Compact { focus }) => {
                                                 state.running = true;
                                                 state.compacting = true;
@@ -3309,6 +3650,20 @@ pub async fn run(
                                                 });
                                             }
                                         }
+                                        continue;
+                                    }
+                                    if startup_auth_pending {
+                                        state.input = prompt;
+                                        state.status = "Checking Axiom authorization…".into();
+                                        state.status_tone = StatusTone::Waiting;
+                                        continue;
+                                    }
+                                    if !auth.has_credential() && !uses_deterministic_test_runner() {
+                                        state.input = prompt;
+                                        state.open_login(Some(
+                                            "Sign in before starting this task. Your draft is still here."
+                                                .into(),
+                                        ));
                                         continue;
                                     }
                                     let turn_id = runtime.turn_id();
@@ -3421,7 +3776,12 @@ pub async fn run(
                     }
                     Event::Paste(text) => {
                         let text = sanitize_terminal_text(&text).replace('\n', " ");
-                        if pending_questions.is_some() {
+                        if matches!(
+                            state.overlay,
+                            Some(Overlay::Auth(AuthOverlay::Paste { .. }))
+                        ) {
+                            state.auth_secret_push(&text);
+                        } else if pending_questions.is_some() {
                             state.answer_input.push_str(&text);
                         } else if pending_approval.is_none()
                             && state.focus == Focus::Composer
@@ -3643,6 +4003,121 @@ pub async fn run(
                             state.focus = Focus::Composer;
                             state.status = state.answer_prompt.clone().unwrap_or_default();
                             pending_questions = Some(pending);
+                        }
+                    }
+                    UiMessage::BrowserLoginStarted(result) => match *result {
+                        Ok(login) => {
+                            let user_code = login.user_code().to_owned();
+                            let authorization_url = login.authorization_url().to_owned();
+                            let browser_opened = login.browser_opened();
+                            state.overlay = Some(Overlay::Auth(AuthOverlay::Browser {
+                                user_code,
+                                authorization_url,
+                                browser_opened,
+                            }));
+                            state.status = "Waiting for browser approval…".into();
+                            state.status_tone = StatusTone::Waiting;
+                            if let Some(token) = auth_cancellation.clone() {
+                                let completion_tx = ui_tx.clone();
+                                tokio::spawn(async move {
+                                    let result = login.complete(token).await;
+                                    let _ = completion_tx
+                                        .send(UiMessage::AuthCompleted(result))
+                                        .await;
+                                });
+                            }
+                        }
+                        Err(AxiomError::Cancelled) => {}
+                        Err(error) => {
+                            auth_cancellation = None;
+                            state.open_login(Some(error.to_string()));
+                        }
+                    },
+                    UiMessage::AuthCompleted(result) => {
+                        auth_cancellation = None;
+                        match result {
+                            Ok(account) => {
+                                let detail = account_status_text(&account);
+                                state.overlay = Some(Overlay::Auth(AuthOverlay::Account {
+                                    status: format!("Signed in successfully.\n\n{detail}"),
+                                }));
+                                state.status = "Signed in to Axiom".into();
+                                state.status_tone = StatusTone::Success;
+                                state.push_entry(
+                                    EntryKind::System,
+                                    format!("AXIOM ACCOUNT\nSigned in. {detail}"),
+                                    false,
+                                );
+                            }
+                            Err(AxiomError::Cancelled) => {}
+                            Err(error) => state.open_login(Some(error.to_string())),
+                        }
+                    }
+                    UiMessage::AuthValidated(purpose, status) => {
+                        if purpose == ValidationPurpose::Startup {
+                            startup_auth_pending = false;
+                        }
+                        match (purpose, status) {
+                            (_, ValidationStatus::Valid(account)) => {
+                                let detail = account_status_text(&account);
+                                if purpose == ValidationPurpose::Startup {
+                                    state.status = "Ready · Axiom account connected".into();
+                                    state.status_tone = StatusTone::Neutral;
+                                } else {
+                                    state.overlay = Some(Overlay::Auth(AuthOverlay::Account {
+                                        status: if purpose == ValidationPurpose::Login {
+                                            format!("Authorization key accepted.\n\n{detail}")
+                                        } else {
+                                            detail
+                                        },
+                                    }));
+                                    state.status = "Axiom authorization is valid".into();
+                                    state.status_tone = StatusTone::Success;
+                                }
+                            }
+                            (ValidationPurpose::Account, ValidationStatus::Missing) => {
+                                state.overlay = Some(Overlay::Auth(AuthOverlay::Account {
+                                    status: "Not signed in. Use /login to connect an Axiom account."
+                                        .into(),
+                                }));
+                                state.status = "Not signed in".into();
+                            }
+                            (_, ValidationStatus::Missing) => state.open_login(Some(
+                                "Connect an Axiom account before starting a task.".into(),
+                            )),
+                            (ValidationPurpose::Account, ValidationStatus::Invalid) => {
+                                state.overlay = Some(Overlay::Auth(AuthOverlay::Account {
+                                    status:
+                                        "The saved authorization is invalid or revoked. Use /login to reconnect."
+                                            .into(),
+                                }));
+                                state.status = "Axiom authorization is invalid".into();
+                                state.status_tone = StatusTone::Error;
+                            }
+                            (_, ValidationStatus::Invalid) => state.open_login(Some(
+                                "The saved authorization is invalid or revoked. Sign in again."
+                                    .into(),
+                            )),
+                            (ValidationPurpose::Account, ValidationStatus::Unavailable(message)) => {
+                                state.overlay = Some(Overlay::Auth(AuthOverlay::Account {
+                                    status: message,
+                                }));
+                                state.status = "Could not validate Axiom authorization".into();
+                                state.status_tone = StatusTone::Waiting;
+                            }
+                            (ValidationPurpose::Login, ValidationStatus::Unavailable(message)) => {
+                                state.overlay = Some(Overlay::Auth(AuthOverlay::Account {
+                                    status: format!(
+                                        "The key was saved, but Axiom could not be reached to validate it.\n\n{message}"
+                                    ),
+                                }));
+                                state.status = "Authorization saved · validation unavailable".into();
+                                state.status_tone = StatusTone::Waiting;
+                            }
+                            (ValidationPurpose::Startup, ValidationStatus::Unavailable(message)) => {
+                                state.status = format!("Ready · login validation unavailable: {message}");
+                                state.status_tone = StatusTone::Waiting;
+                            }
                         }
                     }
                 }
@@ -4444,6 +4919,10 @@ fn render_interaction(frame: &mut Frame<'_>, state: &TuiState, theme: Theme) {
 }
 
 fn render_overlay(frame: &mut Frame<'_>, state: &TuiState, overlay: &Overlay, theme: Theme) {
+    if let Overlay::Auth(auth) = overlay {
+        render_auth_overlay(frame, state, auth, theme);
+        return;
+    }
     if matches!(overlay, Overlay::ModelPicker { .. }) {
         render_model_picker(frame, state, theme);
         return;
@@ -4493,6 +4972,7 @@ fn render_overlay(frame: &mut Frame<'_>, state: &TuiState, overlay: &Overlay, th
         Overlay::ModelPicker { .. } => unreachable!("model picker rendered separately"),
         Overlay::ResumePicker { .. } => unreachable!("resume picker rendered separately"),
         Overlay::DeletePicker { .. } => unreachable!("delete picker rendered separately"),
+        Overlay::Auth(_) => unreachable!("auth overlay rendered separately"),
     };
     // Help is a fixed list, so give it only the rows it needs; the viewer holds
     // arbitrary entry text and keeps the tall panel.
@@ -4505,6 +4985,7 @@ fn render_overlay(frame: &mut Frame<'_>, state: &TuiState, overlay: &Overlay, th
         Overlay::ModelPicker { .. } => unreachable!("model picker rendered separately"),
         Overlay::ResumePicker { .. } => unreachable!("resume picker rendered separately"),
         Overlay::DeletePicker { .. } => unreachable!("delete picker rendered separately"),
+        Overlay::Auth(_) => unreachable!("auth overlay rendered separately"),
     };
     frame.render_widget(Clear, area);
     frame.render_widget(
@@ -4523,6 +5004,216 @@ fn render_overlay(frame: &mut Frame<'_>, state: &TuiState, overlay: &Overlay, th
                     .padding(Padding::horizontal(1)),
             )
             .scroll((state.overlay_scroll, 0))
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+fn render_auth_overlay(
+    frame: &mut Frame<'_>,
+    state: &TuiState,
+    overlay: &AuthOverlay,
+    theme: Theme,
+) {
+    let area = centered_rect(78, 64, frame.area());
+    frame.render_widget(Clear, area);
+    let title = match overlay {
+        AuthOverlay::Menu { .. } | AuthOverlay::Account { .. } => " Axiom account ",
+        AuthOverlay::Starting | AuthOverlay::Browser { .. } => " Browser sign-in ",
+        AuthOverlay::Paste {
+            kind: AuthPasteKind::ApiKey,
+            ..
+        } => " Paste authorization key ",
+        AuthOverlay::Paste {
+            kind: AuthPasteKind::CompletionCode,
+            ..
+        } => " Paste one-time code ",
+        AuthOverlay::Checking { .. } => " Checking authorization ",
+    };
+    let mut lines = Vec::new();
+    match overlay {
+        AuthOverlay::Menu { selected, message } => {
+            lines.push(Line::from(Span::styled(
+                "Connect AxiomCLI to your Axiom account",
+                Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
+            )));
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "The browser flow creates a revocable credential without exposing wallet or browser encryption keys to the CLI.",
+                Style::default().fg(theme.muted),
+            )));
+            if let Some(message) = message {
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    sanitize_terminal_text(message),
+                    Style::default().fg(theme.warning),
+                )));
+            }
+            lines.push(Line::from(""));
+            for (index, label) in [
+                "Continue in browser",
+                "Paste an axm_ authorization key",
+                "Paste an axc_ one-time browser code",
+                "Not now",
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let marker = if index == *selected { "›" } else { " " };
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!(" {marker} "),
+                        Style::default().fg(if index == *selected {
+                            theme.cherry_bright
+                        } else {
+                            theme.muted
+                        }),
+                    ),
+                    Span::styled(
+                        label,
+                        Style::default()
+                            .fg(if index == *selected {
+                                theme.text
+                            } else {
+                                theme.muted
+                            })
+                            .add_modifier(if index == *selected {
+                                Modifier::BOLD
+                            } else {
+                                Modifier::empty()
+                            }),
+                    ),
+                ]));
+            }
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "↑/↓ select · Enter confirm · Esc close",
+                Style::default().fg(theme.muted),
+            )));
+        }
+        AuthOverlay::Starting => {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("{}  ", state.blossom_glyph(false)),
+                    Style::default().fg(state.blossom_color(theme, 0)),
+                ),
+                Span::styled(
+                    "Starting a short-lived authorization…",
+                    Style::default().fg(theme.text),
+                ),
+            ]));
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "Esc cancels",
+                Style::default().fg(theme.muted),
+            )));
+        }
+        AuthOverlay::Browser {
+            user_code,
+            authorization_url,
+            browser_opened,
+        } => {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("{}  ", state.blossom_glyph(false)),
+                    Style::default().fg(state.blossom_color(theme, 0)),
+                ),
+                Span::styled(
+                    "Waiting for approval in your browser",
+                    Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
+                ),
+            ]));
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "Confirm that this code matches the website:",
+                Style::default().fg(theme.muted),
+            )));
+            lines.push(Line::from(Span::styled(
+                format!("  {user_code}"),
+                Style::default()
+                    .fg(theme.cherry_bright)
+                    .add_modifier(Modifier::BOLD),
+            )));
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                if *browser_opened {
+                    "The approval page was opened automatically."
+                } else {
+                    "The browser did not open automatically. Press O or open:"
+                },
+                Style::default().fg(theme.muted),
+            )));
+            lines.push(Line::from(Span::styled(
+                authorization_url,
+                Style::default()
+                    .fg(theme.cherry_bright)
+                    .add_modifier(Modifier::UNDERLINED),
+            )));
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "O reopen browser · P paste fallback code · Esc cancel",
+                Style::default().fg(theme.muted),
+            )));
+        }
+        AuthOverlay::Paste { kind, input } => {
+            lines.push(Line::from(Span::styled(
+                if *kind == AuthPasteKind::ApiKey {
+                    "Paste the axm_ authorization key. It will be stored in your system credential store when available."
+                } else {
+                    "Paste the axc_ one-time code shown by the approval page. It can only be exchanged once."
+                },
+                Style::default().fg(theme.muted),
+            )));
+            lines.push(Line::from(""));
+            let count = input.0.chars().count();
+            let visible = "•".repeat(count.min(48));
+            let suffix = if count > 48 { "…" } else { "" };
+            lines.push(Line::from(Span::styled(
+                format!("› {visible}{suffix}_"),
+                Style::default().fg(theme.cherry_bright),
+            )));
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "Enter submit · Esc back",
+                Style::default().fg(theme.muted),
+            )));
+        }
+        AuthOverlay::Checking { label } => {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("{}  ", state.blossom_glyph(false)),
+                    Style::default().fg(state.blossom_color(theme, 0)),
+                ),
+                Span::styled(*label, Style::default().fg(theme.text)),
+            ]));
+        }
+        AuthOverlay::Account { status } => {
+            lines.push(Line::from(Span::styled(
+                sanitize_terminal_text(status),
+                Style::default().fg(theme.text),
+            )));
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "Enter or Esc to close",
+                Style::default().fg(theme.muted),
+            )));
+        }
+    }
+    frame.render_widget(
+        Paragraph::new(lines)
+            .style(Style::default().fg(theme.text).bg(theme.surface))
+            .block(
+                Block::default()
+                    .title(Span::styled(
+                        title,
+                        Style::default()
+                            .fg(theme.cherry)
+                            .add_modifier(Modifier::BOLD),
+                    ))
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(theme.border))
+                    .padding(Padding::new(2, 2, 1, 1)),
+            )
             .wrap(Wrap { trim: false }),
         area,
     );
@@ -6986,6 +7677,26 @@ mod tests {
         assert_eq!(tail_to_width("abcdef", 10), "abcdef");
         assert_eq!(tail_to_width("abcdef", 3), "def");
         assert_eq!(tail_to_width("a👋bc", 3), "bc");
+    }
+
+    #[test]
+    fn auth_overlays_are_keyboard_clear_and_never_render_pasted_secrets() {
+        let mut state = preview_state();
+        state.open_login(Some("Authentication is required.".into()));
+        let menu = render_symbols(90, 28, &state);
+        assert!(menu.contains("Continue in browser"));
+        assert!(menu.contains("Paste an axm_ authorization key"));
+        assert!(menu.contains("Paste an axc_ one-time browser code"));
+
+        state.overlay = Some(Overlay::Auth(AuthOverlay::Paste {
+            kind: AuthPasteKind::ApiKey,
+            input: SecretInput("axm_do-not-render-this-secret".into()),
+        }));
+        let paste = render_symbols(90, 28, &state);
+        assert!(paste.contains("Paste the axm_ authorization key"));
+        assert!(paste.contains('•'));
+        assert!(!paste.contains("do-not-render-this-secret"));
+        assert!(!format!("{state:?}").contains("do-not-render-this-secret"));
     }
 
     #[test]

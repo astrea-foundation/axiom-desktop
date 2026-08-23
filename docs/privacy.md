@@ -55,13 +55,19 @@ retention policy. Package uninstall intentionally preserves user configuration
 and session data. Remove the config/data paths printed by `axiomcli doctor`
 manually only when permanent local-data deletion is intended.
 
-Provider credentials are accepted only through `AXIOM_API_KEY`, wrapped as a
-secret in memory, redacted from debug output, excluded from child environments,
-and absent from deterministic tests and release artifacts. Proxy clients use a
-separate generated `AXIOM_PROXY_TOKEN`. Ordinary logs, panic messages, security
-receipts, and desktop control messages must contain only bounded metadata and
-fingerprints—not credentials, key pairs, shared secrets, ciphertext dumps,
-plaintext request/response fields, or raw attestation artifacts.
+Provider credentials come from browser authorization, direct API-key entry, or
+the explicit `AXIOM_API_KEY` automation override. Persisted login uses the
+operating-system keyring when available and otherwise an owner-only local file.
+Browser authorization uses PKCE plus a one-time device secret: the website can
+approve and trigger the loopback callback, but it never receives the permanent
+API key. Its displayed `axc_` fallback is single-use and short-lived. The
+credential is wrapped as a secret in memory, redacted from debug output,
+excluded from child environments and session journals, and absent from release
+artifacts. Proxy clients use a separate generated `AXIOM_PROXY_TOKEN`.
+Ordinary logs, panic messages, security receipts, and desktop control messages
+must contain only bounded metadata and fingerprints—not credentials, key
+pairs, shared secrets, ciphertext dumps, plaintext request/response fields, or
+raw attestation artifacts.
 
 The legacy plaintext provider is compiled only for tests or with the explicit
 `development-provider` Cargo feature. Selecting it also requires

@@ -6,12 +6,17 @@ configuration/session paths without printing credentials.
 
 ## Provider or model errors
 
-- Confirm `AXIOM_API_KEY` is present in the AxiomCLI process environment and
-  the configured HTTPS Axiom service is reachable.
+- Run `/account` in the TUI or `axiomcli doctor` to validate the current login.
+  If no credential is present, use `/login` and choose browser authorization or
+  paste an existing API key.
 - Run `axiomcli models` to test bounded model discovery.
-- Set `AXIOM_API_KEY` in the process environment only if the endpoint requires
-  it. Authentication errors are not retried; rate limits and transient errors
-  use bounded retries with a stable idempotency key.
+- Set `AXIOM_API_KEY` only as an automation override. It prevents `/login` from
+  replacing the credential until the environment variable is unset.
+- If browser approval succeeds but the loopback callback is blocked, copy the
+  one-time `axc_` code from the website into AxiomCLI. It is not the permanent
+  API key and becomes unusable after one successful exchange.
+- Authentication errors are not retried; rate limits and transient errors use
+  bounded retries with a stable idempotency key.
 - A truncated or malformed stream fails the turn. It is never treated as a
   complete answer.
 - Attestation rejection, stale/mismatched nonces, model/key mismatches, TLS

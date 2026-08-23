@@ -11,6 +11,7 @@ use axiomcli::{
         WorkspaceEditTurnRunner,
     },
     app::{AppCommand, AppEvent, Origin, Runtime, SessionId},
+    auth::{AuthManager, ValidationStatus},
     config::Config,
     planning::PlanArtifact,
     policy::{EffectClass, PolicyRule, RuleAction},
@@ -169,6 +170,8 @@ enum SessionAction {
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let config = Config::load().context("failed to load AxiomCLI configuration")?;
+    let auth = AuthManager::new(&config.base_url, config.request_timeout())
+        .context("failed to initialize Axiom authentication")?;
     init_tracing(matches!(cli.command, Some(Command::Acp)));
 
     match cli.command.unwrap_or(Command::Tui {
@@ -177,11 +180,11 @@ async fn main() -> anyhow::Result<()> {
         plan: false,
     }) {
         Command::Doctor => {
-            doctor(&config).await;
+            doctor(&config, &auth).await;
             Ok(())
         }
         Command::Models => {
-            let provider = build_provider(&config)?;
+            let provider = build_provider(&config, &auth)?;
             for model in provider.models(CancellationToken::new()).await? {
                 println!("{}", model.id);
             }
@@ -225,13 +228,18 @@ async fn main() -> anyhow::Result<()> {
                 workspace_config.permission_profile
             });
             axiomcli::tui::run(
-                build_runner(&workspace_config).await?,
+                build_runner(&workspace_config, &auth).await?,
                 cwd,
                 workspace_config.model.clone(),
                 profile,
-                axiomcli::tui::TuiOptions::from_environment(workspace_config.animation),
-                Some(store),
-                resume,
+                axiomcli::tui::TuiLaunch {
+                    options: axiomcli::tui::TuiOptions::from_environment(
+                        workspace_config.animation,
+                    ),
+                    store: Some(store),
+                    resume,
+                    auth,
+                },
             )
             .await
             .map_err(anyhow::Error::from)
@@ -247,7 +255,7 @@ async fn main() -> anyhow::Result<()> {
                 workspace_config.permission_profile
             };
             run_headless(
-                build_runner(&workspace_config).await?,
+                build_runner(&workspace_config, &auth).await?,
                 cwd,
                 profile,
                 workspace_config.model.clone(),
@@ -257,9 +265,10 @@ async fn main() -> anyhow::Result<()> {
             .await
         }
         Command::Acp => axiomcli::acp::serve_stdio(
-            build_runner(&config).await?,
+            build_runner(&config, &auth).await?,
             config.clone(),
             Some(open_store()?),
+            auth,
         )
         .await
         .map_err(anyhow::Error::from),
@@ -338,13 +347,24 @@ fn init_tracing(acp_mode: bool) {
     }
 }
 
-async fn doctor(config: &Config) {
+async fn doctor(config: &Config, auth: &AuthManager) {
     println!("AxiomCLI diagnostics");
     println!("model: {}", config.model);
     println!("base URL: {}", config.base_url);
     println!("security: local attestation and E2EE required per inference request");
     println!("permission profile: {}", config.permission_profile);
     println!("SearXNG: {}", config.searxng_url);
+    let auth_status = match auth.validate().await {
+        ValidationStatus::Missing => "not signed in".to_owned(),
+        ValidationStatus::Valid(account) => format!(
+            "valid ({}, stored in {})",
+            account.key_name,
+            account.source.label()
+        ),
+        ValidationStatus::Invalid => "invalid or revoked".to_owned(),
+        ValidationStatus::Unavailable(message) => format!("not checked ({message})"),
+    };
+    println!("Axiom authorization: {auth_status}");
     let endpoint = format!("{}/", config.searxng_url.trim_end_matches('/'));
     let status = reqwest::Client::new()
         .get(endpoint)
@@ -484,7 +504,7 @@ fn manage_sessions(action: SessionAction) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn build_runner(config: &Config) -> anyhow::Result<Arc<dyn TurnRunner>> {
+async fn build_runner(config: &Config, auth: &AuthManager) -> anyhow::Result<Arc<dyn TurnRunner>> {
     if cfg!(debug_assertions) {
         match std::env::var("AXIOMCLI_TEST_RUNNER").as_deref() {
             Ok("echo") => return Ok(Arc::new(EchoTurnRunner)),
@@ -496,7 +516,7 @@ async fn build_runner(config: &Config) -> anyhow::Result<Arc<dyn TurnRunner>> {
             _ => {}
         }
     }
-    let provider = build_provider(config)?;
+    let provider = build_provider(config, auth)?;
     let mut tools = default_registry(config.max_tool_output_bytes, &config.searxng_url)?;
     for tool in
         axiomcli::mcp::connect_tools(&config.mcp_servers, config.max_tool_output_bytes).await?
@@ -521,7 +541,10 @@ async fn build_runner(config: &Config) -> anyhow::Result<Arc<dyn TurnRunner>> {
     ))
 }
 
-fn build_provider(config: &Config) -> anyhow::Result<Arc<dyn InferenceProvider>> {
+fn build_provider(
+    config: &Config,
+    auth: &AuthManager,
+) -> anyhow::Result<Arc<dyn InferenceProvider>> {
     #[cfg(feature = "development-provider")]
     if std::env::var("AXIOMCLI_UNATTESTED_DEV").as_deref() == Ok("1") {
         return Ok(Arc::new(AxiomProvider::from_environment(
@@ -529,8 +552,9 @@ fn build_provider(config: &Config) -> anyhow::Result<Arc<dyn InferenceProvider>>
             config.request_timeout(),
         )?));
     }
-    Ok(Arc::new(SecureAxiomProvider::from_environment(
+    Ok(Arc::new(SecureAxiomProvider::with_auth(
         &config.base_url,
+        auth.clone(),
         config.request_timeout(),
     )?))
 }

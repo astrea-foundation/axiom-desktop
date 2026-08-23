@@ -155,6 +155,9 @@ async fn slash_commands_are_advertised_and_execute_outside_model_turns() {
             "resume",
             "delete",
             "thinking",
+            "login",
+            "logout",
+            "account",
             "help"
         ]
     );

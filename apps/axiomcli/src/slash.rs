@@ -17,6 +17,9 @@ pub enum SlashCommand {
     Resume,
     Delete,
     Thinking(ThinkingLevel),
+    Login,
+    Logout,
+    Account,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -72,6 +75,24 @@ pub const COMMANDS: &[SlashCommandSpec] = &[
         usage: "/thinking <minimal|low|medium|high|xhigh>",
         description: "Set the reasoning effort for subsequent requests",
         aliases: &["reasoning"],
+    },
+    SlashCommandSpec {
+        name: "login",
+        usage: "/login",
+        description: "Connect an Axiom account or paste an authorization value",
+        aliases: &["signin"],
+    },
+    SlashCommandSpec {
+        name: "logout",
+        usage: "/logout",
+        description: "Remove the saved Axiom authorization from this computer",
+        aliases: &["signout"],
+    },
+    SlashCommandSpec {
+        name: "account",
+        usage: "/account",
+        description: "Check the current Axiom authorization",
+        aliases: &["whoami"],
     },
     SlashCommandSpec {
         name: "help",
@@ -138,6 +159,9 @@ pub fn parse(input: &str) -> Option<Result<SlashCommand, SlashCommandError>> {
                 .map(SlashCommand::Thinking)
                 .map_err(|_| SlashCommandError::new(COMMANDS[5].usage))
         }),
+        Some("login") => no_arguments(arguments, SlashCommand::Login, COMMANDS[6].usage),
+        Some("logout") => no_arguments(arguments, SlashCommand::Logout, COMMANDS[7].usage),
+        Some("account") => no_arguments(arguments, SlashCommand::Account, COMMANDS[8].usage),
         Some(_) => unreachable!("all command specs are handled"),
         None => Err(SlashCommandError::new(format!(
             "unknown command `/{name}`; use /help to list commands"
@@ -210,7 +234,10 @@ pub fn completions(input: &str) -> Vec<SlashCompletion> {
                 input: format!(
                     "/{}{}",
                     spec.name,
-                    if matches!(spec.name, "help" | "model" | "resume" | "delete") {
+                    if matches!(
+                        spec.name,
+                        "help" | "model" | "resume" | "delete" | "login" | "logout" | "account"
+                    ) {
                         ""
                     } else {
                         " "
@@ -253,7 +280,9 @@ pub fn completions(input: &str) -> Vec<SlashCompletion> {
             ("high", "Use high reasoning effort"),
             ("xhigh", "Use extra-high reasoning effort"),
         ],
-        "compact" | "help" | "model" | "resume" | "delete" => Vec::new(),
+        "compact" | "help" | "model" | "resume" | "delete" | "login" | "logout" | "account" => {
+            Vec::new()
+        }
         _ => unreachable!("all command specs are handled"),
     };
     options
@@ -296,6 +325,9 @@ mod tests {
         assert_eq!(parse("/resume"), Some(Ok(SlashCommand::Resume)));
         assert_eq!(parse("/sessions"), Some(Ok(SlashCommand::Resume)));
         assert_eq!(parse("/delete"), Some(Ok(SlashCommand::Delete)));
+        assert_eq!(parse("/login"), Some(Ok(SlashCommand::Login)));
+        assert_eq!(parse("/signout"), Some(Ok(SlashCommand::Logout)));
+        assert_eq!(parse("/whoami"), Some(Ok(SlashCommand::Account)));
         assert_eq!(
             parse("/reasoning xhigh"),
             Some(Ok(SlashCommand::Thinking(ThinkingLevel::ExtraHigh)))

@@ -76,6 +76,9 @@ the application and is never sent to the model as a prompt:
 /delete
 /thinking <minimal|low|medium|high|xhigh>
 /compact [what the successor summary should preserve]
+/login
+/logout
+/account
 /help
 ```
 
@@ -137,12 +140,21 @@ model, verifies current TEE evidence locally, binds the attested model key to
 the live provider TLS endpoint, and encrypts inference end to end in-process.
 
 ```text
-AXIOM_API_KEY=...                 required; never put it in repository config
 AXIOM_BASE_URL=https://api.axiom.stream
+AXIOM_WEB_URL=https://axiom.stream
 AXIOM_MODEL=your-model-id
 ```
 
-Do not put API keys in repository configuration or command-line arguments.
+On first use, AxiomCLI opens `/login`. Browser login creates a short-lived,
+PKCE-bound authorization, asks the signed-in Axiom website to approve it, and
+stores the resulting revocable API credential in the operating-system keyring.
+If the browser cannot reach the loopback callback, paste the one-time `axc_`
+completion code shown by the website. `/login` also accepts either that `axc_`
+code or an existing `axm_` API key directly, while `/account` validates the current credential and
+`/logout` removes a stored credential. `AXIOM_API_KEY` remains an explicit
+environment override for automation; do not put API keys in repository
+configuration or command-line arguments.
+
 The legacy OpenAI-compatible development adapter is available only in builds
 compiled with `--features development-provider` and only when
 `AXIOMCLI_UNATTESTED_DEV=1`; the TUI labels that path `UNATTESTED DEV`.

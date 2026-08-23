@@ -20,6 +20,7 @@ use crate::{
         AppCommand, AppEvent, Origin, PermissionProfile, QuestionRequest, Runtime, SessionId,
         TurnId,
     },
+    auth::{AuthManager, ValidationStatus},
     config::Config,
     policy::{ApprovalChoice, ApprovalHandler, ApprovalRequest, ApprovalResponse},
     session::{SessionStore, model_for_resume, permission_for_resume, thinking_for_resume},
@@ -34,7 +35,10 @@ fn send_available_commands(
         .iter()
         .map(|spec| {
             let command = protocol::AvailableCommand::new(spec.name, spec.description);
-            if matches!(spec.name, "help" | "model" | "resume" | "delete") {
+            if matches!(
+                spec.name,
+                "help" | "model" | "resume" | "delete" | "login" | "logout" | "account"
+            ) {
                 command
             } else {
                 command.input(protocol::AvailableCommandInput::Unstructured(
@@ -263,6 +267,7 @@ pub async fn serve_stdio(
     runner: Arc<dyn TurnRunner>,
     config: Config,
     store: Option<SessionStore>,
+    auth: AuthManager,
 ) -> agent_client_protocol::Result<()> {
     let sessions: Sessions = Arc::new(Mutex::new(HashMap::new()));
     let runtime = Runtime::new(512);
@@ -279,6 +284,7 @@ pub async fn serve_stdio(
     let new_store = store.clone();
     let load_store = store.clone();
     let prompt_store = store;
+    let prompt_auth = auth;
     let load_sessions = sessions.clone();
     let load_runtime = runtime.clone();
     let load_runner = runner.clone();
@@ -659,6 +665,69 @@ pub async fn serve_stdio(
                                 protocol::StopReason::EndTurn,
                             ));
                         }
+                        SlashCommand::Login => {
+                            let login = prompt_auth
+                                .start_browser_login()
+                                .await
+                                .map_err(agent_error)?;
+                            send_text(
+                                &connection,
+                                &session_id,
+                                format!(
+                                    "Authorize AxiomCLI in your browser. Confirm code {}.\n{}",
+                                    login.user_code(),
+                                    login.authorization_url()
+                                ),
+                            )?;
+                            let account = login
+                                .complete(CancellationToken::new())
+                                .await
+                                .map_err(agent_error)?;
+                            send_text(
+                                &connection,
+                                &session_id,
+                                format!(
+                                    "Signed in as credential {} (stored in {}).",
+                                    account.key_name,
+                                    account.source.label()
+                                ),
+                            )?;
+                            return responder.respond(protocol::PromptResponse::new(
+                                protocol::StopReason::EndTurn,
+                            ));
+                        }
+                        SlashCommand::Logout => {
+                            prompt_auth.logout().map_err(agent_error)?;
+                            send_text(
+                                &connection,
+                                &session_id,
+                                "Signed out. The saved Axiom authorization was removed.".into(),
+                            )?;
+                            return responder.respond(protocol::PromptResponse::new(
+                                protocol::StopReason::EndTurn,
+                            ));
+                        }
+                        SlashCommand::Account => {
+                            let text = match prompt_auth.validate().await {
+                                ValidationStatus::Missing => {
+                                    "Not signed in. Run /login to connect AxiomCLI.".to_owned()
+                                }
+                                ValidationStatus::Valid(account) => format!(
+                                    "Axiom authorization is valid: {} (stored in {}).",
+                                    account.key_name,
+                                    account.source.label()
+                                ),
+                                ValidationStatus::Invalid => {
+                                    "The saved Axiom authorization is invalid or revoked."
+                                        .to_owned()
+                                }
+                                ValidationStatus::Unavailable(message) => message,
+                            };
+                            send_text(&connection, &session_id, text)?;
+                            return responder.respond(protocol::PromptResponse::new(
+                                protocol::StopReason::EndTurn,
+                            ));
+                        }
                         SlashCommand::Compact { focus } => {
                             let cancellation = CancellationToken::new();
                             if let Some(session) = prompt_sessions.lock().await.get_mut(&session_id)
@@ -751,6 +820,20 @@ pub async fn serve_stdio(
                             return Ok(());
                         }
                     }
+                }
+                let deterministic_test_runner = cfg!(debug_assertions)
+                    && std::env::var("AXIOMCLI_TEST_RUNNER")
+                        .is_ok_and(|value| !value.trim().is_empty());
+                if !prompt_auth.has_credential() && !deterministic_test_runner {
+                    send_text(
+                        &connection,
+                        &session_id,
+                        "Authentication required. Run /login to connect an Axiom account."
+                            .into(),
+                    )?;
+                    return responder.respond(protocol::PromptResponse::new(
+                        protocol::StopReason::EndTurn,
+                    ));
                 }
                 let turn_id = TurnId::new();
                 let cancellation = CancellationToken::new();
