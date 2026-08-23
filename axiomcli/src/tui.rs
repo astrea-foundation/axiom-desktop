@@ -71,6 +71,38 @@ const SPLASH_MESSAGES: &[&str] = &[
     "Speak freely.",
     "Your words stay yours.",
 ];
+const STARTUP_BLOSSOM_ART: [&str; 11] = [
+    "   ⢀⡀⢀⣀       ⣀⡀       ",
+    " ⢀⠔⠁ ⠢⢀⠈⠑⢶⠉⠉⢩⠁ ⡄⠑⢄     ",
+    " ⢸  ⠐⠢⢀⠡⡐⡘⡀⠈⠸⣤⣾⡿⠲⠈⡆    ",
+    "  ⢆ ⢀⡒⠤⣑⡑⣰⢡⡄⡣⢺⠛⡁⢀⡴⠒⠠⢄  ",
+    " ⢀⠔⢉ ⠤⠭⢐⡻⡟⣋⡽⢱⢷⠬⢐⠭⢐⣂⡀ ⠉⢆",
+    " ⠃ ⢀⠄⠒ ⣈⠘⢧⣿⣴⣃⣘⡾⠦⠭⠤⠄⣀  ⢸",
+    "⢸⡀ ⠁⠠⠂⠁⡠⠂⢡⢪⠛⠚⡝⠫⠑⠈⠑⢄⣀⣀⠴⠋",
+    " ⠱⡀   ⠈  ⢃⠃ ⡇⠘⡀⠡ ⠐⠄⡇   ",
+    "  ⠈⠑⠒⠤⠤⠤⠤⢾⡀   ⠇ ⠃  ⡇   ",
+    "          ⠙⠂⢤⢀⡀   ⡸    ",
+    "               ⠈⠉⠉     ",
+];
+const STARTUP_COMPACT_BLOSSOM_ART: [&str; 8] = [
+    "  ⡠⢀⠤⣀⣀⣀⣀⡠⠤⣀    ",
+    " ⡎ ⣬⡑⣄⡽ ⢼⣀⣾⣬⢧   ",
+    " ⢵⣀⣰⣬⣞⣺⣧⣲⣿⣋⣠⠾⠠⣄ ",
+    "⢠⠞⠡⢐⡛⠽⣿⡽⣻⢿⣛⣿⠿⠆⠈⢳",
+    "⣴ ⠚⡠⠂⡣⢛⣿⠿⡿⡯⠽⢍⣚⣀⡼",
+    "⠈⢆⡀ ⠈ ⢻⠃⠿⢹⡸⡀⠢⡏⠁ ",
+    "  ⠈⠙⠛⠛⠛⣦⢀⠘⠁⠁⢠⡇  ",
+    "        ⠈⠉⠐⠒⠊   ",
+];
+const STARTUP_ASCII_ART: [&str; 7] = [
+    "        .  *  .",
+    "     *  . * .  *",
+    "   . *  * @ *  * .",
+    "     *  . * .  *",
+    "        `\\|/`",
+    "          |",
+    "          |",
+];
 
 fn pick_splash_message() -> &'static str {
     let entropy = SystemTime::now()
@@ -120,6 +152,48 @@ impl Command for DisableAxiomMouseCapture {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+struct SetAxiomTerminalBackground(Option<&'static str>);
+
+impl Command for SetAxiomTerminalBackground {
+    fn write_ansi(&self, formatter: &mut impl std::fmt::Write) -> std::fmt::Result {
+        if let Some(color) = self.0 {
+            write!(formatter, "\x1b]11;{color}\x1b\\")?;
+        }
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    fn execute_winapi(&self) -> io::Result<()> {
+        use std::io::Write as _;
+        if let Some(color) = self.0 {
+            write!(io::stdout(), "\x1b]11;{color}\x1b\\")?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ResetAxiomTerminalBackground(bool);
+
+impl Command for ResetAxiomTerminalBackground {
+    fn write_ansi(&self, formatter: &mut impl std::fmt::Write) -> std::fmt::Result {
+        if self.0 {
+            formatter.write_str("\x1b]111\x1b\\")?;
+        }
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    fn execute_winapi(&self) -> io::Result<()> {
+        use std::io::Write as _;
+        if self.0 {
+            io::stdout().write_all(b"\x1b]111\x1b\\")?;
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ColorMode {
     #[default]
@@ -164,6 +238,14 @@ impl ColorMode {
             Self::Ansi16
         }
     }
+
+    const fn terminal_background(self) -> Option<&'static str> {
+        match self {
+            Self::TrueColor | Self::Ansi256 => Some("#101013"),
+            Self::Ansi16 => Some("#000000"),
+            Self::NoColor => None,
+        }
+    }
 }
 
 /// Three background tones give the shell its depth: `base` is the slab the whole
@@ -195,9 +277,7 @@ impl Theme {
                 cherry_bright: Color::Rgb(255, 138, 158),
                 blossom_pale: Color::Rgb(255, 199, 210),
                 cherry_deep: Color::Rgb(94, 26, 40),
-                // Inherit the terminal background so its own cell padding and
-                // our viewport read as one uninterrupted surface.
-                base: Color::Reset,
+                base: Color::Rgb(16, 16, 19),
                 surface: Color::Rgb(29, 29, 34),
                 border: Color::Rgb(46, 46, 53),
                 on_accent: Color::Rgb(16, 16, 19),
@@ -212,7 +292,7 @@ impl Theme {
                 cherry_bright: Color::Indexed(211),
                 blossom_pale: Color::Indexed(218),
                 cherry_deep: Color::Indexed(52),
-                base: Color::Reset,
+                base: Color::Indexed(233),
                 surface: Color::Indexed(236),
                 border: Color::Indexed(239),
                 on_accent: Color::Indexed(233),
@@ -227,7 +307,7 @@ impl Theme {
                 cherry_bright: Color::LightRed,
                 blossom_pale: Color::White,
                 cherry_deep: Color::Magenta,
-                base: Color::Reset,
+                base: Color::Black,
                 surface: Color::Black,
                 border: Color::DarkGray,
                 on_accent: Color::Black,
@@ -2424,18 +2504,23 @@ fn approval_status(request: &ApprovalRequest) -> String {
     format!("{}  {choices}", request.explanation)
 }
 
-struct TerminalGuard;
+struct TerminalGuard {
+    reset_background: bool,
+}
 
 impl TerminalGuard {
-    fn enter() -> io::Result<Self> {
+    fn enter(background: Option<&'static str>) -> io::Result<Self> {
         enable_raw_mode()?;
         execute!(
             io::stdout(),
+            SetAxiomTerminalBackground(background),
             EnterAlternateScreen,
             EnableAxiomMouseCapture,
             EnableBracketedPaste
         )?;
-        Ok(Self)
+        Ok(Self {
+            reset_background: background.is_some(),
+        })
     }
 }
 
@@ -2446,7 +2531,8 @@ impl Drop for TerminalGuard {
             io::stdout(),
             DisableBracketedPaste,
             DisableAxiomMouseCapture,
-            LeaveAlternateScreen
+            LeaveAlternateScreen,
+            ResetAxiomTerminalBackground(self.reset_background)
         );
     }
 }
@@ -2559,7 +2645,7 @@ pub async fn run(
     } else {
         default_thinking
     };
-    let _guard = TerminalGuard::enter()?;
+    let _guard = TerminalGuard::enter(options.color_mode.terminal_background())?;
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
     terminal.clear()?;
@@ -3887,8 +3973,10 @@ fn render_transcript(frame: &mut Frame<'_>, state: &TuiState, theme: Theme, area
 fn render_startup(frame: &mut Frame<'_>, state: &TuiState, theme: Theme, area: Rect) {
     let horizontal_margin = if area.width >= 60 { 8 } else { 2 };
     let width = area.width.saturating_sub(horizontal_margin).clamp(3, 104);
-    let requested_height = if area.width >= 60 && area.height >= 11 {
+    let requested_height = if area.height >= 13 {
         13
+    } else if area.height >= 10 {
+        10
     } else {
         7
     };
@@ -3909,7 +3997,10 @@ fn render_startup(frame: &mut Frame<'_>, state: &TuiState, theme: Theme, area: R
         return;
     }
 
-    if inner.width < 56 || inner.height < 8 {
+    let use_detailed_art = !state.options.ascii && inner.width >= 56 && inner.height >= 11;
+    let use_compact_art = !state.options.ascii && inner.width >= 46 && inner.height >= 8;
+    let use_ascii_art = state.options.ascii && inner.width >= 46 && inner.height >= 7;
+    if !use_detailed_art && !use_compact_art && !use_ascii_art {
         let mut lines = Vec::new();
         let content_rows = if inner.height >= 3 { 3 } else { 1 };
         lines.extend(std::iter::repeat_n(
@@ -3950,41 +4041,20 @@ fn render_startup(frame: &mut Frame<'_>, state: &TuiState, theme: Theme, area: R
         Constraint::Min(24),
     ])
     .split(inner);
-    let unicode_art = [
-        "        ·  ✦  ·",
-        "     ✿  · ✿ ·  ✿",
-        "   · ✿  ✿ ❀ ✿  ✿ ·",
-        "     ✿  · ✿ ·  ✿",
-        "        `\\|/`",
-        "          |",
-        "          |",
-    ];
-    let ascii_art = [
-        "        .  *  .",
-        "     *  . * .  *",
-        "   . *  * @ *  * .",
-        "     *  . * .  *",
-        "        `\\|/`",
-        "          |",
-        "          |",
-    ];
-    let art = if state.options.ascii {
-        &ascii_art
+    let art: &[&str] = if use_ascii_art {
+        &STARTUP_ASCII_ART
+    } else if use_detailed_art {
+        &STARTUP_BLOSSOM_ART
     } else {
-        &unicode_art
+        &STARTUP_COMPACT_BLOSSOM_ART
     };
-    let art_top = usize::from(columns[0].height.saturating_sub(7) / 2);
+    let art_height = u16::try_from(art.len()).unwrap_or(columns[0].height);
+    let art_top = usize::from(columns[0].height.saturating_sub(art_height) / 2);
     let mut art_lines = vec![Line::default(); art_top];
-    art_lines.extend(art.iter().enumerate().map(|(index, line)| {
-        Line::from(Span::styled(
-            *line,
-            Style::default().fg(match index {
-                0 | 4..=6 => theme.cherry_deep,
-                2 => theme.blossom_pale,
-                _ => theme.cherry,
-            }),
-        ))
-    }));
+    art_lines.extend(
+        art.iter()
+            .map(|line| Line::from(Span::styled(*line, Style::default().fg(theme.cherry)))),
+    );
     frame.render_widget(
         Paragraph::new(art_lines)
             .alignment(Alignment::Center)
@@ -4014,7 +4084,11 @@ fn render_startup(frame: &mut Frame<'_>, state: &TuiState, theme: Theme, area: R
         )),
         Line::default(),
         Line::from(Span::styled(
-            "Private AI for the work in front of you.",
+            if use_detailed_art {
+                "Private AI for the work in front of you."
+            } else {
+                "Private AI. Kept private."
+            },
             Style::default().fg(theme.muted),
         )),
     ]);
@@ -5130,6 +5204,34 @@ mod tests {
     }
 
     #[test]
+    fn terminal_background_commands_cover_padding_and_restore_the_host_color() {
+        assert_eq!(ColorMode::TrueColor.terminal_background(), Some("#101013"));
+        assert_eq!(ColorMode::Ansi16.terminal_background(), Some("#000000"));
+        assert_eq!(ColorMode::NoColor.terminal_background(), None);
+
+        let mut start = String::new();
+        SetAxiomTerminalBackground(Some("#101013"))
+            .write_ansi(&mut start)
+            .expect("set background sequence");
+        assert_eq!(start, "\x1b]11;#101013\x1b\\");
+
+        let mut reset = String::new();
+        ResetAxiomTerminalBackground(true)
+            .write_ansi(&mut reset)
+            .expect("reset background sequence");
+        assert_eq!(reset, "\x1b]111\x1b\\");
+
+        let mut no_color = String::new();
+        SetAxiomTerminalBackground(None)
+            .write_ansi(&mut no_color)
+            .expect("no-color sequence");
+        ResetAxiomTerminalBackground(false)
+            .write_ansi(&mut no_color)
+            .expect("no-color reset sequence");
+        assert!(no_color.is_empty());
+    }
+
+    #[test]
     fn ctrl_f_is_search_and_slash_is_reserved_for_commands() {
         assert!(is_search_shortcut(&KeyEvent::new(
             KeyCode::Char('f'),
@@ -5507,8 +5609,12 @@ mod tests {
         assert!(output.contains("AXIOM CLI"));
         assert!(output.contains(concat!("v", env!("CARGO_PKG_VERSION"))));
         assert!(output.contains("Think freely."));
-        assert!(output.contains("✿ ❀ ✿"));
+        assert!(output.contains("⢧⣿⣴⣃⣘⡾"));
         assert!(!output.contains("AxiomCLI is ready"));
+
+        let compact = render_symbols(64, 30, &state);
+        assert!(compact.contains("⣬⣞⣺⣧⣲⣿"));
+        assert!(compact.contains("Think freely."));
 
         let narrow = render_symbols(54, 16, &state);
         assert!(narrow.contains("✿  AXIOM CLI"));
@@ -5516,7 +5622,7 @@ mod tests {
     }
 
     #[test]
-    fn base_background_inherits_terminal_color_at_every_outer_edge() {
+    fn base_background_paints_axiom_black_at_every_outer_cell() {
         let state = TuiState::with_options(
             PathBuf::from("/tmp/project"),
             "model".into(),
@@ -5532,7 +5638,7 @@ mod tests {
         terminal.draw(|frame| render(frame, &state)).expect("draw");
         let buffer = terminal.backend().buffer();
         for position in [(0, 0), (99, 0), (0, 29), (99, 29)] {
-            assert_eq!(buffer[position].bg, Color::Reset);
+            assert_eq!(buffer[position].bg, Color::Rgb(16, 16, 19));
         }
     }
 
@@ -6448,6 +6554,8 @@ mod tests {
     fn preview_scenarios() -> Vec<(&'static str, u16, u16, TuiState)> {
         let mut startup = preview_state();
         startup.splash_message = "A quiet place to think.";
+        let mut startup_compact = preview_state();
+        startup_compact.splash_message = "A quiet place to think.";
         let mut conversation = preview_state();
         let conversation_turn = TurnId::new();
         for event in [
@@ -6818,6 +6926,7 @@ mod tests {
 
         vec![
             ("startup", 100, 30, startup),
+            ("startup-compact", 64, 30, startup_compact),
             ("conversation", 100, 30, conversation),
             ("working", 100, 30, working),
             ("waiting", 100, 30, waiting),
