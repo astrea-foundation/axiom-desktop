@@ -1071,7 +1071,7 @@ fn send_event(
         AppEvent::ThinkingLevelChanged { level } => send_text(
             connection,
             session_id,
-            format!("[settings] thinking: {level} (proxy transport pending)"),
+            format!("[settings] thinking: {level}"),
         ),
         AppEvent::ContextCompacted {
             messages_before, ..
