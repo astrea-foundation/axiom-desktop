@@ -3,6 +3,7 @@ name = "axiom-fuzz"
 version = "0.0.0"
 publish = false
 edition = "2024"
+license = "Apache-2.0"
 
 [package.metadata]
 cargo-fuzz = true
@@ -11,11 +12,11 @@ cargo-fuzz = true
 members = ["."]
 
 [dependencies]
-axiom-inference = { path = "../crates/axiom-inference" }
-axiom-openai-compat = { path = "../crates/axiom-openai-compat" }
-axiom-secure-client = { path = "../crates/axiom-secure-client", features = ["fuzzing"] }
-libfuzzer-sys = "0.4"
-serde_json = "1"
+axiom-inference = { version = "0.1.0", path = "../crates/axiom-inference" }
+axiom-openai-compat = { version = "0.1.0", path = "../crates/axiom-openai-compat" }
+axiom-secure-client = { version = "0.1.0", path = "../crates/axiom-secure-client", features = ["fuzzing"] }
+libfuzzer-sys = "0.4.13"
+serde_json = "1.0.151"
 
 [[bin]]
 name = "ciphertext"
