@@ -2,6 +2,9 @@
 
 Decision: **PASS (reviewed 2026-08-23)**
 
+Implementation commit under review: `bfbadf7` (`feat: implement near v2
+encryption`)
+
 ## Delivered
 
 - New provider-private `near-v2` implementation of Ed25519-to-X25519 public and

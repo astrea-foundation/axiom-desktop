@@ -1,6 +1,7 @@
 # Axiom secure inference and proxy implementation plan
 
-Status: **proposed — no implementation stages started**
+Status: **implemented and audited 2026-08-23 — early Linux x86-64
+release-candidate scope**
 
 Primary language: Rust
 

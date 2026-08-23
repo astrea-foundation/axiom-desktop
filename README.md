@@ -35,8 +35,8 @@ Implementation is governed by the gated
 
 The implementation follows the gated plan in
 [`docs/axiomcli-implementation-plan.md`](docs/axiomcli-implementation-plan.md).
-Stages 00–15 pass; Stage 16 hardening is implemented and awaits its completion
-audit. Each passed stage has an evidence-backed review under `docs/reviews/`.
+Stages 00–16 pass, including the independent completion audit. Each stage has
+an evidence-backed review under `docs/reviews/`.
 The current secure path verifies provider hardware, model/key identity, and the
 live TLS endpoint and applies E2EE; an approved workload allowlist and the
 desktop application remain future work.
@@ -117,9 +117,9 @@ Development installs can use `cargo install --locked --path apps/axiomcli`. The
 supported release artifact is currently Linux x86-64 GNU:
 
 ```text
-scripts/verify-release dist/axiomcli-VERSION-x86_64-unknown-linux-gnu.tar.gz \
-  dist/axiomcli-VERSION-x86_64-unknown-linux-gnu.tar.gz.asc
-scripts/install-release dist/axiomcli-VERSION-x86_64-unknown-linux-gnu.tar.gz PREFIX
+scripts/verify-release dist/axiomai-VERSION-x86_64-unknown-linux-gnu.tar.gz \
+  dist/axiomai-VERSION-x86_64-unknown-linux-gnu.tar.gz.asc
+scripts/install-release dist/axiomai-VERSION-x86_64-unknown-linux-gnu.tar.gz PREFIX
 scripts/uninstall-release PREFIX
 ```
 
@@ -127,6 +127,8 @@ See [`docs/releasing.md`](docs/releasing.md) for reproducible packaging and
 signing, and [`docs/configuration.md`](docs/configuration.md),
 [`docs/privacy.md`](docs/privacy.md), and
 [`docs/troubleshooting.md`](docs/troubleshooting.md) for operation details.
+Parser fuzzing and corpus-handling instructions are in
+[`docs/fuzzing.md`](docs/fuzzing.md).
 
 ## Provider configuration
 

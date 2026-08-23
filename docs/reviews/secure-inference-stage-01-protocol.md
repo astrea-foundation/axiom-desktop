@@ -2,6 +2,9 @@
 
 Decision: **PASS (reviewed 2026-08-23)**
 
+Implementation commit under review: `b6aebc1` (`docs: specify secure inference
+protocol`)
+
 ## Evidence reviewed
 
 - Axiom backend commit `114be9a4061e8b1a9049f1e31b7b05c52a694c50`.

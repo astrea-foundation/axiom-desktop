@@ -2,6 +2,9 @@
 
 Decision: **PASS (reviewed 2026-08-23)**
 
+Implementation commit under review: `b0a4fbf` (`feat: establish secure client
+lifecycle`)
+
 ## Delivered
 
 - `axiom-secure-client` workspace crate with typed configuration, endpoint

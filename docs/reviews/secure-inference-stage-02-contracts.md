@@ -2,6 +2,9 @@
 
 Decision: **PASS (reviewed 2026-08-23)**
 
+Implementation commit under review: `635244b` (`feat: expand shared inference
+contracts`)
+
 ## Delivered
 
 - `axiom-inference` now represents optional message reasoning/name/refusal,

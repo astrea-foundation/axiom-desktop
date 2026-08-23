@@ -2,6 +2,9 @@
 
 Decision: **PASS (reviewed 2026-08-23)**
 
+Implementation commit under review: `b68c672` (`refactor: establish axiomai
+monorepo layout`)
+
 ## Scope
 
 This gate reviews only the mechanical monorepo migration, extraction of the
