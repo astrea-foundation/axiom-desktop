@@ -11,6 +11,7 @@ pub struct SecureClientConfig {
     pub attestation_timeout: Duration,
     pub limits: SecureClientLimits,
     pub endpoint_policy: EndpointPolicy,
+    #[cfg(feature = "test-fixture")]
     test_fixture: bool,
 }
 
@@ -29,6 +30,7 @@ impl SecureClientConfig {
             attestation_timeout: Duration::from_secs(60),
             limits: SecureClientLimits::default(),
             endpoint_policy: EndpointPolicy::default(),
+            #[cfg(feature = "test-fixture")]
             test_fixture: false,
         })
     }

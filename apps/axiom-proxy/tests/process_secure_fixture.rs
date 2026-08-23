@@ -50,6 +50,7 @@ struct AttestationQuery {
 struct ProxyProcess {
     child: Child,
     base_url: String,
+    stderr_reader: std::thread::JoinHandle<String>,
 }
 
 impl ProxyProcess {
@@ -64,6 +65,14 @@ impl ProxyProcess {
             .spawn()
             .expect("actual proxy binary starts");
         let stdout = child.stdout.take().expect("proxy stdout is piped");
+        let mut stderr = child.stderr.take().expect("proxy stderr is piped");
+        let stderr_reader = std::thread::spawn(move || {
+            let mut output = String::new();
+            stderr
+                .read_to_string(&mut output)
+                .expect("read proxy stderr");
+            output
+        });
         let mut stdout = BufReader::new(stdout);
         let mut line = String::new();
         stdout.read_line(&mut line).expect("read ready line");
@@ -72,6 +81,7 @@ impl ProxyProcess {
         Self {
             child,
             base_url: format!("http://{address}"),
+            stderr_reader,
         }
     }
 
@@ -94,14 +104,7 @@ impl ProxyProcess {
             }
             std::thread::sleep(Duration::from_millis(25));
         }
-        let mut stderr = String::new();
-        self.child
-            .stderr
-            .take()
-            .expect("proxy stderr is piped")
-            .read_to_string(&mut stderr)
-            .expect("read proxy stderr");
-        stderr
+        self.stderr_reader.join().expect("join stderr reader")
     }
 }
 
@@ -397,6 +400,8 @@ async fn actual_proxy_preserves_encryption_streaming_tools_errors_and_cancellati
     }
 
     let proxy_logs = proxy.stop();
+    assert!(proxy_logs.contains("\"event\":\"security_verified\""));
+    assert!(proxy_logs.contains("\"terminal\":\"cancelled\""));
     for secret in [UPSTREAM_KEY, LOCAL_TOKEN]
         .into_iter()
         .chain(privacy_sentinels)

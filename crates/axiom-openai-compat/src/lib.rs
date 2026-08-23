@@ -330,6 +330,12 @@ pub struct WireModel {
     pub object: &'static str,
     pub created: u64,
     pub owned_by: String,
+    pub context_window_tokens: u32,
+    pub max_output_tokens: u32,
+    pub supported_reasoning_efforts: Vec<String>,
+    pub supports_tools: bool,
+    pub supports_parallel_tools: bool,
+    pub supports_streaming: bool,
 }
 
 #[must_use]
@@ -343,6 +349,16 @@ pub fn model_list(models: &[ModelInfo]) -> ModelList {
                 object: "model",
                 created: 0,
                 owned_by: model.provider_label.clone(),
+                context_window_tokens: model.context_window_tokens,
+                max_output_tokens: model.max_output_tokens,
+                supported_reasoning_efforts: model
+                    .supported_reasoning_efforts
+                    .iter()
+                    .map(|effort| effort.as_str().to_owned())
+                    .collect(),
+                supports_tools: model.supports_tools,
+                supports_parallel_tools: model.supports_parallel_tools,
+                supports_streaming: model.supports_streaming,
             })
             .collect(),
     }
@@ -753,6 +769,24 @@ mod tests {
 
     #[test]
     fn emits_openai_nonstream_stream_usage_tools_and_done_shapes() {
+        let models = serde_json::to_value(model_list(&[ModelInfo {
+            id: "cherry".to_owned(),
+            provider_label: "Axiom".to_owned(),
+            context_window_tokens: 131_072,
+            max_output_tokens: 8_192,
+            supported_reasoning_efforts: vec![ReasoningEffort::Medium],
+            supports_tools: true,
+            supports_parallel_tools: true,
+            supports_streaming: true,
+            ..ModelInfo::default()
+        }]))
+        .unwrap();
+        assert_eq!(models["data"][0]["context_window_tokens"], 131_072);
+        assert_eq!(
+            models["data"][0]["supported_reasoning_efforts"],
+            serde_json::json!(["medium"])
+        );
+
         let response = InferenceResponse {
             assistant: AssistantTurn {
                 text: String::new(),

@@ -93,9 +93,10 @@ fn build_request(
         ));
     }
     if request.reasoning_effort == ReasoningEffort::Minimal
-        || !model
-            .supported_reasoning_efforts
-            .contains(&request.reasoning_effort)
+        || (!model.supported_reasoning_efforts.is_empty()
+            && !model
+                .supported_reasoning_efforts
+                .contains(&request.reasoning_effort))
     {
         return Err(invalid_request(
             "reasoning effort is not supported by the model",
@@ -201,7 +202,8 @@ fn build_request(
         max_tokens: request.max_output_tokens,
         sampling,
         response_format,
-        reasoning_effort: Some(request.reasoning_effort.as_str().to_owned()),
+        reasoning_effort: (!model.supported_reasoning_efforts.is_empty())
+            .then(|| request.reasoning_effort.as_str().to_owned()),
     };
     Ok((identity, relay))
 }
@@ -378,7 +380,7 @@ fn decrypt_completion(
         assistant: AssistantTurn { text, tool_calls },
         reasoning,
         refusal,
-        usage: normalize_usage(&completion.usage),
+        usage: normalize_usage(&completion.usage)?,
         finish_reason: Some(finish_reason),
     })
 }
@@ -432,16 +434,22 @@ fn validate_finish_shape(reason: &FinishReason, calls: &[ToolCall]) -> Result<()
     Ok(())
 }
 
-fn normalize_usage(usage: &RelayUsage) -> Usage {
+fn normalize_usage(usage: &RelayUsage) -> Result<Usage> {
     let input_tokens = usage.prompt_tokens.unwrap_or(0);
     let output_tokens = usage.completion_tokens.unwrap_or(0);
-    Usage {
+    if usage
+        .cached_prompt_tokens
+        .is_some_and(|cached| usage.prompt_tokens.is_none_or(|prompt| cached > prompt))
+    {
+        return Err(invalid("relay cached-token usage is inconsistent"));
+    }
+    Ok(Usage {
         input_tokens,
         output_tokens,
         total_tokens: usage
             .total_tokens
             .unwrap_or_else(|| input_tokens.saturating_add(output_tokens)),
-    }
+    })
 }
 
 fn validate_run_id(value: &str) -> Result<()> {
@@ -555,7 +563,7 @@ impl StreamState {
                     return Err(invalid("relay message completion is duplicated"));
                 }
                 let reason = parse_finish_reason(&payload.finish_reason)?;
-                let usage = normalize_usage(&payload.usage);
+                let usage = normalize_usage(&payload.usage)?;
                 send(
                     sink,
                     ProviderEvent::Usage {
@@ -735,6 +743,42 @@ mod tests {
     }
 
     #[test]
+    fn non_reasoning_models_omit_the_provider_parameter_and_usage_is_consistent() {
+        let recipient = crypto::ClientIdentity::generate();
+        let recipient_key =
+            crypto::Ed25519PublicKey::from_hex(&recipient.public_key_hex()).unwrap();
+        let mut non_reasoning = model();
+        non_reasoning.supported_reasoning_efforts.clear();
+        let mut request = InferenceRequest::streaming(
+            non_reasoning.id.clone(),
+            vec![ChatMessage::text(ChatRole::User, "hello")],
+            Vec::new(),
+        );
+        request.reasoning_effort = ReasoningEffort::Medium;
+        request.stream = false;
+        let (_, relay) = build_request(&non_reasoning, recipient_key, request, false).unwrap();
+        assert!(relay.reasoning_effort.is_none());
+
+        assert!(
+            normalize_usage(&RelayUsage {
+                prompt_tokens: Some(10),
+                completion_tokens: Some(5),
+                total_tokens: Some(15),
+                cached_prompt_tokens: Some(4),
+            })
+            .is_ok()
+        );
+        assert!(
+            normalize_usage(&RelayUsage {
+                prompt_tokens: Some(3),
+                cached_prompt_tokens: Some(4),
+                ..RelayUsage::default()
+            })
+            .is_err()
+        );
+    }
+
+    #[test]
     fn tool_results_and_assistant_history_are_encrypted() {
         let recipient = crypto::ClientIdentity::generate();
         let recipient_key =
@@ -794,6 +838,7 @@ mod tests {
                 prompt_tokens: Some(10),
                 completion_tokens: Some(4),
                 total_tokens: Some(14),
+                cached_prompt_tokens: None,
             },
         };
         let response = decrypt_completion(&model(), &identity, completion).unwrap();
@@ -897,6 +942,7 @@ mod tests {
                         prompt_tokens: Some(8),
                         completion_tokens: Some(5),
                         total_tokens: Some(13),
+                        cached_prompt_tokens: None,
                     },
                     finish_reason: "tool_calls".to_owned(),
                 }),

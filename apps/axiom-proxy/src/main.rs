@@ -208,6 +208,8 @@ async fn chat_completions(
         .into_domain()
         .map_err(|error| ApiError::invalid_request(error.safe_detail()))?;
     let model_id = domain.model.clone();
+    let id = format!("chatcmpl-{}", uuid::Uuid::new_v4().simple());
+    let created = unix_seconds();
     let permit = state
         .concurrency
         .clone()
@@ -232,15 +234,21 @@ async fn chat_completions(
         .client
         .establish(model, &TrustPolicy::default(), cancellation.clone())
         .await
-        .map_err(map_secure_error)?;
+        .map_err(|error| {
+            log_security_failure(&id, &model_id, error.kind());
+            map_secure_error(error)
+        })?;
+    log_security_evidence(&id, session.evidence());
 
-    let id = format!("chatcmpl-{}", uuid::Uuid::new_v4().simple());
-    let created = unix_seconds();
     if !is_stream {
         let response = session
             .complete(domain, cancellation)
             .await
-            .map_err(map_secure_error)?;
+            .map_err(|error| {
+                log_request_failure(&id, &error);
+                map_secure_error(error)
+            })?;
+        log_terminal(&id, "completed", response.usage.total_tokens);
         drop(permit);
         return Ok(Json(axiom_openai_compat::completion(
             id, model_id, created, response,
@@ -253,6 +261,7 @@ async fn chat_completions(
         let _permit = permit;
         let start = encode_sse(&stream_start(&id, &model_id, created));
         if send_chunk(&output_tx, start, &cancellation).await.is_err() {
+            log_terminal(&id, "cancelled", 0);
             return;
         }
         let (event_tx, mut event_rx) = mpsc::channel(STREAM_CHANNEL_CAPACITY);
@@ -270,6 +279,7 @@ async fn chat_completions(
                     if let Some(chunk) = stream_event(&id, &model_id, created, event, include_usage)
                         && send_chunk(&output_tx, encode_sse(&chunk), &cancellation).await.is_err()
                     {
+                        log_terminal(&id, "cancelled", 0);
                         return;
                     }
                 }
@@ -281,14 +291,23 @@ async fn chat_completions(
                     .await
                     .is_err()
             {
+                log_terminal(&id, "cancelled", 0);
                 return;
             }
         }
         match result {
-            Ok(_) => {
+            Ok(response) => {
+                log_terminal(&id, "completed", response.usage.total_tokens);
                 let _ = send_chunk(&output_tx, Ok(done_sse().to_owned()), &cancellation).await;
             }
             Err(error) => {
+                let terminal = if error.kind() == ProviderFailureKind::Cancelled {
+                    "cancelled"
+                } else {
+                    "failed"
+                };
+                log_terminal(&id, terminal, 0);
+                log_request_failure(&id, &error);
                 let mapped = map_secure_error(error);
                 let envelope = error_envelope(mapped.message, mapped.kind, mapped.code);
                 let _ = send_chunk(&output_tx, encode_sse(&envelope), &cancellation).await;
@@ -310,6 +329,74 @@ async fn chat_completions(
         .header("x-accel-buffering", "no")
         .body(Body::from_stream(body_stream))
         .expect("static response headers are valid"))
+}
+
+fn log_security_evidence(request_id: &str, evidence: &axiom_secure_client::SecurityEvidence) {
+    let checks = evidence
+        .checks
+        .iter()
+        .map(|check| {
+            serde_json::json!({
+                "id": check.id,
+                "status": check.status,
+                "passed": check.passed,
+            })
+        })
+        .collect::<Vec<_>>();
+    eprintln!(
+        "{}",
+        serde_json::json!({
+            "event":"security_verified",
+            "request_id":request_id,
+            "model_id":evidence.model_id,
+            "provider_id":evidence.provider_id,
+            "attestation_protocol":evidence.attestation_protocol,
+            "e2ee_protocol":evidence.e2ee_protocol,
+            "e2ee_encryption_version":evidence.e2ee_encryption_version,
+            "trust_policy_version":evidence.trust_policy_version,
+            "verified_at_unix_seconds":evidence.verified_at_unix_seconds,
+            "model_key_fingerprint":evidence.model_key_fingerprint,
+            "tls_spki_fingerprint":evidence.tls_spki_fingerprint,
+            "approved_workload_identity":evidence.approved_workload_identity,
+            "checks":checks,
+        })
+    );
+}
+
+fn log_security_failure(request_id: &str, model_id: &str, kind: ProviderFailureKind) {
+    eprintln!(
+        "{}",
+        serde_json::json!({
+            "event":"security_failed",
+            "request_id":request_id,
+            "model_id":model_id,
+            "failure_kind":format!("{kind:?}"),
+        })
+    );
+}
+
+fn log_terminal(request_id: &str, terminal: &'static str, total_tokens: u64) {
+    eprintln!(
+        "{}",
+        serde_json::json!({
+            "event":"request_terminal",
+            "request_id":request_id,
+            "terminal":terminal,
+            "total_tokens":total_tokens,
+        })
+    );
+}
+
+fn log_request_failure(request_id: &str, error: &axiom_secure_client::SecureClientError) {
+    eprintln!(
+        "{}",
+        serde_json::json!({
+            "event":"request_failed",
+            "request_id":request_id,
+            "failure_kind":format!("{:?}", error.kind()),
+            "safe_detail":error.safe_detail(),
+        })
+    );
 }
 
 async fn send_chunk(

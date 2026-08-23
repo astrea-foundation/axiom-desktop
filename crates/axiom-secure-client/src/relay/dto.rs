@@ -168,6 +168,8 @@ pub(crate) struct RelayUsage {
     pub completion_tokens: Option<u64>,
     #[serde(default)]
     pub total_tokens: Option<u64>,
+    #[serde(default)]
+    pub cached_prompt_tokens: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
