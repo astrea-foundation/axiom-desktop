@@ -27,6 +27,13 @@ pub use security::{EvidenceCheck, EvidenceClaim, SecurityEvidence, SecurityState
 #[cfg(feature = "test-fixture")]
 pub mod test_support;
 
+/// Bounded parser entry points for the standalone fuzz workspace.
+///
+/// This module is absent from ordinary production builds. It deliberately
+/// exposes no session establishment, provider credentials, or key material.
+#[cfg(feature = "fuzzing")]
+pub mod fuzz_support;
+
 use std::sync::Arc;
 
 use secrecy::{ExposeSecret, SecretString};

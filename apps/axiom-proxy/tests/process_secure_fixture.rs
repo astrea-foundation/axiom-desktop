@@ -1,4 +1,4 @@
-#![cfg(feature = "test-fixture")]
+#![cfg(all(feature = "test-fixture", target_os = "linux"))]
 
 use std::{
     collections::BTreeSet,
@@ -105,6 +105,36 @@ impl ProxyProcess {
             std::thread::sleep(Duration::from_millis(25));
         }
         self.stderr_reader.join().expect("join stderr reader")
+    }
+
+    fn id(&self) -> u32 {
+        self.child.id()
+    }
+}
+
+#[derive(Debug)]
+struct LinuxResources {
+    file_descriptors: usize,
+    resident_kib: u64,
+}
+
+fn linux_resources(process_id: u32) -> LinuxResources {
+    let file_descriptors = std::fs::read_dir(format!("/proc/{process_id}/fd"))
+        .expect("read proxy file descriptors")
+        .count();
+    let status = std::fs::read_to_string(format!("/proc/{process_id}/status"))
+        .expect("read proxy process status");
+    let resident_kib = status
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix("VmRSS:")
+                .and_then(|value| value.split_whitespace().next())
+                .and_then(|value| value.parse().ok())
+        })
+        .expect("proxy VmRSS is present");
+    LinuxResources {
+        file_descriptors,
+        resident_kib,
     }
 }
 
@@ -370,6 +400,47 @@ async fn actual_proxy_preserves_encryption_streaming_tools_errors_and_cancellati
     for task in parallel_requests {
         task.await.unwrap();
     }
+
+    let resources_before_soak = linux_resources(proxy.id());
+    for index in 0..24 {
+        let response = post_json(
+            &client,
+            &proxy.base_url,
+            json!({"model":MODEL_ID,"messages":[{"role":"user","content":format!("stream soak {index}")}],"stream":true}),
+        )
+        .await
+        .error_for_status()
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+        assert!(response.ends_with("data: [DONE]\n\n"));
+    }
+    for _ in 0..12 {
+        state.slow_stream_dropped.store(false, Ordering::SeqCst);
+        let mut response = post_json(
+            &client,
+            &proxy.base_url,
+            json!({"model":MODEL_ID,"messages":[{"role":"user","content":"slow stream fixture"}],"stream":true}),
+        )
+        .await
+        .error_for_status()
+        .unwrap();
+        state.slow_stream_started.notified().await;
+        let _ = response.chunk().await.unwrap();
+        drop(response);
+        wait_for_flag(&state.slow_stream_dropped).await;
+    }
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    let resources_after_soak = linux_resources(proxy.id());
+    assert!(
+        resources_after_soak.file_descriptors <= resources_before_soak.file_descriptors + 24,
+        "proxy file descriptors did not return to a bounded level: before={resources_before_soak:?}, after={resources_after_soak:?}"
+    );
+    assert!(
+        resources_after_soak.resident_kib <= resources_before_soak.resident_kib + 96 * 1024,
+        "proxy resident memory grew beyond the soak bound: before={resources_before_soak:?}, after={resources_after_soak:?}"
+    );
 
     let relay_bodies = state.relay_bodies.lock().unwrap().clone();
     assert!(relay_bodies.len() >= 17);

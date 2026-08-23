@@ -134,6 +134,17 @@ impl AttestationReport {
     }
 }
 
+#[cfg(feature = "fuzzing")]
+pub(crate) fn fuzz_parse_report(input: &[u8]) {
+    let Ok(report) = serde_json::from_slice::<AttestationReport>(input) else {
+        return;
+    };
+    let _ = report.echoed_nonce();
+    let _ = report.tls_fingerprint();
+    let _ = report.model_key();
+    let _ = report.workload_manifest();
+}
+
 #[derive(Clone, Debug)]
 struct IntelEvidence {
     status: String,

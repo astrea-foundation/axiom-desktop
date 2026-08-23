@@ -10,6 +10,8 @@ default = []
 # Deterministic process-test provider. This is intentionally absent from
 # production builds and additionally requires an explicit runtime opt-in.
 test-fixture = []
+# Parser entry points used only by the standalone cargo-fuzz workspace.
+fuzzing = []
 
 [dependencies]
 anyhow = "1.0.100"
