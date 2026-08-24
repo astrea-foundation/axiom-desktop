@@ -1,0 +1,8 @@
+{
+  "name": "axiomai-workspace",
+  "private": true,
+  "scripts": {
+    "check:rust": "cargo check --workspace --all-targets --all-features",
+    "test:rust": "cargo test --workspace --all-features"
+  }
+}
