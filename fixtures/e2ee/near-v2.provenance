@@ -1,0 +1,5 @@
+source_repository=https://github.com/astrea-foundation/axiom.git
+source_commit=114be9a4061e8b1a9049f1e31b7b05c52a694c50
+generator=backend/scripts/gen_e2ee_vectors.py
+source_proxy_fixture_sha256=8e8120f3daef3ab0ab89944310ebd84f22cb326ba9907742db3905c1b7d6b61c
+selection=all conversion, HKDF, report-data, and the first three round-trip vectors; the 4096-byte boundary is generated locally
