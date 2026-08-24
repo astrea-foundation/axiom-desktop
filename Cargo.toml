@@ -1,0 +1,42 @@
+[workspace]
+resolver = "3"
+members = [
+    "apps/axiomcli",
+    "apps/axiom-proxy",
+    "crates/axiom-inference",
+    "crates/axiom-openai-compat",
+    "crates/axiom-secure-client",
+]
+default-members = [
+    "apps/axiomcli",
+    "apps/axiom-proxy",
+    "crates/axiom-inference",
+    "crates/axiom-openai-compat",
+    "crates/axiom-secure-client",
+]
+
+[workspace.package]
+edition = "2024"
+license = "Apache-2.0"
+rust-version = "1.88"
+
+[workspace.dependencies]
+axiom-inference = { version = "0.1.0", path = "crates/axiom-inference" }
+axiom-openai-compat = { version = "0.1.0", path = "crates/axiom-openai-compat" }
+axiom-secure-client = { version = "0.1.0", path = "crates/axiom-secure-client" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+too_many_lines = "allow"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
