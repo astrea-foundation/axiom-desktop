@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+state_dir="${AXIOMCLI_SEARXNG_STATE_DIR:-${project_dir}/.cache/searxng}"
+source_dir="${state_dir}/source"
+venv_dir="${state_dir}/venv"
+pid_file="${state_dir}/searxng.pid"
+log_file="${state_dir}/searxng.log"
+settings_file="${AXIOMCLI_SEARXNG_SETTINGS:-${project_dir}/dev/searxng/settings.yml}"
+upstream="https://github.com/searxng/searxng.git"
+revision="5f4005996e387985353e9300fd171e0b0045dd1a"
+bind_address="${AXIOMCLI_SEARXNG_BIND_ADDRESS:-127.0.0.1}"
+port="${AXIOMCLI_SEARXNG_PORT:-8888}"
+endpoint="${AXIOMCLI_SEARXNG_URL:-http://${bind_address}:${port}}"
+
+bootstrap() {
+  mkdir -p "${state_dir}"
+  if [[ ! -d "${source_dir}/.git" ]]; then
+    git clone "${upstream}" "${source_dir}"
+  fi
+  git -C "${source_dir}" fetch --depth 1 origin "${revision}"
+  git -C "${source_dir}" checkout --detach "${revision}"
+  uv venv --python 3.13 "${venv_dir}"
+  uv pip install --python "${venv_dir}/bin/python" -r "${source_dir}/requirements.txt" setuptools
+  uv pip install --python "${venv_dir}/bin/python" --no-build-isolation -e "${source_dir}"
+}
+
+is_running() {
+  [[ -f "${pid_file}" ]] && kill -0 "$(<"${pid_file}")" 2>/dev/null
+}
+
+wait_ready() {
+  local attempt
+  for attempt in $(seq 1 80); do
+    if curl --silent --fail --max-time 2 "${endpoint}/" >/dev/null; then
+      return 0
+    fi
+    sleep 0.25
+  done
+  echo "SearXNG did not become ready; inspect ${log_file}" >&2
+  return 1
+}
+
+run_foreground() {
+  [[ -x "${venv_dir}/bin/searxng-run" ]] || bootstrap
+  cd "${source_dir}"
+  SEARXNG_SETTINGS_PATH="${settings_file}" \
+  SEARXNG_BIND_ADDRESS="${bind_address}" \
+  SEARXNG_PORT="${port}" \
+  SEARXNG_LIMITER="false" \
+    exec "${venv_dir}/bin/searxng-run"
+}
+
+start() {
+  if is_running; then
+    echo "SearXNG already running as PID $(<"${pid_file}")"
+    return 0
+  fi
+  [[ -x "${venv_dir}/bin/searxng-run" ]] || bootstrap
+  (
+    cd "${source_dir}"
+    SEARXNG_SETTINGS_PATH="${settings_file}" \
+    SEARXNG_BIND_ADDRESS="${bind_address}" \
+    SEARXNG_PORT="${port}" \
+    SEARXNG_LIMITER="false" \
+      nohup "${venv_dir}/bin/searxng-run" >"${log_file}" 2>&1 &
+    echo $! >"${pid_file}"
+  )
+  wait_ready
+  echo "Real SearXNG is ready at ${endpoint} (PID $(<"${pid_file}"))"
+}
+
+stop() {
+  if ! is_running; then
+    echo "SearXNG is not running"
+    return 0
+  fi
+  local pid
+  pid="$(<"${pid_file}")"
+  kill "${pid}"
+  for _ in $(seq 1 40); do
+    kill -0 "${pid}" 2>/dev/null || break
+    sleep 0.1
+  done
+  if kill -0 "${pid}" 2>/dev/null; then
+    kill -KILL "${pid}"
+  fi
+  rm -f "${pid_file}"
+  echo "Stopped SearXNG PID ${pid}"
+}
+
+case "${1:-}" in
+  bootstrap) bootstrap ;;
+  run) run_foreground ;;
+  start) start ;;
+  stop) stop ;;
+  status)
+    if is_running; then
+      echo "running PID $(<"${pid_file}") at ${endpoint}"
+    else
+      echo "stopped"
+      exit 1
+    fi
+    ;;
+  query)
+    shift
+    [[ $# -gt 0 ]] || { echo "usage: $0 query SEARCH TERMS" >&2; exit 2; }
+    curl --get --fail --silent --show-error \
+      --data-urlencode "q=$*" --data "format=json" "${endpoint}/search"
+    ;;
+  integration-test)
+    [[ -x "${venv_dir}/bin/searxng-run" ]] || bootstrap
+    cargo test --manifest-path "${project_dir}/Cargo.toml" \
+      --test searxng_integration -- --ignored --nocapture
+    ;;
+  *)
+    echo "usage: $0 {bootstrap|run|start|stop|status|query SEARCH TERMS|integration-test}" >&2
+    exit 2
+    ;;
+esac
