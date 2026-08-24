@@ -1,0 +1,66 @@
+name: signed release artifact
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  live-evaluation:
+    runs-on: ubuntu-latest
+    environment: release
+    timeout-minutes: 15
+    env:
+      AXIOM_API_KEY: ${{ secrets.AXIOM_EVAL_API_KEY }}
+      AXIOM_LIVE_BASE_URL: ${{ secrets.AXIOM_EVAL_BASE_URL }}
+      AXIOM_LIVE_MODEL: ${{ secrets.AXIOM_EVAL_MODEL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.1
+      - uses: Swatinem/rust-cache@v2
+      - name: Require and run the budgeted live regression gate
+        shell: bash
+        run: |
+          test -n "$AXIOM_API_KEY"
+          test -n "$AXIOM_LIVE_BASE_URL"
+          test -n "$AXIOM_LIVE_MODEL"
+          scripts/axiomcli-eval live
+
+  linux-x86-64:
+    needs: live-evaluation
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.1
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y bubblewrap jq
+      - run: cargo install cargo-deny --locked
+      - name: Import release signing key
+        env:
+          GPG_PRIVATE_KEY_BASE64: ${{ secrets.AXIOMCLI_RELEASE_GPG_KEY_BASE64 }}
+        run: |
+          test -n "$GPG_PRIVATE_KEY_BASE64"
+          printf '%s' "$GPG_PRIVATE_KEY_BASE64" | base64 --decode | gpg --batch --import
+      - name: Build reproducible signed package
+        env:
+          AXIOMCLI_SIGNING_KEY: ${{ secrets.AXIOMCLI_RELEASE_GPG_FINGERPRINT }}
+        run: |
+          export SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)
+          scripts/package-release --sign
+          scripts/verify-release dist/*.tar.gz dist/*.tar.gz.asc
+      - uses: actions/upload-artifact@v4
+        with:
+          name: axiomcli-linux-x86-64
+          path: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+            dist/*.tar.gz.asc
+          if-no-files-found: error

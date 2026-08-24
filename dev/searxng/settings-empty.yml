@@ -1,0 +1,27 @@
+use_default_settings:
+  engines:
+    keep_only:
+      - axiomcli empty fixture
+
+general:
+  debug: false
+  instance_name: "AxiomCLI Empty Search Fixture"
+  enable_metrics: false
+
+search:
+  safe_search: 1
+  autocomplete: ""
+  formats: [html, json]
+
+server:
+  bind_address: "127.0.0.1"
+  secret_key: "axiomcli-development-empty-fixture"
+  limiter: false
+  public_instance: false
+
+engines:
+  - name: axiomcli empty fixture
+    engine: dummy
+    shortcut: axempty
+    disabled: false
+
