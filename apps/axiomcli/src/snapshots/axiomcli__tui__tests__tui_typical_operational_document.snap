@@ -1,9 +1,9 @@
 ---
 source: apps/axiomcli/src/tui.rs
-assertion_line: 3447
+assertion_line: 7979
 expression: "render_symbols(80, 20, &state)"
 ---
-  AXIOMCLI  /work/axiomcli          NOT VERIFIED   glm-test · medium · confirm
+  AXIOMCLI  /work/axiomcli          NOT VERIFIED   glm-test · medium · Confirm
 ────────────────────────────────────────────────────────────────────────────────
 
     profile.
@@ -18,8 +18,8 @@ expression: "render_symbols(80, 20, &state)"
     │
     │ The repository contains a Rust coding agent.
 
-  ● Task complete                                              117 tokens used
+  ● Task complete
 
     ›
 
-  Enter send/toggle · Tab focus · j/k scroll · Ctrl+F search · v view · ? help
+  Enter send · Alt+Enter newline · Tab focus · j/k scroll · Ctrl+F search · v

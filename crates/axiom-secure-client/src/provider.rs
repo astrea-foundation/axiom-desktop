@@ -56,16 +56,19 @@ impl ProviderRegistry {
         config: crate::SecureClientConfig,
         credential: Arc<ApiCredential>,
     ) -> Result<Self> {
-        let near = Arc::new(crate::providers::near::NearProvider::new(
-            config.clone(),
-            Arc::clone(&credential),
-        )) as Arc<dyn SecureProvider>;
         #[cfg(not(feature = "test-fixture"))]
         {
+            let near = Arc::new(crate::providers::near::NearProvider::new(
+                config, credential,
+            )) as Arc<dyn SecureProvider>;
             Self::new([near])
         }
         #[cfg(feature = "test-fixture")]
         {
+            let near = Arc::new(crate::providers::near::NearProvider::new(
+                config.clone(),
+                Arc::clone(&credential),
+            )) as Arc<dyn SecureProvider>;
             let mut providers = vec![near];
             if config.uses_test_fixture() {
                 providers.push(Arc::new(crate::providers::fixture::FixtureProvider::new(

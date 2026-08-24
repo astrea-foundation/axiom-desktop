@@ -2,8 +2,8 @@ use std::{convert::Infallible, net::SocketAddr, sync::Arc, time::Duration};
 
 use axiom_inference::ProviderFailureKind;
 use axiom_openai_compat::{
-    ChatCompletionRequest, done_sse, encode_sse, error_envelope, model_list, stream_event,
-    stream_start,
+    ChatCompletionRequest, CompatError, CompatMode, done_sse, encode_sse, error_envelope,
+    model_list, stream_event, stream_start,
 };
 use axiom_secure_client::{ApiCredential, SecureClient, SecureClientConfig, TrustPolicy};
 use axum::{
@@ -14,7 +14,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use futures_util::stream;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -24,6 +24,9 @@ use tokio_util::sync::CancellationToken;
 
 const MAX_LOCAL_BODY_BYTES: usize = 2 * 1024 * 1024;
 const STREAM_CHANNEL_CAPACITY: usize = 32;
+/// Names the parameters a request carried that were not applied. Clients that
+/// ignore the header are unaffected; the value is always a sanitized ASCII list.
+const IGNORED_PARAMETERS_HEADER: &str = "x-axiom-ignored-parameters";
 
 #[derive(Debug, Parser)]
 #[command(name = "axiom-proxy", version, about = "Axiom secure loopback proxy")]
@@ -40,6 +43,34 @@ struct Arguments {
     max_concurrency: usize,
     #[arg(long, env = "AXIOM_PROXY_REQUEST_TIMEOUT_SECS", default_value_t = 120)]
     request_timeout_secs: u64,
+    /// How to treat request parameters the Axiom relay cannot honor.
+    #[arg(long, env = "AXIOM_PROXY_COMPAT", default_value = "lenient")]
+    compat: CompatArgument,
+}
+
+/// Command-line spelling of [`CompatMode`].
+///
+/// The translation crate stays free of `clap` and of environment access; this
+/// composition root owns both.
+#[derive(Clone, Copy, Debug, ValueEnum)]
+#[value(rename_all = "lower")]
+enum CompatArgument {
+    /// Drop parameters that cannot be applied so an application the operator
+    /// cannot modify still receives an answer. Dropped parameters that could
+    /// have changed the answer are reported on the response header and to the
+    /// supervisor log.
+    Lenient,
+    /// Refuse any request carrying a parameter that cannot be applied.
+    Strict,
+}
+
+impl From<CompatArgument> for CompatMode {
+    fn from(value: CompatArgument) -> Self {
+        match value {
+            CompatArgument::Lenient => Self::Lenient,
+            CompatArgument::Strict => Self::Strict,
+        }
+    }
 }
 
 struct AppState {
@@ -47,6 +78,7 @@ struct AppState {
     local_token_hash: [u8; 32],
     concurrency: Arc<Semaphore>,
     shutdown: CancellationToken,
+    compat: CompatMode,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -126,6 +158,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         local_token_hash: token_hash(&local_token),
         concurrency: Arc::new(Semaphore::new(arguments.max_concurrency)),
         shutdown: CancellationToken::new(),
+        compat: arguments.compat.into(),
     });
     drop(local_token);
 
@@ -204,9 +237,12 @@ async fn chat_completions(
     let Json(wire) = payload.map_err(|_| ApiError::invalid_request("request JSON is invalid"))?;
     let include_usage = wire.include_stream_usage();
     let is_stream = wire.stream;
-    let domain = wire
-        .into_domain()
-        .map_err(|error| ApiError::invalid_request(error.safe_detail()))?;
+    let translated = match wire.into_domain(state.compat) {
+        Ok(translated) => translated,
+        Err(error) => return Ok(translation_error_response(&error)),
+    };
+    let ignored_parameters = translated.ignored_parameters;
+    let domain = translated.request;
     let model_id = domain.model.clone();
     let id = format!("chatcmpl-{}", uuid::Uuid::new_v4().simple());
     let created = unix_seconds();
@@ -215,6 +251,17 @@ async fn chat_completions(
         .clone()
         .try_acquire_owned()
         .map_err(|_| ApiError::busy())?;
+    if !ignored_parameters.is_empty() {
+        eprintln!(
+            "{}",
+            serde_json::json!({
+                "event":"request_parameters_ignored",
+                "request_id":id,
+                "model_id":model_id,
+                "parameters":ignored_parameters,
+            })
+        );
+    }
     let cancellation = state.shutdown.child_token();
     let models = state
         .client
@@ -250,10 +297,12 @@ async fn chat_completions(
             })?;
         log_terminal(&id, "completed", response.usage.total_tokens);
         drop(permit);
-        return Ok(Json(axiom_openai_compat::completion(
+        let mut body = Json(axiom_openai_compat::completion(
             id, model_id, created, response,
         ))
-        .into_response());
+        .into_response();
+        attach_ignored_parameters(&mut body, &ignored_parameters);
+        return Ok(body);
     }
 
     eprintln!(
@@ -330,13 +379,42 @@ async fn chat_completions(
             .await
             .map(|bytes| (Ok::<Bytes, Infallible>(bytes), receiver))
     });
-    Ok(Response::builder()
+    let mut response = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "text/event-stream")
         .header(header::CACHE_CONTROL, "no-cache")
         .header("x-accel-buffering", "no")
         .body(Body::from_stream(body_stream))
-        .expect("static response headers are valid"))
+        .expect("static response headers are valid");
+    attach_ignored_parameters(&mut response, &ignored_parameters);
+    Ok(response)
+}
+
+/// Records on the response which parameters were dropped.
+///
+/// A dropped parameter that could have changed the answer must be discoverable
+/// by whoever is debugging the answer, so leniency never becomes silence.
+fn attach_ignored_parameters(response: &mut Response, parameters: &[String]) {
+    if parameters.is_empty() {
+        return;
+    }
+    // Names are sanitized to ASCII alphanumerics, `_`, `-`, and `.` before they
+    // reach here, so the joined value is always a valid header value.
+    if let Ok(value) = parameters.join(",").parse() {
+        response
+            .headers_mut()
+            .insert(IGNORED_PARAMETERS_HEADER, value);
+    }
+}
+
+/// Turns a translation failure into a client error.
+///
+/// A strict-mode rejection also names the offending parameters on the header,
+/// because the error message itself is a fixed string.
+fn translation_error_response(error: &CompatError) -> Response {
+    let mut response = ApiError::invalid_request(error.safe_detail()).into_response();
+    attach_ignored_parameters(&mut response, error.parameters());
+    response
 }
 
 fn log_security_evidence(request_id: &str, evidence: &axiom_secure_client::SecurityEvidence) {
@@ -545,6 +623,7 @@ mod tests {
             axiom_base_url: "https://api.axiom.stream".to_owned(),
             max_concurrency: 8,
             request_timeout_secs: 120,
+            compat: CompatArgument::Lenient,
         };
         assert!(validate_arguments(&unsafe_arguments).is_err());
         assert!(validate_local_token("short").is_err());

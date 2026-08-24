@@ -840,7 +840,7 @@ fn validate_api_key_shape(value: &str) -> Result<()> {
         || !value.bytes().all(|byte| byte.is_ascii_graphic())
     {
         return Err(AxiomError::Config(
-            "invalid Axiom authorization key; expected an axm_ key".into(),
+            "invalid Axiom API key; expected a key beginning with axm_".into(),
         ));
     }
     Ok(())

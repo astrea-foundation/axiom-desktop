@@ -392,7 +392,7 @@ fn investigation_fixture() -> (TempDir, Vec<AssistantTurn>) {
 async fn original_multilanguage_evaluation_set_is_repeatable_from_clean_fixtures() {
     for repetition in 0..2 {
         let (typescript, turns) = typescript_fixture();
-        let run = run_agent(typescript.path(), turns, PermissionProfile::Autonomous).await;
+        let run = run_agent(typescript.path(), turns, PermissionProfile::FullAccess).await;
         let expected = std::fs::read_to_string(typescript.path().join("src/report.ts"))
             .expect("TypeScript result")
             .contains("rectangleArea(6, 7)")
@@ -400,14 +400,14 @@ async fn original_multilanguage_evaluation_set_is_repeatable_from_clean_fixtures
         score("typescript_multifile", &run, expected, Some("ts-verify"), 0).assert_gate(3);
 
         let (python, turns) = python_fixture();
-        let run = run_agent(python.path(), turns, PermissionProfile::Autonomous).await;
+        let run = run_agent(python.path(), turns, PermissionProfile::FullAccess).await;
         let expected = std::fs::read_to_string(python.path().join("calculator.py"))
             .expect("Python result")
             .contains("left / right");
         score("python_test_repair", &run, expected, Some("py-verify"), 1).assert_gate(4);
 
         let (config_docs, turns) = configuration_and_docs_fixture();
-        let run = run_agent(config_docs.path(), turns, PermissionProfile::Autonomous).await;
+        let run = run_agent(config_docs.path(), turns, PermissionProfile::FullAccess).await;
         let expected = std::fs::read_to_string(config_docs.path().join("app.toml"))
             .expect("config result")
             .contains("cherry-blossom")

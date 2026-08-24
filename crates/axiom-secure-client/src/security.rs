@@ -62,5 +62,15 @@ pub struct SecurityEvidence {
     pub tls_spki_fingerprint: Option<String>,
     pub checks: Vec<EvidenceCheck>,
     pub provider_claims: Vec<EvidenceClaim>,
+    /// Exact provider-supplied workload manifest whose digest was verified
+    /// against the hardware quote. This is public attestation evidence, not a
+    /// secret, but callers should still sanitize it before terminal display.
+    #[serde(default)]
+    pub workload_manifest: Option<String>,
+    /// Whether this verification policy had an explicit workload allowlist.
+    /// This distinguishes "not evaluated" from "evaluated and rejected" in
+    /// user interfaces.
+    #[serde(default)]
+    pub workload_identity_allowlist_configured: bool,
     pub approved_workload_identity: bool,
 }

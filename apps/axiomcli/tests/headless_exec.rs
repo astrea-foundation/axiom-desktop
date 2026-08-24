@@ -66,3 +66,44 @@ fn exec_uses_the_shared_runtime_and_persists_a_terminal_turn() {
             .any(|event| event["event"]["kind"] == "turn_completed")
     );
 }
+
+#[test]
+fn system_prompt_file_is_global_and_validated_before_launch() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let state = tempfile::tempdir().expect("isolated state");
+    let prompt_file = workspace.path().join("agent-instructions.md");
+    std::fs::write(&prompt_file, "Be concise and verify every change.\n").expect("write prompt");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_axiomcli"))
+        .env("AXIOMCLI_TEST_RUNNER", "echo")
+        .env("XDG_CONFIG_HOME", state.path().join("config"))
+        .env("XDG_DATA_HOME", state.path().join("data"))
+        .current_dir(workspace.path())
+        .args([
+            "exec",
+            "use the launch instructions",
+            "--system-prompt-file",
+        ])
+        .arg(&prompt_file)
+        .output()
+        .expect("headless exec with prompt file");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let missing = workspace.path().join("missing-instructions.md");
+    let output = Command::new(env!("CARGO_BIN_EXE_axiomcli"))
+        .env("AXIOMCLI_TEST_RUNNER", "echo")
+        .env("XDG_CONFIG_HOME", state.path().join("config"))
+        .env("XDG_DATA_HOME", state.path().join("data"))
+        .current_dir(workspace.path())
+        .arg("--system-prompt-file")
+        .arg(&missing)
+        .args(["exec", "this must not run"])
+        .output()
+        .expect("missing prompt file rejection");
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("failed to open system prompt file"));
+}

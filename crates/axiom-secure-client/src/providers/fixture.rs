@@ -247,6 +247,8 @@ async fn verify_fixture_evidence(
                 name: "scope".to_owned(),
                 value: "process integration testing only; not TEE attestation".to_owned(),
             }],
+            workload_manifest: None,
+            workload_identity_allowlist_configured: false,
             approved_workload_identity: false,
         },
     ))

@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 //! `AxiomCLI`'s early, intentionally change-friendly implementation.
 
 pub mod acp;

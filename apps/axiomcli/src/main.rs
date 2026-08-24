@@ -1,4 +1,12 @@
-use std::{path::PathBuf, str::FromStr as _, sync::Arc};
+#![recursion_limit = "256"]
+
+use std::{
+    fs::File,
+    io::Read as _,
+    path::{Path, PathBuf},
+    str::FromStr as _,
+    sync::Arc,
+};
 
 use anyhow::Context as _;
 #[cfg(feature = "development-provider")]
@@ -7,8 +15,8 @@ use axiomcli::{
     AxiomError,
     agent::{
         APP_EVENT_QUEUE_CAPACITY, AgentEngine, AgentLimits, ApprovalTurnRunner, BlockingTurnRunner,
-        EchoTurnRunner, PlanReviewTurnRunner, QuestionTurnRunner, TurnContext, TurnRunner,
-        WorkspaceEditTurnRunner,
+        EchoTurnRunner, MAX_CUSTOM_SYSTEM_PROMPT_BYTES, PlanReviewTurnRunner, QuestionTurnRunner,
+        TurnContext, TurnRunner, WorkspaceEditTurnRunner,
     },
     app::{AppCommand, AppEvent, Origin, Runtime, SessionId},
     auth::{AuthManager, ValidationStatus},
@@ -26,6 +34,9 @@ use tokio_util::sync::CancellationToken;
 #[derive(Debug, Parser)]
 #[command(name = "axiomcli", version, about = "Early AxiomAI coding-agent TUI")]
 struct Cli {
+    /// Load agent instructions from a UTF-8 file for this process.
+    #[arg(long, global = true, value_name = "PATH")]
+    system_prompt_file: Option<PathBuf>,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -39,18 +50,12 @@ enum Command {
         /// Resume a durable session by ID. Its original workspace identity is enforced.
         #[arg(long)]
         resume: Option<String>,
-        /// Run with deterministic read-only plan policy; only plan artifacts may be written.
-        #[arg(long)]
-        plan: bool,
     },
     /// Run one prompt without a terminal interface.
     Exec {
         prompt: String,
         #[arg(long)]
         cwd: Option<PathBuf>,
-        /// Run with deterministic read-only plan policy; only plan artifacts may be written.
-        #[arg(long)]
-        plan: bool,
     },
     /// Serve Agent Client Protocol over stdin/stdout.
     Acp,
@@ -169,15 +174,20 @@ enum SessionAction {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    let system_prompt = cli
+        .system_prompt_file
+        .as_deref()
+        .map(load_system_prompt_file)
+        .transpose()?;
     let config = Config::load().context("failed to load AxiomCLI configuration")?;
     let auth = AuthManager::new(&config.base_url, config.request_timeout())
         .context("failed to initialize Axiom authentication")?;
-    init_tracing(matches!(cli.command, Some(Command::Acp)));
+    let tui_mode = matches!(cli.command, None | Some(Command::Tui { .. }));
+    init_tracing(tui_mode);
 
     match cli.command.unwrap_or(Command::Tui {
         cwd: None,
         resume: None,
-        plan: false,
     }) {
         Command::Doctor => {
             doctor(&config, &auth).await;
@@ -193,7 +203,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Sessions { action } => manage_sessions(action),
         Command::Plans { cwd, action } => manage_plans(&resolve_cwd(cwd)?, action),
         Command::Permissions { action } => manage_permissions(action),
-        Command::Tui { cwd, resume, plan } => {
+        Command::Tui { cwd, resume } => {
             let store = open_store()?;
             let resume = resume
                 .map(|id| SessionId::from_str(&id).context("invalid session ID"))
@@ -211,10 +221,6 @@ async fn main() -> anyhow::Result<()> {
                     );
                 }
                 let profile = axiomcli::app::PermissionProfile::from_str(&summary.profile)?;
-                anyhow::ensure!(
-                    !plan || profile == axiomcli::app::PermissionProfile::Plan,
-                    "--plan cannot change the permission profile of a resumed session"
-                );
                 (saved, Some(profile))
             } else {
                 (resolve_cwd(cwd)?, None)
@@ -222,13 +228,9 @@ async fn main() -> anyhow::Result<()> {
             let workspace_config = config
                 .for_workspace(&cwd)
                 .context("failed to load workspace configuration")?;
-            let profile = saved_profile.unwrap_or(if plan {
-                axiomcli::app::PermissionProfile::Plan
-            } else {
-                workspace_config.permission_profile
-            });
+            let profile = saved_profile.unwrap_or(workspace_config.permission_profile);
             axiomcli::tui::run(
-                build_runner(&workspace_config, &auth).await?,
+                build_runner(&workspace_config, &auth, system_prompt.as_deref()).await?,
                 cwd,
                 workspace_config.model.clone(),
                 profile,
@@ -244,18 +246,14 @@ async fn main() -> anyhow::Result<()> {
             .await
             .map_err(anyhow::Error::from)
         }
-        Command::Exec { prompt, cwd, plan } => {
+        Command::Exec { prompt, cwd } => {
             let cwd = resolve_cwd(cwd)?;
             let workspace_config = config
                 .for_workspace(&cwd)
                 .context("failed to load workspace configuration")?;
-            let profile = if plan {
-                axiomcli::app::PermissionProfile::Plan
-            } else {
-                workspace_config.permission_profile
-            };
+            let profile = workspace_config.permission_profile;
             run_headless(
-                build_runner(&workspace_config, &auth).await?,
+                build_runner(&workspace_config, &auth, system_prompt.as_deref()).await?,
                 cwd,
                 profile,
                 workspace_config.model.clone(),
@@ -265,7 +263,7 @@ async fn main() -> anyhow::Result<()> {
             .await
         }
         Command::Acp => axiomcli::acp::serve_stdio(
-            build_runner(&config, &auth).await?,
+            build_runner(&config, &auth, system_prompt.as_deref()).await?,
             config.clone(),
             Some(open_store()?),
             auth,
@@ -336,14 +334,17 @@ fn manage_plans(cwd: &std::path::Path, action: PlanAction) -> anyhow::Result<()>
     Ok(())
 }
 
-fn init_tracing(acp_mode: bool) {
+fn init_tracing(tui_mode: bool) {
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
     let builder = tracing_subscriber::fmt().with_env_filter(filter);
-    if acp_mode {
-        builder.with_writer(std::io::stderr).init();
+    if tui_mode {
+        // Direct stderr writes corrupt Ratatui's alternate-screen renderer.
+        // Actionable failures are delivered through typed UI messages; traces
+        // remain available in ACP and non-interactive CLI modes.
+        builder.with_writer(std::io::sink).init();
     } else {
-        builder.init();
+        builder.with_writer(std::io::stderr).init();
     }
 }
 
@@ -504,7 +505,11 @@ fn manage_sessions(action: SessionAction) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn build_runner(config: &Config, auth: &AuthManager) -> anyhow::Result<Arc<dyn TurnRunner>> {
+async fn build_runner(
+    config: &Config,
+    auth: &AuthManager,
+    system_prompt: Option<&str>,
+) -> anyhow::Result<Arc<dyn TurnRunner>> {
     if cfg!(debug_assertions) {
         match std::env::var("AXIOMCLI_TEST_RUNNER").as_deref() {
             Ok("echo") => return Ok(Arc::new(EchoTurnRunner)),
@@ -524,21 +529,53 @@ async fn build_runner(config: &Config, auth: &AuthManager) -> anyhow::Result<Arc
         tools.register(tool)?;
     }
     let policy_rules = config.policy_rules.clone();
-    Ok(Arc::new(
-        AgentEngine::with_limits(
-            provider,
-            Arc::new(tools),
-            config.model.clone(),
-            AgentLimits {
-                max_steps: config.max_agent_steps,
-                max_context_bytes: config.max_context_bytes,
-                max_context_tokens: config.max_context_tokens,
-                max_tool_output_bytes: config.max_tool_output_bytes,
-                max_wall_time: config.max_turn_secs.map(std::time::Duration::from_secs),
-            },
-        )
-        .with_policy_rules(policy_rules),
-    ))
+    let mut engine = AgentEngine::with_limits(
+        provider,
+        Arc::new(tools),
+        config.model.clone(),
+        AgentLimits {
+            max_steps: config.max_agent_steps,
+            max_context_bytes: config.max_context_bytes,
+            max_context_tokens: config.max_context_tokens,
+            max_tool_output_bytes: config.max_tool_output_bytes,
+            max_wall_time: config.max_turn_secs.map(std::time::Duration::from_secs),
+        },
+    );
+    if let Some(system_prompt) = system_prompt {
+        engine = engine.with_system_prompt(system_prompt.to_owned())?;
+    }
+    Ok(Arc::new(engine.with_policy_rules(policy_rules)))
+}
+
+fn load_system_prompt_file(path: &Path) -> anyhow::Result<String> {
+    let file = File::open(path)
+        .with_context(|| format!("failed to open system prompt file `{}`", path.display()))?;
+    let mut bytes = Vec::new();
+    file.take(MAX_CUSTOM_SYSTEM_PROMPT_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("failed to read system prompt file `{}`", path.display()))?;
+    anyhow::ensure!(
+        bytes.len() <= MAX_CUSTOM_SYSTEM_PROMPT_BYTES,
+        "system prompt file `{}` exceeds the 256 KiB limit",
+        path.display()
+    );
+    let prompt = String::from_utf8(bytes)
+        .with_context(|| format!("system prompt file `{}` is not valid UTF-8", path.display()))?;
+    let prompt = prompt
+        .strip_prefix('\u{feff}')
+        .unwrap_or(&prompt)
+        .to_owned();
+    anyhow::ensure!(
+        !prompt.trim().is_empty(),
+        "system prompt file `{}` is empty",
+        path.display()
+    );
+    anyhow::ensure!(
+        !prompt.contains('\0'),
+        "system prompt file `{}` contains a NUL byte",
+        path.display()
+    );
+    Ok(prompt)
 }
 
 fn build_provider(
@@ -546,7 +583,7 @@ fn build_provider(
     auth: &AuthManager,
 ) -> anyhow::Result<Arc<dyn InferenceProvider>> {
     #[cfg(feature = "development-provider")]
-    if std::env::var("AXIOMCLI_UNATTESTED_DEV").as_deref() == Ok("1") {
+    if axiomcli::provider::unattested_development_enabled() {
         return Ok(Arc::new(AxiomProvider::from_environment(
             &config.base_url,
             config.request_timeout(),

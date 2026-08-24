@@ -6,9 +6,10 @@ future JavaScript packages live under `packages/`.
 
 The implemented applications today are AxiomCLI—an early Rust coding agent with
 a terminal interface and Agent Client Protocol (ACP) control mode—and
-`axiom-proxy`, an authenticated loopback OpenAI-compatible sidecar. The Electron
-desktop directory still documents its future boundary and contains no product
-implementation yet.
+`axiom-proxy`, an authenticated loopback OpenAI-compatible sidecar. The
+frameless Electron app now has a production main/preload boundary for
+supervising and controlling AxiomCLI over ACP; its renderer remains a visual
+prototype for the separate desktop UI implementation.
 
 ## Workspace layout
 
@@ -16,12 +17,14 @@ implementation yet.
 apps/
   axiomcli/       Coding-agent TUI, headless CLI, and ACP server
   axiom-proxy/    Local OpenAI-compatible Rust sidecar
-  desktop/        Reserved for the Electron application
+  desktop/        Electron shell and typed AxiomCLI sidecar boundary
 crates/
+  axiom-acp-extension/ Versioned first-party ACP extension DTOs/schema
   axiom-inference/      Transport-independent inference contracts
   axiom-openai-compat/  Pure OpenAI wire translation
   axiom-secure-client/  Provider-modular attestation and E2EE
 packages/
+  axiom-acp-client/ Typed Node/Electron-main ACP client and state reducer
   sidecar-protocol/ Reserved for generated/shared desktop control types
 ```
 
@@ -38,8 +41,10 @@ The implementation follows the gated plan in
 Stages 00–16 pass, including the independent completion audit. Each stage has
 an evidence-backed review under `docs/reviews/`.
 The current secure path verifies provider hardware, model/key identity, and the
-live TLS endpoint and applies E2EE; an approved workload allowlist and the
-desktop application remain future work.
+live TLS endpoint and applies E2EE. An approved workload allowlist and the final
+desktop renderer remain future work; the desktop-to-AxiomCLI control plane is
+implemented and documented in
+[`docs/acp-desktop-parity-matrix.md`](docs/acp-desktop-parity-matrix.md).
 
 ## Commands
 
@@ -48,6 +53,7 @@ cargo run -p axiomcli -- --help
 cargo run -p axiomcli -- doctor
 cargo run -p axiomcli -- tui
 cargo run -p axiomcli -- exec "inspect this repository"
+cargo run -p axiomcli -- --system-prompt-file ./AGENT.md tui
 cargo run -p axiomcli -- acp
 cargo run -p axiomcli -- sessions list
 cargo run -p axiomcli -- plans list
@@ -58,19 +64,30 @@ cargo run -p axiom-proxy -- --help
 `axiomcli acp` reserves stdout for newline-delimited ACP JSON-RPC. Logs and
 diagnostics go to stderr.
 
+`--system-prompt-file PATH` is a global launch option, so it works with `tui`,
+`exec`, and `acp` whether it appears before or after the subcommand. The UTF-8
+file replaces AxiomCLI's default behavioral instructions for that process.
+AxiomCLI still appends trusted runtime context (the selected model, thinking
+level, workspace) and its untrusted-input rule. Prompt files are capped at
+256 KiB and their contents are neither written to session journals nor exposed
+in debug output. A resumed session uses the prompt file supplied to that launch;
+without the option, it uses the default instructions.
+
 The TUI uses the current terminal viewport (it does not resize the terminal).
-It needs at least 42×10 cells. Press `?` for its keyboard/mouse reference;
+It needs at least 42×10 cells. Press `?` for its keyboard reference;
 search, task-detail folding, entry/diff viewing, reduced motion, ASCII, and
 no-color modes are built in. Each prompt is presented as one task that updates
 in place: checklist progress and compact tool summaries remain visible while
 raw reasoning, arguments, output, and diffs stay in expandable details. The
-assistant's final Markdown response remains attached to that task.
+assistant's final Markdown response remains attached to that task. AxiomCLI
+does not capture pointer input, so normal terminal text selection and copying
+remain available.
 
 The composer also owns a typed slash-command layer. Slash input is handled by
 the application and is never sent to the model as a prompt:
 
 ```text
-/permissions <plan|observe|confirm|workspace|autonomous>
+/permissions
 /model
 /resume
 /delete
@@ -79,15 +96,20 @@ the application and is never sent to the model as a prompt:
 /login
 /logout
 /account
+/security
+/refresh
 /help
 ```
 
 Pressing `/` from transcript focus returns to the composer with a slash ready.
 While typing a command, `Tab` completes command names and valid
-permission/thinking values; repeated presses cycle matches. Enter on an invalid
+thinking values; repeated presses cycle matches. Enter on an invalid
 prefix with a valid completion performs that same completion instead of showing
-an error. `/model` loads the configured provider's real model catalog on demand
-and opens a searchable, scrollable picker. Model IDs cannot be entered manually.
+an error. `/permissions` opens a keyboard-controlled window rather than taking
+an argument. Its Tools tab describes and selects the active tool profile; the
+separate Crypto tab is reserved for future wallet and transaction permissions.
+`/model` loads the configured provider's real model catalog on demand and opens
+a searchable, scrollable picker. Model IDs cannot be entered manually.
 
 `/resume` opens a searchable, scrollable list of saved transcripts from the
 current workspace. Selecting one restores its transcript, model context, and
@@ -161,21 +183,22 @@ compiled with `--features development-provider` and only when
 
 ## Permission profiles
 
-- `plan`: workspace reads plus writes to revisioned `.axiomcli/plans` artifacts;
-  all code edits, processes, network, and MCP calls are deterministically denied.
-- `observe`: workspace reads only; mutation, processes, network, and MCP denied.
-- `confirm`: reads are automatic; every other effect asks the TUI/ACP client.
-- `workspace`: in-root edits and a narrow development-command allowlist are
-  automatic; network, MCP, deletion, and other programs ask.
-- `autonomous`: normalized in-scope operations are automatic, while shell and
-  deletion remain confirmation-gated and hard denials still win.
+- `none`: no tools are exposed. The model can only respond in conversation.
+- `web`: only local `web_search` and `fetch_url` are exposed.
+- `observe`: only read-only tools are exposed, including workspace inspection
+  and explicitly trusted read-only MCP tools; web and mutation tools are hidden.
+- `confirm` (default): every available tool is exposed and every invocation
+  requires a fresh confirmation. Approval is one-shot, not remembered.
+- `full_access`: every available tool is exposed and tool invocations run
+  automatically.
 
-Repository mutations such as `git commit`, `reset`, `checkout`, and unknown Git
-subcommands are separately classified and require one-shot confirmation in
-every mutating profile. Credential/keychain access is represented explicitly
-and hard-denied in this early release.
+Full Access removes tool-profile restrictions and prompts; it does not disable
+the runtime's structural safety boundaries. Canonical workspace containment,
+credential isolation, SSRF defenses, process/output bounds, and explicit
+user/project deny rules still apply. Tool permissions never grant wallet or
+transaction authority. Crypto permissions will be modeled separately in the
+Crypto tab.
 
-Use `axiomcli tui --plan` or `axiomcli exec --plan "..."` for plan mode.
 Review durable plans with `axiomcli plans list/show/comment/request-revision/
 revise/propose/approve/abandon`. Plan approval changes artifact state; it does
 not itself execute the plan or grant broader authority.
@@ -195,7 +218,8 @@ stored with line ranges.
 The model proposes operations but never authorizes them. Structured tools,
 canonical paths, process groups, output caps, SSRF checks, and the policy engine
 remain outside model control. Shell execution is a separate, explicitly
-higher-risk tool and always requires approval.
+higher-risk tool; Confirm asks before it and Full Access permits it within the
+same structural runtime boundaries.
 
 ## Real SearXNG integration
 
@@ -223,7 +247,7 @@ commands. `axiomcli doctor` prints the platform-specific trusted user config
 path. Example user configuration:
 
 ```toml
-permission_profile = "workspace"
+permission_profile = "confirm"
 searxng_url = "http://127.0.0.1:8888"
 
 [[mcp_servers]]

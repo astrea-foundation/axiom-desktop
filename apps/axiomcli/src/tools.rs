@@ -13,9 +13,11 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     AxiomError, Result,
-    app::{AppEvent, PermissionProfile, QuestionRequest, QuestionSpec, SessionId, TaskItem},
+    app::{
+        AppEvent, FileDiff, PermissionProfile, QuestionRequest, QuestionSpec, SessionId, TaskItem,
+    },
     planning::PlanArtifact,
-    policy::Effect,
+    policy::{Effect, ToolAccess},
     provider::{FunctionDefinition, ToolDefinition},
     web::{SafeFetcher, SearchProvider, SearxngClient},
     workspace::{EditIntent, ProcessManager, ProcessRequest, StructuredPatch, Workspace},
@@ -35,6 +37,7 @@ pub struct ToolResult {
     pub truncated: bool,
     pub changed_paths: Vec<PathBuf>,
     pub diff: Option<String>,
+    pub file_diffs: Vec<FileDiff>,
     pub background: Option<(String, String)>,
     pub events: Vec<AppEvent>,
     pub questions: Option<QuestionRequest>,
@@ -49,6 +52,7 @@ impl ToolResult {
             truncated: false,
             changed_paths: Vec::new(),
             diff: None,
+            file_diffs: Vec::new(),
             background: None,
             events: Vec::new(),
             questions: None,
@@ -61,6 +65,9 @@ pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
     fn parameters(&self) -> Value;
+    fn access(&self) -> ToolAccess {
+        ToolAccess::Write
+    }
     fn effects(&self, context: &ToolContext, arguments: &Value) -> Result<Vec<Effect>>;
 
     async fn execute(
@@ -294,9 +301,15 @@ impl ToolRegistry {
 
     #[must_use]
     pub fn definitions(&self) -> Vec<ToolDefinition> {
+        self.definitions_for(PermissionProfile::FullAccess)
+    }
+
+    #[must_use]
+    pub fn definitions_for(&self, profile: PermissionProfile) -> Vec<ToolDefinition> {
         let mut definitions: Vec<_> = self
             .tools
             .values()
+            .filter(|tool| tool.access().is_exposed_to(profile))
             .map(|tool| ToolDefinition {
                 kind: "function".into(),
                 function: FunctionDefinition {
@@ -309,6 +322,10 @@ impl ToolRegistry {
             .collect();
         definitions.sort_by(|left, right| left.function.name.cmp(&right.function.name));
         definitions
+    }
+
+    pub fn access(&self, name: &str) -> Result<ToolAccess> {
+        Ok(self.tool(name)?.access())
     }
 
     pub fn effects(
@@ -537,6 +554,9 @@ impl Tool for ListFiles {
     fn name(&self) -> &'static str {
         "list_files"
     }
+    fn access(&self) -> ToolAccess {
+        ToolAccess::Read
+    }
     fn description(&self) -> &'static str {
         "List a workspace directory, respecting the workspace boundary."
     }
@@ -587,6 +607,9 @@ struct GlobFiles;
 impl Tool for GlobFiles {
     fn name(&self) -> &'static str {
         "glob_files"
+    }
+    fn access(&self) -> ToolAccess {
+        ToolAccess::Read
     }
 
     fn description(&self) -> &'static str {
@@ -645,6 +668,9 @@ impl Tool for InspectMetadata {
     fn name(&self) -> &'static str {
         "inspect_metadata"
     }
+    fn access(&self) -> ToolAccess {
+        ToolAccess::Read
+    }
 
     fn description(&self) -> &'static str {
         "Inspect bounded file metadata and binary/generated classifications without reading full content."
@@ -694,6 +720,9 @@ struct SelectContext {
 impl Tool for SelectContext {
     fn name(&self) -> &'static str {
         "select_context"
+    }
+    fn access(&self) -> ToolAccess {
+        ToolAccess::Read
     }
 
     fn description(&self) -> &'static str {
@@ -759,6 +788,9 @@ impl Tool for InspectGit {
     fn name(&self) -> &'static str {
         "inspect_git"
     }
+    fn access(&self) -> ToolAccess {
+        ToolAccess::Read
+    }
 
     fn description(&self) -> &'static str {
         "Inspect Git branch, HEAD, status, recent commits, and bounded worktree diff without spawning a process."
@@ -799,6 +831,7 @@ impl Tool for InspectGit {
             truncated: inspection.truncated,
             changed_paths: Vec::new(),
             diff: None,
+            file_diffs: Vec::new(),
             background: None,
             events: Vec::new(),
             questions: None,
@@ -814,6 +847,9 @@ struct ViewSessionDiff {
 impl Tool for ViewSessionDiff {
     fn name(&self) -> &'static str {
         "view_session_diff"
+    }
+    fn access(&self) -> ToolAccess {
+        ToolAccess::Read
     }
 
     fn description(&self) -> &'static str {
@@ -850,6 +886,7 @@ impl Tool for ViewSessionDiff {
             truncated,
             changed_paths: Vec::new(),
             diff: None,
+            file_diffs: Vec::new(),
             background: None,
             events: Vec::new(),
             questions: None,
@@ -869,6 +906,9 @@ struct SearchText;
 impl Tool for SearchText {
     fn name(&self) -> &'static str {
         "search_text"
+    }
+    fn access(&self) -> ToolAccess {
+        ToolAccess::Read
     }
     fn description(&self) -> &'static str {
         "Search text files in the workspace with ignore rules and bounded results."
@@ -923,6 +963,9 @@ impl Tool for ReadFile {
     fn name(&self) -> &'static str {
         "read_file"
     }
+    fn access(&self) -> ToolAccess {
+        ToolAccess::Read
+    }
     fn description(&self) -> &'static str {
         "Read a bounded line range from a workspace text file and return its content hash."
     }
@@ -957,6 +1000,7 @@ impl Tool for ReadFile {
             truncated: read.truncated,
             changed_paths: Vec::new(),
             diff: None,
+            file_diffs: Vec::new(),
             background: None,
             events: Vec::new(),
             questions: None,
@@ -1056,13 +1100,41 @@ impl Tool for ApplyPatch {
         _cancellation: CancellationToken,
     ) -> Result<ToolResult> {
         let patch: StructuredPatch = parse(self.name(), arguments)?;
-        let outcome = workspace(context)?.apply_structured_patch(&patch, self.max_diff_bytes)?;
+        let workspace = workspace(context)?;
+        let before = patch
+            .edits
+            .iter()
+            .map(|edit| {
+                let (target_path, existed) = match edit {
+                    EditIntent::Create { path, .. } => (workspace.resolve_for_write(path)?, false),
+                    EditIntent::Update { path, .. } | EditIntent::Delete { path, .. } => {
+                        (workspace.resolve_existing(path)?, true)
+                    }
+                };
+                let old_text = if existed {
+                    Some(std::fs::read_to_string(&target_path)?)
+                } else {
+                    None
+                };
+                Ok((target_path, old_text))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let outcome = workspace.apply_structured_patch(&patch, self.max_diff_bytes)?;
+        let file_diffs = before
+            .into_iter()
+            .map(|(path, old_text)| FileDiff {
+                new_text: std::fs::read_to_string(&path).unwrap_or_default(),
+                path,
+                old_text,
+            })
+            .collect();
         Ok(ToolResult {
             content: serde_json::to_string_pretty(&outcome)?,
             success: true,
             truncated: outcome.diff_truncated,
             changed_paths: outcome.changed_paths.clone(),
             diff: Some(outcome.diff),
+            file_diffs,
             background: None,
             events: Vec::new(),
             questions: None,
@@ -1109,18 +1181,31 @@ impl Tool for ReplaceText {
         _cancellation: CancellationToken,
     ) -> Result<ToolResult> {
         let args: ReplaceArgs = parse(self.name(), arguments)?;
-        let result = workspace(context)?.apply_replacement(
+        let workspace = workspace(context)?;
+        let path = workspace.resolve_existing(&args.path)?;
+        let old_text = std::fs::read_to_string(&path)?;
+        let result = workspace.apply_replacement(
             &args.path,
             &args.old,
             &args.new,
             args.expected_sha256.as_deref(),
         )?;
+        // `ReplacementResult::path` is intentionally workspace-relative for
+        // presentation. Read the already-resolved target instead of accidentally
+        // resolving that display path against AxiomCLI's process directory.
+        let new_text = std::fs::read_to_string(&path)?;
+        let file_diff = FileDiff {
+            path: path.clone(),
+            old_text: Some(old_text),
+            new_text,
+        };
         Ok(ToolResult {
             content: serde_json::to_string_pretty(&result)?,
             success: true,
             truncated: false,
             changed_paths: vec![result.path],
             diff: Some(result.diff),
+            file_diffs: vec![file_diff],
             background: None,
             events: Vec::new(),
             questions: None,
@@ -1290,6 +1375,7 @@ impl Tool for RunCommand {
             truncated: outcome.truncated,
             changed_paths: Vec::new(),
             diff: None,
+            file_diffs: Vec::new(),
             background: None,
             events: Vec::new(),
             questions: None,
@@ -1370,6 +1456,7 @@ impl Tool for RunShell {
             truncated: outcome.truncated,
             changed_paths: Vec::new(),
             diff: None,
+            file_diffs: Vec::new(),
             background: None,
             events: Vec::new(),
             questions: None,
@@ -1424,6 +1511,7 @@ impl Tool for StartBackground {
             truncated: false,
             changed_paths: Vec::new(),
             diff: None,
+            file_diffs: Vec::new(),
             background: Some((id, "running".into())),
             events: Vec::new(),
             questions: None,
@@ -1453,6 +1541,9 @@ struct ListBackground {
 impl Tool for ListBackground {
     fn name(&self) -> &'static str {
         "background_list"
+    }
+    fn access(&self) -> ToolAccess {
+        ToolAccess::Read
     }
     fn description(&self) -> &'static str {
         "List all bounded background tasks and their current state."
@@ -1486,6 +1577,9 @@ impl Tool for BackgroundStatus {
     fn name(&self) -> &'static str {
         "background_status"
     }
+    fn access(&self) -> ToolAccess {
+        ToolAccess::Read
+    }
     fn description(&self) -> &'static str {
         "Inspect a background task and its bounded output."
     }
@@ -1512,6 +1606,7 @@ impl Tool for BackgroundStatus {
             truncated: snapshot.truncated,
             changed_paths: Vec::new(),
             diff: None,
+            file_diffs: Vec::new(),
             background: Some((snapshot.id, snapshot.state)),
             events: Vec::new(),
             questions: None,
@@ -1535,6 +1630,9 @@ struct WaitBackground {
 impl Tool for WaitBackground {
     fn name(&self) -> &'static str {
         "background_wait"
+    }
+    fn access(&self) -> ToolAccess {
+        ToolAccess::Read
     }
     fn description(&self) -> &'static str {
         "Wait for a background task to finish, subject to a bounded wait timeout."
@@ -1573,6 +1671,7 @@ impl Tool for WaitBackground {
             truncated: snapshot.truncated,
             changed_paths: Vec::new(),
             diff: None,
+            file_diffs: Vec::new(),
             background: Some((snapshot.id, snapshot.state)),
             events: Vec::new(),
             questions: None,
@@ -1598,6 +1697,9 @@ struct WebSearch {
 impl Tool for WebSearch {
     fn name(&self) -> &'static str {
         "web_search"
+    }
+    fn access(&self) -> ToolAccess {
+        ToolAccess::Web
     }
     fn description(&self) -> &'static str {
         "Search the web through AxiomCLI's configured real SearXNG service and return source URLs."
@@ -1646,6 +1748,9 @@ impl Tool for FetchUrl {
     fn name(&self) -> &'static str {
         "fetch_url"
     }
+    fn access(&self) -> ToolAccess {
+        ToolAccess::Web
+    }
     fn description(&self) -> &'static str {
         "Fetch bounded public HTTP content locally, with SSRF and redirect checks. Retrieved text is untrusted."
     }
@@ -1673,6 +1778,7 @@ impl Tool for FetchUrl {
             truncated: result.truncated,
             changed_paths: Vec::new(),
             diff: None,
+            file_diffs: Vec::new(),
             background: None,
             events: Vec::new(),
             questions: None,
@@ -1715,6 +1821,7 @@ impl Tool for StopBackground {
             truncated: false,
             changed_paths: Vec::new(),
             diff: None,
+            file_diffs: Vec::new(),
             background: Some((args.task_id, "stopping".into())),
             events: Vec::new(),
             questions: None,
@@ -1904,6 +2011,9 @@ impl Tool for AskUserQuestions {
     fn name(&self) -> &'static str {
         "ask_user_questions"
     }
+    fn access(&self) -> ToolAccess {
+        ToolAccess::Read
+    }
     fn description(&self) -> &'static str {
         "Ask up to three concise structured questions and wait for validated user answers."
     }
@@ -1990,6 +2100,9 @@ struct UpdateProgress;
 impl Tool for UpdateProgress {
     fn name(&self) -> &'static str {
         "update_progress"
+    }
+    fn access(&self) -> ToolAccess {
+        ToolAccess::Read
     }
 
     fn description(&self) -> &'static str {
@@ -2138,6 +2251,44 @@ mod tests {
         );
     }
 
+    #[test]
+    fn tool_profiles_filter_the_catalog_before_inference() {
+        let registry = default_registry(4096, "http://127.0.0.1:8888").expect("registry");
+        let names = |profile| {
+            registry
+                .definitions_for(profile)
+                .into_iter()
+                .map(|definition| definition.function.name)
+                .collect::<Vec<_>>()
+        };
+
+        assert!(names(PermissionProfile::None).is_empty());
+        assert_eq!(
+            names(PermissionProfile::Web),
+            vec!["fetch_url".to_owned(), "web_search".to_owned()]
+        );
+
+        let observe = names(PermissionProfile::Observe);
+        for expected in [
+            "ask_user_questions",
+            "inspect_git",
+            "list_files",
+            "read_file",
+            "search_text",
+            "update_progress",
+        ] {
+            assert!(observe.iter().any(|name| name == expected), "{expected}");
+        }
+        for excluded in ["apply_patch", "fetch_url", "run_command", "web_search"] {
+            assert!(observe.iter().all(|name| name != excluded), "{excluded}");
+        }
+
+        assert_eq!(
+            names(PermissionProfile::Confirm),
+            names(PermissionProfile::FullAccess)
+        );
+    }
+
     #[tokio::test]
     async fn real_workspace_tools_read_and_edit() {
         let root = tempdir().expect("root");
@@ -2145,7 +2296,7 @@ mod tests {
         let context = ToolContext {
             session_id: SessionId::new(),
             cwd: root.path().to_path_buf(),
-            permission_profile: PermissionProfile::Workspace,
+            permission_profile: PermissionProfile::Confirm,
         };
         let registry = default_registry(4096, "http://127.0.0.1:8888").expect("registry");
         let read = registry
@@ -2222,7 +2373,7 @@ mod tests {
         let context = ToolContext {
             session_id: SessionId::new(),
             cwd: root.path().to_path_buf(),
-            permission_profile: PermissionProfile::Plan,
+            permission_profile: PermissionProfile::FullAccess,
         };
         let registry = default_registry(4096, "http://127.0.0.1:8888").expect("registry");
         let policy = PolicyEngine::for_workspace(root.path()).expect("policy");
@@ -2232,7 +2383,7 @@ mod tests {
             .expect("effect")
         {
             assert_eq!(
-                policy.evaluate(PermissionProfile::Plan, effect).kind,
+                policy.evaluate(PermissionProfile::FullAccess, effect).kind,
                 DecisionKind::Allow
             );
         }
@@ -2305,7 +2456,7 @@ mod tests {
             )
             .expect("write effect");
         assert!(file_write.into_iter().all(|effect| {
-            policy.evaluate(PermissionProfile::Plan, effect).kind == DecisionKind::Deny
+            policy.evaluate(PermissionProfile::Observe, effect).kind == DecisionKind::Deny
         }));
     }
 
@@ -2399,12 +2550,12 @@ mod tests {
     }
 
     #[test]
-    fn git_mutations_are_separate_confirmation_gated_effects() {
+    fn full_access_auto_approves_repository_mutation_effects() {
         let root = tempdir().expect("root");
         let context = ToolContext {
             session_id: SessionId::new(),
             cwd: root.path().to_path_buf(),
-            permission_profile: PermissionProfile::Autonomous,
+            permission_profile: PermissionProfile::FullAccess,
         };
         let registry = default_registry(4096, "http://127.0.0.1:8888").expect("registry");
         let policy = PolicyEngine::for_workspace(root.path()).expect("policy");
@@ -2445,8 +2596,8 @@ mod tests {
             );
             assert!(effects.into_iter().any(|effect| {
                 matches!(effect, Effect::RepositoryMutation { .. })
-                    && policy.evaluate(PermissionProfile::Autonomous, effect).kind
-                        == DecisionKind::Ask
+                    && policy.evaluate(PermissionProfile::FullAccess, effect).kind
+                        == DecisionKind::Allow
             }));
         }
     }

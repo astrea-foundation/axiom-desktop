@@ -39,15 +39,22 @@ args = []
 read_only_tools = ["lookup"]
 ```
 
-Profiles are `plan`, `observe`, `confirm`, `workspace`, and `autonomous`.
-`plan` can also be selected for a new TUI/headless session with `--plan`.
-Resume always restores the journaled profile; command-line flags cannot broaden
-or silently change it.
+Tool profiles are `none`, `web`, `observe`, `confirm`, and `full_access`.
+`confirm` is the default. None exposes no tools; Web exposes only web search and
+page fetching; Observe exposes only read-only tools; Confirm exposes all tools
+but asks once for every invocation; Full Access exposes all tools without tool
+approval prompts. Structural runtime boundaries and explicit deny rules still
+apply to every profile. Existing journals and configuration using `plan`,
+`workspace`, or `autonomous` migrate to Observe, Confirm, or Full Access
+respectively. Resume always restores the journaled profile.
 
 ## Session slash commands
 
 While a TUI session is idle, `/permissions`, `/model`, and `/thinking` change
-session-scoped settings used by subsequent turns. `/model` opens a searchable
+session-scoped settings used by subsequent turns. `/permissions` takes no
+argument and opens a two-tab window. Tools selects and explains the five tool
+profiles; Crypto is marked Coming soon and will later hold wallet, network,
+spending, and transaction authority separately. `/model` opens a searchable
 picker populated from the provider's discovered catalog; arbitrary model IDs
 are not accepted. These changes are journaled and restored with the session.
 When an ordinary prompt is submitted, its active model becomes the durable
@@ -69,15 +76,23 @@ selection.
 `/compact [focus]` uses the current session
 model to summarize live history with an empty tool set, then journals and
 installs that summary as successor context. It can be cancelled with Escape.
-`/login` opens a choice between browser authorization, an existing API key, or
-a one-time browser completion code. `/account` validates the current credential without revealing it, and
+`/login` offers browser sign-in or an existing Axiom API key. During browser
+sign-in, a one-time completion code can be pasted as a fallback. `/account`
+validates the current credential without revealing it, and
 `/logout` clears a persisted credential. Login state is application-wide and is
 never written to a session journal.
+`/security` opens the latest in-memory attestation inspector. It shows hardware
+checks, endpoint and encryption-key bindings, workload measurements, parsed
+Compose services, and the exact quote-bound `app_compose` manifest. `R` performs
+a fresh verification; evidence is never written into the chat transcript.
+`/refresh` runs that fresh attestation verification directly without opening the
+inspector. The header animates while it is running and reports failures
+prominently.
 `/help` prints the full command list, and typing `/` opens filtered usage hints.
 
 The first ordinary prompt also starts a parallel, tool-free title request. Its
 short result fills the session title only when one has not already been set;
-failure is non-fatal and does not alter the conversation or its token counter.
+failure is non-fatal and does not alter the conversation or tracked token usage.
 
 The direct secure client validates the changed model ID against Axiom's signed-in
 catalog, establishes a fresh verified provider session for each inference, and
@@ -159,6 +174,35 @@ supervise it as a sidecar:
 | `AXIOM_BASE_URL` | Axiom relay URL; defaults to `https://api.axiom.stream` |
 | `AXIOM_PROXY_BIND` | numeric loopback address; defaults to `127.0.0.1:8484` |
 | `AXIOM_PROXY_MAX_CONCURRENCY` | bounded simultaneous requests; defaults to 8 |
+| `AXIOM_PROXY_COMPAT` | `lenient` (default) or `strict`; see below |
+
+### Unsupported request parameters
+
+The Axiom relay accepts a fixed field set, so an OpenAI parameter with no relay
+equivalent can only be dropped or refused. `AXIOM_PROXY_COMPAT` chooses which.
+
+`lenient`, the default, drops the parameter and answers the request. This exists
+because the person running a third-party application usually cannot edit that
+application's request builder, and an answer is more useful to them than a
+rejection. Drops are never silent: parameters that could have changed the answer
+are named on the `x-axiom-ignored-parameters` response header and in a
+`request_parameters_ignored` line on stderr for the supervisor. Parameters that
+cannot affect the answer at all — `user`, `metadata`, `store`, `service_tier` —
+are dropped without a report.
+
+`strict` refuses any request carrying a parameter that cannot be applied,
+naming them on the same header. Use it when a caller must be certain that every
+parameter it sent was honored.
+
+Two cases are refused in both modes, because dropping them would return a
+confidently wrong answer rather than a degraded one:
+
+- `n` greater than 1, which the caller would index into.
+- A message content part that is not text. No catalog model advertises image,
+  audio, or file input, so answering would mean ignoring what was asked about.
+
+Text delivered as a content part array is accepted in both modes and joined with
+newlines, since the OpenAI SDKs emit that shape even for plain text.
 
 The old unattested adapter is not part of the default build. For deliberate
 local protocol development only, compile with `development-provider` and set
@@ -169,6 +213,11 @@ At startup, the AxiomCLI TUI validates a discovered credential with Axiom. A
 rejected or revoked persisted credential is removed and the TUI opens the login
 surface; an `AXIOM_API_KEY` override must instead be unset by the caller. A
 temporary network failure is reported but does not erase the credential.
+After credential validation, the TUI establishes and locally verifies a real
+model-specific attested session without sending a prompt. The header animates
+while this preflight runs and fails visibly if verification does not succeed.
+Inference requests still establish and verify fresh secure sessions; startup
+preflight is not treated as a reusable attestation result.
 Browser authorization listens on a random `127.0.0.1` port and
 expires after the server-defined short lifetime. The protected-file fallback is
 stored beneath the platform data directory with `0700` directory and `0600`

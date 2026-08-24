@@ -16,20 +16,22 @@ use crate::{Result, app::PermissionProfile, error::AxiomError, policy::PolicyRul
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
 #[serde(rename_all = "snake_case")]
 pub enum PermissionProfileArg {
+    None,
+    Web,
     Observe,
     #[default]
     Confirm,
-    Workspace,
-    Autonomous,
+    FullAccess,
 }
 
 impl From<PermissionProfileArg> for PermissionProfile {
     fn from(value: PermissionProfileArg) -> Self {
         match value {
+            PermissionProfileArg::None => Self::None,
+            PermissionProfileArg::Web => Self::Web,
             PermissionProfileArg::Observe => Self::Observe,
             PermissionProfileArg::Confirm => Self::Confirm,
-            PermissionProfileArg::Workspace => Self::Workspace,
-            PermissionProfileArg::Autonomous => Self::Autonomous,
+            PermissionProfileArg::FullAccess => Self::FullAccess,
         }
     }
 }
@@ -138,13 +140,7 @@ impl ConfigLayer {
             ));
         }
         if let Some(profile) = self.permission_profile {
-            if profile == PermissionProfile::Plan {
-                return Err(AxiomError::Config(
-                    "project config cannot enable plan artifact writes; use --plan or trusted user configuration"
-                        .into(),
-                ));
-            }
-            if profile_rank(profile) > profile_rank(config.permission_profile) {
+            if !profile_is_narrower_or_equal(profile, config.permission_profile) {
                 return Err(AxiomError::Config(
                     "project config cannot broaden the trusted permission profile".into(),
                 ));
@@ -190,13 +186,23 @@ impl ConfigLayer {
     }
 }
 
-const fn profile_rank(profile: PermissionProfile) -> u8 {
-    match profile {
-        PermissionProfile::Plan => 0,
-        PermissionProfile::Observe => 1,
-        PermissionProfile::Confirm => 2,
-        PermissionProfile::Workspace => 3,
-        PermissionProfile::Autonomous => 4,
+const fn profile_is_narrower_or_equal(
+    candidate: PermissionProfile,
+    trusted: PermissionProfile,
+) -> bool {
+    match trusted {
+        PermissionProfile::None => matches!(candidate, PermissionProfile::None),
+        PermissionProfile::Web => {
+            matches!(candidate, PermissionProfile::None | PermissionProfile::Web)
+        }
+        PermissionProfile::Observe => {
+            matches!(
+                candidate,
+                PermissionProfile::None | PermissionProfile::Observe
+            )
+        }
+        PermissionProfile::Confirm => !matches!(candidate, PermissionProfile::FullAccess),
+        PermissionProfile::FullAccess => true,
     }
 }
 
@@ -262,7 +268,7 @@ impl Config {
         // Applying against a maximally permissive trusted profile validates
         // that the project layer contains no authority-granting settings.
         let mut config = Config {
-            permission_profile: PermissionProfile::Autonomous,
+            permission_profile: PermissionProfile::FullAccess,
             ..Config::default()
         };
         layer.apply_project(&mut config)?;
@@ -498,8 +504,20 @@ mod tests {
     #[test]
     fn profile_parser_is_strict() {
         assert_eq!(
-            PermissionProfile::from_str("workspace").expect("profile"),
-            PermissionProfile::Workspace
+            PermissionProfile::from_str("full_access").expect("profile"),
+            PermissionProfile::FullAccess
+        );
+        assert_eq!(
+            PermissionProfile::from_str("workspace").expect("legacy profile"),
+            PermissionProfile::Confirm
+        );
+        assert_eq!(
+            PermissionProfile::from_str("autonomous").expect("legacy profile"),
+            PermissionProfile::FullAccess
+        );
+        assert_eq!(
+            PermissionProfile::from_str("plan").expect("legacy profile"),
+            PermissionProfile::Observe
         );
         assert!(PermissionProfile::from_str("YOLO").is_err());
     }
@@ -557,7 +575,7 @@ mod tests {
     fn project_layer_cannot_broaden_authority_or_launch_mcp() {
         let mut config = Config::default();
         let broad: ConfigLayer =
-            toml::from_str("permission_profile = 'autonomous'").expect("layer");
+            toml::from_str("permission_profile = 'full_access'").expect("layer");
         assert!(broad.apply_project(&mut config).is_err());
 
         let mcp: ConfigLayer =

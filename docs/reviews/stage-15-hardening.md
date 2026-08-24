@@ -8,7 +8,7 @@ decision does not claim macOS/Windows support or production TEE/E2EE.
 
 ## Daily-use and documentation evidence
 
-- The keyboard reference, mouse paths, transcript selection/search/folding,
+- The keyboard reference, native terminal text selection, transcript search/folding,
   entry and diff viewers, sticky task/security state, approval language, and
   error recovery are exercised by unit snapshots and real PTY tests.
 - The TUI fills only the terminal's current viewport, responds to resize, has an

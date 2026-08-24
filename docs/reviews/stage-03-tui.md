@@ -12,9 +12,9 @@ Reviewer: Codex, acceptance-criteria-first re-review
 
 | Criterion | Evidence |
 |---|---|
-| Terminal guard/input/resize | `TerminalGuard` owns raw mode, alternate screen and mouse capture; `EventStream` handles keys/mouse/resize; real PTY tests resize 60×14 → 100×30 |
+| Terminal guard/input/resize | `TerminalGuard` owns raw mode and the alternate screen without capturing pointer input; `EventStream` handles keys/paste/resize; real PTY tests resize 60×14 → 100×30 |
 | Operational-document layout | Header, semantic transcript, status, persistent composer, shortcuts, viewer and help overlay are fixture-driven and contain no provider/agent behavior |
-| Navigation and follow behavior | Composer/transcript focus, j/k/arrows, mouse wheel/click, stable selection, deliberate follow stop and End-to-follow are implemented and tested during streaming |
+| Navigation and follow behavior | Composer/transcript focus, j/k/arrows, stable selection, deliberate follow stop and End-to-follow are implemented and tested during streaming; native terminal text selection remains available |
 | Search/fold/view | `/` live transcript/tool-output search, n/N matches, Enter fold/unfold, and `v` terminal-viewport viewer are operational tests, not placeholder text |
 | Accessible theme matrix | True color, 256, 16 and no-color render at 42×10, 60×14, 100×30 and 160×50; no-color asserts every cell uses reset foreground/background |
 | ASCII/reduced motion | `AXIOMCLI_ASCII`, dumb-terminal fallback and `AXIOMCLI_REDUCED_MOTION` remove decorative Unicode/animation while retaining textual meaning |

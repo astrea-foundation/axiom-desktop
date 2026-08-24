@@ -16,21 +16,97 @@ pub type Result<T> = std::result::Result<T, CompatError>;
 #[error("invalid OpenAI-compatible request: {detail}")]
 pub struct CompatError {
     detail: &'static str,
+    parameters: Vec<String>,
 }
 
 impl CompatError {
     const fn new(detail: &'static str) -> Self {
-        Self { detail }
+        Self {
+            detail,
+            parameters: Vec::new(),
+        }
+    }
+
+    fn unsupported(parameters: Vec<String>) -> Self {
+        Self {
+            detail: "request contains parameters this proxy does not support",
+            parameters,
+        }
     }
 
     #[must_use]
     pub const fn safe_detail(&self) -> &'static str {
         self.detail
     }
+
+    /// Sanitized names of the parameters that caused a strict-mode rejection.
+    ///
+    /// Empty for every other translation failure.
+    #[must_use]
+    pub fn parameters(&self) -> &[String] {
+        &self.parameters
+    }
 }
 
+/// How the translator treats request parameters it cannot honor.
+///
+/// Axiom's relay accepts a fixed field set, so a parameter with no relay
+/// equivalent can only be dropped or refused. The composition root chooses;
+/// this crate never reads configuration.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CompatMode {
+    /// Drop unsupported parameters and report the ones that could have changed
+    /// the answer. A request from an application the operator cannot modify
+    /// still succeeds.
+    #[default]
+    Lenient,
+    /// Refuse any request carrying a parameter that cannot be honored.
+    Strict,
+}
+
+/// Parameters that cannot reach the relay but also cannot change the answer.
+///
+/// Dropping these is invisible, so lenient mode does not report them.
+const INERT_PARAMETERS: [&str; 4] = ["user", "metadata", "store", "service_tier"];
+
+/// Upper bound on reported parameter names, keeping the response header and
+/// the supervisor log bounded regardless of request content.
+const MAX_REPORTED_PARAMETERS: usize = 16;
+const MAX_REPORTED_PARAMETER_LEN: usize = 64;
+
+/// Reduces a client-supplied key to a token that is safe to place in a response
+/// header and a structured log line.
+///
+/// Returns `None` when nothing usable survives.
+fn sanitize_parameter_name(name: &str) -> Option<String> {
+    let cleaned: String = name
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+        .take(MAX_REPORTED_PARAMETER_LEN)
+        .collect();
+    if cleaned.is_empty() {
+        None
+    } else {
+        Some(cleaned)
+    }
+}
+
+/// A translated request plus the parameters that were dropped to produce it.
+#[derive(Clone, Debug)]
+pub struct TranslatedRequest {
+    pub request: InferenceRequest,
+    /// Sorted, deduplicated, sanitized names of dropped parameters that could
+    /// have changed the answer. Empty when the request was honored in full.
+    pub ignored_parameters: Vec<String>,
+}
+
+/// An OpenAI-compatible chat completion request.
+///
+/// Unknown keys are captured rather than refused at parse time so that
+/// [`CompatMode`] can decide their fate. Nested structures keep
+/// `deny_unknown_fields`: a malformed message, tool, or schema is a client bug
+/// in every mode.
 #[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct ChatCompletionRequest {
     pub model: String,
     pub messages: Vec<WireMessage>,
@@ -56,10 +132,39 @@ pub struct ChatCompletionRequest {
     pub stream: bool,
     #[serde(default)]
     pub stream_options: Option<StreamOptions>,
+    /// Requested completion count. Only `1` is representable, so anything
+    /// greater is refused in every mode rather than silently under-delivered.
+    #[serde(default)]
+    pub n: Option<u32>,
+    #[serde(flatten)]
+    pub unsupported: serde_json::Map<String, serde_json::Value>,
 }
 
 impl ChatCompletionRequest {
-    pub fn into_domain(self) -> Result<InferenceRequest> {
+    /// Names the captured keys that lenient mode must report.
+    ///
+    /// Everything outside [`INERT_PARAMETERS`] is reported: both parameters
+    /// `OpenAI` defines that the relay cannot honor (`stop`, `seed`,
+    /// `frequency_penalty`, `presence_penalty`, `logit_bias`, `logprobs`,
+    /// `top_logprobs`) and keys this build does not recognize at all, which may
+    /// be a caller typo or a newer API revision.
+    fn classify_parameters(&self) -> Vec<String> {
+        let mut reported = Vec::new();
+        for key in self.unsupported.keys() {
+            if INERT_PARAMETERS.contains(&key.as_str()) {
+                continue;
+            }
+            if let Some(name) = sanitize_parameter_name(key) {
+                reported.push(name);
+            }
+        }
+        reported.sort_unstable();
+        reported.dedup();
+        reported.truncate(MAX_REPORTED_PARAMETERS);
+        reported
+    }
+
+    pub fn into_domain(self, mode: CompatMode) -> Result<TranslatedRequest> {
         if self.max_tokens.is_some()
             && self.max_completion_tokens.is_some()
             && self.max_tokens != self.max_completion_tokens
@@ -70,6 +175,23 @@ impl ChatCompletionRequest {
         }
         if self.stream_options.is_some() && !self.stream {
             return Err(CompatError::new("stream_options requires stream=true"));
+        }
+        if self.n.is_some_and(|count| count != 1) {
+            return Err(CompatError::new(
+                "n must be 1: additional choices cannot be produced",
+            ));
+        }
+        let ignored_parameters = self.classify_parameters();
+        if mode == CompatMode::Strict && !self.unsupported.is_empty() {
+            let mut refused: Vec<String> = self
+                .unsupported
+                .keys()
+                .filter_map(|key| sanitize_parameter_name(key))
+                .collect();
+            refused.sort_unstable();
+            refused.dedup();
+            refused.truncate(MAX_REPORTED_PARAMETERS);
+            return Err(CompatError::unsupported(refused));
         }
         let reasoning_effort = parse_reasoning(self.reasoning_effort.as_deref())?;
         let tools = self
@@ -103,7 +225,10 @@ impl ChatCompletionRequest {
         request
             .validate()
             .map_err(|_| CompatError::new("request fields failed validation"))?;
-        Ok(request)
+        Ok(TranslatedRequest {
+            request,
+            ignored_parameters,
+        })
     }
 
     #[must_use]
@@ -126,7 +251,7 @@ pub struct StreamOptions {
 pub struct WireMessage {
     pub role: String,
     #[serde(default)]
-    pub content: Option<String>,
+    pub content: Option<WireContent>,
     #[serde(default)]
     pub reasoning_content: Option<String>,
     #[serde(default)]
@@ -151,7 +276,9 @@ impl WireMessage {
         };
         Ok(ChatMessage {
             role,
-            content: self.content.unwrap_or_default(),
+            content: self
+                .content
+                .map_or_else(|| Ok(String::new()), WireContent::into_text)?,
             reasoning_content: self.reasoning_content,
             name: self.name,
             refusal: self.refusal,
@@ -163,6 +290,53 @@ impl WireMessage {
                 .collect::<Result<Vec<_>>>()?,
         })
     }
+}
+
+/// Message content as either a bare string or the part array that the
+/// `OpenAI` SDKs and most agent frameworks emit even for plain text.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(untagged)]
+pub enum WireContent {
+    Text(String),
+    Parts(Vec<WireContentPart>),
+}
+
+impl WireContent {
+    fn into_text(self) -> Result<String> {
+        match self {
+            Self::Text(text) => Ok(text),
+            Self::Parts(parts) => {
+                let mut texts = Vec::with_capacity(parts.len());
+                for part in parts {
+                    match part {
+                        WireContentPart::Text { text } => texts.push(text),
+                        WireContentPart::Unsupported => {
+                            return Err(CompatError::new(
+                                "message content part type is not supported",
+                            ));
+                        }
+                    }
+                }
+                Ok(texts.join("\n"))
+            }
+        }
+    }
+}
+
+/// A single content part.
+///
+/// Only text is representable. No catalog model advertises image, audio, or
+/// file input, and dropping such a part would answer as though the caller had
+/// never sent it. The catch-all variant exists so the request fails during
+/// translation with a specific message rather than as an opaque parse error.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum WireContentPart {
+    Text {
+        text: String,
+    },
+    #[serde(other)]
+    Unsupported,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -739,7 +913,9 @@ mod tests {
         }))
         .unwrap();
         assert!(wire.include_stream_usage());
-        let domain = wire.into_domain().unwrap();
+        let translated = wire.into_domain(CompatMode::Strict).unwrap();
+        assert!(translated.ignored_parameters.is_empty());
+        let domain = translated.request;
         assert_eq!(domain.messages[0].role, ChatRole::Developer);
         assert_eq!(domain.messages[1].tool_calls[0].id, "call:1");
         assert_eq!(domain.reasoning_effort, ReasoningEffort::High);
@@ -752,19 +928,133 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unknown_fields_conflicts_and_legacy_shapes() {
-        assert!(
-            serde_json::from_value::<ChatCompletionRequest>(serde_json::json!({
-                "model":"x","messages":[],"prompt":"legacy"
+    fn rejects_conflicting_and_unrepresentable_fields_in_every_mode() {
+        for mode in [CompatMode::Lenient, CompatMode::Strict] {
+            let conflict: ChatCompletionRequest = serde_json::from_value(serde_json::json!({
+                "model":"x","messages":[{"role":"user","content":"hi"}],
+                "max_tokens":1,"max_completion_tokens":2
             }))
-            .is_err()
+            .unwrap();
+            assert!(conflict.into_domain(mode).is_err());
+
+            // n > 1 cannot be under-delivered silently: the caller indexes the
+            // choices it asked for.
+            let choices: ChatCompletionRequest = serde_json::from_value(serde_json::json!({
+                "model":"x","messages":[{"role":"user","content":"hi"}],"n":3
+            }))
+            .unwrap();
+            assert!(choices.into_domain(mode).is_err());
+
+            // n = 1 is exactly the default, so it is honored rather than refused.
+            let single: ChatCompletionRequest = serde_json::from_value(serde_json::json!({
+                "model":"x","messages":[{"role":"user","content":"hi"}],"n":1
+            }))
+            .unwrap();
+            assert!(
+                single
+                    .into_domain(mode)
+                    .unwrap()
+                    .ignored_parameters
+                    .is_empty()
+            );
+
+            // A content part type with no representable meaning must not be
+            // dropped: answering without the image is worse than refusing.
+            let image: ChatCompletionRequest = serde_json::from_value(serde_json::json!({
+                "model":"x","messages":[{"role":"user","content":[
+                    {"type":"image_url","image_url":{"url":"https://example/a.png"}}
+                ]}]
+            }))
+            .expect("an unsupported part must reach translation, not fail parsing");
+            assert!(image.into_domain(mode).is_err());
+        }
+    }
+
+    #[test]
+    fn lenient_drops_unsupported_parameters_and_strict_refuses_them() {
+        let body = serde_json::json!({
+            "model":"x","messages":[{"role":"user","content":"hi"}],
+            // Answer-affecting: reported.
+            "stop":["\n\n"],"seed":7,"frequency_penalty":0.5,"logit_bias":{"1":1},
+            "logprobs":true,"top_logprobs":3,"presence_penalty":0.1,
+            // Inert: dropped without noise.
+            "user":"u-1","metadata":{"k":"v"},"store":false,"service_tier":"auto",
+            // Unrecognized, possibly a typo or a newer revision: reported.
+            "temperatur":0.4
+        });
+
+        let lenient: ChatCompletionRequest = serde_json::from_value(body.clone()).unwrap();
+        let translated = lenient.into_domain(CompatMode::Lenient).unwrap();
+        assert_eq!(
+            translated.ignored_parameters,
+            [
+                "frequency_penalty",
+                "logit_bias",
+                "logprobs",
+                "presence_penalty",
+                "seed",
+                "stop",
+                "temperatur",
+                "top_logprobs"
+            ]
         );
+
+        let strict: ChatCompletionRequest = serde_json::from_value(body).unwrap();
+        let error = strict.into_domain(CompatMode::Strict).unwrap_err();
+        // Strict names the inert parameters too: it promises full fidelity.
+        assert!(error.parameters().contains(&"user".to_owned()));
+        assert!(error.parameters().contains(&"stop".to_owned()));
+    }
+
+    #[test]
+    fn accepts_inert_parameters_silently_in_lenient_mode() {
         let wire: ChatCompletionRequest = serde_json::from_value(serde_json::json!({
             "model":"x","messages":[{"role":"user","content":"hi"}],
-            "max_tokens":1,"max_completion_tokens":2
+            "user":"u-1","store":true
         }))
         .unwrap();
-        assert!(wire.into_domain().is_err());
+        let translated = wire.into_domain(CompatMode::Lenient).unwrap();
+        assert!(translated.ignored_parameters.is_empty());
+    }
+
+    #[test]
+    fn joins_text_content_parts_and_keeps_bare_strings() {
+        let wire: ChatCompletionRequest = serde_json::from_value(serde_json::json!({
+            "model":"x","messages":[
+                {"role":"user","content":[{"type":"text","text":"first"},
+                                          {"type":"text","text":"second"}]},
+                {"role":"assistant","content":"plain"}
+            ]
+        }))
+        .unwrap();
+        let domain = wire.into_domain(CompatMode::Strict).unwrap().request;
+        assert_eq!(domain.messages[0].content, "first\nsecond");
+        assert_eq!(domain.messages[1].content, "plain");
+    }
+
+    #[test]
+    fn sanitizes_and_bounds_reported_parameter_names() {
+        // Header and log injection must be impossible regardless of the key.
+        assert_eq!(sanitize_parameter_name("a\r\nb: c").as_deref(), Some("abc"));
+        assert_eq!(sanitize_parameter_name("\u{202e}\u{202e}"), None);
+        assert_eq!(
+            sanitize_parameter_name(&"x".repeat(200)).map(|n| n.len()),
+            Some(MAX_REPORTED_PARAMETER_LEN)
+        );
+
+        let mut body = serde_json::Map::new();
+        body.insert("model".into(), serde_json::json!("x"));
+        body.insert(
+            "messages".into(),
+            serde_json::json!([{"role":"user","content":"hi"}]),
+        );
+        for index in 0..50 {
+            body.insert(format!("unknown_{index}"), serde_json::json!(1));
+        }
+        let wire: ChatCompletionRequest =
+            serde_json::from_value(serde_json::Value::Object(body)).unwrap();
+        let translated = wire.into_domain(CompatMode::Lenient).unwrap();
+        assert_eq!(translated.ignored_parameters.len(), MAX_REPORTED_PARAMETERS);
     }
 
     #[test]

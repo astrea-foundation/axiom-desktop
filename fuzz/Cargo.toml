@@ -13,6 +13,7 @@ members = ["."]
 
 [dependencies]
 axiom-inference = { version = "0.1.0", path = "../crates/axiom-inference" }
+axiom-acp-extension = { version = "0.1.0", path = "../crates/axiom-acp-extension" }
 axiom-openai-compat = { version = "0.1.0", path = "../crates/axiom-openai-compat" }
 axiom-secure-client = { version = "0.1.0", path = "../crates/axiom-secure-client", features = ["fuzzing"] }
 libfuzzer-sys = "0.4.13"
@@ -49,6 +50,13 @@ bench = false
 [[bin]]
 name = "tool_fragments"
 path = "fuzz_targets/tool_fragments.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "acp_extension_json"
+path = "fuzz_targets/acp_extension_json.rs"
 test = false
 doc = false
 bench = false

@@ -187,7 +187,7 @@ async fn real_service_lifecycle_failure_modes_and_agent_citations() {
                 session_id: SessionId::new(),
                 turn_id: TurnId::new(),
                 cwd: PathBuf::from(workspace.path()),
-                permission_profile: PermissionProfile::Autonomous,
+                permission_profile: PermissionProfile::FullAccess,
                 approval: None,
                 questions: None,
             },

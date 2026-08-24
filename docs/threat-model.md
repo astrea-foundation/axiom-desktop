@@ -59,6 +59,27 @@ Tool definitions, model-proposed calls, and tool results are encrypted by the
 secure transport. Tool execution authority remains with AxiomCLI or the
 external coding client and its deterministic permission system.
 
+## Desktop and ACP trust boundary
+
+The Electron renderer and every external ACP client are untrusted. The desktop
+renderer is sandboxed and context-isolated, has no Node or child-process access,
+and receives only a domain-specific preload API. It cannot send arbitrary ACP
+method names. Electron main validates every argument before forwarding it, and
+AxiomCLI validates it again before applying application or policy semantics.
+
+Only Electron main spawns AxiomCLI. Packaged builds resolve a fixed binary under
+the application resources; an environment override is accepted only in an
+unpackaged development build. ACP stdout contains only bounded JSON-RPC frames,
+stderr diagnostics are capped in the desktop process, and sidecar exit rejects
+all pending requests. A sidecar restart changes the runtime instance ID, making
+old approval, elicitation, and deletion handles stale.
+
+The Axiom extension is capability-negotiated. Its event sequence lets a client
+detect lost notifications and repair state from an authoritative snapshot.
+Session deletion uses a short-lived single-use token bound to an exact set of
+session IDs. The renderer does not store API keys and cannot approve an option
+that AxiomCLI did not offer.
+
 ## Principal threats and early mitigations
 
 | Threat | Early mitigation |
@@ -71,6 +92,13 @@ external coding client and its deterministic permission system.
 | Web SSRF or redirect pivot | Resolve/revalidate each hop; deny non-public addresses; byte/time/content limits |
 | Web/MCP prompt injection | Delimit as untrusted tool data; never interpret it as policy |
 | ACP client disconnects during approval | Fail closed; do not convert disconnection into approval |
+| Compromised renderer calls privileged IPC | Narrow preload API, context isolation/sandbox, main-process validation, Rust revalidation; no raw ACP escape hatch |
+| Forged or replayed interaction response | Client-side offered-option check plus one active Rust request; stale IDs fail closed |
+| Replayed/altered delete confirmation | Random process-local token, exact normalized selection, 60-second expiry, single use |
+| Sidecar replacement | Fixed packaged resource path; development override is unavailable in packaged mode |
+| Malformed/oversized ACP output | Incremental 4 MiB frame bound, fatal malformed JSON handling, bounded diagnostics and request map |
+| Lost/reordered extension activity | Runtime instance and monotonic sequence trigger authoritative snapshot repair |
+| API key leaked through desktop state | One-way IPC request, redacted Rust debug, no key field in responses/events/state |
 | Credential exposure | Environment/secret wrapper, redacted tracing, deny child inheritance by default |
 | Relay observes prompts or tool context | Encrypt every secret-bearing field locally; sentinel scans over serialized relay requests and logs |
 | Malicious catalog chooses wrong provider/endpoint | Match compiled provider/protocol versions; HTTPS/public-address policy; verify fresh evidence rather than trusting catalog keys |

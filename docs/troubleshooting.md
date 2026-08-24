@@ -43,10 +43,10 @@ configuration/session paths without printing credentials.
 ## A command will not run
 
 On Linux, `/usr/bin/bwrap` is required. AxiomCLI fails closed if it is absent.
-The `workspace` profile automatically permits only its narrow development
-command list; other structured programs require confirmation. Shell commands
-always require confirmation. The process receives no network and only an
-allowlisted environment.
+The default `confirm` profile asks before every tool invocation. `full_access`
+removes those tool prompts, while `none`, `web`, and `observe` hide tools that
+fall outside their declared purpose. Sandboxed processes receive no network and
+only an allowlisted environment regardless of tool profile.
 
 If Cargo cannot find an already installed toolchain inside the sandbox, verify
 that the invoking account’s Cargo and Rustup directories exist. AxiomCLI mounts

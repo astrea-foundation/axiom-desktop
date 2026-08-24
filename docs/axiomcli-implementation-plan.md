@@ -29,7 +29,7 @@ for a later stage.
 
 - A Rust executable named `axiomcli`.
 - A keyboard-first TUI that fills the terminal's current viewport, adapts to
-  terminal resizing, and uses mouse support where useful. It never changes the
+  terminal resizing, and leaves pointer input to native terminal selection. It never changes the
   operating system's window/fullscreen state.
 - Interactive and non-interactive test entry points for the same agent runtime.
 - An ACP server mode, initially over standard input/output.
@@ -549,7 +549,7 @@ with ASCII fallbacks for important Unicode glyphs.
 ### 6.3 Required interaction behaviors
 
 - Keyboard-first navigation with discoverable context-sensitive shortcuts.
-- Mouse scrolling and clicking where the terminal supports it.
+- Native terminal text selection and copying without application pointer capture.
 - Stable selection when streamed content arrives above or below the viewport.
 - A follow-output mode that stops when the user deliberately scrolls away.
 - Search within transcript and tool output.
@@ -569,13 +569,14 @@ execution paths and they are not model instructions.
 
 | Profile | Automatic behavior | Requires approval or is denied |
 |---|---|---|
-| `observe` | Read files in declared roots, list/search, inspect repository metadata | Writes, processes, network, MCP side effects |
-| `confirm` | Same safe reads as `observe` | Every write, process, network request, or externally visible action |
-| `workspace` | Safe reads and edits inside declared roots; explicitly allowlisted build/test programs | Shell interpretation, new network destinations, destructive actions, scope expansion |
-| `autonomous` | Operations allowed by explicit filesystem, command, and network rules | Hard-denied classes and any operation outside configured capabilities |
+| `none` | No tools are exposed | Every tool invocation is denied |
+| `web` | Web search and page fetching only | Workspace, process, mutation, and MCP tools are hidden and denied |
+| `observe` | Read-only workspace and explicitly trusted read-only MCP tools | Web, writes, processes, and side-effecting MCP tools are hidden and denied |
+| `confirm` | All tools are exposed | Every invocation requires a fresh one-shot approval |
+| `full_access` | All tools are exposed and tool approval is automatic | Structural runtime boundaries and explicit deny rules still apply |
 
-`autonomous` does not mean unrestricted. Hard policy remains active. A future
-automation flag may reduce prompts, but it cannot disable hard denials.
+Tool profiles do not carry crypto authority. Wallet, network, spending, and
+transaction permissions belong to a separate Crypto policy surface.
 
 ### 7.2 Effect classification
 
@@ -1314,7 +1315,7 @@ embedding.
 
 **Work:**
 
-- Conduct complete keyboard, mouse, small-terminal, low-color, and accessibility
+- Conduct complete keyboard, native-selection, small-terminal, low-color, and accessibility
   passes.
 - Refine density, sticky context, tool folding, diff navigation, task visibility,
   permission wording, help, onboarding, and error recovery.

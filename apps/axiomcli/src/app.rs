@@ -132,12 +132,47 @@ pub enum Origin {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PermissionProfile {
-    Plan,
+    None,
+    Web,
+    #[serde(alias = "plan")]
     Observe,
     #[default]
+    #[serde(alias = "workspace")]
     Confirm,
-    Workspace,
-    Autonomous,
+    #[serde(alias = "autonomous")]
+    FullAccess,
+}
+
+impl PermissionProfile {
+    pub const ALL: [Self; 5] = [
+        Self::None,
+        Self::Web,
+        Self::Observe,
+        Self::Confirm,
+        Self::FullAccess,
+    ];
+
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::None => "None",
+            Self::Web => "Web",
+            Self::Observe => "Observe",
+            Self::Confirm => "Confirm",
+            Self::FullAccess => "Full Access",
+        }
+    }
+
+    #[must_use]
+    pub const fn description(self) -> &'static str {
+        match self {
+            Self::None => "Chat without giving the model any tools",
+            Self::Web => "Allow only web search and page fetching",
+            Self::Observe => "Allow read-only workspace inspection",
+            Self::Confirm => "Allow every tool after one confirmation per use",
+            Self::FullAccess => "Run every available tool without confirmation",
+        }
+    }
 }
 
 /// Provider-neutral reasoning preference for a session. Reasoning is always
@@ -188,11 +223,11 @@ impl FromStr for ThinkingLevel {
 impl fmt::Display for PermissionProfile {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
-            Self::Plan => "plan",
+            Self::None => "none",
+            Self::Web => "web",
             Self::Observe => "observe",
             Self::Confirm => "confirm",
-            Self::Workspace => "workspace",
-            Self::Autonomous => "autonomous",
+            Self::FullAccess => "full_access",
         })
     }
 }
@@ -202,11 +237,13 @@ impl FromStr for PermissionProfile {
 
     fn from_str(input: &str) -> Result<Self> {
         match input {
-            "plan" => Ok(Self::Plan),
-            "observe" => Ok(Self::Observe),
-            "confirm" => Ok(Self::Confirm),
-            "workspace" => Ok(Self::Workspace),
-            "autonomous" => Ok(Self::Autonomous),
+            "none" => Ok(Self::None),
+            "web" => Ok(Self::Web),
+            // Compatibility aliases keep early transcripts/configuration
+            // loadable without exposing the retired profiles in the UI.
+            "plan" | "observe" => Ok(Self::Observe),
+            "workspace" | "confirm" => Ok(Self::Confirm),
+            "autonomous" | "full_access" | "full-access" | "full" => Ok(Self::FullAccess),
             _ => Err(AxiomError::Config(format!(
                 "unknown permission profile `{input}`"
             ))),
@@ -391,6 +428,8 @@ pub enum AppEvent {
         call_id: String,
         diff: String,
         truncated: bool,
+        #[serde(default)]
+        files: Vec<FileDiff>,
     },
     QuestionAsked {
         question_id: String,
@@ -460,6 +499,16 @@ pub enum AppEvent {
         message: String,
     },
     SessionClosed,
+}
+
+/// Presentation-neutral before/after file content for clients that support
+/// native diff rendering. The unified diff remains alongside this structure
+/// for the TUI and backwards-compatible journals.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileDiff {
+    pub path: PathBuf,
+    pub old_text: Option<String>,
+    pub new_text: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -597,7 +646,7 @@ impl Kernel {
                         profile,
                     },
                     AppEvent::SecurityStatusChanged {
-                        state: SecurityStatus::UnattestedDevelopment,
+                        state: SecurityStatus::Unverified,
                     },
                 ]
             }
@@ -1177,6 +1226,29 @@ mod tests {
             ))
             .expect("create session");
         session_id
+    }
+
+    #[test]
+    fn a_new_session_never_claims_an_unattested_development_transport() {
+        let mut kernel = Kernel::with_services(services());
+        let session_id = SessionId::from_uuid(Uuid::from_u128(101));
+        let events = kernel
+            .apply(envelope(
+                AppCommand::CreateSession {
+                    session_id,
+                    cwd: PathBuf::from("/tmp/example"),
+                    origin: Origin::Tui,
+                    profile: PermissionProfile::Confirm,
+                },
+                1,
+            ))
+            .expect("create session");
+        assert!(matches!(
+            events.get(1).map(|event| &event.event),
+            Some(AppEvent::SecurityStatusChanged {
+                state: SecurityStatus::Unverified
+            })
+        ));
     }
 
     #[test]

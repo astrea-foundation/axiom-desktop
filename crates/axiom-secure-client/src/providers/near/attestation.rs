@@ -226,7 +226,14 @@ pub(crate) async fn verify_model(
         ));
     }
 
-    let evidence = build_evidence(model_id, policy, model_key, &tls_fingerprint, &intel);
+    let evidence = build_evidence(
+        model_id,
+        policy,
+        model_key,
+        &tls_fingerprint,
+        &intel,
+        manifest,
+    );
     Ok(VerifiedNearAttestation {
         model_key,
         evidence,
@@ -670,6 +677,7 @@ fn build_evidence(
     model_key: Ed25519PublicKey,
     tls_fingerprint: &[u8; 32],
     intel: &IntelEvidence,
+    workload_manifest: String,
 ) -> SecurityEvidence {
     let approved_workload_identity = policy
         .approved_workload_measurements
@@ -711,6 +719,8 @@ fn build_evidence(
                 value: intel.advisory_ids.join(","),
             },
         ],
+        workload_manifest: Some(workload_manifest),
+        workload_identity_allowlist_configured: !policy.approved_workload_measurements.is_empty(),
         approved_workload_identity,
     }
 }

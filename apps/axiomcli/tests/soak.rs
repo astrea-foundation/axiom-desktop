@@ -197,7 +197,7 @@ async fn repeated_background_batches_are_ordered_bounded_and_fully_reaped() {
                             timeout_secs: 5,
                         },
                         parent.clone(),
-                        "autonomous".into(),
+                        "full_access".into(),
                     )
                     .await
                     .expect("start background task"),
@@ -219,7 +219,7 @@ async fn repeated_background_batches_are_ordered_bounded_and_fully_reaped() {
     );
     assert!(snapshots.iter().all(|snapshot| {
         snapshot.state == "completed"
-            && snapshot.permission_profile == "autonomous"
+            && snapshot.permission_profile == "full_access"
             && snapshot.stdout.len() <= 1024
             && snapshot.stderr.len() <= 1024
     }));

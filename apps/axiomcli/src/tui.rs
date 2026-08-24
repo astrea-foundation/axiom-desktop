@@ -3,19 +3,21 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     env,
     fmt::Write as _,
-    io,
-    path::PathBuf,
+    fs::{self, OpenOptions},
+    io::{self, Write as _},
+    path::{Component, Path, PathBuf},
     str::FromStr as _,
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use async_trait::async_trait;
+use axiom_secure_client::SecurityEvidence;
 use crossterm::{
     Command,
     event::{
         DisableBracketedPaste, EnableBracketedPaste, Event, EventStream, KeyCode, KeyEvent,
-        KeyEventKind, KeyModifiers, MouseEventKind,
+        KeyEventKind, KeyModifiers,
     },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
@@ -24,7 +26,7 @@ use futures::StreamExt as _;
 use ratatui::{
     Frame, Terminal,
     backend::CrosstermBackend,
-    layout::{Alignment, Constraint, Direction, Layout, Position, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Padding, Paragraph, Wrap},
@@ -35,7 +37,10 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::{
     AxiomError, Result,
-    agent::{APP_EVENT_QUEUE_CAPACITY, CompactionResult, QuestionHandler, TurnContext, TurnRunner},
+    agent::{
+        APP_EVENT_QUEUE_CAPACITY, CompactionResult, QuestionHandler, SecurityVerification,
+        TurnContext, TurnRunner,
+    },
     app::{
         AppCommand, AppEvent, Origin, PermissionProfile, QuestionRequest, Runtime, SessionId,
         ThinkingLevel, TurnId,
@@ -48,9 +53,11 @@ use crate::{
     slash::{self, SlashCommand},
 };
 
+mod composer;
 mod markdown;
 mod task;
 
+use composer::ComposerBuffer;
 use markdown::{MarkdownStyles, StreamingMarkdownRenderer};
 use task::{TaskActivity, TaskPhase, TaskRunView, TaskTimelineItem, ToolPhase};
 
@@ -63,6 +70,7 @@ const BODY_INDENT: usize = 2;
 /// Smallest terminal the full layout is designed for.
 const MIN_WIDTH: u16 = 42;
 const MIN_HEIGHT: u16 = 10;
+const COMPOSER_MAX_CONTENT_ROWS: u16 = 8;
 const ANIMATION_TICK: Duration = Duration::from_millis(160);
 const SPLASH_MESSAGES: &[&str] = &[
     "Think freely.",
@@ -112,45 +120,6 @@ fn pick_splash_message() -> &'static str {
     let count = u128::try_from(SPLASH_MESSAGES.len()).unwrap_or(1);
     let index = usize::try_from(entropy % count).unwrap_or_default();
     SPLASH_MESSAGES[index]
-}
-
-/// Mouse reporting tailored to the interactions `AxiomCLI` actually consumes.
-/// Crossterm's broad `EnableMouseCapture` also enables DECSET 1003, which
-/// reports every pointer movement. We only need button/wheel events (1000) and
-/// the unambiguous SGR coordinate encoding (1006).
-#[derive(Clone, Copy, Debug)]
-struct EnableAxiomMouseCapture;
-
-impl Command for EnableAxiomMouseCapture {
-    fn write_ansi(&self, formatter: &mut impl std::fmt::Write) -> std::fmt::Result {
-        // Clear broader modes first in case a previous process exited badly.
-        formatter.write_str("\x1b[?1003l\x1b[?1002l\x1b[?1015l\x1b[?1000h\x1b[?1006h")
-    }
-
-    #[cfg(windows)]
-    fn execute_winapi(&self) -> io::Result<()> {
-        use crossterm::ExecutableCommand as _;
-        io::stdout()
-            .execute(crossterm::event::EnableMouseCapture)
-            .map(|_| ())
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-struct DisableAxiomMouseCapture;
-
-impl Command for DisableAxiomMouseCapture {
-    fn write_ansi(&self, formatter: &mut impl std::fmt::Write) -> std::fmt::Result {
-        formatter.write_str("\x1b[?1006l\x1b[?1000l")
-    }
-
-    #[cfg(windows)]
-    fn execute_winapi(&self) -> io::Result<()> {
-        use crossterm::ExecutableCommand as _;
-        io::stdout()
-            .execute(crossterm::event::DisableMouseCapture)
-            .map(|_| ())
-    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -376,6 +345,10 @@ fn uses_deterministic_test_runner() -> bool {
 enum Overlay {
     Entry(usize),
     Help,
+    Permissions {
+        tab: PermissionTab,
+        selected: usize,
+    },
     ModelPicker {
         query: String,
         selected: usize,
@@ -392,7 +365,59 @@ enum Overlay {
         marked: BTreeSet<String>,
         confirming: bool,
     },
+    Security(SecurityView),
+    SaveAttestation(SaveAttestationPicker),
     Auth(AuthOverlay),
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum SavePickerFocus {
+    Directories,
+    #[default]
+    Filename,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SaveAttestationPicker {
+    directory: PathBuf,
+    filename: String,
+    selected: usize,
+    focus: SavePickerFocus,
+    error: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum PermissionTab {
+    #[default]
+    Tools,
+    Crypto,
+}
+
+impl PermissionTab {
+    const fn other(self) -> Self {
+        match self {
+            Self::Tools => Self::Crypto,
+            Self::Crypto => Self::Tools,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum SecurityView {
+    #[default]
+    Summary,
+    Workload,
+    Raw,
+}
+
+impl SecurityView {
+    const fn next(self) -> Self {
+        match self {
+            Self::Summary => Self::Workload,
+            Self::Workload => Self::Raw,
+            Self::Raw => Self::Summary,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -535,7 +560,8 @@ pub struct TuiState {
     slash_selection_moved: bool,
     profile: PermissionProfile,
     security: &'static str,
-    input: String,
+    security_evidence: Option<SecurityEvidence>,
+    input: ComposerBuffer,
     entries: Vec<Entry>,
     running: bool,
     status: String,
@@ -595,7 +621,8 @@ impl TuiState {
             slash_selection_moved: false,
             profile,
             security: "NOT VERIFIED",
-            input: String::new(),
+            security_evidence: None,
+            input: ComposerBuffer::default(),
             entries: vec![Entry {
                 id: 1,
                 kind: EntryKind::System,
@@ -609,7 +636,7 @@ impl TuiState {
             }],
             running: false,
             status: "Ready".into(),
-            status_tone: StatusTone::Neutral,
+            status_tone: StatusTone::Success,
             scroll: 0,
             follow_output: true,
             focus: Focus::Composer,
@@ -650,12 +677,170 @@ impl TuiState {
         self.status_tone = StatusTone::Waiting;
     }
 
+    fn reset_security(&mut self) {
+        self.security = "NOT VERIFIED";
+        self.security_evidence = None;
+    }
+
+    fn open_security(&mut self) {
+        self.overlay = Some(Overlay::Security(SecurityView::Summary));
+        self.overlay_scroll = 0;
+    }
+
+    fn cycle_security_view(&mut self) {
+        if let Some(Overlay::Security(view)) = &mut self.overlay {
+            *view = view.next();
+            self.overlay_scroll = 0;
+        }
+    }
+
+    fn open_attestation_save_picker(&mut self) {
+        let Some(evidence) = self.security_evidence.as_ref() else {
+            self.status = "No attestation result is available to save".into();
+            self.status_tone = StatusTone::Error;
+            return;
+        };
+        self.overlay = Some(Overlay::SaveAttestation(SaveAttestationPicker {
+            directory: self.cwd.clone(),
+            filename: attestation_export_filename(evidence),
+            selected: 0,
+            focus: SavePickerFocus::Filename,
+            error: None,
+        }));
+        self.overlay_scroll = 0;
+    }
+
+    fn close_attestation_save_picker(&mut self) {
+        self.overlay = Some(Overlay::Security(SecurityView::Raw));
+        self.overlay_scroll = 0;
+    }
+
+    fn toggle_attestation_save_focus(&mut self) {
+        let Some(Overlay::SaveAttestation(picker)) = &mut self.overlay else {
+            return;
+        };
+        picker.focus = match picker.focus {
+            SavePickerFocus::Directories => SavePickerFocus::Filename,
+            SavePickerFocus::Filename => SavePickerFocus::Directories,
+        };
+        picker.error = None;
+    }
+
+    fn move_attestation_directory_selection(&mut self, amount: isize) {
+        let Some(Overlay::SaveAttestation(picker)) = &mut self.overlay else {
+            return;
+        };
+        if picker.focus != SavePickerFocus::Directories {
+            return;
+        }
+        let count = attestation_picker_directories(&picker.directory).len();
+        if count == 0 {
+            picker.selected = 0;
+            return;
+        }
+        picker.selected = if amount.is_negative() {
+            picker.selected.saturating_sub(amount.unsigned_abs())
+        } else {
+            picker
+                .selected
+                .saturating_add(amount.unsigned_abs())
+                .min(count - 1)
+        };
+    }
+
+    fn open_selected_attestation_directory(&mut self) {
+        let Some(Overlay::SaveAttestation(picker)) = &mut self.overlay else {
+            return;
+        };
+        let directories = attestation_picker_directories(&picker.directory);
+        let Some((_, next_directory)) = directories.get(picker.selected) else {
+            return;
+        };
+        picker.directory.clone_from(next_directory);
+        picker.selected = 0;
+        picker.error = None;
+    }
+
+    fn open_parent_attestation_directory(&mut self) {
+        let Some(Overlay::SaveAttestation(picker)) = &mut self.overlay else {
+            return;
+        };
+        let Some(parent) = picker.directory.parent() else {
+            return;
+        };
+        picker.directory = parent.to_path_buf();
+        picker.selected = 0;
+        picker.error = None;
+    }
+
+    fn push_attestation_filename(&mut self, text: &str) {
+        let Some(Overlay::SaveAttestation(picker)) = &mut self.overlay else {
+            return;
+        };
+        if picker.focus != SavePickerFocus::Filename {
+            return;
+        }
+        let remaining = 255_usize.saturating_sub(picker.filename.len());
+        picker
+            .filename
+            .push_str(&text.chars().take(remaining).collect::<String>());
+        picker.error = None;
+    }
+
+    fn pop_attestation_filename(&mut self) {
+        let Some(Overlay::SaveAttestation(picker)) = &mut self.overlay else {
+            return;
+        };
+        if picker.focus == SavePickerFocus::Filename {
+            picker.filename.pop();
+            picker.error = None;
+        }
+    }
+
+    fn clear_attestation_filename(&mut self) {
+        let Some(Overlay::SaveAttestation(picker)) = &mut self.overlay else {
+            return;
+        };
+        if picker.focus == SavePickerFocus::Filename {
+            picker.filename.clear();
+            picker.error = None;
+        }
+    }
+
+    fn save_attestation_export(&mut self) {
+        let Some(evidence) = self.security_evidence.as_ref() else {
+            self.close_attestation_save_picker();
+            self.status = "No attestation result is available to save".into();
+            self.status_tone = StatusTone::Error;
+            return;
+        };
+        let Some(Overlay::SaveAttestation(picker)) = &self.overlay else {
+            return;
+        };
+        let directory = picker.directory.clone();
+        let filename = picker.filename.clone();
+        match write_attestation_export(&directory, &filename, evidence) {
+            Ok(destination) => {
+                self.close_attestation_save_picker();
+                self.status = format!("Saved attestation to {}", destination.display());
+                self.status_tone = StatusTone::Success;
+            }
+            Err(error) => {
+                if let Some(Overlay::SaveAttestation(picker)) = &mut self.overlay {
+                    picker.error = Some(sanitize_terminal_text(&error.to_string()));
+                }
+                self.status = "Attestation was not saved".into();
+                self.status_tone = StatusTone::Error;
+            }
+        }
+    }
+
     fn auth_menu_move(&mut self, amount: isize) {
         let Some(Overlay::Auth(AuthOverlay::Menu { selected, .. })) = &mut self.overlay else {
             return;
         };
         *selected = usize::try_from(
-            (isize::try_from(*selected).unwrap_or_default() + amount).rem_euclid(4),
+            (isize::try_from(*selected).unwrap_or_default() + amount).rem_euclid(2),
         )
         .unwrap_or_default();
     }
@@ -812,6 +997,9 @@ impl TuiState {
         }
     }
 
+    // Retained for a future token-usage surface; collection remains live even
+    // though the current TUI intentionally does not render the counter.
+    #[allow(dead_code)]
     fn displayed_tokens(&self) -> u64 {
         self.input_tokens
             .saturating_add(self.output_tokens)
@@ -1020,24 +1208,19 @@ impl TuiState {
             AppEvent::ProviderStatusChanged { connected, detail } => {
                 if *connected {
                     self.begin_provider_request();
+                } else {
+                    self.status =
+                        format!("Provider unavailable: {}", sanitize_terminal_text(detail));
+                    self.status_tone = StatusTone::Error;
                 }
-                self.status = if *connected {
-                    sanitize_terminal_text(detail)
-                } else {
-                    format!("Provider unavailable: {}", sanitize_terminal_text(detail))
-                };
-                self.status_tone = if *connected {
-                    StatusTone::Active
-                } else {
-                    StatusTone::Error
-                };
             }
             AppEvent::PermissionProfileChanged { profile } => {
                 self.profile = *profile;
-                self.status = format!("Permission profile changed to {profile}");
+                self.status = format!("Tools permission changed to {}", profile.label());
             }
             AppEvent::ModelChanged { model } => {
                 self.model.clone_from(model);
+                self.security_evidence = None;
                 self.status = format!("Model changed to {model}");
             }
             AppEvent::ThinkingLevelChanged { level } => {
@@ -1093,6 +1276,7 @@ impl TuiState {
                 call_id,
                 diff,
                 truncated,
+                ..
             } => {
                 let diff = sanitize_terminal_text(diff);
                 if let Some(task) = self.task_for_call_mut(call_id) {
@@ -1230,9 +1414,14 @@ impl TuiState {
                 self.security = match state {
                     crate::app::SecurityStatus::Unverified => "NOT VERIFIED",
                     crate::app::SecurityStatus::Verifying => "VERIFYING",
-                    crate::app::SecurityStatus::UnattestedDevelopment => "UNATTESTED DEV",
+                    crate::app::SecurityStatus::UnattestedDevelopment
+                        if crate::provider::unattested_development_enabled() =>
+                    {
+                        "UNATTESTED DEV"
+                    }
                     crate::app::SecurityStatus::Verified => "SECURE",
-                    crate::app::SecurityStatus::Failed => "SECURITY FAILED",
+                    crate::app::SecurityStatus::UnattestedDevelopment
+                    | crate::app::SecurityStatus::Failed => "SECURITY FAILED",
                 };
             }
             AppEvent::TurnCompleted { turn_id } => {
@@ -1261,10 +1450,14 @@ impl TuiState {
             }
             AppEvent::ErrorRaised { turn_id, message } => {
                 self.running = false;
-                self.status = "Error".into();
                 self.status_tone = StatusTone::Error;
                 self.clear_foreground_attention();
                 let detail = sanitize_terminal_text(message);
+                self.status = if is_attestation_failure(&detail) {
+                    "Attestation failed".into()
+                } else {
+                    "Error".into()
+                };
                 let message = user_facing_provider_error(&detail);
                 let handled = turn_id
                     .as_ref()
@@ -1283,7 +1476,7 @@ impl TuiState {
         if self.follow_output {
             // `follow_output` is the viewport anchor. Keep `scroll` as a real
             // top-relative offset instead of overloading `u16::MAX` as a
-            // sentinel; wheel-up can then leave follow mode in one step.
+            // sentinel; one upward navigation step can then leave follow mode.
             self.scroll = 0;
         }
     }
@@ -1840,6 +2033,7 @@ impl TuiState {
     fn should_animate(&self) -> bool {
         self.options.animation
             && (self.running
+                || self.security == "VERIFYING"
                 || self.transition_ticks > 0
                 || self.has_background_activity()
                 || matches!(
@@ -1947,7 +2141,7 @@ impl TuiState {
     fn begin_slash_input(&mut self) {
         self.focus = Focus::Composer;
         self.reset_slash_completion();
-        self.input.push('/');
+        self.input.insert_char('/');
     }
 
     fn invalid_slash_has_completion(&self) -> bool {
@@ -1961,7 +2155,7 @@ impl TuiState {
             && cycle
                 .candidates
                 .get(cycle.index)
-                .is_some_and(|candidate| candidate.input == self.input)
+                .is_some_and(|candidate| candidate.input == self.input.as_str())
         {
             return cycle.candidates.clone();
         }
@@ -1972,6 +2166,7 @@ impl TuiState {
         self.focus == Focus::Composer
             && !self.running
             && self.input.starts_with('/')
+            && self.input.is_cursor_at_end()
             && !self.slash_candidates().is_empty()
     }
 
@@ -2000,7 +2195,7 @@ impl TuiState {
         let candidates = self.slash_candidates();
         let selected = candidates.get(self.slash_selection.min(candidates.len().saturating_sub(1)));
         selected.is_some_and(|candidate| {
-            candidate.input != self.input
+            candidate.input != self.input.as_str()
                 && (self.slash_selection_moved || self.invalid_slash_has_completion())
         })
     }
@@ -2014,6 +2209,57 @@ impl TuiState {
         self.focus = Focus::Composer;
         self.status = "Draft cleared".into();
         true
+    }
+
+    fn open_permissions(&mut self) {
+        let selected = PermissionProfile::ALL
+            .iter()
+            .position(|profile| *profile == self.profile)
+            .unwrap_or(0);
+        self.overlay = Some(Overlay::Permissions {
+            tab: PermissionTab::Tools,
+            selected,
+        });
+        self.status = "Choose tool permissions".into();
+        self.status_tone = StatusTone::Neutral;
+    }
+
+    fn switch_permission_tab(&mut self) {
+        if let Some(Overlay::Permissions { tab, .. }) = &mut self.overlay {
+            *tab = tab.other();
+            self.status = match tab {
+                PermissionTab::Tools => "Choose tool permissions".into(),
+                PermissionTab::Crypto => "Crypto permissions are coming soon".into(),
+            };
+        }
+    }
+
+    fn move_permission_selection(&mut self, amount: isize) {
+        let Some(Overlay::Permissions {
+            tab: PermissionTab::Tools,
+            selected,
+        }) = &mut self.overlay
+        else {
+            return;
+        };
+        if amount.is_negative() {
+            *selected = selected.saturating_sub(amount.unsigned_abs());
+        } else {
+            *selected = selected
+                .saturating_add(amount.unsigned_abs())
+                .min(PermissionProfile::ALL.len() - 1);
+        }
+    }
+
+    fn selected_permission_profile(&self) -> Option<PermissionProfile> {
+        let Overlay::Permissions {
+            tab: PermissionTab::Tools,
+            selected,
+        } = self.overlay.as_ref()?
+        else {
+            return None;
+        };
+        PermissionProfile::ALL.get(*selected).copied()
     }
 
     fn open_model_picker(&mut self) {
@@ -2345,10 +2591,11 @@ impl TuiState {
             && cycle
                 .candidates
                 .get(cycle.index)
-                .is_some_and(|candidate| candidate.input == self.input)
+                .is_some_and(|candidate| candidate.input == self.input.as_str())
         {
             cycle.index = (cycle.index + 1) % cycle.candidates.len();
-            self.input.clone_from(&cycle.candidates[cycle.index].input);
+            self.input
+                .set_text(cycle.candidates[cycle.index].input.clone());
             self.slash_selection = cycle.index;
             self.status = format!(
                 "Completion {}/{} · Tab next · Enter run",
@@ -2365,7 +2612,7 @@ impl TuiState {
             return;
         }
         let index = self.slash_selection.min(candidates.len() - 1);
-        self.input.clone_from(&candidates[index].input);
+        self.input.set_text(candidates[index].input.clone());
         self.slash_selection = index;
         self.slash_selection_moved = false;
         self.status = format!(
@@ -2384,7 +2631,7 @@ impl TuiState {
             return;
         }
         let index = self.slash_selection.min(candidates.len() - 1);
-        self.input.clone_from(&candidates[index].input);
+        self.input.set_text(candidates[index].input.clone());
         self.slash_selection = index;
         self.slash_selection_moved = false;
         self.status = format!(
@@ -2438,21 +2685,26 @@ fn show_slash_error(state: &mut TuiState, message: &str) {
     let message = sanitize_terminal_text(message);
     state.status = format!("Command error: {message}");
     state.status_tone = StatusTone::Error;
-    state.push_entry(EntryKind::Error, format!("COMMAND ERROR\n{message}"), false);
 }
 
 fn account_status_text(account: &AccountStatus) -> String {
-    format!(
-        "Credential: {}\nKey ID: {}\nStored in: {}",
-        sanitize_terminal_text(&account.key_name),
-        sanitize_terminal_text(&account.key_id),
-        account.source.label(),
-    )
+    match account.source {
+        crate::auth::CredentialSource::Environment => {
+            "Using the Axiom API key from AXIOM_API_KEY.".into()
+        }
+        crate::auth::CredentialSource::SystemKeyring => {
+            "Your Axiom API key is saved securely in the system keyring.".into()
+        }
+        crate::auth::CredentialSource::ProtectedFile => {
+            "Your Axiom API key is saved in a protected local file.".into()
+        }
+    }
 }
 
 enum UiMessage {
     Event(AppEvent),
     Done(TurnId, Result<()>),
+    SecurityPreflightDone(u64, Result<SecurityVerification>),
     CompactionDone(Result<CompactionResult>),
     ModelsLoaded(Result<Vec<String>>),
     TitleGenerated(SessionId, Result<String>),
@@ -2471,6 +2723,40 @@ enum ValidationPurpose {
     Startup,
     Login,
     Account,
+}
+
+fn start_security_preflight(
+    state: &mut TuiState,
+    runner: &Arc<dyn TurnRunner>,
+    ui_tx: &mpsc::Sender<UiMessage>,
+    cancellation: &mut Option<CancellationToken>,
+    generation: &mut u64,
+) {
+    if let Some(previous) = cancellation.take() {
+        previous.cancel();
+    }
+    let token = CancellationToken::new();
+    *cancellation = Some(token.clone());
+    *generation = generation.wrapping_add(1);
+    let request_generation = *generation;
+    state.apply(&AppEvent::SecurityStatusChanged {
+        state: crate::app::SecurityStatus::Verifying,
+    });
+    state.security_evidence = None;
+    let task_runner = Arc::clone(runner);
+    let model = state.model.clone();
+    let result_tx = ui_tx.clone();
+    tokio::spawn(async move {
+        let result = task_runner.verify_security(&model, token.clone()).await;
+        let result = if token.is_cancelled() {
+            Err(AxiomError::Cancelled)
+        } else {
+            result
+        };
+        let _ = result_tx
+            .send(UiMessage::SecurityPreflightDone(request_generation, result))
+            .await;
+    });
 }
 
 #[derive(Clone)]
@@ -2639,7 +2925,6 @@ impl TerminalGuard {
             io::stdout(),
             SetAxiomTerminalBackground(background),
             EnterAlternateScreen,
-            EnableAxiomMouseCapture,
             EnableBracketedPaste
         )?;
         Ok(Self {
@@ -2654,7 +2939,6 @@ impl Drop for TerminalGuard {
         let _ = execute!(
             io::stdout(),
             DisableBracketedPaste,
-            DisableAxiomMouseCapture,
             LeaveAlternateScreen,
             ResetAxiomTerminalBackground(self.reset_background)
         );
@@ -2689,6 +2973,9 @@ async fn restore_tui_session(
     state.model = resumed_model;
     state.thinking = resumed_thinking;
     state.profile = resumed_profile;
+    // Security is live process state, not resumable conversation state. A
+    // historical receipt must never become the current header claim.
+    state.reset_security();
     state.running = false;
     state.clear_foreground_attention();
     state.status = "Resumed · no interrupted actions replayed".into();
@@ -2844,7 +3131,7 @@ pub async fn run(
             state.apply(&event.event);
         }
         state.status = "Ready".into();
-        state.status_tone = StatusTone::Neutral;
+        state.status_tone = StatusTone::Success;
         session_id
     };
 
@@ -2852,6 +3139,8 @@ pub async fn run(
     let (ui_tx, mut ui_rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
     let mut cancellation: Option<CancellationToken> = None;
     let mut auth_cancellation: Option<CancellationToken> = None;
+    let mut security_cancellation: Option<CancellationToken> = None;
+    let mut security_generation = 0_u64;
     let mut startup_auth_pending = false;
     let mut active_turn: Option<TurnId> = None;
     let mut pending_approval: Option<(ApprovalRequest, oneshot::Sender<ApprovalResponse>)> = None;
@@ -2865,7 +3154,7 @@ pub async fn run(
         }
     } else if auth.has_credential() {
         startup_auth_pending = true;
-        state.status = "Checking Axiom authorization…".into();
+        state.status = "Checking Axiom account…".into();
         let validation_auth = auth.clone();
         let validation_tx = ui_tx.clone();
         tokio::spawn(async move {
@@ -2875,9 +3164,7 @@ pub async fn run(
                 .await;
         });
     } else {
-        state.open_login(Some(
-            "Connect an Axiom account before starting a task.".into(),
-        ));
+        state.open_login(None);
     }
 
     assert!(
@@ -2905,6 +3192,9 @@ pub async fn run(
                         {
                             if state.exit_armed {
                                 if let Some(token) = &cancellation {
+                                    token.cancel();
+                                }
+                                if let Some(token) = security_cancellation.take() {
                                     token.cancel();
                                 }
                                 if let Some(turn_id) = active_turn.take() {
@@ -3053,16 +3343,9 @@ pub async fn run(
                                                     kind: AuthPasteKind::ApiKey,
                                                     input: SecretInput(String::new()),
                                                 }));
-                                                state.status = "Paste an Axiom authorization key".into();
+                                                state.status = "Paste your Axiom API key".into();
                                             }
-                                            2 => {
-                                                state.overlay = Some(Overlay::Auth(AuthOverlay::Paste {
-                                                    kind: AuthPasteKind::CompletionCode,
-                                                    input: SecretInput(String::new()),
-                                                }));
-                                                state.status = "Paste the one-time browser code".into();
-                                            }
-                                            _ => state.overlay = None,
+                                            _ => unreachable!("the sign-in menu has two options"),
                                         }
                                     }
                                     _ => {}
@@ -3118,8 +3401,9 @@ pub async fn run(
                                         } else if kind == AuthPasteKind::ApiKey {
                                             match auth.save_pasted_key(&value) {
                                                 Ok(()) => {
+                                                    state.reset_security();
                                                     state.overlay = Some(Overlay::Auth(AuthOverlay::Checking {
-                                                        label: "Checking authorization key…",
+                                                        label: "Checking Axiom API key…",
                                                     }));
                                                     let validation_auth = auth.clone();
                                                     let validation_tx = ui_tx.clone();
@@ -3157,11 +3441,56 @@ pub async fn run(
                                     }
                                     _ => {}
                                 },
-                                Some(Overlay::Auth(
-                                    AuthOverlay::Checking { .. } | AuthOverlay::Account { .. },
-                                )) => {
+                                Some(Overlay::Auth(AuthOverlay::Account { .. })) => {
                                     if matches!(key.code, KeyCode::Esc | KeyCode::Enter) {
                                         state.overlay = None;
+                                    }
+                                }
+                                _ => {}
+                            }
+                        } else if matches!(state.overlay, Some(Overlay::Permissions { .. })) {
+                            state.exit_armed = false;
+                            match key.code {
+                                KeyCode::Esc => {
+                                    state.overlay = None;
+                                    state.status = "Permission selection cancelled".into();
+                                }
+                                KeyCode::Tab | KeyCode::Left | KeyCode::Right => {
+                                    state.switch_permission_tab();
+                                }
+                                KeyCode::Up => state.move_permission_selection(-1),
+                                KeyCode::Down => state.move_permission_selection(1),
+                                KeyCode::PageUp => state.move_permission_selection(-4),
+                                KeyCode::PageDown => state.move_permission_selection(4),
+                                KeyCode::Enter => {
+                                    if let Some(next_profile) =
+                                        state.selected_permission_profile()
+                                    {
+                                        state.overlay = None;
+                                        match runtime
+                                            .dispatch(AppCommand::ChangePermissionProfile {
+                                                session_id: session_id.clone(),
+                                                profile: next_profile,
+                                            })
+                                            .await
+                                        {
+                                            Ok(events) => {
+                                                if let Some(store) = &store {
+                                                    store.append_all(&events)?;
+                                                }
+                                                for event in events {
+                                                    state.apply(&event.event);
+                                                }
+                                            }
+                                            Err(error) => show_slash_error(
+                                                &mut state,
+                                                &error.to_string(),
+                                            ),
+                                        }
+                                    } else {
+                                        state.status =
+                                            "Crypto permissions are coming soon".into();
+                                        state.status_tone = StatusTone::Neutral;
                                     }
                                 }
                                 _ => {}
@@ -3202,6 +3531,15 @@ pub async fn run(
                                                     }
                                                     for event in events {
                                                         state.apply(&event.event);
+                                                    }
+                                                    if auth.has_credential() {
+                                                        start_security_preflight(
+                                                            &mut state,
+                                                            &runner,
+                                                            &ui_tx,
+                                                            &mut security_cancellation,
+                                                            &mut security_generation,
+                                                        );
                                                     }
                                                 }
                                                 Err(error) => show_slash_error(
@@ -3281,6 +3619,15 @@ pub async fn run(
                                             active_turn = None;
                                             pending_approval = None;
                                             pending_questions = None;
+                                            if auth.has_credential() {
+                                                start_security_preflight(
+                                                    &mut state,
+                                                    &runner,
+                                                    &ui_tx,
+                                                    &mut security_cancellation,
+                                                    &mut security_generation,
+                                                );
+                                            }
                                         }
                                         Err(error) => {
                                             show_slash_error(&mut state, &error.to_string());
@@ -3367,6 +3714,102 @@ pub async fn run(
                                     _ => {}
                                 }
                             }
+                        } else if matches!(state.overlay, Some(Overlay::SaveAttestation(_))) {
+                            state.exit_armed = false;
+                            let focus = match &state.overlay {
+                                Some(Overlay::SaveAttestation(picker)) => picker.focus,
+                                _ => unreachable!("attestation save picker is active"),
+                            };
+                            match key.code {
+                                KeyCode::Esc => state.close_attestation_save_picker(),
+                                KeyCode::Tab => state.toggle_attestation_save_focus(),
+                                KeyCode::Up => state.move_attestation_directory_selection(-1),
+                                KeyCode::Down => state.move_attestation_directory_selection(1),
+                                KeyCode::PageUp => {
+                                    state.move_attestation_directory_selection(-8);
+                                }
+                                KeyCode::PageDown => {
+                                    state.move_attestation_directory_selection(8);
+                                }
+                                KeyCode::Left | KeyCode::Backspace
+                                    if focus == SavePickerFocus::Directories =>
+                                {
+                                    state.open_parent_attestation_directory();
+                                }
+                                KeyCode::Enter if focus == SavePickerFocus::Directories => {
+                                    state.open_selected_attestation_directory();
+                                }
+                                KeyCode::Enter => state.save_attestation_export(),
+                                KeyCode::Char('s' | 'S')
+                                    if focus == SavePickerFocus::Directories =>
+                                {
+                                    state.save_attestation_export();
+                                }
+                                KeyCode::Char('u')
+                                    if focus == SavePickerFocus::Filename
+                                        && key.modifiers.contains(KeyModifiers::CONTROL) =>
+                                {
+                                    state.clear_attestation_filename();
+                                }
+                                KeyCode::Backspace => state.pop_attestation_filename(),
+                                KeyCode::Char(character)
+                                    if focus == SavePickerFocus::Filename
+                                        && (key.modifiers.is_empty()
+                                            || key.modifiers == KeyModifiers::SHIFT) =>
+                                {
+                                    state.push_attestation_filename(&character.to_string());
+                                }
+                                _ => {}
+                            }
+                        } else if matches!(state.overlay, Some(Overlay::Security(_))) {
+                            state.exit_armed = false;
+                            match key.code {
+                                KeyCode::Esc | KeyCode::Char('q' | 'Q') => {
+                                    state.overlay = None;
+                                    state.overlay_scroll = 0;
+                                }
+                                KeyCode::Char('v' | 'V') | KeyCode::Enter
+                                | KeyCode::Left | KeyCode::Right => {
+                                    state.cycle_security_view();
+                                }
+                                KeyCode::Char('r' | 'R') => {
+                                    if auth.has_credential() {
+                                        start_security_preflight(
+                                            &mut state,
+                                            &runner,
+                                            &ui_tx,
+                                            &mut security_cancellation,
+                                            &mut security_generation,
+                                        );
+                                    } else {
+                                        state.open_login(Some(
+                                            "Sign in before verifying model attestation.".into(),
+                                        ));
+                                    }
+                                }
+                                KeyCode::Char('s' | 'S')
+                                    if matches!(
+                                        state.overlay,
+                                        Some(Overlay::Security(SecurityView::Raw))
+                                    ) =>
+                                {
+                                    state.open_attestation_save_picker();
+                                }
+                                KeyCode::Up => {
+                                    state.overlay_scroll = state.overlay_scroll.saturating_sub(1);
+                                }
+                                KeyCode::Down => {
+                                    state.overlay_scroll = state.overlay_scroll.saturating_add(1);
+                                }
+                                KeyCode::PageUp => {
+                                    state.overlay_scroll = state.overlay_scroll.saturating_sub(10);
+                                }
+                                KeyCode::PageDown => {
+                                    state.overlay_scroll = state.overlay_scroll.saturating_add(10);
+                                }
+                                KeyCode::Home => state.overlay_scroll = 0,
+                                _ => {}
+                            }
                         } else if state.overlay.is_some() {
                             state.exit_armed = false;
                             match key.code {
@@ -3432,7 +3875,8 @@ pub async fn run(
                                 }
                                 KeyCode::Tab
                                     if state.focus == Focus::Composer
-                                        && state.input.starts_with('/') =>
+                                        && state.input.starts_with('/')
+                                        && state.input.is_cursor_at_end() =>
                                 {
                                     state.complete_slash();
                                 }
@@ -3442,6 +3886,36 @@ pub async fn run(
                                         state.selected = state.entries.len().checked_sub(1);
                                     }
                                 }
+                                KeyCode::Enter
+                                    if state.focus == Focus::Composer
+                                        && key.modifiers.intersects(
+                                            KeyModifiers::SHIFT | KeyModifiers::ALT,
+                                        ) =>
+                                {
+                                    state.reset_slash_completion();
+                                    state.input.insert_char('\n');
+                                }
+                                KeyCode::Char('j')
+                                    if state.focus == Focus::Composer
+                                        && key.modifiers == KeyModifiers::CONTROL =>
+                                {
+                                    state.reset_slash_completion();
+                                    state.input.insert_char('\n');
+                                }
+                                KeyCode::Char('a')
+                                    if state.focus == Focus::Composer
+                                        && key.modifiers == KeyModifiers::CONTROL =>
+                                {
+                                    state.reset_slash_completion();
+                                    state.input.move_to_line_start();
+                                }
+                                KeyCode::Char('e')
+                                    if state.focus == Focus::Composer
+                                        && key.modifiers == KeyModifiers::CONTROL =>
+                                {
+                                    state.reset_slash_completion();
+                                    state.input.move_to_line_end();
+                                }
                                 KeyCode::Enter if state.focus == Focus::Transcript => state.toggle_selected(),
                                 KeyCode::Enter
                                     if !state.running && state.should_accept_slash_selection() =>
@@ -3449,7 +3923,7 @@ pub async fn run(
                                     state.accept_slash_selection();
                                 }
                                 KeyCode::Enter if !state.running && !state.input.trim().is_empty() => {
-                                    let prompt = std::mem::take(&mut state.input);
+                                    let prompt = state.input.take_text();
                                     state.reset_slash_completion();
                                     if let Some(command) = slash::parse(&prompt) {
                                         match command {
@@ -3462,21 +3936,8 @@ pub async fn run(
                                                 );
                                                 state.status = "Slash commands".into();
                                             }
-                                            Ok(SlashCommand::Permission(next_profile)) => {
-                                                match runtime.dispatch(AppCommand::ChangePermissionProfile {
-                                                    session_id: session_id.clone(),
-                                                    profile: next_profile,
-                                                }).await {
-                                                    Ok(events) => {
-                                                        if let Some(store) = &store {
-                                                            store.append_all(&events)?;
-                                                        }
-                                                        for event in events {
-                                                            state.apply(&event.event);
-                                                        }
-                                                    }
-                                                    Err(error) => show_slash_error(&mut state, &error.to_string()),
-                                                }
+                                            Ok(SlashCommand::Permissions) => {
+                                                state.open_permissions();
                                             }
                                             Ok(SlashCommand::Model) => {
                                                 state.open_model_picker();
@@ -3578,14 +4039,20 @@ pub async fn run(
                                                 if let Some(token) = auth_cancellation.take() {
                                                     token.cancel();
                                                 }
+                                                if let Some(token) = security_cancellation.take() {
+                                                    token.cancel();
+                                                }
+                                                security_generation =
+                                                    security_generation.wrapping_add(1);
                                                 match auth.logout() {
                                                     Ok(()) => {
                                                         state.overlay = None;
+                                                        state.reset_security();
                                                         state.status = "Signed out of Axiom".into();
                                                         state.status_tone = StatusTone::Neutral;
                                                         state.push_entry(
                                                             EntryKind::System,
-                                                            "AXIOM ACCOUNT\nSigned out. Saved authorization was removed from this computer."
+                                                            "AXIOM ACCOUNT\nSigned out. The saved Axiom API key was removed from this computer."
                                                                 .into(),
                                                             false,
                                                         );
@@ -3613,6 +4080,40 @@ pub async fn run(
                                                         ))
                                                         .await;
                                                 });
+                                            }
+                                            Ok(SlashCommand::Security) => {
+                                                state.open_security();
+                                                if state.security_evidence.is_none()
+                                                    && security_cancellation.is_none()
+                                                    && auth.has_credential()
+                                                {
+                                                    start_security_preflight(
+                                                        &mut state,
+                                                        &runner,
+                                                        &ui_tx,
+                                                        &mut security_cancellation,
+                                                        &mut security_generation,
+                                                    );
+                                                }
+                                            }
+                                            Ok(SlashCommand::Refresh) => {
+                                                if auth.has_credential() {
+                                                    start_security_preflight(
+                                                        &mut state,
+                                                        &runner,
+                                                        &ui_tx,
+                                                        &mut security_cancellation,
+                                                        &mut security_generation,
+                                                    );
+                                                    state.status =
+                                                        "Refreshing attestation…".into();
+                                                    state.status_tone = StatusTone::Active;
+                                                } else {
+                                                    state.open_login(Some(
+                                                        "Sign in before refreshing attestation."
+                                                            .into(),
+                                                    ));
+                                                }
                                             }
                                             Ok(SlashCommand::Compact { focus }) => {
                                                 state.running = true;
@@ -3653,13 +4154,19 @@ pub async fn run(
                                         continue;
                                     }
                                     if startup_auth_pending {
-                                        state.input = prompt;
+                                        state.input.set_text(prompt);
                                         state.status = "Checking Axiom authorization…".into();
                                         state.status_tone = StatusTone::Waiting;
                                         continue;
                                     }
+                                    if security_cancellation.is_some() {
+                                        state.input.set_text(prompt);
+                                        state.status = "Please wait…".into();
+                                        state.status_tone = StatusTone::Waiting;
+                                        continue;
+                                    }
                                     if !auth.has_credential() && !uses_deterministic_test_runner() {
-                                        state.input = prompt;
+                                        state.input.set_text(prompt);
                                         state.open_login(Some(
                                             "Sign in before starting this task. Your draft is still here."
                                                 .into(),
@@ -3730,17 +4237,61 @@ pub async fn run(
                                 }
                                 KeyCode::Char(character) if state.focus == Focus::Composer && (!state.running || key.modifiers.is_empty()) => {
                                     state.reset_slash_completion();
-                                    state.input.push(character);
+                                    state.input.insert_char(character);
                                 }
                                 KeyCode::Backspace if state.focus == Focus::Composer => {
                                     state.reset_slash_completion();
-                                    state.input.pop();
+                                    state.input.backspace();
+                                }
+                                KeyCode::Delete if state.focus == Focus::Composer => {
+                                    state.reset_slash_completion();
+                                    state.input.delete_forward();
+                                }
+                                KeyCode::Left if state.focus == Focus::Composer => {
+                                    state.reset_slash_completion();
+                                    state.input.move_left();
+                                }
+                                KeyCode::Right if state.focus == Focus::Composer => {
+                                    state.reset_slash_completion();
+                                    state.input.move_right();
+                                }
+                                KeyCode::Home
+                                    if state.focus == Focus::Composer
+                                        && key.modifiers == KeyModifiers::CONTROL =>
+                                {
+                                    state.reset_slash_completion();
+                                    state.input.move_to_document_start();
+                                }
+                                KeyCode::End
+                                    if state.focus == Focus::Composer
+                                        && key.modifiers == KeyModifiers::CONTROL =>
+                                {
+                                    state.reset_slash_completion();
+                                    state.input.move_to_document_end();
+                                }
+                                KeyCode::Home if state.focus == Focus::Composer => {
+                                    state.reset_slash_completion();
+                                    state.input.move_to_line_start();
+                                }
+                                KeyCode::End if state.focus == Focus::Composer => {
+                                    state.reset_slash_completion();
+                                    state.input.move_to_line_end();
                                 }
                                 KeyCode::Up if state.can_navigate_slash() => {
                                     state.move_slash_selection(-1);
                                 }
                                 KeyCode::Down if state.can_navigate_slash() => {
                                     state.move_slash_selection(1);
+                                }
+                                KeyCode::Up if state.focus == Focus::Composer => {
+                                    let (width, _) = crossterm::terminal::size()?;
+                                    state.reset_slash_completion();
+                                    state.input.move_up(composer_text_width(width));
+                                }
+                                KeyCode::Down if state.focus == Focus::Composer => {
+                                    let (width, _) = crossterm::terminal::size()?;
+                                    state.reset_slash_completion();
+                                    state.input.move_down(composer_text_width(width));
                                 }
                                 KeyCode::Up => {
                                     if state.focus == Focus::Transcript {
@@ -3775,79 +4326,28 @@ pub async fn run(
                         }
                     }
                     Event::Paste(text) => {
-                        let text = sanitize_terminal_text(&text).replace('\n', " ");
+                        let text = sanitize_terminal_text(&text);
                         if matches!(
                             state.overlay,
                             Some(Overlay::Auth(AuthOverlay::Paste { .. }))
                         ) {
-                            state.auth_secret_push(&text);
+                            state.auth_secret_push(&text.replace('\n', " "));
+                        } else if matches!(
+                            state.overlay,
+                            Some(Overlay::SaveAttestation(SaveAttestationPicker {
+                                focus: SavePickerFocus::Filename,
+                                ..
+                            }))
+                        ) {
+                            state.push_attestation_filename(&text.replace(['\n', '\r'], ""));
                         } else if pending_questions.is_some() {
-                            state.answer_input.push_str(&text);
+                            state.answer_input.push_str(&text.replace('\n', " "));
                         } else if pending_approval.is_none()
                             && state.focus == Focus::Composer
                             && !state.running
                         {
                             state.reset_slash_completion();
-                            state.input.push_str(&text);
-                        }
-                    }
-                    Event::Mouse(mouse) => {
-                        state.exit_armed = false;
-                        if matches!(state.overlay, Some(Overlay::ModelPicker { .. })) {
-                            match mouse.kind {
-                                MouseEventKind::ScrollUp => state.move_model_picker(-1),
-                                MouseEventKind::ScrollDown => state.move_model_picker(1),
-                                _ => {}
-                            }
-                        } else if matches!(state.overlay, Some(Overlay::ResumePicker { .. })) {
-                            match mouse.kind {
-                                MouseEventKind::ScrollUp => state.move_resume_picker(-1),
-                                MouseEventKind::ScrollDown => state.move_resume_picker(1),
-                                _ => {}
-                            }
-                        } else if matches!(state.overlay, Some(Overlay::DeletePicker { .. })) {
-                            match mouse.kind {
-                                MouseEventKind::ScrollUp => state.move_delete_picker(-1),
-                                MouseEventKind::ScrollDown => state.move_delete_picker(1),
-                                _ => {}
-                            }
-                        } else {
-                            match mouse.kind {
-                                MouseEventKind::ScrollUp => {
-                                    let (width, height) = crossterm::terminal::size()?;
-                                    scroll_transcript_up(
-                                        &mut state,
-                                        Rect::new(0, 0, width, height),
-                                        3,
-                                    );
-                                }
-                                MouseEventKind::ScrollDown => {
-                                    let (width, height) = crossterm::terminal::size()?;
-                                    scroll_transcript_down(
-                                        &mut state,
-                                        Rect::new(0, 0, width, height),
-                                        3,
-                                    );
-                                }
-                                MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
-                                    let (width, height) = crossterm::terminal::size()?;
-                                    match focus_at(
-                                        Rect::new(0, 0, width, height),
-                                        mouse.column,
-                                        mouse.row,
-                                    ) {
-                                        Some(Focus::Composer) => state.focus = Focus::Composer,
-                                        Some(Focus::Transcript) => {
-                                            state.focus = Focus::Transcript;
-                                            if state.selected.is_none() {
-                                                state.selected = state.entries.len().checked_sub(1);
-                                            }
-                                        }
-                                        Some(Focus::None) | None => {}
-                                    }
-                                }
-                                _ => {}
-                            }
+                            state.input.insert_str(&text);
                         }
                     }
                     _ => {}
@@ -3857,12 +4357,70 @@ pub async fn run(
                 let Some(message) = message else { break };
                 match message {
                     UiMessage::Event(event) => {
-                        let envelope = runtime.emit(session_id.clone(), event.clone()).await?;
-                        if let Some(store) = &store {
-                            store.append(&envelope)?;
+                        if matches!(event, AppEvent::SecurityStatusChanged { .. }) {
+                            // Security is live process state, not resumable
+                            // conversation state.
+                            state.apply(&event);
+                        } else {
+                            let envelope = runtime.emit(session_id.clone(), event.clone()).await?;
+                            if let Some(store) = &store {
+                                store.append(&envelope)?;
+                            }
+                            state.apply(&event);
                         }
-                        state.apply(&event);
                     }
+                    UiMessage::SecurityPreflightDone(generation, result)
+                        if generation == security_generation =>
+                    {
+                        security_cancellation = None;
+                        match result {
+                            Ok(SecurityVerification {
+                                status:
+                                    security @ (crate::app::SecurityStatus::Verified
+                                    | crate::app::SecurityStatus::UnattestedDevelopment),
+                                evidence,
+                            }) => {
+                                let manually_refreshed =
+                                    state.status == "Refreshing attestation…";
+                                state.security_evidence = evidence;
+                                state.apply(&AppEvent::SecurityStatusChanged { state: security });
+                                if manually_refreshed {
+                                    state.status = "Attestation refreshed".into();
+                                    state.status_tone = StatusTone::Success;
+                                } else if state.status == "Please wait…"
+                                    || state.status.starts_with("Security verification")
+                                {
+                                    state.status = "Ready".into();
+                                    state.status_tone = StatusTone::Success;
+                                }
+                            }
+                            Ok(_) => {
+                                state.security_evidence = None;
+                                state.apply(&AppEvent::SecurityStatusChanged {
+                                    state: crate::app::SecurityStatus::Failed,
+                                });
+                                state.status =
+                                    "Security verification returned no final verdict".into();
+                                state.status_tone = StatusTone::Error;
+                            }
+                            Err(AxiomError::Cancelled) => {}
+                            Err(error) => {
+                                state.security_evidence = None;
+                                state.apply(&AppEvent::SecurityStatusChanged {
+                                    state: crate::app::SecurityStatus::Failed,
+                                });
+                                let detail = sanitize_terminal_text(&error.to_string());
+                                state.status = if is_attestation_failure(&detail) {
+                                    "Attestation failed · Run /refresh or /security for details"
+                                        .into()
+                                } else {
+                                    format!("Security verification failed: {detail}")
+                                };
+                                state.status_tone = StatusTone::Error;
+                            }
+                        }
+                    }
+                    UiMessage::SecurityPreflightDone(_, _) => {}
                     UiMessage::Done(turn_id, result) => {
                         if result.is_err()
                             && let Some(token) = &cancellation
@@ -4038,15 +4596,23 @@ pub async fn run(
                         match result {
                             Ok(account) => {
                                 let detail = account_status_text(&account);
+                                state.reset_security();
                                 state.overlay = Some(Overlay::Auth(AuthOverlay::Account {
                                     status: format!("Signed in successfully.\n\n{detail}"),
                                 }));
-                                state.status = "Signed in to Axiom".into();
+                                state.status = "Ready".into();
                                 state.status_tone = StatusTone::Success;
                                 state.push_entry(
                                     EntryKind::System,
-                                    format!("AXIOM ACCOUNT\nSigned in. {detail}"),
+                                    "AXIOM ACCOUNT\nSigned in to Axiom.".into(),
                                     false,
+                                );
+                                start_security_preflight(
+                                    &mut state,
+                                    &runner,
+                                    &ui_tx,
+                                    &mut security_cancellation,
+                                    &mut security_generation,
                                 );
                             }
                             Err(AxiomError::Cancelled) => {}
@@ -4061,43 +4627,70 @@ pub async fn run(
                             (_, ValidationStatus::Valid(account)) => {
                                 let detail = account_status_text(&account);
                                 if purpose == ValidationPurpose::Startup {
-                                    state.status = "Ready · Axiom account connected".into();
-                                    state.status_tone = StatusTone::Neutral;
+                                    state.status = "Ready".into();
+                                    state.status_tone = StatusTone::Success;
+                                    start_security_preflight(
+                                        &mut state,
+                                        &runner,
+                                        &ui_tx,
+                                        &mut security_cancellation,
+                                        &mut security_generation,
+                                    );
                                 } else {
+                                    if purpose == ValidationPurpose::Login {
+                                        state.reset_security();
+                                    }
                                     state.overlay = Some(Overlay::Auth(AuthOverlay::Account {
                                         status: if purpose == ValidationPurpose::Login {
-                                            format!("Authorization key accepted.\n\n{detail}")
+                                            format!("Axiom API key accepted.\n\n{detail}")
                                         } else {
-                                            detail
+                                            format!("Connected to Axiom.\n\n{detail}")
                                         },
                                     }));
-                                    state.status = "Axiom authorization is valid".into();
+                                    state.status = "Ready".into();
                                     state.status_tone = StatusTone::Success;
+                                    if purpose == ValidationPurpose::Login {
+                                        start_security_preflight(
+                                            &mut state,
+                                            &runner,
+                                            &ui_tx,
+                                            &mut security_cancellation,
+                                            &mut security_generation,
+                                        );
+                                    }
                                 }
                             }
                             (ValidationPurpose::Account, ValidationStatus::Missing) => {
+                                state.reset_security();
                                 state.overlay = Some(Overlay::Auth(AuthOverlay::Account {
                                     status: "Not signed in. Use /login to connect an Axiom account."
                                         .into(),
                                 }));
                                 state.status = "Not signed in".into();
                             }
-                            (_, ValidationStatus::Missing) => state.open_login(Some(
-                                "Connect an Axiom account before starting a task.".into(),
-                            )),
+                            (_, ValidationStatus::Missing) => {
+                                state.reset_security();
+                                state.open_login(Some(
+                                    "Connect an Axiom account before starting a task.".into(),
+                                ));
+                            }
                             (ValidationPurpose::Account, ValidationStatus::Invalid) => {
+                                state.reset_security();
                                 state.overlay = Some(Overlay::Auth(AuthOverlay::Account {
                                     status:
-                                        "The saved authorization is invalid or revoked. Use /login to reconnect."
+                                        "The saved Axiom API key is invalid or revoked. Use /login to reconnect."
                                             .into(),
                                 }));
-                                state.status = "Axiom authorization is invalid".into();
+                                state.status = "Axiom API key is invalid".into();
                                 state.status_tone = StatusTone::Error;
                             }
-                            (_, ValidationStatus::Invalid) => state.open_login(Some(
-                                "The saved authorization is invalid or revoked. Sign in again."
-                                    .into(),
-                            )),
+                            (_, ValidationStatus::Invalid) => {
+                                state.reset_security();
+                                state.open_login(Some(
+                                    "The saved Axiom API key is invalid or revoked. Sign in again."
+                                        .into(),
+                                ));
+                            }
                             (ValidationPurpose::Account, ValidationStatus::Unavailable(message)) => {
                                 state.overlay = Some(Overlay::Auth(AuthOverlay::Account {
                                     status: message,
@@ -4117,6 +4710,13 @@ pub async fn run(
                             (ValidationPurpose::Startup, ValidationStatus::Unavailable(message)) => {
                                 state.status = format!("Ready · login validation unavailable: {message}");
                                 state.status_tone = StatusTone::Waiting;
+                                start_security_preflight(
+                                    &mut state,
+                                    &runner,
+                                    &ui_tx,
+                                    &mut security_cancellation,
+                                    &mut security_generation,
+                                );
                             }
                         }
                     }
@@ -4125,6 +4725,9 @@ pub async fn run(
         }
     }
 
+    if let Some(token) = security_cancellation.take() {
+        token.cancel();
+    }
     let closed = runtime
         .dispatch(AppCommand::CloseSession {
             session_id: session_id.clone(),
@@ -4160,7 +4763,7 @@ pub fn render(frame: &mut Frame<'_>, state: &TuiState) {
         return;
     }
 
-    let rows = main_rows(area);
+    let rows = main_rows(area, state);
     render_header(frame, state, theme, rows[0]);
     render_transcript(frame, state, theme, rows[1]);
     render_status(frame, state, theme, rows[2]);
@@ -4278,14 +4881,38 @@ fn render_slash_suggestions(frame: &mut Frame<'_>, state: &TuiState, theme: Them
     );
 }
 
-fn main_rows(area: Rect) -> [Rect; 5] {
+fn composer_text_width(terminal_width: u16) -> u16 {
+    terminal_width
+        .saturating_sub(GUTTER.saturating_mul(2).saturating_add(5))
+        .max(1)
+}
+
+fn composer_content_height(area: Rect, state: &TuiState) -> u16 {
+    if state.interaction.is_some() || state.answer_prompt.is_some() {
+        return 1;
+    }
+    let proportional_cap = (area.height / 4).max(1);
+    let transcript_safe_cap = area.height.saturating_sub(9).max(1);
+    state
+        .input
+        .desired_height(composer_text_width(area.width))
+        .clamp(
+            1,
+            COMPOSER_MAX_CONTENT_ROWS
+                .min(proportional_cap)
+                .min(transcript_safe_cap),
+        )
+}
+
+fn main_rows(area: Rect, state: &TuiState) -> [Rect; 5] {
+    let composer_height = composer_content_height(area, state).saturating_add(2);
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(2),
             Constraint::Min(3),
             Constraint::Length(1),
-            Constraint::Length(3),
+            Constraint::Length(composer_height),
             Constraint::Length(1),
         ])
         .split(area);
@@ -4296,7 +4923,7 @@ fn transcript_max_scroll(state: &TuiState, terminal_area: Rect) -> u16 {
     if terminal_area.width < MIN_WIDTH || terminal_area.height < MIN_HEIGHT {
         return 0;
     }
-    let transcript_area = main_rows(terminal_area)[1];
+    let transcript_area = main_rows(terminal_area, state)[1];
     let inner = Block::default()
         .padding(Padding::new(GUTTER, GUTTER, 1, 1))
         .inner(transcript_area);
@@ -4342,21 +4969,6 @@ fn inset_horizontal(area: Rect, inset: u16) -> Option<Rect> {
     })
 }
 
-fn focus_at(area: Rect, column: u16, row: u16) -> Option<Focus> {
-    if area.width < MIN_WIDTH || area.height < MIN_HEIGHT {
-        return None;
-    }
-    let rows = main_rows(area);
-    let position = Position::new(column, row);
-    if rows[3].contains(position) {
-        Some(Focus::Composer)
-    } else if rows[1].contains(position) {
-        Some(Focus::Transcript)
-    } else {
-        None
-    }
-}
-
 fn render_header(frame: &mut Frame<'_>, state: &TuiState, theme: Theme, area: Rect) {
     let block = Block::default()
         .borders(Borders::BOTTOM)
@@ -4369,11 +4981,15 @@ fn render_header(frame: &mut Frame<'_>, state: &TuiState, theme: Theme, area: Re
     }
     let width = usize::from(inner.width);
 
-    let chip = format!(" {} ", state.security);
+    let chip = if state.security == "VERIFYING" {
+        format!(" {} VERIFYING ", state.blossom_glyph(false))
+    } else {
+        format!(" {} ", state.security)
+    };
     let chip_width = display_width(&chip);
     let model = state.model.clone();
     let thinking = state.thinking.to_string();
-    let profile = state.profile.to_string();
+    let profile = state.profile.label().to_owned();
     let tail_width =
         2 + display_width(&model) + 3 + display_width(&thinking) + 3 + display_width(&profile);
     // The security chip must never be the thing that gets clipped, so the model
@@ -4607,7 +5223,7 @@ fn render_status(frame: &mut Frame<'_>, state: &TuiState, theme: Theme, area: Re
         )
     };
     let status_text = if state.compacting && !state.exit_armed && !state.search_active {
-        format!("{}  {status_text}", state.compaction_frame())
+        format!("{}  Compacting…", state.compaction_frame())
     } else {
         status_text
     };
@@ -4616,23 +5232,13 @@ fn render_status(frame: &mut Frame<'_>, state: &TuiState, theme: Theme, area: Re
     } else {
         state.glyph("●", "*")
     };
-    let usage_text = format_token_usage(state.displayed_tokens());
     let width = usize::from(inner.width);
-    let fixed_width = display_width(marker)
-        .saturating_add(1)
-        .saturating_add(2)
-        .saturating_add(display_width(&usage_text));
+    let fixed_width = display_width(marker).saturating_add(1);
     let status_text = truncate_end(&status_text, width.saturating_sub(fixed_width));
-    let left_width = display_width(marker)
-        .saturating_add(1)
-        .saturating_add(display_width(&status_text));
-    let gap = width.saturating_sub(left_width.saturating_add(display_width(&usage_text)));
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(marker, Style::default().fg(status_color)),
             Span::styled(format!(" {status_text}"), Style::default().fg(theme.muted)),
-            Span::raw(" ".repeat(gap)),
-            Span::styled(usage_text, Style::default().fg(theme.muted)),
         ])),
         inner,
     );
@@ -4664,81 +5270,121 @@ fn render_composer(frame: &mut Frame<'_>, state: &TuiState, theme: Theme, area: 
         },
     );
 
-    let Some(inner) = composer_input_row(area) else {
+    let Some(inner) = composer_input_area(area) else {
         return;
     };
     let answering = state.answer_prompt.is_some() && !interacting;
-    let input = if interacting {
-        ""
-    } else if answering {
-        state.answer_input.as_str()
-    } else {
-        state.input.as_str()
-    };
-    let field_width = usize::from(inner.width).saturating_sub(2);
-    let visible = tail_to_width(input, field_width);
-    let body = if interacting {
-        Span::styled(
-            "Respond in the panel above",
-            Style::default().fg(theme.muted),
-        )
-    } else if input.is_empty() && !focused {
-        Span::styled(
-            if answering {
-                "Tab to answer"
-            } else {
-                "Tab or click to type"
-            },
-            Style::default().fg(theme.muted),
-        )
-    } else {
-        Span::styled(visible.clone(), Style::default().fg(theme.text))
-    };
+    let marker = format!(
+        "{} ",
+        if answering {
+            "?"
+        } else {
+            state.glyph("›", ">")
+        }
+    );
     frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(
-                format!(
-                    "{} ",
-                    if answering {
-                        "?"
-                    } else {
-                        state.glyph("›", ">")
-                    }
-                ),
-                Style::default().fg(if focused {
+        Paragraph::new(marker).style(
+            Style::default()
+                .fg(if focused {
                     theme.cherry_bright
                 } else {
                     theme.muted
-                }),
-            ),
-            body,
-        ]))
-        .style(Style::default().fg(theme.text).bg(theme.surface)),
-        inner,
+                })
+                .bg(theme.surface),
+        ),
+        Rect {
+            width: inner.width.min(2),
+            ..inner
+        },
     );
 
-    if focused && state.overlay.is_none() && !state.search_active && !interacting {
-        let offset = u16::try_from(display_width(&visible)).unwrap_or(u16::MAX);
+    let text_area = Rect {
+        x: inner.x.saturating_add(2),
+        width: inner.width.saturating_sub(2),
+        ..inner
+    };
+    if text_area.is_empty() {
+        return;
+    }
+
+    if interacting {
+        frame.render_widget(
+            Paragraph::new("Respond in the panel above")
+                .style(Style::default().fg(theme.muted).bg(theme.surface)),
+            text_area,
+        );
+        return;
+    }
+
+    if answering {
+        let visible = tail_to_width(
+            &state.answer_input,
+            usize::from(text_area.width).saturating_sub(1),
+        );
+        let body = if visible.is_empty() && !focused {
+            Span::styled("Tab to answer", Style::default().fg(theme.muted))
+        } else {
+            Span::styled(visible.clone(), Style::default().fg(theme.text))
+        };
+        frame.render_widget(
+            Paragraph::new(body).style(Style::default().bg(theme.surface)),
+            text_area,
+        );
+        if focused && state.overlay.is_none() && !state.search_active {
+            let column = u16::try_from(display_width(&visible)).unwrap_or(u16::MAX);
+            frame.set_cursor_position((
+                text_area
+                    .x
+                    .saturating_add(column)
+                    .min(text_area.right().saturating_sub(1)),
+                text_area.y,
+            ));
+        }
+        return;
+    }
+
+    let view = state.input.view(text_area.width, text_area.height);
+    let body = if state.input.is_empty() && !focused {
+        "Tab to type".to_owned()
+    } else {
+        view.lines.join("\n")
+    };
+    frame.render_widget(
+        Paragraph::new(body).style(
+            Style::default()
+                .fg(if state.input.is_empty() && !focused {
+                    theme.muted
+                } else {
+                    theme.text
+                })
+                .bg(theme.surface),
+        ),
+        text_area,
+    );
+
+    if focused && state.overlay.is_none() && !state.search_active {
         frame.set_cursor_position((
-            inner
+            text_area
                 .x
-                .saturating_add(2)
-                .saturating_add(offset)
-                .min(inner.x.saturating_add(inner.width.saturating_sub(1))),
-            inner.y,
+                .saturating_add(view.cursor_column)
+                .min(text_area.right().saturating_sub(1)),
+            text_area
+                .y
+                .saturating_add(view.cursor_row)
+                .min(text_area.bottom().saturating_sub(1)),
         ));
     }
 }
 
-/// The single editable row inside the composer slab: one column for the accent
+/// The editable viewport inside the composer slab: one column for the accent
 /// bar, one of padding, and one blank row above and below the text.
-fn composer_input_row(area: Rect) -> Option<Rect> {
+fn composer_input_area(area: Rect) -> Option<Rect> {
     let width = area.width.checked_sub(3)?;
     (width > 0 && area.height >= 3).then(|| Rect {
         x: area.x.saturating_add(2),
         y: area.y.saturating_add(1),
         width,
-        height: 1,
+        height: area.height.saturating_sub(2),
     })
 }
 
@@ -4786,7 +5432,8 @@ fn render_hints(frame: &mut Frame<'_>, state: &TuiState, theme: Theme, area: Rec
             ("?", "help"),
         ],
         None => vec![
-            ("Enter", "send/toggle"),
+            ("Enter", "send"),
+            ("Alt+Enter", "newline"),
             ("Tab", "focus"),
             ("j/k", "scroll"),
             ("Ctrl+F", "search"),
@@ -4919,8 +5566,20 @@ fn render_interaction(frame: &mut Frame<'_>, state: &TuiState, theme: Theme) {
 }
 
 fn render_overlay(frame: &mut Frame<'_>, state: &TuiState, overlay: &Overlay, theme: Theme) {
+    if let Overlay::Security(view) = overlay {
+        render_security_overlay(frame, state, *view, theme);
+        return;
+    }
+    if matches!(overlay, Overlay::SaveAttestation(_)) {
+        render_attestation_save_picker(frame, state, theme);
+        return;
+    }
     if let Overlay::Auth(auth) = overlay {
         render_auth_overlay(frame, state, auth, theme);
+        return;
+    }
+    if matches!(overlay, Overlay::Permissions { .. }) {
+        render_permissions_picker(frame, state, theme);
         return;
     }
     if matches!(overlay, Overlay::ModelPicker { .. }) {
@@ -4939,14 +5598,15 @@ fn render_overlay(frame: &mut Frame<'_>, state: &TuiState, overlay: &Overlay, th
         Overlay::Help => (
             " Help ",
             "Tab: switch composer/transcript focus\n\
-             j/k or arrows: move through transcript\n\
-             Enter: send or show/hide selected task details\n\
+             Composer arrows/Home/End: move the editing cursor\n\
+             Alt+Enter, Shift+Enter, or Ctrl+J: insert a new line\n\
+             Enter: send, or show/hide selected task details\n\
+             Transcript j/k or arrows: move through entries\n\
              Ctrl+F: search transcript; n/N: next/previous match\n\
              v: open selected entry in this terminal-viewport viewer\n\
              End: follow streaming output\n\
              Ctrl+C: press twice to exit\n\
-             Esc: stop active work, clear a composer draft, or close an overlay\n\
-             Mouse wheel: scroll; click: focus transcript"
+             Esc: stop active work, clear a composer draft, or close an overlay"
                 .into(),
         ),
         Overlay::Entry(index) => {
@@ -4969,9 +5629,14 @@ fn render_overlay(frame: &mut Frame<'_>, state: &TuiState, overlay: &Overlay, th
                 body,
             )
         }
+        Overlay::Permissions { .. } => unreachable!("permissions rendered separately"),
         Overlay::ModelPicker { .. } => unreachable!("model picker rendered separately"),
         Overlay::ResumePicker { .. } => unreachable!("resume picker rendered separately"),
         Overlay::DeletePicker { .. } => unreachable!("delete picker rendered separately"),
+        Overlay::Security(_) => unreachable!("security inspector rendered separately"),
+        Overlay::SaveAttestation(_) => {
+            unreachable!("attestation save picker rendered separately")
+        }
         Overlay::Auth(_) => unreachable!("auth overlay rendered separately"),
     };
     // Help is a fixed list, so give it only the rows it needs; the viewer holds
@@ -4982,9 +5647,14 @@ fn render_overlay(frame: &mut Frame<'_>, state: &TuiState, overlay: &Overlay, th
             fitted_rect(88, rows.saturating_add(2), frame.area())
         }
         Overlay::Entry(_) => centered_rect(88, 82, frame.area()),
+        Overlay::Permissions { .. } => unreachable!("permissions rendered separately"),
         Overlay::ModelPicker { .. } => unreachable!("model picker rendered separately"),
         Overlay::ResumePicker { .. } => unreachable!("resume picker rendered separately"),
         Overlay::DeletePicker { .. } => unreachable!("delete picker rendered separately"),
+        Overlay::Security(_) => unreachable!("security inspector rendered separately"),
+        Overlay::SaveAttestation(_) => {
+            unreachable!("attestation save picker rendered separately")
+        }
         Overlay::Auth(_) => unreachable!("auth overlay rendered separately"),
     };
     frame.render_widget(Clear, area);
@@ -5009,21 +5679,858 @@ fn render_overlay(frame: &mut Frame<'_>, state: &TuiState, overlay: &Overlay, th
     );
 }
 
+fn render_permissions_picker(frame: &mut Frame<'_>, state: &TuiState, theme: Theme) {
+    let Some(Overlay::Permissions { tab, selected }) = &state.overlay else {
+        return;
+    };
+    let area = fitted_rect(82, 23, frame.area());
+    frame.render_widget(Clear, area);
+    let block = Block::default()
+        .title(Span::styled(
+            " Permissions ",
+            Style::default()
+                .fg(theme.cherry_bright)
+                .add_modifier(Modifier::BOLD),
+        ))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.cherry))
+        .padding(Padding::new(2, 2, 1, 1))
+        .style(Style::default().fg(theme.text).bg(theme.surface));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.width == 0 || inner.height < 3 {
+        return;
+    }
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Min(1),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+    let tab_span = |label: &'static str, active: bool| {
+        Span::styled(
+            if active {
+                format!(" {label} ")
+            } else {
+                format!("  {label}  ")
+            },
+            if active {
+                Style::default()
+                    .fg(theme.blossom_pale)
+                    .bg(theme.cherry_deep)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.muted)
+            },
+        )
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            tab_span("Tools", *tab == PermissionTab::Tools),
+            Span::raw("  "),
+            tab_span("Crypto", *tab == PermissionTab::Crypto),
+        ])),
+        rows[0],
+    );
+
+    match tab {
+        PermissionTab::Tools => {
+            let selected = (*selected).min(PermissionProfile::ALL.len() - 1);
+            let mut lines = Vec::new();
+            for (index, profile) in PermissionProfile::ALL.into_iter().enumerate() {
+                let is_selected = index == selected;
+                let marker = if is_selected {
+                    state.glyph("›", ">")
+                } else {
+                    " "
+                };
+                let is_current = profile == state.profile;
+                let current = if is_current {
+                    state.glyph("✓", "+")
+                } else {
+                    " "
+                };
+                let style = if is_selected {
+                    Style::default()
+                        .fg(theme.blossom_pale)
+                        .bg(theme.cherry_deep)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(theme.text)
+                };
+                let current_style = if is_current {
+                    style.fg(theme.success)
+                } else {
+                    style
+                };
+                lines.push(Line::from(vec![
+                    Span::styled(format!("{marker} "), style),
+                    Span::styled(format!("{current} "), current_style),
+                    Span::styled(
+                        truncate_end(
+                            profile.label(),
+                            usize::from(rows[1].width).saturating_sub(4),
+                        ),
+                        style,
+                    ),
+                ]));
+                lines.push(Line::from(Span::styled(
+                    truncate_end(
+                        &format!("    {}", profile.description()),
+                        usize::from(rows[1].width),
+                    ),
+                    Style::default().fg(theme.muted),
+                )));
+                if index + 1 < PermissionProfile::ALL.len() {
+                    lines.push(Line::from(""));
+                }
+            }
+            let visible_height = usize::from(rows[1].height);
+            let scroll = if lines.len() > visible_height {
+                selected
+                    .saturating_mul(3)
+                    .min(lines.len().saturating_sub(visible_height))
+            } else {
+                0
+            };
+            let scroll = u16::try_from(scroll).unwrap_or(u16::MAX);
+            frame.render_widget(
+                Paragraph::new(lines)
+                    .scroll((scroll, 0))
+                    .wrap(Wrap { trim: false }),
+                rows[1],
+            );
+        }
+        PermissionTab::Crypto => {
+            let message_area = Rect::new(
+                rows[1].x,
+                rows[1].y.saturating_add(rows[1].height / 2),
+                rows[1].width,
+                1,
+            );
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    "Coming soon!",
+                    Style::default()
+                        .fg(theme.cherry_bright)
+                        .add_modifier(Modifier::BOLD),
+                ))
+                .alignment(Alignment::Center),
+                message_area,
+            );
+        }
+    }
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            truncate_end(
+                match tab {
+                    PermissionTab::Tools => {
+                        "↑/↓ select · Enter apply · Tab or ←/→ switch · Esc cancel"
+                    }
+                    PermissionTab::Crypto => "Tab or ←/→ switch · Esc close",
+                },
+                usize::from(rows[2].width),
+            ),
+            Style::default().fg(theme.muted),
+        )),
+        rows[2],
+    );
+}
+
+const MAX_WORKLOAD_DISPLAY_CHARS: usize = 100_000;
+
+fn render_attestation_save_picker(frame: &mut Frame<'_>, state: &TuiState, theme: Theme) {
+    let Some(Overlay::SaveAttestation(picker)) = &state.overlay else {
+        return;
+    };
+    let area = centered_rect(82, 72, frame.area());
+    frame.render_widget(Clear, area);
+    let block = Block::default()
+        .title(Span::styled(
+            " Save attestation ",
+            Style::default()
+                .fg(theme.cherry_bright)
+                .add_modifier(Modifier::BOLD),
+        ))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.cherry))
+        .padding(Padding::horizontal(1))
+        .style(Style::default().fg(theme.text).bg(theme.surface));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.width == 0 || inner.height < 7 {
+        return;
+    }
+
+    let rows = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Min(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .split(inner);
+    let directory_text = truncate_middle(
+        &picker.directory.display().to_string(),
+        usize::from(rows[0].width).saturating_sub(display_width("Folder  ")),
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                "Folder  ",
+                Style::default().fg(if picker.focus == SavePickerFocus::Directories {
+                    theme.cherry_bright
+                } else {
+                    theme.muted
+                }),
+            ),
+            Span::styled(directory_text, Style::default().fg(theme.text)),
+        ])),
+        rows[0],
+    );
+
+    let filename_width = usize::from(rows[1].width).saturating_sub(display_width("File    "));
+    let visible_filename = tail_to_width(&picker.filename, filename_width);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                "File    ",
+                Style::default().fg(if picker.focus == SavePickerFocus::Filename {
+                    theme.cherry_bright
+                } else {
+                    theme.muted
+                }),
+            ),
+            Span::styled(visible_filename.clone(), Style::default().fg(theme.text)),
+        ])),
+        rows[1],
+    );
+
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            "Folders",
+            Style::default()
+                .fg(theme.muted)
+                .add_modifier(Modifier::BOLD),
+        )),
+        rows[2],
+    );
+    let directories = attestation_picker_directories(&picker.directory);
+    let visible_height = usize::from(rows[3].height).max(1);
+    let selected = picker.selected.min(directories.len().saturating_sub(1));
+    let start = selected
+        .saturating_add(1)
+        .saturating_sub(visible_height)
+        .min(directories.len().saturating_sub(visible_height));
+    let directory_lines = if directories.is_empty() {
+        vec![Line::from(Span::styled(
+            "  No folders available",
+            Style::default().fg(theme.muted),
+        ))]
+    } else {
+        directories
+            .iter()
+            .enumerate()
+            .skip(start)
+            .take(visible_height)
+            .map(|(index, (label, _))| {
+                let is_selected = picker.focus == SavePickerFocus::Directories && index == selected;
+                let marker = if is_selected {
+                    state.glyph("›", ">")
+                } else {
+                    " "
+                };
+                let style = if is_selected {
+                    Style::default()
+                        .fg(theme.blossom_pale)
+                        .bg(theme.cherry_deep)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(theme.text)
+                };
+                Line::from(Span::styled(
+                    truncate_end(&format!("{marker} {label}"), usize::from(rows[3].width)),
+                    style,
+                ))
+            })
+            .collect()
+    };
+    frame.render_widget(Paragraph::new(directory_lines), rows[3]);
+
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            picker.error.as_deref().unwrap_or(""),
+            Style::default().fg(theme.error),
+        )),
+        rows[4],
+    );
+    let help = match picker.focus {
+        SavePickerFocus::Filename => {
+            "Type filename · Ctrl+U clear · Enter save · Tab browse folders · Esc back"
+        }
+        SavePickerFocus::Directories => {
+            "↑/↓ select · Enter open · ← parent · S save · Tab filename · Esc back"
+        }
+    };
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            truncate_end(help, usize::from(rows[5].width)),
+            Style::default().fg(theme.muted),
+        )),
+        rows[5],
+    );
+
+    if picker.focus == SavePickerFocus::Filename {
+        let cursor_x = rows[1]
+            .x
+            .saturating_add(u16::try_from(display_width("File    ")).unwrap_or(u16::MAX))
+            .saturating_add(u16::try_from(display_width(&visible_filename)).unwrap_or(u16::MAX))
+            .min(rows[1].right().saturating_sub(1));
+        frame.set_cursor_position((cursor_x, rows[1].y));
+    }
+}
+
+fn render_security_overlay(
+    frame: &mut Frame<'_>,
+    state: &TuiState,
+    view: SecurityView,
+    theme: Theme,
+) {
+    let area = centered_rect(88, 86, frame.area());
+    frame.render_widget(Clear, area);
+    let title = match view {
+        SecurityView::Summary => " Security ",
+        SecurityView::Workload => " Attested workload ",
+        SecurityView::Raw => " Raw app_compose ",
+    };
+    let block = Block::default()
+        .title(Span::styled(
+            title,
+            Style::default()
+                .fg(theme.cherry_bright)
+                .add_modifier(Modifier::BOLD),
+        ))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.cherry))
+        .padding(Padding::horizontal(1))
+        .style(Style::default().fg(theme.text).bg(theme.surface));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.height < 2 || inner.width == 0 {
+        return;
+    }
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(inner);
+    let lines = security_overlay_lines(state, view, theme);
+    frame.render_widget(
+        Paragraph::new(lines)
+            .style(Style::default().fg(theme.text).bg(theme.surface))
+            .scroll((state.overlay_scroll, 0))
+            .wrap(Wrap { trim: false }),
+        rows[0],
+    );
+    let mut help = vec![
+        Span::styled("V", Style::default().fg(theme.cherry_bright)),
+        Span::styled(" next view  ·  ", Style::default().fg(theme.muted)),
+        Span::styled("R", Style::default().fg(theme.cherry_bright)),
+        Span::styled(" verify again  ·  ", Style::default().fg(theme.muted)),
+    ];
+    if view == SecurityView::Raw && state.security_evidence.is_some() {
+        help.extend([
+            Span::styled("S", Style::default().fg(theme.cherry_bright)),
+            Span::styled(" save  ·  ", Style::default().fg(theme.muted)),
+        ]);
+    }
+    help.push(Span::styled(
+        "↑/↓ scroll  ·  Esc close",
+        Style::default().fg(theme.muted),
+    ));
+    frame.render_widget(Paragraph::new(Line::from(help)), rows[1]);
+}
+
+fn security_overlay_lines(
+    state: &TuiState,
+    view: SecurityView,
+    theme: Theme,
+) -> Vec<Line<'static>> {
+    if state.security == "VERIFYING" {
+        return vec![
+            Line::from(vec![
+                Span::styled(
+                    format!("{}  ", state.blossom_glyph(false)),
+                    Style::default().fg(state.blossom_color(theme, 0)),
+                ),
+                Span::styled(
+                    "Verifying fresh hardware evidence and endpoint bindings…",
+                    Style::default().fg(theme.text),
+                ),
+            ]),
+            Line::from(""),
+            Line::from(Span::styled(
+                "No prompt will be sent until verification succeeds.",
+                Style::default().fg(theme.muted),
+            )),
+        ];
+    }
+
+    let Some(evidence) = &state.security_evidence else {
+        let message = if state.security == "SECURITY FAILED" {
+            "The latest security verification failed. Press R to try again."
+        } else if state.security == "UNATTESTED DEV" {
+            "This process is using the explicitly enabled unattested development transport."
+        } else {
+            "No attestation evidence is available. Press R to verify now."
+        };
+        return vec![Line::from(Span::styled(
+            message,
+            Style::default().fg(if state.security == "SECURITY FAILED" {
+                theme.error
+            } else {
+                theme.warning
+            }),
+        ))];
+    };
+
+    match view {
+        SecurityView::Summary => security_summary_lines(evidence, theme),
+        SecurityView::Workload => workload_lines(evidence, false, theme),
+        SecurityView::Raw => workload_lines(evidence, true, theme),
+    }
+}
+
+fn security_summary_lines(evidence: &SecurityEvidence, theme: Theme) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    security_field(
+        &mut lines,
+        "Status",
+        "Cryptographically verified",
+        theme.success,
+        theme,
+    );
+    security_field(&mut lines, "Model", &evidence.model_id, theme.text, theme);
+    security_field(
+        &mut lines,
+        "Provider",
+        &evidence.provider_id,
+        theme.text,
+        theme,
+    );
+    security_field(
+        &mut lines,
+        "Verified",
+        &format_verification_time(evidence.verified_at_unix_seconds),
+        theme.text,
+        theme,
+    );
+    security_field(
+        &mut lines,
+        "Attestation",
+        &evidence.attestation_protocol,
+        theme.text,
+        theme,
+    );
+    security_field(
+        &mut lines,
+        "Encryption",
+        &format!(
+            "{} v{}",
+            evidence.e2ee_protocol, evidence.e2ee_encryption_version
+        ),
+        theme.text,
+        theme,
+    );
+    security_field(
+        &mut lines,
+        "Trust policy",
+        &evidence.trust_policy_version,
+        theme.text,
+        theme,
+    );
+
+    lines.push(Line::from(""));
+    lines.push(section_line("Verification checks", theme));
+    for check in &evidence.checks {
+        lines.push(Line::from(vec![
+            Span::styled(
+                if check.passed { "✓ " } else { "× " },
+                Style::default().fg(if check.passed {
+                    theme.success
+                } else {
+                    theme.error
+                }),
+            ),
+            Span::styled(check.label.clone(), Style::default().fg(theme.text)),
+            Span::styled(
+                format!("  {}", check.status),
+                Style::default().fg(theme.muted),
+            ),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(section_line("Workload", theme));
+    if let Some(value) = evidence_claim(evidence, "intel_mr_td") {
+        security_field(&mut lines, "TD measurement", value, theme.text, theme);
+    }
+    if let Some(value) = evidence_claim(evidence, "workload_manifest_sha256") {
+        security_field(&mut lines, "Manifest SHA-256", value, theme.text, theme);
+    }
+
+    if let Some(manifest) = evidence.workload_manifest.as_deref() {
+        let parsed = parse_workload_manifest(manifest);
+        for (key, value) in parsed.metadata {
+            security_field(
+                &mut lines,
+                &humanize_manifest_key(&key),
+                &value,
+                theme.text,
+                theme,
+            );
+        }
+        if !parsed.services.is_empty() {
+            lines.push(Line::from(""));
+            lines.push(section_line("Attested services", theme));
+            for service in parsed.services {
+                lines.push(Line::from(vec![
+                    Span::styled("• ", Style::default().fg(theme.cherry_bright)),
+                    Span::styled(
+                        service.name,
+                        Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        service
+                            .image
+                            .map_or_else(String::new, |image| format!("  {image}")),
+                        Style::default().fg(theme.muted),
+                    ),
+                ]));
+            }
+        }
+    } else {
+        lines.push(Line::from(Span::styled(
+            "The provider did not retain a workload manifest.",
+            Style::default().fg(theme.warning),
+        )));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(section_line("Endpoint bindings", theme));
+    security_field(
+        &mut lines,
+        "Model key SHA-256",
+        &evidence.model_key_fingerprint,
+        theme.text,
+        theme,
+    );
+    security_field(
+        &mut lines,
+        "TLS SPKI SHA-256",
+        evidence
+            .tls_spki_fingerprint
+            .as_deref()
+            .unwrap_or("Unavailable"),
+        theme.text,
+        theme,
+    );
+    lines
+}
+
+fn workload_lines(evidence: &SecurityEvidence, raw: bool, theme: Theme) -> Vec<Line<'static>> {
+    let Some(manifest) = evidence.workload_manifest.as_deref() else {
+        return vec![Line::from(Span::styled(
+            "No workload manifest was retained for this provider.",
+            Style::default().fg(theme.warning),
+        ))];
+    };
+    let parsed = parse_workload_manifest(manifest);
+    let (heading, content) = if raw {
+        (
+            "Exact provider-supplied app_compose bytes (terminal-sanitized)",
+            manifest.to_owned(),
+        )
+    } else if let Some(compose) = parsed.compose {
+        (
+            "Docker Compose configuration committed to by the quote",
+            compose,
+        )
+    } else {
+        (
+            "Workload manifest committed to by the quote",
+            manifest.to_owned(),
+        )
+    };
+    let (content, truncated) = bounded_workload_display(&sanitize_terminal_text(&content));
+    let mut lines = vec![
+        section_line(heading, theme),
+        Line::from(Span::styled(
+            "This is public attestation evidence. It is not a live process list.",
+            Style::default().fg(theme.muted),
+        )),
+        Line::from(""),
+    ];
+    lines.extend(content.lines().map(|line| Line::from(line.to_owned())));
+    if truncated {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            format!("Display limited to {MAX_WORKLOAD_DISPLAY_CHARS} characters."),
+            Style::default().fg(theme.warning),
+        )));
+    }
+    lines
+}
+
+fn security_field(
+    lines: &mut Vec<Line<'static>>,
+    label: &str,
+    value: &str,
+    value_color: Color,
+    theme: Theme,
+) {
+    lines.push(Line::from(vec![
+        Span::styled(format!("{label:<20}  "), Style::default().fg(theme.muted)),
+        Span::styled(value.to_owned(), Style::default().fg(value_color)),
+    ]));
+}
+
+fn section_line(label: &str, theme: Theme) -> Line<'static> {
+    Line::from(Span::styled(
+        label.to_owned(),
+        Style::default()
+            .fg(theme.cherry_bright)
+            .add_modifier(Modifier::BOLD),
+    ))
+}
+
+fn evidence_claim<'a>(evidence: &'a SecurityEvidence, name: &str) -> Option<&'a str> {
+    evidence
+        .provider_claims
+        .iter()
+        .find(|claim| claim.name == name)
+        .map(|claim| claim.value.as_str())
+}
+
+fn format_verification_time(timestamp: u64) -> String {
+    i64::try_from(timestamp)
+        .ok()
+        .and_then(|seconds| chrono::DateTime::from_timestamp(seconds, 0))
+        .map_or_else(
+            || format!("Unix timestamp {timestamp}"),
+            |time| time.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
+        )
+}
+
+fn attestation_export_filename(evidence: &SecurityEvidence) -> String {
+    i64::try_from(evidence.verified_at_unix_seconds)
+        .ok()
+        .and_then(|seconds| chrono::DateTime::from_timestamp(seconds, 0))
+        .map_or_else(
+            || {
+                format!(
+                    "axiom-attestation-{}.json",
+                    evidence.verified_at_unix_seconds
+                )
+            },
+            |time| format!("axiom-attestation-{}.json", time.format("%Y%m%d-%H%M%S")),
+        )
+}
+
+fn attestation_picker_directories(directory: &Path) -> Vec<(String, PathBuf)> {
+    let mut directories = Vec::new();
+    if let Some(parent) = directory.parent() {
+        directories.push(("../".into(), parent.to_path_buf()));
+    }
+    let Ok(entries) = fs::read_dir(directory) else {
+        return directories;
+    };
+    let mut children = entries
+        .filter_map(std::result::Result::ok)
+        .filter_map(|entry| {
+            let path = entry.path();
+            path.is_dir().then(|| {
+                let name = sanitize_terminal_text(&entry.file_name().to_string_lossy());
+                (format!("{name}/"), path)
+            })
+        })
+        .collect::<Vec<_>>();
+    children.sort_by_key(|(name, _)| name.to_lowercase());
+    directories.extend(children);
+    directories
+}
+
+fn write_attestation_export(
+    directory: &Path,
+    filename: &str,
+    evidence: &SecurityEvidence,
+) -> Result<PathBuf> {
+    let mut components = Path::new(filename).components();
+    let filename_is_safe =
+        matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none();
+    if !filename_is_safe {
+        return Err(AxiomError::Config(
+            "enter a filename without directory separators".into(),
+        ));
+    }
+
+    let destination = directory.join(filename);
+    let mut encoded = serde_json::to_vec_pretty(evidence)?;
+    encoded.push(b'\n');
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&destination)
+        .map_err(|error| {
+            if error.kind() == io::ErrorKind::AlreadyExists {
+                AxiomError::Config(format!(
+                    "{} already exists; choose another filename",
+                    destination.display()
+                ))
+            } else {
+                AxiomError::Io(error)
+            }
+        })?;
+    file.write_all(&encoded)?;
+    file.sync_all()?;
+    Ok(destination)
+}
+
+#[derive(Debug, Default)]
+struct ParsedWorkloadManifest {
+    metadata: Vec<(String, String)>,
+    compose: Option<String>,
+    services: Vec<WorkloadService>,
+}
+
+#[derive(Debug)]
+struct WorkloadService {
+    name: String,
+    image: Option<String>,
+}
+
+fn parse_workload_manifest(manifest: &str) -> ParsedWorkloadManifest {
+    let Ok(serde_json::Value::Object(object)) = serde_json::from_str(manifest) else {
+        return ParsedWorkloadManifest {
+            services: parse_compose_services(manifest),
+            ..ParsedWorkloadManifest::default()
+        };
+    };
+    let mut parsed = ParsedWorkloadManifest::default();
+    for (key, value) in object {
+        if key == "docker_compose_file" {
+            if let Some(compose) = value.as_str() {
+                parsed.services = parse_compose_services(compose);
+                parsed.compose = Some(compose.to_owned());
+            }
+            continue;
+        }
+        let value = match value {
+            serde_json::Value::Null => "null".to_owned(),
+            serde_json::Value::String(value) => value,
+            serde_json::Value::Bool(value) => value.to_string(),
+            serde_json::Value::Number(value) => value.to_string(),
+            value => serde_json::to_string(&value).unwrap_or_else(|_| "unavailable".into()),
+        };
+        parsed.metadata.push((key, truncate_end(&value, 160)));
+    }
+    parsed
+}
+
+fn parse_compose_services(compose: &str) -> Vec<WorkloadService> {
+    let mut services = Vec::new();
+    let mut in_services = false;
+    for line in compose.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let indent = line.len().saturating_sub(line.trim_start().len());
+        if indent == 0 {
+            in_services = trimmed == "services:";
+            continue;
+        }
+        if !in_services {
+            continue;
+        }
+        if indent == 2 && trimmed.ends_with(':') {
+            if services.len() >= 128 {
+                break;
+            }
+            services.push(WorkloadService {
+                name: trimmed.trim_end_matches(':').to_owned(),
+                image: None,
+            });
+        } else if indent == 4
+            && let Some(image) = trimmed.strip_prefix("image:")
+            && let Some(service) = services.last_mut()
+        {
+            service.image = Some(image.trim().trim_matches(['\'', '"']).to_owned());
+        }
+    }
+    services
+}
+
+fn humanize_manifest_key(key: &str) -> String {
+    let mut words = key.split('_').filter(|word| !word.is_empty());
+    let Some(first) = words.next() else {
+        return key.to_owned();
+    };
+    let mut output = first.to_owned();
+    if let Some(initial) = output.get_mut(0..1) {
+        initial.make_ascii_uppercase();
+    }
+    for word in words {
+        output.push(' ');
+        output.push_str(word);
+    }
+    output
+}
+
+fn bounded_workload_display(text: &str) -> (String, bool) {
+    if text.chars().count() <= MAX_WORKLOAD_DISPLAY_CHARS {
+        return (text.to_owned(), false);
+    }
+    (
+        text.chars().take(MAX_WORKLOAD_DISPLAY_CHARS).collect(),
+        true,
+    )
+}
+
 fn render_auth_overlay(
     frame: &mut Frame<'_>,
     state: &TuiState,
     overlay: &AuthOverlay,
     theme: Theme,
 ) {
-    let area = centered_rect(78, 64, frame.area());
+    let height = match overlay {
+        AuthOverlay::Menu { message, .. } => {
+            if message.is_some() {
+                12
+            } else {
+                10
+            }
+        }
+        AuthOverlay::Starting => 7,
+        AuthOverlay::Browser { .. } => 15,
+        AuthOverlay::Paste { .. } => 9,
+        AuthOverlay::Checking { .. } => 5,
+        AuthOverlay::Account { status } => u16::try_from(status.lines().count())
+            .unwrap_or(u16::MAX)
+            .saturating_add(6),
+    };
+    let area = fitted_rect(78, height, frame.area());
     frame.render_widget(Clear, area);
     let title = match overlay {
-        AuthOverlay::Menu { .. } | AuthOverlay::Account { .. } => " Axiom account ",
+        AuthOverlay::Menu { .. } => " Connect to Axiom ",
+        AuthOverlay::Account { .. } => " Axiom account ",
         AuthOverlay::Starting | AuthOverlay::Browser { .. } => " Browser sign-in ",
         AuthOverlay::Paste {
             kind: AuthPasteKind::ApiKey,
             ..
-        } => " Paste authorization key ",
+        } => " Axiom API key ",
         AuthOverlay::Paste {
             kind: AuthPasteKind::CompletionCode,
             ..
@@ -5034,13 +6541,8 @@ fn render_auth_overlay(
     match overlay {
         AuthOverlay::Menu { selected, message } => {
             lines.push(Line::from(Span::styled(
-                "Connect AxiomCLI to your Axiom account",
+                "Sign in to start using AxiomCLI.",
                 Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
-            )));
-            lines.push(Line::from(""));
-            lines.push(Line::from(Span::styled(
-                "The browser flow creates a revocable credential without exposing wallet or browser encryption keys to the CLI.",
-                Style::default().fg(theme.muted),
             )));
             if let Some(message) = message {
                 lines.push(Line::from(""));
@@ -5050,14 +6552,9 @@ fn render_auth_overlay(
                 )));
             }
             lines.push(Line::from(""));
-            for (index, label) in [
-                "Continue in browser",
-                "Paste an axm_ authorization key",
-                "Paste an axc_ one-time browser code",
-                "Not now",
-            ]
-            .into_iter()
-            .enumerate()
+            for (index, label) in ["Continue in browser", "Continue with an Axiom API key"]
+                .into_iter()
+                .enumerate()
             {
                 let marker = if index == *selected { "›" } else { " " };
                 lines.push(Line::from(vec![
@@ -5087,7 +6584,7 @@ fn render_auth_overlay(
             }
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
-                "↑/↓ select · Enter confirm · Esc close",
+                "↑/↓ select · Enter continue · Esc close",
                 Style::default().fg(theme.muted),
             )));
         }
@@ -5158,7 +6655,7 @@ fn render_auth_overlay(
         AuthOverlay::Paste { kind, input } => {
             lines.push(Line::from(Span::styled(
                 if *kind == AuthPasteKind::ApiKey {
-                    "Paste the axm_ authorization key. It will be stored in your system credential store when available."
+                    "Paste your Axiom API key (axm_…). It will be stored in your system credential store when available."
                 } else {
                     "Paste the axc_ one-time code shown by the approval page. It can only be exchanged once."
                 },
@@ -5188,10 +6685,12 @@ fn render_auth_overlay(
             ]));
         }
         AuthOverlay::Account { status } => {
-            lines.push(Line::from(Span::styled(
-                sanitize_terminal_text(status),
-                Style::default().fg(theme.text),
-            )));
+            for line in sanitize_terminal_text(status).lines() {
+                lines.push(Line::from(Span::styled(
+                    line.to_owned(),
+                    Style::default().fg(theme.text),
+                )));
+            }
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
                 "Enter or Esc to close",
@@ -5342,7 +6841,7 @@ fn render_model_picker(frame: &mut Frame<'_>, state: &TuiState, theme: Theme) {
     frame.render_widget(
         Paragraph::new(Span::styled(
             truncate_end(
-                "Type to search · ↑/↓ or wheel to scroll · Enter select · Esc cancel",
+                "Type to search · ↑/↓ to scroll · Enter select · Esc cancel",
                 usize::from(rows[3].width),
             ),
             Style::default().fg(theme.muted),
@@ -5474,7 +6973,7 @@ fn render_resume_picker(frame: &mut Frame<'_>, state: &TuiState, theme: Theme) {
     frame.render_widget(
         Paragraph::new(Span::styled(
             truncate_end(
-                "Type to search · ↑/↓ or wheel to scroll · Enter resume · Esc cancel",
+                "Type to search · ↑/↓ to scroll · Enter resume · Esc cancel",
                 usize::from(rows[3].width),
             ),
             Style::default().fg(theme.muted),
@@ -5815,6 +7314,9 @@ const fn estimate_streamed_tokens(bytes: u64) -> u64 {
     bytes.div_ceil(4)
 }
 
+// Retained with the dormant counter implementation so reintroducing a token
+// surface does not require rebuilding its formatting behavior.
+#[allow(dead_code)]
 fn format_token_usage(total: u64) -> String {
     let digits = total.to_string();
     let mut reversed = String::with_capacity(digits.len().saturating_add(digits.len() / 3));
@@ -5846,11 +7348,22 @@ fn user_facing_provider_error(message: &str) -> String {
         || normalized.contains("insufficient credit")
         || normalized.contains("out of credit")
         || normalized.contains("top up your axiom balance");
-    if payment_required && insufficient_credit {
+    if is_attestation_failure(&normalized) {
+        "Secure connection could not be verified\nYour request was not sent. Run /refresh to try again or /security for details."
+            .into()
+    } else if payment_required && insufficient_credit {
         "Out of credits\nVisit axiom.stream to top up your balance.".into()
     } else {
         message.to_owned()
     }
+}
+
+fn is_attestation_failure(message: &str) -> bool {
+    let normalized = message.to_ascii_lowercase();
+    normalized.contains("attestationrejected")
+        || normalized.contains("attestation rejected")
+        || normalized.contains("attestationunavailable")
+        || normalized.contains("attestation unavailable")
 }
 
 fn truncate_middle(input: &str, max_chars: usize) -> String {
@@ -5874,9 +7387,175 @@ fn truncate_middle(input: &str, max_chars: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    use axiom_secure_client::{EvidenceCheck, EvidenceClaim, SecurityState};
     use ratatui::{Terminal, backend::TestBackend};
 
     use super::*;
+
+    fn security_evidence() -> SecurityEvidence {
+        SecurityEvidence {
+            state: SecurityState::Verified,
+            provider_id: "near".into(),
+            model_id: "deepseek-v4-flash".into(),
+            attestation_protocol: "near-tdx-nvidia-v1".into(),
+            e2ee_protocol: "near-v2".into(),
+            e2ee_encryption_version: 2,
+            trust_policy_version: "near-v2-trust-v1".into(),
+            verified_at_unix_seconds: 1_777_776_000,
+            model_key_fingerprint: "11".repeat(32),
+            tls_spki_fingerprint: Some("22".repeat(32)),
+            checks: vec![EvidenceCheck {
+                id: "intel_tdx".into(),
+                label: "Intel TDX".into(),
+                status: "UpToDate".into(),
+                passed: true,
+            }],
+            provider_claims: vec![
+                EvidenceClaim {
+                    name: "intel_mr_td".into(),
+                    value: "33".repeat(48),
+                },
+                EvidenceClaim {
+                    name: "workload_manifest_sha256".into(),
+                    value: "44".repeat(32),
+                },
+            ],
+            workload_manifest: Some(
+                serde_json::json!({
+                    "manifest_version": 2,
+                    "name": "dstack-nvidia-test",
+                    "runner": "docker-compose",
+                    "local_key_provider_enabled": false,
+                    "docker_compose_file": "services:\n  inference:\n    image: registry.example/inference@sha256:abcd\n  gateway:\n    image: registry.example/gateway@sha256:ef01\n",
+                })
+                .to_string(),
+            ),
+            workload_identity_allowlist_configured: false,
+            approved_workload_identity: false,
+        }
+    }
+
+    #[test]
+    fn security_inspector_shows_summary_workload_and_exact_manifest_views() {
+        let mut state = TuiState::new(
+            PathBuf::from("/tmp/project"),
+            "deepseek-v4-flash".into(),
+            PermissionProfile::Confirm,
+        );
+        state.security = "SECURE";
+        state.security_evidence = Some(security_evidence());
+        state.open_security();
+
+        let summary = render_symbols(120, 42, &state);
+        assert!(summary.contains("Security"));
+        assert!(summary.contains("Cryptographically verified"));
+        assert!(summary.contains("Intel TDX"));
+        assert!(summary.contains("dstack-nvidia-test"));
+        assert!(summary.contains("Local key provider enabled  false"));
+        assert!(summary.contains("inference"));
+        assert!(!summary.contains("Axiom approval"));
+        assert!(!summary.contains("allowlist configured"));
+
+        state.cycle_security_view();
+        let workload = render_symbols(120, 42, &state);
+        assert!(workload.contains("Attested workload"));
+        assert!(workload.contains("registry.example/inference@sha256:abcd"));
+
+        state.cycle_security_view();
+        let raw = render_symbols(120, 42, &state);
+        assert!(raw.contains("Raw app_compose"));
+        assert!(raw.contains("manifest_version"));
+        assert!(raw.contains("docker_compose_file"));
+        assert!(raw.contains("S save"));
+    }
+
+    #[test]
+    fn raw_attestation_view_opens_a_keyboard_save_picker() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        fs::create_dir(directory.path().join("exports")).expect("exports directory");
+        let mut state = TuiState::new(
+            directory.path().to_path_buf(),
+            "deepseek-v4-flash".into(),
+            PermissionProfile::Confirm,
+        );
+        state.security = "SECURE";
+        state.security_evidence = Some(security_evidence());
+        state.overlay = Some(Overlay::Security(SecurityView::Raw));
+
+        state.open_attestation_save_picker();
+        let picker = render_symbols(120, 42, &state);
+        assert!(picker.contains("Save attestation"));
+        assert!(picker.contains("axiom-attestation-"));
+        assert!(picker.contains("exports/"));
+        assert!(picker.contains("Enter save"));
+
+        state.close_attestation_save_picker();
+        assert!(matches!(
+            state.overlay,
+            Some(Overlay::Security(SecurityView::Raw))
+        ));
+    }
+
+    #[test]
+    fn attestation_export_is_complete_pretty_json_and_never_overwrites() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let evidence = security_evidence();
+        let destination =
+            write_attestation_export(directory.path(), "axiom-attestation.json", &evidence)
+                .expect("save evidence");
+        let encoded = fs::read_to_string(&destination).expect("read evidence");
+        assert!(encoded.ends_with('\n'));
+        assert!(encoded.contains("\n  \"workload_manifest\""));
+        assert_eq!(
+            serde_json::from_str::<SecurityEvidence>(&encoded).expect("decode evidence"),
+            evidence
+        );
+
+        let overwrite = write_attestation_export(
+            directory.path(),
+            "axiom-attestation.json",
+            &security_evidence(),
+        )
+        .expect_err("existing evidence must not be overwritten");
+        assert!(overwrite.to_string().contains("already exists"));
+        assert!(
+            write_attestation_export(directory.path(), "../escape.json", &security_evidence())
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn ready_status_uses_the_success_tone() {
+        let state = TuiState::new(
+            PathBuf::from("/tmp/project"),
+            "model".into(),
+            PermissionProfile::Confirm,
+        );
+        assert_eq!(state.status, "Ready");
+        assert_eq!(state.status_tone, StatusTone::Success);
+    }
+
+    #[test]
+    fn workload_parser_extracts_digest_pinned_compose_services_and_bounds_unicode() {
+        let evidence = security_evidence();
+        let parsed = parse_workload_manifest(
+            evidence
+                .workload_manifest
+                .as_deref()
+                .expect("workload manifest"),
+        );
+        assert_eq!(parsed.services.len(), 2);
+        assert_eq!(parsed.services[0].name, "inference");
+        assert_eq!(
+            parsed.services[0].image.as_deref(),
+            Some("registry.example/inference@sha256:abcd")
+        );
+        let oversized = "🌸".repeat(MAX_WORKLOAD_DISPLAY_CHARS + 1);
+        let (bounded, truncated) = bounded_workload_display(&oversized);
+        assert!(truncated);
+        assert_eq!(bounded.chars().count(), MAX_WORKLOAD_DISPLAY_CHARS);
+        assert!(bounded.ends_with('🌸'));
+    }
 
     #[test]
     fn strips_terminal_control_sequences() {
@@ -5954,22 +7633,35 @@ mod tests {
     }
 
     #[test]
-    fn slash_option_menu_and_tab_completion_use_valid_values() {
+    fn permissions_picker_has_tools_and_crypto_tabs() {
         let mut state = TuiState::new(
             PathBuf::from("/tmp/project"),
             "model".into(),
             PermissionProfile::Confirm,
         );
-        state.input = "/permissions a".into();
-
+        state.open_permissions();
         let output = render_symbols(100, 30, &state);
-        assert!(output.contains("/permissions options"));
-        assert!(output.contains("autonomous"));
-        assert!(output.contains("hard gates"));
-        assert!(!output.contains("Read-only workspace inspection"));
+        assert!(output.contains("Tools"));
+        assert!(output.contains("Crypto"));
+        assert!(output.contains("Full Access"));
+        assert!(output.contains("one confirmation per use"));
+        assert!(!output.contains("Control which tools"));
+        assert!(!output.contains("Coming soon"));
+        assert!(output.contains("✓ Confirm"));
+        assert!(!output.contains("Current"));
+        assert_eq!(
+            state.selected_permission_profile(),
+            Some(PermissionProfile::Confirm)
+        );
+        let compact = render_symbols(MIN_WIDTH, MIN_HEIGHT, &state);
+        assert!(compact.contains("Confirm"));
 
-        state.complete_slash();
-        assert_eq!(state.input, "/permissions autonomous");
+        state.switch_permission_tab();
+        let crypto = render_symbols(100, 30, &state);
+        assert!(crypto.contains("Coming soon!"));
+        assert!(!crypto.contains("Crypto authority is separate"));
+        assert!(!crypto.contains("Wallets, networks"));
+        assert_eq!(state.selected_permission_profile(), None);
     }
 
     #[test]
@@ -5987,8 +7679,8 @@ mod tests {
         state.input = "/permi".into();
         assert!(state.invalid_slash_has_completion());
         state.complete_slash();
-        assert_eq!(state.input, "/permissions ");
-        assert!(state.invalid_slash_has_completion());
+        assert_eq!(state.input, "/permissions");
+        assert!(!state.invalid_slash_has_completion());
 
         state.input = "/not-a-command".into();
         assert!(!state.invalid_slash_has_completion());
@@ -6229,6 +7921,10 @@ mod tests {
         state.compacting = true;
         state.status = "Compacting conversation context…".into();
         state.status_tone = StatusTone::Active;
+        state.apply(&AppEvent::ProviderStatusChanged {
+            connected: true,
+            detail: "Attested end-to-end encrypted inference connected".into(),
+        });
 
         state.animation_frame = 0;
         let spread = render_symbols(100, 30, &state);
@@ -6236,6 +7932,7 @@ mod tests {
         let compressed = render_symbols(100, 30, &state);
         assert!(spread.contains("● [▰   ▰   ▰]  Compacting"));
         assert!(compressed.contains("● [    ◆    ]  Compacting"));
+        assert!(!spread.contains("Attested end-to-end"));
         assert_ne!(spread, compressed);
 
         state.options.ascii = true;
@@ -6246,6 +7943,29 @@ mod tests {
         });
         assert!(!state.compacting);
         assert!(render_symbols(100, 30, &state).contains("* Context compacted"));
+    }
+
+    #[test]
+    fn provider_connection_details_do_not_replace_task_status_but_failures_do() {
+        let mut state = TuiState::new(
+            PathBuf::from("/tmp/project"),
+            "model".into(),
+            PermissionProfile::Confirm,
+        );
+        let turn_id = TurnId::new();
+        state.apply(&AppEvent::TurnStarted { turn_id });
+        state.apply(&AppEvent::ProviderStatusChanged {
+            connected: true,
+            detail: "Attested end-to-end encrypted inference connected".into(),
+        });
+        assert_eq!(state.status, "Working…");
+
+        state.apply(&AppEvent::ProviderStatusChanged {
+            connected: false,
+            detail: "connection closed".into(),
+        });
+        assert_eq!(state.status, "Provider unavailable: connection closed");
+        assert_eq!(state.status_tone, StatusTone::Error);
     }
 
     #[test]
@@ -6266,7 +7986,7 @@ mod tests {
             messages_before: 12,
         });
         let output = render_symbols(100, 30, &state);
-        assert!(output.contains("new-model · high · confirm"));
+        assert!(output.contains("new-model · high · Confirm"));
         assert!(output.contains("CONTEXT COMPACTED"));
         assert!(output.contains("12 conversation message(s)"));
         assert!(!output.contains("hidden successor summary"));
@@ -6392,7 +8112,7 @@ mod tests {
     }
 
     #[test]
-    fn token_usage_accumulates_across_provider_requests_and_renders() {
+    fn token_usage_accumulates_across_provider_requests_without_rendering() {
         let mut state = TuiState::new(
             PathBuf::from("/tmp/project"),
             "model".into(),
@@ -6418,7 +8138,7 @@ mod tests {
         assert_eq!(state.input_tokens, 1_120);
         assert_eq!(state.output_tokens, 114);
         assert_eq!(state.displayed_tokens(), 1_234);
-        assert!(render_symbols(100, 30, &state).contains("1,234 tokens used"));
+        assert!(!render_symbols(100, 30, &state).contains("tokens used"));
     }
 
     #[test]
@@ -6451,16 +8171,14 @@ mod tests {
         });
 
         assert_eq!(state.displayed_tokens(), 3);
-        assert!(render_symbols(100, 30, &state).contains("3 tokens used"));
-        assert!(!render_symbols(100, 30, &state).contains("~3 tokens used"));
+        assert!(!render_symbols(100, 30, &state).contains("tokens used"));
 
         state.apply(&AppEvent::UsageUpdated {
             input_tokens: 40,
             output_tokens: 5,
         });
         assert_eq!(state.displayed_tokens(), 45);
-        assert!(render_symbols(100, 30, &state).contains("45 tokens used"));
-        assert!(!render_symbols(100, 30, &state).contains("~45 tokens used"));
+        assert!(!render_symbols(100, 30, &state).contains("tokens used"));
 
         state.apply(&AppEvent::TextDelta {
             turn_id: TurnId::new(),
@@ -6477,19 +8195,11 @@ mod tests {
     }
 
     #[test]
-    fn mouse_hit_testing_distinguishes_composer_from_transcript() {
-        let area = Rect::new(0, 0, 100, 30);
-        assert_eq!(focus_at(area, 5, 27), Some(Focus::Composer));
-        assert_eq!(focus_at(area, 5, 10), Some(Focus::Transcript));
-        assert_eq!(focus_at(area, 5, 29), None);
-    }
-
-    #[test]
     fn pending_attention_is_ordered_and_does_not_replace_message_draft() {
         let mut state = TuiState::new(
             PathBuf::from("/tmp/project"),
             "model".into(),
-            PermissionProfile::Workspace,
+            PermissionProfile::Confirm,
         );
         state.input = "unfinished draft".into();
         state.apply(&AppEvent::BackgroundTaskChanged {
@@ -6678,11 +8388,44 @@ mod tests {
     }
 
     #[test]
+    fn attestation_failure_is_actionable_and_keeps_raw_detail_folded() {
+        let mut state = TuiState::new(
+            PathBuf::from("/tmp/project"),
+            "model".into(),
+            PermissionProfile::Confirm,
+        );
+        let turn = TurnId::new();
+        state.apply(&AppEvent::PromptAccepted {
+            turn_id: turn.clone(),
+            text: "test secure inference".into(),
+        });
+        state.apply(&AppEvent::TurnStarted {
+            turn_id: turn.clone(),
+        });
+        let raw = "provider error: AttestationRejected: Intel TDX status is rejected by policy";
+        state.apply(&AppEvent::ErrorRaised {
+            turn_id: Some(turn.clone()),
+            message: raw.into(),
+        });
+
+        let rendered = render_symbols(100, 30, &state);
+        assert!(rendered.contains("Secure connection could not be verified"));
+        assert!(rendered.contains("Your request was not sent"));
+        assert!(!rendered.contains("Intel TDX"));
+        assert_eq!(state.status, "Attestation failed");
+        let task = state.entries[state.task_index(&turn).expect("task")]
+            .task
+            .as_ref()
+            .expect("task view");
+        assert_eq!(task.error_detail.as_deref(), Some(raw));
+    }
+
+    #[test]
     fn ascii_mode_and_every_semantic_category_render_without_controls() {
         let mut state = TuiState::with_options(
             PathBuf::from("/tmp/🌸/project"),
             "model".into(),
-            PermissionProfile::Workspace,
+            PermissionProfile::Confirm,
             TuiOptions {
                 color_mode: ColorMode::Ansi16,
                 ascii: true,
@@ -6694,12 +8437,12 @@ mod tests {
             AppEvent::SessionCreated {
                 cwd: PathBuf::from("/tmp/project"),
                 origin: Origin::Test,
-                profile: PermissionProfile::Workspace,
+                profile: PermissionProfile::Confirm,
             },
             AppEvent::SessionResumed {
                 cwd: PathBuf::from("/tmp/project"),
                 origin: Origin::Test,
-                profile: PermissionProfile::Workspace,
+                profile: PermissionProfile::Confirm,
             },
             AppEvent::PromptAccepted {
                 turn_id: turn.clone(),
@@ -6765,6 +8508,7 @@ mod tests {
                 call_id: "c2".into(),
                 diff: "-old\n+new".into(),
                 truncated: false,
+                files: Vec::new(),
             },
             AppEvent::QuestionAsked {
                 question_id: "q".into(),
@@ -6794,7 +8538,7 @@ mod tests {
                 output_tokens: 2,
             },
             AppEvent::PermissionProfileChanged {
-                profile: PermissionProfile::Workspace,
+                profile: PermissionProfile::Confirm,
             },
             AppEvent::ModelChanged {
                 model: "next-model".into(),
@@ -6882,7 +8626,7 @@ mod tests {
     }
 
     #[test]
-    fn first_wheel_step_leaves_follow_mode_at_the_real_bottom_offset() {
+    fn first_scroll_step_leaves_follow_mode_at_the_real_bottom_offset() {
         let mut state = TuiState::new(
             PathBuf::from("/tmp/project"),
             "model".into(),
@@ -6958,6 +8702,7 @@ mod tests {
                 call_id: "read-1".into(),
                 diff: "-old\n+new".into(),
                 truncated: false,
+                files: Vec::new(),
             },
             AppEvent::ToolCompleted {
                 call_id: "read-1".into(),
@@ -7455,6 +9200,7 @@ mod tests {
                 call_id: "patch-reducer".into(),
                 diff: "- push_entry(tool_output)\n+ update_tool(call_id)".into(),
                 truncated: false,
+                files: Vec::new(),
             },
             AppEvent::ToolCompleted {
                 call_id: "patch-reducer".into(),
@@ -7526,7 +9272,7 @@ mod tests {
         slash_commands.status = "Choose a local command".into();
 
         let mut slash_options = preview_state();
-        slash_options.input = "/permissions a".into();
+        slash_options.input = "/thinking h".into();
         slash_options.status = "Tab completes valid options".into();
 
         let mut model_picker = preview_state();
@@ -7548,7 +9294,7 @@ mod tests {
                 title: Some("Build transcript resume picker".into()),
                 cwd: PathBuf::from("/work/axiomai"),
                 origin: "tui".into(),
-                profile: "workspace".into(),
+                profile: "full_access".into(),
                 archived: false,
                 history_truncated: false,
                 updated_at: "2026-08-22T16:42:00Z".into(),
@@ -7574,6 +9320,16 @@ mod tests {
                 updated_at: "2026-08-21T09:06:00Z".into(),
             },
         ]);
+
+        let mut security = preview_state();
+        security.security = "SECURE";
+        security.security_evidence = Some(security_evidence());
+        security.open_security();
+
+        let mut security_workload = preview_state();
+        security_workload.security = "SECURE";
+        security_workload.security_evidence = Some(security_evidence());
+        security_workload.overlay = Some(Overlay::Security(SecurityView::Workload));
 
         let narrow = preview_state();
         let minimum = preview_state();
@@ -7635,6 +9391,8 @@ mod tests {
             ("slash-options", 100, 30, slash_options),
             ("model-picker", 100, 30, model_picker),
             ("resume-picker", 100, 30, resume_picker),
+            ("security", 120, 42, security),
+            ("security-workload", 120, 42, security_workload),
             ("narrow", 54, 16, narrow),
             ("minimum", 42, 10, minimum),
             ("markdown", 100, 42, markdown),
@@ -7673,10 +9431,91 @@ mod tests {
     }
 
     #[test]
-    fn composer_keeps_the_caret_visible_for_overlong_input() {
+    fn single_line_fields_keep_their_caret_visible_for_overlong_input() {
         assert_eq!(tail_to_width("abcdef", 10), "abcdef");
         assert_eq!(tail_to_width("abcdef", 3), "def");
         assert_eq!(tail_to_width("a👋bc", 3), "bc");
+    }
+
+    #[test]
+    fn composer_grows_to_eight_rows_then_scrolls_with_the_editing_cursor() {
+        let mut state = TuiState::new(
+            PathBuf::from("/tmp/project"),
+            "model".into(),
+            PermissionProfile::Confirm,
+        );
+        state.has_prompt = true;
+        state.entries.clear();
+        let area = Rect::new(0, 0, 100, 42);
+        assert_eq!(main_rows(area, &state)[3].height, 3);
+
+        state.input.set_text(
+            (0..20)
+                .map(|index| format!("draft line {index:02}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        let rows = main_rows(area, &state);
+        assert_eq!(rows[3].height, COMPOSER_MAX_CONTENT_ROWS + 2);
+        assert!(
+            rows[1].height >= 3,
+            "the transcript must retain usable space"
+        );
+
+        let bottom = render_symbols(area.width, area.height, &state);
+        assert!(bottom.contains("draft line 19"));
+        assert!(!bottom.contains("draft line 00"));
+
+        state.input.move_to_document_start();
+        let top = render_symbols(area.width, area.height, &state);
+        assert!(top.contains("draft line 00"));
+        assert!(!top.contains("draft line 19"));
+    }
+
+    #[test]
+    fn multiline_composer_keeps_minimum_terminal_layout_usable() {
+        let mut state = TuiState::new(
+            PathBuf::from("/tmp/project"),
+            "model".into(),
+            PermissionProfile::Confirm,
+        );
+        state.input.set_text("one\ntwo\nthree\nfour");
+        let area = Rect::new(0, 0, MIN_WIDTH, MIN_HEIGHT);
+        let rows = main_rows(area, &state);
+        assert_eq!(rows[1].height, 3);
+        assert_eq!(rows[3].height, 3);
+        assert!(render_symbols(area.width, area.height, &state).contains("four"));
+    }
+
+    #[test]
+    fn command_errors_are_transient_status_instead_of_transcript_entries() {
+        let mut state = preview_state();
+        let entries_before = state.entries.len();
+        show_slash_error(&mut state, "/permissions does not accept arguments");
+        assert_eq!(state.entries.len(), entries_before);
+        assert!(state.status.starts_with("Command error:"));
+        assert_eq!(state.status_tone, StatusTone::Error);
+
+        state.apply(&AppEvent::PermissionProfileChanged {
+            profile: PermissionProfile::FullAccess,
+        });
+        assert_eq!(state.status, "Tools permission changed to Full Access");
+    }
+
+    #[test]
+    fn verifying_attestation_animates_the_header_chip() {
+        let mut state = preview_state();
+        state.options.animation = true;
+        state.apply(&AppEvent::SecurityStatusChanged {
+            state: crate::app::SecurityStatus::Verifying,
+        });
+        state.animation_frame = 0;
+        let resting = render_symbols(100, 30, &state);
+        state.animation_frame = 4;
+        let blooming = render_symbols(100, 30, &state);
+        assert!(state.should_animate());
+        assert!(resting.contains("· VERIFYING"));
+        assert!(blooming.contains("✦ VERIFYING"));
     }
 
     #[test]
@@ -7685,18 +9524,48 @@ mod tests {
         state.open_login(Some("Authentication is required.".into()));
         let menu = render_symbols(90, 28, &state);
         assert!(menu.contains("Continue in browser"));
-        assert!(menu.contains("Paste an axm_ authorization key"));
-        assert!(menu.contains("Paste an axc_ one-time browser code"));
+        assert!(menu.contains("Continue with an Axiom API key"));
+        assert!(!menu.contains("Not now"));
+        assert!(!menu.contains("Press K"));
 
         state.overlay = Some(Overlay::Auth(AuthOverlay::Paste {
             kind: AuthPasteKind::ApiKey,
             input: SecretInput("axm_do-not-render-this-secret".into()),
         }));
         let paste = render_symbols(90, 28, &state);
-        assert!(paste.contains("Paste the axm_ authorization key"));
+        assert!(paste.contains("Paste your Axiom API key"));
         assert!(paste.contains('•'));
         assert!(!paste.contains("do-not-render-this-secret"));
         assert!(!format!("{state:?}").contains("do-not-render-this-secret"));
+
+        state.overlay = Some(Overlay::Auth(AuthOverlay::Account {
+            status: "Signed in successfully.\n\nYour Axiom API key is saved securely.".into(),
+        }));
+        let account = render_symbols(90, 28, &state);
+        let account_lines = account.lines().collect::<Vec<_>>();
+        let signed_row = account_lines
+            .iter()
+            .position(|line| line.contains("Signed in successfully."))
+            .expect("signed-in row");
+        let storage_row = account_lines
+            .iter()
+            .position(|line| line.contains("Your Axiom API key is saved securely."))
+            .expect("storage row");
+        assert!(storage_row >= signed_row + 2);
+        assert!(account.contains("Your Axiom API key is saved securely."));
+        assert!(!account.contains("Key ID:"));
+    }
+
+    #[test]
+    fn unattested_badge_requires_the_explicit_development_launch_gate() {
+        if crate::provider::unattested_development_enabled() {
+            return;
+        }
+        let mut state = preview_state();
+        state.apply(&AppEvent::SecurityStatusChanged {
+            state: crate::app::SecurityStatus::UnattestedDevelopment,
+        });
+        assert_eq!(state.security, "SECURITY FAILED");
     }
 
     #[test]

@@ -36,18 +36,22 @@ fn run_tui_at(
     }
     command.env(
         "AXIOMCLI_TEST_RUNNER",
-        if matches!(runner, "resume" | "remembered_model" | "delete") {
+        if matches!(
+            runner,
+            "resume" | "remembered_model" | "delete" | "composer"
+        ) {
             "echo"
         } else {
             runner
         },
     );
     command.env("AXIOMCLI_ASCII", "1");
+    command.env("AXIOMCLI_CREDENTIAL_STORE", "file");
     command.env("NO_COLOR", "1");
     command.env("XDG_CONFIG_HOME", state_path.join("config"));
     command.env("XDG_DATA_HOME", state_path.join("data"));
     if runner == "workspace_edit" {
-        command.env("AXIOM_PERMISSION_PROFILE", "workspace");
+        command.env("AXIOM_PERMISSION_PROFILE", "full_access");
     }
     if panic_probe {
         command.env("AXIOMCLI_TEST_TUI_PANIC", "1");
@@ -99,10 +103,6 @@ fn run_tui_at(
             b"view",
             "resized interactive screen",
         );
-        // SGR mouse coordinates are one-based; row 28 is inside the
-        // composer after the PTY has resized to 100x30.
-        writer.write_all(b"\x1b[<0;5;28M").expect("click composer");
-        writer.flush().expect("flush composer click");
         writer.write_all(b"probe\r").expect("submit prompt");
         writer.flush().expect("flush prompt");
         if runner == "blocking" {
@@ -164,15 +164,15 @@ fn run_tui_at(
                 "slash thinking result",
             );
             writer
-                // Start on `plan`, move the highlighted option to `observe`,
-                // accept it, then execute the completed command.
-                .write_all(b"/permissions \x1b[B\r\r")
+                // Open the permission window on Confirm, move to Full Access,
+                // then apply the selected tool profile.
+                .write_all(b"/permissions\r\x1b[B\r")
                 .expect("arrow-select and change permission profile");
             writer.flush().expect("flush slash command");
             wait_for_output(
                 &output_rx,
                 &mut output,
-                b"observe",
+                b"Full Access",
                 "slash permission result",
             );
             writer.write_all(b"/model\r").expect("open model picker");
@@ -185,11 +185,10 @@ fn run_tui_at(
                 "loaded model catalog",
             );
             writer
-                // SGR wheel-up at a cell inside the picker, followed by Enter.
                 // The default glm model is the second deterministic catalog
-                // entry, so one wheel step selects alternate-model.
-                .write_all(b"\x1b[<64;50;15M\r")
-                .expect("scroll and select model");
+                // entry, so Arrow Up selects alternate-model.
+                .write_all(b"\x1b[A\r")
+                .expect("move and select model");
             writer.flush().expect("flush model selection");
             wait_for_output(
                 &output_rx,
@@ -244,6 +243,19 @@ fn run_tui_at(
                 .expect("search and select transcript");
             writer.flush().expect("flush transcript selection");
             wait_for_output(&output_rx, &mut output, b"Resumed", "resumed transcript");
+        } else if runner == "composer" {
+            thread::sleep(Duration::from_millis(500));
+            writer
+                .write_all(b"\x1b[200~first line\nsecond line\x1b[201~\x1b[D!\x1b\rthird\r")
+                .expect("paste, edit, and submit multiline prompt");
+            writer.flush().expect("flush multiline prompt");
+            wait_for_output(
+                &output_rx,
+                &mut output,
+                b"thirde",
+                "edited multiline prompt",
+            );
+            thread::sleep(Duration::from_millis(500));
         } else {
             thread::sleep(Duration::from_millis(250));
         }
@@ -330,27 +342,37 @@ fn resize_prompt_and_double_ctrl_c_restore_the_terminal() {
     let (output, success) = run_tui("echo", false);
     assert!(success, "TUI failed; output: {output:?}");
     assert!(output.contains("AXIOMCLI"));
-    assert!(output.contains("observe"), "slash command did not render");
+    assert!(
+        output.contains("Full Access"),
+        "slash command did not render"
+    );
     assert!(
         output.contains("Thinking set to high"),
         "invalid Enter completion or slash focus shortcut did not run"
     );
     assert!(
         output.contains("Model changed to alternate-model"),
-        "model picker did not select the wheel-scrolled model"
+        "model picker did not select the keyboard-highlighted model"
     );
     assert!(
-        output.contains("\u{1b}[?1003l\u{1b}[?1002l\u{1b}[?1015l\u{1b}[?1000h\u{1b}[?1006h"),
-        "focused mouse capture sequence was not emitted"
-    );
-    assert!(
-        !output.contains("\u{1b}[?1003h"),
-        "all-motion mouse reporting should remain disabled"
+        !output.contains("\u{1b}[?1000h") && !output.contains("\u{1b}[?1006h"),
+        "terminal pointer capture must remain disabled so native selection works"
     );
     assert!(output.contains("\u{1b}[?1049h"), "alternate screen entered");
     assert!(
         output.contains("\u{1b}[?1049l"),
         "alternate screen restored"
+    );
+}
+
+#[test]
+fn composer_preserves_multiline_paste_newline_shortcut_and_cursor_edits() {
+    let (output, success) = run_tui("composer", false);
+    assert!(success, "TUI failed; output: {output:?}");
+    assert!(output.contains("first"), "first pasted line missing");
+    assert!(
+        output.contains("lin!") && output.contains("thirde"),
+        "cursor insertion was not preserved: {output:?}"
     );
 }
 
@@ -448,7 +470,7 @@ fn durable_tui_session_resumes_in_the_same_workspace() {
     assert!(
         resumed_output.contains("alternate-model")
             && resumed_output.contains("high")
-            && resumed_output.contains("observe"),
+            && resumed_output.contains("Full Access"),
         "resume did not preserve model, thinking, and permissions: {resumed_output:?}"
     );
 }
@@ -530,7 +552,7 @@ fn slash_resume_picker_searches_and_restores_a_saved_transcript() {
     assert!(output.contains("Earlier cherry task"));
     assert!(output.contains("Resumed"));
     assert!(
-        output.contains("observe"),
+        output.contains("Full Access"),
         "saved permission state was not restored"
     );
 }
@@ -599,6 +621,7 @@ fn idle_tui_stays_within_linux_memory_and_cpu_budgets() {
     command.arg("tui");
     command.env("AXIOMCLI_TEST_RUNNER", "echo");
     command.env("AXIOMCLI_ASCII", "1");
+    command.env("AXIOMCLI_CREDENTIAL_STORE", "file");
     command.env("NO_COLOR", "1");
     command.env("XDG_CONFIG_HOME", state.path().join("config"));
     command.env("XDG_DATA_HOME", state.path().join("data"));

@@ -1148,7 +1148,7 @@ mod tests {
                 &id,
                 3,
                 AppEvent::PermissionProfileChanged {
-                    profile: PermissionProfile::Workspace,
+                    profile: PermissionProfile::Confirm,
                 },
             ),
         ];
@@ -1158,13 +1158,13 @@ mod tests {
         );
         assert_eq!(
             permission_for_resume(&events, PermissionProfile::Confirm),
-            PermissionProfile::Workspace
+            PermissionProfile::Confirm
         );
         let store = SessionStore::in_memory().expect("store");
         store.append_all(&events).expect("persist settings");
         assert_eq!(
             store.summary(&id).expect("updated summary").profile,
-            "workspace"
+            "confirm"
         );
     }
 

@@ -55,8 +55,13 @@ struct ProxyProcess {
 
 impl ProxyProcess {
     fn start(relay_url: &str) -> Self {
+        Self::start_with(relay_url, &[])
+    }
+
+    fn start_with(relay_url: &str, extra: &[&str]) -> Self {
         let mut child = Command::new(env!("CARGO_BIN_EXE_axiom-proxy"))
             .args(["--bind", "127.0.0.1:0", "--axiom-base-url", relay_url])
+            .args(extra)
             .env("AXIOM_API_KEY", UPSTREAM_KEY)
             .env("AXIOM_PROXY_TOKEN", LOCAL_TOKEN)
             .env("AXIOM_TEST_FIXTURE", "1")
@@ -136,6 +141,124 @@ fn linux_resources(process_id: u32) -> LinuxResources {
         file_descriptors,
         resident_kib,
     }
+}
+
+/// A request from an application the operator cannot modify must still be
+/// answered, and the parameters that were not applied must be discoverable.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn actual_proxy_honors_compatibility_mode_for_unsupported_parameters() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let fixture_address = listener.local_addr().unwrap();
+    let relay_url = format!("http://{fixture_address}");
+    let state = Arc::new(FixtureState {
+        model_identity: FixtureModelIdentity::generate(),
+        provider_base_url: format!("{relay_url}/v1"),
+        relay_bodies: Mutex::new(Vec::new()),
+        decrypted_values: Mutex::new(Vec::new()),
+        slow_stream_started: Notify::new(),
+        slow_stream_dropped: Arc::new(AtomicBool::new(false)),
+    });
+    let app = Router::new()
+        .route("/api/v1/relay/models", get(catalog))
+        .route("/v1/attestation/report", get(attestation))
+        .route("/api/v1/relay/chat/completions", post(relay_chat))
+        .with_state(Arc::clone(&state));
+    let fixture_shutdown = tokio_util::sync::CancellationToken::new();
+    let shutdown = fixture_shutdown.clone();
+    let fixture_task = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .with_graceful_shutdown(shutdown.cancelled_owned())
+            .await
+            .unwrap();
+    });
+    let client = reqwest::Client::builder().build().unwrap();
+
+    // A body shaped like what a third-party application actually sends: an
+    // OpenAI parameter the relay has no field for, an inert one, a typo, an
+    // `n` that is a no-op, and text delivered as a part array.
+    let body = json!({
+        "model":MODEL_ID,
+        "messages":[{"role":"user","content":[{"type":"text","text":"compat fixture request"}]}],
+        "stop":["\n\n"],
+        "seed":11,
+        "user":"local-app",
+        "temperatur":0.3,
+        "n":1
+    });
+
+    let lenient = ProxyProcess::start_with(&relay_url, &["--compat", "lenient"]);
+    let answered = post_json(&client, &lenient.base_url, body.clone()).await;
+    assert_eq!(answered.status(), StatusCode::OK);
+    let reported = answered
+        .headers()
+        .get("x-axiom-ignored-parameters")
+        .expect("lenient mode reports dropped parameters")
+        .to_str()
+        .unwrap()
+        .to_owned();
+    // Answer-affecting parameters and the typo are named; the inert one is not.
+    assert_eq!(reported, "seed,stop,temperatur");
+    let answer: Value = answered.json().await.unwrap();
+    assert_eq!(answer["choices"][0]["message"]["role"], "assistant");
+
+    // The part array became text, and nothing unsupported reached the relay.
+    let relayed = state.relay_bodies.lock().unwrap().last().cloned().unwrap();
+    for absent in ["stop", "seed", "temperatur", "local-app"] {
+        assert!(
+            !relayed.contains(absent),
+            "dropped parameter {absent} must never reach the relay"
+        );
+    }
+
+    let lenient_stderr = lenient.stop();
+    assert!(
+        lenient_stderr.contains("request_parameters_ignored"),
+        "the supervisor log must record the drop"
+    );
+
+    let strict = ProxyProcess::start_with(&relay_url, &["--compat", "strict"]);
+    let refused = post_json(&client, &strict.base_url, body).await;
+    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+    let named = refused
+        .headers()
+        .get("x-axiom-ignored-parameters")
+        .expect("strict mode names the refused parameters")
+        .to_str()
+        .unwrap()
+        .to_owned();
+    // Strict promises full fidelity, so it names the inert parameter as well.
+    assert!(named.contains("user"), "strict named: {named}");
+    assert!(named.contains("stop"), "strict named: {named}");
+
+    // A request carrying nothing unsupported still succeeds under strict mode.
+    let clean = post_json(
+        &client,
+        &strict.base_url,
+        json!({
+            "model":MODEL_ID,
+            "messages":[{"role":"user","content":"compat fixture request"}]
+        }),
+    )
+    .await;
+    assert_eq!(clean.status(), StatusCode::OK);
+    assert!(clean.headers().get("x-axiom-ignored-parameters").is_none());
+
+    // More choices than can be produced is refused regardless of mode.
+    let over_delivered = post_json(
+        &client,
+        &strict.base_url,
+        json!({
+            "model":MODEL_ID,
+            "messages":[{"role":"user","content":"compat fixture request"}],
+            "n":2
+        }),
+    )
+    .await;
+    assert_eq!(over_delivered.status(), StatusCode::BAD_REQUEST);
+
+    strict.stop();
+    fixture_shutdown.cancel();
+    fixture_task.await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

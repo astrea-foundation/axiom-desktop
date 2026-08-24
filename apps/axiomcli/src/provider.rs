@@ -9,7 +9,9 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use axiom_secure_client::{ApiCredential, SecureClient, SecureClientConfig, TrustPolicy};
+use axiom_secure_client::{
+    ApiCredential, SecureClient, SecureClientConfig, SecurityEvidence, TrustPolicy,
+};
 
 use crate::{AxiomError, Result, auth::AuthManager};
 pub use axiom_inference::{
@@ -17,8 +19,45 @@ pub use axiom_inference::{
     ModelInfo, ProviderEvent, ProviderFailureKind, ProviderSecurityState, ToolCall, ToolDefinition,
 };
 
+/// Returns true only when this binary was compiled with the quarantined
+/// development adapter and the caller explicitly requested it for this
+/// process. All front ends use this same gate when selecting or displaying the
+/// unattested transport.
+#[must_use]
+pub fn unattested_development_enabled() -> bool {
+    #[cfg(feature = "development-provider")]
+    {
+        std::env::var("AXIOMCLI_UNATTESTED_DEV").as_deref() == Ok("1")
+    }
+    #[cfg(not(feature = "development-provider"))]
+    {
+        false
+    }
+}
+
+/// Result of a provider security preflight. Evidence is present only for a
+/// genuinely attested transport; development and future non-attested
+/// providers must not manufacture it.
+#[derive(Clone, Debug)]
+pub struct ProviderSecurityVerification {
+    pub state: ProviderSecurityState,
+    pub evidence: Option<SecurityEvidence>,
+}
+
 #[async_trait]
 pub trait InferenceProvider: Send + Sync {
+    /// Establish and verify the selected model's security session without
+    /// performing inference. Front ends use this as a startup preflight.
+    async fn verify_security(
+        &self,
+        _model: &str,
+        _cancellation: CancellationToken,
+    ) -> Result<ProviderSecurityVerification> {
+        Err(AxiomError::Provider(
+            "provider does not support security preflight".into(),
+        ))
+    }
+
     async fn stream(
         &self,
         request: InferenceRequest,
@@ -89,6 +128,28 @@ impl SecureAxiomProvider {
         };
         SecureClient::new(self.config.clone(), ApiCredential::new(value)).map_err(map_secure_error)
     }
+
+    async fn establish_verified(
+        &self,
+        model_id: &str,
+        cancellation: CancellationToken,
+    ) -> Result<Box<dyn axiom_secure_client::VerifiedSession>> {
+        let client = self.client()?;
+        let models = client
+            .models(cancellation.clone())
+            .await
+            .map_err(map_secure_error)?;
+        let model = models
+            .iter()
+            .find(|model| model.id == model_id)
+            .ok_or_else(|| {
+                AxiomError::Provider("selected secure model is unavailable".to_owned())
+            })?;
+        client
+            .establish(model, &TrustPolicy::default(), cancellation)
+            .await
+            .map_err(map_secure_error)
+    }
 }
 
 impl std::fmt::Debug for SecureAxiomProvider {
@@ -103,6 +164,18 @@ impl std::fmt::Debug for SecureAxiomProvider {
 
 #[async_trait]
 impl InferenceProvider for SecureAxiomProvider {
+    async fn verify_security(
+        &self,
+        model: &str,
+        cancellation: CancellationToken,
+    ) -> Result<ProviderSecurityVerification> {
+        let session = self.establish_verified(model, cancellation).await?;
+        Ok(ProviderSecurityVerification {
+            state: ProviderSecurityState::Verified,
+            evidence: Some(session.evidence().clone()),
+        })
+    }
+
     async fn stream(
         &self,
         request: InferenceRequest,
@@ -124,28 +197,21 @@ impl InferenceProvider for SecureAxiomProvider {
             &cancellation,
         )
         .await?;
-        let client = self.client()?;
-        let models = match client.models(cancellation.clone()).await {
-            Ok(models) => models,
-            Err(error) => {
-                send_security_failure(&events, &cancellation, &error).await;
-                return Err(map_secure_error(error));
-            }
-        };
-        let model = models
-            .iter()
-            .find(|model| model.id == request.model)
-            .ok_or_else(|| {
-                AxiomError::Provider("selected secure model is unavailable".to_owned())
-            })?;
-        let established = client
-            .establish(model, &TrustPolicy::default(), cancellation.clone())
-            .await;
-        let mut session = match established {
+        let mut session = match self
+            .establish_verified(&request.model, cancellation.clone())
+            .await
+        {
             Ok(session) => session,
             Err(error) => {
-                send_security_failure(&events, &cancellation, &error).await;
-                return Err(map_secure_error(error));
+                if !matches!(error, AxiomError::Cancelled) {
+                    let _ = send_provider_event(
+                        &events,
+                        ProviderEvent::SecurityState(ProviderSecurityState::Failed),
+                        &cancellation,
+                    )
+                    .await;
+                }
+                return Err(error);
             }
         };
         send_provider_event(
@@ -177,21 +243,6 @@ async fn send_provider_event(
     tokio::select! {
         () = cancellation.cancelled() => Err(AxiomError::Cancelled),
         result = events.send(event) => result.map_err(|_| AxiomError::Cancelled),
-    }
-}
-
-async fn send_security_failure(
-    events: &mpsc::Sender<ProviderEvent>,
-    cancellation: &CancellationToken,
-    error: &axiom_secure_client::SecureClientError,
-) {
-    if error.kind() != ProviderFailureKind::Cancelled {
-        let _ = send_provider_event(
-            events,
-            ProviderEvent::SecurityState(ProviderSecurityState::Failed),
-            cancellation,
-        )
-        .await;
     }
 }
 
@@ -417,6 +468,20 @@ mod development_provider {
 
     #[async_trait]
     impl InferenceProvider for AxiomProvider {
+        async fn verify_security(
+            &self,
+            _model: &str,
+            cancellation: CancellationToken,
+        ) -> Result<ProviderSecurityVerification> {
+            if cancellation.is_cancelled() {
+                return Err(AxiomError::Cancelled);
+            }
+            Ok(ProviderSecurityVerification {
+                state: ProviderSecurityState::UnattestedDevelopment,
+                evidence: None,
+            })
+        }
+
         async fn stream(
             &self,
             request: InferenceRequest,
@@ -783,6 +848,24 @@ mod tests {
     fn truncation_preserves_utf8() {
         assert_eq!(truncate("hello", 5), "hello");
         assert!(truncate("ab🌸cd", 4).ends_with('…'));
+    }
+
+    #[tokio::test]
+    async fn development_security_preflight_is_explicitly_unattested() {
+        let provider = AxiomProvider::new(
+            "http://127.0.0.1:1/v1",
+            Some("axm_secret".into()),
+            Duration::from_secs(1),
+        )
+        .expect("provider");
+        assert_eq!(
+            provider
+                .verify_security("test-model", CancellationToken::new())
+                .await
+                .expect("preflight")
+                .state,
+            ProviderSecurityState::UnattestedDevelopment
+        );
     }
 
     #[tokio::test]

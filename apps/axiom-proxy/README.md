@@ -18,7 +18,17 @@ Optional environment:
 AXIOM_BASE_URL=https://api.axiom.stream
 AXIOM_PROXY_BIND=127.0.0.1:8484
 AXIOM_PROXY_MAX_CONCURRENCY=8
+AXIOM_PROXY_COMPAT=lenient      lenient (default) drops unsupported request
+                                parameters; strict refuses them
 ```
+
+Unsupported parameters are those the Axiom relay has no field for, such as
+`stop`, `seed`, and the penalties. Lenient mode drops them so an application the
+operator cannot modify still gets an answer, and names the ones that could have
+changed the answer on the `x-axiom-ignored-parameters` response header and in a
+`request_parameters_ignored` stderr line. `n` above 1 and non-text content parts
+are refused in both modes. See
+[`../../docs/configuration.md`](../../docs/configuration.md).
 
 Start it with `cargo run --locked -p axiom-proxy`. The process emits one
 structured readiness object on stdout for a supervisor. Sanitized diagnostics

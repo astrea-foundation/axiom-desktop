@@ -23,7 +23,7 @@ use crate::{
     AxiomError, Result,
     audit::{redact_text, redact_value},
     config::McpServerConfig,
-    policy::Effect,
+    policy::{Effect, ToolAccess},
     tools::{Tool, ToolContext, ToolResult},
 };
 
@@ -311,6 +311,14 @@ impl Tool for McpTool {
         &self.description
     }
 
+    fn access(&self) -> ToolAccess {
+        if self.trusted_read_only {
+            ToolAccess::Read
+        } else {
+            ToolAccess::Write
+        }
+    }
+
     fn parameters(&self) -> Value {
         self.schema.clone()
     }
@@ -394,6 +402,7 @@ impl Tool for McpTool {
             truncated,
             changed_paths: Vec::new(),
             diff: None,
+            file_diffs: Vec::new(),
             background: None,
             events: Vec::new(),
             questions: None,

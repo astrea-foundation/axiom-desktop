@@ -1,12 +1,41 @@
-# Axiom desktop application
+# Axiom desktop
 
-This directory is reserved for the Electron desktop application. The Electron
-main process will supervise Rust sidecars; renderer processes will not receive
-raw secrets, wallet keys, or direct process-spawning authority.
+The current renderer is the Axiom desktop visual concept: sidebar, loose
+threads, the chat surface, and a Proxy pane. Its production boundary is now
+wired: Electron main supervises `axiomcli acp`, negotiates the versioned Axiom
+extension, and exposes a narrow typed API through the sandboxed preload.
 
-The Agent surface will control `axiomcli acp`. The Proxy surface will control
-the standalone `axiom-proxy` process through a separate versioned lifecycle
-protocol. The desktop implementation is intentionally left to its dedicated
-design and implementation effort.
+The visual prototype still uses its demo conversation data. A separate desktop
+UI pass can consume `window.axiomDesktop.agent` without importing Rust, parsing
+JSON-RPC, spawning a process, or reimplementing policy. The API covers sessions,
+streaming prompts, cancellation, model/thinking/permission settings, account
+login, attestation evidence, compaction, deletion, approvals, and questions.
 
-See [`../../docs/adr/0009-monorepo-and-secure-client-boundaries.md`](../../docs/adr/0009-monorepo-and-secure-client-boundaries.md).
+Brand treatment (palette, Geist, wordmark, sakura/ember empty state, message
+chrome) is copied into this package. The closed-source website is not a
+runtime or build dependency.
+
+## Run
+
+From the repository root:
+
+```text
+pnpm install
+cargo build -p axiomcli
+pnpm desktop
+```
+
+The window is frameless. Drag the top of the sidebar or the chat header to
+move it. There is no File / Edit / View menu.
+
+Sakura petal animation is vendored from sakura-js (MIT).
+
+Unpackaged development resolves `../../target/debug/axiomcli` from this app.
+`AXIOMCLI_SIDECAR` may override that development path. Packaged builds never
+use the override and require `resources/bin/axiomcli`.
+
+```text
+pnpm capture
+```
+
+writes PNG snapshots to `~/axiom-desktop-captures` (or `--capture=/path`).

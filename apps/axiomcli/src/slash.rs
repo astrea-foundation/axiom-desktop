@@ -6,12 +6,12 @@
 
 use std::{fmt, str::FromStr as _};
 
-use crate::app::{PermissionProfile, ThinkingLevel};
+use crate::app::ThinkingLevel;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SlashCommand {
     Help,
-    Permission(PermissionProfile),
+    Permissions,
     Compact { focus: Option<String> },
     Model,
     Resume,
@@ -20,6 +20,8 @@ pub enum SlashCommand {
     Login,
     Logout,
     Account,
+    Security,
+    Refresh,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -42,8 +44,8 @@ pub struct SlashCompletion {
 pub const COMMANDS: &[SlashCommandSpec] = &[
     SlashCommandSpec {
         name: "permissions",
-        usage: "/permissions <plan|observe|confirm|workspace|autonomous>",
-        description: "Change the local tool permission profile",
+        usage: "/permissions",
+        description: "Open tool and crypto permission settings",
         aliases: &["permission", "mode"],
     },
     SlashCommandSpec {
@@ -79,13 +81,13 @@ pub const COMMANDS: &[SlashCommandSpec] = &[
     SlashCommandSpec {
         name: "login",
         usage: "/login",
-        description: "Connect an Axiom account or paste an authorization value",
+        description: "Connect an Axiom account or use an Axiom API key",
         aliases: &["signin"],
     },
     SlashCommandSpec {
         name: "logout",
         usage: "/logout",
-        description: "Remove the saved Axiom authorization from this computer",
+        description: "Remove the saved Axiom API key from this computer",
         aliases: &["signout"],
     },
     SlashCommandSpec {
@@ -93,6 +95,18 @@ pub const COMMANDS: &[SlashCommandSpec] = &[
         usage: "/account",
         description: "Check the current Axiom authorization",
         aliases: &["whoami"],
+    },
+    SlashCommandSpec {
+        name: "security",
+        usage: "/security",
+        description: "Inspect attestation, encryption, and workload evidence",
+        aliases: &["attestation"],
+    },
+    SlashCommandSpec {
+        name: "refresh",
+        usage: "/refresh",
+        description: "Run a fresh attestation verification",
+        aliases: &["reverify"],
     },
     SlashCommandSpec {
         name: "help",
@@ -139,15 +153,9 @@ pub fn parse(input: &str) -> Option<Result<SlashCommand, SlashCommandError>> {
 
     Some(match canonical {
         Some("help") => no_arguments(arguments, SlashCommand::Help, "/help"),
-        Some("permissions") => required_argument(arguments, COMMANDS[0].usage).and_then(|value| {
-            PermissionProfile::from_str(value)
-                .map(SlashCommand::Permission)
-                .map_err(|_| {
-                    SlashCommandError::new(
-                        "unknown permission profile; use plan, observe, confirm, workspace, or autonomous",
-                    )
-                })
-        }),
+        Some("permissions") => {
+            no_arguments(arguments, SlashCommand::Permissions, COMMANDS[0].usage)
+        }
         Some("compact") => Ok(SlashCommand::Compact {
             focus: (!arguments.is_empty()).then(|| arguments.to_owned()),
         }),
@@ -162,6 +170,8 @@ pub fn parse(input: &str) -> Option<Result<SlashCommand, SlashCommandError>> {
         Some("login") => no_arguments(arguments, SlashCommand::Login, COMMANDS[6].usage),
         Some("logout") => no_arguments(arguments, SlashCommand::Logout, COMMANDS[7].usage),
         Some("account") => no_arguments(arguments, SlashCommand::Account, COMMANDS[8].usage),
+        Some("security") => no_arguments(arguments, SlashCommand::Security, COMMANDS[9].usage),
+        Some("refresh") => no_arguments(arguments, SlashCommand::Refresh, COMMANDS[10].usage),
         Some(_) => unreachable!("all command specs are handled"),
         None => Err(SlashCommandError::new(format!(
             "unknown command `/{name}`; use /help to list commands"
@@ -236,7 +246,16 @@ pub fn completions(input: &str) -> Vec<SlashCompletion> {
                     spec.name,
                     if matches!(
                         spec.name,
-                        "help" | "model" | "resume" | "delete" | "login" | "logout" | "account"
+                        "help"
+                            | "permissions"
+                            | "model"
+                            | "resume"
+                            | "delete"
+                            | "login"
+                            | "logout"
+                            | "account"
+                            | "security"
+                            | "refresh"
                     ) {
                         ""
                     } else {
@@ -260,19 +279,6 @@ pub fn completions(input: &str) -> Vec<SlashCompletion> {
         return Vec::new();
     }
     let options: Vec<(&str, &'static str)> = match command {
-        "permissions" => vec![
-            ("plan", "Read files and write revisioned plan artifacts"),
-            ("observe", "Read-only workspace inspection"),
-            ("confirm", "Ask before every side effect"),
-            (
-                "workspace",
-                "Allow in-workspace edits and safe dev commands",
-            ),
-            (
-                "autonomous",
-                "Allow most in-scope actions; retain hard gates",
-            ),
-        ],
         "thinking" => vec![
             ("minimal", "Use minimal reasoning effort"),
             ("low", "Use low reasoning effort"),
@@ -280,9 +286,8 @@ pub fn completions(input: &str) -> Vec<SlashCompletion> {
             ("high", "Use high reasoning effort"),
             ("xhigh", "Use extra-high reasoning effort"),
         ],
-        "compact" | "help" | "model" | "resume" | "delete" | "login" | "logout" | "account" => {
-            Vec::new()
-        }
+        "permissions" | "compact" | "help" | "model" | "resume" | "delete" | "login" | "logout"
+        | "account" | "security" | "refresh" => Vec::new(),
         _ => unreachable!("all command specs are handled"),
     };
     options
@@ -307,14 +312,8 @@ mod tests {
 
     #[test]
     fn parses_every_required_command_and_aliases() {
-        assert_eq!(
-            parse("/permissions workspace"),
-            Some(Ok(SlashCommand::Permission(PermissionProfile::Workspace)))
-        );
-        assert_eq!(
-            parse("/mode plan"),
-            Some(Ok(SlashCommand::Permission(PermissionProfile::Plan)))
-        );
+        assert_eq!(parse("/permissions"), Some(Ok(SlashCommand::Permissions)));
+        assert_eq!(parse("/mode"), Some(Ok(SlashCommand::Permissions)));
         assert_eq!(
             parse("/compact preserve the failing test names"),
             Some(Ok(SlashCommand::Compact {
@@ -328,6 +327,10 @@ mod tests {
         assert_eq!(parse("/login"), Some(Ok(SlashCommand::Login)));
         assert_eq!(parse("/signout"), Some(Ok(SlashCommand::Logout)));
         assert_eq!(parse("/whoami"), Some(Ok(SlashCommand::Account)));
+        assert_eq!(parse("/security"), Some(Ok(SlashCommand::Security)));
+        assert_eq!(parse("/attestation"), Some(Ok(SlashCommand::Security)));
+        assert_eq!(parse("/refresh"), Some(Ok(SlashCommand::Refresh)));
+        assert_eq!(parse("/reverify"), Some(Ok(SlashCommand::Refresh)));
         assert_eq!(
             parse("/reasoning xhigh"),
             Some(Ok(SlashCommand::Thinking(ThinkingLevel::ExtraHigh)))
@@ -340,6 +343,8 @@ mod tests {
         assert!(parse("/model glm-5-2").expect("slash input").is_err());
         assert!(parse("/resume latest").expect("slash input").is_err());
         assert!(parse("/delete latest").expect("slash input").is_err());
+        assert!(parse("/permissions confirm").expect("slash input").is_err());
+        assert!(parse("/refresh now").expect("slash input").is_err());
         assert!(parse("/thinking enormous").expect("slash input").is_err());
     }
 
@@ -352,9 +357,7 @@ mod tests {
 
     #[test]
     fn completions_cover_commands_and_static_options() {
-        let permission = completions("/permissions a");
-        assert_eq!(permission.len(), 1);
-        assert_eq!(permission[0].input, "/permissions autonomous");
+        assert!(completions("/permissions ").is_empty());
 
         let thinking = completions("/thinking m");
         assert_eq!(
@@ -366,10 +369,11 @@ mod tests {
         );
 
         let commands = completions("/per");
-        assert_eq!(commands[0].input, "/permissions ");
+        assert_eq!(commands[0].input, "/permissions");
         assert_eq!(completions("/mod")[0].input, "/model");
         assert!(completions("/model ").is_empty());
         assert_eq!(completions("/res")[0].input, "/resume");
         assert_eq!(completions("/del")[0].input, "/delete");
+        assert_eq!(completions("/sec")[0].input, "/security");
     }
 }

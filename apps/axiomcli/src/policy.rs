@@ -10,9 +10,33 @@ use uuid::Uuid;
 
 use crate::{AxiomError, Result, app::PermissionProfile};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolAccess {
+    Web,
+    Read,
+    Write,
+}
+
+impl ToolAccess {
+    #[must_use]
+    pub const fn is_exposed_to(self, profile: PermissionProfile) -> bool {
+        match profile {
+            PermissionProfile::None => false,
+            PermissionProfile::Web => matches!(self, Self::Web),
+            PermissionProfile::Observe => matches!(self, Self::Read),
+            PermissionProfile::Confirm | PermissionProfile::FullAccess => true,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum Effect {
+    ToolUse {
+        name: String,
+        access: ToolAccess,
+    },
     FileRead {
         path: PathBuf,
     },
@@ -55,6 +79,7 @@ pub enum Effect {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "snake_case")]
 pub enum EffectClass {
+    ToolUse,
     FileRead,
     FileWrite,
     FileDelete,
@@ -70,6 +95,7 @@ pub enum EffectClass {
 impl EffectClass {
     const fn of(effect: &Effect) -> Self {
         match effect {
+            Effect::ToolUse { .. } => Self::ToolUse,
             Effect::FileRead { .. } => Self::FileRead,
             Effect::FileWrite { .. } => Self::FileWrite,
             Effect::FileDelete { .. } => Self::FileDelete,
@@ -363,28 +389,17 @@ impl PolicyEngine {
             );
         }
 
-        // Read-only profiles are hard constraints. A repository-supplied `ask`
-        // rule cannot turn a prohibited mutation into an approval prompt.
-        if profile == PermissionProfile::Plan
-            && !matches!(
-                normalized,
-                Effect::FileRead { .. } | Effect::PlanWrite { .. }
-            )
-        {
-            return decision(
-                DecisionKind::Deny,
-                "plan mode is read-only outside its revisioned plan artifact".into(),
-                normalized,
-                false,
-            );
-        }
-        if profile == PermissionProfile::Observe && !matches!(normalized, Effect::FileRead { .. }) {
-            return decision(
-                DecisionKind::Deny,
-                "observe mode is read-only".into(),
-                normalized,
-                false,
-            );
+        // Restricted tool profiles are hard intersections. A configured `ask`
+        // rule must never turn a tool that is absent from the profile into an
+        // approval prompt.
+        if matches!(
+            profile,
+            PermissionProfile::None | PermissionProfile::Web | PermissionProfile::Observe
+        ) {
+            let (kind, explanation, grantable) = profile_default(profile, &normalized);
+            if kind == DecisionKind::Deny {
+                return decision(kind, explanation.into(), normalized, grantable);
+            }
         }
 
         if let Some(rule) = matches.iter().find(|rule| rule.action == RuleAction::Ask) {
@@ -472,6 +487,15 @@ impl PolicyEngine {
 
     fn normalize(&self, effect: Effect) -> Result<Effect> {
         match effect {
+            Effect::ToolUse { name, access } => {
+                let name = name.trim().to_owned();
+                if name.is_empty() || name.contains('\0') {
+                    return Err(AxiomError::PermissionDenied(
+                        "tool name must be non-empty and NUL-free".into(),
+                    ));
+                }
+                Ok(Effect::ToolUse { name, access })
+            }
             Effect::FileRead { path } => Ok(Effect::FileRead {
                 path: self.normalize_path(path),
             }),
@@ -703,6 +727,7 @@ fn normalize_rule(mut rule: PolicyRule, root: &Path) -> Result<PolicyRule> {
             url.to_string()
         }
         EffectClass::Process
+        | EffectClass::ToolUse
         | EffectClass::RepositoryMutation
         | EffectClass::Mcp
         | EffectClass::ScopeChange
@@ -736,85 +761,49 @@ fn profile_default(
     effect: &Effect,
 ) -> (DecisionKind, &'static str, bool) {
     match (profile, effect) {
-        (_, Effect::FileRead { .. }) => (DecisionKind::Allow, "workspace read", false),
-        (PermissionProfile::Plan, Effect::PlanWrite { .. }) => (
-            DecisionKind::Allow,
-            "plan mode permits the revisioned plan artifact",
-            false,
-        ),
-        (PermissionProfile::Plan, _) => (
-            DecisionKind::Deny,
-            "plan mode is read-only outside its revisioned plan artifact",
-            false,
-        ),
-        (PermissionProfile::Observe, _) => (DecisionKind::Deny, "observe mode is read-only", false),
-        (_, Effect::ScopeChange { .. }) => (
-            DecisionKind::Ask,
-            "scope expansion always requires approval",
-            false,
-        ),
-        (_, Effect::CredentialAccess { .. }) => (
-            DecisionKind::Deny,
-            "credential access is not available",
-            false,
-        ),
-        (_, Effect::RepositoryMutation { .. }) => (
-            DecisionKind::Ask,
-            "repository mutation requires approval",
-            false,
-        ),
-        (PermissionProfile::Confirm, _) => {
-            (DecisionKind::Ask, "confirm mode requires approval", true)
-        }
-        (PermissionProfile::Workspace, Effect::FileWrite { .. }) => (
-            DecisionKind::Allow,
-            "workspace mode permits in-root edits",
-            false,
-        ),
-        (PermissionProfile::Workspace, Effect::FileDelete { .. }) => {
-            (DecisionKind::Ask, "file deletion requires approval", true)
-        }
+        (PermissionProfile::None, _) => (DecisionKind::Deny, "tools are disabled", false),
         (
-            PermissionProfile::Workspace,
-            Effect::Mcp {
+            PermissionProfile::Web,
+            Effect::ToolUse {
+                access: ToolAccess::Web,
+                ..
+            }
+            | Effect::Network { .. },
+        ) => (DecisionKind::Allow, "allowed by web-only profile", false),
+        (PermissionProfile::Web, _) => (
+            DecisionKind::Deny,
+            "web profile permits only web tools",
+            false,
+        ),
+        (
+            PermissionProfile::Observe,
+            Effect::ToolUse {
+                access: ToolAccess::Read,
+                ..
+            }
+            | Effect::FileRead { .. }
+            | Effect::Mcp {
                 side_effecting: false,
                 ..
             },
-        ) => (
-            DecisionKind::Allow,
-            "explicitly trusted read-only MCP tool",
+        ) => (DecisionKind::Allow, "allowed by read-only profile", false),
+        (PermissionProfile::Observe, _) => (
+            DecisionKind::Deny,
+            "observe profile permits only read tools",
             false,
         ),
-        (
-            PermissionProfile::Workspace,
-            Effect::Process {
-                program,
-                args,
-                shell: false,
-                ..
-            },
-        ) if is_workspace_program_allowed(program, args) => (
-            DecisionKind::Allow,
-            "allowlisted development command",
+        (PermissionProfile::Confirm, Effect::ToolUse { .. }) => (
+            DecisionKind::Ask,
+            "confirm profile requires approval for this tool",
             false,
         ),
-        (PermissionProfile::Workspace, _) => (
-            DecisionKind::Ask,
-            "operation exceeds workspace defaults",
-            true,
+        (PermissionProfile::Confirm, _) => (
+            DecisionKind::Allow,
+            "tool invocation was confirmation-gated",
+            false,
         ),
-        (PermissionProfile::Autonomous, Effect::Process { shell: true, .. }) => (
-            DecisionKind::Ask,
-            "shell interpretation always requires approval",
-            true,
-        ),
-        (PermissionProfile::Autonomous, Effect::FileDelete { .. }) => (
-            DecisionKind::Ask,
-            "deletion remains confirmation-gated",
-            true,
-        ),
-        (PermissionProfile::Autonomous, _) => {
-            (DecisionKind::Allow, "allowed by autonomous profile", false)
+        (PermissionProfile::FullAccess, _) => {
+            (DecisionKind::Allow, "allowed by full-access profile", false)
         }
     }
 }
@@ -841,6 +830,7 @@ fn suggested_prefix(effect: &Effect) -> Option<ScopedGrant> {
             side_effecting: *side_effecting,
         }),
         Effect::Process { .. }
+        | Effect::ToolUse { .. }
         | Effect::RepositoryMutation { .. }
         | Effect::ScopeChange { .. }
         | Effect::CredentialAccess { .. }
@@ -881,6 +871,7 @@ fn effect_path(effect: &Effect) -> Option<&Path> {
 
 fn effect_matches_prefix(effect: &Effect, prefix: &str) -> bool {
     match effect {
+        Effect::ToolUse { name, .. } => name.starts_with(prefix),
         Effect::FileRead { path }
         | Effect::FileWrite { path }
         | Effect::FileDelete { path }
@@ -928,22 +919,6 @@ fn normalize_for_policy(path: &Path) -> PathBuf {
     normalized
 }
 
-fn is_workspace_program_allowed(program: &str, args: &[String]) -> bool {
-    let program = program.rsplit('/').next().unwrap_or(program);
-    match program {
-        "cargo" => matches!(
-            args.first().map(String::as_str),
-            Some("check" | "test" | "fmt" | "clippy")
-        ),
-        "npm" | "pnpm" | "yarn" => matches!(args.first().map(String::as_str), Some("test" | "run")),
-        "git" => matches!(
-            args.first().map(String::as_str),
-            Some("status" | "diff" | "log" | "show")
-        ),
-        _ => false,
-    }
-}
-
 #[must_use]
 pub fn is_allowed_child_env_key(key: &str) -> bool {
     matches!(
@@ -955,6 +930,7 @@ pub fn is_allowed_child_env_key(key: &str) -> bool {
 #[must_use]
 pub fn describe_effect(effect: &Effect) -> String {
     match effect {
+        Effect::ToolUse { name, .. } => format!("use tool {name}"),
         Effect::FileRead { path } => format!("read {}", path.display()),
         Effect::FileWrite { path } => format!("write {}", path.display()),
         Effect::FileDelete { path } => format!("delete {}", path.display()),
@@ -1024,13 +1000,7 @@ mod tests {
     use super::*;
 
     fn profiles() -> [PermissionProfile; 5] {
-        [
-            PermissionProfile::Plan,
-            PermissionProfile::Observe,
-            PermissionProfile::Confirm,
-            PermissionProfile::Workspace,
-            PermissionProfile::Autonomous,
-        ]
+        PermissionProfile::ALL
     }
 
     #[test]
@@ -1038,6 +1008,10 @@ mod tests {
         let root = tempdir().expect("root");
         let path = root.path().join("src/lib.rs");
         let effects = [
+            Effect::ToolUse {
+                name: "read_file".into(),
+                access: ToolAccess::Read,
+            },
             Effect::FileRead { path: path.clone() },
             Effect::FileWrite { path: path.clone() },
             Effect::FileDelete { path: path.clone() },
@@ -1123,7 +1097,7 @@ mod tests {
     }
 
     #[test]
-    fn plan_profile_is_a_hard_read_only_intersection() {
+    fn restricted_profiles_are_hard_tool_intersections() {
         let root = tempdir().expect("root");
         let policy = PolicyEngine::for_workspace_with_rules(
             root.path(),
@@ -1135,39 +1109,43 @@ mod tests {
             }],
         )
         .expect("policy");
-        assert_eq!(
-            policy
-                .evaluate(
-                    PermissionProfile::Plan,
-                    Effect::FileRead {
-                        path: root.path().join("src/lib.rs")
-                    }
-                )
-                .kind,
-            DecisionKind::Allow
-        );
-        assert_eq!(
-            policy
-                .evaluate(
-                    PermissionProfile::Plan,
-                    Effect::PlanWrite {
-                        path: root.path().join(".axiomcli/plans/p.json")
-                    }
-                )
-                .kind,
-            DecisionKind::Allow
-        );
-        assert_eq!(
-            policy
-                .evaluate(
-                    PermissionProfile::Plan,
-                    Effect::FileWrite {
-                        path: root.path().join("src/lib.rs")
-                    }
-                )
-                .kind,
-            DecisionKind::Deny
-        );
+        for (profile, allowed, denied) in [
+            (
+                PermissionProfile::None,
+                None,
+                Effect::ToolUse {
+                    name: "read_file".into(),
+                    access: ToolAccess::Read,
+                },
+            ),
+            (
+                PermissionProfile::Web,
+                Some(Effect::ToolUse {
+                    name: "web_search".into(),
+                    access: ToolAccess::Web,
+                }),
+                Effect::ToolUse {
+                    name: "read_file".into(),
+                    access: ToolAccess::Read,
+                },
+            ),
+            (
+                PermissionProfile::Observe,
+                Some(Effect::ToolUse {
+                    name: "read_file".into(),
+                    access: ToolAccess::Read,
+                }),
+                Effect::ToolUse {
+                    name: "apply_patch".into(),
+                    access: ToolAccess::Write,
+                },
+            ),
+        ] {
+            if let Some(effect) = allowed {
+                assert_eq!(policy.evaluate(profile, effect).kind, DecisionKind::Allow);
+            }
+            assert_eq!(policy.evaluate(profile, denied).kind, DecisionKind::Deny);
+        }
     }
 
     #[test]
@@ -1192,7 +1170,7 @@ mod tests {
             assert_eq!(
                 policy
                     .evaluate(
-                        PermissionProfile::Autonomous,
+                        PermissionProfile::FullAccess,
                         Effect::FileWrite { path: path.clone() }
                     )
                     .kind,
@@ -1202,55 +1180,48 @@ mod tests {
     }
 
     #[test]
-    fn exact_and_prefix_grants_do_not_cross_effect_or_resource_scope() {
+    fn confirm_uses_non_grantable_one_shot_tool_approvals() {
         let root = tempdir().expect("root");
         let policy = PolicyEngine::for_workspace(root.path()).expect("policy");
-        let first = root.path().join("src/one.rs");
-        let second = root.path().join("src/two.rs");
-        let outside_scope = root.path().join("tests/one.rs");
         let decision = policy.evaluate(
             PermissionProfile::Confirm,
-            Effect::FileWrite {
-                path: first.clone(),
+            Effect::ToolUse {
+                name: "apply_patch".into(),
+                access: ToolAccess::Write,
             },
         );
+        assert_eq!(decision.kind, DecisionKind::Ask);
         let request = ApprovalRequest::new(&decision);
+        assert!(!request.allow_session_grants);
         policy
             .apply_approval(
                 &request,
                 ApprovalResponse {
-                    choice: ApprovalChoice::AllowPrefixSession,
+                    choice: ApprovalChoice::AllowOnce,
                 },
             )
-            .expect("prefix grant");
+            .expect("one-shot approval");
         assert_eq!(
             policy
                 .evaluate(
                     PermissionProfile::Confirm,
-                    Effect::FileWrite { path: second }
-                )
-                .kind,
-            DecisionKind::Allow
-        );
-        assert_eq!(
-            policy
-                .evaluate(
-                    PermissionProfile::Confirm,
-                    Effect::FileDelete { path: first }
-                )
-                .kind,
-            DecisionKind::Ask
-        );
-        assert_eq!(
-            policy
-                .evaluate(
-                    PermissionProfile::Confirm,
-                    Effect::FileWrite {
-                        path: outside_scope
+                    Effect::ToolUse {
+                        name: "apply_patch".into(),
+                        access: ToolAccess::Write,
                     }
                 )
                 .kind,
             DecisionKind::Ask
+        );
+        assert!(
+            policy
+                .apply_approval(
+                    &request,
+                    ApprovalResponse {
+                        choice: ApprovalChoice::AllowExactSession,
+                    },
+                )
+                .is_err()
         );
     }
 
@@ -1268,7 +1239,7 @@ mod tests {
         )
         .expect("policy");
         let decision = policy.evaluate(
-            PermissionProfile::Autonomous,
+            PermissionProfile::FullAccess,
             Effect::Network {
                 url: "https://example.com/a".into(),
             },
@@ -1313,7 +1284,7 @@ mod tests {
     }
 
     #[test]
-    fn shell_interpretation_is_detected_and_always_higher_risk() {
+    fn shell_interpretation_is_normalized_but_full_access_needs_no_approval() {
         let root = tempdir().expect("root");
         let policy = PolicyEngine::for_workspace(root.path()).expect("policy");
         let disguised_shell = Effect::Process {
@@ -1323,8 +1294,8 @@ mod tests {
             cwd: root.path().to_path_buf(),
             env: Vec::new(),
         };
-        let decision = policy.evaluate(PermissionProfile::Autonomous, disguised_shell);
-        assert_eq!(decision.kind, DecisionKind::Ask);
+        let decision = policy.evaluate(PermissionProfile::FullAccess, disguised_shell);
+        assert_eq!(decision.kind, DecisionKind::Allow);
         assert!(matches!(
             decision.normalized_effect,
             Effect::Process { shell: true, .. }
@@ -1338,9 +1309,7 @@ mod tests {
             env: vec![("CI".into(), "true".into())],
         };
         assert_eq!(
-            policy
-                .evaluate(PermissionProfile::Workspace, structured)
-                .kind,
+            policy.evaluate(PermissionProfile::Confirm, structured).kind,
             DecisionKind::Allow
         );
     }
@@ -1363,7 +1332,7 @@ mod tests {
             });
             let policy = PolicyEngine::for_workspace_with_rules(root.path(), rules).expect("policy");
             prop_assert_eq!(
-                policy.evaluate(PermissionProfile::Autonomous, Effect::Network { url: "https://example.com".into() }).kind,
+                policy.evaluate(PermissionProfile::FullAccess, Effect::Network { url: "https://example.com".into() }).kind,
                 DecisionKind::Deny
             );
         }
