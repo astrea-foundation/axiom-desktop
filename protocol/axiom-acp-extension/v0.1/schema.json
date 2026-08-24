@@ -1,0 +1,1194 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ProtocolSchema",
+  "description": "Schema root used to generate the checked-in language-neutral contract.",
+  "type": "object",
+  "properties": {
+    "capabilities": {
+      "$ref": "#/$defs/ExtensionCapabilities"
+    },
+    "listSessionsRequest": {
+      "$ref": "#/$defs/ListSessionsRequest"
+    },
+    "listSessionsResponse": {
+      "$ref": "#/$defs/ListSessionsResponse"
+    },
+    "getSessionStateRequest": {
+      "$ref": "#/$defs/GetSessionStateRequest"
+    },
+    "getSessionStateResponse": {
+      "$ref": "#/$defs/GetSessionStateResponse"
+    },
+    "deletePreviewRequest": {
+      "$ref": "#/$defs/DeletePreviewRequest"
+    },
+    "deletePreviewResponse": {
+      "$ref": "#/$defs/DeletePreviewResponse"
+    },
+    "deleteConfirmRequest": {
+      "$ref": "#/$defs/DeleteConfirmRequest"
+    },
+    "deleteConfirmResponse": {
+      "$ref": "#/$defs/DeleteConfirmResponse"
+    },
+    "listModelsRequest": {
+      "$ref": "#/$defs/ListModelsRequest"
+    },
+    "listModelsResponse": {
+      "$ref": "#/$defs/ListModelsResponse"
+    },
+    "setSessionSettingsRequest": {
+      "$ref": "#/$defs/SetSessionSettingsRequest"
+    },
+    "setSessionSettingsResponse": {
+      "$ref": "#/$defs/SetSessionSettingsResponse"
+    },
+    "accountStatusRequest": {
+      "$ref": "#/$defs/AccountStatusRequest"
+    },
+    "accountStatusResponse": {
+      "$ref": "#/$defs/AccountStatusResponse"
+    },
+    "browserLoginStartRequest": {
+      "$ref": "#/$defs/BrowserLoginStartRequest"
+    },
+    "browserLoginStartResponse": {
+      "$ref": "#/$defs/BrowserLoginStartResponse"
+    },
+    "browserLoginCompleteRequest": {
+      "$ref": "#/$defs/BrowserLoginCompleteRequest"
+    },
+    "useApiKeyRequest": {
+      "$ref": "#/$defs/UseApiKeyRequest"
+    },
+    "logoutRequest": {
+      "$ref": "#/$defs/LogoutRequest"
+    },
+    "verifySecurityRequest": {
+      "$ref": "#/$defs/VerifySecurityRequest"
+    },
+    "verifySecurityResponse": {
+      "$ref": "#/$defs/VerifySecurityResponse"
+    },
+    "compactRequest": {
+      "$ref": "#/$defs/CompactRequest"
+    },
+    "compactResponse": {
+      "$ref": "#/$defs/CompactResponse"
+    },
+    "eventNotification": {
+      "$ref": "#/$defs/EventNotification"
+    },
+    "error": {
+      "$ref": "#/$defs/ExtensionError"
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "required": [
+    "capabilities",
+    "listSessionsRequest",
+    "listSessionsResponse",
+    "getSessionStateRequest",
+    "getSessionStateResponse",
+    "deletePreviewRequest",
+    "deletePreviewResponse",
+    "deleteConfirmRequest",
+    "deleteConfirmResponse",
+    "listModelsRequest",
+    "listModelsResponse",
+    "setSessionSettingsRequest",
+    "setSessionSettingsResponse",
+    "accountStatusRequest",
+    "accountStatusResponse",
+    "browserLoginStartRequest",
+    "browserLoginStartResponse",
+    "browserLoginCompleteRequest",
+    "useApiKeyRequest",
+    "logoutRequest",
+    "verifySecurityRequest",
+    "verifySecurityResponse",
+    "compactRequest",
+    "compactResponse",
+    "eventNotification",
+    "error",
+    "metadata"
+  ],
+  "$defs": {
+    "ExtensionCapabilities": {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "type": "string"
+        },
+        "features": {
+          "$ref": "#/$defs/FeatureVersions"
+        },
+        "runtimeInstanceId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "features"
+      ]
+    },
+    "FeatureVersions": {
+      "type": "object",
+      "properties": {
+        "sessionCatalog": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "settings": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "account": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "securityEvidence": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "compaction": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "activity": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535
+        }
+      },
+      "required": [
+        "sessionCatalog",
+        "settings",
+        "account",
+        "securityEvidence",
+        "compaction",
+        "activity"
+      ]
+    },
+    "ListSessionsRequest": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "includeArchived": {
+          "type": "boolean",
+          "default": false
+        },
+        "limit": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "cursor": {
+          "description": "Opaque cursor returned by the previous page.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "ListSessionsResponse": {
+      "type": "object",
+      "properties": {
+        "sessions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SessionSummary"
+          }
+        },
+        "nextCursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "sessions"
+      ]
+    },
+    "SessionSummary": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "type": "string"
+        },
+        "settings": {
+          "$ref": "#/$defs/SessionSettings"
+        },
+        "archived": {
+          "type": "boolean"
+        },
+        "historyTruncated": {
+          "type": "boolean"
+        },
+        "lastOutcome": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "sessionId",
+        "cwd",
+        "updatedAt",
+        "settings",
+        "archived",
+        "historyTruncated"
+      ]
+    },
+    "SessionSettings": {
+      "type": "object",
+      "properties": {
+        "model": {
+          "type": "string"
+        },
+        "thinkingLevel": {
+          "type": "string"
+        },
+        "permissionProfile": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "model",
+        "thinkingLevel",
+        "permissionProfile"
+      ]
+    },
+    "GetSessionStateRequest": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId"
+      ]
+    },
+    "GetSessionStateResponse": {
+      "type": "object",
+      "properties": {
+        "snapshot": {
+          "$ref": "#/$defs/SessionSnapshot"
+        }
+      },
+      "required": [
+        "snapshot"
+      ]
+    },
+    "SessionSnapshot": {
+      "type": "object",
+      "properties": {
+        "runtimeInstanceId": {
+          "type": "string"
+        },
+        "sequence": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "lifecycle": {
+          "$ref": "#/$defs/SessionLifecycle"
+        },
+        "settings": {
+          "$ref": "#/$defs/SessionSettings"
+        },
+        "security": {
+          "$ref": "#/$defs/SecurityStatus"
+        },
+        "activeTurnId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "hasPrompt": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "runtimeInstanceId",
+        "sequence",
+        "sessionId",
+        "cwd",
+        "lifecycle",
+        "settings",
+        "security",
+        "hasPrompt"
+      ]
+    },
+    "SessionLifecycle": {
+      "type": "string",
+      "enum": [
+        "ready",
+        "running",
+        "waiting_for_approval",
+        "waiting_for_answer",
+        "compacting",
+        "closed"
+      ]
+    },
+    "SecurityStatus": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "$ref": "#/$defs/SecurityState"
+        },
+        "detail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "state"
+      ]
+    },
+    "SecurityState": {
+      "type": "string",
+      "enum": [
+        "unverified",
+        "verifying",
+        "unattested_development",
+        "verified",
+        "failed"
+      ]
+    },
+    "DeletePreviewRequest": {
+      "type": "object",
+      "properties": {
+        "sessionIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "sessionIds"
+      ]
+    },
+    "DeletePreviewResponse": {
+      "type": "object",
+      "properties": {
+        "confirmationToken": {
+          "type": "string"
+        },
+        "expiresAtUnixSeconds": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "sessions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SessionSummary"
+          }
+        }
+      },
+      "required": [
+        "confirmationToken",
+        "expiresAtUnixSeconds",
+        "sessions"
+      ]
+    },
+    "DeleteConfirmRequest": {
+      "type": "object",
+      "properties": {
+        "confirmationToken": {
+          "type": "string"
+        },
+        "sessionIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "confirmationToken",
+        "sessionIds"
+      ]
+    },
+    "DeleteConfirmResponse": {
+      "type": "object",
+      "properties": {
+        "deleted": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "deleted"
+      ]
+    },
+    "ListModelsRequest": {
+      "type": "object"
+    },
+    "ListModelsResponse": {
+      "type": "object",
+      "properties": {
+        "models": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ModelInfo"
+          }
+        }
+      },
+      "required": [
+        "models"
+      ]
+    },
+    "ModelInfo": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "thinkingLevels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "thinkingLevels"
+      ]
+    },
+    "SetSessionSettingsRequest": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "thinkingLevel": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "permissionProfile": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "sessionId"
+      ]
+    },
+    "SetSessionSettingsResponse": {
+      "type": "object",
+      "properties": {
+        "settings": {
+          "$ref": "#/$defs/SessionSettings"
+        }
+      },
+      "required": [
+        "settings"
+      ]
+    },
+    "AccountStatusRequest": {
+      "type": "object"
+    },
+    "AccountStatusResponse": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "$ref": "#/$defs/AccountStatus"
+        }
+      },
+      "required": [
+        "status"
+      ]
+    },
+    "AccountStatus": {
+      "type": "object",
+      "properties": {
+        "keyId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "keyName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "$ref": "#/$defs/AccountState"
+        },
+        "detail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "state"
+      ]
+    },
+    "AccountState": {
+      "type": "string",
+      "enum": [
+        "missing",
+        "valid",
+        "invalid",
+        "unavailable"
+      ]
+    },
+    "BrowserLoginStartRequest": {
+      "type": "object"
+    },
+    "BrowserLoginStartResponse": {
+      "type": "object",
+      "properties": {
+        "login": {
+          "$ref": "#/$defs/BrowserLoginState"
+        }
+      },
+      "required": [
+        "login"
+      ]
+    },
+    "BrowserLoginState": {
+      "type": "object",
+      "properties": {
+        "loginId": {
+          "type": "string"
+        },
+        "userCode": {
+          "type": "string"
+        },
+        "authorizationUrl": {
+          "type": "string"
+        },
+        "browserOpened": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "loginId",
+        "userCode",
+        "authorizationUrl",
+        "browserOpened"
+      ]
+    },
+    "BrowserLoginCompleteRequest": {
+      "type": "object",
+      "properties": {
+        "loginId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "loginId"
+      ]
+    },
+    "UseApiKeyRequest": {
+      "type": "object",
+      "properties": {
+        "apiKey": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "apiKey"
+      ]
+    },
+    "LogoutRequest": {
+      "type": "object"
+    },
+    "VerifySecurityRequest": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId"
+      ]
+    },
+    "VerifySecurityResponse": {
+      "type": "object",
+      "properties": {
+        "evidence": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SecurityEvidence"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "$ref": "#/$defs/SecurityStatus"
+        }
+      },
+      "required": [
+        "status"
+      ]
+    },
+    "SecurityEvidence": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "$ref": "#/$defs/SecurityStatus"
+        },
+        "providerId": {
+          "type": "string"
+        },
+        "modelId": {
+          "type": "string"
+        },
+        "attestationProtocol": {
+          "type": "string"
+        },
+        "e2eeProtocol": {
+          "type": "string"
+        },
+        "e2eeEncryptionVersion": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "trustPolicyVersion": {
+          "type": "string"
+        },
+        "verifiedAtUnixSeconds": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "modelKeyFingerprint": {
+          "type": "string"
+        },
+        "tlsSpkiFingerprint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "checks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EvidenceCheck"
+          }
+        },
+        "providerClaims": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EvidenceClaim"
+          }
+        },
+        "workloadManifest": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "workloadIdentityAllowlistConfigured": {
+          "type": "boolean"
+        },
+        "approvedWorkloadIdentity": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "status",
+        "providerId",
+        "modelId",
+        "attestationProtocol",
+        "e2eeProtocol",
+        "e2eeEncryptionVersion",
+        "trustPolicyVersion",
+        "verifiedAtUnixSeconds",
+        "modelKeyFingerprint",
+        "checks",
+        "providerClaims",
+        "workloadIdentityAllowlistConfigured",
+        "approvedWorkloadIdentity"
+      ]
+    },
+    "EvidenceCheck": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "passed": {
+          "type": "boolean"
+        },
+        "detail": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "passed",
+        "detail"
+      ]
+    },
+    "EvidenceClaim": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "value"
+      ]
+    },
+    "CompactRequest": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "focus": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "sessionId"
+      ]
+    },
+    "CompactResponse": {
+      "type": "object",
+      "properties": {
+        "messagesBefore": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "messagesBefore"
+      ]
+    },
+    "EventNotification": {
+      "type": "object",
+      "properties": {
+        "runtimeInstanceId": {
+          "type": "string"
+        },
+        "sessionId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sequence": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "occurredAt": {
+          "description": "RFC 3339 time recorded by `AxiomCLI` when the outward event was created.",
+          "type": "string"
+        },
+        "correlationId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "event": {
+          "$ref": "#/$defs/ActivityEvent"
+        }
+      },
+      "required": [
+        "runtimeInstanceId",
+        "sequence",
+        "occurredAt",
+        "event"
+      ]
+    },
+    "ActivityEvent": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "snapshot": {
+              "$ref": "#/$defs/SessionSnapshot"
+            },
+            "kind": {
+              "type": "string",
+              "const": "session_state"
+            }
+          },
+          "required": [
+            "kind",
+            "snapshot"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "title": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "title_changed"
+            }
+          },
+          "required": [
+            "kind",
+            "title"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "settings": {
+              "$ref": "#/$defs/SessionSettings"
+            },
+            "kind": {
+              "type": "string",
+              "const": "settings_changed"
+            }
+          },
+          "required": [
+            "kind",
+            "settings"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "status": {
+              "$ref": "#/$defs/SecurityStatus"
+            },
+            "kind": {
+              "type": "string",
+              "const": "security_changed"
+            }
+          },
+          "required": [
+            "kind",
+            "status"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "status": {
+              "$ref": "#/$defs/AccountStatus"
+            },
+            "kind": {
+              "type": "string",
+              "const": "account_changed"
+            }
+          },
+          "required": [
+            "kind",
+            "status"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "message": {
+              "type": "string"
+            },
+            "completed": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0
+            },
+            "total": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0
+            },
+            "kind": {
+              "type": "string",
+              "const": "progress"
+            }
+          },
+          "required": [
+            "kind",
+            "message"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "items": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/TaskItem"
+              }
+            },
+            "kind": {
+              "type": "string",
+              "const": "task_list"
+            }
+          },
+          "required": [
+            "kind",
+            "items"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "task_id": {
+              "type": "string"
+            },
+            "state": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "background_task"
+            }
+          },
+          "required": [
+            "kind",
+            "task_id",
+            "state"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "paths": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "kind": {
+              "type": "string",
+              "const": "workspace_changed"
+            }
+          },
+          "required": [
+            "kind",
+            "paths"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "phase": {
+              "$ref": "#/$defs/CompactionPhase"
+            },
+            "detail": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "compaction"
+            }
+          },
+          "required": [
+            "kind",
+            "phase"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "message": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "warning"
+            }
+          },
+          "required": [
+            "kind",
+            "message"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "message": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "error"
+            }
+          },
+          "required": [
+            "kind",
+            "message"
+          ]
+        }
+      ]
+    },
+    "TaskItem": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "status"
+      ]
+    },
+    "CompactionPhase": {
+      "type": "string",
+      "enum": [
+        "started",
+        "summarizing",
+        "replacing_context",
+        "completed",
+        "cancelled",
+        "failed"
+      ]
+    },
+    "ExtensionError": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/ExtensionErrorCode"
+        },
+        "message": {
+          "type": "string"
+        },
+        "retryable": {
+          "type": "boolean"
+        },
+        "correlationId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "code",
+        "message",
+        "retryable"
+      ]
+    },
+    "ExtensionErrorCode": {
+      "type": "string",
+      "enum": [
+        "unsupported_feature",
+        "invalid_request",
+        "invalid_state",
+        "not_found",
+        "conflict",
+        "permission_denied",
+        "authentication_required",
+        "security_verification_failed",
+        "cancelled",
+        "expired",
+        "provider_unavailable",
+        "internal"
+      ]
+    }
+  }
+}
