@@ -1,0 +1,13 @@
+{
+  "name": "axiomai-workspace",
+  "private": true,
+  "scripts": {
+    "check:rust": "cargo check --workspace --all-targets --all-features",
+    "test:rust": "cargo test --workspace --all-features",
+    "generate:protocol": "pnpm --filter @axiom/axiom-acp-client generate",
+    "typecheck": "pnpm --recursive typecheck",
+    "test": "pnpm --recursive test",
+    "build:desktop": "pnpm --filter axiom-desktop build",
+    "desktop": "pnpm --filter axiom-desktop dev"
+  }
+}
