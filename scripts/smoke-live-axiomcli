@@ -1,0 +1,142 @@
+#!/usr/bin/env bash
+
+# Protected Lane F test: real ACP client -> real AxiomCLI policy/tool runtime ->
+# axiom-secure-client -> live Axiom. No localhost inference proxy participates.
+
+set +x
+set -euo pipefail
+
+fail() {
+  printf 'AxiomCLI live tool smoke failed: %s\n' "$1" >&2
+  exit 1
+}
+
+for required in cargo cmp cp find grep python3 sed timeout; do
+  command -v "$required" >/dev/null 2>&1 || fail "missing required command: $required"
+done
+[[ -n "${AXIOM_API_KEY:-}" ]] || fail "export AXIOM_API_KEY in the protected environment"
+
+upstream_key="$AXIOM_API_KEY"
+repository="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+cli_bin="${AXIOMCLI_BIN:-$repository/target/debug/axiomcli}"
+axiom_base_url="${AXIOM_BASE_URL:-https://api.axiom.stream}"
+requested_model="${AXIOM_LIVE_MODEL:-}"
+timeout_seconds="${AXIOMCLI_LIVE_TIMEOUT_SECONDS:-300}"
+keep_artifacts="${KEEP_LIVE_ARTIFACTS:-0}"
+
+[[ "$timeout_seconds" =~ ^[0-9]+$ ]] && ((timeout_seconds > 0)) \
+  || fail "AXIOMCLI_LIVE_TIMEOUT_SECONDS must be positive"
+
+if [[ ! -x "$cli_bin" ]]; then
+  cargo build --manifest-path "$repository/Cargo.toml" -p axiomcli
+fi
+
+artifact_root="$(mktemp -d "${TMPDIR:-/tmp}/axiomcli-live-tools.XXXXXX")"
+workspace="$artifact_root/workspace"
+state="$artifact_root/state"
+mkdir -p -- "$workspace" "$state/config" "$state/data"
+printf 'READ_MARKER=blossom-7f3a\n' >"$workspace/read-only.txt"
+printf 'TOKEN=before\n' >"$workspace/edit-target.txt"
+cp -- "$workspace/read-only.txt" "$artifact_root/read-only.expected"
+
+cleanup() {
+  status=$?
+  trap - EXIT INT TERM
+  if ((status != 0)) || [[ "$keep_artifacts" == "1" ]]; then
+    printf 'AxiomCLI tool artifacts retained at %s\n' "$artifact_root" >&2
+  else
+    rm -rf -- "$artifact_root"
+  fi
+  exit "$status"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+models_file="$artifact_root/models.txt"
+AXIOM_API_KEY="$upstream_key" AXIOM_BASE_URL="$axiom_base_url" \
+XDG_CONFIG_HOME="$state/config" XDG_DATA_HOME="$state/data" \
+  timeout --signal=TERM --kill-after=5 "${timeout_seconds}s" \
+  "$cli_bin" models >"$models_file" 2>"$artifact_root/models.stderr" \
+  || fail "direct secure model discovery failed"
+
+if [[ -n "$requested_model" ]]; then
+  grep -Fxq -- "$requested_model" "$models_file" \
+    || fail "AXIOM_LIVE_MODEL is absent from direct secure discovery"
+  model="$requested_model"
+else
+  model="$(sed -n '1{/./p;q;}' "$models_file")"
+fi
+[[ -n "$model" ]] || fail "direct secure discovery returned no models"
+
+controller="$repository/scripts/smoke-live-axiomcli-controller.py"
+
+run_acp() {
+  profile=$1
+  prompt=$2
+  output=$3
+  stderr_file=$4
+  AXIOM_API_KEY="$upstream_key" AXIOM_BASE_URL="$axiom_base_url" AXIOM_MODEL="$model" \
+  AXIOM_PERMISSION_PROFILE="$profile" XDG_CONFIG_HOME="$state/config" \
+  XDG_DATA_HOME="$state/data" \
+    timeout --signal=TERM --kill-after=10 "${timeout_seconds}s" \
+    python3 "$controller" "$cli_bin" "$workspace" "$prompt" "$output" "$stderr_file"
+}
+
+run_acp observe \
+  'You must use read_file to read read-only.txt. Report its exact READ_MARKER value. Do not call any other tool and do not modify any file.' \
+  "$artifact_root/read.events.jsonl" "$artifact_root/read.stderr.log"
+cmp -s "$workspace/read-only.txt" "$artifact_root/read-only.expected" \
+  || fail "read-only lane modified its target"
+
+run_acp confirm \
+  'First use read_file on edit-target.txt. Then use replace_text or apply_patch to change exactly TOKEN=before to TOKEN=after. Read edit-target.txt again and return a non-empty final response. Do not modify any other file.' \
+  "$artifact_root/edit.events.jsonl" "$artifact_root/edit.stderr.log"
+[[ "$(<"$workspace/edit-target.txt")" == 'TOKEN=after' ]] \
+  || fail "confirmed edit did not produce the exact expected content"
+
+unexpected="$(find "$workspace" -mindepth 1 -maxdepth 1 -type f \
+  ! -name read-only.txt ! -name edit-target.txt -print -quit)"
+[[ -z "$unexpected" ]] || fail "AxiomCLI created an unexpected workspace file"
+
+grep -Fq 'read_file' "$artifact_root/read.events.jsonl" \
+  || fail "read-only events did not include read_file"
+grep -Fq 'blossom-7f3a' "$artifact_root/read.events.jsonl" \
+  || fail "read-only final response omitted the exact marker"
+grep -Fq 'Verifying model attestation and secure endpoint binding' \
+  "$artifact_root/read.events.jsonl" "$artifact_root/edit.events.jsonl" \
+  || fail "ACP events did not expose secure-session verification"
+grep -Eq 'replace_text|apply_patch' "$artifact_root/edit.events.jsonl" \
+  || fail "edit events did not include an edit tool"
+grep -Fq 'session/request_permission' "$artifact_root/edit.events.jsonl" \
+  || fail "confirm profile did not request user permission"
+grep -Fq 'allow_once' "$artifact_root/edit.events.jsonl" \
+  || fail "ACP client did not record the narrow approval"
+
+if grep -FRq -- "$upstream_key" "$artifact_root"; then
+  fail "Axiom credential appeared in a captured artifact"
+fi
+if grep -RqE 'axm_[A-Za-z0-9_-]{20,}' "$artifact_root"; then
+  fail "a credential-shaped value appeared in a captured artifact"
+fi
+for stderr_file in "$artifact_root"/*.stderr "$artifact_root"/*.stderr.log; do
+  [[ -e "$stderr_file" ]] || continue
+  grep -Fq 'READ_MARKER=blossom-7f3a' "$stderr_file" \
+    && fail "plaintext read sentinel appeared in operational logs"
+  grep -Fq 'TOKEN=before' "$stderr_file" \
+    && fail "plaintext edit sentinel appeared in operational logs"
+done
+
+python3 - "$model" >"$artifact_root/result.json" <<'PY'
+import json, sys
+print(json.dumps({
+    "status": "pass",
+    "model": sys.argv[1],
+    "transport": "direct axiom-secure-client",
+    "read_only_tool_loop": True,
+    "confirmed_edit_tool_loop": True,
+    "credential_scan": "pass",
+    "plaintext_log_scan": "pass",
+}, separators=(",", ":")))
+PY
+printf 'AxiomCLI live tool smoke passed with model %s\n' "$model"
