@@ -32,7 +32,9 @@ export function SettingsSheet({
     ? (account.keyName || account.keyId || "Connected Axiom account")
     : account?.state === "unavailable"
       ? (account.detail || "Account status unavailable")
-      : "Not signed in";
+      : account?.state === "invalid"
+        ? (account.detail || "Your sign-in expired")
+        : "Not signed in";
 
   return (
     <div className="absolute inset-0 z-50 flex items-start justify-center bg-black/55 px-6 pt-24 backdrop-blur-sm">
@@ -60,7 +62,7 @@ export function SettingsSheet({
             </div>
             <button type="button" disabled={!connected} onClick={signedIn ? onLogout : onLogin} className="mt-3 flex items-center gap-2 rounded-lg border border-[var(--color-border)] px-3 py-1.5 text-[12.5px] text-[var(--color-text-primary)] disabled:opacity-35">
               {signedIn ? <LogOut size={13} /> : <LogIn size={13} />}
-              {signedIn ? "Sign out" : "Sign in with browser"}
+              {signedIn ? "Sign out" : account?.state === "invalid" ? "Sign in again" : "Sign in with browser"}
             </button>
           </div>
         </div>

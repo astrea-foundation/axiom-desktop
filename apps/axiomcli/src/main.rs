@@ -30,6 +30,37 @@ use clap::{Parser, Subcommand};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+#[cfg(windows)]
+static PROCESS_JOB: std::sync::OnceLock<Result<win32job::Job, String>> = std::sync::OnceLock::new();
+
+/// Keep this process and every inheriting child in a kill-on-close Job Object.
+///
+/// Windows closes the retained handle even after an abrupt process exit, which
+/// prevents tool and MCP descendants from surviving their owning AxiomCLI.
+#[cfg(windows)]
+fn install_descendant_cleanup() {
+    let job = PROCESS_JOB.get_or_init(|| {
+        let mut limits = win32job::ExtendedLimitInfo::new();
+        limits.limit_kill_on_job_close();
+
+        let job = win32job::Job::create_with_limit_info(&limits)
+            .map_err(|error| format!("could not create a Windows Job Object: {error:?}"))?;
+        job.assign_current_process().map_err(|error| {
+            format!("could not assign AxiomCLI to its Windows Job Object: {error:?}")
+        })?;
+        Ok(job)
+    });
+
+    if let Err(error) = job {
+        eprintln!(
+            "axiomcli: warning: descendant cleanup is unavailable; child processes may outlive AxiomCLI: {error}"
+        );
+    }
+}
+
+#[cfg(not(windows))]
+fn install_descendant_cleanup() {}
+
 #[derive(Debug, Parser)]
 #[command(name = "axiomcli", version, about = "Early AxiomAI coding-agent TUI")]
 struct Cli {
@@ -176,6 +207,7 @@ enum SessionAction {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    install_descendant_cleanup();
     let cli = Cli::parse();
     let frontend = match &cli.command {
         Some(Command::Acp { frontend }) => *frontend,
@@ -196,8 +228,10 @@ async fn main() -> anyhow::Result<()> {
         .context("failed to prepare Axiom platform paths")?;
     let config =
         Config::load_for(frontend, &paths).context("failed to load AxiomCLI configuration")?;
-    let auth = AuthManager::new_with_paths(&config.base_url, config.request_timeout(), &paths)
-        .context("failed to initialize Axiom authentication")?;
+    let auth =
+        AuthManager::new_with_paths_async(&config.base_url, config.request_timeout(), &paths)
+            .await
+            .context("failed to initialize Axiom authentication")?;
     let tui_mode = matches!(cli.command, None | Some(Command::Tui { .. }));
     init_tracing(tui_mode);
 

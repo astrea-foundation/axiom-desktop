@@ -1,4 +1,4 @@
-import { EventEmitter, once } from "node:events";
+import { EventEmitter } from "node:events";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { join } from "node:path";
 import { AcpError, ProtocolError, SidecarExitedError } from "./errors.js";
@@ -33,6 +33,8 @@ export class AcpProcess extends EventEmitter {
   private readonly pending = new Map<number, Pending>();
   private diagnostics = "";
   private closed = false;
+  private terminalError: Error | null = null;
+  private terminationPublished = false;
   private stdoutRemainder = Buffer.alloc(0);
   private readonly terminated: Promise<void>;
   private resolveTerminated!: () => void;
@@ -66,13 +68,19 @@ export class AcpProcess extends EventEmitter {
       );
       this.emit("diagnostic", this.diagnostics);
     });
-    this.child.once("error", (error) => this.finish(error));
+    // A child can close its read end while remaining alive. Without an error
+    // listener, the resulting EPIPE is emitted by stdin as an uncaught
+    // exception even when the write's callback/promise is otherwise handled.
+    this.child.stdin.on("error", (error) => {
+      this.finish(this.writeError(error), true);
+    });
+    this.child.once("error", (error) => this.finish(error, true));
     this.child.once("exit", (code, signal) => {
       const error = new SidecarExitedError(code, signal, this.diagnostics);
-      this.finish(error);
+      this.finish(error, false);
     });
     this.child.once("close", (code, signal) => {
-      if (!this.closed) this.finish(new SidecarExitedError(code, signal, this.diagnostics));
+      if (!this.closed) this.finish(new SidecarExitedError(code, signal, this.diagnostics), false);
     });
   }
 
@@ -133,9 +141,14 @@ export class AcpProcess extends EventEmitter {
   async close(): Promise<void> {
     if (this.closed) {
       this.terminatePosixProcessGroup(true);
+      await this.terminated;
       return;
     }
-    this.child.stdin.end();
+    try {
+      this.child.stdin.end();
+    } catch (error) {
+      this.finish(this.writeError(error), true);
+    }
     const gracefulTimer = setTimeout(() => this.terminateChild(false), 2_000);
     const forceTimer = setTimeout(() => this.terminateChild(true), 4_000);
     let deadlineTimer: NodeJS.Timeout;
@@ -154,8 +167,9 @@ export class AcpProcess extends EventEmitter {
     clearTimeout(forceTimer);
     clearTimeout(deadlineTimer!);
     if (!this.closed) {
-      this.finish(new ProtocolError("AxiomCLI did not exit after shutdown"));
+      this.finish(new ProtocolError("AxiomCLI did not exit after shutdown"), true);
     }
+    await this.terminated;
   }
 
   getDiagnostics(): string {
@@ -163,21 +177,34 @@ export class AcpProcess extends EventEmitter {
   }
 
   private async write(message: JsonObject): Promise<void> {
-    if (this.closed || this.child.stdin.destroyed || !this.child.stdin.writable) {
-      throw new ProtocolError("AxiomCLI is not running");
+    if (this.closed) {
+      throw this.terminalError ?? new ProtocolError("AxiomCLI is not running");
+    }
+    if (this.child.stdin.destroyed || !this.child.stdin.writable) {
+      const error = new ProtocolError("AxiomCLI input stream is not writable");
+      throw this.finish(error, true);
     }
     const frame = `${JSON.stringify(message)}\n`;
     if (Buffer.byteLength(frame) > MAX_FRAME_BYTES) {
       throw new ProtocolError("outgoing ACP frame exceeds the 4 MiB limit");
     }
-    if (!this.child.stdin.write(frame, "utf8")) {
-      await Promise.race([
-        once(this.child.stdin, "drain").then(() => undefined),
-        this.terminated.then(() => {
-          throw new ProtocolError("AxiomCLI exited while an ACP frame was being written");
-        }),
-      ]);
-    }
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const complete = (error?: Error | null) => {
+        if (settled) return;
+        settled = true;
+        if (!error) {
+          resolve();
+          return;
+        }
+        reject(this.finish(this.writeError(error), true));
+      };
+      try {
+        this.child.stdin.write(frame, "utf8", complete);
+      } catch (error) {
+        complete(error instanceof Error ? error : new Error(String(error)));
+      }
+    });
   }
 
   private acceptLine(line: string): void {
@@ -185,7 +212,7 @@ export class AcpProcess extends EventEmitter {
     try {
       value = JSON.parse(line) as Record<string, unknown>;
     } catch {
-      this.abort(new ProtocolError("AxiomCLI emitted malformed JSON on stdout"));
+      this.finish(new ProtocolError("AxiomCLI emitted malformed JSON on stdout"), true);
       return;
     }
     if (value.id !== undefined && ("result" in value || "error" in value)) {
@@ -208,12 +235,14 @@ export class AcpProcess extends EventEmitter {
         respond: (result: unknown) => {
           if (answered) return;
           answered = true;
-          void this.write({ jsonrpc: "2.0", id: request.id, result });
+          void this.write({ jsonrpc: "2.0", id: request.id, result }).catch(() => undefined);
         },
         reject: (code: number, message: string) => {
           if (answered) return;
           answered = true;
-          void this.write({ jsonrpc: "2.0", id: request.id, error: { code, message } });
+          void this.write({ jsonrpc: "2.0", id: request.id, error: { code, message } }).catch(
+            () => undefined,
+          );
         },
       } satisfies IncomingRequest);
       return;
@@ -228,7 +257,7 @@ export class AcpProcess extends EventEmitter {
       const end = newline === -1 ? chunk.length : newline;
       const segment = chunk.subarray(start, end);
       if (this.stdoutRemainder.length + segment.length > MAX_FRAME_BYTES) {
-        this.abort(new ProtocolError("incoming ACP frame exceeds the 4 MiB limit"));
+        this.finish(new ProtocolError("incoming ACP frame exceeds the 4 MiB limit"), true);
         return;
       }
       if (segment.length > 0) {
@@ -254,46 +283,76 @@ export class AcpProcess extends EventEmitter {
     this.pending.clear();
   }
 
-  private finish(error: Error): void {
-    if (this.closed) return;
-    this.terminatePosixProcessGroup(true);
+  private finish(error: Error, terminate: boolean): Error {
+    if (this.closed) return this.terminalError ?? error;
     this.closed = true;
+    this.terminalError = error;
     this.failAll(error);
+    if (process.platform === "win32") {
+      // Do not announce termination (and let Desktop restart) until Windows
+      // has finished a best-effort process-tree cleanup. The sidecar leader
+      // may have exited while a tool grandchild still owns the SQLite files.
+      void this.terminateWindowsTree(true).finally(() => this.publishTermination(error));
+    } else {
+      if (terminate) this.terminateChild(true);
+      else this.terminatePosixProcessGroup(true);
+      this.publishTermination(error);
+    }
+    return error;
+  }
+
+  private publishTermination(error: Error): void {
+    if (this.terminationPublished) return;
+    this.terminationPublished = true;
     this.resolveTerminated();
     this.emit("exit", error);
   }
 
-  private abort(error: Error): void {
-    this.terminateChild(true);
-    this.finish(error);
+  private writeError(error: unknown): ProtocolError {
+    const detail = error instanceof Error ? error.message : String(error);
+    return new ProtocolError(`could not write to AxiomCLI: ${detail}`);
   }
 
   private terminateChild(force: boolean): void {
-    if (process.platform === "win32" && this.child.pid) {
-      const taskkillExecutable = process.env.SystemRoot
-        ? join(process.env.SystemRoot, "System32", "taskkill.exe")
-        : "taskkill.exe";
-      const taskkill = spawn(
-        taskkillExecutable,
-        ["/PID", String(this.child.pid), "/T", ...(force ? ["/F"] : [])],
-        { stdio: "ignore", windowsHide: true, shell: false },
-      );
-      let fellBack = false;
-      const fallback = () => {
-        if (fellBack) return;
-        fellBack = true;
-        this.child.kill(force ? "SIGKILL" : "SIGTERM");
-      };
-      taskkill.once("error", fallback);
-      taskkill.once("exit", (code) => {
-        if (code !== 0) fallback();
-      });
-      taskkill.unref();
+    if (process.platform === "win32") {
+      void this.terminateWindowsTree(force);
       return;
     }
     const signal = force ? "SIGKILL" : "SIGTERM";
     if (this.terminatePosixProcessGroup(force)) return;
     this.child.kill(signal);
+  }
+
+  private terminateWindowsTree(force: boolean): Promise<void> {
+    const pid = this.child.pid;
+    if (!pid) {
+      this.child.kill(force ? "SIGKILL" : "SIGTERM");
+      return Promise.resolve();
+    }
+    const taskkillExecutable = process.env.SystemRoot
+      ? join(process.env.SystemRoot, "System32", "taskkill.exe")
+      : "taskkill.exe";
+    return new Promise<void>((resolve) => {
+      let settled = false;
+      const complete = (fallback: boolean) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        if (fallback) this.child.kill(force ? "SIGKILL" : "SIGTERM");
+        resolve();
+      };
+      const taskkill = spawn(
+        taskkillExecutable,
+        ["/PID", String(pid), "/T", ...(force ? ["/F"] : [])],
+        { stdio: "ignore", windowsHide: true, shell: false },
+      );
+      const timeout = setTimeout(() => {
+        taskkill.kill();
+        complete(true);
+      }, 3_000);
+      taskkill.once("error", () => complete(true));
+      taskkill.once("exit", (code) => complete(code !== 0));
+    });
   }
 
   private terminatePosixProcessGroup(force: boolean): boolean {

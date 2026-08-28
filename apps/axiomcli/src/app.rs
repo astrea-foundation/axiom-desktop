@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fmt,
+    future::Future,
     path::PathBuf,
     str::FromStr,
     sync::{
@@ -16,6 +17,10 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::{AxiomError, Result};
+
+/// Maximum number of journal events projected before cooperative async
+/// restore returns control to Tokio.
+const RESTORE_COOPERATION_INTERVAL: usize = 128;
 
 macro_rules! typed_uuid {
     ($name:ident) => {
@@ -932,33 +937,17 @@ impl Kernel {
     }
 
     pub fn restore_from_events(&mut self, events: &[EventEnvelope]) -> Result<SessionState> {
-        let first = events.first().ok_or_else(|| {
-            AxiomError::InvalidTransition("cannot restore an empty event stream".into())
-        })?;
-        let id = first.session_id.clone();
-        let mut state: Option<SessionState> = None;
+        let mut projection = RestoreProjection::new(events)?;
         for envelope in events {
-            if envelope.session_id != id {
-                return Err(AxiomError::InvalidTransition(
-                    "restore stream contains multiple sessions".into(),
-                ));
-            }
-            self.next_sequence = self.next_sequence.max(envelope.sequence);
-            replay_event(&mut state, &id, &envelope.event)?;
+            projection.replay(envelope)?;
         }
-        let mut state = state.ok_or_else(|| {
-            AxiomError::InvalidTransition("restore stream has no session creation".into())
-        })?;
-        // A close event records that the previous front end shut down; it does
-        // not tombstone a durable session. Unknown in-flight work is never
-        // replayed. Every successfully restored session resumes ready and the
-        // durable turn records retain interrupted evidence for recovery.
-        state.lifecycle = SessionLifecycle::Ready;
-        state.active_turn = None;
-        state.pending_permission = None;
-        state.pending_question = None;
-        self.sessions.insert(id, state.clone());
-        Ok(state)
+        Ok(self.install_restore(projection.finish()?))
+    }
+
+    fn install_restore(&mut self, restored: CompletedRestore) -> SessionState {
+        self.next_sequence = self.next_sequence.max(restored.max_sequence);
+        self.sessions.insert(restored.id, restored.state.clone());
+        restored.state
     }
 
     fn session_mut(&mut self, id: &SessionId) -> Result<&mut SessionState> {
@@ -1116,6 +1105,60 @@ fn replay_event(state: &mut Option<SessionState>, id: &SessionId, event: &AppEve
     Ok(())
 }
 
+struct RestoreProjection {
+    id: SessionId,
+    state: Option<SessionState>,
+    max_sequence: u64,
+}
+
+struct CompletedRestore {
+    id: SessionId,
+    state: SessionState,
+    max_sequence: u64,
+}
+
+impl RestoreProjection {
+    fn new(events: &[EventEnvelope]) -> Result<Self> {
+        let first = events.first().ok_or_else(|| {
+            AxiomError::InvalidTransition("cannot restore an empty event stream".into())
+        })?;
+        Ok(Self {
+            id: first.session_id.clone(),
+            state: None,
+            max_sequence: 0,
+        })
+    }
+
+    fn replay(&mut self, envelope: &EventEnvelope) -> Result<()> {
+        if envelope.session_id != self.id {
+            return Err(AxiomError::InvalidTransition(
+                "restore stream contains multiple sessions".into(),
+            ));
+        }
+        self.max_sequence = self.max_sequence.max(envelope.sequence);
+        replay_event(&mut self.state, &self.id, &envelope.event)
+    }
+
+    fn finish(self) -> Result<CompletedRestore> {
+        let mut state = self.state.ok_or_else(|| {
+            AxiomError::InvalidTransition("restore stream has no session creation".into())
+        })?;
+        // A close event records that the previous front end shut down; it does
+        // not tombstone a durable session. Unknown in-flight work is never
+        // replayed. Every successfully restored session resumes ready and the
+        // durable turn records retain interrupted evidence for recovery.
+        state.lifecycle = SessionLifecycle::Ready;
+        state.active_turn = None;
+        state.pending_permission = None;
+        state.pending_question = None;
+        Ok(CompletedRestore {
+            id: self.id,
+            state,
+            max_sequence: self.max_sequence,
+        })
+    }
+}
+
 #[derive(Clone)]
 pub struct Runtime {
     kernel: Arc<Mutex<Kernel>>,
@@ -1197,7 +1240,32 @@ impl Runtime {
     }
 
     pub async fn restore(&self, events: &[EventEnvelope]) -> Result<SessionState> {
-        self.kernel.lock().await.restore_from_events(events)
+        self.restore_with_cooperation(events, tokio::task::yield_now)
+            .await
+    }
+
+    async fn restore_with_cooperation<Cooperate, Cooperation>(
+        &self,
+        events: &[EventEnvelope],
+        mut cooperate: Cooperate,
+    ) -> Result<SessionState>
+    where
+        Cooperate: FnMut() -> Cooperation,
+        Cooperation: Future<Output = ()>,
+    {
+        // Projection is deliberately independent of the shared kernel. Other
+        // sessions remain dispatchable while a large journal is validated and
+        // replayed; only the final state/sequence installation takes the lock.
+        let mut projection = RestoreProjection::new(events)?;
+        for (index, envelope) in events.iter().enumerate() {
+            projection.replay(envelope)?;
+            if (index + 1).is_multiple_of(RESTORE_COOPERATION_INTERVAL) {
+                cooperate().await;
+            }
+        }
+        let restored = projection.finish()?;
+        let mut kernel = self.kernel.lock().await;
+        Ok(kernel.install_restore(restored))
     }
 
     #[must_use]
@@ -1208,7 +1276,10 @@ impl Runtime {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
     use chrono::TimeZone as _;
+    use tokio::sync::Notify;
 
     use super::*;
 
@@ -1242,6 +1313,21 @@ mod tests {
             origin: Origin::Test,
             cancellation: CancellationToken::new(),
             command,
+        }
+    }
+
+    fn journal_event(session_id: &SessionId, sequence: u64, event: AppEvent) -> EventEnvelope {
+        EventEnvelope {
+            schema_version: 1,
+            sequence,
+            occurred_at: Utc
+                .with_ymd_and_hms(2026, 8, 22, 0, 0, 0)
+                .single()
+                .expect("event time"),
+            correlation_id: CorrelationId::from_uuid(Uuid::from_u128(u128::from(sequence))),
+            origin: Origin::Test,
+            session_id: session_id.clone(),
+            event,
         }
     }
 
@@ -1764,5 +1850,110 @@ mod tests {
         .await
         .expect("not blocked")
         .expect("dispatch");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn runtime_restore_is_cooperative_unlocked_and_equivalent_to_kernel_replay() {
+        let restored_id = SessionId::from_uuid(Uuid::from_u128(900));
+        let mut events = vec![journal_event(
+            &restored_id,
+            1,
+            AppEvent::SessionCreated {
+                cwd: PathBuf::from("/tmp/large-restore"),
+                origin: Origin::Test,
+                profile: PermissionProfile::Observe,
+            },
+        )];
+        for sequence in 2..=RESTORE_COOPERATION_INTERVAL as u64 * 4 + 1 {
+            events.push(journal_event(
+                &restored_id,
+                sequence,
+                AppEvent::PermissionProfileChanged {
+                    profile: if sequence.is_multiple_of(2) {
+                        PermissionProfile::Confirm
+                    } else {
+                        PermissionProfile::Observe
+                    },
+                },
+            ));
+        }
+        let max_sequence = events.last().expect("last event").sequence;
+        let mut expected_kernel = Kernel::with_services(services());
+        let expected = expected_kernel
+            .restore_from_events(&events)
+            .expect("reference restore");
+
+        let runtime = Runtime::with_services(8, services());
+        let other_id = runtime.session_id();
+        runtime
+            .dispatch(AppCommand::CreateSession {
+                session_id: other_id.clone(),
+                cwd: PathBuf::from("/tmp/other-session"),
+                origin: Origin::Test,
+                profile: PermissionProfile::Observe,
+            })
+            .await
+            .expect("create other session");
+
+        let reached_checkpoint = Arc::new(Notify::new());
+        let release_checkpoint = Arc::new(Notify::new());
+        let first_checkpoint = Arc::new(AtomicBool::new(true));
+        let restore_runtime = runtime.clone();
+        let restore_events = Arc::new(events);
+        let restore_task = {
+            let reached_checkpoint = reached_checkpoint.clone();
+            let release_checkpoint = release_checkpoint.clone();
+            let first_checkpoint = first_checkpoint.clone();
+            tokio::spawn(async move {
+                restore_runtime
+                    .restore_with_cooperation(restore_events.as_slice(), move || {
+                        let is_first = first_checkpoint.swap(false, Ordering::SeqCst);
+                        let reached_checkpoint = reached_checkpoint.clone();
+                        let release_checkpoint = release_checkpoint.clone();
+                        async move {
+                            if is_first {
+                                reached_checkpoint.notify_one();
+                                release_checkpoint.notified().await;
+                            } else {
+                                tokio::task::yield_now().await;
+                            }
+                        }
+                    })
+                    .await
+            })
+        };
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            reached_checkpoint.notified(),
+        )
+        .await
+        .expect("restore reached cooperative checkpoint");
+        assert!(!restore_task.is_finished());
+        tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            runtime.dispatch(AppCommand::ChangePermissionProfile {
+                session_id: other_id,
+                profile: PermissionProfile::Confirm,
+            }),
+        )
+        .await
+        .expect("kernel remains responsive during projection")
+        .expect("other session dispatch");
+
+        release_checkpoint.notify_one();
+        let restored = restore_task
+            .await
+            .expect("restore task join")
+            .expect("runtime restore");
+        assert_eq!(restored, expected);
+        let next = runtime
+            .dispatch(AppCommand::ChangePermissionProfile {
+                session_id: restored_id,
+                profile: PermissionProfile::FullAccess,
+            })
+            .await
+            .expect("dispatch after restore");
+        assert_eq!(next[0].sequence, max_sequence + 1);
     }
 }

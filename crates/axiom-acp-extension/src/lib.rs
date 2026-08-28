@@ -336,6 +336,9 @@ pub struct CollectionState {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountStatus {
+    /// Monotonic within one agent runtime. Clients must ignore account states
+    /// whose revision is not newer than the state they already applied.
+    pub revision: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

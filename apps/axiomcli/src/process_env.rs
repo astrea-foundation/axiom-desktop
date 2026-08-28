@@ -4,12 +4,189 @@ use std::{
     env,
     ffi::{OsStr, OsString},
     path::PathBuf,
+    sync::Arc,
 };
+
+#[cfg(unix)]
+use std::{collections::HashSet, sync::Mutex, time::Duration};
 
 #[cfg(any(windows, test))]
 use std::path::Path;
 
 use tokio::process::Command;
+
+/// Tracks POSIX process groups whose leaders were spawned by `AxiomCLI`.
+///
+/// Tool and MCP children deliberately lead their own process groups so one
+/// cancellation can terminate their complete process trees. That also moves
+/// them outside a supervising Desktop sidecar's process group, so ownership
+/// must remain inside `AxiomCLI` as an RAII lease. Dropping either the final
+/// registry owner or an armed guard synchronously sends SIGKILL before the
+/// process-group ID can be forgotten and later reused.
+#[derive(Clone, Default)]
+pub(crate) struct ProcessGroupRegistry {
+    inner: Arc<ProcessGroupRegistryInner>,
+}
+
+#[derive(Default)]
+struct ProcessGroupRegistryInner {
+    #[cfg(unix)]
+    state: Mutex<ProcessGroupRegistryState>,
+}
+
+#[cfg(unix)]
+#[derive(Default)]
+struct ProcessGroupRegistryState {
+    active: HashSet<i32>,
+    closed: bool,
+}
+
+impl Drop for ProcessGroupRegistryInner {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        {
+            let state = self
+                .state
+                .get_mut()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.closed = true;
+            for &pgid in &state.active {
+                signal_process_group(pgid, nix::sys::signal::Signal::SIGKILL);
+            }
+            state.active.clear();
+        }
+    }
+}
+
+impl ProcessGroupRegistry {
+    pub(crate) fn register(&self, process_id: Option<u32>) -> ProcessGroupGuard {
+        #[cfg(unix)]
+        let group_id = process_id
+            .and_then(|value| i32::try_from(value).ok())
+            .filter(|value| *value > 1 && Some(*value) != i32::try_from(std::process::id()).ok());
+        #[cfg(not(unix))]
+        let group_id = {
+            let _ = process_id;
+            None
+        };
+
+        #[cfg(unix)]
+        let group_id = group_id.and_then(|group_id| {
+            let mut state = self.state();
+            if state.closed {
+                // The owner may have shut down after scheduling a task but
+                // before that task reached spawn. Keep registration and the
+                // closed check under one lock so no process group can appear
+                // after the final drain.
+                signal_process_group(group_id, nix::sys::signal::Signal::SIGKILL);
+                None
+            } else {
+                state.active.insert(group_id);
+                Some(group_id)
+            }
+        });
+
+        ProcessGroupGuard {
+            registry: self.clone(),
+            pgid: group_id,
+        }
+    }
+
+    /// Immediately terminates and forgets every group still owned by this
+    /// registry. This is synchronous so it remains usable from Drop and from a
+    /// runtime-shutdown path that can no longer poll async cleanup futures.
+    pub(crate) fn terminate_all(&self) {
+        #[cfg(unix)]
+        {
+            let mut state = self.state();
+            state.closed = true;
+            for &pgid in &state.active {
+                signal_process_group(pgid, nix::sys::signal::Signal::SIGKILL);
+            }
+            state.active.clear();
+        }
+    }
+
+    #[cfg(unix)]
+    fn state(&self) -> std::sync::MutexGuard<'_, ProcessGroupRegistryState> {
+        self.inner
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    #[cfg(unix)]
+    fn signal_if_registered(&self, pgid: i32, signal: nix::sys::signal::Signal) -> bool {
+        let state = self.state();
+        if !state.active.contains(&pgid) {
+            return false;
+        }
+        signal_process_group(pgid, signal)
+    }
+
+    #[cfg(unix)]
+    fn kill_and_unregister(&self, pgid: i32) {
+        let mut state = self.state();
+        if state.active.contains(&pgid) {
+            signal_process_group(pgid, nix::sys::signal::Signal::SIGKILL);
+            state.active.remove(&pgid);
+        }
+    }
+
+    #[cfg(all(test, unix))]
+    pub(crate) fn active_count(&self) -> usize {
+        self.state().active.len()
+    }
+
+    #[cfg(all(test, unix))]
+    pub(crate) fn is_closed(&self) -> bool {
+        self.state().closed
+    }
+}
+
+pub(crate) struct ProcessGroupGuard {
+    registry: ProcessGroupRegistry,
+    pgid: Option<i32>,
+}
+
+impl ProcessGroupGuard {
+    /// Gracefully asks the group to stop, then guarantees a synchronous kill
+    /// before releasing its registration. If SIGTERM reports no group, the
+    /// leader and every descendant are already gone and no grace delay is
+    /// needed.
+    pub(crate) async fn terminate(&mut self) {
+        #[cfg(unix)]
+        if let Some(pgid) = self.pgid {
+            if self
+                .registry
+                .signal_if_registered(pgid, nix::sys::signal::Signal::SIGTERM)
+            {
+                tokio::time::sleep(Duration::from_millis(150)).await;
+            }
+            self.registry.kill_and_unregister(pgid);
+        }
+        self.pgid = None;
+    }
+
+    pub(crate) fn terminate_now(&mut self) {
+        #[cfg(unix)]
+        if let Some(pgid) = self.pgid {
+            self.registry.kill_and_unregister(pgid);
+        }
+        self.pgid = None;
+    }
+}
+
+impl Drop for ProcessGroupGuard {
+    fn drop(&mut self) {
+        self.terminate_now();
+    }
+}
+
+#[cfg(unix)]
+fn signal_process_group(pgid: i32, signal: nix::sys::signal::Signal) -> bool {
+    nix::sys::signal::killpg(nix::unistd::Pid::from_raw(pgid), signal).is_ok()
+}
 
 pub(crate) fn apply_sanitized_environment(command: &mut Command) {
     command.env_clear().env("PATH", sanitized_path());

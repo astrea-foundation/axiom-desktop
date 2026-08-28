@@ -99,6 +99,9 @@ export function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [proxyInspecting, setProxyInspecting] = useState(false);
   const [uiError, setUiError] = useState<string | null>(null);
+  const [modelCatalogError, setModelCatalogError] = useState<string | null>(null);
+  const [modelCatalogRefresh, setModelCatalogRefresh] = useState(0);
+  const [desktopReady, setDesktopReady] = useState(false);
   const [pendingUserMessage, setPendingUserMessage] = useState<PendingUserMessage | null>(null);
   const loadingSessions = useRef(new Set<string>());
   const settingsGeneration = useRef(0);
@@ -150,49 +153,91 @@ export function App() {
       setUiError("Axiom Desktop bridge is unavailable");
       return;
     }
-    const unsubscribe = api.onState(setAgentState);
-    void api.getState().then(setAgentState).catch((error: unknown) => setUiError(String(error)));
-    return unsubscribe;
+    let disposed = false;
+    let receivedLiveState = false;
+    const unsubscribe = api.onState((state) => {
+      if (disposed) return;
+      receivedLiveState = true;
+      setAgentState(state);
+    });
+    void api.getState().then((state) => {
+      // Subscription is installed first so an older IPC snapshot can never
+      // overwrite a newer sidecar-ready event that raced its round trip.
+      if (!disposed && !receivedLiveState) setAgentState(state);
+    }).catch((error: unknown) => {
+      if (!disposed) setUiError(String(error));
+    });
+    return () => {
+      disposed = true;
+      unsubscribe();
+    };
   }, []);
 
   useEffect(() => {
-    if (!agentState.connected) return;
+    if (!agentState.connected) {
+      setDesktopReady(false);
+      return;
+    }
     const api = window.axiomDesktop?.agent;
     if (!api) return;
     let cancelled = false;
     const initialize = async () => {
-      for (let attempt = 0; attempt < 12; attempt += 1) {
-        try {
-          const bootstrap = await api.desktopBootstrap();
-          const [modelResponse] = await Promise.all([
-            api.listModels(),
-            api.listCollections(),
-            api.listThreads(),
-          ]);
-          if (cancelled) return;
-          const available = providerModels(modelResponse);
-          const rememberedModel = bootstrap.newThreadSettings.model;
-          const nextModel = available.some((model) => model.id === rememberedModel)
-            ? rememberedModel!
-            : available[0]?.id || "";
-          const rememberedThinking = bootstrap.newThreadSettings.thinkingLevel;
-          const nextThinking = isReasoningEffort(rememberedThinking) ? rememberedThinking : "medium";
-          setModels(available);
-          setModelId(nextModel);
-          setReasoningEffort(nextThinking);
-          preferredModelId.current = nextModel;
-          preferredReasoningEffort.current = nextThinking;
-          setUiError(null);
-          return;
-        } catch (error) {
-          if (attempt === 11 && !cancelled) setUiError(error instanceof Error ? error.message : String(error));
-          await new Promise((resolve) => window.setTimeout(resolve, 200));
-        }
+      setDesktopReady(false);
+      try {
+        const bootstrap = await api.desktopBootstrap();
+        if (cancelled) return;
+        const rememberedModel = bootstrap.newThreadSettings.model ?? "";
+        const rememberedThinking = bootstrap.newThreadSettings.thinkingLevel;
+        const nextThinking = isReasoningEffort(rememberedThinking) ? rememberedThinking : "medium";
+        setModelId(rememberedModel);
+        setReasoningEffort(nextThinking);
+        preferredModelId.current = rememberedModel;
+        preferredReasoningEffort.current = nextThinking;
+        setDesktopReady(true);
+        setUiError(null);
+      } catch (error) {
+        if (!cancelled) setUiError(error instanceof Error ? error.message : String(error));
       }
     };
     void initialize();
     return () => { cancelled = true; };
   }, [agentState.connected, agentState.runtimeInstanceId]);
+
+  useEffect(() => {
+    const api = window.axiomDesktop?.agent;
+    if (!api || !agentState.connected || !desktopReady || agentState.account?.state !== "valid") {
+      setModels([]);
+      setModelCatalogError(null);
+      return;
+    }
+    let cancelled = false;
+    setModels([]);
+    setModelCatalogError(null);
+    void api.listModels().then((response) => {
+      if (cancelled) return;
+      const available = providerModels(response);
+      if (available.length === 0) throw new Error("this account has no available models");
+      const rememberedModel = preferredModelId.current;
+      const nextModel = available.some((model) => model.id === rememberedModel)
+        ? rememberedModel
+        : available[0]!.id;
+      setModels(available);
+      setModelId(nextModel);
+      preferredModelId.current = nextModel;
+    }).catch((error: unknown) => {
+      if (cancelled) return;
+      const detail = error instanceof Error ? error.message : String(error);
+      setModelCatalogError(`Could not load models. Check your connection or refresh your account in Settings. ${detail}`);
+    });
+    return () => { cancelled = true; };
+  }, [
+    agentState.account?.keyId,
+    agentState.account?.state,
+    agentState.connected,
+    agentState.runtimeInstanceId,
+    desktopReady,
+    modelCatalogRefresh,
+  ]);
 
   const loadThread = useCallback(async (id: string) => {
     setActiveThreadId(id);
@@ -367,6 +412,18 @@ export function App() {
       ? "New thread"
       : activeThread.title;
 
+  const modelStatusLabel = !agentState.connected || !desktopReady
+    ? "Starting…"
+    : modelCatalogError
+      ? "Models unavailable"
+      : agentState.account?.state === "invalid"
+        ? "Sign in again"
+        : agentState.account?.state === "unavailable"
+          ? "Models unavailable"
+          : agentState.account?.state === "valid"
+            ? "Loading models…"
+            : "Sign in for models";
+
   const beginResize = (event: ReactPointerEvent<HTMLDivElement>) => {
     event.preventDefault();
     const startX = event.clientX;
@@ -443,6 +500,8 @@ export function App() {
 
         {uiError || agentState.error ? (
           <div className="absolute inset-x-4 top-12 z-40 rounded-lg border border-red-400/20 bg-red-950/90 px-3 py-2 text-[12px] text-red-200 shadow-lg">{uiError ?? agentState.error}</div>
+        ) : modelCatalogError ? (
+          <div className="absolute inset-x-4 top-12 z-40 rounded-lg border border-amber-300/20 bg-amber-950/90 px-3 py-2 text-[12px] text-amber-100 shadow-lg">{modelCatalogError}</div>
         ) : null}
 
         <div className="relative min-h-0 flex-1">
@@ -456,6 +515,7 @@ export function App() {
               isStreaming={isStreaming}
               models={models}
               selectedModelId={modelId || models[0]?.id || ""}
+              modelStatusLabel={modelStatusLabel}
               onModelChange={(id) => updateSettings(id, undefined)}
               reasoningEffort={reasoningEffort}
               onReasoningEffortChange={(effort) => updateSettings(undefined, effort)}
@@ -476,6 +536,7 @@ export function App() {
               onSubmit={() => void submitDraft()}
               models={models}
               selectedModelId={modelId || models[0]?.id || ""}
+              modelStatusLabel={modelStatusLabel}
               onModelChange={(id) => { setModelId(id); preferredModelId.current = id; }}
               reasoningEffort={reasoningEffort}
               onReasoningEffortChange={(effort) => {
@@ -490,13 +551,22 @@ export function App() {
               connected={agentState.connected}
               account={agentState.account}
               onRefreshAccount={() => {
-                void window.axiomDesktop?.agent.accountStatus().catch((error: unknown) => setUiError(error instanceof Error ? error.message : String(error)));
+                void (async () => {
+                  try {
+                    await window.axiomDesktop?.agent.accountStatus();
+                    setModelCatalogRefresh((version) => version + 1);
+                    setUiError(null);
+                  } catch (error) {
+                    setUiError(error instanceof Error ? error.message : String(error));
+                  }
+                })();
               }}
               onLogin={() => {
                 void (async () => {
                   try {
                     const started = await window.axiomDesktop?.agent.browserLoginStart();
                     if (started) await window.axiomDesktop?.agent.browserLoginComplete(started.login.loginId);
+                    setModelCatalogRefresh((version) => version + 1);
                     setUiError(null);
                   } catch (error) {
                     setUiError(error instanceof Error ? error.message : String(error));
@@ -504,7 +574,16 @@ export function App() {
                 })();
               }}
               onLogout={() => {
-                void window.axiomDesktop?.agent.logout().catch((error: unknown) => setUiError(error instanceof Error ? error.message : String(error)));
+                void (async () => {
+                  try {
+                    await window.axiomDesktop?.agent.logout();
+                    setModels([]);
+                    setModelCatalogError(null);
+                    setUiError(null);
+                  } catch (error) {
+                    setUiError(error instanceof Error ? error.message : String(error));
+                  }
+                })();
               }}
             />
           ) : null}

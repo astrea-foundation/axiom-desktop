@@ -56,14 +56,54 @@ impl AcpProcess {
     fn spawn(runner: &str) -> Self {
         let state = tempfile::tempdir().expect("isolated ACP state");
         let path = state.path().to_path_buf();
-        Self::spawn_inner(runner, &path, Some(state))
+        Self::spawn_inner(runner, &path, Some(state), None, None)
     }
 
     fn spawn_with_state(runner: &str, state: &Path) -> Self {
-        Self::spawn_inner(runner, state, None)
+        Self::spawn_inner(runner, state, None, None, None)
     }
 
-    fn spawn_inner(runner: &str, state_path: &Path, state: Option<TempDir>) -> Self {
+    fn spawn_with_persistence_failure(runner: &str, scope: &str) -> Self {
+        let state = tempfile::tempdir().expect("isolated ACP state");
+        let path = state.path().to_path_buf();
+        Self::spawn_inner(runner, &path, Some(state), None, Some(scope))
+    }
+
+    fn spawn_desktop_without_provider() -> Self {
+        Self::spawn_desktop_with_provider_base("https://127.0.0.1:1")
+    }
+
+    fn spawn_desktop_with_provider_base(base_url: &str) -> Self {
+        let state = tempfile::tempdir().expect("isolated desktop ACP state");
+        let path = state.path().to_path_buf();
+        Self::spawn_inner(
+            &format!("unreachable-provider:{base_url}"),
+            &path,
+            Some(state),
+            Some("desktop-chat"),
+            None,
+        )
+    }
+
+    fn spawn_desktop_with_blocked_auth(base_url: &str) -> Self {
+        let state = tempfile::tempdir().expect("isolated desktop ACP state");
+        let path = state.path().to_path_buf();
+        Self::spawn_inner(
+            &format!("blocked-auth:{base_url}"),
+            &path,
+            Some(state),
+            Some("desktop-chat"),
+            None,
+        )
+    }
+
+    fn spawn_inner(
+        runner: &str,
+        state_path: &Path,
+        state: Option<TempDir>,
+        frontend: Option<&str>,
+        persistence_failure: Option<&str>,
+    ) -> Self {
         let mut command = Command::new(env!("CARGO_BIN_EXE_axiomcli"));
         command
             .arg("acp")
@@ -74,8 +114,25 @@ impl AcpProcess {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        if let Some(frontend) = frontend {
+            command.args(["--frontend", frontend]);
+        }
+        if let Some(scope) = persistence_failure {
+            command.env("AXIOMCLI_TEST_FAIL_PERSISTENCE", scope);
+        }
         if runner == "workspace_edit" {
             command.env("AXIOM_PERMISSION_PROFILE", "full_access");
+        }
+        if let Some(base_url) = runner.strip_prefix("unreachable-provider:") {
+            command
+                .env("AXIOM_BASE_URL", base_url)
+                .env("AXIOMCLI_CREDENTIAL_STORE", "file");
+        }
+        if let Some(base_url) = runner.strip_prefix("blocked-auth:") {
+            command
+                .env("AXIOM_BASE_URL", base_url)
+                .env("AXIOM_API_KEY", "axm_0123456789abcdef")
+                .env("AXIOMCLI_CREDENTIAL_STORE", "file");
         }
         let mut child = command.spawn().expect("spawn ACP");
         let stdin = child.stdin.take().expect("stdin");
@@ -190,6 +247,96 @@ impl AcpProcess {
             .expect("wait ACP");
         assert!(status.success());
     }
+}
+
+#[tokio::test]
+async fn request_failure_returns_an_error_and_keeps_the_connection_usable() {
+    let mut acp = AcpProcess::spawn("echo");
+    acp.initialize_extension().await;
+
+    acp.send(&json!({
+        "jsonrpc":"2.0","id":2,"method":"_axiom/thread/timeline",
+        "params":{"threadId":"not-a-session-id","limit":10}
+    }))
+    .await;
+    let failed = acp.response(2).await;
+    assert!(failed.get("error").is_some());
+    assert!(failed.get("result").is_none());
+
+    acp.send(&json!({
+        "jsonrpc":"2.0","id":3,"method":"_axiom/thread/list","params":{}
+    }))
+    .await;
+    let following = acp.response(3).await;
+    assert_eq!(following["result"]["threads"], json!([]));
+    acp.close().await;
+}
+
+#[tokio::test]
+async fn desktop_bootstrap_is_local_and_does_not_require_provider_or_auth() {
+    let mut acp = AcpProcess::spawn_desktop_without_provider();
+    acp.initialize_extension().await;
+
+    acp.send(&json!({
+        "jsonrpc":"2.0","id":2,"method":"_axiom/desktop/bootstrap","params":{}
+    }))
+    .await;
+    let bootstrap = acp.response(2).await;
+    assert!(bootstrap.get("error").is_none(), "{bootstrap}");
+    assert_eq!(bootstrap["result"]["frontend"], "desktop-chat");
+    assert_eq!(bootstrap["result"]["permissionProfile"], "web");
+    assert_eq!(bootstrap["result"]["newThreadSettings"]["model"], "glm-5-2");
+    assert_eq!(
+        bootstrap["result"]["newThreadSettings"]["thinkingLevel"],
+        "medium"
+    );
+    assert!(
+        Path::new(
+            bootstrap["result"]["chatCwd"]
+                .as_str()
+                .expect("desktop chat cwd")
+        )
+        .is_absolute()
+    );
+    acp.close().await;
+}
+
+#[tokio::test]
+async fn blocked_external_request_does_not_block_local_requests_and_is_cancellable() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("blocked provider listener");
+    let provider_url = format!(
+        "https://{}",
+        listener.local_addr().expect("listener address")
+    );
+    let mut acp = AcpProcess::spawn_desktop_with_blocked_auth(&provider_url);
+    acp.initialize_extension().await;
+
+    acp.send(&json!({
+        "jsonrpc":"2.0","id":2,"method":"_axiom/account/status","params":{}
+    }))
+    .await;
+    let (_blocked_connection, _) = tokio::time::timeout(Duration::from_secs(2), listener.accept())
+        .await
+        .expect("provider request was not started")
+        .expect("accept provider request");
+
+    acp.send(&json!({
+        "jsonrpc":"2.0","id":3,"method":"_axiom/thread/list","params":{}
+    }))
+    .await;
+    let local = acp.response(3).await;
+    assert_eq!(local["result"]["threads"], json!([]));
+
+    acp.send(&json!({
+        "jsonrpc":"2.0","method":"$/cancel_request","params":{"requestId":2}
+    }))
+    .await;
+    let cancelled = acp.response(2).await;
+    assert!(cancelled.get("error").is_some(), "{cancelled}");
+    assert_eq!(cancelled["error"]["code"], -32800, "{cancelled}");
+    acp.close().await;
 }
 
 #[tokio::test]
@@ -382,6 +529,99 @@ async fn model_changes_reconcile_disjoint_reasoning_capabilities_atomically() {
     assert_eq!(
         preferences["result"]["preferences"]["thinkingLevel"],
         "medium"
+    );
+    acp.close().await;
+}
+
+#[tokio::test]
+async fn config_persistence_failure_rolls_live_settings_back_before_next_request() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let mut acp = AcpProcess::spawn_with_persistence_failure("echo", "config");
+    acp.initialize_extension().await;
+    let session = acp.new_session(2, workspace.path()).await;
+
+    acp.send(&json!({
+        "jsonrpc":"2.0","id":3,"method":"session/set_config_option",
+        "params":{"sessionId":session,"configId":"thinking","value":"high"}
+    }))
+    .await;
+    assert!(acp.response(3).await.get("error").is_some());
+
+    acp.send(&json!({
+        "jsonrpc":"2.0","id":4,"method":"session/set_config_option",
+        "params":{"sessionId":session,"configId":"model","value":"alternate-model"}
+    }))
+    .await;
+    let following = acp.response(4).await;
+    let thinking = following["result"]["configOptions"]
+        .as_array()
+        .and_then(|options| options.iter().find(|option| option["id"] == "thinking"))
+        .expect("thinking config after rollback");
+    assert_eq!(thinking["currentValue"], "medium", "{following}");
+
+    acp.send(&json!({
+        "jsonrpc":"2.0","id":5,"method":"_axiom/profile/preferences","params":{}
+    }))
+    .await;
+    assert_eq!(
+        acp.response(5).await["result"]["preferences"]["thinkingLevel"],
+        "medium"
+    );
+    acp.close().await;
+}
+
+#[tokio::test]
+async fn slash_thinking_persistence_failure_rolls_back_before_standard_config() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let mut acp = AcpProcess::spawn_with_persistence_failure("echo", "slash-thinking");
+    acp.initialize().await;
+    let session = acp.new_session(2, workspace.path()).await;
+
+    acp.send(&json!({
+        "jsonrpc":"2.0","id":3,"method":"session/prompt",
+        "params":{"sessionId":session,"prompt":[{"type":"text","text":"/thinking high"}]}
+    }))
+    .await;
+    assert!(acp.response(3).await.get("error").is_some());
+
+    acp.send(&json!({
+        "jsonrpc":"2.0","id":4,"method":"session/set_config_option",
+        "params":{"sessionId":session,"configId":"model","value":"alternate-model"}
+    }))
+    .await;
+    let following = acp.response(4).await;
+    let thinking = following["result"]["configOptions"]
+        .as_array()
+        .and_then(|options| options.iter().find(|option| option["id"] == "thinking"))
+        .expect("thinking config after slash rollback");
+    assert_eq!(thinking["currentValue"], "medium", "{following}");
+    acp.close().await;
+}
+
+#[tokio::test]
+async fn mode_persistence_failure_restores_the_permission_used_by_the_next_turn() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    std::fs::write(workspace.path().join("frontend.txt"), "before\n").expect("fixture");
+    let mut acp = AcpProcess::spawn_with_persistence_failure("workspace_edit", "mode");
+    acp.initialize().await;
+    let session = acp.new_session(2, workspace.path()).await;
+
+    acp.send(&json!({
+        "jsonrpc":"2.0","id":3,"method":"session/set_mode",
+        "params":{"sessionId":session,"modeId":"observe"}
+    }))
+    .await;
+    assert!(acp.response(3).await.get("error").is_some());
+
+    acp.send(&json!({
+        "jsonrpc":"2.0","id":4,"method":"session/prompt",
+        "params":{"sessionId":session,"prompt":[{"type":"text","text":"edit fixture"}]}
+    }))
+    .await;
+    assert_eq!(acp.response(4).await["result"]["stopReason"], "end_turn");
+    assert_eq!(
+        std::fs::read_to_string(workspace.path().join("frontend.txt")).expect("result"),
+        "after\n"
     );
     acp.close().await;
 }
@@ -889,7 +1129,7 @@ async fn workspace_edit_reaches_the_expected_acp_semantics_and_final_workspace()
     let workspace = tempfile::tempdir().expect("workspace");
     std::fs::write(workspace.path().join("frontend.txt"), "before\n").expect("fixture");
     let state = tempfile::tempdir().expect("state");
-    let mut acp = AcpProcess::spawn_inner("workspace_edit", state.path(), None);
+    let mut acp = AcpProcess::spawn_inner("workspace_edit", state.path(), None, None, None);
     // This fixture exercises a pre-authorized shared turn; it still rejects
     // profiles without workspace write authority.
     acp.initialize().await;
@@ -1107,6 +1347,18 @@ async fn unsupported_structured_questions_close_cleanly_instead_of_sticking() {
             })),
         "unsupported elicitation must close the durable notice with a reason"
     );
+    acp.send(&json!({
+        "jsonrpc":"2.0","id":5,"method":"session/prompt",
+        "params":{"sessionId":session,"prompt":[{"type":"text","text":"ask again"}]}
+    }))
+    .await;
+    loop {
+        let value = acp.read().await;
+        if value.get("id").and_then(Value::as_i64) == Some(5) {
+            assert_eq!(value["result"]["stopReason"], "end_turn", "{value}");
+            break;
+        }
+    }
     acp.close().await;
 }
 
@@ -1253,6 +1505,53 @@ async fn durable_session_load_keeps_identity_replays_history_and_continues() {
 }
 
 #[tokio::test]
+async fn concurrent_loads_share_a_canonical_in_flight_reservation() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let state = tempfile::tempdir().expect("shared state");
+    let session = {
+        let mut first = AcpProcess::spawn_with_state("echo", state.path());
+        first.initialize().await;
+        let session = first.new_session(2, workspace.path()).await;
+        first.close().await;
+        session
+    };
+
+    let mut acp = AcpProcess::spawn_with_state("echo", state.path());
+    acp.initialize().await;
+    for (id, session_id) in [(2, session.clone()), (3, session.to_uppercase())] {
+        acp.send(&json!({
+            "jsonrpc":"2.0","id":id,"method":"session/load",
+            "params":{"sessionId":session_id,"cwd":workspace.path(),"mcpServers":[]}
+        }))
+        .await;
+    }
+    let mut responses = Vec::new();
+    while responses.len() < 2 {
+        let value = acp.read().await;
+        if matches!(value.get("id").and_then(Value::as_i64), Some(2 | 3)) {
+            responses.push(value);
+        }
+    }
+    assert_eq!(
+        responses
+            .iter()
+            .filter(|value| value.get("result").is_some())
+            .count(),
+        1,
+        "{responses:?}"
+    );
+    assert_eq!(
+        responses
+            .iter()
+            .filter(|value| value.get("error").is_some())
+            .count(),
+        1,
+        "{responses:?}"
+    );
+    acp.close().await;
+}
+
+#[tokio::test]
 async fn creates_prompts_streams_and_exits_with_protocol_only_stdout() {
     let workspace = tempfile::tempdir().expect("workspace");
     let mut acp = AcpProcess::spawn("echo");
@@ -1310,17 +1609,84 @@ async fn cancellation_finishes_the_active_prompt_once() {
     let mut acp = AcpProcess::spawn("blocking");
     acp.initialize().await;
     let session = acp.new_session(2, workspace.path()).await;
+    for request_id in 3..11 {
+        acp.send(&json!({
+            "jsonrpc":"2.0","id":request_id,"method":"session/prompt",
+            "params":{"sessionId":session,"prompt":[{"type":"text","text":"wait"}]}
+        }))
+        .await;
+        acp.send(&json!({
+            "jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":session}
+        }))
+        .await;
+        let response = acp.response(request_id).await;
+        assert_eq!(response["result"]["stopReason"], "cancelled", "{response}");
+    }
+    acp.close().await;
+}
+
+#[tokio::test]
+async fn active_prompt_rejects_config_mutation_until_owner_cleanup() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let mut acp = AcpProcess::spawn("blocking");
+    acp.initialize().await;
+    let session = acp.new_session(2, workspace.path()).await;
     acp.send(&json!({
         "jsonrpc":"2.0","id":3,"method":"session/prompt",
         "params":{"sessionId":session,"prompt":[{"type":"text","text":"wait"}]}
     }))
     .await;
     acp.send(&json!({
+        "jsonrpc":"2.0","id":4,"method":"session/set_config_option",
+        "params":{"sessionId":session,"configId":"thinking","value":"high"}
+    }))
+    .await;
+    let busy = acp.response(4).await;
+    assert!(busy.get("error").is_some(), "{busy}");
+    acp.send(&json!({
         "jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":session}
     }))
     .await;
-    let response = acp.response(3).await;
-    assert_eq!(response["result"]["stopReason"], "cancelled");
+    assert_eq!(acp.response(3).await["result"]["stopReason"], "cancelled");
+    acp.close().await;
+}
+
+#[tokio::test]
+async fn delete_confirmation_rechecks_active_work_after_preview() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let mut acp = AcpProcess::spawn("blocking");
+    acp.initialize_extension().await;
+    let session = acp.new_session(2, workspace.path()).await;
+
+    acp.send(&json!({
+        "jsonrpc":"2.0","id":3,"method":"_axiom/thread/delete_preview",
+        "params":{"threadIds":[session]}
+    }))
+    .await;
+    let preview = acp.response(3).await;
+    let token = preview["result"]["confirmationToken"]
+        .as_str()
+        .expect("confirmation token")
+        .to_owned();
+
+    acp.send(&json!({
+        "jsonrpc":"2.0","id":4,"method":"session/prompt",
+        "params":{"sessionId":session,"prompt":[{"type":"text","text":"wait"}]}
+    }))
+    .await;
+    acp.send(&json!({
+        "jsonrpc":"2.0","id":5,"method":"_axiom/thread/delete_confirm",
+        "params":{"confirmationToken":token,"threadIds":[session]}
+    }))
+    .await;
+    let rejected = acp.response(5).await;
+    assert!(rejected.get("error").is_some(), "{rejected}");
+
+    acp.send(&json!({
+        "jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":session}
+    }))
+    .await;
+    assert_eq!(acp.response(4).await["result"]["stopReason"], "cancelled");
     acp.close().await;
 }
 

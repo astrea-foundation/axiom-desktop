@@ -12,6 +12,7 @@ import {
   type PermissionOutcome,
   type ThreadSettingsRequest,
 } from "@axiom/axiom-acp-client";
+import { RestartPolicy } from "./restart-policy";
 
 export const AGENT_STATE_CHANNEL = "agent:state-changed";
 export const AGENT_INTERACTION_CHANNEL = "agent:interaction";
@@ -50,6 +51,7 @@ async function resolveSidecar(): Promise<string> {
 
 export class AgentSidecar {
   private client: AxiomAcpClient | null = null;
+  private initializingClient: AxiomAcpClient | null = null;
   private lastState: ClientState = {
     connected: false,
     runtimeInstanceId: null,
@@ -64,17 +66,21 @@ export class AgentSidecar {
   };
   private starting: Promise<void> | null = null;
   private shuttingDown = false;
-  private restartAttempt = 0;
   private bootstrap: DesktopBootstrapResponse | null = null;
+  private readonly restartPolicy = new RestartPolicy();
   private readonly loginControllers = new Map<string, AbortController>();
 
-  async start(): Promise<void> {
-    if (this.client) return;
+  start(): Promise<void> {
+    if (this.shuttingDown) return Promise.reject(new Error("Axiom Desktop sidecar is shutting down"));
     if (this.starting) return this.starting;
-    this.starting = this.startOnce().finally(() => {
-      this.starting = null;
+    if (this.client && this.bootstrap) return Promise.resolve();
+
+    const pending = this.startOnce();
+    const tracked = pending.finally(() => {
+      if (this.starting === tracked) this.starting = null;
     });
-    return this.starting;
+    this.starting = tracked;
+    return tracked;
   }
 
   private async startOnce(): Promise<void> {
@@ -86,57 +92,102 @@ export class AgentSidecar {
         args: ["acp", "--frontend", "desktop-chat"],
         cwd: app.getPath("home"),
       });
-      this.client = client;
+      this.initializingClient = client;
       client.on("state", (state: ClientState) => {
-        this.lastState = state;
-        broadcast(AGENT_STATE_CHANNEL, state);
+        const visibleState = this.client === client
+          ? state
+          : { ...state, connected: false };
+        this.lastState = visibleState;
+        broadcast(AGENT_STATE_CHANNEL, visibleState);
       });
       client.on("interaction", (interaction: PendingInteraction) => {
         broadcast(AGENT_INTERACTION_CHANNEL, interaction);
       });
       client.process.once("exit", () => {
+        const owned = this.client === client || this.initializingClient === client;
         if (this.client === client) {
           this.client = null;
           this.bootstrap = null;
         }
-        if (!this.shuttingDown && this.restartAttempt < 3) {
-          const delay = 250 * 2 ** this.restartAttempt++;
-          setTimeout(() => void this.start().catch(() => undefined), delay);
-        }
+        if (this.initializingClient === client) this.initializingClient = null;
+        if (owned) this.scheduleRestart();
       });
       await client.initialize();
-      this.bootstrap = await client.bootstrapDesktop();
-      this.restartAttempt = 0;
-      await Promise.all([client.accountStatus(), client.initializeDesktopState()]);
+      const bootstrap = await client.bootstrapDesktop();
+      await client.initializeDesktopState();
+      if (this.shuttingDown || this.initializingClient !== client) {
+        throw new Error("AxiomCLI exited before Desktop initialization completed");
+      }
+      this.initializingClient = null;
+      this.client = client;
+      this.bootstrap = bootstrap;
+      const readyState = client.getState();
+      this.lastState = readyState;
+      broadcast(AGENT_STATE_CHANNEL, readyState);
+      this.restartPolicy.markReady(() => !this.shuttingDown && this.client === client);
+      this.refreshAccountInBackground(client);
     } catch (error) {
+      const owned = client !== null && (this.client === client || this.initializingClient === client);
       if (client && this.client === client) this.client = null;
-      if (client) await client.close().catch(() => undefined);
+      if (client && this.initializingClient === client) this.initializingClient = null;
+      this.bootstrap = null;
+      if (client && owned) await client.close().catch(() => undefined);
       this.lastState = {
         ...this.lastState,
         connected: false,
         error: error instanceof Error ? error.message : String(error),
       };
       broadcast(AGENT_STATE_CHANNEL, this.lastState);
+      this.scheduleRestart();
       throw error;
     }
   }
 
+  private scheduleRestart(): void {
+    if (this.shuttingDown) return;
+    this.restartPolicy.scheduleRestart(() => {
+      const pending = this.starting?.catch(() => undefined) ?? Promise.resolve();
+      void pending
+        .then(() => this.start())
+        .catch(() => undefined);
+    });
+  }
+
+  private refreshAccountInBackground(client: AxiomAcpClient): void {
+    void client.accountStatus().catch((error: unknown) => {
+      if (this.shuttingDown || this.client !== client) return;
+      const detail = error instanceof Error ? error.message : String(error);
+      const revision = client.state.snapshot().account?.revision ?? 0;
+      client.state.setAccount({
+        revision,
+        state: "unavailable",
+        detail: `Could not refresh the Axiom account: ${detail}`,
+      });
+    });
+  }
+
   async stop(): Promise<void> {
     this.shuttingDown = true;
+    this.restartPolicy.cancelAll();
     for (const controller of this.loginControllers.values()) controller.abort();
     this.loginControllers.clear();
-    const client = this.client;
+    const clients = new Set(
+      [this.client, this.initializingClient].filter((client): client is AxiomAcpClient => client !== null),
+    );
     this.client = null;
+    this.initializingClient = null;
     this.bootstrap = null;
-    if (client) await client.close();
+    await Promise.all([...clients].map((client) => client.close().catch(() => undefined)));
+    await this.starting?.catch(() => undefined);
   }
 
   state(): ClientState {
     return this.client?.getState() ?? structuredClone(this.lastState);
   }
 
-  desktopBootstrap(): DesktopBootstrapResponse {
-    if (!this.bootstrap) throw new Error("Axiom Desktop sidecar has not finished bootstrapping");
+  async desktopBootstrap(): Promise<DesktopBootstrapResponse> {
+    await this.start();
+    if (!this.client || !this.bootstrap) throw new Error("Axiom Desktop sidecar did not finish bootstrapping");
     return structuredClone(this.bootstrap);
   }
 
@@ -257,7 +308,7 @@ export class AgentSidecar {
   }
 
   private requireClient(): AxiomAcpClient {
-    if (!this.client) throw new Error("AxiomCLI sidecar is not connected");
+    if (!this.client || !this.bootstrap) throw new Error("AxiomCLI sidecar is not ready");
     return this.client;
   }
 }

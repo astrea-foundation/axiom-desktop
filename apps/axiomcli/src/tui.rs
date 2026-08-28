@@ -2726,6 +2726,8 @@ enum UiMessage {
     ),
     BrowserLoginStarted(Box<Result<BrowserLogin>>),
     AuthCompleted(Result<AccountStatus>),
+    AuthCredentialSaved(Result<()>),
+    AuthLoggedOut(Result<()>),
     AuthValidated(ValidationPurpose, ValidationStatus),
 }
 
@@ -3537,26 +3539,21 @@ pub async fn run(
                                         if value.trim().is_empty() {
                                             state.open_login(Some("No authorization value was entered.".into()));
                                         } else {
-                                            match auth.save_pasted_key(&value) {
-                                                Ok(()) => {
-                                                    state.reset_security();
-                                                    state.overlay = Some(Overlay::Auth(AuthOverlay::Checking {
-                                                        label: "Checking Axiom API key…",
-                                                    }));
-                                                    let validation_auth = auth.clone();
-                                                    let validation_tx = ui_tx.clone();
-                                                    tokio::spawn(async move {
-                                                        let status = validation_auth.validate().await;
-                                                        let _ = validation_tx
-                                                            .send(UiMessage::AuthValidated(
-                                                                ValidationPurpose::Login,
-                                                                status,
-                                                            ))
-                                                            .await;
-                                                    });
-                                                }
-                                                Err(error) => state.open_login(Some(error.to_string())),
-                                            }
+                                            state.overlay = Some(Overlay::Auth(AuthOverlay::Checking {
+                                                label: "Saving Axiom API key…",
+                                            }));
+                                            state.status = "Saving Axiom authorization…".into();
+                                            state.status_tone = StatusTone::Waiting;
+                                            let save_auth = auth.clone();
+                                            let save_tx = ui_tx.clone();
+                                            tokio::spawn(async move {
+                                                let result = save_auth
+                                                    .save_pasted_key_async(&value)
+                                                    .await;
+                                                let _ = save_tx
+                                                    .send(UiMessage::AuthCredentialSaved(result))
+                                                    .await;
+                                            });
                                         }
                                     }
                                     KeyCode::Char(character)
@@ -4211,24 +4208,21 @@ pub async fn run(
                                                 }
                                                 security_generation =
                                                     security_generation.wrapping_add(1);
-                                                match auth.logout() {
-                                                    Ok(()) => {
-                                                        state.overlay = None;
-                                                        state.reset_security();
-                                                        state.status = "Signed out of Axiom".into();
-                                                        state.status_tone = StatusTone::Neutral;
-                                                        state.push_entry(
-                                                            EntryKind::System,
-                                                            "AXIOM ACCOUNT\nSigned out. The saved Axiom API key was removed from this computer."
-                                                                .into(),
-                                                            false,
-                                                        );
-                                                    }
-                                                    Err(error) => show_slash_error(
-                                                        &mut state,
-                                                        &error.to_string(),
-                                                    ),
-                                                }
+                                                state.overlay = Some(Overlay::Auth(
+                                                    AuthOverlay::Checking {
+                                                        label: "Signing out of Axiom…",
+                                                    },
+                                                ));
+                                                state.status = "Removing saved Axiom authorization…".into();
+                                                state.status_tone = StatusTone::Waiting;
+                                                let logout_auth = auth.clone();
+                                                let logout_tx = ui_tx.clone();
+                                                tokio::spawn(async move {
+                                                    let result = logout_auth.logout_async().await;
+                                                    let _ = logout_tx
+                                                        .send(UiMessage::AuthLoggedOut(result))
+                                                        .await;
+                                                });
                                             }
                                             Ok(SlashCommand::Account) => {
                                                 state.overlay = Some(Overlay::Auth(
@@ -4761,6 +4755,7 @@ pub async fn run(
                     UiMessage::AuthCompleted(result) => {
                         auth_cancellation = None;
                         match result {
+                            Ok(account) if !auth.account_status_is_current(&account) => {}
                             Ok(account) => {
                                 let detail = account_status_text(&account);
                                 state.reset_security();
@@ -4786,9 +4781,56 @@ pub async fn run(
                             Err(error) => state.open_login(Some(error.to_string())),
                         }
                     }
+                    UiMessage::AuthCredentialSaved(result) => match result {
+                        Ok(()) => {
+                            state.reset_security();
+                            state.overlay = Some(Overlay::Auth(AuthOverlay::Checking {
+                                label: "Checking Axiom API key…",
+                            }));
+                            state.status = "Checking Axiom authorization…".into();
+                            state.status_tone = StatusTone::Waiting;
+                            let validation_auth = auth.clone();
+                            let validation_tx = ui_tx.clone();
+                            tokio::spawn(async move {
+                                let status = validation_auth.validate().await;
+                                let _ = validation_tx
+                                    .send(UiMessage::AuthValidated(
+                                        ValidationPurpose::Login,
+                                        status,
+                                    ))
+                                    .await;
+                            });
+                        }
+                        Err(error) => state.open_login(Some(error.to_string())),
+                    },
+                    UiMessage::AuthLoggedOut(result) => match result {
+                        Ok(()) => {
+                            state.overlay = None;
+                            state.reset_security();
+                            state.status = "Signed out of Axiom".into();
+                            state.status_tone = StatusTone::Neutral;
+                            state.push_entry(
+                                EntryKind::System,
+                                "AXIOM ACCOUNT\nSigned out. The saved Axiom API key was removed from this computer."
+                                    .into(),
+                                false,
+                            );
+                        }
+                        Err(error) => {
+                            state.overlay = None;
+                            show_slash_error(&mut state, &error.to_string());
+                        }
+                    },
                     UiMessage::AuthValidated(purpose, status) => {
                         if purpose == ValidationPurpose::Startup {
                             startup_auth_pending = false;
+                        }
+                        if matches!(
+                            &status,
+                            ValidationStatus::Valid(account)
+                                if !auth.account_status_is_current(account)
+                        ) {
+                            continue;
                         }
                         match (purpose, status) {
                             (_, ValidationStatus::Valid(account)) => {

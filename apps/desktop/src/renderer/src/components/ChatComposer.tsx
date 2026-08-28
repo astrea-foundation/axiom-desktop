@@ -30,6 +30,7 @@ interface ChatComposerProps {
   isStreaming?: boolean;
   models: ProviderModel[];
   selectedModelId: string;
+  modelStatusLabel: string;
   onModelChange: (modelId: string) => void;
   reasoningEffort: ReasoningEffort;
   onReasoningEffortChange: (effort: ReasoningEffort) => void;
@@ -47,6 +48,7 @@ export function ChatComposer({
   isStreaming = false,
   models,
   selectedModelId,
+  modelStatusLabel,
   onModelChange,
   reasoningEffort,
   onReasoningEffortChange,
@@ -59,7 +61,7 @@ export function ChatComposer({
   const selectedModel = models.find((model) => model.id === selectedModelId) ?? models[0];
   const supportedReasoningEfforts = selectedModel?.supportedReasoningEfforts ?? [];
   const showThinkingSelector = supportedReasoningEfforts.length > 0;
-  const canSend = Boolean(value.trim()) && !isStreaming;
+  const canSend = Boolean(value.trim()) && Boolean(selectedModel) && !isStreaming;
 
   useEffect(() => {
     const el = ref.current;
@@ -71,6 +73,12 @@ export function ChatComposer({
   useEffect(() => {
     if (autoFocus) ref.current?.focus();
   }, [autoFocus]);
+
+  useEffect(() => {
+    if (models.length === 0) {
+      setOpenMenu((current) => current === "model" ? null : current);
+    }
+  }, [models.length]);
 
   useEffect(() => {
     if (!openMenu) return;
@@ -125,11 +133,12 @@ export function ChatComposer({
             <div className="relative shrink-0">
               <button
                 type="button"
+                disabled={models.length === 0}
                 onClick={() => setOpenMenu((open) => (open === "model" ? null : "model"))}
-                className="flex items-center gap-1.5 rounded-full px-2.5 py-1.5 text-[12.5px] text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-surface-hover)] hover:text-[var(--color-text-primary)]"
+                className="flex items-center gap-1.5 rounded-full px-2.5 py-1.5 text-[12.5px] text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-surface-hover)] hover:text-[var(--color-text-primary)] disabled:cursor-default disabled:opacity-70 disabled:hover:bg-transparent disabled:hover:text-[var(--color-text-secondary)]"
                 aria-haspopup="menu"
                 aria-expanded={openMenu === "model"}
-                title="Select model"
+                title={models.length === 0 ? modelStatusLabel : "Select model"}
               >
                 {selectedModel ? (
                   <ModelBrandIcon model={selectedModel} className="h-3.5 w-3.5 shrink-0" />
@@ -137,7 +146,7 @@ export function ChatComposer({
                   <span className="h-1.5 w-1.5 rounded-full bg-[var(--color-cherry)]" />
                 )}
                 <span className="max-w-[9rem] truncate sm:max-w-none">
-                  {selectedModel?.shortLabel ?? "Model"}
+                  {selectedModel?.shortLabel ?? modelStatusLabel}
                 </span>
                 <ChevronDown size={12} className="opacity-70" />
               </button>

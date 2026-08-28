@@ -1,16 +1,17 @@
 use std::{
     collections::{BTreeMap, HashMap},
+    ops::{Deref, DerefMut},
     path::{Path, PathBuf},
     str::FromStr as _,
     sync::{
-        Arc,
+        Arc, Mutex as StdMutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use agent_client_protocol::schema::{ProtocolVersion, v1 as protocol};
-use agent_client_protocol::{Agent, Client, ConnectionTo, Responder, Stdio};
+use agent_client_protocol::{Agent, ByteStreams, Client, ConnectionTo, Responder};
 use async_trait::async_trait;
 use axiom_acp_extension as extension;
 use axiom_acp_extension::{
@@ -27,6 +28,7 @@ use axiom_acp_extension::{
     VerifySecurityResponse,
 };
 use tokio::sync::{Mutex, mpsc};
+use tokio_util::compat::{TokioAsyncReadCompatExt as _, TokioAsyncWriteCompatExt as _};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -38,7 +40,7 @@ use crate::{
         AppCommand, AppEvent, Origin, PermissionProfile, QuestionRequest, Runtime, SessionId,
         TurnId,
     },
-    auth::{AuthManager, ValidationStatus},
+    auth::{AuthManager, ValidationStatus, VersionedValidationStatus},
     config::Config,
     paths::FrontendKind,
     policy::{ApprovalChoice, ApprovalHandler, ApprovalRequest, ApprovalResponse},
@@ -46,6 +48,54 @@ use crate::{
     slash::{self, SlashCommand},
     tool_display::{ToolDisplayPhase, describe_tool},
 };
+
+/// Complete an expected request failure through its JSON-RPC responder instead
+/// of returning it from the handler and terminating the ACP connection task.
+/// The only errors allowed to escape a request handler are transport failures
+/// produced while sending responses, notifications, or spawned work.
+macro_rules! respond_or_return {
+    ($responder:ident, $result:expr) => {
+        match $result {
+            Ok(value) => value,
+            Err(error) => return $responder.respond_with_error(error),
+        }
+    };
+}
+
+#[derive(Default)]
+struct PersistenceFailpoint {
+    scope: StdMutex<Option<String>>,
+}
+
+impl PersistenceFailpoint {
+    fn from_environment() -> Self {
+        let enabled = cfg!(debug_assertions)
+            && std::env::var("AXIOMCLI_TEST_RUNNER").is_ok()
+            && std::env::var("AXIOMCLI_TEST_FAIL_PERSISTENCE")
+                .ok()
+                .is_some_and(|value| !value.trim().is_empty());
+        Self {
+            scope: StdMutex::new(enabled.then(|| {
+                std::env::var("AXIOMCLI_TEST_FAIL_PERSISTENCE")
+                    .expect("checked test persistence failpoint")
+            })),
+        }
+    }
+
+    fn check(&self, scope: &str) -> crate::Result<()> {
+        let mut configured = self
+            .scope
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if configured.as_deref() == Some(scope) {
+            configured.take();
+            return Err(crate::AxiomError::Storage(format!(
+                "injected {scope} persistence failure"
+            )));
+        }
+        Ok(())
+    }
+}
 
 fn send_available_commands(
     connection: &ConnectionTo<Client>,
@@ -572,31 +622,60 @@ fn extension_collections(value: crate::session::CollectionState) -> extension::C
     }
 }
 
-fn extension_account_status(status: ValidationStatus) -> ExtensionAccountStatus {
-    match status {
+fn extension_account_status(status: VersionedValidationStatus) -> ExtensionAccountStatus {
+    let revision = status.revision;
+    match status.status {
         ValidationStatus::Missing => ExtensionAccountStatus {
+            revision,
             key_id: None,
             key_name: None,
             state: ExtensionAccountState::Missing,
             detail: None,
         },
         ValidationStatus::Valid(account) => ExtensionAccountStatus {
+            revision,
             key_id: Some(account.key_id),
             key_name: Some(account.key_name),
             state: ExtensionAccountState::Valid,
             detail: Some(format!("stored in {}", account.source.label())),
         },
         ValidationStatus::Invalid => ExtensionAccountStatus {
+            revision,
             key_id: None,
             key_name: None,
             state: ExtensionAccountState::Invalid,
             detail: Some("The saved Axiom API key is invalid or revoked".into()),
         },
         ValidationStatus::Unavailable(detail) => ExtensionAccountStatus {
+            revision,
             key_id: None,
             key_name: None,
             state: ExtensionAccountState::Unavailable,
             detail: Some(detail),
+        },
+    }
+}
+
+fn validation_status_if_current(
+    auth: &AuthManager,
+    status: VersionedValidationStatus,
+) -> VersionedValidationStatus {
+    let revision = status.revision;
+    match status.status {
+        ValidationStatus::Valid(account) if !auth.account_status_is_current(&account) => {
+            let status = if auth.has_credential() {
+                ValidationStatus::Unavailable(
+                    "Axiom authorization changed while account status was being published; refresh account status"
+                        .into(),
+                )
+            } else {
+                ValidationStatus::Missing
+            };
+            VersionedValidationStatus { status, revision }
+        }
+        account_status => VersionedValidationStatus {
+            status: account_status,
+            revision,
         },
     }
 }
@@ -719,10 +798,84 @@ struct AcpSession {
     model: String,
     thinking: crate::app::ThinkingLevel,
     models: Vec<String>,
-    active_turn: Option<TurnId>,
-    cancellation: Option<CancellationToken>,
     has_prompt: bool,
     security: crate::app::SecurityStatus,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum SessionWorkKind {
+    Prompt(TurnId),
+    SlashCommand,
+    Compaction,
+    SecurityVerification,
+    Configuration,
+    PermissionMode,
+    Loading,
+    Deletion,
+}
+
+#[derive(Clone)]
+struct SessionWork {
+    id: uuid::Uuid,
+    kind: SessionWorkKind,
+    cancellation: CancellationToken,
+}
+
+impl SessionWork {
+    fn new(kind: SessionWorkKind) -> Self {
+        Self {
+            id: uuid::Uuid::new_v4(),
+            kind,
+            cancellation: CancellationToken::new(),
+        }
+    }
+
+    fn matches(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+async fn await_request_future<T>(
+    request_cancellation: &agent_client_protocol::RequestCancellation,
+    future: impl std::future::Future<Output = T>,
+) -> agent_client_protocol::Result<T> {
+    if request_cancellation.is_cancelled() {
+        return Err(agent_client_protocol::Error::request_cancelled());
+    }
+    tokio::pin!(future);
+    tokio::select! {
+        biased;
+        result = &mut future => Ok(result),
+        () = request_cancellation.cancelled() => {
+            Err(agent_client_protocol::Error::request_cancelled())
+        }
+    }
+}
+
+async fn await_session_future<T>(
+    request_cancellation: &agent_client_protocol::RequestCancellation,
+    work: &SessionWork,
+    future: impl std::future::Future<Output = T>,
+) -> agent_client_protocol::Result<T> {
+    if request_cancellation.is_cancelled() || work.cancellation.is_cancelled() {
+        work.cancellation.cancel();
+        return Err(agent_client_protocol::Error::request_cancelled());
+    }
+    tokio::pin!(future);
+    tokio::select! {
+        // A completed operation is its commit point. Prefer that result when
+        // completion and cancellation become ready in the same scheduler poll,
+        // so callers never report cancellation after a setter already committed.
+        biased;
+        result = &mut future => Ok(result),
+        () = request_cancellation.cancelled() => {
+            work.cancellation.cancel();
+            Err(agent_client_protocol::Error::request_cancelled())
+        }
+        () = work.cancellation.cancelled() => {
+            Err(agent_client_protocol::Error::request_cancelled())
+        }
+    }
 }
 
 fn apply_session_model_settings(
@@ -741,7 +894,121 @@ fn apply_session_model_settings(
     }
 }
 
-type Sessions = Arc<Mutex<HashMap<protocol::SessionId, AcpSession>>>;
+#[derive(Default)]
+struct SessionRegistry {
+    sessions: HashMap<protocol::SessionId, AcpSession>,
+    active_work: HashMap<SessionId, SessionWork>,
+}
+
+impl Deref for SessionRegistry {
+    type Target = HashMap<protocol::SessionId, AcpSession>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.sessions
+    }
+}
+
+impl DerefMut for SessionRegistry {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.sessions
+    }
+}
+
+type Sessions = Arc<Mutex<SessionRegistry>>;
+
+async fn release_session_work(sessions: &Sessions, internal_id: &SessionId, work: &SessionWork) {
+    work.cancellation.cancel();
+    let mut registry = sessions.lock().await;
+    if registry
+        .active_work
+        .get(internal_id)
+        .is_some_and(|active| active.matches(work))
+    {
+        registry.active_work.remove(internal_id);
+    }
+}
+
+async fn release_session_works(
+    sessions: &Sessions,
+    internal_ids: &[SessionId],
+    work: &SessionWork,
+) {
+    work.cancellation.cancel();
+    let mut registry = sessions.lock().await;
+    for internal_id in internal_ids {
+        if work_matches(&registry, internal_id, work) {
+            registry.active_work.remove(internal_id);
+        }
+    }
+}
+
+fn work_matches(registry: &SessionRegistry, internal_id: &SessionId, work: &SessionWork) -> bool {
+    registry
+        .active_work
+        .get(internal_id)
+        .is_some_and(|active| active.matches(work))
+}
+
+async fn set_session_security_if_work(
+    sessions: &Sessions,
+    external_id: &protocol::SessionId,
+    internal_id: &SessionId,
+    work: &SessionWork,
+    expected_model: &str,
+    status: crate::app::SecurityStatus,
+) -> bool {
+    let mut registry = sessions.lock().await;
+    if !work_matches(&registry, internal_id, work) {
+        return false;
+    }
+    let Some(session) = registry.get_mut(external_id) else {
+        return false;
+    };
+    if session.internal_id != *internal_id || session.model != expected_model {
+        return false;
+    }
+    session.security = status;
+    true
+}
+
+async fn fail_active_prompt(
+    sessions: &Sessions,
+    runtime: &Runtime,
+    store: Option<&SessionStore>,
+    internal_id: &SessionId,
+    work: &SessionWork,
+    message: &str,
+) {
+    work.cancellation.cancel();
+    let SessionWorkKind::Prompt(turn_id) = &work.kind else {
+        tracing::warn!(%internal_id, "non-prompt work passed to prompt finalizer");
+        release_session_work(sessions, internal_id, work).await;
+        return;
+    };
+    match runtime
+        .dispatch(AppCommand::FailTurn {
+            session_id: internal_id.clone(),
+            turn_id: turn_id.clone(),
+            message: message.to_owned(),
+        })
+        .await
+    {
+        Ok(events) => {
+            if let Some(store) = store
+                && let Err(error) = store.append_all(&events)
+            {
+                tracing::warn!(%error, %internal_id, "could not persist failed ACP turn");
+            }
+        }
+        Err(error) => {
+            tracing::warn!(%error, %internal_id, "could not terminalize failed ACP turn");
+        }
+    }
+    let mut registry = sessions.lock().await;
+    if work_matches(&registry, internal_id, work) {
+        registry.active_work.remove(internal_id);
+    }
+}
 
 struct PendingDelete {
     session_ids: Vec<SessionId>,
@@ -985,11 +1252,14 @@ pub async fn serve_stdio(
     frontend: FrontendKind,
     desktop_cwd: Option<PathBuf>,
 ) -> agent_client_protocol::Result<()> {
-    let sessions: Sessions = Arc::new(Mutex::new(HashMap::new()));
+    let sessions: Sessions = Arc::new(Mutex::new(SessionRegistry::default()));
     let extension_state = Arc::new(ExtensionState::new());
+    let profile_settings_lock = Arc::new(Mutex::new(()));
+    let persistence_failpoint = Arc::new(PersistenceFailpoint::from_environment());
     let runtime = Runtime::new(512);
     let default_model = config.model.clone();
     let default_thinking = crate::app::ThinkingLevel::Medium;
+    let shutdown_runner = runner.clone();
 
     let new_sessions = sessions.clone();
     let new_runtime = runtime.clone();
@@ -1012,6 +1282,8 @@ pub async fn serve_stdio(
     let load_runner = runner.clone();
     let load_extension = extension_state.clone();
     let prompt_extension = extension_state.clone();
+    let prompt_profile_settings_lock = profile_settings_lock.clone();
+    let prompt_persistence_failpoint = persistence_failpoint.clone();
     let new_default_model = default_model.clone();
     let load_default_model = default_model;
     let new_default_thinking = default_thinking;
@@ -1021,9 +1293,12 @@ pub async fn serve_stdio(
     let config_runner = runner.clone();
     let config_store = prompt_store.clone();
     let config_extension = extension_state.clone();
+    let config_profile_settings_lock = profile_settings_lock.clone();
+    let config_persistence_failpoint = persistence_failpoint.clone();
     let mode_sessions = sessions.clone();
     let mode_runtime = runtime.clone();
     let mode_store = prompt_store.clone();
+    let mode_persistence_failpoint = persistence_failpoint;
     let mode_frontend = frontend;
     let supports_load = load_store.is_some();
     let supports_elicitation = Arc::new(AtomicBool::new(false));
@@ -1046,6 +1321,7 @@ pub async fn serve_stdio(
     let update_preferences_extension = extension_state.clone();
     let update_preferences_store = extension_store.clone();
     let update_preferences_runner = runner.clone();
+    let update_preferences_lock = profile_settings_lock;
     let collections_list_extension = extension_state.clone();
     let collections_list_store = extension_store.clone();
     let collection_create_extension = extension_state.clone();
@@ -1081,13 +1357,12 @@ pub async fn serve_stdio(
     let bootstrap_extension = extension_state.clone();
     let bootstrap_cwd = desktop_cwd.clone();
     let bootstrap_store = prompt_store.clone();
-    let bootstrap_runner = runner.clone();
     let bootstrap_default_model = new_default_model.clone();
     let bootstrap_default_thinking = default_thinking;
     let load_frontend = frontend;
     let load_desktop_cwd = desktop_cwd;
 
-    Agent
+    let connection_result = Agent
         .builder()
         .name("axiomcli")
         .on_receive_request(
@@ -1134,42 +1409,27 @@ pub async fn serve_stdio(
                         "desktop chat workspace was not initialized",
                     );
                 };
-                let durable_preferences = bootstrap_store
-                    .as_ref()
-                    .map(SessionStore::profile_preferences)
-                    .transpose()
-                    .map_err(agent_error)?;
-                let model_details = bootstrap_runner
-                    .available_model_details(CancellationToken::new())
-                    .await
-                    .map_err(agent_error)?;
-                let settings = reconcile_new_session_settings(
-                    model_details,
-                    durable_preferences
+                let durable_preferences = respond_or_return!(
+                    responder,
+                    bootstrap_store
                         .as_ref()
-                        .and_then(|preferences| preferences.model.as_deref()),
-                    &bootstrap_default_model,
-                    durable_preferences.as_ref().map_or(
-                        bootstrap_default_thinking,
-                        |preferences| preferences.thinking_level,
-                    ),
-                )
-                .map_err(agent_error)?;
-                let preferences = match (&bootstrap_store, durable_preferences) {
-                    (Some(store), Some(preferences))
-                        if preferences.model.as_deref() != Some(settings.model.as_str())
-                            || preferences.thinking_level != settings.thinking =>
-                    {
-                        extension_preferences(
-                            store
-                                .set_profile_preferences(&settings.model, settings.thinking)
-                                .map_err(agent_error)?,
-                        )
-                    }
-                    (_, Some(preferences)) => extension_preferences(preferences),
-                    _ => extension::ProfilePreferences {
-                        model: Some(settings.model),
-                        thinking_level: settings.thinking.to_string(),
+                        .map(SessionStore::profile_preferences)
+                        .transpose()
+                        .map_err(agent_error)
+                );
+                let preferences = match durable_preferences {
+                    Some(preferences) => extension::ProfilePreferences {
+                        model: Some(
+                            preferences
+                                .model
+                                .unwrap_or_else(|| bootstrap_default_model.clone()),
+                        ),
+                        thinking_level: preferences.thinking_level.to_string(),
+                        updated_at: preferences.updated_at,
+                    },
+                    None => extension::ProfilePreferences {
+                        model: Some(bootstrap_default_model.clone()),
+                        thinking_level: bootstrap_default_thinking.to_string(),
                         updated_at: chrono::Utc::now().to_rfc3339(),
                     },
                 };
@@ -1186,15 +1446,29 @@ pub async fn serve_stdio(
             async move |request: protocol::NewSessionRequest,
                         responder: Responder<protocol::NewSessionResponse>,
                         connection: ConnectionTo<Client>| {
+                let new_desktop_cwd = new_desktop_cwd.clone();
+                let new_config = new_config.clone();
+                let new_store = new_store.clone();
+                let new_runner = new_runner.clone();
+                let new_default_model = new_default_model.clone();
+                let new_runtime = new_runtime.clone();
+                let new_sessions = new_sessions.clone();
+                let new_extension = new_extension.clone();
+                let task_connection = connection.clone();
+                connection.spawn(async move {
+                let connection = task_connection;
                 if !request.cwd.is_absolute() {
                     return responder
                         .respond_with_internal_error("ACP session cwd must be absolute");
                 }
-                let cwd = request.cwd.canonicalize().map_err(|error| {
-                    agent_client_protocol::util::internal_error(format!(
-                        "cannot open ACP workspace: {error}"
-                    ))
-                })?;
+                let cwd = respond_or_return!(
+                    responder,
+                    request.cwd.canonicalize().map_err(|error| {
+                        agent_client_protocol::util::internal_error(format!(
+                            "cannot open ACP workspace: {error}"
+                        ))
+                    })
+                );
                 let profile = if new_frontend == FrontendKind::DesktopChat {
                     let Some(expected) = &new_desktop_cwd else {
                         return responder.respond_with_internal_error(
@@ -1208,34 +1482,51 @@ pub async fn serve_stdio(
                     }
                     PermissionProfile::Web
                 } else {
-                    new_config
-                        .for_workspace(&cwd)
-                        .map_err(agent_error)?
-                        .permission_profile
+                    respond_or_return!(
+                        responder,
+                        new_config.for_workspace(&cwd).map_err(agent_error)
+                    )
+                    .permission_profile
                 };
                 let internal_id = SessionId::new();
-                let preferences = new_store
-                    .as_ref()
-                    .map(SessionStore::profile_preferences)
-                    .transpose()
-                    .map_err(agent_error)?;
+                let preferences = respond_or_return!(
+                    responder,
+                    new_store
+                        .as_ref()
+                        .map(SessionStore::profile_preferences)
+                        .transpose()
+                        .map_err(agent_error)
+                );
                 let preferred_model = preferences
                     .as_ref()
                     .and_then(|preferences| preferences.model.as_deref());
                 let preferred_thinking = preferences
                     .as_ref()
                     .map_or(new_default_thinking, |preferences| preferences.thinking_level);
-                let model_details = new_runner
-                    .available_model_details(CancellationToken::new())
-                    .await
-                    .map_err(agent_error)?;
-                let settings = reconcile_new_session_settings(
-                    model_details.clone(),
-                    preferred_model,
-                    &new_default_model,
-                    preferred_thinking,
-                )
-                .map_err(agent_error)?;
+                    let request_cancellation = responder.cancellation();
+                    let discovery_cancellation = CancellationToken::new();
+                    let discovery = new_runner
+                        .available_model_details(discovery_cancellation.clone());
+                    tokio::pin!(discovery);
+                    let model_details = tokio::select! {
+                        result = &mut discovery => respond_or_return!(responder, result.map_err(agent_error)),
+                        () = request_cancellation.cancelled() => {
+                            discovery_cancellation.cancel();
+                            return responder.respond_with_error(
+                                agent_client_protocol::Error::request_cancelled(),
+                            );
+                        }
+                    };
+                let settings = respond_or_return!(
+                    responder,
+                    reconcile_new_session_settings(
+                        model_details.clone(),
+                        preferred_model,
+                        &new_default_model,
+                        preferred_thinking,
+                    )
+                    .map_err(agent_error)
+                );
                 let correct_preferences = new_store.is_some()
                     && preferences.as_ref().is_none_or(|preferences| {
                         preferences.model.as_deref() != Some(settings.model.as_str())
@@ -1247,54 +1538,70 @@ pub async fn serve_stdio(
                     .iter()
                     .map(|model| model.id.clone())
                     .collect::<Vec<_>>();
-                let supported_thinking = model_details
-                    .iter()
-                    .find(|model| model.id == session_model)
-                    .map(supported_thinking_levels)
-                    .ok_or_else(|| {
-                        agent_client_protocol::util::internal_error(
-                            "selected model disappeared from the provider catalog",
-                        )
-                    })?;
-                let created = new_runtime
-                    .dispatch(AppCommand::CreateSession {
-                        session_id: internal_id.clone(),
-                        cwd: cwd.clone(),
-                        origin: Origin::Acp,
-                        profile,
-                    })
-                    .await
-                    .map_err(agent_error)?;
+                let supported_thinking = respond_or_return!(
+                    responder,
+                    model_details
+                        .iter()
+                        .find(|model| model.id == session_model)
+                        .map(supported_thinking_levels)
+                        .ok_or_else(|| {
+                            agent_client_protocol::util::internal_error(
+                                "selected model disappeared from the provider catalog",
+                            )
+                        })
+                );
+                let created = respond_or_return!(
+                    responder,
+                    new_runtime
+                        .dispatch(AppCommand::CreateSession {
+                            session_id: internal_id.clone(),
+                            cwd: cwd.clone(),
+                            origin: Origin::Acp,
+                            profile,
+                        })
+                        .await
+                        .map_err(agent_error)
+                );
                 if let Some(store) = &new_store {
-                    store.append_all(&created).map_err(agent_error)?;
+                    respond_or_return!(responder, store.append_all(&created).map_err(agent_error));
                 }
-                new_runner
-                    .set_model_settings(&internal_id, &settings)
-                    .await
-                    .map_err(agent_error)?;
-                let selected_settings = new_runtime
-                    .dispatch(AppCommand::ChangeModelSettings {
-                        session_id: internal_id.clone(),
-                        model: session_model.clone(),
-                        thinking: session_thinking,
-                        reset_security: false,
-                    })
-                    .await
-                    .map_err(agent_error)?;
+                respond_or_return!(
+                    responder,
+                    new_runner
+                        .set_model_settings(&internal_id, &settings)
+                        .await
+                        .map_err(agent_error)
+                );
+                let selected_settings = respond_or_return!(
+                    responder,
+                    new_runtime
+                        .dispatch(AppCommand::ChangeModelSettings {
+                            session_id: internal_id.clone(),
+                            model: session_model.clone(),
+                            thinking: session_thinking,
+                            reset_security: false,
+                        })
+                        .await
+                        .map_err(agent_error)
+                );
                 let corrected_preferences = if let Some(store) = &new_store {
                     if correct_preferences {
-                        let (_, preferences) = store
-                            .append_all_and_set_profile_preferences(
-                                &selected_settings,
-                                &session_model,
-                                session_thinking,
-                            )
-                            .map_err(agent_error)?;
+                        let (_, preferences) = respond_or_return!(
+                            responder,
+                            store
+                                .append_all_and_set_profile_preferences(
+                                    &selected_settings,
+                                    &session_model,
+                                    session_thinking,
+                                )
+                                .map_err(agent_error)
+                        );
                         Some(extension_preferences(preferences))
                     } else {
-                        store
-                            .append_all(&selected_settings)
-                            .map_err(agent_error)?;
+                        respond_or_return!(
+                            responder,
+                            store.append_all(&selected_settings).map_err(agent_error)
+                        );
                         None
                     }
                 } else {
@@ -1304,14 +1611,12 @@ pub async fn serve_stdio(
                 new_sessions.lock().await.insert(
                     external_id.clone(),
                     AcpSession {
-                        internal_id,
+                        internal_id: internal_id.clone(),
                         cwd,
                         profile,
                         model: session_model.clone(),
                         thinking: session_thinking,
                         models: models.clone(),
-                        active_turn: None,
-                        cancellation: None,
                         has_prompt: false,
                         security: crate::app::SecurityStatus::Unverified,
                     },
@@ -1335,6 +1640,8 @@ pub async fn serve_stdio(
                     )?;
                 }
                 send_available_commands(&connection, &external_id)
+                })?;
+                Ok(())
             },
             agent_client_protocol::on_receive_request!(),
         )
@@ -1342,7 +1649,14 @@ pub async fn serve_stdio(
             async move |request: protocol::LoadSessionRequest,
                         responder: Responder<protocol::LoadSessionResponse>,
                         connection: ConnectionTo<Client>| {
-                let Some(store) = &load_store else {
+                let load_store = load_store.clone();
+                let load_sessions = load_sessions.clone();
+                let load_desktop_cwd = load_desktop_cwd.clone();
+                let load_default_model = load_default_model.clone();
+                let load_runner = load_runner.clone();
+                let load_runtime = load_runtime.clone();
+                let load_extension = load_extension.clone();
+                let Some(store) = load_store else {
                     return responder.respond_with_internal_error(
                         "durable session loading is unavailable",
                     );
@@ -1352,52 +1666,100 @@ pub async fn serve_stdio(
                         .respond_with_internal_error("ACP session cwd must be absolute");
                 }
                 let external_id = request.session_id.clone();
-                if load_sessions.lock().await.contains_key(&external_id) {
-                    return responder.respond_with_internal_error("ACP session is already loaded");
+                let internal_id = respond_or_return!(
+                    responder,
+                    SessionId::from_str(request.session_id.0.as_ref()).map_err(|_| {
+                        agent_client_protocol::util::internal_error("invalid session ID")
+                    })
+                );
+                let work = SessionWork::new(SessionWorkKind::Loading);
+                {
+                    let mut registry = load_sessions.lock().await;
+                    if registry
+                        .values()
+                        .any(|session| session.internal_id == internal_id)
+                    {
+                        return responder
+                            .respond_with_internal_error("ACP session is already loaded");
+                    }
+                    if registry.active_work.contains_key(&internal_id) {
+                        return responder.respond_with_internal_error(
+                            "ACP session is already loading or being deleted",
+                        );
+                    }
+                    registry
+                        .active_work
+                        .insert(internal_id.clone(), work.clone());
                 }
-                let internal_id = SessionId::from_str(request.session_id.0.as_ref())
-                    .map_err(|_| agent_client_protocol::util::internal_error("invalid session ID"))?;
-                let summary = store.summary(&internal_id).map_err(agent_error)?;
+                let request_cancellation = responder.cancellation();
+                let task_connection = connection.clone();
+                let rollback_sessions = load_sessions.clone();
+                let rollback_internal_id = internal_id.clone();
+                let rollback_work = work.clone();
+                let spawn_result = connection.spawn(async move {
+                let connection = task_connection;
+                let task_result: agent_client_protocol::Result<_> = async {
+                let durable_store = store.clone();
+                let durable_internal_id = internal_id.clone();
+                let durable_load = tokio::task::spawn_blocking(move || {
+                    let summary = durable_store.summary(&durable_internal_id)?;
+                    let loaded = durable_store.load_recovering(&durable_internal_id)?;
+                    Ok::<_, crate::AxiomError>((summary, loaded))
+                });
+                let (summary, loaded) = await_session_future(
+                    &request_cancellation,
+                    &work,
+                    durable_load,
+                )
+                .await?
+                .map_err(|error| {
+                    agent_client_protocol::util::internal_error(format!(
+                        "durable session load worker failed: {error}"
+                    ))
+                })?
+                .map_err(agent_error)?;
                 let requested_cwd = request.cwd.canonicalize().map_err(|error| {
-                    agent_client_protocol::util::internal_error(format!(
-                        "cannot open ACP workspace: {error}"
-                    ))
-                })?;
+                        agent_client_protocol::util::internal_error(format!(
+                            "cannot open ACP workspace: {error}"
+                        ))
+                    })?;
                 let saved_cwd = summary.cwd.canonicalize().map_err(|error| {
-                    agent_client_protocol::util::internal_error(format!(
-                        "saved ACP workspace is unavailable: {error}"
-                    ))
-                })?;
+                        agent_client_protocol::util::internal_error(format!(
+                            "saved ACP workspace is unavailable: {error}"
+                        ))
+                    })?;
                 if requested_cwd != saved_cwd {
-                    return responder.respond_with_internal_error(
+                    return Err(agent_client_protocol::util::internal_error(
                         "ACP load cwd does not match the session workspace identity",
-                    );
+                    ));
                 }
                 if load_frontend == FrontendKind::DesktopChat
                     && load_desktop_cwd.as_ref() != Some(&saved_cwd)
                 {
-                    return responder.respond_with_internal_error(
+                    return Err(agent_client_protocol::util::internal_error(
                         "desktop chat session has an invalid workspace identity",
-                    );
+                    ));
                 }
-                let loaded = store.load_recovering(&internal_id).map_err(agent_error)?;
                 if let Some(warning) = loaded.warnings.first() {
-                    return responder.respond_with_internal_error(warning.clone());
+                    return Err(agent_client_protocol::util::internal_error(warning.clone()));
                 }
                 let restored_model = model_for_resume(&loaded.events, &load_default_model);
                 let restored_thinking =
                     thinking_for_resume(&loaded.events, load_default_thinking);
-                let model_details = load_runner
-                    .available_model_details(CancellationToken::new())
-                    .await
-                    .map_err(agent_error)?;
-                let settings = reconcile_new_session_settings(
-                    model_details.clone(),
-                    Some(&restored_model),
-                    &load_default_model,
-                    restored_thinking,
+                let model_details = await_session_future(
+                    &request_cancellation,
+                    &work,
+                    load_runner.available_model_details(work.cancellation.clone()),
                 )
+                .await?
                 .map_err(agent_error)?;
+                let settings = reconcile_new_session_settings(
+                        model_details.clone(),
+                        Some(&restored_model),
+                        &load_default_model,
+                        restored_thinking,
+                    )
+                    .map_err(agent_error)?;
                 let session_model = settings.model.clone();
                 let session_thinking = settings.thinking;
                 let models = model_details
@@ -1405,27 +1767,40 @@ pub async fn serve_stdio(
                     .map(|model| model.id.clone())
                     .collect::<Vec<_>>();
                 let supported_thinking = model_details
-                    .iter()
-                    .find(|model| model.id == session_model)
-                    .map(supported_thinking_levels)
-                    .ok_or_else(|| {
-                        agent_client_protocol::util::internal_error(
-                            "selected model disappeared from the provider catalog",
-                        )
-                    })?;
+                        .iter()
+                        .find(|model| model.id == session_model)
+                        .map(supported_thinking_levels)
+                        .ok_or_else(|| {
+                            agent_client_protocol::util::internal_error(
+                                "selected model disappeared from the provider catalog",
+                            )
+                        })
+                        ?;
+                await_session_future(
+                    &request_cancellation,
+                    &work,
+                    load_runner
+                        .restore_session(&internal_id, &loaded.events),
+                )
+                .await?
+                .map_err(agent_error)?;
+                await_session_future(
+                    &request_cancellation,
+                    &work,
+                    load_runner
+                        .set_model_settings(&internal_id, &settings),
+                )
+                .await?
+                .map_err(agent_error)?;
+                // Completing the runner settings is the load commit point.
+                // Cancellation before it leaves no registered ACP session;
+                // after it, finish restoring Runtime/storage/session state so
+                // the runner and ACP mirror cannot diverge.
                 let restored = load_runtime
                     .restore(&loaded.events)
                     .await
                     .map_err(agent_error)?;
-                load_runner
-                    .restore_session(&internal_id, &loaded.events)
-                    .await
-                    .map_err(agent_error)?;
-                load_runner
-                    .set_model_settings(&internal_id, &settings)
-                    .await
-                    .map_err(agent_error)?;
-                for envelope in &loaded.events {
+                for (index, envelope) in loaded.events.iter().enumerate() {
                     send_event(
                         &connection,
                         &external_id,
@@ -1438,30 +1813,33 @@ pub async fn serve_stdio(
                             client_item_id: None,
                         },
                     )?;
+                    if (index + 1) % 128 == 0 {
+                        tokio::task::yield_now().await;
+                    }
                 }
                 let resumed = load_runtime
-                    .emit(
-                        internal_id.clone(),
-                        AppEvent::SessionResumed {
-                            cwd: saved_cwd.clone(),
-                            origin: Origin::Acp,
-                            profile: restored.profile,
-                        },
-                    )
-                    .await
-                    .map_err(agent_error)?;
+                        .emit(
+                            internal_id.clone(),
+                            AppEvent::SessionResumed {
+                                cwd: saved_cwd.clone(),
+                                origin: Origin::Acp,
+                                profile: restored.profile,
+                            },
+                        )
+                        .await
+                        .map_err(agent_error)?;
                 store.append(&resumed).map_err(agent_error)?;
                 let model_changed = restored_model != session_model;
                 if model_changed || restored_thinking != session_thinking {
                     let corrected = load_runtime
-                        .dispatch(AppCommand::ChangeModelSettings {
-                            session_id: internal_id.clone(),
-                            model: session_model.clone(),
-                            thinking: session_thinking,
-                            reset_security: model_changed,
-                        })
-                        .await
-                        .map_err(agent_error)?;
+                            .dispatch(AppCommand::ChangeModelSettings {
+                                session_id: internal_id.clone(),
+                                model: session_model.clone(),
+                                thinking: session_thinking,
+                                reset_security: model_changed,
+                            })
+                            .await
+                            .map_err(agent_error)?;
                     let revision = store.append_all(&corrected).map_err(agent_error)?;
                     for envelope in corrected {
                         send_event(
@@ -1496,34 +1874,61 @@ pub async fn serve_stdio(
                 } else {
                     permission_for_resume(&loaded.events, restored.profile)
                 };
-                load_sessions.lock().await.insert(
-                    external_id.clone(),
-                    AcpSession {
-                        internal_id,
+                let response = protocol::LoadSessionResponse::new()
+                    .modes(permission_modes(restored_profile, load_frontend))
+                    .config_options(session_config_options(
+                        &session_model,
+                        &models,
+                        session_thinking,
+                        Some(&supported_thinking),
+                    ));
+                {
+                    let mut registry = load_sessions.lock().await;
+                    if !work_matches(&registry, &internal_id, &work) {
+                        return Err(agent_client_protocol::Error::request_cancelled());
+                    }
+                    if registry
+                        .values()
+                        .any(|session| session.internal_id == internal_id)
+                    {
+                        return Err(agent_client_protocol::util::internal_error(
+                            "ACP session became loaded while restoring",
+                        ));
+                    }
+                    registry.insert(external_id.clone(), AcpSession {
+                        internal_id: internal_id.clone(),
                         cwd: saved_cwd,
                         profile: restored_profile,
                         model: session_model.clone(),
                         thinking: session_thinking,
                         models: models.clone(),
-                        active_turn: None,
-                        cancellation: None,
                         has_prompt: loaded.events.iter().any(|envelope| {
                             matches!(envelope.event, AppEvent::PromptAccepted { .. })
                         }),
                         security: crate::app::SecurityStatus::Unverified,
-                    },
-                );
-                responder.respond(
-                    protocol::LoadSessionResponse::new()
-                        .modes(permission_modes(restored_profile, load_frontend))
-                        .config_options(session_config_options(
-                            &session_model,
-                            &models,
-                            session_thinking,
-                            Some(&supported_thinking),
-                        )),
-                )?;
-                send_available_commands(&connection, &external_id)
+                    });
+                }
+                Ok(response)
+                }.await;
+                release_session_work(&load_sessions, &internal_id, &work).await;
+                match task_result {
+                    Ok(response) => {
+                        responder.respond(response)?;
+                        send_available_commands(&connection, &external_id)
+                    }
+                    Err(error) => responder.respond_with_error(error),
+                }
+                });
+                if let Err(error) = spawn_result {
+                    release_session_work(
+                        &rollback_sessions,
+                        &rollback_internal_id,
+                        &rollback_work,
+                    )
+                    .await;
+                    return Err(error);
+                }
+                Ok(())
             },
             agent_client_protocol::on_receive_request!(),
         )
@@ -1531,41 +1936,108 @@ pub async fn serve_stdio(
             async move |request: protocol::PromptRequest,
                         responder: Responder<protocol::PromptResponse>,
                         connection: ConnectionTo<Client>| {
-                let client_item_id = prompt_metadata(request.meta.as_ref())
-                    .map_err(agent_error)?
-                    .map(|metadata| metadata.client_item_id);
+                let runner = runner.clone();
+                let prompt_sessions = prompt_sessions.clone();
+                let prompt_runtime = prompt_runtime.clone();
+                let prompt_store = prompt_store.clone();
+                let prompt_auth = prompt_auth.clone();
+                let prompt_extension = prompt_extension.clone();
+                let prompt_profile_settings_lock = prompt_profile_settings_lock.clone();
+                let prompt_persistence_failpoint = prompt_persistence_failpoint.clone();
+                let supports_elicitation = supports_elicitation.clone();
+                let client_item_id = respond_or_return!(
+                    responder,
+                    prompt_metadata(request.meta.as_ref()).map_err(agent_error)
+                )
+                .map(|metadata| metadata.client_item_id);
                 let prompt = match prompt_text(&request.prompt) {
                     Ok(prompt) => prompt,
                     Err(message) => return responder.respond_with_internal_error(message),
                 };
                 let session_id = request.session_id.clone();
-                if let Some(command) = slash::parse(&prompt) {
-                    let command = match command {
-                        Ok(command) => command,
-                        Err(error) => {
-                            send_text(&connection, &session_id, format!("Command error: {error}"))?;
-                            return responder.respond(protocol::PromptResponse::new(
-                                protocol::StopReason::EndTurn,
-                            ));
-                        }
+                let command = match slash::parse(&prompt) {
+                    Some(Ok(command)) => Some(command),
+                    Some(Err(error)) => {
+                        send_text(&connection, &session_id, format!("Command error: {error}"))?;
+                        return responder.respond(protocol::PromptResponse::new(
+                            protocol::StopReason::EndTurn,
+                        ));
+                    }
+                    None => None,
+                };
+                let deterministic_test_runner = cfg!(debug_assertions)
+                    && std::env::var("AXIOMCLI_TEST_RUNNER")
+                        .is_ok_and(|value| !value.trim().is_empty());
+                if command.is_none()
+                    && !prompt_auth.has_credential()
+                    && !deterministic_test_runner
+                {
+                    send_text(
+                        &connection,
+                        &session_id,
+                        "Authentication required. Run /login to connect an Axiom account."
+                            .into(),
+                    )?;
+                    return responder.respond(protocol::PromptResponse::new(
+                        protocol::StopReason::EndTurn,
+                    ));
+                }
+                let turn_id = command.is_none().then(TurnId::new);
+                let work = SessionWork::new(turn_id.as_ref().map_or(
+                    SessionWorkKind::SlashCommand,
+                    |turn_id| SessionWorkKind::Prompt(turn_id.clone()),
+                ));
+                let (
+                    internal_id,
+                    cwd,
+                    session_profile,
+                    session_model,
+                    session_thinking,
+                    should_generate_title,
+                ) = {
+                    let mut registry = prompt_sessions.lock().await;
+                    let Some(session) = registry.get(&session_id) else {
+                        return responder.respond_with_internal_error("unknown ACP session");
                     };
-                    let internal_id = {
-                        let sessions = prompt_sessions.lock().await;
-                        let Some(session) = sessions.get(&session_id) else {
-                            return responder.respond_with_internal_error("unknown ACP session");
-                        };
-                        if session.cancellation.is_some() {
-                            return responder
-                                .respond_with_internal_error("session already has active work");
-                        }
-                        session.internal_id.clone()
-                    };
+                    let internal_id = session.internal_id.clone();
+                    if registry.active_work.contains_key(&internal_id) {
+                        return responder
+                            .respond_with_internal_error("session already has active work");
+                    }
+                    registry
+                        .active_work
+                        .insert(internal_id.clone(), work.clone());
+                    let session = registry
+                        .get_mut(&session_id)
+                        .expect("session remained loaded while reserving work");
+                    let should_generate_title = turn_id.is_some() && !session.has_prompt;
+                    if turn_id.is_some() {
+                        session.has_prompt = true;
+                    }
+                    (
+                        internal_id,
+                        session.cwd.clone(),
+                        session.profile,
+                        session.model.clone(),
+                        session.thinking,
+                        should_generate_title,
+                    )
+                };
+                let request_cancellation = responder.cancellation();
+                let task_connection = connection.clone();
+                let rollback_sessions = prompt_sessions.clone();
+                let rollback_session_id = session_id.clone();
+                let rollback_internal_id = internal_id.clone();
+                let rollback_work = work.clone();
+                let rollback_has_prompt = should_generate_title;
+                let spawn_result = connection.spawn(async move {
+                let connection = task_connection;
+                if let Some(command) = command {
+                    let slash_result: agent_client_protocol::Result<_> = async {
                     match command {
                         SlashCommand::Help => {
                             send_text(&connection, &session_id, slash_help_text())?;
-                            return responder.respond(protocol::PromptResponse::new(
-                                protocol::StopReason::EndTurn,
-                            ));
+                            Ok(protocol::StopReason::EndTurn)
                         }
                         SlashCommand::Permissions => {
                             send_text(
@@ -1573,21 +2045,26 @@ pub async fn serve_stdio(
                                 &session_id,
                                 "Open your ACP client's session mode selector to change Tools permissions. Crypto permissions are coming soon.".into(),
                             )?;
-                            return responder.respond(protocol::PromptResponse::new(
-                                protocol::StopReason::EndTurn,
-                            ));
+                            Ok(protocol::StopReason::EndTurn)
                         }
                         SlashCommand::Model => {
-                            let models = runner
-                                .available_models(CancellationToken::new())
-                                .await
-                                .map_err(agent_error)?;
+                            let models = await_session_future(
+                                &request_cancellation,
+                                &work,
+                                runner.available_models(work.cancellation.clone()),
+                            )
+                            .await?
+                            .map_err(agent_error)?;
                             let current = {
-                                let mut sessions = prompt_sessions.lock().await;
-                                let Some(session) = sessions.get_mut(&session_id) else {
-                                    return responder
-                                        .respond_with_internal_error("unknown ACP session");
-                                };
+                                let mut registry = prompt_sessions.lock().await;
+                                if !work_matches(&registry, &internal_id, &work) {
+                                    return Err(agent_client_protocol::Error::request_cancelled());
+                                }
+                                let session = registry.get_mut(&session_id).ok_or_else(|| {
+                                    agent_client_protocol::util::internal_error(
+                                        "unknown ACP session",
+                                    )
+                                })?;
                                 session.models.clone_from(&models);
                                 session.model.clone()
                             };
@@ -1602,9 +2079,7 @@ pub async fn serve_stdio(
                                 &session_id,
                                 "Choose a model using the client model selector.".into(),
                             )?;
-                            return responder.respond(protocol::PromptResponse::new(
-                                protocol::StopReason::EndTurn,
-                            ));
+                            Ok(protocol::StopReason::EndTurn)
                         }
                         SlashCommand::Resume => {
                             send_text(
@@ -1613,9 +2088,7 @@ pub async fn serve_stdio(
                                 "Use your ACP client's session list and session/load support to resume a transcript. The interactive /resume picker is available in the terminal UI."
                                     .into(),
                             )?;
-                            return responder.respond(protocol::PromptResponse::new(
-                                protocol::StopReason::EndTurn,
-                            ));
+                            Ok(protocol::StopReason::EndTurn)
                         }
                         SlashCommand::Delete => {
                             send_text(
@@ -1624,34 +2097,108 @@ pub async fn serve_stdio(
                                 "The interactive multi-select /delete picker is available in the terminal UI. ACP transcript deletion will use a native client capability when the protocol defines one."
                                     .into(),
                             )?;
-                            return responder.respond(protocol::PromptResponse::new(
-                                protocol::StopReason::EndTurn,
-                            ));
+                            Ok(protocol::StopReason::EndTurn)
                         }
                         SlashCommand::Thinking(level) => {
-                            runner
-                                .set_thinking_level(&internal_id, level)
-                                .await
-                                .map_err(agent_error)?;
-                            let events = prompt_runtime
+                            let _profile_settings_guard = await_session_future(
+                                &request_cancellation,
+                                &work,
+                                prompt_profile_settings_lock.lock(),
+                            )
+                            .await?;
+                            await_session_future(
+                                &request_cancellation,
+                                &work,
+                                runner.set_thinking_level(&internal_id, level),
+                            )
+                            .await?
+                            .map_err(agent_error)?;
+                            let events = match prompt_runtime
                                 .dispatch(AppCommand::ChangeThinkingLevel {
-                                    session_id: internal_id,
+                                    session_id: internal_id.clone(),
                                     level,
                                 })
                                 .await
-                                .map_err(agent_error)?;
-                            if let Some(store) = &prompt_store {
-                                store.append_all(&events).map_err(agent_error)?;
-                            }
-                            if let Some(session) = prompt_sessions.lock().await.get_mut(&session_id)
                             {
-                                session.thinking = level;
-                            }
+                                Ok(events) => events,
+                                Err(error) => {
+                                    if let Err(rollback_error) = runner
+                                        .set_thinking_level(&internal_id, session_thinking)
+                                        .await
+                                    {
+                                        tracing::warn!(
+                                            %rollback_error,
+                                            %internal_id,
+                                            "could not roll back runner thinking after Runtime rejected slash command"
+                                        );
+                                    }
+                                    return Err(agent_error(error));
+                                }
+                            };
                             let current = {
-                                let sessions = prompt_sessions.lock().await;
-                                sessions.get(&session_id).map(|session| {
-                                    (session.model.clone(), session.models.clone())
-                                })
+                                let mut registry = prompt_sessions.lock().await;
+                                if !work_matches(&registry, &internal_id, &work) {
+                                    return Err(agent_client_protocol::Error::request_cancelled());
+                                }
+                                let session = registry.get_mut(&session_id).ok_or_else(|| {
+                                    agent_client_protocol::util::internal_error(
+                                        "unknown ACP session",
+                                    )
+                                })?;
+                                session.thinking = level;
+                                Some((session.model.clone(), session.models.clone()))
+                            };
+                            let stored_preferences = if let Some(store) = &prompt_store {
+                                let persistence = prompt_persistence_failpoint
+                                    .check("slash-thinking")
+                                    .and_then(|()| {
+                                        store
+                                            .append_all_and_set_profile_preferences(
+                                                &events,
+                                                &session_model,
+                                                level,
+                                            )
+                                            .map(|(_, preferences)| preferences)
+                                    });
+                                match persistence {
+                                    Ok(preferences) => {
+                                        Some(extension_preferences(preferences))
+                                    }
+                                    Err(error) => {
+                                        if let Err(rollback_error) = runner
+                                            .set_thinking_level(&internal_id, session_thinking)
+                                            .await
+                                        {
+                                            tracing::error!(
+                                                %rollback_error,
+                                                %internal_id,
+                                                "could not roll back runner after slash thinking persistence failed"
+                                            );
+                                        }
+                                        if let Err(rollback_error) = prompt_runtime
+                                            .dispatch(AppCommand::ChangeThinkingLevel {
+                                                session_id: internal_id.clone(),
+                                                level: session_thinking,
+                                            })
+                                            .await
+                                        {
+                                            tracing::error!(
+                                                %rollback_error,
+                                                %internal_id,
+                                                "could not roll back Runtime after slash thinking persistence failed"
+                                            );
+                                        }
+                                        let mut registry = prompt_sessions.lock().await;
+                                        if work_matches(&registry, &internal_id, &work)
+                                            && let Some(session) = registry.get_mut(&session_id)
+                                        {
+                                            session.thinking = session_thinking;
+                                        }
+                                        return Err(agent_error(error));
+                                    }
+                                }
+                            } else {
+                                None
                             };
                             if let Some((model, models)) = current {
                                 send_config_update(
@@ -1661,12 +2208,7 @@ pub async fn serve_stdio(
                                     &models,
                                     level,
                                 )?;
-                                if let Some(store) = &prompt_store {
-                                    let preferences = extension_preferences(
-                                        store
-                                            .set_profile_preferences(&model, level)
-                                            .map_err(agent_error)?,
-                                    );
+                                if let Some(preferences) = stored_preferences {
                                     send_extension_activity(
                                         &connection,
                                         &prompt_extension,
@@ -1675,15 +2217,16 @@ pub async fn serve_stdio(
                                     )?;
                                 }
                             }
-                            return responder.respond(protocol::PromptResponse::new(
-                                protocol::StopReason::EndTurn,
-                            ));
+                            Ok(protocol::StopReason::EndTurn)
                         }
                         SlashCommand::Login => {
-                            let login = prompt_auth
-                                .start_browser_login()
-                                .await
-                                .map_err(agent_error)?;
+                            let login = await_session_future(
+                                &request_cancellation,
+                                &work,
+                                prompt_auth.start_browser_login(),
+                            )
+                            .await?
+                            .map_err(agent_error)?;
                             send_text(
                                 &connection,
                                 &session_id,
@@ -1693,10 +2236,43 @@ pub async fn serve_stdio(
                                     login.authorization_url()
                                 ),
                             )?;
-                            let account = login
-                                .complete(CancellationToken::new())
-                                .await
-                                .map_err(agent_error)?;
+                            let completion =
+                                login.complete(work.cancellation.clone());
+                            tokio::pin!(completion);
+                            let completion_result = tokio::select! {
+                                biased;
+                                result = &mut completion => result,
+                                () = request_cancellation.cancelled() => {
+                                    work.cancellation.cancel();
+                                    // BrowserLogin may already be committing
+                                    // the credential. Keep polling it so a
+                                    // successful commit is always announced.
+                                    completion.await
+                                }
+                                () = work.cancellation.cancelled() => {
+                                    // session/cancel only requests cancellation;
+                                    // BrowserLogin decides whether the commit
+                                    // point has already been crossed.
+                                    completion.await
+                                }
+                            };
+                            let account = completion_result.map_err(agent_error)?;
+                            // The credential is now persisted. Finish account
+                            // validation and publish it without observing later
+                            // request/session cancellation.
+                            let validation = validation_status_if_current(
+                                &prompt_auth,
+                                prompt_auth.validate_with_revision().await,
+                            );
+                            let status = extension_account_status(validation);
+                            send_extension_activity(
+                                &connection,
+                                &prompt_extension,
+                                None,
+                                ActivityEvent::AccountChanged {
+                                    status: status.clone(),
+                                },
+                            )?;
                             send_text(
                                 &connection,
                                 &session_id,
@@ -1706,23 +2282,48 @@ pub async fn serve_stdio(
                                     account.source.label()
                                 ),
                             )?;
-                            return responder.respond(protocol::PromptResponse::new(
-                                protocol::StopReason::EndTurn,
-                            ));
+                            Ok(protocol::StopReason::EndTurn)
                         }
                         SlashCommand::Logout => {
-                            prompt_auth.logout().map_err(agent_error)?;
+                            let logout = prompt_auth
+                                .logout_with_cancellation(&work.cancellation);
+                            tokio::pin!(logout);
+                            let logout_result = tokio::select! {
+                                biased;
+                                result = &mut logout => result,
+                                () = request_cancellation.cancelled() => {
+                                    work.cancellation.cancel();
+                                    logout.await
+                                }
+                                () = work.cancellation.cancelled() => logout.await,
+                            };
+                            let revision = logout_result.map_err(agent_error)?;
+                            send_extension_activity(
+                                &connection,
+                                &prompt_extension,
+                                None,
+                                ActivityEvent::AccountChanged {
+                                    status: extension_account_status(VersionedValidationStatus {
+                                        status: ValidationStatus::Missing,
+                                        revision,
+                                    }),
+                                },
+                            )?;
                             send_text(
                                 &connection,
                                 &session_id,
                                 "Signed out. The saved Axiom authorization was removed.".into(),
                             )?;
-                            return responder.respond(protocol::PromptResponse::new(
-                                protocol::StopReason::EndTurn,
-                            ));
+                            Ok(protocol::StopReason::EndTurn)
                         }
                         SlashCommand::Account => {
-                            let text = match prompt_auth.validate().await {
+                            let validation = await_session_future(
+                                &request_cancellation,
+                                &work,
+                                prompt_auth.validate(),
+                            )
+                            .await?;
+                            let text = match validation {
                                 ValidationStatus::Missing => {
                                     "Not signed in. Run /login to connect AxiomCLI.".to_owned()
                                 }
@@ -1738,23 +2339,19 @@ pub async fn serve_stdio(
                                 ValidationStatus::Unavailable(message) => message,
                             };
                             send_text(&connection, &session_id, text)?;
-                            return responder.respond(protocol::PromptResponse::new(
-                                protocol::StopReason::EndTurn,
-                            ));
+                            Ok(protocol::StopReason::EndTurn)
                         }
                         SlashCommand::Security => {
-                            let model = {
-                                let sessions = prompt_sessions.lock().await;
-                                let Some(session) = sessions.get(&session_id) else {
-                                    return responder
-                                        .respond_with_internal_error("unknown ACP session");
-                                };
-                                session.model.clone()
-                            };
-                            let verification = runner
-                                .verify_security(&model, CancellationToken::new())
-                                .await
-                                .map_err(agent_error)?;
+                            let verification = await_session_future(
+                                &request_cancellation,
+                                &work,
+                                runner.verify_security(
+                                    &session_model,
+                                    work.cancellation.clone(),
+                                ),
+                            )
+                            .await?
+                            .map_err(agent_error)?;
                             strict_extension_security_verification(verification.clone())
                                 .map_err(agent_error)?;
                             send_text(
@@ -1762,21 +2359,25 @@ pub async fn serve_stdio(
                                 &session_id,
                                 security_summary(&verification),
                             )?;
-                            return responder.respond(protocol::PromptResponse::new(
-                                protocol::StopReason::EndTurn,
-                            ));
+                            Ok(protocol::StopReason::EndTurn)
                         }
                         SlashCommand::Refresh => {
-                            let model = {
-                                let mut sessions = prompt_sessions.lock().await;
-                                let Some(session) = sessions.get_mut(&session_id) else {
-                                    return responder
-                                        .respond_with_internal_error("unknown ACP session");
-                                };
+                            {
+                                let mut registry = prompt_sessions.lock().await;
+                                if !work_matches(&registry, &internal_id, &work) {
+                                    return Err(agent_client_protocol::Error::request_cancelled());
+                                }
+                                let session = registry.get_mut(&session_id).ok_or_else(|| {
+                                    agent_client_protocol::util::internal_error(
+                                        "unknown ACP session",
+                                    )
+                                })?;
+                                if session.model != session_model {
+                                    return Err(agent_client_protocol::Error::request_cancelled());
+                                }
                                 session.security = crate::app::SecurityStatus::Verifying;
-                                session.model.clone()
-                            };
-                            send_extension_activity(
+                            }
+                            if let Err(error) = send_extension_activity(
                                 &connection,
                                 &prompt_extension,
                                 Some(&session_id),
@@ -1785,41 +2386,91 @@ pub async fn serve_stdio(
                                         crate::app::SecurityStatus::Verifying,
                                     ),
                                 },
-                            )?;
-                            let verification = match runner
-                                .verify_security(&model, CancellationToken::new())
-                                .await
+                            ) {
+                                set_session_security_if_work(
+                                    &prompt_sessions,
+                                    &session_id,
+                                    &internal_id,
+                                    &work,
+                                    &session_model,
+                                    crate::app::SecurityStatus::Unverified,
+                                )
+                                .await;
+                                return Err(error);
+                            }
+                            let verification = match await_session_future(
+                                &request_cancellation,
+                                &work,
+                                runner.verify_security(
+                                    &session_model,
+                                    work.cancellation.clone(),
+                                ),
+                            )
+                            .await
                             {
-                                Ok(verification) => verification,
+                                Ok(Ok(verification)) => verification,
                                 Err(error) => {
-                                    if let Some(session) =
-                                        prompt_sessions.lock().await.get_mut(&session_id)
+                                    if set_session_security_if_work(
+                                        &prompt_sessions,
+                                        &session_id,
+                                        &internal_id,
+                                        &work,
+                                        &session_model,
+                                        crate::app::SecurityStatus::Unverified,
+                                    )
+                                    .await
                                     {
-                                        session.security = crate::app::SecurityStatus::Failed;
-                                    }
-                                    send_extension_activity(
-                                        &connection,
-                                        &prompt_extension,
-                                        Some(&session_id),
-                                        ActivityEvent::SecurityChanged {
-                                            status: ExtensionSecurityStatus {
-                                                state: ExtensionSecurityState::Failed,
-                                                detail: Some(error.to_string()),
+                                        send_extension_activity(
+                                            &connection,
+                                            &prompt_extension,
+                                            Some(&session_id),
+                                            ActivityEvent::SecurityChanged {
+                                                status: extension_security_status(
+                                                    crate::app::SecurityStatus::Unverified,
+                                                ),
                                             },
-                                        },
-                                    )?;
-                                    return responder.respond_with_internal_error(error);
+                                        )?;
+                                    }
+                                    return Err(error);
                                 }
-                            };
-                            let verification_status =
-                                match strict_extension_security_verification(verification.clone()) {
-                                    Ok(result) => result,
-                                    Err(error) => {
-                                        if let Some(session) =
-                                            prompt_sessions.lock().await.get_mut(&session_id)
-                                        {
-                                            session.security = crate::app::SecurityStatus::Failed;
-                                        }
+                                Ok(Err(crate::AxiomError::Cancelled)) => {
+                                    work.cancellation.cancel();
+                                    if set_session_security_if_work(
+                                        &prompt_sessions,
+                                        &session_id,
+                                        &internal_id,
+                                        &work,
+                                        &session_model,
+                                        crate::app::SecurityStatus::Unverified,
+                                    )
+                                    .await
+                                    {
+                                        send_extension_activity(
+                                            &connection,
+                                            &prompt_extension,
+                                            Some(&session_id),
+                                            ActivityEvent::SecurityChanged {
+                                                status: extension_security_status(
+                                                    crate::app::SecurityStatus::Unverified,
+                                                ),
+                                            },
+                                        )?;
+                                    }
+                                    return Err(
+                                        agent_client_protocol::Error::request_cancelled(),
+                                    );
+                                }
+                                Ok(Err(error)) => {
+                                    if set_session_security_if_work(
+                                        &prompt_sessions,
+                                        &session_id,
+                                        &internal_id,
+                                        &work,
+                                        &session_model,
+                                        crate::app::SecurityStatus::Failed,
+                                    )
+                                    .await
+                                    {
                                         send_extension_activity(
                                             &connection,
                                             &prompt_extension,
@@ -1831,12 +2482,51 @@ pub async fn serve_stdio(
                                                 },
                                             },
                                         )?;
-                                        return responder.respond_with_internal_error(error);
+                                    }
+                                    return Err(agent_error(error));
+                                }
+                            };
+                            let verification_status =
+                                match strict_extension_security_verification(verification.clone()) {
+                                    Ok(result) => result,
+                                    Err(error) => {
+                                        if set_session_security_if_work(
+                                            &prompt_sessions,
+                                            &session_id,
+                                            &internal_id,
+                                            &work,
+                                            &session_model,
+                                            crate::app::SecurityStatus::Failed,
+                                        )
+                                        .await
+                                        {
+                                            send_extension_activity(
+                                                &connection,
+                                                &prompt_extension,
+                                                Some(&session_id),
+                                                ActivityEvent::SecurityChanged {
+                                                    status: ExtensionSecurityStatus {
+                                                        state: ExtensionSecurityState::Failed,
+                                                        detail: Some(error.to_string()),
+                                                    },
+                                                },
+                                            )?;
+                                        }
+                                        return Err(agent_error(error));
                                     }
                                 }
                                 .0;
-                            if let Some(session) = prompt_sessions.lock().await.get_mut(&session_id) {
-                                session.security = verification_status;
+                            if !set_session_security_if_work(
+                                &prompt_sessions,
+                                &session_id,
+                                &internal_id,
+                                &work,
+                                &session_model,
+                                verification_status,
+                            )
+                            .await
+                            {
+                                return Err(agent_client_protocol::Error::request_cancelled());
                             }
                             send_extension_activity(
                                 &connection,
@@ -1854,216 +2544,207 @@ pub async fn serve_stdio(
                                     security_summary(&verification)
                                 ),
                             )?;
-                            return responder.respond(protocol::PromptResponse::new(
-                                protocol::StopReason::EndTurn,
-                            ));
+                            Ok(protocol::StopReason::EndTurn)
                         }
                         SlashCommand::Compact { focus } => {
-                            let cancellation = CancellationToken::new();
-                            if let Some(session) = prompt_sessions.lock().await.get_mut(&session_id)
-                            {
-                                session.cancellation = Some(cancellation.clone());
-                            }
-                            let task_sessions = prompt_sessions.clone();
                             let task_runtime = prompt_runtime.clone();
                             let task_runner = runner.clone();
                             let task_connection = connection.clone();
                             let task_store = prompt_store.clone();
                             let task_extension = prompt_extension.clone();
-                            connection.spawn(async move {
                                 let (events_tx, mut events_rx) =
                                     mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
-                                let compact = task_runner.compact(
-                                    &internal_id,
-                                    focus,
-                                    events_tx,
-                                    cancellation.clone(),
-                                );
-                                tokio::pin!(compact);
-                                let result = loop {
-                                    tokio::select! {
-                                        result = &mut compact => break result,
-                                        event = events_rx.recv() => {
-                                            let Some(event) = event else { continue };
-                                            let envelope = task_runtime
-                                                .emit(internal_id.clone(), event.clone())
-                                                .await
-                                                .map_err(agent_error)?;
-                                            let revision = match &task_store {
-                                                Some(store) => Some(store.append(&envelope).map_err(agent_error)?),
-                                                None => None,
-                                            };
-                                            send_event(
-                                                &task_connection,
-                                                &session_id,
-                                                event,
-                                                EventDelivery {
-                                                    cwd: None,
-                                                    extension_state: Some(&task_extension),
-                                                    correlation_id: Some(envelope.correlation_id.to_string()),
-                                                    revision: revision.as_ref(),
-                                                    client_item_id: None,
-                                                },
-                                            )?;
+                                let task_result: agent_client_protocol::Result<_> = async {
+                                    let compact = task_runner.compact(
+                                        &internal_id,
+                                        focus,
+                                        events_tx,
+                                        work.cancellation.clone(),
+                                    );
+                                    tokio::pin!(compact);
+                                    let result = loop {
+                                        tokio::select! {
+                                            result = &mut compact => break result,
+                                            event = events_rx.recv() => {
+                                                let Some(event) = event else { continue };
+                                                let envelope = task_runtime
+                                                    .emit(internal_id.clone(), event.clone())
+                                                    .await
+                                                    .map_err(agent_error)?;
+                                                let revision = match &task_store {
+                                                    Some(store) => Some(store.append(&envelope).map_err(agent_error)?),
+                                                    None => None,
+                                                };
+                                                send_event(
+                                                    &task_connection,
+                                                    &session_id,
+                                                    event,
+                                                    EventDelivery {
+                                                        cwd: None,
+                                                        extension_state: Some(&task_extension),
+                                                        correlation_id: Some(envelope.correlation_id.to_string()),
+                                                        revision: revision.as_ref(),
+                                                        client_item_id: None,
+                                                    },
+                                                )?;
+                                            }
+                                            () = request_cancellation.cancelled() => {
+                                                work.cancellation.cancel();
+                                                break Err(crate::AxiomError::Cancelled);
+                                            }
+                                            () = work.cancellation.cancelled() => {
+                                                break Err(crate::AxiomError::Cancelled);
+                                            }
                                         }
-                                    }
-                                };
-                                while let Ok(event) = events_rx.try_recv() {
-                                    let envelope = task_runtime
-                                        .emit(internal_id.clone(), event.clone())
-                                        .await
-                                        .map_err(agent_error)?;
-                                    let revision = match &task_store {
-                                        Some(store) => Some(store.append(&envelope).map_err(agent_error)?),
-                                        None => None,
                                     };
-                                    send_event(
-                                        &task_connection,
-                                        &session_id,
-                                        event,
-                                        EventDelivery {
-                                            cwd: None,
-                                            extension_state: Some(&task_extension),
-                                            correlation_id: Some(envelope.correlation_id.to_string()),
-                                            revision: revision.as_ref(),
-                                            client_item_id: None,
-                                        },
-                                    )?;
-                                }
-                                let stop_reason = match result {
-                                    Ok(result) => {
-                                        let events = task_runtime
-                                            .dispatch(AppCommand::RecordContextCompaction {
-                                                session_id: internal_id.clone(),
-                                                summary: result.summary,
-                                                messages_before: result.messages_before,
-                                            })
+                                    while let Ok(event) = events_rx.try_recv() {
+                                        let envelope = task_runtime
+                                            .emit(internal_id.clone(), event.clone())
                                             .await
                                             .map_err(agent_error)?;
-                                        if let Some(store) = &task_store {
-                                            store.append_all(&events).map_err(agent_error)?;
+                                        let revision = match &task_store {
+                                            Some(store) => Some(store.append(&envelope).map_err(agent_error)?),
+                                            None => None,
+                                        };
+                                        send_event(
+                                            &task_connection,
+                                            &session_id,
+                                            event,
+                                            EventDelivery {
+                                                cwd: None,
+                                                extension_state: Some(&task_extension),
+                                                correlation_id: Some(envelope.correlation_id.to_string()),
+                                                revision: revision.as_ref(),
+                                                client_item_id: None,
+                                            },
+                                        )?;
+                                    }
+                                    match result {
+                                        Ok(result) => {
+                                            let messages_before = result.messages_before;
+                                            let events = task_runtime
+                                                .dispatch(AppCommand::RecordContextCompaction {
+                                                    session_id: internal_id.clone(),
+                                                    summary: result.summary,
+                                                    messages_before,
+                                                })
+                                                .await
+                                                .map_err(agent_error)?;
+                                            if let Some(store) = &task_store {
+                                                store.append_all(&events).map_err(agent_error)?;
+                                            }
+                                            send_text(
+                                                &task_connection,
+                                                &session_id,
+                                                format!(
+                                                    "Context compacted from {messages_before} conversation message(s)."
+                                                ),
+                                            )?;
+                                            Ok(protocol::StopReason::EndTurn)
                                         }
-                                        send_text(
-                                            &task_connection,
-                                            &session_id,
-                                            format!(
-                                                "Context compacted from {} conversation message(s).",
-                                                result.messages_before
-                                            ),
-                                        )?;
-                                        protocol::StopReason::EndTurn
+                                        Err(crate::AxiomError::Cancelled) => {
+                                            Ok(protocol::StopReason::Cancelled)
+                                        }
+                                        Err(error) => {
+                                            send_text(
+                                                &task_connection,
+                                                &session_id,
+                                                format!("AxiomCLI compaction error: {error}"),
+                                            )?;
+                                            Ok(protocol::StopReason::EndTurn)
+                                        }
                                     }
-                                    Err(crate::AxiomError::Cancelled) => {
-                                        protocol::StopReason::Cancelled
-                                    }
-                                    Err(error) => {
-                                        send_text(
-                                            &task_connection,
-                                            &session_id,
-                                            format!("AxiomCLI compaction error: {error}"),
-                                        )?;
-                                        protocol::StopReason::EndTurn
-                                    }
-                                };
-                                if let Some(session) =
-                                    task_sessions.lock().await.get_mut(&session_id)
-                                {
-                                    session.cancellation = None;
                                 }
-                                responder.respond(protocol::PromptResponse::new(stop_reason))
-                            })?;
-                            return Ok(());
+                                .await;
+                            task_result
                         }
                     }
-                }
-                let deterministic_test_runner = cfg!(debug_assertions)
-                    && std::env::var("AXIOMCLI_TEST_RUNNER")
-                        .is_ok_and(|value| !value.trim().is_empty());
-                if !prompt_auth.has_credential() && !deterministic_test_runner {
-                    send_text(
-                        &connection,
-                        &session_id,
-                        "Authentication required. Run /login to connect an Axiom account."
-                            .into(),
-                    )?;
-                    return responder.respond(protocol::PromptResponse::new(
-                        protocol::StopReason::EndTurn,
-                    ));
-                }
-                let turn_id = TurnId::new();
-                let request_cancellation = responder.cancellation();
-                let cancellation = CancellationToken::new();
-                let (
-                    internal_id,
-                    cwd,
-                    session_profile,
-                    session_model,
-                    session_thinking,
-                    should_generate_title,
-                ) = {
-                    let mut sessions = prompt_sessions.lock().await;
-                    let Some(session) = sessions.get_mut(&session_id) else {
-                        return responder.respond_with_internal_error("unknown ACP session");
-                    };
-                    if session.cancellation.is_some() {
-                        return responder
-                            .respond_with_internal_error("session already has an active turn");
                     }
-                    session.active_turn = Some(turn_id.clone());
-                    session.cancellation = Some(cancellation.clone());
-                    let should_generate_title = !session.has_prompt;
-                    session.has_prompt = true;
-                    (
-                        session.internal_id.clone(),
-                        session.cwd.clone(),
-                        session.profile,
-                        session.model.clone(),
-                        session.thinking,
-                        should_generate_title,
-                    )
-                };
+                    .await;
+                    release_session_work(&prompt_sessions, &internal_id, &work).await;
+                    return responder.respond_with_result(
+                        slash_result.map(protocol::PromptResponse::new),
+                    );
+                }
+                let turn_id = turn_id.expect("non-slash prompt reserves a turn ID");
 
-                let submitted = prompt_runtime
+                let submitted = match prompt_runtime
                     .dispatch(AppCommand::SubmitPrompt {
                         session_id: internal_id.clone(),
                         turn_id: turn_id.clone(),
                         text: prompt.clone(),
                     })
                     .await
-                    .map_err(agent_error)?;
-                let submitted_revision = if let Some(store) = &prompt_store {
-                    let revision = store
-                        .append_all_with_client_item_id(&submitted, client_item_id.as_deref())
-                        .map_err(agent_error)?;
-                    let preferences = extension_preferences(
-                        store
-                            .set_profile_preferences(&session_model, session_thinking)
-                            .map_err(agent_error)?,
-                    );
-                    send_extension_activity(
-                        &connection,
-                        &prompt_extension,
-                        None,
-                        ActivityEvent::ProfilePreferencesChanged { preferences },
-                    )?;
-                    Some(revision)
-                } else {
-                    None
+                {
+                    Ok(submitted) => submitted,
+                    Err(error) => {
+                        if should_generate_title {
+                            let mut registry = prompt_sessions.lock().await;
+                            if work_matches(&registry, &internal_id, &work)
+                                && let Some(session) = registry.get_mut(&session_id)
+                            {
+                                session.has_prompt = false;
+                            }
+                        }
+                        release_session_work(&prompt_sessions, &internal_id, &work).await;
+                        return responder.respond_with_error(agent_error(error));
+                    }
                 };
-                for envelope in &submitted {
-                    send_event(
-                        &connection,
-                        &session_id,
-                        envelope.event.clone(),
-                        EventDelivery {
-                            cwd: Some(&cwd),
-                            extension_state: Some(&prompt_extension),
-                            correlation_id: Some(envelope.correlation_id.to_string()),
-                            revision: submitted_revision.as_ref(),
-                            client_item_id: client_item_id.as_deref(),
-                        },
-                    )?;
+                let preparation: agent_client_protocol::Result<_> = async {
+                    let submitted_revision = if let Some(store) = &prompt_store {
+                        let revision = store
+                            .append_all_with_client_item_id(
+                                &submitted,
+                                client_item_id.as_deref(),
+                            )
+                            .map_err(agent_error)?;
+                        let preferences = extension_preferences(
+                            store
+                                .set_profile_preferences(&session_model, session_thinking)
+                                .map_err(agent_error)?,
+                        );
+                        send_extension_activity(
+                            &connection,
+                            &prompt_extension,
+                            None,
+                            ActivityEvent::ProfilePreferencesChanged { preferences },
+                        )?;
+                        Some(revision)
+                    } else {
+                        None
+                    };
+                    for envelope in &submitted {
+                        send_event(
+                            &connection,
+                            &session_id,
+                            envelope.event.clone(),
+                            EventDelivery {
+                                cwd: Some(&cwd),
+                                extension_state: Some(&prompt_extension),
+                                correlation_id: Some(envelope.correlation_id.to_string()),
+                                revision: submitted_revision.as_ref(),
+                                client_item_id: client_item_id.as_deref(),
+                            },
+                        )?;
+                    }
+                    Ok(submitted_revision)
                 }
+                .await;
+                let _submitted_revision = match preparation {
+                    Ok(revision) => revision,
+                    Err(error) => {
+                        fail_active_prompt(
+                            &prompt_sessions,
+                            &prompt_runtime,
+                            prompt_store.as_ref(),
+                            &internal_id,
+                            &work,
+                            &error.to_string(),
+                        )
+                        .await;
+                        return responder.respond_with_error(error);
+                    }
+                };
 
                 if should_generate_title
                     && let Some(title_store) = prompt_store.clone()
@@ -2125,139 +2806,181 @@ pub async fn serve_stdio(
                 let task_store = prompt_store.clone();
                 let task_elicitation = supports_elicitation.clone();
                 let task_extension = prompt_extension.clone();
-                connection.spawn(async move {
                     let (events_tx, mut events_rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
                     let display_cwd = cwd.clone();
-                    let run = task_runner.run(
-                        crate::agent::TurnContext {
-                            session_id: internal_id.clone(),
-                            turn_id: turn_id.clone(),
-                            cwd,
-                            permission_profile: session_profile,
-                            approval: Some(Arc::new(AcpApproval {
-                                connection: task_connection.clone(),
-                                session_id: session_id.clone(),
-                            })),
-                            questions: Some(Arc::new(AcpQuestions {
-                                connection: task_connection.clone(),
-                                session_id: session_id.clone(),
-                                supported: task_elicitation,
-                            })),
-                        },
-                        prompt,
-                        events_tx,
-                        cancellation.clone(),
-                    );
-                    tokio::pin!(run);
+                    let mut terminalized = false;
+                    let task_result: agent_client_protocol::Result<_> = async {
+                        let run = task_runner.run(
+                            crate::agent::TurnContext {
+                                session_id: internal_id.clone(),
+                                turn_id: turn_id.clone(),
+                                cwd,
+                                permission_profile: session_profile,
+                                approval: Some(Arc::new(AcpApproval {
+                                    connection: task_connection.clone(),
+                                    session_id: session_id.clone(),
+                                })),
+                                questions: Some(Arc::new(AcpQuestions {
+                                    connection: task_connection.clone(),
+                                    session_id: session_id.clone(),
+                                    supported: task_elicitation,
+                                })),
+                            },
+                            prompt,
+                            events_tx,
+                            work.cancellation.clone(),
+                        );
+                        tokio::pin!(run);
 
-                    let result = loop {
-                        tokio::select! {
-                            result = &mut run => break result,
-                            event = events_rx.recv() => {
-                                let Some(event) = event else { continue };
-                                let envelope = task_runtime.emit(internal_id.clone(), event.clone()).await.map_err(agent_error)?;
-                                let revision = match &task_store {
-                                    Some(store) => Some(store.append(&envelope).map_err(agent_error)?),
-                                    None => None,
-                                };
-                                send_event(
-                                    &task_connection,
-                                    &session_id,
-                                    event,
-                                    EventDelivery {
-                                        cwd: Some(&display_cwd),
-                                        extension_state: Some(&task_extension),
-                                        correlation_id: Some(envelope.correlation_id.to_string()),
-                                        revision: revision.as_ref(),
-                                        client_item_id: None,
-                                    },
-                                )?;
+                        let result = loop {
+                            tokio::select! {
+                                result = &mut run => break result,
+                                event = events_rx.recv() => {
+                                    let Some(event) = event else { continue };
+                                    let envelope = task_runtime
+                                        .emit(internal_id.clone(), event.clone())
+                                        .await
+                                        .map_err(agent_error)?;
+                                    let revision = match &task_store {
+                                        Some(store) => Some(store.append(&envelope).map_err(agent_error)?),
+                                        None => None,
+                                    };
+                                    send_event(
+                                        &task_connection,
+                                        &session_id,
+                                        event,
+                                        EventDelivery {
+                                            cwd: Some(&display_cwd),
+                                            extension_state: Some(&task_extension),
+                                            correlation_id: Some(envelope.correlation_id.to_string()),
+                                            revision: revision.as_ref(),
+                                            client_item_id: None,
+                                        },
+                                    )?;
+                                }
+                                () = request_cancellation.cancelled() => {
+                                    work.cancellation.cancel();
+                                    break Err(crate::AxiomError::Cancelled);
+                                }
+                                () = work.cancellation.cancelled() => {
+                                    break Err(crate::AxiomError::Cancelled);
+                                }
                             }
-                            () = request_cancellation.cancelled() => {
-                                cancellation.cancel();
-                                break Err(crate::AxiomError::Cancelled);
-                            }
+                        };
+                        if result.is_err() {
+                            work.cancellation.cancel();
                         }
-                    };
-                    if result.is_err() {
-                        cancellation.cancel();
-                    }
-                    while let Ok(event) = events_rx.try_recv() {
-                        let envelope = task_runtime
-                            .emit(internal_id.clone(), event.clone())
+                        while let Ok(event) = events_rx.try_recv() {
+                            let envelope = task_runtime
+                                .emit(internal_id.clone(), event.clone())
+                                .await
+                                .map_err(agent_error)?;
+                            let revision = match &task_store {
+                                Some(store) => Some(store.append(&envelope).map_err(agent_error)?),
+                                None => None,
+                            };
+                            send_event(
+                                &task_connection,
+                                &session_id,
+                                event,
+                                EventDelivery {
+                                    cwd: Some(&display_cwd),
+                                    extension_state: Some(&task_extension),
+                                    correlation_id: Some(envelope.correlation_id.to_string()),
+                                    revision: revision.as_ref(),
+                                    client_item_id: None,
+                                },
+                            )?;
+                        }
+
+                        let (command, stop_reason, display_error) = match result {
+                            Ok(()) => (
+                                AppCommand::FinishTurn {
+                                    session_id: internal_id.clone(),
+                                    turn_id: turn_id.clone(),
+                                },
+                                protocol::StopReason::EndTurn,
+                                None,
+                            ),
+                            Err(crate::AxiomError::Cancelled) => (
+                                AppCommand::CancelTurn {
+                                    session_id: internal_id.clone(),
+                                    turn_id: turn_id.clone(),
+                                },
+                                protocol::StopReason::Cancelled,
+                                None,
+                            ),
+                            Err(error) => {
+                                let message = error.to_string();
+                                (
+                                    AppCommand::FailTurn {
+                                        session_id: internal_id.clone(),
+                                        turn_id: turn_id.clone(),
+                                        message: message.clone(),
+                                    },
+                                    protocol::StopReason::EndTurn,
+                                    Some(message),
+                                )
+                            }
+                        };
+                        let completed = task_runtime
+                            .dispatch(command)
                             .await
                             .map_err(agent_error)?;
-                        let revision = match &task_store {
-                            Some(store) => Some(store.append(&envelope).map_err(agent_error)?),
-                            None => None,
-                        };
-                        send_event(
-                            &task_connection,
-                            &session_id,
-                            event,
-                            EventDelivery {
-                                cwd: Some(&display_cwd),
-                                extension_state: Some(&task_extension),
-                                correlation_id: Some(envelope.correlation_id.to_string()),
-                                revision: revision.as_ref(),
-                                client_item_id: None,
-                            },
-                        )?;
-                    }
-
-                    let stop_reason = match result {
-                        Ok(()) => {
-                            let completed = task_runtime
-                                .dispatch(AppCommand::FinishTurn {
-                                    session_id: internal_id,
-                                    turn_id,
-                                })
-                                .await
-                                .map_err(agent_error)?;
-                            if let Some(store) = &task_store {
-                                store.append_all(&completed).map_err(agent_error)?;
-                            }
-                            protocol::StopReason::EndTurn
+                        terminalized = true;
+                        if let Some(store) = &task_store {
+                            store.append_all(&completed).map_err(agent_error)?;
                         }
-                        Err(crate::AxiomError::Cancelled) => {
-                            let completed = task_runtime
-                                .dispatch(AppCommand::CancelTurn {
-                                    session_id: internal_id,
-                                    turn_id,
-                                })
-                                .await
-                                .map_err(agent_error)?;
-                            if let Some(store) = &task_store {
-                                store.append_all(&completed).map_err(agent_error)?;
-                            }
-                            protocol::StopReason::Cancelled
-                        }
-                        Err(error) => {
-                            let completed = task_runtime
-                                .dispatch(AppCommand::FailTurn {
-                                    session_id: internal_id,
-                                    turn_id,
-                                    message: error.to_string(),
-                                })
-                                .await
-                                .map_err(agent_error)?;
-                            if let Some(store) = &task_store {
-                                store.append_all(&completed).map_err(agent_error)?;
-                            }
+                        if let Some(error) = display_error {
                             send_text(
                                 &task_connection,
                                 &session_id,
                                 format!("AxiomCLI error: {error}"),
                             )?;
-                            protocol::StopReason::EndTurn
                         }
-                    };
-                    if let Some(session) = task_sessions.lock().await.get_mut(&session_id) {
-                        session.active_turn = None;
-                        session.cancellation = None;
+                        Ok(stop_reason)
                     }
-                    responder.respond(protocol::PromptResponse::new(stop_reason))
-                })?;
+                    .await;
+
+                    if let Err(error) = &task_result
+                        && !terminalized
+                    {
+                        fail_active_prompt(
+                            &task_sessions,
+                            &task_runtime,
+                            task_store.as_ref(),
+                            &internal_id,
+                            &work,
+                            &error.to_string(),
+                        )
+                        .await;
+                    } else {
+                        release_session_work(&task_sessions, &internal_id, &work).await;
+                    }
+                    responder.respond_with_result(
+                        task_result.map(protocol::PromptResponse::new),
+                    )
+                });
+                if let Err(error) = spawn_result {
+                    if rollback_has_prompt {
+                        let mut registry = rollback_sessions.lock().await;
+                        if work_matches(
+                            &registry,
+                            &rollback_internal_id,
+                            &rollback_work,
+                        ) && let Some(session) = registry.get_mut(&rollback_session_id)
+                        {
+                            session.has_prompt = false;
+                        }
+                    }
+                    release_session_work(
+                        &rollback_sessions,
+                        &rollback_internal_id,
+                        &rollback_work,
+                    )
+                    .await;
+                    return Err(error);
+                }
                 Ok(())
             },
             agent_client_protocol::on_receive_request!(),
@@ -2284,14 +3007,17 @@ pub async fn serve_stdio(
                 let query = request.query.as_deref().map(str::trim).filter(|query| !query.is_empty());
                 let limit = usize::try_from(request.limit.unwrap_or(200).clamp(1, 200))
                     .unwrap_or(200);
-                let page = store
-                    .thread_catalog(
-                        query,
-                        request.include_archived,
-                        request.cursor.as_deref(),
-                        limit,
-                    )
-                    .map_err(agent_error)?;
+                let page = respond_or_return!(
+                    responder,
+                    store
+                        .thread_catalog(
+                            query,
+                            request.include_archived,
+                            request.cursor.as_deref(),
+                            limit,
+                        )
+                        .map_err(agent_error)
+                );
                 responder.respond(ListThreadsResponse {
                     threads: page.threads.into_iter().map(extension_thread_summary).collect(),
                     next_cursor: page.next_cursor,
@@ -2311,15 +3037,22 @@ pub async fn serve_stdio(
                         "durable thread storage is unavailable",
                     );
                 };
-                let thread_id = SessionId::from_str(&request.thread_id)
-                    .map_err(|_| agent_client_protocol::util::internal_error("invalid thread ID"))?;
+                let thread_id = respond_or_return!(
+                    responder,
+                    SessionId::from_str(&request.thread_id).map_err(|_| {
+                        agent_client_protocol::util::internal_error("invalid thread ID")
+                    })
+                );
                 let limit = usize::try_from(
                     request.limit.unwrap_or(250).clamp(1, extension::MAX_TIMELINE_PAGE_SIZE),
                 )
                 .unwrap_or(250);
-                let snapshot = store
-                    .thread_snapshot(&thread_id, request.after_sequence, limit)
-                    .map_err(agent_error)?;
+                let snapshot = respond_or_return!(
+                    responder,
+                    store
+                        .thread_snapshot(&thread_id, request.after_sequence, limit)
+                        .map_err(agent_error)
+                );
                 responder.respond(GetThreadTimelineResponse {
                     thread: extension_thread_summary(snapshot.thread),
                     items: snapshot.items.into_iter().map(extension_timeline_item).collect(),
@@ -2340,14 +3073,16 @@ pub async fn serve_stdio(
                         "durable session storage is unavailable",
                     );
                 };
-                let ids = validate_session_ids(&request.thread_ids).map_err(agent_error)?;
+                let ids = respond_or_return!(
+                    responder,
+                    validate_session_ids(&request.thread_ids).map_err(agent_error)
+                );
                 {
-                    let sessions = preview_extension_sessions.lock().await;
-                    if ids.iter().any(|id| {
-                        sessions.values().any(|session| {
-                            &session.internal_id == id && session.cancellation.is_some()
-                        })
-                    }) {
+                    let registry = preview_extension_sessions.lock().await;
+                    if ids
+                        .iter()
+                        .any(|id| registry.active_work.contains_key(id))
+                    {
                         return responder.respond_with_internal_error(
                             "sessions with active work must be cancelled before deletion",
                         );
@@ -2355,9 +3090,10 @@ pub async fn serve_stdio(
                 }
                 let mut summaries = Vec::with_capacity(ids.len());
                 for id in &ids {
-                    summaries.push(extension_thread_summary(
-                        store.thread_summary(id).map_err(agent_error)?,
-                    ));
+                    summaries.push(extension_thread_summary(respond_or_return!(
+                        responder,
+                        store.thread_summary(id).map_err(agent_error)
+                    )));
                 }
                 let token = uuid::Uuid::new_v4().to_string();
                 let expires_at_unix_seconds = now_unix_seconds().saturating_add(60);
@@ -2381,11 +3117,11 @@ pub async fn serve_stdio(
         .on_receive_request(
             async move |request: DeleteConfirmRequest,
                         responder: Responder<DeleteConfirmResponse>,
-                        _connection| {
+                        connection: ConnectionTo<Client>| {
                 if !extension_enabled(&delete_extension, ExtensionFeature::ThreadCatalog) {
                     return responder.respond_with_error(extension_not_negotiated());
                 }
-                let Some(store) = &delete_extension_store else {
+                let Some(store) = delete_extension_store.clone() else {
                     return responder.respond_with_internal_error(
                         "durable session storage is unavailable",
                     );
@@ -2412,31 +3148,92 @@ pub async fn serve_stdio(
                         "delete selection does not match the preview",
                     );
                 }
-                delete_extension_sessions
-                    .lock()
-                    .await
-                    .retain(|_, session| !requested.contains(&session.internal_id));
-                let deleted = match store.delete_sessions(&requested) {
-                    Ok(deleted) => deleted,
-                    Err(error) => return responder.respond_with_internal_error(error),
-                };
-                responder.respond(DeleteConfirmResponse {
-                    deleted: u32::try_from(deleted).unwrap_or(u32::MAX),
-                })
+                let delete_work = SessionWork::new(SessionWorkKind::Deletion);
+                {
+                    let mut registry = delete_extension_sessions.lock().await;
+                    if requested
+                        .iter()
+                        .any(|id| registry.active_work.contains_key(id))
+                    {
+                        return responder.respond_with_internal_error(
+                            "sessions with active work must be cancelled before deletion",
+                        );
+                    }
+                    for id in &requested {
+                        registry.active_work.insert(id.clone(), delete_work.clone());
+                    }
+                }
+                let request_cancellation = responder.cancellation();
+                let task_sessions = delete_extension_sessions.clone();
+                let rollback_sessions = delete_extension_sessions.clone();
+                let rollback_requested = requested.clone();
+                let rollback_work = delete_work.clone();
+                let spawn_result = connection.spawn(async move {
+                    let task_result: agent_client_protocol::Result<_> = async {
+                        if request_cancellation.is_cancelled() {
+                            return Err(agent_client_protocol::Error::request_cancelled());
+                        }
+                        let deletion_store = store.clone();
+                        let deletion_ids = requested.clone();
+                        let deleted = tokio::task::spawn_blocking(move || {
+                            deletion_store.delete_sessions(&deletion_ids)
+                        })
+                        .await
+                        .map_err(|error| {
+                            agent_client_protocol::util::internal_error(format!(
+                                "session deletion worker failed: {error}"
+                            ))
+                        })?
+                        .map_err(agent_error)?;
+                        task_sessions
+                            .lock()
+                            .await
+                            .retain(|_, session| !requested.contains(&session.internal_id));
+                        Ok(DeleteConfirmResponse {
+                            deleted: u32::try_from(deleted).unwrap_or(u32::MAX),
+                        })
+                    }
+                    .await;
+                    release_session_works(&task_sessions, &requested, &delete_work).await;
+                    responder.respond_with_result(task_result)
+                });
+                if let Err(error) = spawn_result {
+                    release_session_works(
+                        &rollback_sessions,
+                        &rollback_requested,
+                        &rollback_work,
+                    )
+                    .await;
+                    return Err(error);
+                }
+                Ok(())
             },
             agent_client_protocol::on_receive_request!(),
         )
         .on_receive_request(
             async move |_request: ListModelsRequest,
                         responder: Responder<ListModelsResponse>,
-                        _connection| {
+                        connection: ConnectionTo<Client>| {
+                let models_extension = models_extension.clone();
+                let models_extension_runner = models_extension_runner.clone();
+                connection.spawn(async move {
                 if !extension_enabled(&models_extension, ExtensionFeature::ModelCatalog) {
                     return responder.respond_with_error(extension_not_negotiated());
                 }
-                let models = models_extension_runner
-                    .available_model_details(CancellationToken::new())
-                    .await
-                    .map_err(agent_error)?
+                    let request_cancellation = responder.cancellation();
+                    let discovery_cancellation = CancellationToken::new();
+                    let discovery = models_extension_runner
+                        .available_model_details(discovery_cancellation.clone());
+                    tokio::pin!(discovery);
+                    let models = tokio::select! {
+                        result = &mut discovery => respond_or_return!(responder, result.map_err(agent_error)),
+                        () = request_cancellation.cancelled() => {
+                            discovery_cancellation.cancel();
+                            return responder.respond_with_error(
+                                agent_client_protocol::Error::request_cancelled(),
+                            );
+                        }
+                    }
                     .into_iter()
                     .map(|model| {
                         if model.id.trim().is_empty()
@@ -2464,8 +3261,11 @@ pub async fn serve_stdio(
                                 .collect(),
                         })
                     })
-                    .collect::<agent_client_protocol::Result<Vec<_>>>()?;
+                    .collect::<agent_client_protocol::Result<Vec<_>>>();
+                let models = respond_or_return!(responder, models);
                 responder.respond(ListModelsResponse { models })
+                })?;
+                Ok(())
             },
             agent_client_protocol::on_receive_request!(),
         )
@@ -2484,11 +3284,11 @@ pub async fn serve_stdio(
                         "durable profile preferences are unavailable",
                     );
                 };
-                responder.respond(ProfilePreferencesResponse {
-                    preferences: extension_preferences(
-                        store.profile_preferences().map_err(agent_error)?,
-                    ),
-                })
+                let preferences = extension_preferences(respond_or_return!(
+                    responder,
+                    store.profile_preferences().map_err(agent_error)
+                ));
+                responder.respond(ProfilePreferencesResponse { preferences })
             },
             agent_client_protocol::on_receive_request!(),
         )
@@ -2502,7 +3302,7 @@ pub async fn serve_stdio(
                 ) {
                     return responder.respond_with_error(extension_not_negotiated());
                 }
-                let Some(store) = &update_preferences_store else {
+                let Some(store) = update_preferences_store.clone() else {
                     return responder.respond_with_internal_error(
                         "durable profile preferences are unavailable",
                     );
@@ -2519,42 +3319,75 @@ pub async fn serve_stdio(
                 {
                     return responder.respond_with_internal_error("profile preference is invalid");
                 }
+                let task_extension = update_preferences_extension.clone();
+                let task_runner = update_preferences_runner.clone();
+                let task_lock = update_preferences_lock.clone();
+                let task_connection = connection.clone();
+                let request_cancellation = responder.cancellation();
+                connection.spawn(async move {
+                let task_result: agent_client_protocol::Result<_> = async {
+                if request_cancellation.is_cancelled() {
+                    return Err(agent_client_protocol::Error::request_cancelled());
+                }
+                let lock = task_lock.lock();
+                tokio::pin!(lock);
+                let _guard = tokio::select! {
+                    guard = &mut lock => guard,
+                    () = request_cancellation.cancelled() => {
+                        return Err(agent_client_protocol::Error::request_cancelled());
+                    }
+                };
                 let current = store.profile_preferences().map_err(agent_error)?;
                 let Some(next_model) = request.model.or(current.model) else {
-                    return responder.respond_with_internal_error(
+                    return Err(agent_client_protocol::util::internal_error(
                         "a model must be selected before saving profile preferences",
-                    );
+                    ));
                 };
                 let next_thinking = request
-                    .thinking_level
-                    .as_deref()
-                    .map(crate::app::ThinkingLevel::from_str)
-                    .transpose()
-                    .map_err(agent_error)?
+                        .thinking_level
+                        .as_deref()
+                        .map(crate::app::ThinkingLevel::from_str)
+                        .transpose()
+                        .map_err(agent_error)?
                     .unwrap_or(current.thinking_level);
-                let models = update_preferences_runner
-                    .available_model_details(CancellationToken::new())
-                    .await
-                    .map_err(agent_error)?;
+                let cancellation = CancellationToken::new();
+                let models_future = task_runner.available_model_details(cancellation.clone());
+                tokio::pin!(models_future);
+                let models = tokio::select! {
+                    result = &mut models_future => result.map_err(agent_error)?,
+                    () = request_cancellation.cancelled() => {
+                        cancellation.cancel();
+                        return Err(agent_client_protocol::Error::request_cancelled());
+                    }
+                };
                 let Some(model) = models.iter().find(|model| model.id == next_model) else {
-                    return responder
-                        .respond_with_internal_error("model is not in the provider catalog");
+                    return Err(agent_client_protocol::util::internal_error(
+                        "model is not in the provider catalog",
+                    ));
                 };
                 let next_thinking = reconcile_model_settings(model, next_thinking).thinking;
+                if request_cancellation.is_cancelled() {
+                    return Err(agent_client_protocol::Error::request_cancelled());
+                }
                 let preferences = extension_preferences(
                     store
                         .set_profile_preferences(&next_model, next_thinking)
                         .map_err(agent_error)?,
                 );
                 send_extension_activity(
-                    &connection,
-                    &update_preferences_extension,
+                    &task_connection,
+                    &task_extension,
                     None,
                     ActivityEvent::ProfilePreferencesChanged {
                         preferences: preferences.clone(),
                     },
                 )?;
-                responder.respond(ProfilePreferencesResponse { preferences })
+                Ok(ProfilePreferencesResponse { preferences })
+                }
+                .await;
+                responder.respond_with_result(task_result)
+                })?;
+                Ok(())
             },
             agent_client_protocol::on_receive_request!(),
         )
@@ -2568,9 +3401,11 @@ pub async fn serve_stdio(
                 let Some(store) = &collections_list_store else {
                     return responder.respond_with_internal_error("collections are unavailable");
                 };
-                responder.respond(CollectionStateResponse {
-                    state: extension_collections(store.list_collections().map_err(agent_error)?),
-                })
+                let state = extension_collections(respond_or_return!(
+                    responder,
+                    store.list_collections().map_err(agent_error)
+                ));
+                responder.respond(CollectionStateResponse { state })
             },
             agent_client_protocol::on_receive_request!(),
         )
@@ -2587,7 +3422,13 @@ pub async fn serve_stdio(
                 if request.name.len() > extension::MAX_COLLECTION_NAME_BYTES {
                     return responder.respond_with_internal_error("collection name is too long");
                 }
-                let state = extension_collections(store.create_collection(&request.name).map_err(agent_error)?.state);
+                let state = extension_collections(
+                    respond_or_return!(
+                        responder,
+                        store.create_collection(&request.name).map_err(agent_error)
+                    )
+                    .state,
+                );
                 send_extension_activity(&connection, &collection_create_extension, None, ActivityEvent::CollectionsChanged { state: state.clone() })?;
                 responder.respond(CollectionStateResponse { state })
             },
@@ -2606,7 +3447,15 @@ pub async fn serve_stdio(
                 if request.name.len() > extension::MAX_COLLECTION_NAME_BYTES {
                     return responder.respond_with_internal_error("collection name is too long");
                 }
-                let state = extension_collections(store.rename_collection(&request.collection_id, &request.name).map_err(agent_error)?.state);
+                let state = extension_collections(
+                    respond_or_return!(
+                        responder,
+                        store
+                            .rename_collection(&request.collection_id, &request.name)
+                            .map_err(agent_error)
+                    )
+                    .state,
+                );
                 send_extension_activity(&connection, &collection_rename_extension, None, ActivityEvent::CollectionsChanged { state: state.clone() })?;
                 responder.respond(CollectionStateResponse { state })
             },
@@ -2622,7 +3471,15 @@ pub async fn serve_stdio(
                 let Some(store) = &collection_collapsed_store else {
                     return responder.respond_with_internal_error("collections are unavailable");
                 };
-                let state = extension_collections(store.set_collection_collapsed(&request.collection_id, request.collapsed).map_err(agent_error)?.state);
+                let state = extension_collections(
+                    respond_or_return!(
+                        responder,
+                        store
+                            .set_collection_collapsed(&request.collection_id, request.collapsed)
+                            .map_err(agent_error)
+                    )
+                    .state,
+                );
                 send_extension_activity(&connection, &collection_collapsed_extension, None, ActivityEvent::CollectionsChanged { state: state.clone() })?;
                 responder.respond(CollectionStateResponse { state })
             },
@@ -2638,7 +3495,15 @@ pub async fn serve_stdio(
                 let Some(store) = &collection_move_store else {
                     return responder.respond_with_internal_error("collections are unavailable");
                 };
-                let state = extension_collections(store.move_collection(&request.collection_id, request.position).map_err(agent_error)?.state);
+                let state = extension_collections(
+                    respond_or_return!(
+                        responder,
+                        store
+                            .move_collection(&request.collection_id, request.position)
+                            .map_err(agent_error)
+                    )
+                    .state,
+                );
                 send_extension_activity(&connection, &collection_move_extension, None, ActivityEvent::CollectionsChanged { state: state.clone() })?;
                 responder.respond(CollectionStateResponse { state })
             },
@@ -2654,7 +3519,15 @@ pub async fn serve_stdio(
                 let Some(store) = &collection_delete_store else {
                     return responder.respond_with_internal_error("collections are unavailable");
                 };
-                let state = extension_collections(store.delete_collection(&request.collection_id).map_err(agent_error)?.state);
+                let state = extension_collections(
+                    respond_or_return!(
+                        responder,
+                        store
+                            .delete_collection(&request.collection_id)
+                            .map_err(agent_error)
+                    )
+                    .state,
+                );
                 send_extension_activity(&connection, &collection_delete_extension, None, ActivityEvent::CollectionsChanged { state: state.clone() })?;
                 responder.respond(CollectionStateResponse { state })
             },
@@ -2670,10 +3543,28 @@ pub async fn serve_stdio(
                 let Some(store) = &collection_assign_store else {
                     return responder.respond_with_internal_error("collections are unavailable");
                 };
-                let thread_id = SessionId::from_str(&request.thread_id)
-                    .map_err(|_| agent_client_protocol::util::internal_error("invalid thread ID"))?;
-                let state = extension_collections(store.assign_thread_collection(&thread_id, request.collection_id.as_deref()).map_err(agent_error)?.state);
-                let revision = store.thread_revision(&thread_id).map_err(agent_error)?;
+                let thread_id = respond_or_return!(
+                    responder,
+                    SessionId::from_str(&request.thread_id).map_err(|_| {
+                        agent_client_protocol::util::internal_error("invalid thread ID")
+                    })
+                );
+                let state = extension_collections(
+                    respond_or_return!(
+                        responder,
+                        store
+                            .assign_thread_collection(
+                                &thread_id,
+                                request.collection_id.as_deref(),
+                            )
+                            .map_err(agent_error)
+                    )
+                    .state,
+                );
+                let revision = respond_or_return!(
+                    responder,
+                    store.thread_revision(&thread_id).map_err(agent_error)
+                );
                 send_extension_activity(&connection, &collection_assign_extension, None, ActivityEvent::CollectionsChanged { state: state.clone() })?;
                 responder.respond(extension::AssignThreadCollectionResponse {
                     state,
@@ -2686,26 +3577,57 @@ pub async fn serve_stdio(
         .on_receive_request(
             async move |_request: extension::AccountStatusRequest,
                         responder: Responder<extension::AccountStatusResponse>,
-                        _connection| {
+                        connection: ConnectionTo<Client>| {
+                let account_status_extension = account_status_extension.clone();
+                let account_status_auth = account_status_auth.clone();
+                connection.spawn(async move {
                 if !extension_enabled(&account_status_extension, ExtensionFeature::Account) {
                     return responder.respond_with_error(extension_not_negotiated());
                 }
-                let status = extension_account_status(account_status_auth.validate().await);
+                let request_cancellation = responder.cancellation();
+                let validation = respond_or_return!(
+                    responder,
+                    await_request_future(
+                        &request_cancellation,
+                        account_status_auth.validate_with_revision(),
+                    )
+                    .await
+                );
+                let status = extension_account_status(validation_status_if_current(
+                    &account_status_auth,
+                    validation,
+                ));
                 responder.respond(extension::AccountStatusResponse { status })
+                })?;
+                Ok(())
             },
             agent_client_protocol::on_receive_request!(),
         )
         .on_receive_request(
             async move |_request: BrowserLoginStartRequest,
                         responder: Responder<BrowserLoginStartResponse>,
-                        _connection| {
+                        connection: ConnectionTo<Client>| {
+                let login_start_extension = login_start_extension.clone();
+                let login_start_auth = login_start_auth.clone();
+                connection.spawn(async move {
                 if !extension_enabled(&login_start_extension, ExtensionFeature::Account) {
                     return responder.respond_with_error(extension_not_negotiated());
                 }
-                let login = login_start_auth
-                    .start_browser_login()
+                let request_cancellation = responder.cancellation();
+                let login = respond_or_return!(
+                    responder,
+                    await_request_future(
+                        &request_cancellation,
+                        login_start_auth.start_browser_login(),
+                    )
                     .await
-                    .map_err(agent_error)?;
+                    .and_then(|result| result.map_err(agent_error))
+                );
+                if request_cancellation.is_cancelled() {
+                    return responder.respond_with_error(
+                        agent_client_protocol::Error::request_cancelled(),
+                    );
+                }
                 let login_id = uuid::Uuid::new_v4().to_string();
                 let state = BrowserLoginState {
                     login_id: login_id.clone(),
@@ -2719,6 +3641,8 @@ pub async fn serve_stdio(
                     .await
                     .insert(login_id, login);
                 responder.respond(BrowserLoginStartResponse { login: state })
+                })?;
+                Ok(())
             },
             agent_client_protocol::on_receive_request!(),
         )
@@ -2726,33 +3650,58 @@ pub async fn serve_stdio(
             async move |request: BrowserLoginCompleteRequest,
                         responder: Responder<extension::AccountStatusResponse>,
                         connection: ConnectionTo<Client>| {
+                let login_complete_extension = login_complete_extension.clone();
+                let login_complete_auth = login_complete_auth.clone();
+                let task_connection = connection.clone();
+                connection.spawn(async move {
+                let connection = task_connection;
                 if !extension_enabled(&login_complete_extension, ExtensionFeature::Account) {
                     return responder.respond_with_error(extension_not_negotiated());
                 }
-                let login = login_complete_extension
-                    .browser_logins
-                    .lock()
-                    .await
-                    .remove(&request.login_id)
-                    .ok_or_else(|| {
-                        agent_client_protocol::util::internal_error(
-                            "browser login is missing, expired, or already completed",
-                        )
-                    })?;
                 let request_cancellation = responder.cancellation();
+                if request_cancellation.is_cancelled() {
+                    return responder.respond_with_error(
+                        agent_client_protocol::Error::request_cancelled(),
+                    );
+                }
+                let login = respond_or_return!(
+                    responder,
+                    login_complete_extension
+                        .browser_logins
+                        .lock()
+                        .await
+                        .remove(&request.login_id)
+                        .ok_or_else(|| {
+                            agent_client_protocol::util::internal_error(
+                                "browser login is missing, expired, or already completed",
+                            )
+                        })
+                );
                 let cancellation = CancellationToken::new();
                 let completion = login.complete(cancellation.clone());
                 tokio::pin!(completion);
-                let account = tokio::select! {
-                    account = &mut completion => account.map_err(agent_error)?,
+                let completion_result = tokio::select! {
+                    biased;
+                    account = &mut completion => account,
                     () = request_cancellation.cancelled() => {
                         cancellation.cancel();
-                        return responder.respond_with_error(
-                            agent_client_protocol::Error::request_cancelled(),
-                        );
+                        // BrowserLogin owns the persistence commit boundary. Do
+                        // not drop it after cancellation: it may already be in
+                        // the uninterruptible credential-save phase.
+                        completion.await
                     }
                 };
-                let status = extension_account_status(ValidationStatus::Valid(account));
+                let _account = respond_or_return!(responder, completion_result.map_err(agent_error));
+                // login.complete persisted the credential. This is the commit
+                // point: finish validation and publish the resulting account
+                // state even if request cancellation arrives afterward.
+                // Revalidate through the manager so a server-side revocation racing
+                // completion still fails closed before the next prompt.
+                let validation = login_complete_auth.validate_with_revision().await;
+                let status = extension_account_status(validation_status_if_current(
+                    &login_complete_auth,
+                    validation,
+                ));
                 send_extension_activity(
                     &connection,
                     &login_complete_extension,
@@ -2761,10 +3710,9 @@ pub async fn serve_stdio(
                         status: status.clone(),
                     },
                 )?;
-                // Revalidate through the manager so a server-side revocation racing
-                // completion still fails closed before the next prompt.
-                let status = extension_account_status(login_complete_auth.validate().await);
                 responder.respond(extension::AccountStatusResponse { status })
+                })?;
+                Ok(())
             },
             agent_client_protocol::on_receive_request!(),
         )
@@ -2778,19 +3726,49 @@ pub async fn serve_stdio(
                 if request.api_key.len() > extension::MAX_API_KEY_BYTES {
                     return responder.respond_with_internal_error("Axiom API key is too long");
                 }
-                api_key_auth
-                    .save_pasted_key(&request.api_key)
-                    .map_err(agent_error)?;
-                let status = extension_account_status(api_key_auth.validate().await);
+                let task_auth = api_key_auth.clone();
+                let task_extension = api_key_extension.clone();
+                let task_connection = connection.clone();
+                let request_cancellation = responder.cancellation();
+                connection.spawn(async move {
+                let task_result: agent_client_protocol::Result<_> = async {
+                    if request_cancellation.is_cancelled() {
+                        return Err(agent_client_protocol::Error::request_cancelled());
+                    }
+                    let cancellation = CancellationToken::new();
+                    let save = task_auth
+                        .save_pasted_key_with_cancellation(&request.api_key, &cancellation);
+                    tokio::pin!(save);
+                    let save_result = tokio::select! {
+                        biased;
+                        result = &mut save => result,
+                        () = request_cancellation.cancelled() => {
+                            cancellation.cancel();
+                            save.await
+                        }
+                    };
+                    save_result.map_err(agent_error)?;
+                // Saving the key is the commit point. Finish validating and
+                // announcing the committed credential despite later cancellation.
+                let validation = task_auth.validate_with_revision().await;
+                let status = extension_account_status(validation_status_if_current(
+                    &task_auth,
+                    validation,
+                ));
                 send_extension_activity(
-                    &connection,
-                    &api_key_extension,
+                    &task_connection,
+                    &task_extension,
                     None,
                     ActivityEvent::AccountChanged {
                         status: status.clone(),
                     },
                 )?;
-                responder.respond(extension::AccountStatusResponse { status })
+                Ok(extension::AccountStatusResponse { status })
+                }
+                .await;
+                responder.respond_with_result(task_result)
+                })?;
+                Ok(())
             },
             agent_client_protocol::on_receive_request!(),
         )
@@ -2801,17 +3779,43 @@ pub async fn serve_stdio(
                 if !extension_enabled(&logout_extension, ExtensionFeature::Account) {
                     return responder.respond_with_error(extension_not_negotiated());
                 }
-                logout_auth.logout().map_err(agent_error)?;
-                let status = extension_account_status(ValidationStatus::Missing);
+                let task_extension = logout_extension.clone();
+                let task_auth = logout_auth.clone();
+                let task_connection = connection.clone();
+                let request_cancellation = responder.cancellation();
+                connection.spawn(async move {
+                let task_result: agent_client_protocol::Result<_> = async {
+                let cancellation = CancellationToken::new();
+                let logout = task_auth.logout_with_cancellation(&cancellation);
+                tokio::pin!(logout);
+                let logout_result = tokio::select! {
+                    biased;
+                    result = &mut logout => result,
+                    () = request_cancellation.cancelled() => {
+                        cancellation.cancel();
+                        logout.await
+                    }
+                };
+                let revision = logout_result.map_err(agent_error)?;
+                // Credential removal is committed; always publish the new state.
+                let status = extension_account_status(VersionedValidationStatus {
+                    status: ValidationStatus::Missing,
+                    revision,
+                });
                 send_extension_activity(
-                    &connection,
-                    &logout_extension,
+                    &task_connection,
+                    &task_extension,
                     None,
                     ActivityEvent::AccountChanged {
                         status: status.clone(),
                     },
                 )?;
-                responder.respond(extension::AccountStatusResponse { status })
+                Ok(extension::AccountStatusResponse { status })
+                }
+                .await;
+                responder.respond_with_result(task_result)
+                })?;
+                Ok(())
             },
             agent_client_protocol::on_receive_request!(),
         )
@@ -2819,19 +3823,54 @@ pub async fn serve_stdio(
             async move |request: VerifySecurityRequest,
                         responder: Responder<VerifySecurityResponse>,
                         connection: ConnectionTo<Client>| {
+                let security_extension = security_extension.clone();
+                let security_extension_sessions = security_extension_sessions.clone();
+                let security_extension_runner = security_extension_runner.clone();
                 if !extension_enabled(&security_extension, ExtensionFeature::SecurityEvidence) {
                     return responder.respond_with_error(extension_not_negotiated());
                 }
-                let external_id = protocol::SessionId::new(request.thread_id);
-                let model = {
-                    let mut sessions = security_extension_sessions.lock().await;
-                    let Some(session) = sessions.get_mut(&external_id) else {
+                let requested_internal_id = respond_or_return!(
+                    responder,
+                    SessionId::from_str(&request.thread_id).map_err(|_| {
+                        agent_client_protocol::util::internal_error("invalid thread ID")
+                    })
+                );
+                let work = SessionWork::new(SessionWorkKind::SecurityVerification);
+                let (external_id, internal_id, model) = {
+                    let mut registry = security_extension_sessions.lock().await;
+                    let Some((external_id, session)) = registry
+                        .iter()
+                        .find(|(_, session)| session.internal_id == requested_internal_id)
+                    else {
                         return responder.respond_with_internal_error("unknown ACP session");
                     };
-                    session.security = crate::app::SecurityStatus::Verifying;
-                    session.model.clone()
+                    let external_id = external_id.clone();
+                    let internal_id = session.internal_id.clone();
+                    let model = session.model.clone();
+                    if registry.active_work.contains_key(&internal_id) {
+                        return responder
+                            .respond_with_internal_error("session already has active work");
+                    }
+                    registry
+                        .active_work
+                        .insert(internal_id.clone(), work.clone());
+                    registry
+                        .get_mut(&external_id)
+                        .expect("session remained loaded while reserving security verification")
+                        .security = crate::app::SecurityStatus::Verifying;
+                    (external_id, internal_id, model)
                 };
-                send_extension_activity(
+                let request_cancellation = responder.cancellation();
+                let task_connection = connection.clone();
+                let rollback_sessions = security_extension_sessions.clone();
+                let rollback_external_id = external_id.clone();
+                let rollback_internal_id = internal_id.clone();
+                let rollback_model = model.clone();
+                let rollback_work = work.clone();
+                let spawn_result = connection.spawn(async move {
+                let connection = task_connection;
+                let task_result: agent_client_protocol::Result<_> = async {
+                    send_extension_activity(
                     &connection,
                     &security_extension,
                     Some(&external_id),
@@ -2839,81 +3878,38 @@ pub async fn serve_stdio(
                         status: extension_security_status(crate::app::SecurityStatus::Verifying),
                     },
                 )?;
-                let request_cancellation = responder.cancellation();
-                let cancellation = CancellationToken::new();
-                let verify = security_extension_runner.verify_security(&model, cancellation.clone());
-                tokio::pin!(verify);
-                let verification = tokio::select! {
-                    verification = &mut verify => verification,
-                    () = request_cancellation.cancelled() => {
-                        cancellation.cancel();
-                        if let Some(session) = security_extension_sessions.lock().await.get_mut(&external_id) {
-                            session.security = crate::app::SecurityStatus::Unverified;
+                    let verification = await_session_future(
+                        &request_cancellation,
+                        &work,
+                        security_extension_runner
+                            .verify_security(&model, work.cancellation.clone()),
+                    )
+                    .await?;
+                    let verification = match verification {
+                        Ok(verification) => verification,
+                        Err(crate::AxiomError::Cancelled) => {
+                            work.cancellation.cancel();
+                            return Err(agent_client_protocol::Error::request_cancelled());
                         }
-                        send_extension_activity(
-                            &connection,
-                            &security_extension,
-                            Some(&external_id),
-                            ActivityEvent::SecurityChanged {
-                                status: extension_security_status(crate::app::SecurityStatus::Unverified),
-                            },
-                        )?;
-                        return responder.respond_with_error(
-                            agent_client_protocol::Error::request_cancelled(),
-                        );
-                    }
-                };
-                let verification = match verification {
-                    Ok(verification) => verification,
-                    Err(error) => {
-                        if let Some(session) = security_extension_sessions.lock().await.get_mut(&external_id) {
-                            session.security = crate::app::SecurityStatus::Failed;
-                        }
-                        send_extension_activity(
-                            &connection,
-                            &security_extension,
-                            Some(&external_id),
-                            ActivityEvent::SecurityChanged {
-                                status: ExtensionSecurityStatus {
-                                    state: ExtensionSecurityState::Failed,
-                                    detail: Some(error.to_string()),
-                                },
-                            },
-                        )?;
-                        return responder.respond_with_internal_error(error);
-                    }
-                };
-                let (verification_status, evidence) =
-                    match strict_extension_security_verification(verification) {
-                        Ok(result) => result,
-                        Err(error) => {
-                        if let Some(session) = security_extension_sessions
-                            .lock()
-                            .await
-                            .get_mut(&external_id)
-                        {
-                            session.security = crate::app::SecurityStatus::Failed;
-                        }
-                        send_extension_activity(
-                            &connection,
-                            &security_extension,
-                            Some(&external_id),
-                            ActivityEvent::SecurityChanged {
-                                status: ExtensionSecurityStatus {
-                                    state: ExtensionSecurityState::Failed,
-                                    detail: Some(error.to_string()),
-                                },
-                            },
-                        )?;
-                        return responder.respond_with_internal_error(error);
-                        }
+                        Err(error) => return Err(agent_error(error)),
                     };
-                if let Some(session) = security_extension_sessions.lock().await.get_mut(&external_id)
-                {
-                    session.security = verification_status;
-                }
-                let status = extension_security_status(verification_status);
-                send_extension_activity(
+                    let (verification_status, evidence) =
+                        strict_extension_security_verification(verification)
+                            .map_err(agent_error)?;
+                    if !set_session_security_if_work(
+                        &security_extension_sessions,
+                        &external_id,
+                        &internal_id,
+                        &work,
+                        &model,
+                        verification_status,
+                    )
+                    .await
+                    {
+                        return Err(agent_client_protocol::Error::request_cancelled());
+                    }
+                    let status = extension_security_status(verification_status);
+                    send_extension_activity(
                     &connection,
                     &security_extension,
                     Some(&external_id),
@@ -2921,7 +3917,65 @@ pub async fn serve_stdio(
                         status: status.clone(),
                     },
                 )?;
-                responder.respond(VerifySecurityResponse { evidence, status })
+                    Ok(VerifySecurityResponse { evidence, status })
+                }
+                .await;
+                if let Err(error) = &task_result {
+                    let verification_status = if work.cancellation.is_cancelled() {
+                        crate::app::SecurityStatus::Unverified
+                    } else {
+                        crate::app::SecurityStatus::Failed
+                    };
+                    if set_session_security_if_work(
+                        &security_extension_sessions,
+                        &external_id,
+                        &internal_id,
+                        &work,
+                        &model,
+                        verification_status,
+                    )
+                    .await
+                    {
+                        let status = if verification_status
+                            == crate::app::SecurityStatus::Failed
+                        {
+                            ExtensionSecurityStatus {
+                                state: ExtensionSecurityState::Failed,
+                                detail: Some(error.to_string()),
+                            }
+                        } else {
+                            extension_security_status(verification_status)
+                        };
+                        let _ = send_extension_activity(
+                            &connection,
+                            &security_extension,
+                            Some(&external_id),
+                            ActivityEvent::SecurityChanged { status },
+                        );
+                    }
+                }
+                release_session_work(&security_extension_sessions, &internal_id, &work).await;
+                responder.respond_with_result(task_result)
+                });
+                if let Err(error) = spawn_result {
+                    set_session_security_if_work(
+                        &rollback_sessions,
+                        &rollback_external_id,
+                        &rollback_internal_id,
+                        &rollback_work,
+                        &rollback_model,
+                        crate::app::SecurityStatus::Unverified,
+                    )
+                    .await;
+                    release_session_work(
+                        &rollback_sessions,
+                        &rollback_internal_id,
+                        &rollback_work,
+                    )
+                    .await;
+                    return Err(error);
+                }
+                Ok(())
             },
             agent_client_protocol::on_receive_request!(),
         )
@@ -2929,6 +3983,11 @@ pub async fn serve_stdio(
             async move |request: CompactRequest,
                         responder: Responder<CompactResponse>,
                         connection: ConnectionTo<Client>| {
+                let compact_extension = compact_extension.clone();
+                let compact_extension_sessions = compact_extension_sessions.clone();
+                let compact_extension_runner = compact_extension_runner.clone();
+                let compact_extension_runtime = compact_extension_runtime.clone();
+                let compact_extension_store = compact_extension_store.clone();
                 if !extension_enabled(&compact_extension, ExtensionFeature::Compaction) {
                     return responder.respond_with_error(extension_not_negotiated());
                 }
@@ -2939,124 +3998,158 @@ pub async fn serve_stdio(
                 {
                     return responder.respond_with_internal_error("compaction focus is too long");
                 }
-                let external_id = protocol::SessionId::new(request.thread_id);
-                let request_cancellation = responder.cancellation();
-                let cancellation = CancellationToken::new();
-                let internal_id = {
-                    let mut sessions = compact_extension_sessions.lock().await;
-                    let Some(session) = sessions.get_mut(&external_id) else {
+                let requested_internal_id = respond_or_return!(
+                    responder,
+                    SessionId::from_str(&request.thread_id).map_err(|_| {
+                        agent_client_protocol::util::internal_error("invalid thread ID")
+                    })
+                );
+                let work = SessionWork::new(SessionWorkKind::Compaction);
+                let (external_id, internal_id) = {
+                    let mut registry = compact_extension_sessions.lock().await;
+                    let Some((external_id, session)) = registry
+                        .iter()
+                        .find(|(_, session)| session.internal_id == requested_internal_id)
+                    else {
                         return responder.respond_with_internal_error("unknown ACP session");
                     };
-                    if session.cancellation.is_some() {
+                    let external_id = external_id.clone();
+                    let internal_id = session.internal_id.clone();
+                    if registry.active_work.contains_key(&internal_id) {
                         return responder
                             .respond_with_internal_error("session already has active work");
                     }
-                    session.cancellation = Some(cancellation.clone());
-                    session.internal_id.clone()
+                    registry
+                        .active_work
+                        .insert(internal_id.clone(), work.clone());
+                    (external_id, internal_id)
                 };
-                send_extension_activity(
-                    &connection,
-                    &compact_extension,
-                    Some(&external_id),
-                    ActivityEvent::Compaction {
-                        phase: CompactionPhase::Started,
-                        detail: Some("Compacting conversation context".into()),
-                    },
-                )?;
-                let (events_tx, mut events_rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
-                let compact = compact_extension_runner.compact(
-                    &internal_id,
-                    request.focus,
-                    events_tx,
-                    cancellation.clone(),
-                );
-                tokio::pin!(compact);
-                let result = loop {
-                    tokio::select! {
-                        result = &mut compact => break result,
-                        event = events_rx.recv() => {
-                            let Some(event) = event else { continue };
-                            let envelope = compact_extension_runtime
-                                .emit(internal_id.clone(), event.clone())
+                let request_cancellation = responder.cancellation();
+                let task_connection = connection.clone();
+                let rollback_sessions = compact_extension_sessions.clone();
+                let rollback_internal_id = internal_id.clone();
+                let rollback_work = work.clone();
+                let spawn_result = connection.spawn(async move {
+                let connection = task_connection;
+                let task_result: agent_client_protocol::Result<_> = async {
+                    send_extension_activity(
+                        &connection,
+                        &compact_extension,
+                        Some(&external_id),
+                        ActivityEvent::Compaction {
+                            phase: CompactionPhase::Started,
+                            detail: Some("Compacting conversation context".into()),
+                        },
+                    )?;
+                    let (events_tx, mut events_rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
+                    let compact = compact_extension_runner.compact(
+                        &internal_id,
+                        request.focus,
+                        events_tx,
+                        work.cancellation.clone(),
+                    );
+                    tokio::pin!(compact);
+                    let result = loop {
+                        tokio::select! {
+                            result = &mut compact => break result,
+                            event = events_rx.recv() => {
+                                let Some(event) = event else { continue };
+                                let envelope = compact_extension_runtime
+                                    .emit(internal_id.clone(), event.clone())
+                                    .await
+                                    .map_err(agent_error)?;
+                                let revision = match &compact_extension_store {
+                                    Some(store) => Some(store.append(&envelope).map_err(agent_error)?),
+                                    None => None,
+                                };
+                                send_event(
+                                    &connection,
+                                    &external_id,
+                                    event,
+                                    EventDelivery {
+                                        cwd: None,
+                                        extension_state: Some(&compact_extension),
+                                        correlation_id: Some(envelope.correlation_id.to_string()),
+                                        revision: revision.as_ref(),
+                                        client_item_id: None,
+                                    },
+                                )?;
+                            }
+                            () = request_cancellation.cancelled() => {
+                                work.cancellation.cancel();
+                                break Err(crate::AxiomError::Cancelled);
+                            }
+                            () = work.cancellation.cancelled() => {
+                                break Err(crate::AxiomError::Cancelled);
+                            }
+                        }
+                    };
+                    match result {
+                        Ok(result) => {
+                            let messages_before = result.messages_before;
+                            let events = compact_extension_runtime
+                                .dispatch(AppCommand::RecordContextCompaction {
+                                    session_id: internal_id.clone(),
+                                    summary: result.summary,
+                                    messages_before,
+                                })
                                 .await
                                 .map_err(agent_error)?;
                             let revision = match &compact_extension_store {
-                                Some(store) => Some(store.append(&envelope).map_err(agent_error)?),
+                                Some(store) => Some(store.append_all(&events).map_err(agent_error)?),
                                 None => None,
                             };
-                            send_event(
-                                &connection,
-                                &external_id,
-                                event,
-                                EventDelivery {
-                                    cwd: None,
-                                    extension_state: Some(&compact_extension),
-                                    correlation_id: Some(envelope.correlation_id.to_string()),
-                                    revision: revision.as_ref(),
-                                    client_item_id: None,
-                                },
-                            )?;
-                        }
-                        () = request_cancellation.cancelled() => {
-                            cancellation.cancel();
-                            break Err(crate::AxiomError::Cancelled);
-                        }
-                    }
-                };
-                if let Some(session) = compact_extension_sessions.lock().await.get_mut(&external_id)
-                {
-                    session.cancellation = None;
-                }
-                match result {
-                    Ok(result) => {
-                        let messages_before = result.messages_before;
-                        let events = compact_extension_runtime
-                            .dispatch(AppCommand::RecordContextCompaction {
-                                session_id: internal_id.clone(),
-                                summary: result.summary,
-                                messages_before,
+                            for event in events {
+                                send_event(
+                                    &connection,
+                                    &external_id,
+                                    event.event,
+                                    EventDelivery {
+                                        cwd: None,
+                                        extension_state: Some(&compact_extension),
+                                        correlation_id: Some(event.correlation_id.to_string()),
+                                        revision: revision.as_ref(),
+                                        client_item_id: None,
+                                    },
+                                )?;
+                            }
+                            Ok(CompactResponse {
+                                messages_before: u64::try_from(messages_before)
+                                    .unwrap_or(u64::MAX),
                             })
-                            .await
-                            .map_err(agent_error)?;
-                        let revision = match &compact_extension_store {
-                            Some(store) => Some(store.append_all(&events).map_err(agent_error)?),
-                            None => None,
-                        };
-                        for event in events {
-                            send_event(
+                        }
+                        Err(error) => {
+                            send_extension_activity(
                                 &connection,
-                                &external_id,
-                                event.event,
-                                EventDelivery {
-                                    cwd: None,
-                                    extension_state: Some(&compact_extension),
-                                    correlation_id: Some(event.correlation_id.to_string()),
-                                    revision: revision.as_ref(),
-                                    client_item_id: None,
+                                &compact_extension,
+                                Some(&external_id),
+                                ActivityEvent::Compaction {
+                                    phase: if matches!(error, crate::AxiomError::Cancelled) {
+                                        CompactionPhase::Cancelled
+                                    } else {
+                                        CompactionPhase::Failed
+                                    },
+                                    detail: Some(error.to_string()),
                                 },
                             )?;
+                            Err(agent_error(error))
                         }
-                        responder.respond(CompactResponse {
-                            messages_before: u64::try_from(messages_before).unwrap_or(u64::MAX),
-                        })
-                    }
-                    Err(error) => {
-                        send_extension_activity(
-                            &connection,
-                            &compact_extension,
-                            Some(&external_id),
-                            ActivityEvent::Compaction {
-                                phase: if matches!(error, crate::AxiomError::Cancelled) {
-                                    CompactionPhase::Cancelled
-                                } else {
-                                    CompactionPhase::Failed
-                                },
-                                detail: Some(error.to_string()),
-                            },
-                        )?;
-                        Err(agent_error(error))
                     }
                 }
+                .await;
+                release_session_work(&compact_extension_sessions, &internal_id, &work).await;
+                responder.respond_with_result(task_result)
+                });
+                if let Err(error) = spawn_result {
+                    release_session_work(
+                        &rollback_sessions,
+                        &rollback_internal_id,
+                        &rollback_work,
+                    )
+                    .await;
+                    return Err(error);
+                }
+                Ok(())
             },
             agent_client_protocol::on_receive_request!(),
         )
@@ -3064,8 +4157,14 @@ pub async fn serve_stdio(
             async move |request: protocol::SetSessionModeRequest,
                         responder: Responder<protocol::SetSessionModeResponse>,
                         connection: ConnectionTo<Client>| {
-                let profile = PermissionProfile::from_str(request.mode_id.0.as_ref())
-                    .map_err(agent_error)?;
+                let mode_sessions = mode_sessions.clone();
+                let mode_runtime = mode_runtime.clone();
+                let mode_store = mode_store.clone();
+                let mode_persistence_failpoint = mode_persistence_failpoint.clone();
+                let profile = respond_or_return!(
+                    responder,
+                    PermissionProfile::from_str(request.mode_id.0.as_ref()).map_err(agent_error)
+                );
                 if mode_frontend == FrontendKind::DesktopChat && profile != PermissionProfile::Web {
                     return responder.respond_with_error(extension_rpc_error(
                         -32003,
@@ -3074,38 +4173,106 @@ pub async fn serve_stdio(
                         false,
                     ));
                 }
-                let internal_id = {
-                    let sessions = mode_sessions.lock().await;
-                    let Some(session) = sessions.get(&request.session_id) else {
+                let work = SessionWork::new(SessionWorkKind::PermissionMode);
+                let (internal_id, previous_profile) = {
+                    let mut registry = mode_sessions.lock().await;
+                    let Some(session) = registry.get(&request.session_id) else {
                         return responder.respond_with_internal_error("unknown ACP session");
                     };
-                    if session.cancellation.is_some() {
+                    let internal_id = session.internal_id.clone();
+                    let previous_profile = session.profile;
+                    if registry.active_work.contains_key(&internal_id) {
                         return responder.respond_with_internal_error(
                             "cannot change permissions while the session has active work",
                         );
                     }
-                    session.internal_id.clone()
+                    registry
+                        .active_work
+                        .insert(internal_id.clone(), work.clone());
+                    (internal_id, previous_profile)
                 };
-                let events = mode_runtime
-                    .dispatch(AppCommand::ChangePermissionProfile {
-                        session_id: internal_id,
-                        profile,
-                    })
-                    .await
-                    .map_err(agent_error)?;
-                if let Some(store) = &mode_store {
-                    store.append_all(&events).map_err(agent_error)?;
-                }
-                if let Some(session) = mode_sessions.lock().await.get_mut(&request.session_id) {
+                let task_sessions = mode_sessions.clone();
+                let rollback_sessions = mode_sessions.clone();
+                let rollback_internal_id = internal_id.clone();
+                let rollback_work = work.clone();
+                let task_connection = connection.clone();
+                let request_cancellation = responder.cancellation();
+                let spawn_result = connection.spawn(async move {
+                    let task_result: agent_client_protocol::Result<_> = async {
+                    let mut registry = task_sessions.lock().await;
+                    if request_cancellation.is_cancelled()
+                        || work.cancellation.is_cancelled()
+                        || !work_matches(&registry, &internal_id, &work)
+                    {
+                        work.cancellation.cancel();
+                        return Err(agent_client_protocol::Error::request_cancelled());
+                    }
+                    // Permission changes are local and short. Holding the registry
+                    // lock makes this the atomic commit point: session/cancel can
+                    // win before dispatch, but cannot split Runtime, storage, and
+                    // the ACP session mirror after dispatch starts.
+                    let events = mode_runtime
+                        .dispatch(AppCommand::ChangePermissionProfile {
+                            session_id: internal_id.clone(),
+                            profile,
+                        })
+                        .await
+                        .map_err(agent_error)?;
+                    let Some(session) = registry.get_mut(&request.session_id) else {
+                        return Err(agent_client_protocol::util::internal_error(
+                            "unknown ACP session",
+                        ));
+                    };
                     session.profile = profile;
+                    drop(registry);
+                    if let Some(store) = &mode_store
+                        && let Err(error) = mode_persistence_failpoint
+                            .check("mode")
+                            .and_then(|()| store.append_all(&events).map(|_| ()))
+                    {
+                        if let Err(rollback_error) = mode_runtime
+                            .dispatch(AppCommand::ChangePermissionProfile {
+                                session_id: internal_id.clone(),
+                                profile: previous_profile,
+                            })
+                            .await
+                        {
+                            tracing::error!(
+                                %rollback_error,
+                                %internal_id,
+                                "could not roll back Runtime after permission persistence failed"
+                            );
+                        }
+                        let mut registry = task_sessions.lock().await;
+                        if work_matches(&registry, &internal_id, &work)
+                            && let Some(session) = registry.get_mut(&request.session_id)
+                        {
+                            session.profile = previous_profile;
+                        }
+                        return Err(agent_error(error));
+                    }
+                    task_connection.send_notification(protocol::SessionNotification::new(
+                        request.session_id.clone(),
+                        protocol::SessionUpdate::CurrentModeUpdate(
+                            protocol::CurrentModeUpdate::new(profile.to_string()),
+                        ),
+                    ))?;
+                    Ok(protocol::SetSessionModeResponse::new())
+                    }
+                    .await;
+                    release_session_work(&task_sessions, &internal_id, &work).await;
+                    responder.respond_with_result(task_result)
+                });
+                if let Err(error) = spawn_result {
+                    release_session_work(
+                        &rollback_sessions,
+                        &rollback_internal_id,
+                        &rollback_work,
+                    )
+                    .await;
+                    return Err(error);
                 }
-                connection.send_notification(protocol::SessionNotification::new(
-                    request.session_id,
-                    protocol::SessionUpdate::CurrentModeUpdate(protocol::CurrentModeUpdate::new(
-                        profile.to_string(),
-                    )),
-                ))?;
-                responder.respond(protocol::SetSessionModeResponse::new())
+                Ok(())
             },
             agent_client_protocol::on_receive_request!(),
         )
@@ -3113,68 +4280,125 @@ pub async fn serve_stdio(
             async move |request: protocol::SetSessionConfigOptionRequest,
                         responder: Responder<protocol::SetSessionConfigOptionResponse>,
                         connection: ConnectionTo<Client>| {
+                let config_sessions = config_sessions.clone();
+                let config_runner = config_runner.clone();
+                let config_runtime = config_runtime.clone();
+                let config_store = config_store.clone();
+                let config_extension = config_extension.clone();
+                let config_profile_settings_lock = config_profile_settings_lock.clone();
+                let config_persistence_failpoint = config_persistence_failpoint.clone();
                 let Some(value) = request.value.as_value_id() else {
                     return responder.respond_with_internal_error(
                         "session config requires a selected value ID",
                     );
                 };
                 let selected = value.0.to_string();
-                let (internal_id, model, thinking) = {
-                    let sessions = config_sessions.lock().await;
-                    let Some(session) = sessions.get(&request.session_id) else {
-                        return responder.respond_with_internal_error("unknown ACP session");
-                    };
-                    if session.cancellation.is_some() {
-                        return responder.respond_with_internal_error(
-                            "cannot change settings while the session has active work",
-                        );
-                    }
-                    (
-                        session.internal_id.clone(),
-                        session.model.clone(),
-                        session.thinking,
-                    )
-                };
                 if !matches!(
                     request.config_id.0.as_ref(),
                     MODEL_CONFIG_ID | THINKING_CONFIG_ID
                 ) {
                     return responder.respond_with_internal_error("unknown session config option");
                 }
-                let details = config_runner
-                    .available_model_details(CancellationToken::new())
-                    .await
-                    .map_err(agent_error)?;
+                let work = SessionWork::new(SessionWorkKind::Configuration);
+                let (internal_id, previous_session) = {
+                    let mut registry = config_sessions.lock().await;
+                    let Some(session) = registry.get(&request.session_id) else {
+                        return responder.respond_with_internal_error("unknown ACP session");
+                    };
+                    let internal_id = session.internal_id.clone();
+                    let previous_session = session.clone();
+                    if registry.active_work.contains_key(&internal_id) {
+                        return responder.respond_with_internal_error(
+                            "cannot change settings while the session has active work",
+                        );
+                    }
+                    registry
+                        .active_work
+                        .insert(internal_id.clone(), work.clone());
+                    (internal_id, previous_session)
+                };
+                let model = previous_session.model.clone();
+                let thinking = previous_session.thinking;
+                let request_cancellation = responder.cancellation();
+                let task_sessions = config_sessions.clone();
+                let rollback_sessions = config_sessions.clone();
+                let rollback_internal_id = internal_id.clone();
+                let rollback_work = work.clone();
+                let task_connection = connection.clone();
+                let spawn_result = connection.spawn(async move {
+                let task_result: agent_client_protocol::Result<_> = async {
+                let _profile_settings_guard = await_session_future(
+                    &request_cancellation,
+                    &work,
+                    config_profile_settings_lock.lock(),
+                )
+                .await?;
+                let details = await_session_future(
+                    &request_cancellation,
+                    &work,
+                    config_runner.available_model_details(work.cancellation.clone()),
+                )
+                .await?
+                .map_err(agent_error)?;
                 let mut models = details
                     .iter()
                     .map(|candidate| candidate.id.clone())
                     .collect::<Vec<_>>();
                 models.sort();
                 models.dedup();
+                let Some(previous_model) = details.iter().find(|candidate| candidate.id == model)
+                else {
+                    return Err(agent_client_protocol::util::internal_error(
+                        "current model is not in the provider catalog",
+                    ));
+                };
+                let previous_settings = reconcile_model_settings(previous_model, thinking);
                 let (settings, supported_thinking, events) = match request.config_id.0.as_ref() {
                     MODEL_CONFIG_ID => {
                         let Some(selected_model) =
                             details.iter().find(|candidate| candidate.id == selected)
                         else {
-                            return responder.respond_with_internal_error(
+                            return Err(agent_client_protocol::util::internal_error(
                                 "model is not in the provider catalog",
-                            );
+                            ));
                         };
                         let model_changed = selected_model.id != model;
                         let settings = reconcile_model_settings(selected_model, thinking);
-                        config_runner
-                            .set_model_settings(&internal_id, &settings)
-                            .await
-                            .map_err(agent_error)?;
-                        let events = config_runtime
+                        await_session_future(
+                            &request_cancellation,
+                            &work,
+                            config_runner
+                                .set_model_settings(&internal_id, &settings),
+                        )
+                        .await?
+                        .map_err(agent_error)?;
+                        // A successful runner setter is the configuration
+                        // commit point. Finish Runtime, durable storage, and the
+                        // ACP mirror even if cancellation arrives afterward.
+                        let events = match config_runtime
                             .dispatch(AppCommand::ChangeModelSettings {
-                                session_id: internal_id.clone(),
-                                model: settings.model.clone(),
-                                thinking: settings.thinking,
-                                reset_security: model_changed,
-                            })
+                                    session_id: internal_id.clone(),
+                                    model: settings.model.clone(),
+                                    thinking: settings.thinking,
+                                    reset_security: model_changed,
+                                })
                             .await
-                            .map_err(agent_error)?;
+                        {
+                            Ok(events) => events,
+                            Err(error) => {
+                                if let Err(rollback_error) = config_runner
+                                    .set_model_settings(&internal_id, &previous_settings)
+                                    .await
+                                {
+                                    tracing::warn!(
+                                        %rollback_error,
+                                        %internal_id,
+                                        "could not roll back runner model after Runtime rejected ACP config"
+                                    );
+                                }
+                                return Err(agent_error(error));
+                            }
+                        };
                         (
                             settings,
                             supported_thinking_levels(selected_model),
@@ -3187,27 +4411,48 @@ pub async fn serve_stdio(
                         let Some(selected_model) =
                             details.iter().find(|candidate| candidate.id == model)
                         else {
-                            return responder.respond_with_internal_error(
+                            return Err(agent_client_protocol::util::internal_error(
                                 "current model is not in the provider catalog",
-                            );
+                            ));
                         };
                         let settings = reconcile_model_settings(selected_model, level);
                         if settings.supports_reasoning && settings.thinking != level {
-                            return responder.respond_with_internal_error(
+                            return Err(agent_client_protocol::util::internal_error(
                                 "thinking level is not supported by the selected model",
-                            );
+                            ));
                         }
-                        config_runner
-                            .set_thinking_level(&internal_id, level)
-                            .await
-                            .map_err(agent_error)?;
-                        let events = config_runtime
+                        await_session_future(
+                            &request_cancellation,
+                            &work,
+                            config_runner
+                                .set_thinking_level(&internal_id, level),
+                        )
+                        .await?
+                        .map_err(agent_error)?;
+                        // Keep the same post-setter commit rule as model changes
+                        // so runner and durable session settings stay aligned.
+                        let events = match config_runtime
                             .dispatch(AppCommand::ChangeThinkingLevel {
-                                session_id: internal_id.clone(),
-                                level,
-                            })
+                                    session_id: internal_id.clone(),
+                                    level,
+                                })
                             .await
-                            .map_err(agent_error)?;
+                        {
+                            Ok(events) => events,
+                            Err(error) => {
+                                if let Err(rollback_error) = config_runner
+                                    .set_thinking_level(&internal_id, thinking)
+                                    .await
+                                {
+                                    tracing::warn!(
+                                        %rollback_error,
+                                        %internal_id,
+                                        "could not roll back runner thinking after Runtime rejected ACP config"
+                                    );
+                                }
+                                return Err(agent_error(error));
+                            }
+                        };
                         (
                             settings,
                             supported_thinking_levels(selected_model),
@@ -3226,23 +4471,16 @@ pub async fn serve_stdio(
                 });
                 let next_model = settings.model;
                 let next_thinking = settings.thinking;
-                if let Some(store) = &config_store {
-                    let (_, stored) = store
-                        .append_all_and_set_profile_preferences(
-                            &events,
-                            &next_model,
-                            next_thinking,
-                        )
-                        .map_err(agent_error)?;
-                    let preferences = extension_preferences(stored);
-                    send_extension_activity(
-                        &connection,
-                        &config_extension,
-                        None,
-                        ActivityEvent::ProfilePreferencesChanged { preferences },
-                    )?;
-                }
-                if let Some(session) = config_sessions.lock().await.get_mut(&request.session_id) {
+                {
+                    let mut registry = task_sessions.lock().await;
+                    if !work_matches(&registry, &internal_id, &work) {
+                        return Err(agent_client_protocol::Error::request_cancelled());
+                    }
+                    let Some(session) = registry.get_mut(&request.session_id) else {
+                        return Err(agent_client_protocol::util::internal_error(
+                            "unknown ACP session",
+                        ));
+                    };
                     apply_session_model_settings(
                         session,
                         &next_model,
@@ -3251,9 +4489,83 @@ pub async fn serve_stdio(
                         reset_security,
                     );
                 }
+                let updated_preferences = if let Some(store) = &config_store {
+                    let persistence = config_persistence_failpoint
+                        .check("config")
+                        .and_then(|()| {
+                            store.append_all_and_set_profile_preferences(
+                                &events,
+                                &next_model,
+                                next_thinking,
+                            )
+                        });
+                    match persistence {
+                        Ok((_, stored)) => Some(extension_preferences(stored)),
+                        Err(error) => {
+                            if let Err(rollback_error) = config_runner
+                                .set_model_settings(&internal_id, &previous_settings)
+                                .await
+                            {
+                                tracing::error!(
+                                    %rollback_error,
+                                    %internal_id,
+                                    "could not roll back runner after ACP config persistence failed"
+                                );
+                            }
+                            if let Err(rollback_error) = config_runtime
+                                .dispatch(AppCommand::ChangeModelSettings {
+                                    session_id: internal_id.clone(),
+                                    model: previous_session.model.clone(),
+                                    thinking: previous_session.thinking,
+                                    reset_security: false,
+                                })
+                                .await
+                            {
+                                tracing::error!(
+                                    %rollback_error,
+                                    %internal_id,
+                                    "could not roll back Runtime after ACP config persistence failed"
+                                );
+                            }
+                            if reset_security
+                                && let Err(rollback_error) = config_runtime
+                                    .emit(
+                                        internal_id.clone(),
+                                        AppEvent::SecurityStatusChanged {
+                                            state: previous_session.security,
+                                        },
+                                    )
+                                    .await
+                            {
+                                tracing::error!(
+                                    %rollback_error,
+                                    %internal_id,
+                                    "could not restore Runtime security after ACP config persistence failed"
+                                );
+                            }
+                            let mut registry = task_sessions.lock().await;
+                            if work_matches(&registry, &internal_id, &work)
+                                && let Some(session) = registry.get_mut(&request.session_id)
+                            {
+                                *session = previous_session.clone();
+                            }
+                            return Err(agent_error(error));
+                        }
+                    }
+                } else {
+                    None
+                };
+                if let Some(preferences) = updated_preferences {
+                    send_extension_activity(
+                        &task_connection,
+                        &config_extension,
+                        None,
+                        ActivityEvent::ProfilePreferencesChanged { preferences },
+                    )?;
+                }
                 if reset_security {
                     send_extension_activity(
-                        &connection,
+                        &task_connection,
                         &config_extension,
                         Some(&request.session_id),
                         ActivityEvent::SecurityChanged {
@@ -3263,7 +4575,7 @@ pub async fn serve_stdio(
                         },
                     )?;
                 }
-                responder.respond(protocol::SetSessionConfigOptionResponse::new(
+                Ok(protocol::SetSessionConfigOptionResponse::new(
                     session_config_options(
                         &next_model,
                         &models,
@@ -3271,25 +4583,51 @@ pub async fn serve_stdio(
                         Some(&supported_thinking),
                     ),
                 ))
+                }
+                .await;
+                release_session_work(&task_sessions, &internal_id, &work).await;
+                responder.respond_with_result(task_result)
+                });
+                if let Err(error) = spawn_result {
+                    release_session_work(
+                        &rollback_sessions,
+                        &rollback_internal_id,
+                        &rollback_work,
+                    )
+                    .await;
+                    return Err(error);
+                }
+                Ok(())
             },
             agent_client_protocol::on_receive_request!(),
         )
         .on_receive_notification(
             async move |notification: protocol::CancelNotification, _connection| {
-                if let Some(token) = cancel_sessions
-                    .lock()
-                    .await
-                    .get(&notification.session_id)
-                    .and_then(|session| session.cancellation.clone())
-                {
+                let token = {
+                    let registry = cancel_sessions.lock().await;
+                    registry
+                        .get(&notification.session_id)
+                        .and_then(|session| registry.active_work.get(&session.internal_id))
+                        .map(|work| work.cancellation.clone())
+                };
+                if let Some(token) = token {
                     token.cancel();
                 }
                 Ok(())
             },
             agent_client_protocol::on_receive_notification!(),
         )
-        .connect_to(Stdio::new())
-        .await
+        // Use Tokio-native stdin/stdout streams for the Tokio-hosted sidecar.
+        .connect_to(ByteStreams::new(
+            tokio::io::stdout().compat_write(),
+            tokio::io::stdin().compat(),
+        ))
+        .await;
+    // ACP EOF is an explicit ownership boundary. Drain tool and MCP process
+    // groups while Tokio is still alive; synchronous guard Drop remains the
+    // fallback if the runtime or an individual request future is aborted.
+    shutdown_runner.shutdown().await;
+    connection_result
 }
 
 fn prompt_text(blocks: &[protocol::ContentBlock]) -> std::result::Result<String, &'static str> {
@@ -3690,12 +5028,21 @@ fn send_text(
 }
 
 fn agent_error(error: crate::AxiomError) -> agent_client_protocol::Error {
-    agent_client_protocol::util::internal_error(error)
+    match error {
+        crate::AxiomError::Cancelled => agent_client_protocol::Error::request_cancelled(),
+        error => agent_client_protocol::util::internal_error(error),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cancelled_operations_use_the_standard_json_rpc_cancellation_code() {
+        let error = agent_error(crate::AxiomError::Cancelled);
+        assert_eq!(i32::from(error.code), -32800);
+    }
 
     #[test]
     fn text_blocks_are_joined_without_accepting_empty_prompts() {
@@ -3795,8 +5142,6 @@ mod tests {
             model: "near/model-a".into(),
             thinking: crate::app::ThinkingLevel::High,
             models: vec!["near/model-a".into(), "phala/model-b".into()],
-            active_turn: None,
-            cancellation: None,
             has_prompt: false,
             security: crate::app::SecurityStatus::Verified,
         };

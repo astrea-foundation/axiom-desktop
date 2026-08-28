@@ -321,15 +321,41 @@ Completed on 2026-08-28 as the clean-slate first-release contract across both re
   ACP profile with a fixed platform data-directory cwd, a Desktop-specific system prompt, stable
   optimistic IDs, transcript-gap recovery, and durable messages, reasoning, plans, tools, interaction
   requests, collections, preferences, and terminal failures.
+- Desktop readiness is now a single-flight boundary: Electron exposes the ACP client only after local
+  bootstrap and transcript hydration complete, while account validation and model discovery remain
+  non-fatal background work. Sidecar restart attempts are bounded and reset only after a stable ready
+  window; stale initial renderer snapshots cannot overwrite a newer live ready event.
 - Local storage is schema version `1`; backend storage is one Alembic `0001` baseline. Pre-release
   migration, backup, platform-path, SIWE, anonymous-auth, provider-inference, and Desktop SQLite paths
   were removed. Explicit reset commands remain for intentional development resets.
 - Shared identity, credentials, and trust policy live below the platform Axiom data root; CLI and
   Desktop state remain isolated. Windows shell execution uses PowerShell or `cmd`, while macOS and
   Linux use `/bin/sh`; the model prompt receives the actual operating system, architecture, shell,
-  profile, and cwd.
+  profile, and cwd. Linux process isolation admits only canonical executable paths from recognized
+  user toolchains and mounts those roots read-only without exposing the user's home or credentials.
 - `auto` reasoning was removed. New threads start at `medium`, then inherit the profile's last valid
   selection. Catalog reconciliation atomically repairs a retired model or reasoning level.
+- ACP request execution uses canonical per-thread work leases with exact-token cleanup. Prompt,
+  slash-command, mode, configuration, security, compaction, load, and delete operations cannot race
+  one another; cancellation is acquired before spawned work, maps to JSON-RPC request cancellation,
+  and cannot split a durable auth or settings commit.
+- Authentication mutations are serialized and OS credential access is offloaded and startup-bounded.
+  Every validation and mutation receives a monotonic account publication revision, so delayed account
+  responses cannot overwrite newer login/logout state. Unavailable platform keyrings leave AxiomCLI
+  usable and explicitly signed out instead of preventing Desktop from starting.
+- Settings persistence is atomic from the client's perspective. Injected SQLite failures roll the
+  runner, Runtime projection, ACP mirror, security state, and profile preferences back before an error
+  response is returned.
+- Large transcript restoration is cooperative: history and Runtime projection yield in bounded
+  batches, shared Runtime state is locked only for atomic installation, and context trimming is exact
+  linear-time work rather than repeated full serialization and front removal.
+- The TypeScript transport treats closed stdin/EPIPE as one terminal process failure and drains all
+  pending work without unhandled rejections. AxiomCLI registers every POSIX tool and MCP process
+  group before its first await, drains them at ACP EOF, and kills them on leader exit, future abort,
+  or owner drop; a Windows kill-on-close Job Object provides the equivalent process-tree boundary.
+- The crates.io ACP SDK 2.0.0 source is vendored with only upstream rust-sdk PR #306's boxed handler
+  dispatch fix. A 512 KiB stack regression runs on Linux, macOS, and Windows until a later published
+  SDK release contains that upstream fix.
 - The Desktop renderer shows exactly one optimistic user item while verification is pending, renders
   structured timeline activity instead of flattening ACP events, uses provider-tab model search with
   normalized brand icons and counts, and carries TEE state in the composer badge.
@@ -347,10 +373,10 @@ Completed on 2026-08-28 as the clean-slate first-release contract across both re
 
 Validation evidence:
 
-- Rust workspace: formatting, all-target/all-feature check and Clippy passed; 375 tests passed and 6
+- Rust workspace: formatting, all-target/all-feature check and Clippy passed; 400 tests passed and 6
   explicitly ignored live/manual tests remained ignored.
 - ACP TypeScript client and Desktop renderer: generation/type checks and production builds passed;
-  25 tests passed.
+  32 tests passed. The vendored ACP SDK small-stack regression passed separately.
 - Backend: compile check, Ruff, and 333 tests passed. A fresh PostgreSQL database upgraded from the
   sole `0001` revision, schema checks passed, and the OpenAPI artifact reproduced byte-for-byte.
 - Browser: 257 tests passed and 2 environment-specific tests were skipped; lint, TypeScript, verified

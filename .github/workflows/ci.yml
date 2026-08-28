@@ -23,6 +23,7 @@ jobs:
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - run: cargo install cargo-deny --locked
       - run: cargo test --workspace --all-features
+      - run: cargo test --target-dir target/acp-sdk-vendor --locked --manifest-path vendor/agent-client-protocol-2.0.0/Cargo.toml --test jsonrpc_deep_chain_stack
       - run: scripts/axiomcli-eval deterministic
       - run: cargo deny check
 
@@ -40,6 +41,7 @@ jobs:
           toolchain: 1.97.1
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --workspace --all-targets --all-features
+      - run: cargo test --target-dir target/acp-sdk-vendor --locked --manifest-path vendor/agent-client-protocol-2.0.0/Cargo.toml --test jsonrpc_deep_chain_stack
 
   release-linux:
     runs-on: ubuntu-latest

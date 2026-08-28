@@ -3,7 +3,12 @@ import { once } from "node:events";
 import { dirname, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { AcpProcess, type RpcNotification } from "../src/index.js";
+import {
+  AcpProcess,
+  ProtocolError,
+  type IncomingRequest,
+  type RpcNotification,
+} from "../src/index.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -41,6 +46,97 @@ function announcedGrandchild(sidecar: AcpProcess): Promise<number> {
     });
   });
 }
+
+function fixtureReady(sidecar: AcpProcess): Promise<number> {
+  return new Promise<number>((resolvePid, reject) => {
+    const timer = setTimeout(() => reject(new Error("fixture did not become ready")), 2_000);
+    sidecar.on("notification", (notification: RpcNotification) => {
+      if (notification.method !== "fixture/ready") return;
+      const pid = (notification.params as { pid?: unknown } | undefined)?.pid;
+      if (typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 0) {
+        clearTimeout(timer);
+        reject(new Error("fixture returned an invalid PID"));
+        return;
+      }
+      clearTimeout(timer);
+      resolvePid(pid);
+    });
+  });
+}
+
+function closedInputSidecar(mode = "passive"): AcpProcess {
+  return new AcpProcess({
+    command: process.execPath,
+    args: [resolve(here, "fixtures/closed-stdin-sidecar.mjs"), mode],
+  });
+}
+
+test("request rejects and aborts when a live sidecar has closed stdin", { timeout: 10_000 }, async () => {
+  const sidecar = closedInputSidecar();
+  try {
+    const ready = fixtureReady(sidecar);
+    const exited = once(sidecar, "exit");
+    const pid = await ready;
+    assert.equal(processExists(pid), true);
+
+    await assert.rejects(
+      sidecar.request("fixture/request", {}),
+      (error: unknown) => error instanceof ProtocolError && /write|input stream/i.test(error.message),
+    );
+    const [error] = await exited;
+    assert.ok(error instanceof ProtocolError);
+    assert.equal(await waitForExit(pid), true, "sidecar survived failed request write");
+  } finally {
+    await sidecar.close().catch(() => undefined);
+  }
+});
+
+test("notification rejects and aborts when a live sidecar has closed stdin", {
+  timeout: 10_000,
+}, async () => {
+  const sidecar = closedInputSidecar();
+  try {
+    const ready = fixtureReady(sidecar);
+    const exited = once(sidecar, "exit");
+    const pid = await ready;
+    assert.equal(processExists(pid), true);
+
+    await assert.rejects(
+      sidecar.notify("fixture/notification", {}),
+      (error: unknown) => error instanceof ProtocolError && /write|input stream/i.test(error.message),
+    );
+    const [error] = await exited;
+    assert.ok(error instanceof ProtocolError);
+    assert.equal(await waitForExit(pid), true, "sidecar survived failed notification write");
+  } finally {
+    await sidecar.close().catch(() => undefined);
+  }
+});
+
+test("permission response EPIPE during shutdown exits without an unhandled rejection", {
+  timeout: 10_000,
+}, async () => {
+  const sidecar = closedInputSidecar("permission");
+  try {
+    const ready = fixtureReady(sidecar);
+    const incoming = once(sidecar, "request") as Promise<[IncomingRequest]>;
+    const exited = once(sidecar, "exit");
+    const pid = await ready;
+    const [permission] = await incoming;
+    assert.equal(permission.request.method, "session/request_permission");
+
+    permission.respond({ outcome: { outcome: "selected", optionId: "allow_once" } });
+    const closing = sidecar.close();
+
+    const [error] = await exited;
+    await closing;
+    assert.ok(error instanceof ProtocolError);
+    assert.match(error.message, /write|input stream/i);
+    assert.equal(await waitForExit(pid), true, "sidecar survived failed permission response write");
+  } finally {
+    await sidecar.close().catch(() => undefined);
+  }
+});
 
 test("forced POSIX close kills a stubborn sidecar grandchild process group", {
   skip: process.platform === "win32",

@@ -352,6 +352,11 @@ export interface AccountStatusResponse {
   [k: string]: unknown;
 }
 export interface AccountStatus {
+  /**
+   * Monotonic within one agent runtime. Clients must ignore account states
+   * whose revision is not newer than the state they already applied.
+   */
+  revision: number;
   keyId?: string | null;
   keyName?: string | null;
   state: AccountState;

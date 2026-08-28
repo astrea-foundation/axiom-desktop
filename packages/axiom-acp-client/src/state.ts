@@ -248,6 +248,7 @@ export class AxiomStateStore extends EventEmitter {
   }
 
   setAccount(account: AccountStatus): void {
+    if (this.value.account && account.revision <= this.value.account.revision) return;
     this.value.account = account;
     this.changed();
   }
@@ -442,6 +443,8 @@ export class AxiomStateStore extends EventEmitter {
     if (runtimeChanged) {
       for (const session of Object.values(this.value.sessions)) session.needsResync = true;
       this.value.lastSequence = 0;
+      // Account revisions are monotonic only within one agent runtime.
+      this.value.account = null;
     } else if (sequenceGap) {
       for (const session of Object.values(this.value.sessions)) session.needsResync = true;
     }
@@ -474,7 +477,11 @@ export class AxiomStateStore extends EventEmitter {
   }
 
   private applyActivity(sessionId: string | null, event: ActivityEvent): void {
-    if (event.kind === "account_changed") this.value.account = event.status;
+    if (event.kind === "account_changed") {
+      if (!this.value.account || event.status.revision > this.value.account.revision) {
+        this.value.account = event.status;
+      }
+    }
     else if (event.kind === "collections_changed") {
       if (event.state.revision >= this.value.collections.revision) this.value.collections = event.state;
     } else if (event.kind === "profile_preferences_changed") this.value.preferences = event.preferences;

@@ -76,11 +76,17 @@ pub trait Tool: Send + Sync {
         arguments: Value,
         cancellation: CancellationToken,
     ) -> Result<ToolResult>;
+
+    /// Stop any native resources owned by this tool before its front end
+    /// disconnects. Most tools are stateless; process-backed adapters override
+    /// this so ACP EOF has an explicit cleanup boundary in addition to Drop.
+    async fn shutdown(&self) {}
 }
 
 pub struct ToolRegistry {
     tools: HashMap<String, Arc<dyn Tool>>,
     changes: Arc<SessionChanges>,
+    processes: Option<ProcessManager>,
 }
 
 #[derive(Debug)]
@@ -270,6 +276,7 @@ impl Default for ToolRegistry {
         Self {
             tools: HashMap::new(),
             changes: Arc::new(SessionChanges::new(128 * 1024)),
+            processes: None,
         }
     }
 }
@@ -297,6 +304,18 @@ impl ToolRegistry {
             )));
         }
         Ok(())
+    }
+
+    /// Terminate process-backed built-ins and external adapters while the
+    /// async runtime is still available. Every implementation is idempotent;
+    /// Drop remains the synchronous fallback for aborted runtimes.
+    pub async fn shutdown(&self) {
+        if let Some(processes) = &self.processes {
+            processes.shutdown().await;
+        }
+        for tool in self.tools.values() {
+            tool.shutdown().await;
+        }
     }
 
     #[must_use]
@@ -465,6 +484,7 @@ pub fn default_registry(max_output_bytes: usize, searxng_url: &str) -> Result<To
     let mut registry = ToolRegistry {
         tools: HashMap::new(),
         changes: changes.clone(),
+        processes: Some(processes.clone()),
     };
     registry.register(Arc::new(ListFiles))?;
     registry.register(Arc::new(GlobFiles))?;

@@ -14,6 +14,7 @@ interface ChatViewProps {
   isStreaming: boolean;
   models: ProviderModel[];
   selectedModelId: string;
+  modelStatusLabel: string;
   onModelChange: (modelId: string) => void;
   reasoningEffort: ReasoningEffort;
   onReasoningEffortChange: (effort: ReasoningEffort) => void;
@@ -30,6 +31,7 @@ export function ChatView({
   isStreaming,
   models,
   selectedModelId,
+  modelStatusLabel,
   onModelChange,
   reasoningEffort,
   onReasoningEffortChange,
@@ -90,6 +92,7 @@ export function ChatView({
             isStreaming={isStreaming}
             models={models}
             selectedModelId={selectedModelId}
+            modelStatusLabel={modelStatusLabel}
             onModelChange={onModelChange}
             reasoningEffort={reasoningEffort}
             onReasoningEffortChange={onReasoningEffortChange}

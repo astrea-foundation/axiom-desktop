@@ -3,7 +3,7 @@ use std::{
     process::Stdio,
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -32,6 +32,11 @@ use crate::{
 
 type McpService = RunningService<RoleClient, ()>;
 
+struct ConnectedMcp {
+    service: McpService,
+    process_group: crate::process_env::ProcessGroupGuard,
+}
+
 const MIN_OUTPUT_BYTES: usize = 1024;
 const MAX_SCHEMA_BYTES: usize = 128 * 1024;
 const MAX_DESCRIPTION_BYTES: usize = 4 * 1024;
@@ -47,6 +52,7 @@ struct ToolDescriptor {
 struct ConnectionState {
     service: Arc<McpService>,
     generation: u64,
+    _process_group: crate::process_env::ProcessGroupGuard,
 }
 
 struct McpConnection {
@@ -54,18 +60,27 @@ struct McpConnection {
     state: RwLock<ConnectionState>,
     reconnect: Mutex<()>,
     next_generation: AtomicU64,
+    process_groups: crate::process_env::ProcessGroupRegistry,
+    shutting_down: AtomicBool,
 }
 
 impl McpConnection {
-    fn new(config: McpServerConfig, service: McpService) -> Self {
+    fn new(
+        config: McpServerConfig,
+        connected: ConnectedMcp,
+        process_groups: crate::process_env::ProcessGroupRegistry,
+    ) -> Self {
         Self {
             config,
             state: RwLock::new(ConnectionState {
-                service: Arc::new(service),
+                service: Arc::new(connected.service),
                 generation: 1,
+                _process_group: connected.process_group,
             }),
             reconnect: Mutex::new(()),
             next_generation: AtomicU64::new(2),
+            process_groups,
+            shutting_down: AtomicBool::new(false),
         }
     }
 
@@ -79,6 +94,9 @@ impl McpConnection {
         expected_name: &str,
         expected_schema: &Value,
     ) -> Result<(Arc<McpService>, u64)> {
+        if self.shutting_down.load(Ordering::Acquire) {
+            return Err(AxiomError::Cancelled);
+        }
         let current = self.current().await;
         if !connection_closed(&current.0) {
             return Ok(current);
@@ -94,6 +112,9 @@ impl McpConnection {
         expected_schema: &Value,
     ) -> Result<(Arc<McpService>, u64)> {
         let _guard = self.reconnect.lock().await;
+        if self.shutting_down.load(Ordering::Acquire) {
+            return Err(AxiomError::Cancelled);
+        }
         let current = self.current().await;
         if !Arc::ptr_eq(&current.0, failed) && !connection_closed(&current.0) {
             verify_reconnected_tool(
@@ -106,16 +127,37 @@ impl McpConnection {
             return Ok(current);
         }
 
-        let service = Arc::new(connect(&self.config).await?);
+        let connected = connect(&self.config, &self.process_groups).await?;
+        let service = Arc::new(connected.service);
         verify_reconnected_tool(&service, &self.config.name, expected_name, expected_schema)
             .await?;
+        if self.shutting_down.load(Ordering::Acquire) {
+            return Err(AxiomError::Cancelled);
+        }
         let generation = self.next_generation.fetch_add(1, Ordering::Relaxed);
         let mut state = self.state.write().await;
         *state = ConnectionState {
             service: service.clone(),
             generation,
+            _process_group: connected.process_group,
         };
         Ok((service, generation))
+    }
+
+    async fn shutdown(&self) {
+        if self.shutting_down.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        // Serialize against reconnect so no replacement process can be
+        // installed after the final registry drain.
+        let _reconnect = self.reconnect.lock().await;
+        self.state
+            .read()
+            .await
+            .service
+            .cancellation_token()
+            .cancel();
+        self.process_groups.terminate_all();
     }
 }
 
@@ -127,9 +169,14 @@ pub async fn connect_tools(
     let mut public_names = HashSet::new();
     for config in configs {
         validate_server_config(config)?;
-        let service = connect(config).await?;
-        let descriptors = discover_tools(&service, &config.name).await?;
-        let connection = Arc::new(McpConnection::new(config.clone(), service));
+        let process_groups = crate::process_env::ProcessGroupRegistry::default();
+        let connected = connect(config, &process_groups).await?;
+        let descriptors = discover_tools(&connected.service, &config.name).await?;
+        let connection = Arc::new(McpConnection::new(
+            config.clone(),
+            connected,
+            process_groups,
+        ));
 
         for descriptor in descriptors.into_values() {
             let public_name = format!(
@@ -161,10 +208,15 @@ pub async fn connect_tools(
     Ok(adapters)
 }
 
-async fn connect(config: &McpServerConfig) -> Result<McpService> {
+async fn connect(
+    config: &McpServerConfig,
+    process_groups: &crate::process_env::ProcessGroupRegistry,
+) -> Result<ConnectedMcp> {
     let mut command = configured_command(config)?;
     crate::process_env::apply_sanitized_environment(&mut command);
     command.stdin(Stdio::null());
+    #[cfg(unix)]
+    command.process_group(0);
     let transport = TokioChildProcess::builder(command)
         .stderr(Stdio::null())
         .spawn()
@@ -175,10 +227,18 @@ async fn connect(config: &McpServerConfig) -> Result<McpService> {
             )
         })?
         .0;
-    tokio::time::timeout(MCP_REQUEST_TIMEOUT, ().serve(transport))
+    // The lease is armed before initialization can await. Runtime teardown,
+    // initialization timeout, reconnect replacement, and ACP EOF therefore
+    // all terminate the MCP server's complete process group.
+    let process_group = process_groups.register(transport.id());
+    let service = tokio::time::timeout(MCP_REQUEST_TIMEOUT, ().serve(transport))
         .await
         .map_err(|_| bounded_mcp_error(&config.name, "initialization timed out"))?
-        .map_err(|error| bounded_mcp_error(&config.name, error))
+        .map_err(|error| bounded_mcp_error(&config.name, error))?;
+    Ok(ConnectedMcp {
+        service,
+        process_group,
+    })
 }
 
 #[cfg(not(windows))]
@@ -439,6 +499,10 @@ impl Tool for McpTool {
             tool: self.remote_name.clone(),
             side_effecting: !self.trusted_read_only,
         }])
+    }
+
+    async fn shutdown(&self) {
+        self.connection.shutdown().await;
     }
 
     async fn execute(

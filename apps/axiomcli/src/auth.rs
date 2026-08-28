@@ -23,6 +23,7 @@ use sha2::{Digest as _, Sha256};
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
     net::{TcpListener, TcpStream},
+    sync::Mutex as AsyncMutex,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -32,6 +33,7 @@ const KEYRING_SERVICE: &str = "stream.axiom.axiomcli";
 const KEYRING_ACCOUNT: &str = "inference-api-key";
 const API_KEY_PREFIX: &str = "axm_";
 const MAX_HTTP_REQUEST_BYTES: usize = 16 * 1024;
+const CREDENTIAL_INITIALIZATION_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CredentialSource {
@@ -56,6 +58,8 @@ pub struct AccountStatus {
     pub key_id: String,
     pub key_name: String,
     pub source: CredentialSource,
+    generation: u64,
+    revision: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -64,6 +68,18 @@ pub enum ValidationStatus {
     Valid(AccountStatus),
     Invalid,
     Unavailable(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VersionedValidationStatus {
+    pub status: ValidationStatus,
+    pub revision: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct AuthVersion {
+    generation: u64,
+    revision: u64,
 }
 
 trait CredentialStore: Send + Sync {
@@ -206,6 +222,20 @@ fn set_file_permissions(_path: &Path) -> std::io::Result<()> {
 struct AuthState {
     credential: Option<SecretString>,
     source: CredentialSource,
+    generation: u64,
+    revision: u64,
+    unavailable_detail: Option<String>,
+}
+
+struct CredentialSnapshot {
+    credential: String,
+    source: CredentialSource,
+    generation: u64,
+}
+
+struct AuthShared {
+    state: RwLock<AuthState>,
+    operations: Arc<AsyncMutex<()>>,
 }
 
 impl std::fmt::Debug for AuthState {
@@ -217,13 +247,16 @@ impl std::fmt::Debug for AuthState {
                 &self.credential.as_ref().map(|_| "[REDACTED]"),
             )
             .field("source", &self.source)
+            .field("generation", &self.generation)
+            .field("revision", &self.revision)
+            .field("unavailable_detail", &self.unavailable_detail)
             .finish()
     }
 }
 
 #[derive(Clone)]
 pub struct AuthManager {
-    state: Arc<RwLock<AuthState>>,
+    shared: Arc<AuthShared>,
     store: Arc<dyn CredentialStore>,
     client: Client,
     api_base_url: Url,
@@ -235,7 +268,7 @@ impl std::fmt::Debug for AuthManager {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("AuthManager")
-            .field("state", &self.state)
+            .field("state", &self.shared.state)
             .field("api_base_url", &self.api_base_url)
             .field("web_base_url", &self.web_base_url)
             .field("launch_browser", &self.launch_browser)
@@ -247,6 +280,69 @@ impl AuthManager {
     pub fn new(api_base_url: &str, timeout: Duration) -> Result<Self> {
         let paths = crate::paths::AxiomPaths::discover()?;
         Self::new_with_paths(api_base_url, timeout, &paths)
+    }
+
+    pub async fn new_with_paths_async(
+        api_base_url: &str,
+        timeout: Duration,
+        paths: &crate::paths::AxiomPaths,
+    ) -> Result<Self> {
+        let owned_api_base_url = api_base_url.to_owned();
+        let owned_paths = paths.clone();
+        let initialization = tokio::task::spawn_blocking(move || {
+            Self::new_with_paths(&owned_api_base_url, timeout, &owned_paths)
+        });
+        match tokio::time::timeout(CREDENTIAL_INITIALIZATION_TIMEOUT, initialization).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(error)) => Err(AxiomError::Storage(format!(
+                "credential initialization task failed: {error}"
+            ))),
+            Err(_) => Self::new_unavailable(
+                api_base_url,
+                timeout,
+                paths,
+                "the system credential store did not respond during startup; Axiom is running signed out",
+            ),
+        }
+    }
+
+    fn new_unavailable(
+        api_base_url: &str,
+        timeout: Duration,
+        paths: &crate::paths::AxiomPaths,
+        detail: &str,
+    ) -> Result<Self> {
+        let api_base_url = parse_service_url(api_base_url, "API")?;
+        let web_url =
+            std::env::var("AXIOM_WEB_URL").unwrap_or_else(|_| "https://axiom.stream".to_owned());
+        let web_base_url = parse_service_url(&web_url, "website")?;
+        let client = Client::builder()
+            .timeout(timeout)
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|error| AxiomError::Config(format!("could not build auth client: {error}")))?;
+        let detail = detail.to_owned();
+        let store: Arc<dyn CredentialStore> = Arc::new(UnavailableStore {
+            detail: detail.clone(),
+            client_id_path: paths.identity_path(),
+        });
+        Ok(Self {
+            shared: Arc::new(AuthShared {
+                state: RwLock::new(AuthState {
+                    credential: None,
+                    source: store.source(),
+                    generation: 0,
+                    revision: 0,
+                    unavailable_detail: Some(detail),
+                }),
+                operations: Arc::new(AsyncMutex::new(())),
+            }),
+            store,
+            client,
+            api_base_url,
+            web_base_url,
+            launch_browser: true,
+        })
     }
 
     pub fn new_with_paths(
@@ -270,10 +366,16 @@ impl AuthManager {
                 client_id_path: paths.identity_path(),
             });
             return Ok(Self {
-                state: Arc::new(RwLock::new(AuthState {
-                    credential: Some(SecretString::from(value)),
-                    source: CredentialSource::Environment,
-                })),
+                shared: Arc::new(AuthShared {
+                    state: RwLock::new(AuthState {
+                        credential: Some(SecretString::from(value)),
+                        source: CredentialSource::Environment,
+                        generation: 0,
+                        revision: 0,
+                        unavailable_detail: None,
+                    }),
+                    operations: Arc::new(AsyncMutex::new(())),
+                }),
                 store,
                 client,
                 api_base_url,
@@ -283,35 +385,42 @@ impl AuthManager {
         }
 
         let requested_store = std::env::var("AXIOMCLI_CREDENTIAL_STORE").ok();
-        let store: Arc<dyn CredentialStore> = match requested_store.as_deref() {
-            Some("file") => Arc::new(FileStore::new(
-                &paths.credentials_dir(),
-                paths.identity_path(),
-            )?),
+        let (store, loaded_credential, unavailable_detail): (
+            Arc<dyn CredentialStore>,
+            Option<String>,
+            Option<String>,
+        ) = match requested_store.as_deref() {
+            Some("file") => {
+                let store: Arc<dyn CredentialStore> = Arc::new(FileStore::new(
+                    &paths.credentials_dir(),
+                    paths.identity_path(),
+                )?);
+                let credential = store.load().map_err(AxiomError::Storage)?;
+                (store, credential, None)
+            }
             Some("keyring") | None => {
                 let keyring: Arc<dyn CredentialStore> = Arc::new(KeyringStore {
                     client_id_path: paths.identity_path(),
                 });
                 match keyring.load() {
-                    Ok(_) => keyring,
-                    Err(error) if requested_store.is_some() => {
-                        return Err(AxiomError::Storage(error));
+                    Ok(credential) => (keyring, credential, None),
+                    Err(error) if requested_store.is_some() || cfg!(windows) => {
+                        let detail = format!(
+                            "the system credential store is unavailable: {error}; sign-in remains disabled until it is restored (set AXIOMCLI_CREDENTIAL_STORE=file to opt in to protected file storage)"
+                        );
+                        let store: Arc<dyn CredentialStore> = Arc::new(UnavailableStore {
+                            detail: detail.clone(),
+                            client_id_path: paths.identity_path(),
+                        });
+                        (store, None, Some(detail))
                     }
-                    Err(error) => {
-                        #[cfg(windows)]
-                        {
-                            return Err(AxiomError::Storage(format!(
-                                "Windows Credential Manager is unavailable: {error}; refusing an implicit plaintext credential fallback (set AXIOMCLI_CREDENTIAL_STORE=file to opt in explicitly)"
-                            )));
-                        }
-                        #[cfg(not(windows))]
-                        {
-                            let _ = error;
-                            Arc::new(FileStore::new(
-                                &paths.credentials_dir(),
-                                paths.identity_path(),
-                            )?)
-                        }
+                    Err(_) => {
+                        let store: Arc<dyn CredentialStore> = Arc::new(FileStore::new(
+                            &paths.credentials_dir(),
+                            paths.identity_path(),
+                        )?);
+                        let credential = store.load().map_err(AxiomError::Storage)?;
+                        (store, credential, None)
                     }
                 }
             }
@@ -321,14 +430,21 @@ impl AuthManager {
                 )));
             }
         };
-        let credential = store
-            .load()
-            .map_err(AxiomError::Storage)?
+        let credential = loaded_credential
             .filter(|value| validate_api_key_shape(value).is_ok())
             .map(SecretString::from);
         let source = store.source();
         Ok(Self {
-            state: Arc::new(RwLock::new(AuthState { credential, source })),
+            shared: Arc::new(AuthShared {
+                state: RwLock::new(AuthState {
+                    credential,
+                    source,
+                    generation: 0,
+                    revision: 0,
+                    unavailable_detail,
+                }),
+                operations: Arc::new(AsyncMutex::new(())),
+            }),
             store,
             client,
             api_base_url,
@@ -339,7 +455,8 @@ impl AuthManager {
 
     #[must_use]
     pub fn has_credential(&self) -> bool {
-        self.state
+        self.shared
+            .state
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .credential
@@ -348,14 +465,16 @@ impl AuthManager {
 
     #[must_use]
     pub fn credential_source(&self) -> CredentialSource {
-        self.state
+        self.shared
+            .state
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .source
     }
 
     pub fn credential(&self) -> Result<String> {
-        self.state
+        self.shared
+            .state
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .credential
@@ -368,81 +487,253 @@ impl AuthManager {
             })
     }
 
-    pub fn save_pasted_key(&self, value: &str) -> Result<()> {
+    #[must_use]
+    pub fn account_status_is_current(&self, status: &AccountStatus) -> bool {
+        self.generation() == status.generation && self.has_credential()
+    }
+
+    #[must_use]
+    pub const fn account_status_revision(status: &AccountStatus) -> u64 {
+        status.revision
+    }
+
+    pub async fn save_pasted_key_async(&self, value: &str) -> Result<()> {
         let value = value.trim();
         validate_api_key_shape(value)?;
-        self.save_credential(value)
+        self.save_credential_async(value, None, None)
+            .await
+            .map(|_| ())
     }
 
-    fn save_credential(&self, value: &str) -> Result<()> {
+    pub async fn save_pasted_key_with_cancellation(
+        &self,
+        value: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<u64> {
+        let value = value.trim();
         validate_api_key_shape(value)?;
-        self.store.save(value).map_err(AxiomError::Storage)?;
-        let mut state = self
-            .state
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.credential = Some(SecretString::from(value.to_owned()));
-        state.source = self.store.source();
-        Ok(())
+        self.save_credential_async(value, None, Some(cancellation))
+            .await
+            .map(|version| version.revision)
     }
 
-    pub fn logout(&self) -> Result<()> {
-        self.store.delete().map_err(AxiomError::Storage)?;
-        self.state
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .credential = None;
-        Ok(())
+    async fn save_credential_async(
+        &self,
+        value: &str,
+        expected_generation: Option<u64>,
+        cancellation: Option<&CancellationToken>,
+    ) -> Result<AuthVersion> {
+        validate_api_key_shape(value)?;
+        let operation_future = Arc::clone(&self.shared.operations).lock_owned();
+        let operation = if let Some(cancellation) = cancellation {
+            tokio::select! {
+                biased;
+                () = cancellation.cancelled() => return Err(AxiomError::Cancelled),
+                operation = operation_future => operation,
+            }
+        } else {
+            operation_future.await
+        };
+        if cancellation.is_some_and(CancellationToken::is_cancelled) {
+            return Err(AxiomError::Cancelled);
+        }
+        let store = Arc::clone(&self.store);
+        let shared = Arc::clone(&self.shared);
+        let source = store.source();
+        let value = value.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let _operation = operation;
+            if let Some(expected_generation) = expected_generation {
+                let current_generation = shared
+                    .state
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .generation;
+                if current_generation != expected_generation {
+                    return Err(AxiomError::InvalidTransition(
+                        "Axiom authorization changed while browser sign-in was pending; start sign-in again"
+                            .into(),
+                    ));
+                }
+            }
+
+            store.save(&value).map_err(AxiomError::Storage)?;
+
+            // Persistence is the commit point: in-memory readers only see the
+            // new credential after the backing store has accepted it. Keeping
+            // the commit in this blocking task makes cancellation safe.
+            let mut state = shared
+                .state
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.credential = Some(SecretString::from(value));
+            state.source = source;
+            state.unavailable_detail = None;
+            state.generation = state.generation.wrapping_add(1);
+            state.revision = state.revision.wrapping_add(1);
+            Ok(AuthVersion {
+                generation: state.generation,
+                revision: state.revision,
+            })
+        })
+            .await
+            .map_err(|error| {
+                AxiomError::Storage(format!("credential persistence task failed: {error}"))
+            })?
+    }
+
+    pub async fn logout_async(&self) -> Result<()> {
+        self.logout_inner(None).await.map(|_| ())
+    }
+
+    pub async fn logout_with_cancellation(&self, cancellation: &CancellationToken) -> Result<u64> {
+        self.logout_inner(Some(cancellation)).await
+    }
+
+    async fn logout_inner(&self, cancellation: Option<&CancellationToken>) -> Result<u64> {
+        let operation_future = Arc::clone(&self.shared.operations).lock_owned();
+        let operation = if let Some(cancellation) = cancellation {
+            tokio::select! {
+                biased;
+                () = cancellation.cancelled() => return Err(AxiomError::Cancelled),
+                operation = operation_future => operation,
+            }
+        } else {
+            operation_future.await
+        };
+        if cancellation.is_some_and(CancellationToken::is_cancelled) {
+            return Err(AxiomError::Cancelled);
+        }
+        let store = Arc::clone(&self.store);
+        let shared = Arc::clone(&self.shared);
+        tokio::task::spawn_blocking(move || {
+            let _operation = operation;
+            store.delete().map_err(AxiomError::Storage)?;
+
+            // Deletion is the commit point. If the OS store rejects it, retain
+            // memory so state cannot disagree with the next launch. Keeping
+            // both halves in this task also makes caller cancellation safe.
+            let mut state = shared
+                .state
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.credential = None;
+            state.unavailable_detail = None;
+            state.generation = state.generation.wrapping_add(1);
+            state.revision = state.revision.wrapping_add(1);
+            Ok(state.revision)
+        })
+        .await
+        .map_err(|error| AxiomError::Storage(format!("credential deletion task failed: {error}")))?
     }
 
     pub async fn validate(&self) -> ValidationStatus {
-        let Ok(credential) = self.credential() else {
-            return ValidationStatus::Missing;
+        self.validate_with_revision().await.status
+    }
+
+    pub async fn validate_with_revision(&self) -> VersionedValidationStatus {
+        let (snapshot, revision) = self.begin_validation();
+        let Some(snapshot) = snapshot else {
+            let status = self
+                .unavailable_detail()
+                .map_or(ValidationStatus::Missing, ValidationStatus::Unavailable);
+            return VersionedValidationStatus { status, revision };
         };
         let response = self
             .client
             .get(self.endpoint("/api/v1/auth/api-key"))
-            .bearer_auth(&credential)
+            .bearer_auth(&snapshot.credential)
             .send()
             .await;
         let response = match response {
             Ok(response) => response,
             Err(error) => {
-                return ValidationStatus::Unavailable(format!(
-                    "could not reach Axiom to validate this login: {error}"
-                ));
+                if let Some(status) = self.changed_validation_status(&snapshot) {
+                    return VersionedValidationStatus { status, revision };
+                }
+                return VersionedValidationStatus {
+                    status: ValidationStatus::Unavailable(format!(
+                        "could not reach Axiom to validate this login: {error}"
+                    )),
+                    revision,
+                };
             }
         };
         if response.status() == StatusCode::UNAUTHORIZED {
-            self.clear_if_current(&credential);
-            return ValidationStatus::Invalid;
+            return match self.clear_if_current_async(&snapshot).await {
+                Ok(Some(clear_revision)) => VersionedValidationStatus {
+                    status: ValidationStatus::Invalid,
+                    revision: clear_revision,
+                },
+                Ok(None) => VersionedValidationStatus {
+                    status: self
+                        .changed_validation_status(&snapshot)
+                        .unwrap_or(ValidationStatus::Invalid),
+                    revision,
+                },
+                Err(error) => {
+                    tracing::warn!(%error, "could not clear rejected Axiom credential");
+                    VersionedValidationStatus {
+                        status: self
+                            .changed_validation_status(&snapshot)
+                            .unwrap_or(ValidationStatus::Invalid),
+                        revision,
+                    }
+                }
+            };
         }
         if !response.status().is_success() {
-            return ValidationStatus::Unavailable(format!(
-                "Axiom credential validation returned HTTP {}",
-                response.status()
-            ));
+            if let Some(status) = self.changed_validation_status(&snapshot) {
+                return VersionedValidationStatus { status, revision };
+            }
+            return VersionedValidationStatus {
+                status: ValidationStatus::Unavailable(format!(
+                    "Axiom credential validation returned HTTP {}",
+                    response.status()
+                )),
+                revision,
+            };
         }
-        match response.json::<ApiKeyStatusResponse>().await {
-            Ok(value) => ValidationStatus::Valid(AccountStatus {
-                key_id: value.id,
-                key_name: value.name,
-                source: self.credential_source(),
-            }),
-            Err(_) => ValidationStatus::Unavailable(
-                "Axiom returned an invalid credential-validation response".into(),
-            ),
-        }
+        let status = match response.json::<ApiKeyStatusResponse>().await {
+            Ok(value) => {
+                self.changed_validation_status(&snapshot)
+                    .unwrap_or(ValidationStatus::Valid(AccountStatus {
+                        key_id: value.id,
+                        key_name: value.name,
+                        source: snapshot.source,
+                        generation: snapshot.generation,
+                        revision,
+                    }))
+            }
+            Err(_) => self
+                .changed_validation_status(&snapshot)
+                .unwrap_or_else(|| {
+                    ValidationStatus::Unavailable(
+                        "Axiom returned an invalid credential-validation response".into(),
+                    )
+                }),
+        };
+        VersionedValidationStatus { status, revision }
     }
 
     pub async fn start_browser_login(&self) -> Result<BrowserLogin> {
+        if let Some(detail) = self.unavailable_detail() {
+            return Err(AxiomError::Storage(detail));
+        }
+        let auth_generation = self.generation();
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let port = listener.local_addr()?.port();
         let verifier = random_urlsafe(32)?;
         let state = random_urlsafe(32)?;
         let code_challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
         let callback_uri = format!("http://127.0.0.1:{port}/callback");
-        let client_id = load_or_create_client_id(self.store.client_id_path())?;
+        let client_id_path = self.store.client_id_path().to_owned();
+        let client_id =
+            tokio::task::spawn_blocking(move || load_or_create_client_id(client_id_path.as_path()))
+                .await
+                .map_err(|error| {
+                    AxiomError::Storage(format!("client identity task failed: {error}"))
+                })??;
         let client_name = client_name(&client_id);
         let response = self
             .client
@@ -488,6 +779,7 @@ impl AuthManager {
             expires_at: created.expires_at,
             interval: Duration::from_secs(created.interval_seconds.clamp(1, 10)),
             browser_opened,
+            auth_generation,
         })
     }
 
@@ -511,7 +803,12 @@ impl AuthManager {
             .map_err(|_| AxiomError::Protocol("invalid login exchange response".into()))
     }
 
-    fn finish_exchange(&self, response: ExchangeResponse) -> Result<AccountStatus> {
+    async fn finish_exchange(
+        &self,
+        response: ExchangeResponse,
+        expected_generation: u64,
+        cancellation: Option<&CancellationToken>,
+    ) -> Result<AccountStatus> {
         if response.status != "complete" {
             return Err(AxiomError::InvalidTransition(
                 "authorization has not been approved yet".into(),
@@ -523,11 +820,15 @@ impl AuthManager {
         let key = response
             .key
             .ok_or_else(|| AxiomError::Protocol("completed login omitted key metadata".into()))?;
-        self.save_credential(&token)?;
+        let version = self
+            .save_credential_async(&token, Some(expected_generation), cancellation)
+            .await?;
         Ok(AccountStatus {
             key_id: key.id,
             key_name: key.name,
             source: self.credential_source(),
+            generation: version.generation,
+            revision: version.revision,
         })
     }
 
@@ -537,23 +838,142 @@ impl AuthManager {
             .expect("static API path is valid")
     }
 
-    fn clear_if_current(&self, checked: &str) {
-        let is_current = self
+    fn generation(&self) -> u64 {
+        self.shared
             .state
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .generation
+    }
+
+    fn begin_validation(&self) -> (Option<CredentialSnapshot>, u64) {
+        let mut state = self
+            .shared
+            .state
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.revision = state.revision.wrapping_add(1);
+        let revision = state.revision;
+        let snapshot = state
             .credential
             .as_ref()
-            .is_some_and(|value| value.expose_secret() == checked);
-        if is_current {
-            let _ = self.logout();
+            .map(|credential| CredentialSnapshot {
+                credential: credential.expose_secret().to_owned(),
+                source: state.source,
+                generation: state.generation,
+            });
+        (snapshot, revision)
+    }
+
+    fn unavailable_detail(&self) -> Option<String> {
+        self.shared
+            .state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unavailable_detail
+            .clone()
+    }
+
+    fn changed_validation_status(&self, snapshot: &CredentialSnapshot) -> Option<ValidationStatus> {
+        let state = self
+            .shared
+            .state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let unchanged = state.generation == snapshot.generation
+            && state
+                .credential
+                .as_ref()
+                .is_some_and(|credential| credential.expose_secret() == snapshot.credential);
+        if unchanged {
+            None
+        } else if state.credential.is_none() {
+            Some(
+                state
+                    .unavailable_detail
+                    .clone()
+                    .map_or(ValidationStatus::Missing, ValidationStatus::Unavailable),
+            )
+        } else {
+            Some(ValidationStatus::Unavailable(
+                "Axiom authorization changed while validation was in progress; retry validation"
+                    .into(),
+            ))
         }
+    }
+
+    async fn clear_if_current_async(&self, snapshot: &CredentialSnapshot) -> Result<Option<u64>> {
+        let operation = Arc::clone(&self.shared.operations).lock_owned().await;
+        let store = Arc::clone(&self.store);
+        let shared = Arc::clone(&self.shared);
+        let checked_credential = snapshot.credential.clone();
+        let checked_generation = snapshot.generation;
+        tokio::task::spawn_blocking(move || {
+            let _operation = operation;
+            let is_current = {
+                let state = shared
+                    .state
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                state.generation == checked_generation
+                    && state
+                        .credential
+                        .as_ref()
+                        .is_some_and(|credential| credential.expose_secret() == checked_credential)
+            };
+            if !is_current {
+                return Ok(None);
+            }
+
+            store.delete().map_err(AxiomError::Storage)?;
+            let mut state = shared
+                .state
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            // The owned operation guard spans both persistence and state commit,
+            // even if the caller drops its future while deletion is blocked.
+            state.credential = None;
+            state.unavailable_detail = None;
+            state.generation = state.generation.wrapping_add(1);
+            state.revision = state.revision.wrapping_add(1);
+            Ok(Some(state.revision))
+        })
+        .await
+        .map_err(|error| AxiomError::Storage(format!("credential deletion task failed: {error}")))?
     }
 }
 
 #[derive(Debug)]
 struct EnvironmentStore {
     client_id_path: PathBuf,
+}
+
+#[derive(Debug)]
+struct UnavailableStore {
+    detail: String,
+    client_id_path: PathBuf,
+}
+
+impl CredentialStore for UnavailableStore {
+    fn source(&self) -> CredentialSource {
+        CredentialSource::SystemKeyring
+    }
+
+    fn load(&self) -> std::result::Result<Option<String>, String> {
+        Err(self.detail.clone())
+    }
+
+    fn save(&self, _credential: &str) -> std::result::Result<(), String> {
+        Err(self.detail.clone())
+    }
+
+    fn delete(&self) -> std::result::Result<(), String> {
+        Err(self.detail.clone())
+    }
+
+    fn client_id_path(&self) -> &Path {
+        &self.client_id_path
+    }
 }
 
 impl CredentialStore for EnvironmentStore {
@@ -590,6 +1010,7 @@ pub struct BrowserLogin {
     expires_at: String,
     interval: Duration,
     browser_opened: bool,
+    auth_generation: u64,
 }
 
 impl std::fmt::Debug for BrowserLogin {
@@ -604,6 +1025,7 @@ impl std::fmt::Debug for BrowserLogin {
             .field("authorization_url", &self.authorization_url)
             .field("expires_at", &self.expires_at)
             .field("browser_opened", &self.browser_opened)
+            .field("auth_generation", &self.auth_generation)
             .finish_non_exhaustive()
     }
 }
@@ -640,7 +1062,7 @@ impl BrowserLogin {
             tokio::select! {
                 () = cancellation.cancelled() => return Err(AxiomError::Cancelled),
                 _ = ticker.tick() => {
-                    if let Some(account) = self.poll_exchange().await? {
+                    if let Some(account) = self.poll_exchange(&cancellation).await? {
                         return Ok(account);
                     }
                 }
@@ -652,7 +1074,7 @@ impl BrowserLogin {
                         &self.authorization_id,
                         self.state.expose_secret(),
                     ).await?
-                        && let Some(account) = self.poll_exchange().await?
+                        && let Some(account) = self.poll_exchange(&cancellation).await?
                     {
                         return Ok(account);
                     }
@@ -661,19 +1083,33 @@ impl BrowserLogin {
         }
     }
 
-    async fn poll_exchange(&self) -> Result<Option<AccountStatus>> {
-        let response = self
-            .manager
-            .exchange(ExchangeRequest {
-                authorization_id: &self.authorization_id,
-                device_code: self.device_code.expose_secret(),
-                code_verifier: self.verifier.expose_secret(),
-            })
-            .await?;
+    async fn poll_exchange(
+        &self,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<AccountStatus>> {
+        let exchange = self.manager.exchange(ExchangeRequest {
+            authorization_id: &self.authorization_id,
+            device_code: self.device_code.expose_secret(),
+            code_verifier: self.verifier.expose_secret(),
+        });
+        let response = tokio::select! {
+            biased;
+            () = cancellation.cancelled() => return Err(AxiomError::Cancelled),
+            response = exchange => response?,
+        };
+        if cancellation.is_cancelled() {
+            return Err(AxiomError::Cancelled);
+        }
         if response.status == "pending" {
             return Ok(None);
         }
-        self.manager.finish_exchange(response).map(Some)
+        // Cancellation is honored through mutation-lane acquisition. Once
+        // persistence starts, await it to its durable commit point so the
+        // caller always receives the account state that was actually saved.
+        self.manager
+            .finish_exchange(response, self.auth_generation, Some(cancellation))
+            .await
+            .map(Some)
     }
 }
 
@@ -949,8 +1385,8 @@ struct ApiKeyStatusResponse {
 #[cfg(test)]
 mod tests {
     use std::sync::{
-        Mutex,
-        atomic::{AtomicBool, Ordering},
+        Condvar, Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     };
 
     use axum::{
@@ -967,6 +1403,78 @@ mod tests {
     struct MemoryStore {
         credential: Mutex<Option<String>>,
         client_id_path: PathBuf,
+    }
+
+    struct BlockingStore {
+        credential: Mutex<Option<String>>,
+        save_started: tokio::sync::Notify,
+        save_gate: (Mutex<bool>, Condvar),
+        delete_started: AtomicBool,
+        client_id_path: PathBuf,
+    }
+
+    impl BlockingStore {
+        fn release_save(&self) {
+            *self.save_gate.0.lock().expect("save gate lock") = true;
+            self.save_gate.1.notify_all();
+        }
+    }
+
+    impl CredentialStore for BlockingStore {
+        fn source(&self) -> CredentialSource {
+            CredentialSource::ProtectedFile
+        }
+
+        fn load(&self) -> std::result::Result<Option<String>, String> {
+            Ok(self.credential.lock().expect("credential lock").clone())
+        }
+
+        fn save(&self, credential: &str) -> std::result::Result<(), String> {
+            self.save_started.notify_one();
+            let released = self.save_gate.0.lock().expect("save gate lock");
+            drop(
+                self.save_gate
+                    .1
+                    .wait_while(released, |released| !*released)
+                    .expect("save gate wait"),
+            );
+            *self.credential.lock().expect("credential lock") = Some(credential.to_owned());
+            Ok(())
+        }
+
+        fn delete(&self) -> std::result::Result<(), String> {
+            self.delete_started.store(true, Ordering::Release);
+            *self.credential.lock().expect("credential lock") = None;
+            Ok(())
+        }
+
+        fn client_id_path(&self) -> &Path {
+            &self.client_id_path
+        }
+    }
+
+    fn manager_with_store(store: Arc<dyn CredentialStore>, api_base_url: &str) -> AuthManager {
+        let credential = store
+            .load()
+            .expect("load test credential")
+            .map(SecretString::from);
+        AuthManager {
+            shared: Arc::new(AuthShared {
+                state: RwLock::new(AuthState {
+                    credential,
+                    source: store.source(),
+                    generation: 0,
+                    revision: 0,
+                    unavailable_detail: None,
+                }),
+                operations: Arc::new(AsyncMutex::new(())),
+            }),
+            store,
+            client: Client::builder().build().expect("auth client"),
+            api_base_url: Url::parse(api_base_url).expect("API URL"),
+            web_base_url: Url::parse("https://axiom.stream").expect("web URL"),
+            launch_browser: false,
+        }
     }
 
     impl CredentialStore for MemoryStore {
@@ -1085,6 +1593,44 @@ mod tests {
         )
     }
 
+    #[derive(Default)]
+    struct DelayedValidationState {
+        entered: tokio::sync::Notify,
+        release: tokio::sync::Notify,
+    }
+
+    async fn delayed_valid_authorization(
+        State(state): State<Arc<DelayedValidationState>>,
+    ) -> Json<Value> {
+        state.entered.notify_one();
+        state.release.notified().await;
+        Json(json!({ "id": "old-key-id", "name": "Old key" }))
+    }
+
+    #[derive(Default)]
+    struct OutOfOrderValidationState {
+        requests: AtomicUsize,
+        first_entered: tokio::sync::Notify,
+        release_first: tokio::sync::Notify,
+    }
+
+    async fn out_of_order_authorization(
+        State(state): State<Arc<OutOfOrderValidationState>>,
+    ) -> (AxumStatus, Json<Value>) {
+        if state.requests.fetch_add(1, Ordering::AcqRel) == 0 {
+            state.first_entered.notify_one();
+            state.release_first.notified().await;
+            return (
+                AxumStatus::SERVICE_UNAVAILABLE,
+                Json(json!({ "detail": "stale outage" })),
+            );
+        }
+        (
+            AxumStatus::OK,
+            Json(json!({ "id": "current-key-id", "name": "Current key" })),
+        )
+    }
+
     async fn mock_manager() -> (AuthManager, Arc<MockAuthorizationState>) {
         let state = Arc::new(MockAuthorizationState::default());
         let app = Router::new()
@@ -1111,10 +1657,16 @@ mod tests {
             client_id_path,
         });
         let manager = AuthManager {
-            state: Arc::new(RwLock::new(AuthState {
-                credential: None,
-                source: store.source(),
-            })),
+            shared: Arc::new(AuthShared {
+                state: RwLock::new(AuthState {
+                    credential: None,
+                    source: store.source(),
+                    generation: 0,
+                    revision: 0,
+                    unavailable_detail: None,
+                }),
+                operations: Arc::new(AsyncMutex::new(())),
+            }),
             store,
             client: Client::builder().build().expect("auth client"),
             api_base_url: Url::parse(&base).expect("API URL"),
@@ -1156,6 +1708,38 @@ mod tests {
         assert!(name.chars().count() <= 80);
     }
 
+    #[tokio::test]
+    async fn unavailable_platform_credentials_start_signed_out_instead_of_failing() {
+        let directory = tempfile::tempdir().expect("auth paths");
+        let paths = crate::paths::AxiomPaths::from_roots(
+            directory.path().join("config"),
+            directory.path().join("data"),
+        );
+        let manager = AuthManager::new_unavailable(
+            "https://api.axiom.stream",
+            Duration::from_secs(1),
+            &paths,
+            "credential manager unavailable",
+        )
+        .expect("construct signed-out manager");
+
+        assert!(!manager.has_credential());
+        let status = manager.validate_with_revision().await;
+        assert!(
+            matches!(status.status, ValidationStatus::Unavailable(detail) if detail.contains("credential manager unavailable"))
+        );
+        assert!(matches!(
+            manager.start_browser_login().await,
+            Err(AxiomError::Storage(detail)) if detail.contains("credential manager unavailable")
+        ));
+        assert!(matches!(
+            manager
+                .save_pasted_key_async("axm_1234567890123456")
+                .await,
+            Err(AxiomError::Storage(detail)) if detail.contains("credential manager unavailable")
+        ));
+    }
+
     #[test]
     fn browser_login_debug_output_redacts_exchange_secrets() {
         let text = format!(
@@ -1163,6 +1747,9 @@ mod tests {
             AuthState {
                 credential: Some(SecretString::from("axm_super-secret".to_owned())),
                 source: CredentialSource::ProtectedFile,
+                generation: 0,
+                revision: 0,
+                unavailable_detail: None,
             }
         );
         assert!(!text.contains("super-secret"));
@@ -1216,10 +1803,216 @@ mod tests {
     async fn rejected_persisted_credentials_are_cleared() {
         let (manager, _) = mock_manager().await;
         manager
-            .save_pasted_key("axm_1234567890123456")
+            .save_pasted_key_async("axm_1234567890123456")
+            .await
             .expect("save synthetic key");
 
         assert_eq!(manager.validate().await, ValidationStatus::Invalid);
+        assert!(!manager.has_credential());
+        assert!(manager.store.load().expect("load credential").is_none());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn credential_store_mutations_are_offloaded_and_serialized() {
+        let directory = tempfile::tempdir().expect("identity temp directory");
+        let store = Arc::new(BlockingStore {
+            credential: Mutex::new(None),
+            save_started: tokio::sync::Notify::new(),
+            save_gate: (Mutex::new(false), Condvar::new()),
+            delete_started: AtomicBool::new(false),
+            client_id_path: directory.path().join("client-id"),
+        });
+        let manager = manager_with_store(Arc::<BlockingStore>::clone(&store), "http://127.0.0.1:1");
+
+        let saving_manager = manager.clone();
+        let saving = tokio::spawn(async move {
+            saving_manager
+                .save_pasted_key_async("axm_1234567890123456")
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(1), store.save_started.notified())
+            .await
+            .expect("blocking save never started");
+
+        // This is a single-thread Tokio runtime. Reaching this point while the
+        // store is blocked proves the OS operation left the cooperative lane.
+        let logout_manager = manager.clone();
+        let logout = tokio::spawn(async move { logout_manager.logout_async().await });
+        tokio::task::yield_now().await;
+        assert!(!store.delete_started.load(Ordering::Acquire));
+
+        store.release_save();
+        saving.await.expect("save task").expect("save credential");
+        logout
+            .await
+            .expect("logout task")
+            .expect("delete credential");
+        assert!(store.delete_started.load(Ordering::Acquire));
+        assert!(!manager.has_credential());
+        assert!(store.load().expect("load credential").is_none());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn queued_credential_mutations_honor_cancellation_before_commit() {
+        let directory = tempfile::tempdir().expect("identity temp directory");
+        let store = Arc::new(BlockingStore {
+            credential: Mutex::new(None),
+            save_started: tokio::sync::Notify::new(),
+            save_gate: (Mutex::new(false), Condvar::new()),
+            delete_started: AtomicBool::new(false),
+            client_id_path: directory.path().join("client-id"),
+        });
+        let manager = manager_with_store(Arc::<BlockingStore>::clone(&store), "http://127.0.0.1:1");
+
+        let first_manager = manager.clone();
+        let first = tokio::spawn(async move {
+            first_manager
+                .save_pasted_key_async("axm_1234567890123456")
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(1), store.save_started.notified())
+            .await
+            .expect("blocking save never started");
+
+        let logout_cancellation = CancellationToken::new();
+        let queued_logout_manager = manager.clone();
+        let queued_logout_token = logout_cancellation.clone();
+        let queued_logout = tokio::spawn(async move {
+            queued_logout_manager
+                .logout_with_cancellation(&queued_logout_token)
+                .await
+        });
+        let save_cancellation = CancellationToken::new();
+        let queued_save_manager = manager.clone();
+        let queued_save_token = save_cancellation.clone();
+        let queued_save = tokio::spawn(async move {
+            queued_save_manager
+                .save_pasted_key_with_cancellation("axm_abcdefghijklmnop", &queued_save_token)
+                .await
+        });
+        tokio::task::yield_now().await;
+        logout_cancellation.cancel();
+        save_cancellation.cancel();
+
+        assert!(matches!(
+            queued_logout.await.expect("logout task"),
+            Err(AxiomError::Cancelled)
+        ));
+        assert!(matches!(
+            queued_save.await.expect("save task"),
+            Err(AxiomError::Cancelled)
+        ));
+        assert!(!store.delete_started.load(Ordering::Acquire));
+
+        store.release_save();
+        first.await.expect("first save task").expect("first save");
+        assert_eq!(
+            manager.credential().expect("committed credential"),
+            "axm_1234567890123456"
+        );
+    }
+
+    #[tokio::test]
+    async fn later_validation_revision_wins_when_an_older_request_finishes_last() {
+        let delayed = Arc::new(OutOfOrderValidationState::default());
+        let app = Router::new()
+            .route("/api/v1/auth/api-key", get(out_of_order_authorization))
+            .with_state(delayed.clone());
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("mock listener");
+        let base = format!(
+            "http://{}",
+            listener.local_addr().expect("listener address")
+        );
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("mock auth server");
+        });
+
+        let directory = tempfile::tempdir().expect("identity temp directory");
+        let store: Arc<dyn CredentialStore> = Arc::new(MemoryStore {
+            credential: Mutex::new(Some("axm_1234567890123456".into())),
+            client_id_path: directory.path().join("client-id"),
+        });
+        let manager = manager_with_store(store, &base);
+        let old_manager = manager.clone();
+        let older = tokio::spawn(async move { old_manager.validate_with_revision().await });
+        tokio::time::timeout(Duration::from_secs(1), delayed.first_entered.notified())
+            .await
+            .expect("first validation did not start");
+
+        let newer = manager.validate_with_revision().await;
+        delayed.release_first.notify_one();
+        let older = older.await.expect("older validation task");
+
+        assert!(matches!(newer.status, ValidationStatus::Valid(_)));
+        assert!(matches!(older.status, ValidationStatus::Unavailable(_)));
+        assert!(newer.revision > older.revision);
+    }
+
+    #[tokio::test]
+    async fn logout_invalidates_an_in_flight_successful_validation() {
+        let delayed = Arc::new(DelayedValidationState::default());
+        let app = Router::new()
+            .route("/api/v1/auth/api-key", get(delayed_valid_authorization))
+            .with_state(delayed.clone());
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("mock listener");
+        let base = format!(
+            "http://{}",
+            listener.local_addr().expect("listener address")
+        );
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("mock auth server");
+        });
+
+        let directory = tempfile::tempdir().expect("identity temp directory");
+        let store: Arc<dyn CredentialStore> = Arc::new(MemoryStore {
+            credential: Mutex::new(Some("axm_1234567890123456".into())),
+            client_id_path: directory.path().join("client-id"),
+        });
+        let manager = manager_with_store(store, &base);
+        let validating_manager = manager.clone();
+        let validation =
+            tokio::spawn(async move { validating_manager.validate_with_revision().await });
+        tokio::time::timeout(Duration::from_secs(1), delayed.entered.notified())
+            .await
+            .expect("validation request never arrived");
+
+        let logout_revision = manager
+            .logout_with_cancellation(&CancellationToken::new())
+            .await
+            .expect("logout");
+        delayed.release.notify_one();
+
+        let validation = validation.await.expect("validation task");
+        assert_eq!(validation.status, ValidationStatus::Missing);
+        assert!(validation.revision < logout_revision);
+    }
+
+    #[tokio::test]
+    async fn logout_prevents_pending_browser_login_from_restoring_a_credential() {
+        let (manager, _) = mock_manager().await;
+        let expected_generation = manager.generation();
+        manager.logout_async().await.expect("logout");
+
+        let result = manager
+            .finish_exchange(
+                ExchangeResponse {
+                    status: "complete".into(),
+                    token: Some("axm_mock-browser-exchange-token".into()),
+                    key: Some(ApiKeyResponse {
+                        id: "key-id".into(),
+                        name: "AxiomCLI".into(),
+                    }),
+                },
+                expected_generation,
+                None,
+            )
+            .await;
+
+        assert!(matches!(result, Err(AxiomError::InvalidTransition(_))));
         assert!(!manager.has_credential());
         assert!(manager.store.load().expect("load credential").is_none());
     }

@@ -24,7 +24,6 @@ use crate::{
         AssistantTurn, ChatMessage, ChatRole, InferenceProvider, InferenceRequest, ProviderEvent,
         ProviderSecurityVerification,
     },
-    session::{model_for_resume, thinking_for_resume},
     tools::{ToolContext, ToolRegistry},
     workspace::Workspace,
 };
@@ -33,6 +32,11 @@ use crate::{
 /// applies backpressure to the turn instead of allowing an unbounded stream to
 /// consume memory.
 pub const APP_EVENT_QUEUE_CAPACITY: usize = 256;
+
+/// Bound CPU-only restore work between scheduler hand-offs. A persisted thread
+/// may contain up to 100k timeline events, so replay must remain cooperative on
+/// the single-thread Tokio runtimes used by embedders and tests as well.
+const RESTORE_COOPERATION_INTERVAL: usize = 128;
 
 /// Upper bound also enforced by the CLI before a launch-time system prompt is
 /// installed. Keeping the bound here protects library embedders as well.
@@ -180,6 +184,10 @@ pub trait QuestionHandler: Send + Sync {
 /// Adapter-independent execution of one already-accepted turn.
 #[async_trait]
 pub trait TurnRunner: Send + Sync {
+    /// Release process-backed tools while the embedding runtime is still
+    /// available. Stateless runners inherit the no-op implementation.
+    async fn shutdown(&self) {}
+
     /// Restore durable conversational context for a previously journaled
     /// session. The default is intentionally a no-op for stateless test and
     /// embedding runners.
@@ -1306,6 +1314,10 @@ impl AgentEngine {
 
 #[async_trait]
 impl TurnRunner for AgentEngine {
+    async fn shutdown(&self) {
+        self.tools.shutdown().await;
+    }
+
     async fn verify_security(
         &self,
         model: &str,
@@ -1323,35 +1335,31 @@ impl TurnRunner for AgentEngine {
         events: &[EventEnvelope],
     ) -> Result<()> {
         let mut settings = self.default_settings();
-        settings.model = model_for_resume(events, &settings.model);
-        settings.thinking = thinking_for_resume(events, settings.thinking);
-        let system = events
-            .iter()
-            .find_map(|envelope| match &envelope.event {
-                AppEvent::SessionCreated { cwd, .. } | AppEvent::SessionResumed { cwd, .. } => {
-                    Some(system_prompt(
-                        cwd,
-                        &settings,
-                        self.custom_system_prompt.as_deref(),
-                    ))
-                }
-                _ => None,
-            })
-            .unwrap_or_else(|| {
-                system_prompt(
-                    std::path::Path::new("."),
-                    &settings,
-                    self.custom_system_prompt.as_deref(),
-                )
-            });
-        let mut messages = vec![ChatMessage::text(ChatRole::System, system.clone())];
+        let mut active_model = settings.model.clone();
+        let mut last_used_model = None;
+        let mut cwd = None;
+        // Keep the system slot in place while replaying. Its final contents
+        // depend on settings projected from the whole stream, but its role is
+        // significant when coalescing assistant text and tool calls.
+        let mut messages = vec![ChatMessage::text(ChatRole::System, String::new())];
         let mut changed_paths = BTreeSet::new();
         let mut active_turns = BTreeSet::new();
         let mut active_tools = BTreeSet::new();
         let mut tool_names = HashMap::new();
-        for envelope in events {
+        for (index, envelope) in events.iter().enumerate() {
             match &envelope.event {
+                AppEvent::SessionCreated {
+                    cwd: session_cwd, ..
+                }
+                | AppEvent::SessionResumed {
+                    cwd: session_cwd, ..
+                } => {
+                    if cwd.is_none() {
+                        cwd = Some(session_cwd.clone());
+                    }
+                }
                 AppEvent::PromptAccepted { text, .. } => {
+                    last_used_model = Some(active_model.clone());
                     messages.push(ChatMessage::text(ChatRole::User, text.clone()));
                 }
                 AppEvent::TextDelta { text, .. } => {
@@ -1433,15 +1441,27 @@ impl TurnRunner for AgentEngine {
                 AppEvent::WorkspaceChanged { paths } => {
                     changed_paths.extend(paths.iter().cloned());
                 }
+                AppEvent::ModelChanged { model } => active_model.clone_from(model),
+                AppEvent::ThinkingLevelChanged { level } => settings.thinking = *level,
                 AppEvent::ContextCompacted { summary, .. } => {
-                    messages = compacted_history(&system, summary);
+                    messages = compacted_history("", summary);
                     active_turns.clear();
                     active_tools.clear();
                     tool_names.clear();
                 }
                 _ => {}
             }
+            if (index + 1).is_multiple_of(RESTORE_COOPERATION_INTERVAL) {
+                tokio::task::yield_now().await;
+            }
         }
+        settings.model = last_used_model.unwrap_or(active_model);
+        let system = system_prompt(
+            cwd.as_deref().unwrap_or_else(|| std::path::Path::new(".")),
+            &settings,
+            self.custom_system_prompt.as_deref(),
+        );
+        messages[0] = ChatMessage::text(ChatRole::System, system);
         if !active_turns.is_empty() || !active_tools.is_empty() {
             messages.push(ChatMessage::text(
                 ChatRole::System,
@@ -1449,9 +1469,7 @@ impl TurnRunner for AgentEngine {
             ));
         }
         let target_bytes = self.limits.max_context_bytes.saturating_mul(3) / 4;
-        while messages.len() > 2 && serialized_message_bytes(&messages)? > target_bytes {
-            messages.remove(1);
-        }
+        let messages = trim_restored_messages(messages, target_bytes).await?;
         self.histories
             .lock()
             .await
@@ -2107,6 +2125,57 @@ fn serialized_message_bytes(messages: &[ChatMessage]) -> Result<usize> {
     Ok(serde_json::to_vec(messages)?.len())
 }
 
+/// Retain the system message and the newest suffix that fits the restore
+/// budget. This is byte-for-byte equivalent to repeatedly serializing the
+/// entire array and removing index 1, but computes each message size once and
+/// compacts the vector once.
+async fn trim_restored_messages(
+    messages: Vec<ChatMessage>,
+    target_bytes: usize,
+) -> Result<Vec<ChatMessage>> {
+    if messages.len() <= 2 {
+        return Ok(messages);
+    }
+
+    // Compact JSON arrays add two brackets and one comma between messages.
+    let mut serialized_bytes = 2_u128;
+    let mut message_bytes = Vec::with_capacity(messages.len());
+    for (index, message) in messages.iter().enumerate() {
+        let bytes = serde_json::to_vec(message)?.len();
+        serialized_bytes += bytes as u128;
+        if index > 0 {
+            serialized_bytes += 1;
+        }
+        message_bytes.push(bytes);
+        if (index + 1).is_multiple_of(RESTORE_COOPERATION_INTERVAL) {
+            tokio::task::yield_now().await;
+        }
+    }
+
+    let mut first_retained = 1_usize;
+    let mut retained_count = messages.len();
+    while retained_count > 2 && serialized_bytes > target_bytes as u128 {
+        serialized_bytes -= message_bytes[first_retained] as u128 + 1;
+        first_retained += 1;
+        retained_count -= 1;
+        if first_retained.is_multiple_of(RESTORE_COOPERATION_INTERVAL) {
+            tokio::task::yield_now().await;
+        }
+    }
+
+    if first_retained == 1 {
+        return Ok(messages);
+    }
+    let mut messages = messages.into_iter();
+    let system = messages
+        .next()
+        .expect("restore history always contains a system message");
+    let mut retained = Vec::with_capacity(retained_count);
+    retained.push(system);
+    retained.extend(messages.skip(first_retained - 1));
+    Ok(retained)
+}
+
 fn compaction_transcript(messages: &[ChatMessage], max_bytes: usize) -> Result<String> {
     let mut messages = messages.to_vec();
     let mut pruned_tool_results = 0_usize;
@@ -2487,6 +2556,50 @@ mod engine_tests {
         policy::Effect,
         tools::{Tool, ToolResult},
     };
+
+    #[tokio::test]
+    async fn restored_history_linear_trimming_matches_the_previous_exact_result() {
+        let messages = vec![
+            ChatMessage::text(ChatRole::System, "system instructions"),
+            ChatMessage::text(ChatRole::User, "oldest user request"),
+            ChatMessage::text(ChatRole::Assistant, "an answer with \"quotes\""),
+            ChatMessage::text(ChatRole::User, "unicode context: café ☕"),
+            ChatMessage {
+                role: ChatRole::Assistant,
+                content: "tool preface".into(),
+                reasoning_content: None,
+                name: None,
+                refusal: None,
+                tool_call_id: None,
+                tool_calls: vec![ToolCall {
+                    id: "call-1".into(),
+                    kind: "function".into(),
+                    function: FunctionCall {
+                        name: "inspect".into(),
+                        arguments: r#"{"path":"src/main.rs"}"#.into(),
+                    },
+                }],
+            },
+            ChatMessage::text(ChatRole::Tool, "older tool result"),
+            ChatMessage::text(ChatRole::User, "newest retained context"),
+        ];
+        let full_size = serialized_message_bytes(&messages).expect("serialized size");
+
+        for target in 0..=full_size + 16 {
+            let mut expected = messages.clone();
+            while expected.len() > 2
+                && serialized_message_bytes(&expected).expect("legacy serialized size") > target
+            {
+                expected.remove(1);
+            }
+            let actual = trim_restored_messages(messages.clone(), target)
+                .await
+                .expect("linear trim");
+            assert_eq!(actual, expected, "target byte budget {target}");
+            assert_eq!(actual.first(), messages.first());
+            assert_eq!(actual.last(), messages.last());
+        }
+    }
 
     #[test]
     fn model_settings_reconcile_disjoint_capabilities_without_losing_nonreasoning_preference() {

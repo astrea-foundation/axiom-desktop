@@ -164,6 +164,51 @@ test("a model change immediately invalidates a verified client security badge", 
   assert.equal(store.snapshot().sessions.session?.security?.state, "unverified");
 });
 
+test("older account responses and activities cannot overwrite newer auth state", () => {
+  const store = new AxiomStateStore();
+  store.setAccount({
+    revision: 4,
+    state: "valid",
+    keyId: "new-key",
+    keyName: "Current key",
+  });
+  store.setAccount({
+    revision: 2,
+    state: "unavailable",
+    detail: "stale validation failed",
+  });
+  store.extensionEvent({
+    runtimeInstanceId: "runtime",
+    sequence: 1,
+    occurredAt: "2026-08-28T00:00:00Z",
+    event: {
+      kind: "account_changed",
+      status: {
+        revision: 3,
+        state: "missing",
+      },
+    },
+  });
+
+  assert.equal(store.snapshot().account?.state, "valid");
+  assert.equal(store.snapshot().account?.revision, 4);
+
+  store.extensionEvent({
+    runtimeInstanceId: "runtime",
+    sequence: 2,
+    occurredAt: "2026-08-28T00:00:01Z",
+    event: {
+      kind: "account_changed",
+      status: {
+        revision: 5,
+        state: "missing",
+      },
+    },
+  });
+  assert.equal(store.snapshot().account?.state, "missing");
+  assert.equal(store.snapshot().account?.revision, 5);
+});
+
 test("a terminal receipt failure revokes a previously verified client security badge", () => {
   const store = new AxiomStateStore();
   store.addSession("session", "/tmp");
