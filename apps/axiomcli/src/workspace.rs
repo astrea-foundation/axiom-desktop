@@ -317,7 +317,7 @@ impl Workspace {
             kind: kind.into(),
             size_bytes: metadata.len(),
             readonly: metadata.permissions().readonly(),
-            executable: is_executable(&metadata),
+            executable: is_executable(&resolved, &metadata),
             content: if looks_binary(&prefix) {
                 ContentClassification::Binary
             } else {
@@ -1058,11 +1058,7 @@ fn stage_content(
             std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(mode))?;
         }
         #[cfg(not(unix))]
-        if mode.is_some() {
-            return Err(AxiomError::Tool(
-                "explicit file modes are not supported on this platform".into(),
-            ));
-        }
+        let _ = mode;
         Ok(())
     })();
     if let Err(error) = result {
@@ -1157,7 +1153,24 @@ fn open_verified(path: &Path, root: &Path) -> Result<File> {
         use std::os::unix::fs::OpenOptionsExt as _;
         options.custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK);
     }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
     let file = options.open(path)?;
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt as _;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+        if file.metadata()?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(AxiomError::Tool(format!(
+                "refusing to follow a Windows reparse point: {}",
+                path.display()
+            )));
+        }
+    }
     #[cfg(target_os = "linux")]
     {
         use std::os::fd::AsRawFd as _;
@@ -1166,7 +1179,21 @@ fn open_verified(path: &Path, root: &Path) -> Result<File> {
             return Err(AxiomError::OutsideWorkspace(actual));
         }
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    {
+        use nix::fcntl::{FcntlArg, fcntl};
+        let mut actual = PathBuf::new();
+        fcntl(&file, FcntlArg::F_GETPATH(&mut actual)).map_err(|error| {
+            AxiomError::Tool(format!(
+                "could not validate opened macOS workspace path: {error}"
+            ))
+        })?;
+        let actual = actual.canonicalize()?;
+        if !actual.starts_with(root) {
+            return Err(AxiomError::OutsideWorkspace(actual));
+        }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let actual = path.canonicalize()?;
         if !actual.starts_with(root) {
@@ -1212,13 +1239,25 @@ fn likely_generated(path: &Path, prefix: &[u8]) -> bool {
 }
 
 #[cfg(unix)]
-fn is_executable(metadata: &std::fs::Metadata) -> bool {
+fn is_executable(_path: &Path, metadata: &std::fs::Metadata) -> bool {
     use std::os::unix::fs::PermissionsExt as _;
     metadata.permissions().mode() & 0o111 != 0
 }
 
-#[cfg(not(unix))]
-fn is_executable(_metadata: &std::fs::Metadata) -> bool {
+#[cfg(windows)]
+fn is_executable(path: &Path, _metadata: &std::fs::Metadata) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "exe" | "com" | "bat" | "cmd" | "ps1"
+            )
+        })
+}
+
+#[cfg(not(any(unix, windows)))]
+fn is_executable(_path: &Path, _metadata: &std::fs::Metadata) -> bool {
     false
 }
 
@@ -1340,6 +1379,14 @@ impl ProcessManager {
         #[cfg(unix)]
         {
             command.process_group(0);
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt as _;
+            const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+            command
+                .as_std_mut()
+                .creation_flags(CREATE_NEW_PROCESS_GROUP);
         }
         let mut child = command.spawn()?;
         let pid = child.id();
@@ -1694,15 +1741,34 @@ fn sandboxed_command(
         Ok(command)
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(windows)]
+    {
+        let program = crate::process_env::resolve_windows_program(&request.program, cwd)
+            .ok_or_else(|| {
+                AxiomError::Tool(
+                    "program was not found in the sanitized Windows PATH or is not a file".into(),
+                )
+            })?;
+        if crate::process_env::windows_program_requires_shell(&program) {
+            return Err(AxiomError::Tool(
+                "Windows .cmd, .bat, and .ps1 programs require run_shell so their shell semantics are explicit and approval-gated"
+                    .into(),
+            ));
+        }
+        let mut command = Command::new(program);
+        crate::process_env::apply_sanitized_environment(&mut command);
+        command.args(&request.args).current_dir(cwd);
+        for (key, value) in &request.env {
+            command.env(key, value);
+        }
+        Ok(command)
+    }
+
+    #[cfg(all(not(target_os = "linux"), not(windows)))]
     {
         let mut command = Command::new(&request.program);
-        command
-            .args(&request.args)
-            .current_dir(cwd)
-            .env_clear()
-            .env("PATH", "/usr/bin:/bin")
-            .env("LANG", "C.UTF-8");
+        crate::process_env::apply_sanitized_environment(&mut command);
+        command.args(&request.args).current_dir(cwd);
         for (key, value) in &request.env {
             command.env(key, value);
         }
@@ -1747,6 +1813,24 @@ async fn terminate_process_group(pid: Option<u32>, child: &mut tokio::process::C
             nix::unistd::Pid::from_raw(pid),
             nix::sys::signal::Signal::SIGKILL,
         );
+    }
+    #[cfg(windows)]
+    if let Some(pid) = pid {
+        let taskkill = std::env::var_os("SystemRoot")
+            .map(PathBuf::from)
+            .map(|root| root.join("System32").join("taskkill.exe"))
+            .filter(|path| path.is_file())
+            .unwrap_or_else(|| PathBuf::from("taskkill.exe"));
+        let mut termination = Command::new(taskkill);
+        let pid = pid.to_string();
+        crate::process_env::apply_sanitized_environment(&mut termination);
+        termination
+            .args(["/PID", pid.as_str(), "/T", "/F"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true);
+        let _ = tokio::time::timeout(Duration::from_secs(2), termination.status()).await;
     }
     let _ = child.kill().await;
     let _ = child.wait().await;

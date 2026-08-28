@@ -10,19 +10,34 @@ actionable compatibility error.
 
 Methods:
 
-- `_axiom/session/list`, `_axiom/session/get_state`
-- `_axiom/session/delete_preview`, `_axiom/session/delete_confirm`
-- `_axiom/models/list`, `_axiom/session/set_settings`
+- `_axiom/desktop/bootstrap`
+- `_axiom/thread/list`, `_axiom/thread/timeline`
+- `_axiom/thread/delete_preview`, `_axiom/thread/delete_confirm`
+- `_axiom/models/list`
+- `_axiom/profile/preferences`, `_axiom/profile/preferences/set`
+- `_axiom/collection/list`, `_axiom/collection/create`,
+  `_axiom/collection/rename`, `_axiom/collection/set_collapsed`,
+  `_axiom/collection/move`, `_axiom/collection/delete`,
+  `_axiom/collection/assign`
 - `_axiom/account/status`, `_axiom/account/browser_login_start`,
   `_axiom/account/browser_login_complete`, `_axiom/account/use_api_key`,
   `_axiom/account/logout`
 - `_axiom/security/verify`
 - `_axiom/compaction/start`
 
-`_axiom/event` carries typed activity with `runtimeInstanceId`, a monotonic
-`sequence`, RFC 3339 `occurredAt`, optional session/correlation IDs, and a tagged
-event. On a sequence gap or runtime change, retrieve session state rather than
-guessing what was missed.
+`_axiom/event` carries only Axiom-specific activity with `runtimeInstanceId`, a
+monotonic `sequence`, RFC 3339 `occurredAt`, optional thread/correlation IDs,
+and a tagged event. Standard ACP is the sole live owner for conversation,
+reasoning, tools, plans, modes, and configuration. The extension must never
+send a second presentation of those events.
+
+Every thread summary and timeline page carries the authoritative durable
+`revision` and `lastTimelineSequence`. `_axiom/thread/timeline` pages forward
+from an exclusive sequence cursor. A sequence/revision gap or runtime change
+requires fetching every page from the beginning and replacing the local
+timeline; a metadata-only refresh is not recovery. Standard ACP notifications
+may include `_meta.axiom` delivery identity, and Desktop prompts include a
+stable `_meta.axiom.clientItemId` for optimistic-message reconciliation.
 
 The canonical schema is
 `protocol/axiom-acp-extension/v0.1/schema.json`. Regenerate both language
@@ -45,3 +60,12 @@ Extension failures retain ordinary JSON-RPC codes and include a bounded typed
 `data` object with `code`, `message`, `retryable`, and optional
 `correlationId`. Unnegotiated feature calls return `unsupported_feature`;
 clients must not infer behavior from presentation text.
+
+Model catalog entries require stable model and provider IDs, display and short
+labels, the exact upstream model name, and supported thinking levels. Missing
+or empty identity fields fail the request; clients never infer a provider from
+a model ID, label, URL, or suffix.
+
+Verified security evidence requires a nonzero attestation generation and hard
+expiry in addition to provider/model identity and key fingerprints. A sidecar
+must fail verification rather than serialize an incomplete verified badge.

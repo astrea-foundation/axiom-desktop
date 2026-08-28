@@ -36,10 +36,6 @@ use crate::{
 const INTEL_PCCS: &str = "https://api.trustedservices.intel.com/";
 const NVIDIA_NRAS: &str = "https://nras.attestation.nvidia.com/v3/attest/gpu";
 const NVIDIA_JWKS: &str = "https://nras.attestation.nvidia.com/.well-known/jwks.json";
-const NVIDIA_ANCHOR_SHA256: &str =
-    "2df8907cf4d6c277b855d407ec178a649930a8e73f7294e8fce66e6ee27c5175";
-const NVIDIA_ANCHOR_PEM: &str =
-    include_str!("../../../fixtures/attestation/nvidia-nras-intermediate-004.pem");
 
 #[derive(Clone, Debug, Deserialize)]
 struct AttestationReport {
@@ -108,6 +104,31 @@ impl AttestationReport {
         Ok(key)
     }
 
+    fn response_signing_address(&self) -> Result<(String, [u8; 20])> {
+        let address = self.signing_address.as_deref().ok_or_else(|| {
+            SecureClientError::attestation("attestation omitted the response-signing address")
+        })?;
+        if address.len() != 42
+            || !address.starts_with("0x")
+            || !address[2..]
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        {
+            return Err(SecureClientError::attestation(
+                "attestation response-signing address is invalid",
+            ));
+        }
+        let bytes: [u8; 20] = hex::decode(&address[2..])
+            .map_err(|_| {
+                SecureClientError::attestation("attestation response-signing address is invalid")
+            })?
+            .try_into()
+            .map_err(|_| {
+                SecureClientError::attestation("attestation response-signing address is invalid")
+            })?;
+        Ok((address.to_owned(), bytes))
+    }
+
     fn workload_manifest(&self) -> Result<String> {
         if let Some(value) = self
             .app_compose
@@ -142,6 +163,7 @@ pub(crate) fn fuzz_parse_report(input: &[u8]) {
     let _ = report.echoed_nonce();
     let _ = report.tls_fingerprint();
     let _ = report.model_key();
+    let _ = report.response_signing_address();
     let _ = report.workload_manifest();
 }
 
@@ -156,6 +178,7 @@ struct IntelEvidence {
 #[derive(Clone, Debug)]
 pub(crate) struct VerifiedNearAttestation {
     pub(crate) model_key: Ed25519PublicKey,
+    pub(crate) response_signing_address: String,
     pub(crate) evidence: SecurityEvidence,
 }
 
@@ -173,51 +196,142 @@ pub(crate) async fn verify_model(
     let base_url = config
         .endpoint_policy
         .validate_provider_url(provider_base_url)?;
-    let (report, live_spki, nonce) =
-        fetch_report(config, &base_url, upstream_model, cancellation).await?;
-    validate_report_identity(&report, &live_spki, &nonce, upstream_model)?;
+    let mut nonce = [0_u8; 32];
+    OsRng.fill_bytes(&mut nonce);
+    let (model_result, response_result) = tokio::select! {
+        () = cancellation.cancelled() => return Err(SecureClientError::cancelled()),
+        outcomes = async {
+            tokio::try_join!(
+                fetch_report(config, &base_url, upstream_model, "ed25519", &nonce, cancellation),
+                fetch_report(config, &base_url, upstream_model, "ecdsa", &nonce, cancellation),
+            )
+        } => outcomes?,
+    };
+    let (model_report, model_live_spki) = model_result;
+    let (response_report, response_live_spki) = response_result;
+    validate_report_identity(
+        &model_report,
+        &model_live_spki,
+        &nonce,
+        upstream_model,
+        "ed25519",
+    )?;
+    validate_report_identity(
+        &response_report,
+        &response_live_spki,
+        &nonce,
+        upstream_model,
+        "ecdsa",
+    )?;
+    if model_live_spki != response_live_spki {
+        return Err(SecureClientError::attestation(
+            "attestation reports were fetched from different TLS identities",
+        ));
+    }
 
-    let model_key = report.model_key()?;
+    let model_key = model_report.model_key()?;
+    let (response_signing_address, response_signing_bytes) =
+        response_report.response_signing_address()?;
     let tls_fingerprint = decode_hex_32(
-        report
+        model_report
             .tls_fingerprint()
             .ok_or_else(|| SecureClientError::attestation("attestation omitted TLS binding"))?,
         "attestation TLS fingerprint is invalid",
     )?;
-    let manifest = report.workload_manifest()?;
-    let quote = decode_quote(
-        report
+    let response_tls_fingerprint = decode_hex_32(
+        response_report
+            .tls_fingerprint()
+            .ok_or_else(|| SecureClientError::attestation("attestation omitted TLS binding"))?,
+        "attestation TLS fingerprint is invalid",
+    )?;
+    if tls_fingerprint != response_tls_fingerprint {
+        return Err(SecureClientError::attestation(
+            "attestation reports disagree on their TLS binding",
+        ));
+    }
+    let manifest = model_report.workload_manifest()?;
+    let response_manifest = response_report.workload_manifest()?;
+    if manifest != response_manifest {
+        return Err(SecureClientError::attestation(
+            "attestation reports disagree on their workload manifest",
+        ));
+    }
+    let model_quote = decode_quote(
+        model_report
             .intel_quote
             .as_deref()
             .ok_or_else(|| SecureClientError::attestation("attestation omitted Intel evidence"))?,
         config.limits.attestation_quote_bytes,
     )?;
-    let nvidia_payload = report
+    let response_quote = decode_quote(
+        response_report
+            .intel_quote
+            .as_deref()
+            .ok_or_else(|| SecureClientError::attestation("attestation omitted Intel evidence"))?,
+        config.limits.attestation_quote_bytes,
+    )?;
+    let model_nvidia_payload = model_report
+        .nvidia_payload
+        .as_ref()
+        .ok_or_else(|| SecureClientError::attestation("attestation omitted NVIDIA evidence"))?;
+    let response_nvidia_payload = response_report
         .nvidia_payload
         .as_ref()
         .ok_or_else(|| SecureClientError::attestation("attestation omitted NVIDIA evidence"))?;
 
-    let intel_future = verify_intel(
-        &quote,
-        model_key,
+    let model_intel_future = verify_intel(
+        &model_quote,
+        model_key.as_bytes(),
         &tls_fingerprint,
         &nonce,
         &manifest,
         config,
     );
-    let nvidia_future = verify_nvidia(nvidia_payload, &nonce, config);
-    let (intel, ()) = tokio::select! {
+    let response_intel_future = verify_intel(
+        &response_quote,
+        &response_signing_bytes,
+        &tls_fingerprint,
+        &nonce,
+        &manifest,
+        config,
+    );
+    let model_nvidia_future = verify_nvidia(
+        model_nvidia_payload,
+        &nonce,
+        config,
+        &policy.nvidia_anchor_sha256,
+    );
+    let response_nvidia_future = verify_nvidia(
+        response_nvidia_payload,
+        &nonce,
+        config,
+        &policy.nvidia_anchor_sha256,
+    );
+    let (intel, (), response_intel, ()) = tokio::select! {
         () = cancellation.cancelled() => return Err(SecureClientError::cancelled()),
-        outcomes = async { tokio::try_join!(intel_future, nvidia_future) } => outcomes?,
+        outcomes = async {
+            tokio::try_join!(
+                model_intel_future,
+                model_nvidia_future,
+                response_intel_future,
+                response_nvidia_future,
+            )
+        } => outcomes?,
     };
 
-    if !policy
-        .accepted_intel_statuses
-        .iter()
-        .any(|status| status == &intel.status)
-    {
+    if [&intel, &response_intel].iter().any(|evidence| {
+        !policy
+            .accepted_intel_statuses
+            .iter()
+            .any(|status| status == &evidence.status)
+    }) {
         return Err(SecureClientError::attestation(
             "Intel TDX status is rejected by policy",
+        ));
+    }
+    if intel.mr_td != response_intel.mr_td || intel.compose_hash != response_intel.compose_hash {
+        return Err(SecureClientError::attestation(
+            "attestation reports disagree on their measured workload",
         ));
     }
     if !policy.require_nvidia_verified {
@@ -226,7 +340,7 @@ pub(crate) async fn verify_model(
         ));
     }
 
-    let evidence = build_evidence(
+    let mut evidence = build_evidence(
         model_id,
         policy,
         model_key,
@@ -234,8 +348,34 @@ pub(crate) async fn verify_model(
         &intel,
         manifest,
     );
+    evidence.checks.push(check(
+        "response_signature",
+        "Provider response signature",
+        "attested",
+    ));
+    evidence.provider_claims.push(EvidenceClaim {
+        name: "response_signing_address".into(),
+        value: response_signing_address.clone(),
+    });
+    evidence.provider_claims.push(EvidenceClaim {
+        name: "response_signing_key_fingerprint".into(),
+        value: hex::encode(Sha256::digest(response_signing_bytes)),
+    });
+    if matches!(
+        policy.workload_enforcement,
+        crate::WorkloadEnforcement::Enforce
+    ) && !evidence.approved_workload_identity
+    {
+        return Err(SecureClientError::with_code(
+            axiom_inference::ProviderFailureKind::AttestationRejected,
+            crate::SecureErrorCode::WorkloadNotApproved,
+            "NEAR workload identity is not approved by policy",
+            false,
+        ));
+    }
     Ok(VerifiedNearAttestation {
         model_key,
+        response_signing_address,
         evidence,
     })
 }
@@ -244,10 +384,10 @@ async fn fetch_report(
     config: &SecureClientConfig,
     base_url: &Url,
     upstream_model: &str,
+    signing_algo: &str,
+    nonce: &[u8; 32],
     cancellation: &CancellationToken,
-) -> Result<(AttestationReport, [u8; 32], [u8; 32])> {
-    let mut nonce = [0_u8; 32];
-    OsRng.fill_bytes(&mut nonce);
+) -> Result<(AttestationReport, [u8; 32])> {
     let nonce_hex = hex::encode(nonce);
     let endpoint_text = format!(
         "{}/attestation/report",
@@ -257,7 +397,7 @@ async fn fetch_report(
         .map_err(|_| SecureClientError::catalog("attestation endpoint is invalid"))?;
     {
         let mut query = endpoint.query_pairs_mut();
-        query.append_pair("signing_algo", "ed25519");
+        query.append_pair("signing_algo", signing_algo);
         query.append_pair("nonce", &nonce_hex);
         query.append_pair("include_tls_fingerprint", "true");
         if base_url.host_str() == Some("cloud-api.near.ai") {
@@ -305,7 +445,7 @@ async fn fetch_report(
     let normalized = normalize_report(raw)?;
     let report = serde_json::from_value(normalized)
         .map_err(|_| SecureClientError::attestation("attestation report shape is invalid"))?;
-    Ok((report, live_spki, nonce))
+    Ok((report, live_spki))
 }
 
 fn normalize_report(mut value: Value) -> Result<Value> {
@@ -343,10 +483,11 @@ fn validate_report_identity(
     live_spki: &[u8; 32],
     nonce: &[u8; 32],
     upstream_model: &str,
+    expected_signing_algo: &str,
 ) -> Result<()> {
-    if report.signing_algo.as_deref() != Some("ed25519") {
+    if report.signing_algo.as_deref() != Some(expected_signing_algo) {
         return Err(SecureClientError::attestation(
-            "attestation signing algorithm is not ed25519",
+            "attestation signing algorithm does not match the request",
         ));
     }
     let echoed_nonce = report.echoed_nonce().ok_or_else(|| {
@@ -357,11 +498,7 @@ fn validate_report_identity(
             "attestation nonce does not match the challenge",
         ));
     }
-    if report
-        .model_name
-        .as_deref()
-        .is_some_and(|model| model != upstream_model)
-    {
+    if report.model_name.as_deref() != Some(upstream_model) {
         return Err(SecureClientError::attestation(
             "attested model does not match the selected model",
         ));
@@ -395,7 +532,7 @@ fn decode_quote(value: &str, limit: usize) -> Result<Vec<u8>> {
 
 async fn verify_intel(
     quote: &[u8],
-    model_key: Ed25519PublicKey,
+    signing_material: &[u8],
     tls_fingerprint: &[u8; 32],
     nonce: &[u8; 32],
     workload_manifest: &str,
@@ -412,7 +549,7 @@ async fn verify_intel(
     let td = verified.report.as_td10().ok_or_else(|| {
         SecureClientError::attestation("Intel quote does not contain a supported TDX report")
     })?;
-    verify_report_data(&td.report_data, model_key, tls_fingerprint, nonce)?;
+    verify_report_data(&td.report_data, signing_material, tls_fingerprint, nonce)?;
 
     let compose_hash = Sha256::digest(workload_manifest.as_bytes());
     let mut expected_config_id = [0_u8; 48];
@@ -434,19 +571,22 @@ async fn verify_intel(
 
 fn verify_report_data(
     report_data: &[u8; 64],
-    model_key: Ed25519PublicKey,
+    signing_material: &[u8],
     tls_fingerprint: &[u8; 32],
     nonce: &[u8; 32],
 ) -> Result<()> {
-    let model_key_bytes = hex::decode(model_key.to_hex())
-        .map_err(|_| SecureClientError::attestation("attested model key is invalid"))?;
+    if signing_material.is_empty() {
+        return Err(SecureClientError::attestation(
+            "attested signing material is invalid",
+        ));
+    }
     let mut hasher = Sha256::new();
-    hasher.update(model_key_bytes);
+    hasher.update(signing_material);
     hasher.update(tls_fingerprint);
     let expected_binding = hasher.finalize();
     if report_data[..32] != expected_binding[..] || report_data[32..] != nonce[..] {
         return Err(SecureClientError::attestation(
-            "Intel report data does not bind the model key, TLS key, and nonce",
+            "Intel report data does not bind the signing key, TLS key, and nonce",
         ));
     }
     Ok(())
@@ -456,6 +596,7 @@ async fn verify_nvidia(
     payload: &Value,
     expected_nonce: &[u8; 32],
     config: &SecureClientConfig,
+    approved_anchor_sha256: &[String],
 ) -> Result<()> {
     let payload_bytes = serde_json::to_vec(payload)
         .map_err(|_| SecureClientError::attestation("NVIDIA evidence is invalid"))?;
@@ -525,13 +666,7 @@ async fn verify_nvidia(
         ));
     }
     let jwks = bounded_body(jwks_response, config.limits.nvidia_jwks_bytes).await?;
-    verify_nvidia_jwt(
-        jwt,
-        &jwks,
-        &expected_nonce_hex,
-        NVIDIA_ANCHOR_PEM,
-        NVIDIA_ANCHOR_SHA256,
-    )
+    verify_nvidia_jwt(jwt, &jwks, &expected_nonce_hex, approved_anchor_sha256)
 }
 
 #[derive(Deserialize)]
@@ -555,8 +690,7 @@ fn verify_nvidia_jwt(
     jwt: &str,
     jwks_json: &[u8],
     expected_nonce: &str,
-    anchor_pem: &str,
-    anchor_sha256: &str,
+    approved_anchor_sha256: &[String],
 ) -> Result<()> {
     let parts: Vec<_> = jwt.split('.').collect();
     let [encoded_header, encoded_payload, encoded_signature] = parts.as_slice() else {
@@ -581,20 +715,17 @@ fn verify_nvidia_jwt(
         .ok_or_else(|| SecureClientError::attestation("NVIDIA signing key is absent from JWKS"))?;
     let leaf_der = decode_certificate(&chain[0])?;
     let presented_intermediate = decode_certificate(&chain[1])?;
-    if hex::encode(Sha256::digest(&presented_intermediate)) != anchor_sha256 {
+    let presented_fingerprint = hex::encode(Sha256::digest(&presented_intermediate));
+    if !approved_anchor_sha256
+        .iter()
+        .any(|approved| approved == &presented_fingerprint)
+    {
         return Err(SecureClientError::attestation(
-            "NVIDIA certificate chain does not match the pinned anchor",
+            "NVIDIA certificate chain does not match the signed trust policy",
         ));
     }
-    let (_, anchor_pem) = parse_x509_pem(anchor_pem.as_bytes())
-        .map_err(|_| SecureClientError::attestation("pinned NVIDIA anchor is invalid"))?;
-    let (_, anchor) = X509Certificate::from_der(&anchor_pem.contents)
-        .map_err(|_| SecureClientError::attestation("pinned NVIDIA anchor is invalid"))?;
-    if hex::encode(Sha256::digest(&anchor_pem.contents)) != anchor_sha256 {
-        return Err(SecureClientError::attestation(
-            "compiled NVIDIA anchor fingerprint is invalid",
-        ));
-    }
+    let (_, anchor) = X509Certificate::from_der(&presented_intermediate)
+        .map_err(|_| SecureClientError::attestation("NVIDIA anchor is invalid"))?;
     let (_, leaf) = X509Certificate::from_der(&leaf_der)
         .map_err(|_| SecureClientError::attestation("NVIDIA leaf certificate is invalid"))?;
     if !leaf.validity().is_valid() || !anchor.validity().is_valid() {
@@ -694,6 +825,8 @@ fn build_evidence(
         verified_at_unix_seconds: SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |duration| duration.as_secs()),
+        attestation_generation: None,
+        hard_expires_at_unix_seconds: None,
         model_key_fingerprint: hex::encode(Sha256::digest(model_key.as_bytes())),
         tls_spki_fingerprint: Some(hex::encode(tls_fingerprint)),
         checks: vec![
@@ -891,18 +1024,39 @@ mod tests {
     #[test]
     fn report_identity_rejects_mutated_nonce_model_algorithm_and_tls_connection() {
         let mut candidate = report();
-        assert!(validate_report_identity(&candidate, &[0x22; 32], &[0x11; 32], "model/a").is_ok());
+        assert!(
+            validate_report_identity(&candidate, &[0x22; 32], &[0x11; 32], "model/a", "ed25519",)
+                .is_ok()
+        );
 
         candidate.nonce = Some("12".repeat(32));
-        assert!(validate_report_identity(&candidate, &[0x22; 32], &[0x11; 32], "model/a").is_err());
+        assert!(
+            validate_report_identity(&candidate, &[0x22; 32], &[0x11; 32], "model/a", "ed25519",)
+                .is_err()
+        );
         candidate = report();
         candidate.model_name = Some("model/b".into());
-        assert!(validate_report_identity(&candidate, &[0x22; 32], &[0x11; 32], "model/a").is_err());
+        assert!(
+            validate_report_identity(&candidate, &[0x22; 32], &[0x11; 32], "model/a", "ed25519",)
+                .is_err()
+        );
+        candidate = report();
+        candidate.model_name = None;
+        assert!(
+            validate_report_identity(&candidate, &[0x22; 32], &[0x11; 32], "model/a", "ed25519",)
+                .is_err()
+        );
         candidate = report();
         candidate.signing_algo = Some("ecdsa".into());
-        assert!(validate_report_identity(&candidate, &[0x22; 32], &[0x11; 32], "model/a").is_err());
+        assert!(
+            validate_report_identity(&candidate, &[0x22; 32], &[0x11; 32], "model/a", "ed25519",)
+                .is_err()
+        );
         candidate = report();
-        assert!(validate_report_identity(&candidate, &[0x23; 32], &[0x11; 32], "model/a").is_err());
+        assert!(
+            validate_report_identity(&candidate, &[0x23; 32], &[0x11; 32], "model/a", "ed25519",)
+                .is_err()
+        );
     }
 
     #[test]
@@ -914,16 +1068,57 @@ mod tests {
             [key_bytes.as_slice(), &[0x22; 32]].concat(),
         ));
         report_data[32..].copy_from_slice(&[0x11; 32]);
-        assert!(verify_report_data(&report_data, key, &[0x22; 32], &[0x11; 32]).is_ok());
+        assert!(
+            verify_report_data(&report_data, key.as_bytes(), &[0x22; 32], &[0x11; 32],).is_ok()
+        );
 
         report_data[0] ^= 1;
-        assert!(verify_report_data(&report_data, key, &[0x22; 32], &[0x11; 32]).is_err());
+        assert!(
+            verify_report_data(&report_data, key.as_bytes(), &[0x22; 32], &[0x11; 32],).is_err()
+        );
+
+        let response_address = [0x33_u8; 20];
+        let mut response_report_data = [0_u8; 64];
+        response_report_data[..32].copy_from_slice(&Sha256::digest(
+            [response_address.as_slice(), &[0x22; 32]].concat(),
+        ));
+        response_report_data[32..].copy_from_slice(&[0x11; 32]);
+        assert!(
+            verify_report_data(
+                &response_report_data,
+                &response_address,
+                &[0x22; 32],
+                &[0x11; 32],
+            )
+            .is_ok()
+        );
+        assert!(
+            verify_report_data(&response_report_data, &[0x34; 20], &[0x22; 32], &[0x11; 32],)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn response_signing_report_requires_canonical_ecdsa_address() {
+        let mut candidate = report();
+        candidate.signing_algo = Some("ecdsa".into());
+        candidate.signing_public_key = None;
+        candidate.signing_address = Some(format!("0x{}", "33".repeat(20)));
+        assert!(
+            validate_report_identity(&candidate, &[0x22; 32], &[0x11; 32], "model/a", "ecdsa",)
+                .is_ok()
+        );
+        assert_eq!(candidate.response_signing_address().unwrap().1, [0x33; 20]);
+
+        candidate.signing_address = Some(format!("0x{}", "AA".repeat(20)));
+        assert!(candidate.response_signing_address().is_err());
+        candidate.signing_address = Some("33".repeat(20));
+        assert!(candidate.response_signing_address().is_err());
     }
 
     struct NvidiaFixture {
         jwt: String,
         jwks: Vec<u8>,
-        anchor_pem: String,
         anchor_hash: String,
         nonce: String,
     }
@@ -981,7 +1176,6 @@ mod tests {
         NvidiaFixture {
             jwt,
             jwks,
-            anchor_pem: ca_cert.pem(),
             anchor_hash: hex::encode(Sha256::digest(ca_cert.der())),
             nonce,
         }
@@ -995,8 +1189,7 @@ mod tests {
                 &fixture.jwt,
                 &fixture.jwks,
                 &fixture.nonce,
-                &fixture.anchor_pem,
-                &fixture.anchor_hash,
+                std::slice::from_ref(&fixture.anchor_hash),
             )
             .is_ok()
         );
@@ -1009,8 +1202,7 @@ mod tests {
                 std::str::from_utf8(&tampered).unwrap(),
                 &fixture.jwks,
                 &fixture.nonce,
-                &fixture.anchor_pem,
-                &fixture.anchor_hash,
+                std::slice::from_ref(&fixture.anchor_hash),
             )
             .is_err()
         );
@@ -1019,8 +1211,7 @@ mod tests {
                 &fixture.jwt,
                 &fixture.jwks,
                 &"cd".repeat(32),
-                &fixture.anchor_pem,
-                &fixture.anchor_hash,
+                std::slice::from_ref(&fixture.anchor_hash),
             )
             .is_err()
         );
@@ -1030,8 +1221,7 @@ mod tests {
                 &rejected.jwt,
                 &rejected.jwks,
                 &rejected.nonce,
-                &rejected.anchor_pem,
-                &rejected.anchor_hash,
+                std::slice::from_ref(&rejected.anchor_hash),
             )
             .is_err()
         );
@@ -1040,8 +1230,7 @@ mod tests {
                 &fixture.jwt,
                 &fixture.jwks,
                 &fixture.nonce,
-                &fixture.anchor_pem,
-                &"00".repeat(32),
+                &["00".repeat(32)],
             )
             .is_err()
         );
@@ -1072,14 +1261,14 @@ mod tests {
         let upstream_model = std::env::var("AXIOM_NEAR_UPSTREAM_MODEL")
             .expect("AXIOM_NEAR_UPSTREAM_MODEL is required for the ignored live test");
         let config = SecureClientConfig::new("https://api.axiom.stream").unwrap();
-        let verified = verify_model(
+        let verified = Box::pin(verify_model(
             &config,
             "live-model",
             &upstream_model,
             &base_url,
             &TrustPolicy::default(),
             &CancellationToken::new(),
-        )
+        ))
         .await
         .unwrap();
 
@@ -1087,5 +1276,6 @@ mod tests {
         assert!(!verified.evidence.approved_workload_identity);
         assert!(verified.evidence.checks.iter().all(|check| check.passed));
         assert_eq!(verified.model_key.to_hex().len(), 64);
+        assert_eq!(verified.response_signing_address.len(), 42);
     }
 }

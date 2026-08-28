@@ -22,6 +22,9 @@ importers:
       '@fontsource-variable/geist-mono':
         specifier: ^5.2.7
         version: 5.3.0
+      '@lobehub/icons-static-svg':
+        specifier: ^1.94.0
+        version: 1.94.0
       animejs:
         specifier: ^4.5.0
         version: 4.5.0
@@ -68,6 +71,9 @@ importers:
       tailwindcss:
         specifier: ^4.3.0
         version: 4.3.3
+      tsx:
+        specifier: ^4.20.6
+        version: 4.23.12
       typescript:
         specifier: ~5.9.2
         version: 5.9.3
@@ -541,6 +547,9 @@ packages:
 
   '@jsdevtools/ono@7.1.3':
     resolution: {integrity: sha512-4JQNk+3mVzK3xh2rqd6RB4J46qUR19azEHBneZyTZM+c456qOrbbM/5xcR8huNCCcbVt7+UmizG6GuUvPvKUYg==}
+
+  '@lobehub/icons-static-svg@1.94.0':
+    resolution: {integrity: sha512-Inx1TYkjLH6YeHOIHeVW9+OM/xxRnk8TmcQVKquFUDBmE3X9sUuRGt7kALrrDBNNAbrWz7Qq6fAiFj9E9Mmw9Q==}
 
   '@napi-rs/lzma-linux-x64-gnu@1.5.1':
     resolution: {integrity: sha512-oTXEIha4SsuXdTA4Iyskj0kpdx2yVXdhd75c2v3xGrHFfVMsbhTPZU/nMPL4sWKo4pBHm3aucLaqGlF696dTyQ==}
@@ -2055,6 +2064,8 @@ snapshots:
       '@jridgewell/sourcemap-codec': 1.5.5
 
   '@jsdevtools/ono@7.1.3': {}
+
+  '@lobehub/icons-static-svg@1.94.0': {}
 
   '@napi-rs/lzma-linux-x64-gnu@1.5.1':
     optional: true

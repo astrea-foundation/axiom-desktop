@@ -39,7 +39,7 @@ use crate::{
     AxiomError, Result,
     agent::{
         APP_EVENT_QUEUE_CAPACITY, CompactionResult, QuestionHandler, SecurityVerification,
-        TurnContext, TurnRunner,
+        TurnContext, TurnRunner, reconcile_model_settings, reconcile_new_session_settings,
     },
     app::{
         AppCommand, AppEvent, Origin, PermissionProfile, QuestionRequest, Runtime, SessionId,
@@ -420,12 +420,6 @@ impl SecurityView {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum AuthPasteKind {
-    ApiKey,
-    CompletionCode,
-}
-
 #[derive(Clone, PartialEq, Eq)]
 struct SecretInput(String);
 
@@ -454,7 +448,6 @@ enum AuthOverlay {
         browser_opened: bool,
     },
     Paste {
-        kind: AuthPasteKind,
         input: SecretInput,
     },
     Checking {
@@ -936,12 +929,13 @@ impl TuiState {
     }
 
     fn resume_active_task(&mut self) {
+        let cwd = self.cwd.clone();
         if !self.has_pending_user_attention()
             && let Some(task) = self.active_task_mut()
         {
             task.phase = TaskPhase::Running;
             task.activity = task.running_tool().map_or(TaskActivity::Thinking, |tool| {
-                TaskActivity::RunningTool(tool.name.clone())
+                TaskActivity::Working(tool.timeline_label(&cwd))
             });
         }
     }
@@ -1095,23 +1089,34 @@ impl TuiState {
                 name,
                 arguments,
             } => {
+                let cwd = self.cwd.clone();
+                let mut activity = None;
                 let index = self.ensure_task(turn_id);
                 if let Some(task) = self.entries[index].task.as_mut() {
-                    task.ensure_tool(call_id, name, arguments.clone());
-                    task.activity = TaskActivity::PreparingTool(name.clone());
+                    let label = task
+                        .ensure_tool(call_id, name, arguments.clone())
+                        .timeline_label(&cwd);
+                    task.activity = TaskActivity::Working(label.clone());
+                    activity = Some(label);
                 }
-                self.status = format!("Preparing {name}…");
+                self.status = activity.unwrap_or_else(|| format!("Preparing {name}"));
                 self.status_tone = StatusTone::Active;
             }
             AppEvent::ToolStarted { call_id, name } => {
+                let cwd = self.cwd.clone();
+                let mut activity = None;
                 if let Some(task) = self.task_for_call_mut(call_id) {
-                    task.ensure_tool(call_id, name, serde_json::Value::Null)
-                        .phase = ToolPhase::Running;
-                    task.activity = TaskActivity::RunningTool(name.clone());
+                    let tool = task.ensure_tool(call_id, name, serde_json::Value::Null);
+                    tool.phase = ToolPhase::Running;
+                    let label = tool.timeline_label(&cwd);
+                    task.activity = TaskActivity::Working(label.clone());
+                    activity = Some(label);
                 } else if let Some(task) = self.active_task_mut() {
-                    task.ensure_tool(call_id, name, serde_json::Value::Null)
-                        .phase = ToolPhase::Running;
-                    task.activity = TaskActivity::RunningTool(name.clone());
+                    let tool = task.ensure_tool(call_id, name, serde_json::Value::Null);
+                    tool.phase = ToolPhase::Running;
+                    let label = tool.timeline_label(&cwd);
+                    task.activity = TaskActivity::Working(label.clone());
+                    activity = Some(label);
                 } else {
                     self.push_entry(
                         EntryKind::Tool,
@@ -1119,7 +1124,7 @@ impl TuiState {
                         false,
                     );
                 }
-                self.status = format!("Running {name}…");
+                self.status = activity.unwrap_or_else(|| format!("Running {name}"));
                 self.status_tone = StatusTone::Active;
             }
             AppEvent::ToolOutput {
@@ -1152,6 +1157,8 @@ impl TuiState {
                 }
             }
             AppEvent::ToolCompleted { call_id, success } => {
+                let cwd = self.cwd.clone();
+                let mut completed_activity = None;
                 if let Some(task) = self.task_for_call_mut(call_id) {
                     if let Some(tool) = task.tool_mut(call_id) {
                         tool.phase = if *success {
@@ -1159,19 +1166,22 @@ impl TuiState {
                         } else {
                             ToolPhase::Failed
                         };
+                        completed_activity = Some(tool.timeline_label(&cwd));
                     }
                     if task.phase != TaskPhase::Waiting {
                         task.activity =
                             task.running_tool().map_or(TaskActivity::Thinking, |tool| {
-                                TaskActivity::RunningTool(tool.name.clone())
+                                TaskActivity::Working(tool.timeline_label(&cwd))
                             });
                     }
                 }
-                self.status = if *success {
-                    "Tool completed".into()
-                } else {
-                    "Tool failed".into()
-                };
+                self.status = completed_activity.unwrap_or_else(|| {
+                    if *success {
+                        "Tool completed".into()
+                    } else {
+                        "Tool failed".into()
+                    }
+                });
                 self.status_tone = if *success {
                     StatusTone::Active
                 } else {
@@ -1219,8 +1229,11 @@ impl TuiState {
                 self.status = format!("Tools permission changed to {}", profile.label());
             }
             AppEvent::ModelChanged { model } => {
+                let changed = self.model != *model;
                 self.model.clone_from(model);
-                self.security_evidence = None;
+                if changed {
+                    self.reset_security();
+                }
                 self.status = format!("Model changed to {model}");
             }
             AppEvent::ThinkingLevelChanged { level } => {
@@ -1414,11 +1427,6 @@ impl TuiState {
                 self.security = match state {
                     crate::app::SecurityStatus::Unverified => "NOT VERIFIED",
                     crate::app::SecurityStatus::Verifying => "VERIFYING",
-                    crate::app::SecurityStatus::UnattestedDevelopment
-                        if crate::provider::unattested_development_enabled() =>
-                    {
-                        "UNATTESTED DEV"
-                    }
                     crate::app::SecurityStatus::Verified => "SECURE",
                     crate::app::SecurityStatus::UnattestedDevelopment
                     | crate::app::SecurityStatus::Failed => "SECURITY FAILED",
@@ -1741,7 +1749,10 @@ impl TuiState {
                         self.push_task_body(
                             &mut lines,
                             task,
-                            &format!("{glyph} {}", sanitize_terminal_text(&tool.timeline_label())),
+                            &format!(
+                                "{glyph} {}",
+                                sanitize_terminal_text(&tool.timeline_label(&self.cwd))
+                            ),
                             Style::default().fg(color),
                             body_width,
                             theme,
@@ -2921,12 +2932,21 @@ struct TerminalGuard {
 impl TerminalGuard {
     fn enter(background: Option<&'static str>) -> io::Result<Self> {
         enable_raw_mode()?;
-        execute!(
+        if let Err(error) = execute!(
             io::stdout(),
             SetAxiomTerminalBackground(background),
             EnterAlternateScreen,
             EnableBracketedPaste
-        )?;
+        ) {
+            let _ = execute!(
+                io::stdout(),
+                DisableBracketedPaste,
+                LeaveAlternateScreen,
+                ResetAxiomTerminalBackground(background.is_some())
+            );
+            let _ = disable_raw_mode();
+            return Err(error);
+        }
         Ok(Self {
             reset_background: background.is_some(),
         })
@@ -2942,6 +2962,68 @@ impl Drop for TerminalGuard {
             LeaveAlternateScreen,
             ResetAxiomTerminalBackground(self.reset_background)
         );
+    }
+}
+
+async fn wait_for_shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use std::future::pending;
+        use tokio::signal::unix::{SignalKind, signal};
+
+        let mut terminate = signal(SignalKind::terminate()).ok();
+        let mut hangup = signal(SignalKind::hangup()).ok();
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            () = async {
+                if let Some(signal) = &mut terminate {
+                    let _ = signal.recv().await;
+                } else {
+                    pending::<()>().await;
+                }
+            } => {}
+            () = async {
+                if let Some(signal) = &mut hangup {
+                    let _ = signal.recv().await;
+                } else {
+                    pending::<()>().await;
+                }
+            } => {}
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        use std::future::pending;
+        use tokio::signal::windows::{ctrl_break, ctrl_close, ctrl_shutdown};
+
+        let mut close = ctrl_close().ok();
+        let mut shutdown = ctrl_shutdown().ok();
+        let mut break_signal = ctrl_break().ok();
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            () = async {
+                if let Some(signal) = &mut close {
+                    let _ = signal.recv().await;
+                } else {
+                    pending::<()>().await;
+                }
+            } => {}
+            () = async {
+                if let Some(signal) = &mut shutdown {
+                    let _ = signal.recv().await;
+                } else {
+                    pending::<()>().await;
+                }
+            } => {}
+            () = async {
+                if let Some(signal) = &mut break_signal {
+                    let _ = signal.recv().await;
+                } else {
+                    pending::<()>().await;
+                }
+            } => {}
+        }
     }
 }
 
@@ -2963,14 +3045,25 @@ async fn restore_tui_session(
     let loaded = store.load_recovering(session_id)?;
     let resumed_model = model_for_resume(&loaded.events, &state.model);
     let resumed_thinking = thinking_for_resume(&loaded.events, state.thinking);
+    let reconciled_settings = reconcile_new_session_settings(
+        runner
+            .available_model_details(CancellationToken::new())
+            .await?,
+        Some(&resumed_model),
+        &state.model,
+        resumed_thinking,
+    )?;
     let resumed_profile = permission_for_resume(&loaded.events, state.profile);
     runtime.restore(&loaded.events).await?;
     runner.restore_session(session_id, &loaded.events).await?;
+    runner
+        .set_model_settings(session_id, &reconciled_settings)
+        .await?;
     state.profile = PermissionProfile::from_str(&summary.profile).unwrap_or(state.profile);
     for envelope in &loaded.events {
         state.apply(&envelope.event);
     }
-    state.model = resumed_model;
+    state.model = resumed_model.clone();
     state.thinking = resumed_thinking;
     state.profile = resumed_profile;
     // Security is live process state, not resumable conversation state. A
@@ -2991,6 +3084,21 @@ async fn restore_tui_session(
         .await?;
     store.append(&resumed)?;
     state.apply(&resumed.event);
+    let model_changed = resumed_model != reconciled_settings.model;
+    if model_changed || resumed_thinking != reconciled_settings.thinking {
+        let corrected = runtime
+            .dispatch(AppCommand::ChangeModelSettings {
+                session_id: session_id.clone(),
+                model: reconciled_settings.model.clone(),
+                thinking: reconciled_settings.thinking,
+                reset_security: model_changed,
+            })
+            .await?;
+        store.append_all(&corrected)?;
+        for event in corrected {
+            state.apply(&event.event);
+        }
+    }
     let recovery = store.recovery_status(session_id)?;
     let mut notices = loaded.warnings;
     if recovery.interrupted_turns > 0 || !recovery.interrupted_tools.is_empty() {
@@ -3011,9 +3119,6 @@ async fn restore_tui_session(
                 .join(", ")
         ));
     }
-    if summary.history_truncated {
-        notices.push("Older session history was removed by retention policy.".into());
-    }
     for message in notices {
         let warning = runtime
             .emit(session_id.clone(), AppEvent::WarningRaised { message })
@@ -3022,6 +3127,18 @@ async fn restore_tui_session(
         state.apply(&warning.event);
     }
     Ok(state)
+}
+
+fn persist_tui_thinking_change(
+    store: Option<&SessionStore>,
+    events: &[crate::app::EventEnvelope],
+    model: &str,
+    thinking: ThinkingLevel,
+) -> Result<()> {
+    if let Some(store) = store {
+        store.append_all_and_set_profile_preferences(events, model, thinking)?;
+    }
+    Ok(())
 }
 
 pub async fn run(
@@ -3040,26 +3157,38 @@ pub async fn run(
     let cwd = cwd.canonicalize()?;
     let default_model = model.clone();
     let default_thinking = ThinkingLevel::Medium;
-    let initial_model = if resume.is_none() {
-        store
+    let (initial_settings, correct_initial_preferences) = if resume.is_none() {
+        let preferences = store
             .as_ref()
-            .map(SessionStore::last_used_model)
-            .transpose()?
-            .flatten()
-            .unwrap_or(model)
+            .map(SessionStore::profile_preferences)
+            .transpose()?;
+        let settings = reconcile_new_session_settings(
+            runner
+                .available_model_details(CancellationToken::new())
+                .await?,
+            preferences
+                .as_ref()
+                .and_then(|preferences| preferences.model.as_deref()),
+            &default_model,
+            preferences
+                .as_ref()
+                .map_or(default_thinking, |preferences| preferences.thinking_level),
+        )?;
+        let correct_preferences = store.is_some()
+            && preferences.as_ref().is_none_or(|preferences| {
+                preferences.model.as_deref() != Some(settings.model.as_str())
+                    || preferences.thinking_level != settings.thinking
+            });
+        (Some(settings), correct_preferences)
     } else {
-        model
+        (None, false)
     };
-    let initial_thinking = if resume.is_none() {
-        store
-            .as_ref()
-            .map(SessionStore::last_used_thinking)
-            .transpose()?
-            .flatten()
-            .unwrap_or(default_thinking)
-    } else {
-        default_thinking
-    };
+    let initial_model = initial_settings
+        .as_ref()
+        .map_or_else(|| model, |settings| settings.model.clone());
+    let initial_thinking = initial_settings
+        .as_ref()
+        .map_or(default_thinking, |settings| settings.thinking);
     let _guard = TerminalGuard::enter(options.color_mode.terminal_background())?;
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
@@ -3098,36 +3227,32 @@ pub async fn run(
         for event in created {
             state.apply(&event.event);
         }
-        if state.model != default_model {
-            runner.set_model(&session_id, state.model.clone()).await?;
-        }
-        if state.thinking != default_thinking {
-            runner
-                .set_thinking_level(&session_id, state.thinking)
-                .await?;
-        }
-        let selected_model = runtime
-            .dispatch(AppCommand::ChangeModel {
+        let initial_settings = initial_settings
+            .as_ref()
+            .expect("new TUI sessions reconcile catalog settings before creation");
+        runner
+            .set_model_settings(&session_id, initial_settings)
+            .await?;
+        let selected_settings = runtime
+            .dispatch(AppCommand::ChangeModelSettings {
                 session_id: session_id.clone(),
                 model: state.model.clone(),
+                thinking: state.thinking,
+                reset_security: false,
             })
             .await?;
         if let Some(store) = &store {
-            store.append_all(&selected_model)?;
+            if correct_initial_preferences {
+                store.append_all_and_set_profile_preferences(
+                    &selected_settings,
+                    &state.model,
+                    state.thinking,
+                )?;
+            } else {
+                store.append_all(&selected_settings)?;
+            }
         }
-        for event in selected_model {
-            state.apply(&event.event);
-        }
-        let selected_thinking = runtime
-            .dispatch(AppCommand::ChangeThinkingLevel {
-                session_id: session_id.clone(),
-                level: state.thinking,
-            })
-            .await?;
-        if let Some(store) = &store {
-            store.append_all(&selected_thinking)?;
-        }
-        for event in selected_thinking {
+        for event in selected_settings {
             state.apply(&event.event);
         }
         state.status = "Ready".into();
@@ -3147,6 +3272,7 @@ pub async fn run(
     let mut pending_questions: Option<PendingQuestions> = None;
     let mut animation_ticks = tokio::time::interval(ANIMATION_TICK);
     animation_ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut shutdown_signal = Box::pin(wait_for_shutdown_signal());
 
     if uses_deterministic_test_runner() {
         if state.status == "Ready" {
@@ -3175,6 +3301,29 @@ pub async fn run(
     loop {
         terminal.draw(|frame| render(frame, &state))?;
         tokio::select! {
+            () = &mut shutdown_signal => {
+                if let Some(token) = &cancellation {
+                    token.cancel();
+                }
+                if let Some(token) = auth_cancellation.take() {
+                    token.cancel();
+                }
+                if let Some(token) = security_cancellation.take() {
+                    token.cancel();
+                }
+                if let Some(turn_id) = active_turn.take() {
+                    let cancelled = runtime
+                        .dispatch(AppCommand::CancelTurn {
+                            session_id: session_id.clone(),
+                            turn_id,
+                        })
+                        .await?;
+                    if let Some(store) = &store {
+                        store.append_all(&cancelled)?;
+                    }
+                }
+                break;
+            }
             _ = animation_ticks.tick(), if state.should_animate() => {
                 state.tick_animation();
             }
@@ -3340,7 +3489,6 @@ pub async fn run(
                                             }
                                             1 => {
                                                 state.overlay = Some(Overlay::Auth(AuthOverlay::Paste {
-                                                    kind: AuthPasteKind::ApiKey,
                                                     input: SecretInput(String::new()),
                                                 }));
                                                 state.status = "Paste your Axiom API key".into();
@@ -3365,16 +3513,6 @@ pub async fn run(
                                         }
                                         state.open_login(Some("Browser sign-in cancelled.".into()));
                                     }
-                                    KeyCode::Char('p' | 'P') => {
-                                        if let Some(token) = auth_cancellation.take() {
-                                            token.cancel();
-                                        }
-                                        state.overlay = Some(Overlay::Auth(AuthOverlay::Paste {
-                                            kind: AuthPasteKind::CompletionCode,
-                                            input: SecretInput(String::new()),
-                                        }));
-                                        state.status = "Paste the one-time browser code".into();
-                                    }
                                     KeyCode::Char('o' | 'O') => {
                                         if let Some(Overlay::Auth(AuthOverlay::Browser {
                                             authorization_url,
@@ -3390,15 +3528,15 @@ pub async fn run(
                                     KeyCode::Esc => state.open_login(None),
                                     KeyCode::Backspace => state.auth_secret_pop(),
                                     KeyCode::Enter => {
-                                        let (kind, value) = match &mut state.overlay {
-                                            Some(Overlay::Auth(AuthOverlay::Paste { kind, input })) => {
-                                                (*kind, std::mem::take(&mut input.0))
+                                        let value = match &mut state.overlay {
+                                            Some(Overlay::Auth(AuthOverlay::Paste { input })) => {
+                                                std::mem::take(&mut input.0)
                                             }
                                             _ => unreachable!("auth paste overlay is active"),
                                         };
                                         if value.trim().is_empty() {
                                             state.open_login(Some("No authorization value was entered.".into()));
-                                        } else if kind == AuthPasteKind::ApiKey {
+                                        } else {
                                             match auth.save_pasted_key(&value) {
                                                 Ok(()) => {
                                                     state.reset_security();
@@ -3419,18 +3557,6 @@ pub async fn run(
                                                 }
                                                 Err(error) => state.open_login(Some(error.to_string())),
                                             }
-                                        } else {
-                                            state.overlay = Some(Overlay::Auth(AuthOverlay::Checking {
-                                                label: "Exchanging one-time browser code…",
-                                            }));
-                                            let completion_auth = auth.clone();
-                                            let completion_tx = ui_tx.clone();
-                                            tokio::spawn(async move {
-                                                let result = completion_auth.complete_with_code(&value).await;
-                                                let _ = completion_tx
-                                                    .send(UiMessage::AuthCompleted(result))
-                                                    .await;
-                                            });
                                         }
                                     }
                                     KeyCode::Char(character)
@@ -3515,19 +3641,52 @@ pub async fn run(
                                 }
                                 KeyCode::Enter => {
                                     if let Some(model) = state.selected_model() {
+                                        let model_changed = model != state.model;
                                         state.overlay = None;
                                         state.status = format!("Switching to {model}…");
-                                        match runner.set_model(&session_id, model.clone()).await {
+                                        let selection = match runner
+                                            .available_model_details(CancellationToken::new())
+                                            .await
+                                        {
+                                            Ok(models) => models
+                                                .iter()
+                                                .find(|candidate| candidate.id == model)
+                                                .map(|candidate| {
+                                                    reconcile_model_settings(
+                                                        candidate,
+                                                        state.thinking,
+                                                    )
+                                                })
+                                                .ok_or_else(|| {
+                                                    AxiomError::InvalidTransition(
+                                                        "model is no longer in the provider catalog"
+                                                            .into(),
+                                                    )
+                                                }),
+                                            Err(error) => Err(error),
+                                        };
+                                        match selection {
+                                            Ok(selection) => match runner
+                                                .set_model_settings(&session_id, &selection)
+                                                .await
+                                            {
                                             Ok(()) => match runtime
-                                                .dispatch(AppCommand::ChangeModel {
+                                                .dispatch(AppCommand::ChangeModelSettings {
                                                     session_id: session_id.clone(),
-                                                    model,
+                                                    model: selection.model.clone(),
+                                                    thinking: selection.thinking,
+                                                    reset_security: model_changed,
                                                 })
                                                 .await
                                             {
                                                 Ok(events) => {
                                                     if let Some(store) = &store {
-                                                        store.append_all(&events)?;
+                                                        store
+                                                            .append_all_and_set_profile_preferences(
+                                                                &events,
+                                                                &selection.model,
+                                                                selection.thinking,
+                                                            )?;
                                                     }
                                                     for event in events {
                                                         state.apply(&event.event);
@@ -3550,6 +3709,11 @@ pub async fn run(
                                             Err(error) => {
                                                 show_slash_error(&mut state, &error.to_string());
                                             }
+                                        },
+                                            Err(error) => show_slash_error(
+                                                &mut state,
+                                                &error.to_string(),
+                                            ),
                                         }
                                     } else if !state.model_catalog_loading {
                                         state.status = "No matching model to select".into();
@@ -4020,9 +4184,12 @@ pub async fn run(
                                                         level,
                                                     }).await {
                                                         Ok(events) => {
-                                                            if let Some(store) = &store {
-                                                                store.append_all(&events)?;
-                                                            }
+                                                            persist_tui_thinking_change(
+                                                                store.as_ref(),
+                                                                &events,
+                                                                &state.model,
+                                                                level,
+                                                            )?;
                                                             for event in events {
                                                                 state.apply(&event.event);
                                                             }
@@ -6081,8 +6248,6 @@ fn security_overlay_lines(
     let Some(evidence) = &state.security_evidence else {
         let message = if state.security == "SECURITY FAILED" {
             "The latest security verification failed. Press R to try again."
-        } else if state.security == "UNATTESTED DEV" {
-            "This process is using the explicitly enabled unattested development transport."
         } else {
             "No attestation evidence is available. Press R to verify now."
         };
@@ -6527,14 +6692,7 @@ fn render_auth_overlay(
         AuthOverlay::Menu { .. } => " Connect to Axiom ",
         AuthOverlay::Account { .. } => " Axiom account ",
         AuthOverlay::Starting | AuthOverlay::Browser { .. } => " Browser sign-in ",
-        AuthOverlay::Paste {
-            kind: AuthPasteKind::ApiKey,
-            ..
-        } => " Axiom API key ",
-        AuthOverlay::Paste {
-            kind: AuthPasteKind::CompletionCode,
-            ..
-        } => " Paste one-time code ",
+        AuthOverlay::Paste { .. } => " Axiom API key ",
         AuthOverlay::Checking { .. } => " Checking authorization ",
     };
     let mut lines = Vec::new();
@@ -6648,17 +6806,13 @@ fn render_auth_overlay(
             )));
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
-                "O reopen browser · P paste fallback code · Esc cancel",
+                "O reopen browser · Esc cancel",
                 Style::default().fg(theme.muted),
             )));
         }
-        AuthOverlay::Paste { kind, input } => {
+        AuthOverlay::Paste { input } => {
             lines.push(Line::from(Span::styled(
-                if *kind == AuthPasteKind::ApiKey {
-                    "Paste your Axiom API key (axm_…). It will be stored in your system credential store when available."
-                } else {
-                    "Paste the axc_ one-time code shown by the approval page. It can only be exchanged once."
-                },
+                "Paste your Axiom API key (axm_…). It will be stored in your system credential store when available.",
                 Style::default().fg(theme.muted),
             )));
             lines.push(Line::from(""));
@@ -7402,6 +7556,8 @@ mod tests {
             e2ee_encryption_version: 2,
             trust_policy_version: "near-v2-trust-v1".into(),
             verified_at_unix_seconds: 1_777_776_000,
+            attestation_generation: Some(4),
+            hard_expires_at_unix_seconds: Some(1_777_776_240),
             model_key_fingerprint: "11".repeat(32),
             tls_spki_fingerprint: Some("22".repeat(32)),
             checks: vec![EvidenceCheck {
@@ -7770,7 +7926,6 @@ mod tests {
                 origin: "tui".into(),
                 profile: "confirm".into(),
                 archived: false,
-                history_truncated: false,
                 updated_at: "2026-08-22T16:42:00Z".into(),
             },
             SessionSummary {
@@ -7778,9 +7933,8 @@ mod tests {
                 title: Some("Release verification".into()),
                 cwd: PathBuf::from("/tmp/project"),
                 origin: "tui".into(),
-                profile: "workspace".into(),
+                profile: "confirm".into(),
                 archived: false,
-                history_truncated: false,
                 updated_at: "2026-08-21T10:15:00Z".into(),
             },
         ];
@@ -7828,7 +7982,6 @@ mod tests {
                 origin: "tui".into(),
                 profile: "confirm".into(),
                 archived: false,
-                history_truncated: false,
                 updated_at: "2026-08-22T16:42:00Z".into(),
             },
             SessionSummary {
@@ -7836,9 +7989,8 @@ mod tests {
                 title: Some("Release verification".into()),
                 cwd: PathBuf::from("/tmp/other"),
                 origin: "tui".into(),
-                profile: "workspace".into(),
+                profile: "confirm".into(),
                 archived: true,
-                history_truncated: false,
                 updated_at: "2026-08-21T10:15:00Z".into(),
             },
         ];
@@ -7975,9 +8127,15 @@ mod tests {
             "old-model".into(),
             PermissionProfile::Confirm,
         );
+        state.apply(&AppEvent::SecurityStatusChanged {
+            state: crate::app::SecurityStatus::Verified,
+        });
+        state.security_evidence = Some(security_evidence());
         state.apply(&AppEvent::ModelChanged {
             model: "new-model".into(),
         });
+        assert_eq!(state.security, "NOT VERIFIED");
+        assert!(state.security_evidence.is_none());
         state.apply(&AppEvent::ThinkingLevelChanged {
             level: ThinkingLevel::High,
         });
@@ -7990,6 +8148,62 @@ mod tests {
         assert!(output.contains("CONTEXT COMPACTED"));
         assert!(output.contains("12 conversation message(s)"));
         assert!(!output.contains("hidden successor summary"));
+    }
+
+    #[tokio::test]
+    async fn thinking_choice_survives_quit_before_the_next_prompt() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let path = directory.path().join("state.sqlite3");
+        let session_id;
+        {
+            let store = SessionStore::open(&path).expect("store");
+            let runtime = Runtime::new(16);
+            session_id = runtime.session_id();
+            let created = runtime
+                .dispatch(AppCommand::CreateSession {
+                    session_id: session_id.clone(),
+                    cwd: directory.path().canonicalize().expect("cwd"),
+                    origin: Origin::Tui,
+                    profile: PermissionProfile::Confirm,
+                })
+                .await
+                .expect("create session");
+            store.append_all(&created).expect("persist session");
+            let initial = runtime
+                .dispatch(AppCommand::ChangeModelSettings {
+                    session_id: session_id.clone(),
+                    model: "near/model".into(),
+                    thinking: ThinkingLevel::Medium,
+                    reset_security: false,
+                })
+                .await
+                .expect("initial settings");
+            store
+                .append_all(&initial)
+                .expect("persist initial settings");
+            let changed = runtime
+                .dispatch(AppCommand::ChangeThinkingLevel {
+                    session_id: session_id.clone(),
+                    level: ThinkingLevel::High,
+                })
+                .await
+                .expect("change thinking");
+            persist_tui_thinking_change(Some(&store), &changed, "near/model", ThinkingLevel::High)
+                .expect("persist thinking and new-thread preference");
+        }
+
+        let reopened = SessionStore::open(&path).expect("reopen after quit");
+        let preferences = reopened.profile_preferences().expect("preferences");
+        assert_eq!(preferences.model.as_deref(), Some("near/model"));
+        assert_eq!(preferences.thinking_level, ThinkingLevel::High);
+        assert_eq!(
+            reopened
+                .thread_snapshot(&session_id, None, 1)
+                .expect("thread")
+                .thread
+                .thinking_level,
+            ThinkingLevel::High
+        );
     }
 
     #[test]
@@ -8729,7 +8943,7 @@ mod tests {
         assert_eq!(task.timeline.len(), 3);
 
         let folded = render_symbols(100, 30, &state);
-        assert!(folded.contains("Read README.md"));
+        assert!(folded.contains("Read `README.md`"));
         assert!(!folded.contains("private scratch reasoning"));
         assert!(!folded.contains("raw README contents"));
         let lines = folded.lines().collect::<Vec<_>>();
@@ -8739,7 +8953,7 @@ mod tests {
             .expect("response before tool");
         let tool = lines
             .iter()
-            .position(|line| line.contains("Read README.md"))
+            .position(|line| line.contains("Read `README.md`"))
             .expect("tool timeline row");
         let after = lines
             .iter()
@@ -8753,6 +8967,88 @@ mod tests {
         let expanded = render_symbols(100, 40, &state);
         assert!(expanded.contains("private scratch reasoning"));
         assert!(expanded.contains("raw README contents"));
+    }
+
+    #[test]
+    fn tool_feedback_shows_live_commands_queries_and_workspace_relative_paths() {
+        let mut state = TuiState::new(
+            PathBuf::from("/work/axiomai"),
+            "model".into(),
+            PermissionProfile::Confirm,
+        );
+        let turn = TurnId::new();
+        state.apply(&AppEvent::PromptAccepted {
+            turn_id: turn.clone(),
+            text: "inspect and test".into(),
+        });
+        state.apply(&AppEvent::TurnStarted {
+            turn_id: turn.clone(),
+        });
+
+        state.apply(&AppEvent::ToolProposed {
+            turn_id: turn.clone(),
+            call_id: "command".into(),
+            name: "run_command".into(),
+            arguments: serde_json::json!({
+                "program": "cargo",
+                "args": ["test", "-p", "axiomcli"]
+            }),
+        });
+        assert_eq!(state.status, "Running a command: `cargo test -p axiomcli`");
+        assert!(
+            render_symbols(120, 34, &state).contains("Running a command: `cargo test -p axiomcli`")
+        );
+        state.apply(&AppEvent::ToolCompleted {
+            call_id: "command".into(),
+            success: true,
+        });
+        assert_eq!(state.status, "Ran a command: `cargo test -p axiomcli`");
+
+        for (call_id, name, arguments, expected) in [
+            (
+                "read",
+                "read_file",
+                serde_json::json!({"path":"/work/axiomai/src/lib.rs"}),
+                "Read `src/lib.rs`",
+            ),
+            (
+                "web",
+                "web_search",
+                serde_json::json!({"query":"Axiom TEE documentation"}),
+                "Searched the web for `Axiom TEE documentation`",
+            ),
+            (
+                "git",
+                "run_command",
+                serde_json::json!({"program":"git", "args":["diff", "--stat"]}),
+                "Ran Git command: `git diff --stat`",
+            ),
+        ] {
+            state.apply(&AppEvent::ToolProposed {
+                turn_id: turn.clone(),
+                call_id: call_id.into(),
+                name: name.into(),
+                arguments,
+            });
+            state.apply(&AppEvent::ToolCompleted {
+                call_id: call_id.into(),
+                success: true,
+            });
+            assert_eq!(state.status, expected);
+        }
+
+        let rendered = render_symbols(120, 42, &state);
+        for expected in [
+            "Ran a command: `cargo test -p axiomcli`",
+            "Read `src/lib.rs`",
+            "Searched the web for `Axiom TEE documentation`",
+            "Ran Git command: `git diff --stat`",
+        ] {
+            assert!(
+                rendered.contains(expected),
+                "missing tool feedback: {expected}"
+            );
+        }
     }
 
     #[test]
@@ -9296,7 +9592,6 @@ mod tests {
                 origin: "tui".into(),
                 profile: "full_access".into(),
                 archived: false,
-                history_truncated: false,
                 updated_at: "2026-08-22T16:42:00Z".into(),
             },
             SessionSummary {
@@ -9306,7 +9601,6 @@ mod tests {
                 origin: "tui".into(),
                 profile: "confirm".into(),
                 archived: false,
-                history_truncated: false,
                 updated_at: "2026-08-22T14:10:00Z".into(),
             },
             SessionSummary {
@@ -9316,7 +9610,6 @@ mod tests {
                 origin: "tui".into(),
                 profile: "confirm".into(),
                 archived: false,
-                history_truncated: false,
                 updated_at: "2026-08-21T09:06:00Z".into(),
             },
         ]);
@@ -9529,7 +9822,6 @@ mod tests {
         assert!(!menu.contains("Press K"));
 
         state.overlay = Some(Overlay::Auth(AuthOverlay::Paste {
-            kind: AuthPasteKind::ApiKey,
             input: SecretInput("axm_do-not-render-this-secret".into()),
         }));
         let paste = render_symbols(90, 28, &state);
@@ -9557,10 +9849,7 @@ mod tests {
     }
 
     #[test]
-    fn unattested_badge_requires_the_explicit_development_launch_gate() {
-        if crate::provider::unattested_development_enabled() {
-            return;
-        }
+    fn unattested_status_always_fails_closed() {
         let mut state = preview_state();
         state.apply(&AppEvent::SecurityStatusChanged {
             state: crate::app::SecurityStatus::UnattestedDevelopment,

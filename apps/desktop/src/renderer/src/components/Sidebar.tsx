@@ -109,7 +109,7 @@ function ThreadRow({
               className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[12.5px] text-[var(--color-cherry-bright)] transition-colors hover:bg-[var(--color-bg-surface-hover)]"
             >
               <Trash2 size={13} />
-              <span>Delete chat</span>
+              <span>Delete thread</span>
             </button>
           </div>
         ) : null}
@@ -207,7 +207,7 @@ function FolderBlock({
         <div className="ml-3 border-l border-white/[0.04] pl-1 pb-1">
           {threads.length === 0 ? (
             <div className="px-3 py-1.5 text-[11.5px] text-[var(--color-text-muted)]">
-              Drop chats here
+              Drop threads here
             </div>
           ) : (
             threads.map((thread) => (
@@ -394,7 +394,7 @@ function SidebarFrame({
             <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[var(--color-cherry)] transition-transform duration-[250ms] ease-[var(--ease-spring)] group-hover:scale-110">
               <Plus size={13} strokeWidth={3} className="text-[#140709]" />
             </span>
-            <span>New chat</span>
+            <span>New thread</span>
           </button>
           <button
             type="button"
@@ -412,13 +412,20 @@ function SidebarFrame({
             <span>Proxy</span>
           </button>
 
+          <div className="flex items-center gap-2 px-2 pb-0.5 pt-3" aria-label="Threads">
+            <span className="shrink-0 text-[10px] font-medium uppercase tracking-[0.14em] text-[var(--color-text-muted)]">
+              Threads
+            </span>
+            <span className="h-px flex-1 bg-white/[0.065]" aria-hidden="true" />
+          </div>
+
           <div className="flex items-center gap-1 px-1 pt-1">
             <div className="flex min-w-0 flex-1 items-center gap-2 rounded-lg border border-transparent bg-[var(--color-bg-surface)] px-2.5 py-1.5 focus-within:border-[var(--color-border-accent)]">
               <Search size={14} className="text-[var(--color-text-tertiary)]" />
               <input
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
-                placeholder="Search chats"
+                placeholder="Search threads"
                 className="w-full bg-transparent text-[13px] text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-tertiary)]"
               />
             </div>
@@ -467,7 +474,7 @@ function SidebarFrame({
             ))}
             {filtered.length === 0 && query ? (
               <div className="px-3 pt-6 text-[12.5px] text-[var(--color-text-tertiary)]">
-                No chats match “{query}”.
+                No threads match “{query}”.
               </div>
             ) : null}
           </div>

@@ -44,6 +44,10 @@ pub trait SecureProvider: sealed::Provider + Send + Sync {
         policy: &TrustPolicy,
         cancellation: CancellationToken,
     ) -> Result<Box<dyn VerifiedSession>>;
+
+    /// Drop public verified material after a typed rotation/protocol failure.
+    /// Request private keys and nonces are never cached by provider engines.
+    async fn invalidate(&self, _model_id: &str) {}
 }
 
 #[derive(Default)]
@@ -59,9 +63,13 @@ impl ProviderRegistry {
         #[cfg(not(feature = "test-fixture"))]
         {
             let near = Arc::new(crate::providers::near::NearProvider::new(
+                config.clone(),
+                Arc::clone(&credential),
+            )) as Arc<dyn SecureProvider>;
+            let phala = Arc::new(crate::providers::phala::PhalaProvider::new(
                 config, credential,
             )) as Arc<dyn SecureProvider>;
-            Self::new([near])
+            Self::new([near, phala])
         }
         #[cfg(feature = "test-fixture")]
         {
@@ -69,7 +77,11 @@ impl ProviderRegistry {
                 config.clone(),
                 Arc::clone(&credential),
             )) as Arc<dyn SecureProvider>;
-            let mut providers = vec![near];
+            let phala = Arc::new(crate::providers::phala::PhalaProvider::new(
+                config.clone(),
+                Arc::clone(&credential),
+            )) as Arc<dyn SecureProvider>;
+            let mut providers = vec![near, phala];
             if config.uses_test_fixture() {
                 providers.push(Arc::new(crate::providers::fixture::FixtureProvider::new(
                     config, credential,
@@ -102,6 +114,11 @@ impl ProviderRegistry {
         Ok(provider)
     }
 
+    #[must_use]
+    pub(crate) fn contains(&self, provider_id: &str) -> bool {
+        self.providers.contains_key(provider_id)
+    }
+
     pub(crate) fn validate_model(&self, model: &mut ModelInfo) -> Result<()> {
         let provider = self.resolve(model)?;
         provider.populate_capabilities(model);
@@ -119,6 +136,12 @@ impl ProviderRegistry {
         }
         let provider = self.resolve(model)?;
         provider.establish(model, policy, cancellation).await
+    }
+
+    pub async fn invalidate(&self, model: &ModelInfo) -> Result<()> {
+        let provider = self.resolve(model)?;
+        provider.invalidate(&model.id).await;
+        Ok(())
     }
 }
 

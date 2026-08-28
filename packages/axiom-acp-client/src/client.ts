@@ -1,17 +1,20 @@
 import { EventEmitter } from "node:events";
 import type {
   AccountStatusResponse,
+  AssignThreadCollectionResponse,
   BrowserLoginStartResponse,
+  CollectionStateResponse,
   CompactResponse,
   DeleteConfirmResponse,
   DeletePreviewResponse,
+  DesktopBootstrapResponse,
   EventNotification,
-  GetSessionStateResponse,
+  GetThreadTimelineResponse,
   ListModelsResponse,
-  ListSessionsRequest,
-  ListSessionsResponse,
-  SetSessionSettingsRequest,
-  SetSessionSettingsResponse,
+  ListThreadsRequest,
+  ListThreadsResponse,
+  ProfilePreferencesResponse,
+  SetProfilePreferencesRequest,
   VerifySecurityResponse,
 } from "./generated/protocol.js";
 import { ProtocolError } from "./errors.js";
@@ -24,20 +27,44 @@ import type {
   PermissionOutcome,
   PromptResult,
   RpcNotification,
+  SessionConfigOption,
   SessionStartResult,
 } from "./types.js";
 
 const EXTENSION_CAPABILITIES = {
   protocolVersion: "0.1",
   features: {
-    sessionCatalog: 1,
-    settings: 1,
+    threadCatalog: 1,
+    timeline: 1,
+    modelCatalog: 1,
+    profilePreferences: 1,
+    collections: 1,
+    desktopChat: 1,
     account: 1,
     securityEvidence: 1,
     compaction: 1,
     activity: 1,
   },
 } as const;
+
+const TIMELINE_PAGE_SIZE = 250;
+const TIMELINE_RESTART_LIMIT = 3;
+
+export interface ThreadSettingsRequest {
+  threadId: string;
+  model?: string;
+  thinkingLevel?: string;
+}
+
+export interface ThreadSettingsResult extends ProfilePreferencesResponse {
+  threadId: string;
+  settings: {
+    model: string;
+    thinkingLevel: string;
+    permissionProfile: string;
+  };
+  configOptions: SessionConfigOption[];
+}
 
 type InteractionResolver = {
   interaction: PendingInteraction;
@@ -48,7 +75,13 @@ export class AxiomAcpClient extends EventEmitter {
   readonly process: AcpProcess;
   readonly state = new AxiomStateStore();
   private readonly interactions = new Map<string, InteractionResolver>();
+  private readonly background = new Set<Promise<void>>();
+  private readonly refreshingThreads = new Map<string, Promise<GetThreadTimelineResponse>>();
+  private fullResync: Promise<void> | null = null;
+  private fullResyncRequired = false;
   private initialized = false;
+  private desktopBootstrap: DesktopBootstrapResponse | null = null;
+  private closing = false;
 
   constructor(options: SidecarProcessOptions) {
     super();
@@ -91,97 +124,212 @@ export class AxiomAcpClient extends EventEmitter {
     return this.state.snapshot();
   }
 
+  async bootstrapDesktop(): Promise<DesktopBootstrapResponse> {
+    this.assertInitialized();
+    const result = await this.process.request<DesktopBootstrapResponse>("_axiom/desktop/bootstrap", {});
+    if (
+      result.frontend !== "desktop-chat"
+      || result.permissionProfile !== "web"
+      || !result.chatCwd
+      || !result.newThreadSettings
+      || !["minimal", "low", "medium", "high", "xhigh"].includes(result.newThreadSettings.thinkingLevel)
+    ) {
+      throw new ProtocolError("AxiomCLI returned an invalid desktop chat bootstrap contract");
+    }
+    this.desktopBootstrap = result;
+    this.state.setPreferences(result.newThreadSettings);
+    return result;
+  }
+
+  async initializeDesktopState(): Promise<void> {
+    await Promise.all([this.listThreads(), this.listCollections(), this.getProfilePreferences()]);
+  }
+
+  async newChat(): Promise<SessionStartResult> {
+    return this.newSession(this.requireDesktopBootstrap().chatCwd);
+  }
+
+  async loadChat(threadId: string): Promise<SessionStartResult> {
+    return this.loadSession(threadId, this.requireDesktopBootstrap().chatCwd);
+  }
+
   async newSession(cwd: string): Promise<SessionStartResult> {
     this.assertInitialized();
     const result = await this.process.request<SessionStartResult>("session/new", { cwd, mcpServers: [] });
     this.state.addSession(result.sessionId, cwd);
     if (result.modes) this.state.setModes(result.sessionId, result.modes.currentModeId, result.modes.availableModes);
     if (result.configOptions) this.state.setConfig(result.sessionId, result.configOptions);
-    await this.refreshSession(result.sessionId);
-    void this.verifySecurity(result.sessionId).catch(() => undefined);
+    await this.refreshThread(result.sessionId);
+    this.runBackground(this.verifySecurity(result.sessionId));
     return result;
   }
 
-  async loadSession(sessionId: string, cwd: string): Promise<SessionStartResult> {
+  async loadSession(threadId: string, cwd: string): Promise<SessionStartResult> {
     this.assertInitialized();
-    const result = await this.process.request<SessionStartResult>("session/load", { sessionId, cwd, mcpServers: [] });
-    this.state.addSession(sessionId, cwd);
-    if (result.modes) this.state.setModes(sessionId, result.modes.currentModeId, result.modes.availableModes);
-    if (result.configOptions) this.state.setConfig(sessionId, result.configOptions);
-    await this.refreshSession(sessionId);
-    void this.verifySecurity(sessionId).catch(() => undefined);
-    return { ...result, sessionId };
+    const result = await this.process.request<SessionStartResult>("session/load", { sessionId: threadId, cwd, mcpServers: [] });
+    this.state.addSession(threadId, cwd);
+    if (result.modes) this.state.setModes(threadId, result.modes.currentModeId, result.modes.availableModes);
+    if (result.configOptions) this.state.setConfig(threadId, result.configOptions);
+    await this.refreshThread(threadId);
+    this.runBackground(this.verifySecurity(threadId));
+    return { ...result, sessionId: threadId };
   }
 
-  async prompt(sessionId: string, text: string): Promise<PromptResult> {
+  async prompt(threadId: string, text: string, clientItemId: string): Promise<PromptResult> {
     if (!text.trim()) throw new ProtocolError("prompt cannot be empty");
-    this.state.addUserMessage(sessionId, text);
-    this.state.setRunning(sessionId, true);
+    if (!clientItemId || clientItemId.length > 512) throw new ProtocolError("invalid client item ID");
+    this.state.setRunning(threadId, true);
     try {
       return await this.process.request<PromptResult>(
         "session/prompt",
-        { sessionId, prompt: [{ type: "text", text }] },
+        {
+          sessionId: threadId,
+          prompt: [{ type: "text", text }],
+          _meta: { axiom: { clientItemId } },
+        },
         0,
       );
     } finally {
-      this.state.setRunning(sessionId, false);
-      await this.refreshSession(sessionId).catch(() => undefined);
+      this.state.setRunning(threadId, false);
+      await this.refreshThread(threadId).catch(() => undefined);
     }
   }
 
-  async cancel(sessionId: string): Promise<void> {
-    // Interactions are client-owned ACP requests. Resolve them while cancelling
-    // the turn so a renderer disappearing or pressing Stop can never leave the
-    // trusted runtime waiting indefinitely (and can never imply approval). Send
-    // the cancellation first on the ordered pipe so denial cannot let the turn
-    // race ahead to a normal completion.
+  async cancel(threadId: string): Promise<void> {
     try {
-      await this.process.notify("session/cancel", { sessionId });
+      await this.process.notify("session/cancel", { sessionId: threadId });
     } finally {
       for (const [interactionId, pending] of this.interactions) {
-        if (pending.interaction.sessionId !== sessionId) continue;
+        if (pending.interaction.sessionId !== threadId) continue;
         this.resolveInteraction(
           interactionId,
-          pending.interaction.kind === "permission"
-            ? { outcome: { outcome: "cancelled" } }
-            : { action: "cancel" },
+          pending.interaction.kind === "permission" ? { outcome: { outcome: "cancelled" } } : { action: "cancel" },
         );
       }
     }
   }
 
-  async setMode(sessionId: string, modeId: string): Promise<void> {
-    await this.process.request("session/set_mode", { sessionId, modeId });
+  async setMode(threadId: string, modeId: string): Promise<void> {
+    await this.process.request("session/set_mode", { sessionId: threadId, modeId });
   }
 
-  async setConfig(sessionId: string, configId: string, value: string): Promise<void> {
-    const result = await this.process.request<{ configOptions: [] }>("session/set_config_option", {
-      sessionId,
+  async setConfig(threadId: string, configId: string, value: string): Promise<SessionConfigOption[]> {
+    const result = await this.process.request<{ configOptions: SessionConfigOption[] }>("session/set_config_option", {
+      sessionId: threadId,
       configId,
       value,
     });
-    this.state.setConfig(sessionId, result.configOptions);
+    this.state.setConfig(threadId, result.configOptions);
+    return result.configOptions;
   }
 
-  async listSessions(request: ListSessionsRequest = {}): Promise<ListSessionsResponse> {
-    const result = await this.process.request<ListSessionsResponse>("_axiom/session/list", request);
-    this.state.setCatalog(result.sessions);
-    return result;
+  async setSettings(request: ThreadSettingsRequest): Promise<ThreadSettingsResult> {
+    if (!request.model && !request.thinkingLevel) throw new ProtocolError("no settings were provided");
+    let configOptions = request.model
+      ? await this.setConfig(request.threadId, "model", request.model)
+      : null;
+    if (request.thinkingLevel) {
+      const thinking = configOptions?.find((option) => option.id === "thinking");
+      const requestedIsSupported = thinking?.options?.some(
+        (option) => option.value === request.thinkingLevel,
+      ) ?? false;
+      if (!request.model || requestedIsSupported) {
+        if (thinking?.currentValue !== request.thinkingLevel) {
+          configOptions = await this.setConfig(request.threadId, "thinking", request.thinkingLevel);
+        }
+      }
+    }
+    await this.refreshThread(request.threadId);
+    const preferences = await this.getProfilePreferences();
+    const session = this.state.snapshot().sessions[request.threadId];
+    if (!session?.settings?.model) {
+      throw new ProtocolError("AxiomCLI returned no authoritative active-thread settings");
+    }
+    return {
+      ...preferences,
+      threadId: request.threadId,
+      settings: session.settings,
+      configOptions: configOptions ?? session.configOptions,
+    };
   }
 
-  async refreshSession(sessionId: string): Promise<GetSessionStateResponse> {
-    const result = await this.process.request<GetSessionStateResponse>("_axiom/session/get_state", { sessionId });
-    this.state.setSnapshot(result.snapshot);
-    return result;
+  async listThreads(request: ListThreadsRequest = {}): Promise<ListThreadsResponse> {
+    const threads = [] as ListThreadsResponse["threads"];
+    let cursor = request.cursor ?? undefined;
+    for (let pageIndex = 0; pageIndex < 10_000; pageIndex += 1) {
+      const page = await this.process.request<ListThreadsResponse>("_axiom/thread/list", {
+        ...request,
+        cursor,
+        limit: request.limit ?? 200,
+      });
+      threads.push(...page.threads);
+      cursor = page.nextCursor ?? undefined;
+      if (cursor === undefined) {
+        const result = { threads, nextCursor: undefined };
+        this.state.setCatalog(threads);
+        return result;
+      }
+    }
+    throw new ProtocolError("thread catalog pagination exceeded its safety limit");
+  }
+
+  refreshThread(threadId: string): Promise<GetThreadTimelineResponse> {
+    const existing = this.refreshingThreads.get(threadId);
+    if (existing) return existing;
+    const refresh = this.fetchTimeline(threadId).finally(() => this.refreshingThreads.delete(threadId));
+    this.refreshingThreads.set(threadId, refresh);
+    return refresh;
   }
 
   listModels(): Promise<ListModelsResponse> {
     return this.process.request("_axiom/models/list", {});
   }
 
-  async setSettings(request: SetSessionSettingsRequest): Promise<SetSessionSettingsResponse> {
-    const result = await this.process.request<SetSessionSettingsResponse>("_axiom/session/set_settings", request);
-    await this.refreshSession(request.sessionId);
+  async getProfilePreferences(): Promise<ProfilePreferencesResponse> {
+    const result = await this.process.request<ProfilePreferencesResponse>("_axiom/profile/preferences", {});
+    this.state.setPreferences(result.preferences);
+    return result;
+  }
+
+  async setProfilePreferences(request: SetProfilePreferencesRequest): Promise<ProfilePreferencesResponse> {
+    const result = await this.process.request<ProfilePreferencesResponse>("_axiom/profile/preferences/set", request);
+    this.state.setPreferences(result.preferences);
+    return result;
+  }
+
+  async listCollections(): Promise<CollectionStateResponse> {
+    const result = await this.process.request<CollectionStateResponse>("_axiom/collection/list", {});
+    this.state.setCollections(result.state);
+    return result;
+  }
+
+  createCollection(name: string): Promise<CollectionStateResponse> {
+    return this.collectionRequest("_axiom/collection/create", { name });
+  }
+
+  renameCollection(collectionId: string, name: string): Promise<CollectionStateResponse> {
+    return this.collectionRequest("_axiom/collection/rename", { collectionId, name });
+  }
+
+  setCollectionCollapsed(collectionId: string, collapsed: boolean): Promise<CollectionStateResponse> {
+    return this.collectionRequest("_axiom/collection/set_collapsed", { collectionId, collapsed });
+  }
+
+  moveCollection(collectionId: string, position: number): Promise<CollectionStateResponse> {
+    return this.collectionRequest("_axiom/collection/move", { collectionId, position });
+  }
+
+  deleteCollection(collectionId: string): Promise<CollectionStateResponse> {
+    return this.collectionRequest("_axiom/collection/delete", { collectionId });
+  }
+
+  async assignThreadCollection(threadId: string, collectionId: string | null): Promise<AssignThreadCollectionResponse> {
+    const result = await this.process.request<AssignThreadCollectionResponse>("_axiom/collection/assign", {
+      threadId,
+      collectionId,
+    });
+    this.state.setCollections(result.state);
+    await this.refreshThread(threadId);
     return result;
   }
 
@@ -206,27 +354,36 @@ export class AxiomAcpClient extends EventEmitter {
     return this.accountRequest("_axiom/account/logout", {});
   }
 
-  async verifySecurity(sessionId: string): Promise<VerifySecurityResponse> {
-    const result = await this.process.request<VerifySecurityResponse>("_axiom/security/verify", { sessionId }, 0);
-    await this.refreshSession(sessionId);
+  async verifySecurity(threadId: string): Promise<VerifySecurityResponse> {
+    const result = await this.process.request<VerifySecurityResponse>("_axiom/security/verify", { threadId }, 0);
+    if (
+      result.status.state === "verified"
+      && (
+        !result.evidence
+        || result.evidence.attestationGeneration <= 0
+        || result.evidence.hardExpiresAtUnixSeconds <= 0
+      )
+    ) {
+      throw new ProtocolError("AxiomCLI returned verified security without complete lease-bound evidence");
+    }
     return result;
   }
 
-  compact(sessionId: string, focus?: string): Promise<CompactResponse> {
-    return this.process.request("_axiom/compaction/start", { sessionId, focus }, 0);
+  compact(threadId: string, focus?: string): Promise<CompactResponse> {
+    return this.process.request("_axiom/compaction/start", { threadId, focus }, 0);
   }
 
-  deletePreview(sessionIds: string[]): Promise<DeletePreviewResponse> {
-    return this.process.request("_axiom/session/delete_preview", { sessionIds });
+  deletePreview(threadIds: string[]): Promise<DeletePreviewResponse> {
+    return this.process.request("_axiom/thread/delete_preview", { threadIds });
   }
 
-  async deleteConfirm(confirmationToken: string, sessionIds: string[]): Promise<DeleteConfirmResponse> {
-    const result = await this.process.request<DeleteConfirmResponse>("_axiom/session/delete_confirm", {
+  async deleteConfirm(confirmationToken: string, threadIds: string[]): Promise<DeleteConfirmResponse> {
+    const result = await this.process.request<DeleteConfirmResponse>("_axiom/thread/delete_confirm", {
       confirmationToken,
-      sessionIds,
+      threadIds,
     });
-    for (const sessionId of sessionIds) this.state.removeSession(sessionId);
-    await this.listSessions();
+    for (const threadId of threadIds) this.state.removeSession(threadId);
+    await Promise.all([this.listThreads(), this.listCollections()]);
     return result;
   }
 
@@ -252,39 +409,73 @@ export class AxiomAcpClient extends EventEmitter {
     this.resolveInteraction(interactionId, outcome);
   }
 
-  close(): Promise<void> {
+  async close(): Promise<void> {
+    this.closing = true;
     for (const pending of this.interactions.values()) {
-      pending.respond(
-        pending.interaction.kind === "permission"
-          ? { outcome: { outcome: "cancelled" } }
-          : { action: "cancel" },
-      );
+      pending.respond(pending.interaction.kind === "permission" ? { outcome: { outcome: "cancelled" } } : { action: "cancel" });
     }
     this.interactions.clear();
-    return this.process.close();
+    try {
+      await this.process.close();
+    } catch (error) {
+      throw new ProtocolError(`could not close AxiomCLI: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    this.background.clear();
+  }
+
+  private async fetchTimeline(threadId: string): Promise<GetThreadTimelineResponse> {
+    for (let attempt = 0; attempt < TIMELINE_RESTART_LIMIT; attempt += 1) {
+      const pages: GetThreadTimelineResponse[] = [];
+      let cursor: number | undefined;
+      let restart = false;
+      do {
+        const page = await this.process.request<GetThreadTimelineResponse>("_axiom/thread/timeline", {
+          threadId,
+          afterSequence: cursor,
+          limit: TIMELINE_PAGE_SIZE,
+        });
+        const first = pages[0];
+        if (first && (
+          page.thread.threadId !== first.thread.threadId
+          || page.thread.revision !== first.thread.revision
+          || page.thread.lastTimelineSequence !== first.thread.lastTimelineSequence
+        )) {
+          restart = true;
+          break;
+        }
+        pages.push(page);
+        cursor = page.nextCursor ?? undefined;
+      } while (cursor !== undefined);
+      if (restart) continue;
+      if (!this.state.replaceTimeline(pages)) continue;
+      return pages.at(-1) ?? (() => { throw new ProtocolError("AxiomCLI returned no timeline page"); })();
+    }
+    throw new ProtocolError("thread changed repeatedly while its timeline was being synchronized");
   }
 
   private onNotification(notification: RpcNotification): void {
-    if (notification.method === "session/update") this.state.standardUpdate(notification.params);
+    if (this.closing) return;
+    if (notification.method === "session/update") {
+      const threadId = this.state.standardUpdate(notification.params);
+      if (threadId) this.runBackground(this.refreshThread(threadId));
+    }
     if (notification.method === "_axiom/event") {
-      const sessionId = this.state.extensionEvent(notification.params as EventNotification);
-      const state = sessionId ? this.state.snapshot().sessions[sessionId] : undefined;
-      if (sessionId && state?.needsResync) void this.refreshSession(sessionId);
+      const result = this.state.extensionEvent(notification.params as EventNotification);
+      if (result?.fullResync) this.fullResyncRequired = true;
+      if (this.fullResyncRequired) this.runBackground(this.resyncAll());
+      else if (result?.threadId) this.runBackground(this.refreshThread(result.threadId));
     }
   }
 
   private onRequest(incoming: IncomingRequest): void {
     const { request } = incoming;
     const params = request.params as Record<string, unknown> | undefined;
-    const mode = params?.mode && typeof params.mode === "object"
-      ? (params.mode as Record<string, unknown>)
-      : undefined;
-    const sessionId =
-      typeof params?.sessionId === "string"
-        ? params.sessionId
-        : typeof mode?.sessionId === "string"
-          ? mode.sessionId
-          : null;
+    const mode = params?.mode && typeof params.mode === "object" ? params.mode as Record<string, unknown> : undefined;
+    const sessionId = typeof params?.sessionId === "string"
+      ? params.sessionId
+      : typeof mode?.sessionId === "string"
+        ? mode.sessionId
+        : null;
     let kind: PendingInteraction["kind"];
     if (request.method === "session/request_permission") kind = "permission";
     else if (request.method === "elicitation/create") kind = "elicitation";
@@ -314,6 +505,39 @@ export class AxiomAcpClient extends EventEmitter {
 
   private assertInitialized(): void {
     if (!this.initialized) throw new ProtocolError("ACP client is not initialized");
+  }
+
+  private requireDesktopBootstrap(): DesktopBootstrapResponse {
+    this.assertInitialized();
+    if (!this.desktopBootstrap) throw new ProtocolError("desktop bootstrap has not completed");
+    return this.desktopBootstrap;
+  }
+
+  private runBackground(task: Promise<unknown>): void {
+    let tracked: Promise<void>;
+    tracked = task.then(() => undefined, () => undefined).finally(() => this.background.delete(tracked));
+    this.background.add(tracked);
+  }
+
+  private resyncAll(): Promise<void> {
+    if (this.fullResync) return this.fullResync;
+    this.fullResync = (async () => {
+      await Promise.all([this.listThreads(), this.listCollections(), this.getProfilePreferences()]);
+      const staleThreads = Object.values(this.state.snapshot().sessions)
+        .filter((session) => session.needsResync)
+        .map((session) => session.sessionId);
+      await Promise.all(staleThreads.map((threadId) => this.refreshThread(threadId)));
+      this.fullResyncRequired = false;
+    })().finally(() => {
+      this.fullResync = null;
+    });
+    return this.fullResync;
+  }
+
+  private async collectionRequest(method: string, params: unknown): Promise<CollectionStateResponse> {
+    const result = await this.process.request<CollectionStateResponse>(method, params);
+    this.state.setCollections(result.state);
+    return result;
   }
 
   private async accountRequest(

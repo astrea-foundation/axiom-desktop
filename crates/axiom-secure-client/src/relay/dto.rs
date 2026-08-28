@@ -3,7 +3,10 @@ use serde::{Deserialize, Deserializer, Serialize};
 use crate::{Result, SecureClientError};
 
 pub(crate) const MAX_CIPHERTEXT_HEX_CHARS: usize = 524_288;
-const MIN_CIPHERTEXT_HEX_CHARS: usize = 144;
+// NEAR envelopes are currently at least 144 characters; Phala ACI v2
+// envelopes have a 120-character minimum. Provider implementations perform
+// their exact protocol validation after this transport-level bound.
+const MIN_CIPHERTEXT_HEX_CHARS: usize = 120;
 
 #[derive(Clone, PartialEq, Eq, Serialize)]
 #[serde(transparent)]
@@ -138,6 +141,11 @@ pub(crate) struct RelayChatRequest {
     pub response_format: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_e2ee_context: Option<serde_json::Value>,
+    pub attestation_generation: u64,
+    pub verified_key_fingerprint: String,
+    pub verified_keyset_digest: Option<String>,
 }
 
 impl RelayChatRequest {
@@ -156,6 +164,43 @@ impl RelayChatRequest {
         }
         Ok(bytes)
     }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub(crate) struct ProviderKeyLease {
+    pub model_id: String,
+    pub model: String,
+    pub base_url: String,
+    pub provider: String,
+    pub attestation_protocol: String,
+    pub encryption_version: u16,
+    pub e2ee_protocol: String,
+    pub model_public_key: String,
+    pub verified: bool,
+    pub attestation_generation: u64,
+    pub model_key_fingerprint: String,
+    #[serde(default)]
+    pub keyset_digest: Option<String>,
+    #[serde(default)]
+    pub response_signing_address: Option<String>,
+    #[serde(default)]
+    pub response_signing_key_fingerprint: Option<String>,
+    pub hard_expires_at_unix_seconds: u64,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct NearCompletionProof {
+    pub provider: String,
+    pub protocol: String,
+    pub chat_id: String,
+    pub model: String,
+    pub request_hash: String,
+    pub response_hash: String,
+    pub response_body_base64: String,
+    pub signed_text: String,
+    pub signature: String,
+    pub signing_address: String,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -189,6 +234,8 @@ pub(crate) struct RelayCompletion {
     pub finish_reason: String,
     #[serde(default)]
     pub usage: RelayUsage,
+    #[serde(default)]
+    pub proof: Option<serde_json::Value>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -232,6 +279,14 @@ pub(crate) struct DeltaPayload {
     #[serde(default)]
     pub encrypted_tool_calls: Vec<EncryptedToolCallDelta>,
     pub sequence: u64,
+    #[serde(default)]
+    pub response_id: Option<String>,
+    #[serde(default)]
+    pub content_field: Option<String>,
+    #[serde(default)]
+    pub reasoning_field: Option<String>,
+    #[serde(default)]
+    pub refusal_field: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -241,6 +296,8 @@ pub(crate) struct CompletedPayload {
     #[serde(default)]
     pub usage: RelayUsage,
     pub finish_reason: String,
+    #[serde(default)]
+    pub proof: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]

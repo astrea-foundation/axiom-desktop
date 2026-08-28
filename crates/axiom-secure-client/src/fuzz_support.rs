@@ -1,7 +1,7 @@
 //! Narrow adapters that let cargo-fuzz reach otherwise-private wire parsers.
 
 use crate::{
-    providers::near::{attestation, crypto::ClientIdentity},
+    providers::near::{attestation, crypto::ClientIdentity, inference},
     relay::sse::SseDecoder,
 };
 
@@ -17,6 +17,11 @@ pub fn ciphertext(input: &[u8]) {
 /// Exercise the provider evidence JSON and claim parsers without networking.
 pub fn evidence(input: &[u8]) {
     attestation::fuzz_parse_report(input);
+}
+
+/// Exercise the closed NEAR signed-receipt parser and all bounded decoders.
+pub fn near_receipt(input: &[u8]) {
+    inference::fuzz_parse_receipt(input);
 }
 
 /// Exercise SSE framing with several deterministic transport fragmentations.

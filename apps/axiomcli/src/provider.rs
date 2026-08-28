@@ -1,39 +1,25 @@
-use std::time::Duration;
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use async_trait::async_trait;
-#[cfg(any(test, feature = "development-provider"))]
+#[cfg(test)]
 use futures::StreamExt as _;
 use secrecy::{ExposeSecret as _, SecretString};
-#[cfg(any(test, feature = "development-provider"))]
+#[cfg(test)]
 use serde::{Deserialize, Serialize};
+use sha2::{Digest as _, Sha256};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use axiom_secure_client::{
-    ApiCredential, SecureClient, SecureClientConfig, SecurityEvidence, TrustPolicy,
-};
+use axiom_secure_client::{ApiCredential, SecureClient, SecureClientConfig, SecurityEvidence};
 
-use crate::{AxiomError, Result, auth::AuthManager};
+use crate::{AxiomError, Result, auth::AuthManager, paths::AxiomPaths};
 pub use axiom_inference::{
     AssistantTurn, ChatMessage, ChatRole, FunctionCall, FunctionDefinition, InferenceRequest,
     ModelInfo, ProviderEvent, ProviderFailureKind, ProviderSecurityState, ToolCall, ToolDefinition,
 };
-
-/// Returns true only when this binary was compiled with the quarantined
-/// development adapter and the caller explicitly requested it for this
-/// process. All front ends use this same gate when selecting or displaying the
-/// unattested transport.
-#[must_use]
-pub fn unattested_development_enabled() -> bool {
-    #[cfg(feature = "development-provider")]
-    {
-        std::env::var("AXIOMCLI_UNATTESTED_DEV").as_deref() == Ok("1")
-    }
-    #[cfg(not(feature = "development-provider"))]
-    {
-        false
-    }
-}
 
 /// Result of a provider security preflight. Evidence is present only for a
 /// genuinely attested transport; development and future non-attested
@@ -77,6 +63,12 @@ pub trait InferenceProvider: Send + Sync {
 pub struct SecureAxiomProvider {
     config: SecureClientConfig,
     credential: ProviderCredential,
+    client_cache: Mutex<Option<CachedSecureClient>>,
+}
+
+struct CachedSecureClient {
+    credential_fingerprint: [u8; 32],
+    client: Arc<SecureClient>,
 }
 
 enum ProviderCredential {
@@ -98,9 +90,11 @@ impl SecureAxiomProvider {
         let mut config = SecureClientConfig::new(relay_base_url)
             .map_err(|error| AxiomError::Config(error.safe_detail().to_owned()))?;
         config.request_timeout = timeout;
+        config.trust_policy_cache_path = Some(AxiomPaths::discover()?.trust_policy_cache_path());
         Ok(Self {
             config,
             credential: ProviderCredential::Fixed(SecretString::from(api_key)),
+            client_cache: Mutex::new(None),
         })
     }
 
@@ -108,9 +102,11 @@ impl SecureAxiomProvider {
         let mut config = SecureClientConfig::new(relay_base_url)
             .map_err(|error| AxiomError::Config(error.safe_detail().to_owned()))?;
         config.request_timeout = timeout;
+        config.trust_policy_cache_path = Some(AxiomPaths::discover()?.trust_policy_cache_path());
         Ok(Self {
             config,
             credential: ProviderCredential::Managed(auth),
+            client_cache: Mutex::new(None),
         })
     }
 
@@ -121,19 +117,41 @@ impl SecureAxiomProvider {
         Self::new(relay_base_url, api_key, timeout)
     }
 
-    fn client(&self) -> Result<SecureClient> {
+    fn client(&self) -> Result<Arc<SecureClient>> {
         let value = match &self.credential {
             ProviderCredential::Fixed(value) => value.expose_secret().to_owned(),
             ProviderCredential::Managed(manager) => manager.credential()?,
         };
-        SecureClient::new(self.config.clone(), ApiCredential::new(value)).map_err(map_secure_error)
+        let fingerprint: [u8; 32] = Sha256::digest(value.as_bytes()).into();
+        let mut cache = self
+            .client_cache
+            .lock()
+            .map_err(|_| AxiomError::Provider("secure client cache is unavailable".into()))?;
+        if let Some(cached) = cache.as_ref()
+            && cached.credential_fingerprint == fingerprint
+        {
+            return Ok(Arc::clone(&cached.client));
+        }
+        let client = Arc::new(
+            SecureClient::new(self.config.clone(), ApiCredential::new(value))
+                .map_err(map_secure_error)?,
+        );
+        *cache = Some(CachedSecureClient {
+            credential_fingerprint: fingerprint,
+            client: Arc::clone(&client),
+        });
+        Ok(client)
     }
 
     async fn establish_verified(
         &self,
         model_id: &str,
         cancellation: CancellationToken,
-    ) -> Result<Box<dyn axiom_secure_client::VerifiedSession>> {
+    ) -> Result<(
+        Arc<SecureClient>,
+        ModelInfo,
+        Box<dyn axiom_secure_client::VerifiedSession>,
+    )> {
         let client = self.client()?;
         let models = client
             .models(cancellation.clone())
@@ -145,10 +163,15 @@ impl SecureAxiomProvider {
             .ok_or_else(|| {
                 AxiomError::Provider("selected secure model is unavailable".to_owned())
             })?;
-        client
-            .establish(model, &TrustPolicy::default(), cancellation)
+        let trust_policy = client
+            .trust_policy(cancellation.clone())
             .await
-            .map_err(map_secure_error)
+            .map_err(map_secure_error)?;
+        let session = client
+            .establish(model, &trust_policy, cancellation)
+            .await
+            .map_err(map_secure_error)?;
+        Ok((client, model.clone(), session))
     }
 }
 
@@ -158,7 +181,7 @@ impl std::fmt::Debug for SecureAxiomProvider {
             .debug_struct("SecureAxiomProvider")
             .field("config", &self.config)
             .field("credential", &self.credential)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -169,7 +192,7 @@ impl InferenceProvider for SecureAxiomProvider {
         model: &str,
         cancellation: CancellationToken,
     ) -> Result<ProviderSecurityVerification> {
-        let session = self.establish_verified(model, cancellation).await?;
+        let (_, _, session) = self.establish_verified(model, cancellation).await?;
         Ok(ProviderSecurityVerification {
             state: ProviderSecurityState::Verified,
             evidence: Some(session.evidence().clone()),
@@ -197,22 +220,12 @@ impl InferenceProvider for SecureAxiomProvider {
             &cancellation,
         )
         .await?;
-        let mut session = match self
+        let (client, model, mut session) = match self
             .establish_verified(&request.model, cancellation.clone())
             .await
         {
             Ok(session) => session,
-            Err(error) => {
-                if !matches!(error, AxiomError::Cancelled) {
-                    let _ = send_provider_event(
-                        &events,
-                        ProviderEvent::SecurityState(ProviderSecurityState::Failed),
-                        &cancellation,
-                    )
-                    .await;
-                }
-                return Err(error);
-            }
+            Err(error) => return secure_stream_failure(&events, &cancellation, error).await,
         };
         send_provider_event(
             &events,
@@ -220,10 +233,59 @@ impl InferenceProvider for SecureAxiomProvider {
             &cancellation,
         )
         .await?;
-        let response = session
-            .stream(request, events, cancellation)
-            .await
-            .map_err(map_secure_error)?;
+        let retry_request = request.clone();
+        let retry_events = events.clone();
+        let response_result = async {
+            match session.stream(request, events, cancellation.clone()).await {
+                Ok(response) => Ok(response),
+                Err(error) if error.requires_reattest_and_reencrypt() => {
+                    client.invalidate(&model).await.map_err(map_secure_error)?;
+                    send_provider_event(
+                        &retry_events,
+                        ProviderEvent::SecurityState(ProviderSecurityState::Verifying),
+                        &cancellation,
+                    )
+                    .await?;
+                    send_provider_event(
+                        &retry_events,
+                        ProviderEvent::Status {
+                            connected: true,
+                            detail: "Provider key rotated; re-verifying and re-encrypting once"
+                                .to_owned(),
+                        },
+                        &cancellation,
+                    )
+                    .await?;
+                    let (_, _, mut refreshed) = self
+                        .establish_verified(&retry_request.model, cancellation.clone())
+                        .await?;
+                    send_provider_event(
+                        &retry_events,
+                        ProviderEvent::SecurityState(ProviderSecurityState::Verified),
+                        &cancellation,
+                    )
+                    .await?;
+                    refreshed
+                        .stream(retry_request, retry_events.clone(), cancellation.clone())
+                        .await
+                        .map_err(map_secure_error)
+                }
+                Err(error) => Err(map_secure_error(error)),
+            }
+        }
+        .await;
+        let response = match response_result {
+            Ok(response) => response,
+            Err(error) => {
+                return secure_stream_failure(&retry_events, &cancellation, error).await;
+            }
+        };
+        send_provider_event(
+            &retry_events,
+            ProviderEvent::ResponseVerified,
+            &cancellation,
+        )
+        .await?;
         Ok(response.assistant)
     }
 
@@ -246,6 +308,26 @@ async fn send_provider_event(
     }
 }
 
+async fn secure_stream_failure<T>(
+    events: &mpsc::Sender<ProviderEvent>,
+    cancellation: &CancellationToken,
+    error: AxiomError,
+) -> Result<T> {
+    if matches!(error, AxiomError::Cancelled) || cancellation.is_cancelled() {
+        return Err(AxiomError::Cancelled);
+    }
+    // Once attestation has begun, every non-cancellation terminal error must
+    // revoke the live green state. Use an independent delivery token because
+    // the failed request token is no longer authority for this state update.
+    let _ = send_provider_event(
+        events,
+        ProviderEvent::SecurityState(ProviderSecurityState::Failed),
+        &CancellationToken::new(),
+    )
+    .await;
+    Err(error)
+}
+
 #[allow(clippy::needless_pass_by_value)]
 fn map_secure_error(error: axiom_secure_client::SecureClientError) -> AxiomError {
     match error.kind() {
@@ -258,8 +340,10 @@ fn map_secure_error(error: axiom_secure_client::SecureClientError) -> AxiomError
     }
 }
 
-#[cfg(any(test, feature = "development-provider"))]
-mod development_provider {
+#[cfg(test)]
+// This fake HTTP transport exists only to exercise generic provider failure,
+// cancellation, and parser behavior. It is not compiled into AxiomCLI binaries.
+mod test_http_provider {
     use std::collections::BTreeMap;
 
     use crate::audit::redact_text;
@@ -271,23 +355,23 @@ mod development_provider {
     pub(super) const MAX_PROVIDER_SSE_EVENT_BYTES: usize = 1024 * 1024;
     const MAX_PROVIDER_STREAM_BYTES: usize = 16 * 1024 * 1024;
 
-    pub struct AxiomProvider {
+    pub struct TestHttpProvider {
         client: reqwest::Client,
         base_url: String,
         api_key: Option<SecretString>,
     }
 
-    impl std::fmt::Debug for AxiomProvider {
+    impl std::fmt::Debug for TestHttpProvider {
         fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             formatter
-                .debug_struct("AxiomProvider")
+                .debug_struct("TestHttpProvider")
                 .field("base_url", &self.base_url)
                 .field("api_key", &self.api_key.as_ref().map(|_| "[REDACTED]"))
                 .finish_non_exhaustive()
         }
     }
 
-    impl AxiomProvider {
+    impl TestHttpProvider {
         pub fn new(
             base_url: impl Into<String>,
             api_key: Option<String>,
@@ -306,11 +390,6 @@ mod development_provider {
                 base_url,
                 api_key: api_key.map(|value| SecretString::new(value.into_boxed_str())),
             })
-        }
-
-        #[cfg(feature = "development-provider")]
-        pub fn from_environment(base_url: impl Into<String>, timeout: Duration) -> Result<Self> {
-            Self::new(base_url, std::env::var("AXIOM_API_KEY").ok(), timeout)
         }
 
         fn endpoint(&self) -> String {
@@ -467,7 +546,7 @@ mod development_provider {
     }
 
     #[async_trait]
-    impl InferenceProvider for AxiomProvider {
+    impl InferenceProvider for TestHttpProvider {
         async fn verify_security(
             &self,
             _model: &str,
@@ -800,11 +879,8 @@ mod development_provider {
     }
 }
 
-#[cfg(feature = "development-provider")]
-pub use development_provider::AxiomProvider;
-
 #[cfg(test)]
-use development_provider::*;
+use test_http_provider::*;
 
 #[cfg(test)]
 mod tests {
@@ -833,7 +909,7 @@ mod tests {
 
     #[test]
     fn provider_debug_redacts_key() {
-        let provider = AxiomProvider::new(
+        let provider = TestHttpProvider::new(
             "http://127.0.0.1:1/v1",
             Some("axm_secret".into()),
             Duration::from_secs(1),
@@ -851,8 +927,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn development_security_preflight_is_explicitly_unattested() {
-        let provider = AxiomProvider::new(
+    async fn test_adapter_security_preflight_is_explicitly_unattested() {
+        let provider = TestHttpProvider::new(
             "http://127.0.0.1:1/v1",
             Some("axm_secret".into()),
             Duration::from_secs(1),
@@ -893,7 +969,7 @@ mod tests {
         });
 
         let provider =
-            AxiomProvider::new(format!("http://{address}/v1"), None, Duration::from_secs(5))
+            TestHttpProvider::new(format!("http://{address}/v1"), None, Duration::from_secs(5))
                 .expect("provider");
         let (tx, mut rx) = mpsc::channel(64);
         let turn = provider
@@ -951,7 +1027,7 @@ mod tests {
             axum::serve(listener, app).await.expect("test service");
         });
         let provider =
-            AxiomProvider::new(format!("http://{address}/v1"), None, Duration::from_secs(5))
+            TestHttpProvider::new(format!("http://{address}/v1"), None, Duration::from_secs(5))
                 .expect("provider");
         let (tx, _rx) = mpsc::channel(64);
         let error = provider
@@ -979,7 +1055,7 @@ mod tests {
         let address = listener.local_addr().expect("address");
         let server = tokio::spawn(async move { axum::serve(listener, app).await.expect("server") });
         let provider =
-            AxiomProvider::new(format!("http://{address}/v1"), None, Duration::from_secs(5))
+            TestHttpProvider::new(format!("http://{address}/v1"), None, Duration::from_secs(5))
                 .expect("provider");
         let (tx, _rx) = mpsc::channel(64);
         let error = provider
@@ -1031,7 +1107,7 @@ mod tests {
         let address = listener.local_addr().expect("address");
         let server = tokio::spawn(async move { axum::serve(listener, app).await.expect("server") });
         let provider =
-            AxiomProvider::new(format!("http://{address}/v1"), None, Duration::from_secs(5))
+            TestHttpProvider::new(format!("http://{address}/v1"), None, Duration::from_secs(5))
                 .expect("provider");
         let (tx, mut rx) = mpsc::channel(64);
         let turn = provider
@@ -1070,7 +1146,7 @@ mod tests {
             .expect("listener");
         let address = listener.local_addr().expect("address");
         let server = tokio::spawn(async move { axum::serve(listener, app).await.expect("server") });
-        let provider = AxiomProvider::new(
+        let provider = TestHttpProvider::new(
             format!("http://{address}/v1"),
             Some("axm_anothersecretvalue".into()),
             Duration::from_secs(5),
@@ -1100,7 +1176,7 @@ mod tests {
         let address = listener.local_addr().expect("address");
         let server = tokio::spawn(async move { axum::serve(listener, app).await.expect("server") });
         let provider =
-            AxiomProvider::new(format!("http://{address}/v1"), None, Duration::from_secs(5))
+            TestHttpProvider::new(format!("http://{address}/v1"), None, Duration::from_secs(5))
                 .expect("provider");
         assert_eq!(
             provider
@@ -1133,7 +1209,7 @@ mod tests {
         let address = listener.local_addr().expect("address");
         let server = tokio::spawn(async move { axum::serve(listener, app).await.expect("server") });
         let provider =
-            AxiomProvider::new(format!("http://{address}/v1"), None, Duration::from_secs(5))
+            TestHttpProvider::new(format!("http://{address}/v1"), None, Duration::from_secs(5))
                 .expect("provider");
         let error = provider
             .models(CancellationToken::new())
@@ -1157,7 +1233,7 @@ mod tests {
             .expect("listener");
         let address = listener.local_addr().expect("address");
         let server = tokio::spawn(async move { axum::serve(listener, app).await.expect("server") });
-        let provider = AxiomProvider::new(
+        let provider = TestHttpProvider::new(
             format!("http://{address}/v1"),
             None,
             Duration::from_secs(60),
@@ -1195,6 +1271,60 @@ mod tests {
         assert!(rendered.contains("insufficient credit"));
     }
 
+    #[tokio::test]
+    async fn terminal_receipt_failure_revokes_a_previously_verified_state() {
+        let (events, mut received) = mpsc::channel(8);
+        events
+            .send(ProviderEvent::SecurityState(
+                ProviderSecurityState::Verified,
+            ))
+            .await
+            .expect("verified preflight");
+        let error = secure_stream_failure::<()>(
+            &events,
+            &CancellationToken::new(),
+            AxiomError::Provider("missing signed terminal receipt".into()),
+        )
+        .await
+        .expect_err("missing receipt fails closed");
+        assert!(
+            error
+                .to_string()
+                .contains("missing signed terminal receipt")
+        );
+        drop(events);
+        let mut observed = Vec::new();
+        while let Some(event) = received.recv().await {
+            observed.push(event);
+        }
+        assert_eq!(
+            observed,
+            vec![
+                ProviderEvent::SecurityState(ProviderSecurityState::Verified),
+                ProviderEvent::SecurityState(ProviderSecurityState::Failed),
+            ]
+        );
+        assert!(!observed.contains(&ProviderEvent::ResponseVerified));
+    }
+
+    #[tokio::test]
+    async fn secure_stream_cancellation_does_not_masquerade_as_verification_failure() {
+        let (events, mut received) = mpsc::channel(8);
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        assert!(matches!(
+            secure_stream_failure::<()>(
+                &events,
+                &cancellation,
+                AxiomError::Provider("request ended during cancellation".into()),
+            )
+            .await,
+            Err(AxiomError::Cancelled)
+        ));
+        drop(events);
+        assert!(received.recv().await.is_none());
+    }
+
     /// Executes one low-cost turn through the configured real Axiom-compatible
     /// development endpoint. CI never supplies credentials; release review must
     /// invoke this test explicitly with its three `AXIOM_LIVE_*` variables.
@@ -1205,7 +1335,7 @@ mod tests {
         let model = std::env::var("AXIOM_LIVE_MODEL").expect("AXIOM_LIVE_MODEL");
         let key = std::env::var("AXIOM_API_KEY").expect("AXIOM_API_KEY");
         let provider =
-            AxiomProvider::new(base_url, Some(key), Duration::from_secs(45)).expect("provider");
+            TestHttpProvider::new(base_url, Some(key), Duration::from_secs(45)).expect("provider");
         let (tx, _rx) = mpsc::channel(64);
         let turn = provider
             .stream(

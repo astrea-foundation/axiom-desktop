@@ -17,7 +17,7 @@ use crate::{
         AppEvent, FileDiff, PermissionProfile, QuestionRequest, QuestionSpec, SessionId, TaskItem,
     },
     planning::PlanArtifact,
-    policy::{Effect, ToolAccess},
+    policy::{Effect, ToolAccess, normalized_executable_name},
     provider::{FunctionDefinition, ToolDefinition},
     web::{SafeFetcher, SearchProvider, SearxngClient},
     workspace::{EditIntent, ProcessManager, ProcessRequest, StructuredPatch, Workspace},
@@ -1277,9 +1277,10 @@ fn command_effects(context: &ToolContext, args: &CommandArgs, shell: bool) -> Re
 fn repository_mutation(program: &str, args: &[String], shell: bool) -> Option<String> {
     if shell {
         let script = args.last()?;
-        let words = shell_words::split(script).ok()?;
+        let words = shell_words::split(script)
+            .unwrap_or_else(|_| script.split_whitespace().map(str::to_owned).collect());
         for (index, word) in words.iter().enumerate() {
-            if word.rsplit('/').next() == Some("git") {
+            if normalized_executable_name(word) == "git" {
                 let command = git_subcommand(&words[index.saturating_add(1)..]);
                 if command.is_none_or(|command| !is_read_only_git_command(command)) {
                     return Some(format!("git {}", command.unwrap_or("unknown")));
@@ -1288,7 +1289,7 @@ fn repository_mutation(program: &str, args: &[String], shell: bool) -> Option<St
         }
         return None;
     }
-    if program.rsplit('/').next() != Some("git") {
+    if normalized_executable_name(program) != "git" {
         return None;
     }
     let command = git_subcommand(args);
@@ -1405,7 +1406,11 @@ impl Tool for RunShell {
         "run_shell"
     }
     fn description(&self) -> &'static str {
-        "Run an explicitly higher-risk shell script in the isolated workspace. Shell execution always requires approval."
+        if cfg!(windows) {
+            "Run an explicitly higher-risk Windows PowerShell script in the workspace. Shell execution always requires approval."
+        } else {
+            "Run an explicitly higher-risk /bin/sh script in the workspace. Shell execution always requires approval."
+        }
     }
     fn parameters(&self) -> Value {
         schema(
@@ -1420,9 +1425,10 @@ impl Tool for RunShell {
     }
     fn effects(&self, context: &ToolContext, arguments: &Value) -> Result<Vec<Effect>> {
         let args: ShellArgs = parse(self.name(), arguments.clone())?;
+        let (program, shell_args) = crate::process_env::native_shell(args.command);
         let command = CommandArgs {
-            program: "sh".into(),
-            args: vec!["-lc".into(), args.command],
+            program,
+            args: shell_args,
             cwd: args.cwd,
             env: args.env,
             timeout_secs: args.timeout_secs,
@@ -1436,13 +1442,14 @@ impl Tool for RunShell {
         cancellation: CancellationToken,
     ) -> Result<ToolResult> {
         let args: ShellArgs = parse(self.name(), arguments)?;
+        let (program, shell_args) = crate::process_env::native_shell(args.command);
         let outcome = self
             .processes
             .run(
                 &workspace(context)?,
                 &ProcessRequest {
-                    program: "sh".into(),
-                    args: vec!["-lc".into(), args.command],
+                    program,
+                    args: shell_args,
                     cwd: args.cwd,
                     env: args.env,
                     timeout_secs: args.timeout_secs,

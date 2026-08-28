@@ -24,6 +24,12 @@ The test suite uses the MIT-licensed `portable-pty` crate to exercise terminal
 resize, cancellation, panic unwinding, and restoration against an actual
 pseudo-terminal rather than a mocked input stream.
 
+`crates/axiom-phala-core` is Axiom's in-tree security-maintained Phala verifier
+and cipher forked from the MIT-licensed `axiom-core` 0.1.6 implementation in
+Astrea's archived AxiomIO repository at commit
+`f7b871ac2214becb12e541ab2ac5c5fd963c6e8c`. Its upstream license and origin
+record are retained with the fork and included in release notices.
+
 The development search service downloads and runs official SearXNG separately.
 SearXNG is AGPL-3.0-or-later and is not linked, vendored, or redistributed as
 part of the AxiomCLI Rust binary. See `dev/searxng/README.md` and the pinned

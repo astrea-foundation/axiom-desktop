@@ -1,4 +1,4 @@
-use std::{net::IpAddr, time::Duration};
+use std::{net::IpAddr, path::PathBuf, time::Duration};
 
 use url::Url;
 
@@ -9,6 +9,13 @@ pub struct SecureClientConfig {
     pub relay_base_url: Url,
     pub request_timeout: Duration,
     pub attestation_timeout: Duration,
+    /// Last-known-good model metadata is for discovery only. Establishment
+    /// still performs fresh endpoint validation and attestation.
+    pub catalog_max_stale: Duration,
+    pub verified_session_ttl: Duration,
+    /// Optional shared rollback journal for signed trust-policy updates.
+    pub trust_policy_cache_path: Option<PathBuf>,
+    pub trust_policy_refresh_interval: Duration,
     pub limits: SecureClientLimits,
     pub endpoint_policy: EndpointPolicy,
     #[cfg(feature = "test-fixture")]
@@ -28,6 +35,10 @@ impl SecureClientConfig {
             relay_base_url,
             request_timeout: Duration::from_secs(120),
             attestation_timeout: Duration::from_secs(60),
+            catalog_max_stale: Duration::from_secs(24 * 60 * 60),
+            verified_session_ttl: Duration::from_secs(240),
+            trust_policy_cache_path: None,
+            trust_policy_refresh_interval: Duration::from_secs(300),
             limits: SecureClientLimits::default(),
             endpoint_policy: EndpointPolicy::default(),
             #[cfg(feature = "test-fixture")]
@@ -53,6 +64,10 @@ impl SecureClientConfig {
             relay_base_url,
             request_timeout: Duration::from_secs(15),
             attestation_timeout: Duration::from_secs(10),
+            catalog_max_stale: Duration::from_secs(60),
+            verified_session_ttl: Duration::from_secs(30),
+            trust_policy_cache_path: None,
+            trust_policy_refresh_interval: Duration::from_secs(30),
             limits: SecureClientLimits::default(),
             endpoint_policy: EndpointPolicy {
                 require_https: false,
@@ -72,6 +87,7 @@ impl SecureClientConfig {
 #[derive(Clone, Debug)]
 pub struct SecureClientLimits {
     pub model_catalog_bytes: usize,
+    pub trust_policy_bytes: usize,
     pub attestation_report_bytes: usize,
     pub attestation_quote_bytes: usize,
     pub nvidia_evidence_bytes: usize,
@@ -89,15 +105,25 @@ impl Default for SecureClientLimits {
     fn default() -> Self {
         Self {
             model_catalog_bytes: 4 * 1024 * 1024,
-            attestation_report_bytes: 2 * 1024 * 1024,
+            trust_policy_bytes: 128 * 1024,
+            // Phala's independently verified gateway report includes fresh
+            // Intel collateral and NVIDIA verdicts for every eligible worker.
+            // A live 17-worker bundle is currently about 8 MiB, so keep a
+            // dedicated bounded ceiling with enough room for evidence churn.
+            attestation_report_bytes: 16 * 1024 * 1024,
             attestation_quote_bytes: 256 * 1024,
             nvidia_evidence_bytes: 1024 * 1024,
             nvidia_jwt_bytes: 256 * 1024,
             nvidia_jwks_bytes: 256 * 1024,
             intel_collateral_bytes: 2 * 1024 * 1024,
             relay_error_bytes: 4 * 1024,
-            relay_response_bytes: 2 * 1024 * 1024,
-            relay_sse_event_bytes: 1024 * 1024,
+            // A NEAR completion receipt contains the provider's bounded two-megabyte
+            // encrypted response again as base64. Leave room for that proof and its
+            // surrounding JSON without relaxing the total stream bound.
+            // Non-stream responses carry both the encrypted provider JSON fields
+            // and a base64 copy of those same signed bytes.
+            relay_response_bytes: 6 * 1024 * 1024,
+            relay_sse_event_bytes: 4 * 1024 * 1024,
             relay_stream_bytes: 16 * 1024 * 1024,
             serialized_relay_request_bytes: 2 * 1024 * 1024,
         }
@@ -182,6 +208,8 @@ pub(crate) fn is_public_address(address: IpAddr) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{EndpointPolicy, SecureClientConfig};
+    use crate::{config::SecureClientLimits, http::bounded_body};
+    use axiom_inference::ProviderFailureKind;
 
     #[test]
     fn production_config_and_provider_urls_require_https() {
@@ -209,5 +237,34 @@ mod tests {
                 "{rejected}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn attestation_report_limit_accepts_the_boundary_and_rejects_the_next_byte() {
+        let limit = SecureClientLimits::default().attestation_report_bytes;
+        assert_eq!(limit, 16 * 1024 * 1024);
+
+        let exact = reqwest::Response::from(
+            http::Response::builder()
+                .body(vec![0_u8; limit])
+                .expect("exact-limit response"),
+        );
+        assert_eq!(
+            bounded_body(exact, limit)
+                .await
+                .expect("exact-limit body")
+                .len(),
+            limit
+        );
+
+        let oversized = reqwest::Response::from(
+            http::Response::builder()
+                .body(vec![0_u8; limit + 1])
+                .expect("oversized response"),
+        );
+        let error = bounded_body(oversized, limit)
+            .await
+            .expect_err("limit plus one must fail closed");
+        assert_eq!(error.kind(), ProviderFailureKind::SessionEstablishment);
     }
 }

@@ -9,8 +9,6 @@ use std::{
 };
 
 use anyhow::Context as _;
-#[cfg(feature = "development-provider")]
-use axiomcli::provider::AxiomProvider;
 use axiomcli::{
     AxiomError,
     agent::{
@@ -21,10 +19,11 @@ use axiomcli::{
     app::{AppCommand, AppEvent, Origin, Runtime, SessionId},
     auth::{AuthManager, ValidationStatus},
     config::Config,
+    paths::{AxiomPaths, FrontendKind},
     planning::PlanArtifact,
     policy::{EffectClass, PolicyRule, RuleAction},
     provider::{InferenceProvider, SecureAxiomProvider},
-    session::{ExportOptions, RetentionPolicy, SessionStore},
+    session::{ExportOptions, SessionStore},
     tools::default_registry,
 };
 use clap::{Parser, Subcommand};
@@ -58,12 +57,24 @@ enum Command {
         cwd: Option<PathBuf>,
     },
     /// Serve Agent Client Protocol over stdin/stdout.
-    Acp,
+    Acp {
+        /// Select the policy, storage, prompt, and workspace contract for the ACP client.
+        #[arg(long, value_enum, default_value_t = FrontendKind::Cli)]
+        frontend: FrontendKind,
+    },
     /// Check configuration and local dependencies.
     Doctor,
     /// List models exposed by the configured secure Axiom service.
     Models,
-    /// Inspect and manage durable local session journals.
+    /// Delete one pre-release frontend state database after explicit confirmation.
+    ResetLocalState {
+        #[arg(long, value_enum)]
+        frontend: FrontendKind,
+        /// Confirm permanent deletion of this frontend's local threads and collections.
+        #[arg(long)]
+        confirm: bool,
+    },
+    /// Inspect and manage durable local threads.
     Sessions {
         #[command(subcommand)]
         action: SessionAction,
@@ -149,7 +160,7 @@ enum SessionAction {
         #[arg(long)]
         omit_tool_output: bool,
         #[arg(long, default_value_t = 10_000)]
-        max_events: usize,
+        max_items: usize,
     },
     Rename {
         id: String,
@@ -161,26 +172,31 @@ enum SessionAction {
     Unarchive {
         id: String,
     },
-    /// Apply explicit local journal retention limits.
-    Prune {
-        #[arg(long, default_value_t = 10_000)]
-        max_events_per_session: usize,
-        /// Permanently delete archived sessions older than this many days.
-        #[arg(long)]
-        delete_archived_older_than_days: Option<i64>,
-    },
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    let frontend = match &cli.command {
+        Some(Command::Acp { frontend }) => *frontend,
+        _ => FrontendKind::Cli,
+    };
+    anyhow::ensure!(
+        frontend != FrontendKind::DesktopChat || cli.system_prompt_file.is_none(),
+        "--system-prompt-file cannot replace the Axiom Desktop product prompt"
+    );
     let system_prompt = cli
         .system_prompt_file
         .as_deref()
         .map(load_system_prompt_file)
         .transpose()?;
-    let config = Config::load().context("failed to load AxiomCLI configuration")?;
-    let auth = AuthManager::new(&config.base_url, config.request_timeout())
+    let paths = AxiomPaths::discover().context("failed to resolve Axiom platform paths")?;
+    paths
+        .prepare()
+        .context("failed to prepare Axiom platform paths")?;
+    let config =
+        Config::load_for(frontend, &paths).context("failed to load AxiomCLI configuration")?;
+    let auth = AuthManager::new_with_paths(&config.base_url, config.request_timeout(), &paths)
         .context("failed to initialize Axiom authentication")?;
     let tui_mode = matches!(cli.command, None | Some(Command::Tui { .. }));
     init_tracing(tui_mode);
@@ -190,7 +206,7 @@ async fn main() -> anyhow::Result<()> {
         resume: None,
     }) {
         Command::Doctor => {
-            doctor(&config, &auth).await;
+            doctor(&config, &auth, &paths).await;
             Ok(())
         }
         Command::Models => {
@@ -200,11 +216,26 @@ async fn main() -> anyhow::Result<()> {
             }
             Ok(())
         }
-        Command::Sessions { action } => manage_sessions(action),
+        Command::ResetLocalState { frontend, confirm } => {
+            anyhow::ensure!(confirm, "refusing to delete local state without --confirm");
+            let removed = paths
+                .reset_frontend_state(frontend)
+                .context("failed to reset frontend local state")?;
+            if removed.is_empty() {
+                println!("{frontend} local state is already empty");
+            } else {
+                println!(
+                    "removed {} {frontend} local state file(s); shared identity, credentials, trust policy, configuration, and chat workspace were preserved",
+                    removed.len()
+                );
+            }
+            Ok(())
+        }
+        Command::Sessions { action } => manage_sessions(action, &paths),
         Command::Plans { cwd, action } => manage_plans(&resolve_cwd(cwd)?, action),
         Command::Permissions { action } => manage_permissions(action),
         Command::Tui { cwd, resume } => {
-            let store = open_store()?;
+            let store = open_store(&paths, FrontendKind::Cli)?;
             let resume = resume
                 .map(|id| SessionId::from_str(&id).context("invalid session ID"))
                 .transpose()?;
@@ -230,7 +261,13 @@ async fn main() -> anyhow::Result<()> {
                 .context("failed to load workspace configuration")?;
             let profile = saved_profile.unwrap_or(workspace_config.permission_profile);
             axiomcli::tui::run(
-                build_runner(&workspace_config, &auth, system_prompt.as_deref()).await?,
+                build_runner(
+                    &workspace_config,
+                    &auth,
+                    system_prompt.as_deref(),
+                    FrontendKind::Cli,
+                )
+                .await?,
                 cwd,
                 workspace_config.model.clone(),
                 profile,
@@ -253,20 +290,32 @@ async fn main() -> anyhow::Result<()> {
                 .context("failed to load workspace configuration")?;
             let profile = workspace_config.permission_profile;
             run_headless(
-                build_runner(&workspace_config, &auth, system_prompt.as_deref()).await?,
+                build_runner(
+                    &workspace_config,
+                    &auth,
+                    system_prompt.as_deref(),
+                    FrontendKind::Cli,
+                )
+                .await?,
                 cwd,
                 profile,
                 workspace_config.model.clone(),
                 prompt,
-                open_store()?,
+                open_store(&paths, FrontendKind::Cli)?,
             )
             .await
         }
-        Command::Acp => axiomcli::acp::serve_stdio(
-            build_runner(&config, &auth, system_prompt.as_deref()).await?,
+        Command::Acp { frontend } => axiomcli::acp::serve_stdio(
+            build_runner(&config, &auth, system_prompt.as_deref(), frontend).await?,
             config.clone(),
-            Some(open_store()?),
+            Some(open_store(&paths, frontend)?),
             auth,
+            frontend,
+            if frontend == FrontendKind::DesktopChat {
+                Some(paths.desktop_chat_cwd()?)
+            } else {
+                None
+            },
         )
         .await
         .map_err(anyhow::Error::from),
@@ -348,7 +397,7 @@ fn init_tracing(tui_mode: bool) {
     }
 }
 
-async fn doctor(config: &Config, auth: &AuthManager) {
+async fn doctor(config: &Config, auth: &AuthManager, paths: &AxiomPaths) {
     println!("AxiomCLI diagnostics");
     println!("model: {}", config.model);
     println!("base URL: {}", config.base_url);
@@ -380,8 +429,23 @@ async fn doctor(config: &Config, auth: &AuthManager) {
     if let Some(path) = Config::user_path() {
         println!("user config: {}", path.display());
     }
-    if let Some(path) = session_path() {
-        println!("session database: {}", path.display());
+    println!("shared config: {}", paths.shared_config_path().display());
+    println!("Axiom data root: {}", paths.data_root().display());
+    println!(
+        "CLI data: {}",
+        paths.frontend_data_dir(FrontendKind::Cli).display()
+    );
+    println!(
+        "desktop data: {}",
+        paths.frontend_data_dir(FrontendKind::DesktopChat).display()
+    );
+    println!(
+        "local state database: {}",
+        state_path(paths, FrontendKind::Cli).display()
+    );
+    match paths.desktop_chat_cwd() {
+        Ok(path) => println!("desktop chat workspace: {}", path.display()),
+        Err(error) => println!("desktop chat workspace: unavailable ({error})"),
     }
 }
 
@@ -417,17 +481,16 @@ fn manage_permissions(action: PermissionAction) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn session_path() -> Option<PathBuf> {
-    Config::data_dir().map(|directory| directory.join("sessions.sqlite3"))
+fn state_path(paths: &AxiomPaths, frontend: FrontendKind) -> PathBuf {
+    paths.state_database(frontend)
 }
 
-fn open_store() -> anyhow::Result<SessionStore> {
-    let path = session_path().context("platform data directory is unavailable")?;
-    SessionStore::open(path).map_err(Into::into)
+fn open_store(paths: &AxiomPaths, frontend: FrontendKind) -> anyhow::Result<SessionStore> {
+    SessionStore::open(state_path(paths, frontend)).map_err(Into::into)
 }
 
-fn manage_sessions(action: SessionAction) -> anyhow::Result<()> {
-    let store = open_store()?;
+fn manage_sessions(action: SessionAction, paths: &AxiomPaths) -> anyhow::Result<()> {
+    let store = open_store(paths, FrontendKind::Cli)?;
     match action {
         SessionAction::List { all } => {
             for session in store.list(all)? {
@@ -455,7 +518,7 @@ fn manage_sessions(action: SessionAction) -> anyhow::Result<()> {
             id,
             omit_prompts,
             omit_tool_output,
-            max_events,
+            max_items,
         } => {
             let id = SessionId::from_str(&id).context("invalid session ID")?;
             println!(
@@ -465,7 +528,7 @@ fn manage_sessions(action: SessionAction) -> anyhow::Result<()> {
                     ExportOptions {
                         include_prompts: !omit_prompts,
                         include_tool_output: !omit_tool_output,
-                        max_events,
+                        max_items,
                     },
                 )?
             );
@@ -488,19 +551,6 @@ fn manage_sessions(action: SessionAction) -> anyhow::Result<()> {
                 false,
             )?;
         }
-        SessionAction::Prune {
-            max_events_per_session,
-            delete_archived_older_than_days,
-        } => {
-            let report = store.apply_retention(RetentionPolicy {
-                max_events_per_session,
-                delete_archived_older_than_days,
-            })?;
-            println!(
-                "deleted {} archived session(s) and {} old event(s)",
-                report.deleted_sessions, report.deleted_events
-            );
-        }
     }
     Ok(())
 }
@@ -509,6 +559,7 @@ async fn build_runner(
     config: &Config,
     auth: &AuthManager,
     system_prompt: Option<&str>,
+    frontend: FrontendKind,
 ) -> anyhow::Result<Arc<dyn TurnRunner>> {
     if cfg!(debug_assertions) {
         match std::env::var("AXIOMCLI_TEST_RUNNER").as_deref() {
@@ -523,10 +574,12 @@ async fn build_runner(
     }
     let provider = build_provider(config, auth)?;
     let mut tools = default_registry(config.max_tool_output_bytes, &config.searxng_url)?;
-    for tool in
-        axiomcli::mcp::connect_tools(&config.mcp_servers, config.max_tool_output_bytes).await?
-    {
-        tools.register(tool)?;
+    if frontend == FrontendKind::Cli {
+        for tool in
+            axiomcli::mcp::connect_tools(&config.mcp_servers, config.max_tool_output_bytes).await?
+        {
+            tools.register(tool)?;
+        }
     }
     let policy_rules = config.policy_rules.clone();
     let mut engine = AgentEngine::with_limits(
@@ -541,7 +594,10 @@ async fn build_runner(
             max_wall_time: config.max_turn_secs.map(std::time::Duration::from_secs),
         },
     );
-    if let Some(system_prompt) = system_prompt {
+    if frontend == FrontendKind::DesktopChat {
+        engine =
+            engine.with_system_prompt(include_str!("../prompts/desktop-chat.md").to_owned())?;
+    } else if let Some(system_prompt) = system_prompt {
         engine = engine.with_system_prompt(system_prompt.to_owned())?;
     }
     Ok(Arc::new(engine.with_policy_rules(policy_rules)))
@@ -582,13 +638,6 @@ fn build_provider(
     config: &Config,
     auth: &AuthManager,
 ) -> anyhow::Result<Arc<dyn InferenceProvider>> {
-    #[cfg(feature = "development-provider")]
-    if axiomcli::provider::unattested_development_enabled() {
-        return Ok(Arc::new(AxiomProvider::from_environment(
-            &config.base_url,
-            config.request_timeout(),
-        )?));
-    }
     Ok(Arc::new(SecureAxiomProvider::with_auth(
         &config.base_url,
         auth.clone(),

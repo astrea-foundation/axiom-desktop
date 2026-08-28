@@ -60,3 +60,10 @@ path = "fuzz_targets/acp_extension_json.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "near_receipt"
+path = "fuzz_targets/near_receipt.rs"
+test = false
+doc = false
+bench = false

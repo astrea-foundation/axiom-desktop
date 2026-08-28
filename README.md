@@ -2,14 +2,13 @@
 
 This repository is the AxiomAI product monorepo. Rust applications live under
 `apps/`, reusable Rust contracts and infrastructure live under `crates/`, and
-future JavaScript packages live under `packages/`.
+the ACP client packages live under `packages/`.
 
 The implemented applications today are AxiomCLI—an early Rust coding agent with
 a terminal interface and Agent Client Protocol (ACP) control mode—and
 `axiom-proxy`, an authenticated loopback OpenAI-compatible sidecar. The
-frameless Electron app now has a production main/preload boundary for
-supervising and controlling AxiomCLI over ACP; its renderer remains a visual
-prototype for the separate desktop UI implementation.
+frameless Electron app supervises and controls AxiomCLI over ACP. AxiomCLI is
+the Desktop chat runtime and durable state owner; Electron owns presentation.
 
 ## Workspace layout
 
@@ -31,19 +30,14 @@ packages/
 The proxy and AxiomCLI share the secure Axiom client; the TUI performs secure
 inference directly rather than routing through localhost. See
 [`docs/adr/0009-monorepo-and-secure-client-boundaries.md`](docs/adr/0009-monorepo-and-secure-client-boundaries.md).
-Implementation is governed by the gated
-[`Axiom secure inference and proxy plan`](docs/axiom-secure-inference-and-proxy-plan.md).
+The first supported storage, ACP, and secure-inference design is defined in the
+[`clean-slate v1 plan`](docs/v1-clean-slate-refactor-plan.md).
 
 ## Development status
 
-The implementation follows the gated plan in
-[`docs/axiomcli-implementation-plan.md`](docs/axiomcli-implementation-plan.md).
-Stages 00–16 pass, including the independent completion audit. Each stage has
-an evidence-backed review under `docs/reviews/`.
 The current secure path verifies provider hardware, model/key identity, and the
-live TLS endpoint and applies E2EE. An approved workload allowlist and the final
-desktop renderer remain future work; the desktop-to-AxiomCLI control plane is
-implemented and documented in
+live TLS endpoint and applies provider E2EE. The desktop-to-AxiomCLI control
+plane and product parity are documented in
 [`docs/acp-desktop-parity-matrix.md`](docs/acp-desktop-parity-matrix.md).
 
 ## Commands
@@ -59,7 +53,12 @@ cargo run -p axiomcli -- sessions list
 cargo run -p axiomcli -- plans list
 cargo run -p axiomcli -- permissions add-project-rule --action ask --effect network
 cargo run -p axiom-proxy -- --help
+pnpm desktop
 ```
+
+`pnpm desktop` builds the current AxiomCLI binary first, then launches Electron
+with that binary as its ACP sidecar. It is the normal development command on
+Linux, macOS, and Windows.
 
 `axiomcli acp` reserves stdout for newline-delimited ACP JSON-RPC. Logs and
 diagnostics go to stderr.
@@ -170,16 +169,13 @@ AXIOM_MODEL=your-model-id
 On first use, AxiomCLI opens `/login`. Browser login creates a short-lived,
 PKCE-bound authorization, asks the signed-in Axiom website to approve it, and
 stores the resulting revocable API credential in the operating-system keyring.
-If the browser cannot reach the loopback callback, paste the one-time `axc_`
-completion code shown by the website. `/login` also accepts either that `axc_`
-code or an existing `axm_` API key directly, while `/account` validates the current credential and
-`/logout` removes a stored credential. `AXIOM_API_KEY` remains an explicit
-environment override for automation; do not put API keys in repository
-configuration or command-line arguments.
-
-The legacy OpenAI-compatible development adapter is available only in builds
-compiled with `--features development-provider` and only when
-`AXIOMCLI_UNATTESTED_DEV=1`; the TUI labels that path `UNATTESTED DEV`.
+The loopback callback is only a best-effort approval notification; AxiomCLI
+continues polling the PKCE-bound device authorization when the callback is not
+reachable. `/login` also accepts an existing `axm_` API key directly, while
+`/account` validates the current credential and `/logout` removes a stored
+credential. `AXIOM_API_KEY` remains an explicit environment override for
+automation; do not put API keys in repository configuration or command-line
+arguments.
 
 ## Permission profiles
 

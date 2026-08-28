@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, HashMap},
-    path::PathBuf,
+    path::{Path, PathBuf},
     str::FromStr as _,
     sync::{
         Arc,
@@ -16,31 +16,35 @@ use axiom_acp_extension as extension;
 use axiom_acp_extension::{
     AccountState as ExtensionAccountState, AccountStatus as ExtensionAccountStatus, ActivityEvent,
     BrowserLoginCompleteRequest, BrowserLoginStartRequest, BrowserLoginStartResponse,
-    BrowserLoginState, CompactRequest, CompactResponse, CompactionPhase, DeleteConfirmRequest,
-    DeleteConfirmResponse, DeletePreviewRequest, DeletePreviewResponse, EventNotification,
-    ExtensionCapabilities, ExtensionError, ExtensionErrorCode, FeatureVersions,
-    GetSessionStateRequest, GetSessionStateResponse, ListModelsRequest, ListModelsResponse,
-    ListSessionsRequest, ListSessionsResponse, LogoutRequest, ModelInfo,
+    BrowserLoginState, CollectionStateResponse, CompactRequest, CompactResponse, CompactionPhase,
+    DeleteConfirmRequest, DeleteConfirmResponse, DeletePreviewRequest, DeletePreviewResponse,
+    DesktopBootstrapRequest, DesktopBootstrapResponse, EventNotification, ExtensionCapabilities,
+    ExtensionError, ExtensionErrorCode, FeatureVersions, GetThreadTimelineRequest,
+    GetThreadTimelineResponse, ListModelsRequest, ListModelsResponse, ListThreadsRequest,
+    ListThreadsResponse, LogoutRequest, ModelInfo, ProfilePreferencesResponse,
     SecurityEvidence as ExtensionSecurityEvidence, SecurityState as ExtensionSecurityState,
-    SecurityStatus as ExtensionSecurityStatus, SessionLifecycle as ExtensionSessionLifecycle,
-    SessionSettings as ExtensionSessionSettings, SessionSnapshot,
-    SessionSummary as ExtensionSessionSummary, SetSessionSettingsRequest,
-    SetSessionSettingsResponse, UseApiKeyRequest, VerifySecurityRequest, VerifySecurityResponse,
+    SecurityStatus as ExtensionSecurityStatus, UseApiKeyRequest, VerifySecurityRequest,
+    VerifySecurityResponse,
 };
 use tokio::sync::{Mutex, mpsc};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    agent::{APP_EVENT_QUEUE_CAPACITY, QuestionHandler, SecurityVerification, TurnRunner},
+    agent::{
+        APP_EVENT_QUEUE_CAPACITY, QuestionHandler, SecurityVerification, TurnRunner,
+        reconcile_model_settings, reconcile_new_session_settings,
+    },
     app::{
         AppCommand, AppEvent, Origin, PermissionProfile, QuestionRequest, Runtime, SessionId,
         TurnId,
     },
     auth::{AuthManager, ValidationStatus},
     config::Config,
+    paths::FrontendKind,
     policy::{ApprovalChoice, ApprovalHandler, ApprovalRequest, ApprovalResponse},
     session::{SessionStore, model_for_resume, permission_for_resume, thinking_for_resume},
     slash::{self, SlashCommand},
+    tool_display::{ToolDisplayPhase, describe_tool},
 };
 
 fn send_available_commands(
@@ -111,12 +115,15 @@ fn model_config_option(current: &str, models: &[String]) -> protocol::SessionCon
     .category(protocol::SessionConfigOptionCategory::Model)
 }
 
-fn thinking_config_option(current: crate::app::ThinkingLevel) -> protocol::SessionConfigOption {
+fn thinking_config_option_for(
+    current: crate::app::ThinkingLevel,
+    levels: &[crate::app::ThinkingLevel],
+) -> protocol::SessionConfigOption {
     protocol::SessionConfigOption::select(
         THINKING_CONFIG_ID,
         "Thinking",
         current.to_string(),
-        THINKING_LEVELS
+        levels
             .iter()
             .map(|level| {
                 protocol::SessionConfigSelectOption::new(level.to_string(), level.to_string())
@@ -126,11 +133,39 @@ fn thinking_config_option(current: crate::app::ThinkingLevel) -> protocol::Sessi
     .description("Reasoning effort used for subsequent AxiomCLI requests")
 }
 
-fn permission_modes(profile: PermissionProfile) -> protocol::SessionModeState {
+fn thinking_config_option(current: crate::app::ThinkingLevel) -> protocol::SessionConfigOption {
+    thinking_config_option_for(current, THINKING_LEVELS)
+}
+
+fn supported_thinking_levels(model: &axiom_inference::ModelInfo) -> Vec<crate::app::ThinkingLevel> {
+    model
+        .supported_reasoning_efforts
+        .iter()
+        .copied()
+        .map(|effort| match effort {
+            axiom_inference::ReasoningEffort::Minimal => crate::app::ThinkingLevel::Minimal,
+            axiom_inference::ReasoningEffort::Low => crate::app::ThinkingLevel::Low,
+            axiom_inference::ReasoningEffort::Medium => crate::app::ThinkingLevel::Medium,
+            axiom_inference::ReasoningEffort::High => crate::app::ThinkingLevel::High,
+            axiom_inference::ReasoningEffort::ExtraHigh => crate::app::ThinkingLevel::ExtraHigh,
+        })
+        .collect()
+}
+
+fn permission_modes(
+    profile: PermissionProfile,
+    frontend: FrontendKind,
+) -> protocol::SessionModeState {
+    let profiles: &[PermissionProfile] = if frontend == FrontendKind::DesktopChat {
+        &[PermissionProfile::Web]
+    } else {
+        &PermissionProfile::ALL
+    };
     protocol::SessionModeState::new(
         profile.to_string(),
-        PermissionProfile::ALL
-            .into_iter()
+        profiles
+            .iter()
+            .copied()
             .map(|permission| {
                 protocol::SessionMode::new(permission.to_string(), permission.label())
                     .description(permission.description())
@@ -143,24 +178,28 @@ fn session_config_options(
     model: &str,
     models: &[String],
     thinking: crate::app::ThinkingLevel,
+    supported_thinking: Option<&[crate::app::ThinkingLevel]>,
 ) -> Vec<protocol::SessionConfigOption> {
-    vec![
-        model_config_option(model, models),
-        thinking_config_option(thinking),
-    ]
+    let mut options = vec![model_config_option(model, models)];
+    match supported_thinking {
+        Some([]) => {}
+        Some(levels) => options.push(thinking_config_option_for(thinking, levels)),
+        None => options.push(thinking_config_option(thinking)),
+    }
+    options
 }
 
 fn tool_kind(name: &str) -> protocol::ToolKind {
     match name {
-        "read_file" | "read_many" | "list_files" | "file_metadata" | "inspect_git" => {
-            protocol::ToolKind::Read
-        }
+        "read_file" | "list_files" | "glob_files" | "inspect_metadata" | "inspect_git"
+        | "select_context" | "view_session_diff" => protocol::ToolKind::Read,
         "apply_patch" | "replace_text" | "plan_create" | "plan_revise" => protocol::ToolKind::Edit,
-        "search_files" | "web_search" | "fetch_url" => protocol::ToolKind::Search,
-        "run_command" | "run_shell" | "start_background" | "wait_background" => {
+        "search_text" | "web_search" | "fetch_url" => protocol::ToolKind::Search,
+        "run_command" | "run_shell" | "start_background" | "background_wait"
+        | "background_list" | "background_status" | "stop_background" => {
             protocol::ToolKind::Execute
         }
-        "progress_update" | "plan_propose" => protocol::ToolKind::Think,
+        "update_progress" | "plan_propose" | "ask_user_questions" => protocol::ToolKind::Think,
         _ => protocol::ToolKind::Other,
     }
 }
@@ -189,7 +228,7 @@ fn send_config_update(
     connection.send_notification(protocol::SessionNotification::new(
         session_id.clone(),
         protocol::SessionUpdate::ConfigOptionUpdate(protocol::ConfigOptionUpdate::new(
-            session_config_options(model, models, thinking),
+            session_config_options(model, models, thinking, None),
         )),
     ))
 }
@@ -247,6 +286,63 @@ fn extension_meta(capabilities: ExtensionCapabilities) -> protocol::Meta {
     meta
 }
 
+fn prompt_metadata(
+    meta: Option<&protocol::Meta>,
+) -> crate::Result<Option<extension::PromptMetadata>> {
+    meta.and_then(|meta| meta.get(extension::META_KEY))
+        .map(|value| {
+            let metadata = serde_json::from_value::<extension::PromptMetadata>(value.clone())
+                .map_err(|_| crate::AxiomError::Protocol("invalid Axiom prompt metadata".into()))?;
+            if metadata.client_item_id.is_empty()
+                || metadata.client_item_id.len() > extension::MAX_IDENTIFIER_BYTES
+            {
+                return Err(crate::AxiomError::Protocol(
+                    "invalid Axiom client item ID".into(),
+                ));
+            }
+            Ok(metadata)
+        })
+        .transpose()
+}
+
+fn delivery_meta(
+    revision: Option<&crate::session::ThreadRevision>,
+    timeline_item_id: Option<String>,
+    client_item_id: Option<String>,
+) -> Option<protocol::Meta> {
+    revision.map(|revision| {
+        let mut meta = protocol::Meta::new();
+        meta.insert(
+            extension::META_KEY.into(),
+            serde_json::to_value(extension::DeliveryMetadata {
+                thread_revision: revision.revision,
+                last_timeline_sequence: revision.last_timeline_sequence,
+                timeline_item_id,
+                client_item_id,
+            })
+            .expect("delivery metadata serializes"),
+        );
+        meta
+    })
+}
+
+fn send_session_update(
+    connection: &ConnectionTo<Client>,
+    session_id: &protocol::SessionId,
+    update: protocol::SessionUpdate,
+    revision: Option<&crate::session::ThreadRevision>,
+    timeline_item_id: Option<String>,
+    client_item_id: Option<String>,
+) -> agent_client_protocol::Result<()> {
+    connection.send_notification(
+        protocol::SessionNotification::new(session_id.clone(), update).meta(delivery_meta(
+            revision,
+            timeline_item_id,
+            client_item_id,
+        )),
+    )
+}
+
 fn negotiated_extension_features(meta: Option<&protocol::Meta>) -> Option<FeatureVersions> {
     meta.and_then(|meta| meta.get(extension::META_KEY))
         .and_then(|value| serde_json::from_value::<ExtensionCapabilities>(value.clone()).ok())
@@ -276,8 +372,24 @@ fn extension_security_status(state: crate::app::SecurityStatus) -> ExtensionSecu
 fn extension_security_evidence(
     status: crate::app::SecurityStatus,
     evidence: axiom_secure_client::SecurityEvidence,
-) -> ExtensionSecurityEvidence {
-    ExtensionSecurityEvidence {
+) -> crate::Result<ExtensionSecurityEvidence> {
+    let attestation_generation = evidence
+        .attestation_generation
+        .filter(|generation| *generation > 0)
+        .ok_or_else(|| {
+            crate::AxiomError::Protocol(
+                "verified provider evidence is missing its attestation generation".into(),
+            )
+        })?;
+    let hard_expires_at_unix_seconds = evidence
+        .hard_expires_at_unix_seconds
+        .filter(|expiry| *expiry > 0)
+        .ok_or_else(|| {
+            crate::AxiomError::Protocol(
+                "verified provider evidence is missing its hard expiry".into(),
+            )
+        })?;
+    Ok(ExtensionSecurityEvidence {
         status: extension_security_status(status),
         provider_id: evidence.provider_id,
         model_id: evidence.model_id,
@@ -286,6 +398,8 @@ fn extension_security_evidence(
         e2ee_encryption_version: evidence.e2ee_encryption_version,
         trust_policy_version: evidence.trust_policy_version,
         verified_at_unix_seconds: evidence.verified_at_unix_seconds,
+        attestation_generation,
+        hard_expires_at_unix_seconds,
         model_key_fingerprint: evidence.model_key_fingerprint,
         tls_spki_fingerprint: evidence.tls_spki_fingerprint,
         checks: evidence
@@ -312,7 +426,26 @@ fn extension_security_evidence(
         }),
         workload_identity_allowlist_configured: evidence.workload_identity_allowlist_configured,
         approved_workload_identity: evidence.approved_workload_identity,
+    })
+}
+
+fn strict_extension_security_verification(
+    verification: SecurityVerification,
+) -> crate::Result<(
+    crate::app::SecurityStatus,
+    Option<ExtensionSecurityEvidence>,
+)> {
+    let status = verification.status;
+    let evidence = verification
+        .evidence
+        .map(|evidence| extension_security_evidence(status, evidence))
+        .transpose()?;
+    if status == crate::app::SecurityStatus::Verified && evidence.is_none() {
+        return Err(crate::AxiomError::Protocol(
+            "verified provider returned no attestation evidence".into(),
+        ));
     }
+    Ok((status, evidence))
 }
 
 fn bounded_extension_text(mut value: String, max_bytes: usize) -> String {
@@ -330,35 +463,112 @@ fn bounded_extension_text(mut value: String, max_bytes: usize) -> String {
     value
 }
 
-fn extension_settings(session: &AcpSession) -> ExtensionSessionSettings {
-    ExtensionSessionSettings {
-        model: session.model.clone(),
-        thinking_level: session.thinking.to_string(),
-        permission_profile: session.profile.to_string(),
+fn extension_thread_lifecycle(
+    value: crate::session::ThreadLifecycle,
+) -> extension::ThreadLifecycle {
+    match value {
+        crate::session::ThreadLifecycle::Ready => extension::ThreadLifecycle::Ready,
+        crate::session::ThreadLifecycle::Running => extension::ThreadLifecycle::Running,
+        crate::session::ThreadLifecycle::WaitingForApproval => {
+            extension::ThreadLifecycle::WaitingForApproval
+        }
+        crate::session::ThreadLifecycle::WaitingForAnswer => {
+            extension::ThreadLifecycle::WaitingForAnswer
+        }
+        crate::session::ThreadLifecycle::Compacting => extension::ThreadLifecycle::Compacting,
+        crate::session::ThreadLifecycle::Closed => extension::ThreadLifecycle::Closed,
     }
 }
 
-fn extension_snapshot(
-    state: &ExtensionState,
-    external_id: &protocol::SessionId,
-    session: &AcpSession,
-    title: Option<String>,
-) -> SessionSnapshot {
-    SessionSnapshot {
-        runtime_instance_id: state.runtime_instance_id.clone(),
-        sequence: state.sequence.load(Ordering::Acquire),
-        session_id: external_id.0.to_string(),
-        title,
-        cwd: session.cwd.display().to_string(),
-        lifecycle: if session.active_turn.is_some() {
-            ExtensionSessionLifecycle::Running
-        } else {
-            ExtensionSessionLifecycle::Ready
-        },
-        settings: extension_settings(session),
-        security: extension_security_status(session.security),
-        active_turn_id: session.active_turn.as_ref().map(ToString::to_string),
-        has_prompt: session.has_prompt,
+fn extension_thread_summary(summary: crate::session::ThreadSummary) -> extension::ThreadSummary {
+    extension::ThreadSummary {
+        thread_id: summary.id,
+        title: summary.title,
+        cwd: summary.cwd.display().to_string(),
+        origin: summary.origin,
+        profile: summary.profile,
+        selected_model: summary.selected_model,
+        thinking_level: summary.thinking_level.to_string(),
+        lifecycle: extension_thread_lifecycle(summary.lifecycle),
+        archived: summary.archived,
+        revision: summary.revision,
+        last_timeline_sequence: summary.last_timeline_sequence,
+        created_at: summary.created_at,
+        updated_at: summary.updated_at,
+    }
+}
+
+fn extension_timeline_kind(value: crate::session::TimelineItemKind) -> extension::TimelineItemKind {
+    match value {
+        crate::session::TimelineItemKind::UserMessage => extension::TimelineItemKind::UserMessage,
+        crate::session::TimelineItemKind::AssistantMessage => {
+            extension::TimelineItemKind::AssistantMessage
+        }
+        crate::session::TimelineItemKind::Reasoning => extension::TimelineItemKind::Reasoning,
+        crate::session::TimelineItemKind::ToolCall => extension::TimelineItemKind::ToolCall,
+        crate::session::TimelineItemKind::Plan => extension::TimelineItemKind::Plan,
+        crate::session::TimelineItemKind::Notice => extension::TimelineItemKind::Notice,
+    }
+}
+
+fn extension_timeline_status(
+    value: crate::session::TimelineItemStatus,
+) -> extension::TimelineItemStatus {
+    match value {
+        crate::session::TimelineItemStatus::Pending => extension::TimelineItemStatus::Pending,
+        crate::session::TimelineItemStatus::InProgress => extension::TimelineItemStatus::InProgress,
+        crate::session::TimelineItemStatus::Completed => extension::TimelineItemStatus::Completed,
+        crate::session::TimelineItemStatus::Cancelled => extension::TimelineItemStatus::Cancelled,
+        crate::session::TimelineItemStatus::Failed => extension::TimelineItemStatus::Failed,
+        crate::session::TimelineItemStatus::Interrupted => {
+            extension::TimelineItemStatus::Interrupted
+        }
+    }
+}
+
+fn extension_timeline_item(item: crate::session::TimelineItem) -> extension::TimelineItem {
+    extension::TimelineItem {
+        id: item.id,
+        thread_id: item.thread_id,
+        turn_id: item.turn_id,
+        sequence: item.sequence,
+        kind: extension_timeline_kind(item.kind),
+        status: extension_timeline_status(item.status),
+        client_item_id: item.client_item_id,
+        external_id: item.external_id,
+        content: item.content,
+        metadata: item.metadata,
+        created_at: item.created_at,
+        updated_at: item.updated_at,
+    }
+}
+
+fn extension_preferences(
+    value: crate::session::ProfilePreferences,
+) -> extension::ProfilePreferences {
+    extension::ProfilePreferences {
+        model: value.model,
+        thinking_level: value.thinking_level.to_string(),
+        updated_at: value.updated_at,
+    }
+}
+
+fn extension_collections(value: crate::session::CollectionState) -> extension::CollectionState {
+    extension::CollectionState {
+        revision: value.revision,
+        collections: value
+            .collections
+            .into_iter()
+            .map(|collection| extension::Collection {
+                id: collection.id,
+                name: collection.name,
+                collapsed: collection.collapsed,
+                position: collection.position,
+                thread_ids: collection.thread_ids,
+                created_at: collection.created_at,
+                updated_at: collection.updated_at,
+            })
+            .collect(),
     }
 }
 
@@ -416,6 +626,8 @@ fn send_extension_activity_correlated(
         sequence: extension_state.next_sequence(),
         occurred_at: chrono::Utc::now().to_rfc3339(),
         correlation_id,
+        thread_revision: None,
+        last_timeline_sequence: None,
         event,
     })
 }
@@ -450,44 +662,6 @@ fn extension_not_negotiated() -> agent_client_protocol::Error {
     )
 }
 
-fn extension_summary(
-    store: &SessionStore,
-    summary: crate::session::SessionSummary,
-    default_model: &str,
-    default_thinking: crate::app::ThinkingLevel,
-) -> crate::Result<ExtensionSessionSummary> {
-    let id = SessionId::from_str(&summary.id)
-        .map_err(|_| crate::AxiomError::Config("invalid stored session ID".into()))?;
-    let events = store.load_recovering(&id)?.events;
-    let last_outcome = events
-        .iter()
-        .rev()
-        .find_map(|envelope| match &envelope.event {
-            AppEvent::TurnCompleted { .. } => Some("completed".to_owned()),
-            AppEvent::TurnCancelled { .. } => Some("cancelled".to_owned()),
-            AppEvent::ErrorRaised { turn_id, .. } if turn_id.is_some() => Some("failed".to_owned()),
-            _ => None,
-        });
-    Ok(ExtensionSessionSummary {
-        session_id: summary.id,
-        title: summary.title,
-        cwd: summary.cwd.display().to_string(),
-        updated_at: summary.updated_at,
-        settings: ExtensionSessionSettings {
-            model: model_for_resume(&events, default_model),
-            thinking_level: thinking_for_resume(&events, default_thinking).to_string(),
-            permission_profile: permission_for_resume(
-                &events,
-                PermissionProfile::from_str(&summary.profile).unwrap_or(PermissionProfile::Confirm),
-            )
-            .to_string(),
-        },
-        archived: summary.archived,
-        history_truncated: summary.history_truncated,
-        last_outcome,
-    })
-}
-
 fn validate_session_ids(values: &[String]) -> crate::Result<Vec<SessionId>> {
     if values.is_empty() || values.len() > extension::MAX_SESSION_IDS {
         return Err(crate::AxiomError::Config(format!(
@@ -512,40 +686,10 @@ fn validate_session_ids(values: &[String]) -> crate::Result<Vec<SessionId>> {
     Ok(ids)
 }
 
-fn security_for_resume(events: &[crate::app::EventEnvelope]) -> crate::app::SecurityStatus {
-    events
-        .iter()
-        .rev()
-        .find_map(|envelope| match &envelope.event {
-            AppEvent::SecurityStatusChanged { state } => Some(*state),
-            _ => None,
-        })
-        .unwrap_or(crate::app::SecurityStatus::Unverified)
-}
-
 fn extension_activity(event: &AppEvent) -> Option<ActivityEvent> {
     match event {
         AppEvent::SecurityStatusChanged { state } => Some(ActivityEvent::SecurityChanged {
             status: extension_security_status(*state),
-        }),
-        AppEvent::ProgressUpdated {
-            message,
-            completed,
-            total,
-        } => Some(ActivityEvent::Progress {
-            message: message.clone(),
-            completed: *completed,
-            total: *total,
-        }),
-        AppEvent::TaskListUpdated { items } => Some(ActivityEvent::TaskList {
-            items: items
-                .iter()
-                .map(|item| extension::TaskItem {
-                    id: item.id.clone(),
-                    title: item.title.clone(),
-                    status: format!("{:?}", item.status).to_ascii_lowercase(),
-                })
-                .collect(),
         }),
         AppEvent::BackgroundTaskChanged { task_id, state } => Some(ActivityEvent::BackgroundTask {
             task_id: task_id.clone(),
@@ -562,12 +706,6 @@ fn extension_activity(event: &AppEvent) -> Option<ActivityEvent> {
         } => Some(ActivityEvent::Compaction {
             phase: CompactionPhase::Completed,
             detail: Some(format!("compacted {messages_before} conversation messages")),
-        }),
-        AppEvent::WarningRaised { message } => Some(ActivityEvent::Warning {
-            message: message.clone(),
-        }),
-        AppEvent::ErrorRaised { message, .. } => Some(ActivityEvent::Error {
-            message: message.clone(),
         }),
         _ => None,
     }
@@ -587,6 +725,22 @@ struct AcpSession {
     security: crate::app::SecurityStatus,
 }
 
+fn apply_session_model_settings(
+    session: &mut AcpSession,
+    model: &str,
+    thinking: crate::app::ThinkingLevel,
+    models: &[String],
+    reset_security: bool,
+) {
+    model.clone_into(&mut session.model);
+    session.thinking = thinking;
+    session.models.clear();
+    session.models.extend_from_slice(models);
+    if reset_security {
+        session.security = crate::app::SecurityStatus::Unverified;
+    }
+}
+
 type Sessions = Arc<Mutex<HashMap<protocol::SessionId, AcpSession>>>;
 
 struct PendingDelete {
@@ -596,12 +750,16 @@ struct PendingDelete {
 
 #[derive(Clone, Copy)]
 enum ExtensionFeature {
-    SessionCatalog = 1 << 0,
-    Settings = 1 << 1,
-    Account = 1 << 2,
-    SecurityEvidence = 1 << 3,
-    Compaction = 1 << 4,
-    Activity = 1 << 5,
+    ThreadCatalog = 1 << 0,
+    Timeline = 1 << 1,
+    ModelCatalog = 1 << 2,
+    ProfilePreferences = 1 << 3,
+    Collections = 1 << 4,
+    Account = 1 << 5,
+    SecurityEvidence = 1 << 6,
+    Compaction = 1 << 7,
+    Activity = 1 << 8,
+    DesktopChat = 1 << 9,
 }
 
 struct ExtensionState {
@@ -633,11 +791,20 @@ impl ExtensionState {
             return;
         };
         let mut mask = 0;
-        if features.session_catalog >= 1 {
-            mask |= ExtensionFeature::SessionCatalog as u64;
+        if features.thread_catalog >= 1 {
+            mask |= ExtensionFeature::ThreadCatalog as u64;
         }
-        if features.settings >= 1 {
-            mask |= ExtensionFeature::Settings as u64;
+        if features.timeline >= 1 {
+            mask |= ExtensionFeature::Timeline as u64;
+        }
+        if features.model_catalog >= 1 {
+            mask |= ExtensionFeature::ModelCatalog as u64;
+        }
+        if features.profile_preferences >= 1 {
+            mask |= ExtensionFeature::ProfilePreferences as u64;
+        }
+        if features.collections >= 1 {
+            mask |= ExtensionFeature::Collections as u64;
         }
         if features.account >= 1 {
             mask |= ExtensionFeature::Account as u64;
@@ -650,6 +817,9 @@ impl ExtensionState {
         }
         if features.activity >= 1 {
             mask |= ExtensionFeature::Activity as u64;
+        }
+        if features.desktop_chat >= 1 {
+            mask |= ExtensionFeature::DesktopChat as u64;
         }
         self.enabled_features.store(mask, Ordering::Release);
     }
@@ -812,25 +982,26 @@ pub async fn serve_stdio(
     config: Config,
     store: Option<SessionStore>,
     auth: AuthManager,
+    frontend: FrontendKind,
+    desktop_cwd: Option<PathBuf>,
 ) -> agent_client_protocol::Result<()> {
     let sessions: Sessions = Arc::new(Mutex::new(HashMap::new()));
     let extension_state = Arc::new(ExtensionState::new());
     let runtime = Runtime::new(512);
     let default_model = config.model.clone();
     let default_thinking = crate::app::ThinkingLevel::Medium;
-    let extension_default_model = default_model.clone();
-    let extension_default_thinking = default_thinking;
-    let list_default_model = extension_default_model.clone();
-    let preview_default_model = extension_default_model;
 
     let new_sessions = sessions.clone();
     let new_runtime = runtime.clone();
     let new_runner = runner.clone();
     let new_config = config;
+    let new_frontend = frontend;
+    let new_desktop_cwd = desktop_cwd.clone();
     let prompt_sessions = sessions.clone();
     let prompt_runtime = runtime.clone();
     let cancel_sessions = sessions.clone();
     let new_store = store.clone();
+    let new_extension = extension_state.clone();
     let load_store = store.clone();
     let extension_store = store.clone();
     let prompt_store = store;
@@ -849,18 +1020,19 @@ pub async fn serve_stdio(
     let config_runtime = runtime.clone();
     let config_runner = runner.clone();
     let config_store = prompt_store.clone();
+    let config_extension = extension_state.clone();
     let mode_sessions = sessions.clone();
     let mode_runtime = runtime.clone();
     let mode_store = prompt_store.clone();
+    let mode_frontend = frontend;
     let supports_load = load_store.is_some();
     let supports_elicitation = Arc::new(AtomicBool::new(false));
     let initialize_elicitation = supports_elicitation.clone();
     let initialize_extension = extension_state.clone();
     let list_extension = extension_state.clone();
     let list_extension_store = extension_store.clone();
-    let state_extension = extension_state.clone();
-    let state_extension_store = extension_store.clone();
-    let state_extension_sessions = sessions.clone();
+    let timeline_extension = extension_state.clone();
+    let timeline_extension_store = extension_store.clone();
     let preview_extension = extension_state.clone();
     let preview_extension_store = extension_store.clone();
     let preview_extension_sessions = sessions.clone();
@@ -869,11 +1041,25 @@ pub async fn serve_stdio(
     let delete_extension_sessions = sessions.clone();
     let models_extension = extension_state.clone();
     let models_extension_runner = runner.clone();
-    let settings_extension = extension_state.clone();
-    let settings_extension_sessions = sessions.clone();
-    let settings_extension_runtime = runtime.clone();
-    let settings_extension_runner = runner.clone();
-    let settings_extension_store = extension_store.clone();
+    let stored_preferences_extension = extension_state.clone();
+    let stored_preferences_store = extension_store.clone();
+    let update_preferences_extension = extension_state.clone();
+    let update_preferences_store = extension_store.clone();
+    let update_preferences_runner = runner.clone();
+    let collections_list_extension = extension_state.clone();
+    let collections_list_store = extension_store.clone();
+    let collection_create_extension = extension_state.clone();
+    let collection_create_store = extension_store.clone();
+    let collection_rename_extension = extension_state.clone();
+    let collection_rename_store = extension_store.clone();
+    let collection_collapsed_extension = extension_state.clone();
+    let collection_collapsed_store = extension_store.clone();
+    let collection_move_extension = extension_state.clone();
+    let collection_move_store = extension_store.clone();
+    let collection_delete_extension = extension_state.clone();
+    let collection_delete_store = extension_store.clone();
+    let collection_assign_extension = extension_state.clone();
+    let collection_assign_store = extension_store.clone();
     let account_status_extension = extension_state.clone();
     let account_status_auth = extension_auth.clone();
     let login_start_extension = extension_state.clone();
@@ -891,7 +1077,15 @@ pub async fn serve_stdio(
     let compact_extension_sessions = sessions.clone();
     let compact_extension_runner = runner.clone();
     let compact_extension_runtime = runtime.clone();
-    let compact_extension_store = extension_store;
+    let compact_extension_store = extension_store.clone();
+    let bootstrap_extension = extension_state.clone();
+    let bootstrap_cwd = desktop_cwd.clone();
+    let bootstrap_store = prompt_store.clone();
+    let bootstrap_runner = runner.clone();
+    let bootstrap_default_model = new_default_model.clone();
+    let bootstrap_default_thinking = default_thinking;
+    let load_frontend = frontend;
+    let load_desktop_cwd = desktop_cwd;
 
     Agent
         .builder()
@@ -924,6 +1118,71 @@ pub async fn serve_stdio(
             agent_client_protocol::on_receive_request!(),
         )
         .on_receive_request(
+            async move |_request: DesktopBootstrapRequest,
+                        responder: Responder<DesktopBootstrapResponse>,
+                        _connection| {
+                if !extension_enabled(&bootstrap_extension, ExtensionFeature::DesktopChat) {
+                    return responder.respond_with_error(extension_not_negotiated());
+                }
+                if frontend != FrontendKind::DesktopChat {
+                    return responder.respond_with_internal_error(
+                        "AxiomCLI was not launched with the desktop-chat frontend",
+                    );
+                }
+                let Some(cwd) = &bootstrap_cwd else {
+                    return responder.respond_with_internal_error(
+                        "desktop chat workspace was not initialized",
+                    );
+                };
+                let durable_preferences = bootstrap_store
+                    .as_ref()
+                    .map(SessionStore::profile_preferences)
+                    .transpose()
+                    .map_err(agent_error)?;
+                let model_details = bootstrap_runner
+                    .available_model_details(CancellationToken::new())
+                    .await
+                    .map_err(agent_error)?;
+                let settings = reconcile_new_session_settings(
+                    model_details,
+                    durable_preferences
+                        .as_ref()
+                        .and_then(|preferences| preferences.model.as_deref()),
+                    &bootstrap_default_model,
+                    durable_preferences.as_ref().map_or(
+                        bootstrap_default_thinking,
+                        |preferences| preferences.thinking_level,
+                    ),
+                )
+                .map_err(agent_error)?;
+                let preferences = match (&bootstrap_store, durable_preferences) {
+                    (Some(store), Some(preferences))
+                        if preferences.model.as_deref() != Some(settings.model.as_str())
+                            || preferences.thinking_level != settings.thinking =>
+                    {
+                        extension_preferences(
+                            store
+                                .set_profile_preferences(&settings.model, settings.thinking)
+                                .map_err(agent_error)?,
+                        )
+                    }
+                    (_, Some(preferences)) => extension_preferences(preferences),
+                    _ => extension::ProfilePreferences {
+                        model: Some(settings.model),
+                        thinking_level: settings.thinking.to_string(),
+                        updated_at: chrono::Utc::now().to_rfc3339(),
+                    },
+                };
+                responder.respond(DesktopBootstrapResponse {
+                    frontend: frontend.to_string(),
+                    chat_cwd: cwd.display().to_string(),
+                    permission_profile: PermissionProfile::Web.to_string(),
+                    new_thread_settings: preferences,
+                })
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
             async move |request: protocol::NewSessionRequest,
                         responder: Responder<protocol::NewSessionResponse>,
                         connection: ConnectionTo<Client>| {
@@ -936,25 +1195,67 @@ pub async fn serve_stdio(
                         "cannot open ACP workspace: {error}"
                     ))
                 })?;
-                let profile = new_config
-                    .for_workspace(&cwd)
-                    .map_err(agent_error)?
-                    .permission_profile;
+                let profile = if new_frontend == FrontendKind::DesktopChat {
+                    let Some(expected) = &new_desktop_cwd else {
+                        return responder.respond_with_internal_error(
+                            "desktop chat workspace was not initialized",
+                        );
+                    };
+                    if &cwd != expected {
+                        return responder.respond_with_internal_error(
+                            "desktop chat sessions must use the application chat workspace",
+                        );
+                    }
+                    PermissionProfile::Web
+                } else {
+                    new_config
+                        .for_workspace(&cwd)
+                        .map_err(agent_error)?
+                        .permission_profile
+                };
                 let internal_id = SessionId::new();
-                let session_model = new_store
+                let preferences = new_store
                     .as_ref()
-                    .map(SessionStore::last_used_model)
+                    .map(SessionStore::profile_preferences)
                     .transpose()
-                    .map_err(agent_error)?
-                    .flatten()
-                    .unwrap_or_else(|| new_default_model.clone());
-                let session_thinking = new_store
+                    .map_err(agent_error)?;
+                let preferred_model = preferences
                     .as_ref()
-                    .map(SessionStore::last_used_thinking)
-                    .transpose()
-                    .map_err(agent_error)?
-                    .flatten()
-                    .unwrap_or(new_default_thinking);
+                    .and_then(|preferences| preferences.model.as_deref());
+                let preferred_thinking = preferences
+                    .as_ref()
+                    .map_or(new_default_thinking, |preferences| preferences.thinking_level);
+                let model_details = new_runner
+                    .available_model_details(CancellationToken::new())
+                    .await
+                    .map_err(agent_error)?;
+                let settings = reconcile_new_session_settings(
+                    model_details.clone(),
+                    preferred_model,
+                    &new_default_model,
+                    preferred_thinking,
+                )
+                .map_err(agent_error)?;
+                let correct_preferences = new_store.is_some()
+                    && preferences.as_ref().is_none_or(|preferences| {
+                        preferences.model.as_deref() != Some(settings.model.as_str())
+                            || preferences.thinking_level != settings.thinking
+                    });
+                let session_model = settings.model.clone();
+                let session_thinking = settings.thinking;
+                let models = model_details
+                    .iter()
+                    .map(|model| model.id.clone())
+                    .collect::<Vec<_>>();
+                let supported_thinking = model_details
+                    .iter()
+                    .find(|model| model.id == session_model)
+                    .map(supported_thinking_levels)
+                    .ok_or_else(|| {
+                        agent_client_protocol::util::internal_error(
+                            "selected model disappeared from the provider catalog",
+                        )
+                    })?;
                 let created = new_runtime
                     .dispatch(AppCommand::CreateSession {
                         session_id: internal_id.clone(),
@@ -967,40 +1268,38 @@ pub async fn serve_stdio(
                 if let Some(store) = &new_store {
                     store.append_all(&created).map_err(agent_error)?;
                 }
-                if session_model != new_default_model {
-                    new_runner
-                        .set_model(&internal_id, session_model.clone())
-                        .await
-                        .map_err(agent_error)?;
-                }
-                if session_thinking != new_default_thinking {
-                    new_runner
-                        .set_thinking_level(&internal_id, session_thinking)
-                        .await
-                        .map_err(agent_error)?;
-                }
-                let selected_model = new_runtime
-                    .dispatch(AppCommand::ChangeModel {
+                new_runner
+                    .set_model_settings(&internal_id, &settings)
+                    .await
+                    .map_err(agent_error)?;
+                let selected_settings = new_runtime
+                    .dispatch(AppCommand::ChangeModelSettings {
                         session_id: internal_id.clone(),
                         model: session_model.clone(),
+                        thinking: session_thinking,
+                        reset_security: false,
                     })
                     .await
                     .map_err(agent_error)?;
-                if let Some(store) = &new_store {
-                    store.append_all(&selected_model).map_err(agent_error)?;
-                }
-                let selected_thinking = new_runtime
-                    .dispatch(AppCommand::ChangeThinkingLevel {
-                        session_id: internal_id.clone(),
-                        level: session_thinking,
-                    })
-                    .await
-                    .map_err(agent_error)?;
-                if let Some(store) = &new_store {
-                    store
-                        .append_all(&selected_thinking)
-                        .map_err(agent_error)?;
-                }
+                let corrected_preferences = if let Some(store) = &new_store {
+                    if correct_preferences {
+                        let (_, preferences) = store
+                            .append_all_and_set_profile_preferences(
+                                &selected_settings,
+                                &session_model,
+                                session_thinking,
+                            )
+                            .map_err(agent_error)?;
+                        Some(extension_preferences(preferences))
+                    } else {
+                        store
+                            .append_all(&selected_settings)
+                            .map_err(agent_error)?;
+                        None
+                    }
+                } else {
+                    None
+                };
                 let external_id = protocol::SessionId::new(internal_id.to_string());
                 new_sessions.lock().await.insert(
                     external_id.clone(),
@@ -1010,7 +1309,7 @@ pub async fn serve_stdio(
                         profile,
                         model: session_model.clone(),
                         thinking: session_thinking,
-                        models: Vec::new(),
+                        models: models.clone(),
                         active_turn: None,
                         cancellation: None,
                         has_prompt: false,
@@ -1019,13 +1318,22 @@ pub async fn serve_stdio(
                 );
                 responder.respond(
                     protocol::NewSessionResponse::new(external_id.clone())
-                        .modes(permission_modes(profile))
+                        .modes(permission_modes(profile, new_frontend))
                         .config_options(session_config_options(
                             &session_model,
-                            &[],
+                            &models,
                             session_thinking,
+                            Some(&supported_thinking),
                         )),
                 )?;
+                if let Some(preferences) = corrected_preferences {
+                    send_extension_activity(
+                        &connection,
+                        &new_extension,
+                        None,
+                        ActivityEvent::ProfilePreferencesChanged { preferences },
+                    )?;
+                }
                 send_available_commands(&connection, &external_id)
             },
             agent_client_protocol::on_receive_request!(),
@@ -1065,10 +1373,46 @@ pub async fn serve_stdio(
                         "ACP load cwd does not match the session workspace identity",
                     );
                 }
+                if load_frontend == FrontendKind::DesktopChat
+                    && load_desktop_cwd.as_ref() != Some(&saved_cwd)
+                {
+                    return responder.respond_with_internal_error(
+                        "desktop chat session has an invalid workspace identity",
+                    );
+                }
                 let loaded = store.load_recovering(&internal_id).map_err(agent_error)?;
                 if let Some(warning) = loaded.warnings.first() {
                     return responder.respond_with_internal_error(warning.clone());
                 }
+                let restored_model = model_for_resume(&loaded.events, &load_default_model);
+                let restored_thinking =
+                    thinking_for_resume(&loaded.events, load_default_thinking);
+                let model_details = load_runner
+                    .available_model_details(CancellationToken::new())
+                    .await
+                    .map_err(agent_error)?;
+                let settings = reconcile_new_session_settings(
+                    model_details.clone(),
+                    Some(&restored_model),
+                    &load_default_model,
+                    restored_thinking,
+                )
+                .map_err(agent_error)?;
+                let session_model = settings.model.clone();
+                let session_thinking = settings.thinking;
+                let models = model_details
+                    .iter()
+                    .map(|model| model.id.clone())
+                    .collect::<Vec<_>>();
+                let supported_thinking = model_details
+                    .iter()
+                    .find(|model| model.id == session_model)
+                    .map(supported_thinking_levels)
+                    .ok_or_else(|| {
+                        agent_client_protocol::util::internal_error(
+                            "selected model disappeared from the provider catalog",
+                        )
+                    })?;
                 let restored = load_runtime
                     .restore(&loaded.events)
                     .await
@@ -1077,13 +1421,22 @@ pub async fn serve_stdio(
                     .restore_session(&internal_id, &loaded.events)
                     .await
                     .map_err(agent_error)?;
+                load_runner
+                    .set_model_settings(&internal_id, &settings)
+                    .await
+                    .map_err(agent_error)?;
                 for envelope in &loaded.events {
                     send_event(
                         &connection,
                         &external_id,
                         envelope.event.clone(),
-                        Some(&load_extension),
-                        Some(envelope.correlation_id.to_string()),
+                        EventDelivery {
+                            cwd: Some(&saved_cwd),
+                            extension_state: None,
+                            correlation_id: Some(envelope.correlation_id.to_string()),
+                            revision: None,
+                            client_item_id: None,
+                        },
                     )?;
                 }
                 let resumed = load_runtime
@@ -1098,6 +1451,33 @@ pub async fn serve_stdio(
                     .await
                     .map_err(agent_error)?;
                 store.append(&resumed).map_err(agent_error)?;
+                let model_changed = restored_model != session_model;
+                if model_changed || restored_thinking != session_thinking {
+                    let corrected = load_runtime
+                        .dispatch(AppCommand::ChangeModelSettings {
+                            session_id: internal_id.clone(),
+                            model: session_model.clone(),
+                            thinking: session_thinking,
+                            reset_security: model_changed,
+                        })
+                        .await
+                        .map_err(agent_error)?;
+                    let revision = store.append_all(&corrected).map_err(agent_error)?;
+                    for envelope in corrected {
+                        send_event(
+                            &connection,
+                            &external_id,
+                            envelope.event,
+                            EventDelivery {
+                                cwd: Some(&saved_cwd),
+                                extension_state: Some(&load_extension),
+                                correlation_id: Some(envelope.correlation_id.to_string()),
+                                revision: Some(&revision),
+                                client_item_id: None,
+                            },
+                        )?;
+                    }
+                }
                 let recovery = store.recovery_status(&internal_id).map_err(agent_error)?;
                 if recovery.interrupted_turns > 0 || !recovery.interrupted_tools.is_empty() {
                     connection.send_notification(protocol::SessionNotification::new(
@@ -1111,34 +1491,36 @@ pub async fn serve_stdio(
                         )),
                     ))?;
                 }
-                let restored_profile = permission_for_resume(&loaded.events, restored.profile);
-                let restored_model = model_for_resume(&loaded.events, &load_default_model);
-                let restored_thinking =
-                    thinking_for_resume(&loaded.events, load_default_thinking);
+                let restored_profile = if load_frontend == FrontendKind::DesktopChat {
+                    PermissionProfile::Web
+                } else {
+                    permission_for_resume(&loaded.events, restored.profile)
+                };
                 load_sessions.lock().await.insert(
                     external_id.clone(),
                     AcpSession {
                         internal_id,
                         cwd: saved_cwd,
                         profile: restored_profile,
-                        model: restored_model.clone(),
-                        thinking: restored_thinking,
-                        models: Vec::new(),
+                        model: session_model.clone(),
+                        thinking: session_thinking,
+                        models: models.clone(),
                         active_turn: None,
                         cancellation: None,
                         has_prompt: loaded.events.iter().any(|envelope| {
                             matches!(envelope.event, AppEvent::PromptAccepted { .. })
                         }),
-                        security: security_for_resume(&loaded.events),
+                        security: crate::app::SecurityStatus::Unverified,
                     },
                 );
                 responder.respond(
                     protocol::LoadSessionResponse::new()
-                        .modes(permission_modes(restored_profile))
+                        .modes(permission_modes(restored_profile, load_frontend))
                         .config_options(session_config_options(
-                            &restored_model,
-                            &[],
-                            restored_thinking,
+                            &session_model,
+                            &models,
+                            session_thinking,
+                            Some(&supported_thinking),
                         )),
                 )?;
                 send_available_commands(&connection, &external_id)
@@ -1149,6 +1531,9 @@ pub async fn serve_stdio(
             async move |request: protocol::PromptRequest,
                         responder: Responder<protocol::PromptResponse>,
                         connection: ConnectionTo<Client>| {
+                let client_item_id = prompt_metadata(request.meta.as_ref())
+                    .map_err(agent_error)?
+                    .map(|metadata| metadata.client_item_id);
                 let prompt = match prompt_text(&request.prompt) {
                     Ok(prompt) => prompt,
                     Err(message) => return responder.respond_with_internal_error(message),
@@ -1262,17 +1647,13 @@ pub async fn serve_stdio(
                             {
                                 session.thinking = level;
                             }
-                            let settings = {
+                            let current = {
                                 let sessions = prompt_sessions.lock().await;
                                 sessions.get(&session_id).map(|session| {
-                                    (
-                                        extension_settings(session),
-                                        session.model.clone(),
-                                        session.models.clone(),
-                                    )
+                                    (session.model.clone(), session.models.clone())
                                 })
                             };
-                            if let Some((settings, model, models)) = settings {
+                            if let Some((model, models)) = current {
                                 send_config_update(
                                     &connection,
                                     &session_id,
@@ -1280,18 +1661,20 @@ pub async fn serve_stdio(
                                     &models,
                                     level,
                                 )?;
-                                send_extension_activity(
-                                    &connection,
-                                    &prompt_extension,
-                                    Some(&session_id),
-                                    ActivityEvent::SettingsChanged { settings },
-                                )?;
+                                if let Some(store) = &prompt_store {
+                                    let preferences = extension_preferences(
+                                        store
+                                            .set_profile_preferences(&model, level)
+                                            .map_err(agent_error)?,
+                                    );
+                                    send_extension_activity(
+                                        &connection,
+                                        &prompt_extension,
+                                        None,
+                                        ActivityEvent::ProfilePreferencesChanged { preferences },
+                                    )?;
+                                }
                             }
-                            send_text(
-                                &connection,
-                                &session_id,
-                                format!("Thinking set to {level}."),
-                            )?;
                             return responder.respond(protocol::PromptResponse::new(
                                 protocol::StopReason::EndTurn,
                             ));
@@ -1372,6 +1755,8 @@ pub async fn serve_stdio(
                                 .verify_security(&model, CancellationToken::new())
                                 .await
                                 .map_err(agent_error)?;
+                            strict_extension_security_verification(verification.clone())
+                                .map_err(agent_error)?;
                             send_text(
                                 &connection,
                                 &session_id,
@@ -1426,17 +1811,39 @@ pub async fn serve_stdio(
                                     return responder.respond_with_internal_error(error);
                                 }
                             };
-                            if let Some(session) =
-                                prompt_sessions.lock().await.get_mut(&session_id)
-                            {
-                                session.security = verification.status;
+                            let verification_status =
+                                match strict_extension_security_verification(verification.clone()) {
+                                    Ok(result) => result,
+                                    Err(error) => {
+                                        if let Some(session) =
+                                            prompt_sessions.lock().await.get_mut(&session_id)
+                                        {
+                                            session.security = crate::app::SecurityStatus::Failed;
+                                        }
+                                        send_extension_activity(
+                                            &connection,
+                                            &prompt_extension,
+                                            Some(&session_id),
+                                            ActivityEvent::SecurityChanged {
+                                                status: ExtensionSecurityStatus {
+                                                    state: ExtensionSecurityState::Failed,
+                                                    detail: Some(error.to_string()),
+                                                },
+                                            },
+                                        )?;
+                                        return responder.respond_with_internal_error(error);
+                                    }
+                                }
+                                .0;
+                            if let Some(session) = prompt_sessions.lock().await.get_mut(&session_id) {
+                                session.security = verification_status;
                             }
                             send_extension_activity(
                                 &connection,
                                 &prompt_extension,
                                 Some(&session_id),
                                 ActivityEvent::SecurityChanged {
-                                    status: extension_security_status(verification.status),
+                                    status: extension_security_status(verification_status),
                                 },
                             )?;
                             send_text(
@@ -1482,15 +1889,21 @@ pub async fn serve_stdio(
                                                 .emit(internal_id.clone(), event.clone())
                                                 .await
                                                 .map_err(agent_error)?;
-                                            if let Some(store) = &task_store {
-                                                store.append(&envelope).map_err(agent_error)?;
-                                            }
+                                            let revision = match &task_store {
+                                                Some(store) => Some(store.append(&envelope).map_err(agent_error)?),
+                                                None => None,
+                                            };
                                             send_event(
                                                 &task_connection,
                                                 &session_id,
                                                 event,
-                                                Some(&task_extension),
-                                                Some(envelope.correlation_id.to_string()),
+                                                EventDelivery {
+                                                    cwd: None,
+                                                    extension_state: Some(&task_extension),
+                                                    correlation_id: Some(envelope.correlation_id.to_string()),
+                                                    revision: revision.as_ref(),
+                                                    client_item_id: None,
+                                                },
                                             )?;
                                         }
                                     }
@@ -1500,15 +1913,21 @@ pub async fn serve_stdio(
                                         .emit(internal_id.clone(), event.clone())
                                         .await
                                         .map_err(agent_error)?;
-                                    if let Some(store) = &task_store {
-                                        store.append(&envelope).map_err(agent_error)?;
-                                    }
+                                    let revision = match &task_store {
+                                        Some(store) => Some(store.append(&envelope).map_err(agent_error)?),
+                                        None => None,
+                                    };
                                     send_event(
                                         &task_connection,
                                         &session_id,
                                         event,
-                                        Some(&task_extension),
-                                        Some(envelope.correlation_id.to_string()),
+                                        EventDelivery {
+                                            cwd: None,
+                                            extension_state: Some(&task_extension),
+                                            correlation_id: Some(envelope.correlation_id.to_string()),
+                                            revision: revision.as_ref(),
+                                            client_item_id: None,
+                                        },
                                     )?;
                                 }
                                 let stop_reason = match result {
@@ -1612,14 +2031,38 @@ pub async fn serve_stdio(
                     })
                     .await
                     .map_err(agent_error)?;
-                if let Some(store) = &prompt_store {
-                    store.append_all(&submitted).map_err(agent_error)?;
-                    store
-                        .set_last_used_model(&session_model)
+                let submitted_revision = if let Some(store) = &prompt_store {
+                    let revision = store
+                        .append_all_with_client_item_id(&submitted, client_item_id.as_deref())
                         .map_err(agent_error)?;
-                    store
-                        .set_last_used_thinking(session_thinking)
-                        .map_err(agent_error)?;
+                    let preferences = extension_preferences(
+                        store
+                            .set_profile_preferences(&session_model, session_thinking)
+                            .map_err(agent_error)?,
+                    );
+                    send_extension_activity(
+                        &connection,
+                        &prompt_extension,
+                        None,
+                        ActivityEvent::ProfilePreferencesChanged { preferences },
+                    )?;
+                    Some(revision)
+                } else {
+                    None
+                };
+                for envelope in &submitted {
+                    send_event(
+                        &connection,
+                        &session_id,
+                        envelope.event.clone(),
+                        EventDelivery {
+                            cwd: Some(&cwd),
+                            extension_state: Some(&prompt_extension),
+                            correlation_id: Some(envelope.correlation_id.to_string()),
+                            revision: submitted_revision.as_ref(),
+                            client_item_id: client_item_id.as_deref(),
+                        },
+                    )?;
                 }
 
                 if should_generate_title
@@ -1630,7 +2073,6 @@ pub async fn serve_stdio(
                     let title_prompt = prompt.clone();
                     let title_connection = connection.clone();
                     let title_external_id = session_id.clone();
-                    let title_extension = prompt_extension.clone();
                     tokio::spawn(async move {
                         match title_runner
                             .generate_title(
@@ -1659,18 +2101,6 @@ pub async fn serve_stdio(
                                             "could not publish generated ACP session title"
                                         );
                                     }
-                                    if let Err(error) = send_extension_activity(
-                                        &title_connection,
-                                        &title_extension,
-                                        Some(&title_external_id),
-                                        ActivityEvent::TitleChanged { title },
-                                    ) {
-                                        tracing::warn!(
-                                            session_id = %title_session,
-                                            %error,
-                                            "could not publish generated Axiom session title"
-                                        );
-                                    }
                                 }
                                 Ok(false) => {}
                                 Err(error) => tracing::warn!(
@@ -1697,6 +2127,7 @@ pub async fn serve_stdio(
                 let task_extension = prompt_extension.clone();
                 connection.spawn(async move {
                     let (events_tx, mut events_rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
+                    let display_cwd = cwd.clone();
                     let run = task_runner.run(
                         crate::agent::TurnContext {
                             session_id: internal_id.clone(),
@@ -1725,15 +2156,21 @@ pub async fn serve_stdio(
                             event = events_rx.recv() => {
                                 let Some(event) = event else { continue };
                                 let envelope = task_runtime.emit(internal_id.clone(), event.clone()).await.map_err(agent_error)?;
-                                if let Some(store) = &task_store {
-                                    store.append(&envelope).map_err(agent_error)?;
-                                }
+                                let revision = match &task_store {
+                                    Some(store) => Some(store.append(&envelope).map_err(agent_error)?),
+                                    None => None,
+                                };
                                 send_event(
                                     &task_connection,
                                     &session_id,
                                     event,
-                                    Some(&task_extension),
-                                    Some(envelope.correlation_id.to_string()),
+                                    EventDelivery {
+                                        cwd: Some(&display_cwd),
+                                        extension_state: Some(&task_extension),
+                                        correlation_id: Some(envelope.correlation_id.to_string()),
+                                        revision: revision.as_ref(),
+                                        client_item_id: None,
+                                    },
                                 )?;
                             }
                             () = request_cancellation.cancelled() => {
@@ -1750,15 +2187,21 @@ pub async fn serve_stdio(
                             .emit(internal_id.clone(), event.clone())
                             .await
                             .map_err(agent_error)?;
-                        if let Some(store) = &task_store {
-                            store.append(&envelope).map_err(agent_error)?;
-                        }
+                        let revision = match &task_store {
+                            Some(store) => Some(store.append(&envelope).map_err(agent_error)?),
+                            None => None,
+                        };
                         send_event(
                             &task_connection,
                             &session_id,
                             event,
-                            Some(&task_extension),
-                            Some(envelope.correlation_id.to_string()),
+                            EventDelivery {
+                                cwd: Some(&display_cwd),
+                                extension_state: Some(&task_extension),
+                                correlation_id: Some(envelope.correlation_id.to_string()),
+                                revision: revision.as_ref(),
+                                client_item_id: None,
+                            },
                         )?;
                     }
 
@@ -1820,10 +2263,10 @@ pub async fn serve_stdio(
             agent_client_protocol::on_receive_request!(),
         )
         .on_receive_request(
-            async move |request: ListSessionsRequest,
-                        responder: Responder<ListSessionsResponse>,
+            async move |request: ListThreadsRequest,
+                        responder: Responder<ListThreadsResponse>,
                         _connection| {
-                if !extension_enabled(&list_extension, ExtensionFeature::SessionCatalog) {
+                if !extension_enabled(&list_extension, ExtensionFeature::ThreadCatalog) {
                     return responder.respond_with_error(extension_not_negotiated());
                 }
                 let Some(store) = &list_extension_store else {
@@ -1838,96 +2281,49 @@ pub async fn serve_stdio(
                 {
                     return responder.respond_with_internal_error("session query is too long");
                 }
-                let query = request
-                    .query
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|query| !query.is_empty())
-                    .map(str::to_ascii_lowercase);
-                let limit = usize::try_from(request.limit.unwrap_or(200).clamp(1, 500))
+                let query = request.query.as_deref().map(str::trim).filter(|query| !query.is_empty());
+                let limit = usize::try_from(request.limit.unwrap_or(200).clamp(1, 200))
                     .unwrap_or(200);
-                let offset = match request.cursor.as_deref() {
-                    None => 0,
-                    Some(cursor) => match cursor.parse::<usize>() {
-                        Ok(offset) => offset,
-                        Err(_) => {
-                            return responder
-                                .respond_with_internal_error("session cursor is invalid");
-                        }
-                    },
-                };
-                let mut sessions = Vec::new();
-                let mut matched_count = 0_usize;
-                for summary in store.list(request.include_archived).map_err(agent_error)? {
-                    if let Some(query) = &query {
-                        let query_matches = summary
-                            .title
-                            .as_deref()
-                            .is_some_and(|title| title.to_ascii_lowercase().contains(query))
-                            || summary.cwd.display().to_string().to_ascii_lowercase().contains(query);
-                        if !query_matches {
-                            continue;
-                        }
-                    }
-                    if matched_count < offset {
-                        matched_count += 1;
-                        continue;
-                    }
-                    matched_count += 1;
-                    sessions.push(
-                        extension_summary(
-                            store,
-                            summary,
-                            &list_default_model,
-                            extension_default_thinking,
-                        )
-                        .map_err(agent_error)?,
-                    );
-                    if sessions.len() > limit {
-                        break;
-                    }
-                }
-                let next_cursor = if sessions.len() > limit {
-                    sessions.pop();
-                    Some(offset.saturating_add(limit).to_string())
-                } else {
-                    None
-                };
-                responder.respond(ListSessionsResponse {
-                    sessions,
-                    next_cursor,
+                let page = store
+                    .thread_catalog(
+                        query,
+                        request.include_archived,
+                        request.cursor.as_deref(),
+                        limit,
+                    )
+                    .map_err(agent_error)?;
+                responder.respond(ListThreadsResponse {
+                    threads: page.threads.into_iter().map(extension_thread_summary).collect(),
+                    next_cursor: page.next_cursor,
                 })
             },
             agent_client_protocol::on_receive_request!(),
         )
         .on_receive_request(
-            async move |request: GetSessionStateRequest,
-                        responder: Responder<GetSessionStateResponse>,
+            async move |request: GetThreadTimelineRequest,
+                        responder: Responder<GetThreadTimelineResponse>,
                         _connection| {
-                if !extension_enabled(&state_extension, ExtensionFeature::SessionCatalog) {
+                if !extension_enabled(&timeline_extension, ExtensionFeature::Timeline) {
                     return responder.respond_with_error(extension_not_negotiated());
                 }
-                let external_id = protocol::SessionId::new(request.session_id);
-                let session = {
-                    let sessions = state_extension_sessions.lock().await;
-                    let Some(session) = sessions.get(&external_id) else {
-                        return responder.respond_with_internal_error(
-                            "session must be loaded before requesting live state",
-                        );
-                    };
-                    session.clone()
+                let Some(store) = &timeline_extension_store else {
+                    return responder.respond_with_internal_error(
+                        "durable thread storage is unavailable",
+                    );
                 };
-                let title = state_extension_store
-                    .as_ref()
-                    .and_then(|store| store.summary(&session.internal_id).ok())
-                    .and_then(|summary| summary.title);
-                responder.respond(GetSessionStateResponse {
-                    snapshot: extension_snapshot(
-                        &state_extension,
-                        &external_id,
-                        &session,
-                        title,
-                    ),
+                let thread_id = SessionId::from_str(&request.thread_id)
+                    .map_err(|_| agent_client_protocol::util::internal_error("invalid thread ID"))?;
+                let limit = usize::try_from(
+                    request.limit.unwrap_or(250).clamp(1, extension::MAX_TIMELINE_PAGE_SIZE),
+                )
+                .unwrap_or(250);
+                let snapshot = store
+                    .thread_snapshot(&thread_id, request.after_sequence, limit)
+                    .map_err(agent_error)?;
+                responder.respond(GetThreadTimelineResponse {
+                    thread: extension_thread_summary(snapshot.thread),
+                    items: snapshot.items.into_iter().map(extension_timeline_item).collect(),
+                    next_cursor: snapshot.next_cursor,
                 })
             },
             agent_client_protocol::on_receive_request!(),
@@ -1936,7 +2332,7 @@ pub async fn serve_stdio(
             async move |request: DeletePreviewRequest,
                         responder: Responder<DeletePreviewResponse>,
                         _connection| {
-                if !extension_enabled(&preview_extension, ExtensionFeature::SessionCatalog) {
+                if !extension_enabled(&preview_extension, ExtensionFeature::ThreadCatalog) {
                     return responder.respond_with_error(extension_not_negotiated());
                 }
                 let Some(store) = &preview_extension_store else {
@@ -1944,7 +2340,7 @@ pub async fn serve_stdio(
                         "durable session storage is unavailable",
                     );
                 };
-                let ids = validate_session_ids(&request.session_ids).map_err(agent_error)?;
+                let ids = validate_session_ids(&request.thread_ids).map_err(agent_error)?;
                 {
                     let sessions = preview_extension_sessions.lock().await;
                     if ids.iter().any(|id| {
@@ -1959,15 +2355,9 @@ pub async fn serve_stdio(
                 }
                 let mut summaries = Vec::with_capacity(ids.len());
                 for id in &ids {
-                    summaries.push(
-                        extension_summary(
-                            store,
-                            store.summary(id).map_err(agent_error)?,
-                            &preview_default_model,
-                            extension_default_thinking,
-                        )
-                        .map_err(agent_error)?,
-                    );
+                    summaries.push(extension_thread_summary(
+                        store.thread_summary(id).map_err(agent_error)?,
+                    ));
                 }
                 let token = uuid::Uuid::new_v4().to_string();
                 let expires_at_unix_seconds = now_unix_seconds().saturating_add(60);
@@ -1983,7 +2373,7 @@ pub async fn serve_stdio(
                 responder.respond(DeletePreviewResponse {
                     confirmation_token: token,
                     expires_at_unix_seconds,
-                    sessions: summaries,
+                    threads: summaries,
                 })
             },
             agent_client_protocol::on_receive_request!(),
@@ -1992,7 +2382,7 @@ pub async fn serve_stdio(
             async move |request: DeleteConfirmRequest,
                         responder: Responder<DeleteConfirmResponse>,
                         _connection| {
-                if !extension_enabled(&delete_extension, ExtensionFeature::SessionCatalog) {
+                if !extension_enabled(&delete_extension, ExtensionFeature::ThreadCatalog) {
                     return responder.respond_with_error(extension_not_negotiated());
                 }
                 let Some(store) = &delete_extension_store else {
@@ -2000,7 +2390,7 @@ pub async fn serve_stdio(
                         "durable session storage is unavailable",
                     );
                 };
-                let requested = match validate_session_ids(&request.session_ids) {
+                let requested = match validate_session_ids(&request.thread_ids) {
                     Ok(requested) => requested,
                     Err(error) => return responder.respond_with_internal_error(error),
                 };
@@ -2040,179 +2430,256 @@ pub async fn serve_stdio(
             async move |_request: ListModelsRequest,
                         responder: Responder<ListModelsResponse>,
                         _connection| {
-                if !extension_enabled(&models_extension, ExtensionFeature::Settings) {
+                if !extension_enabled(&models_extension, ExtensionFeature::ModelCatalog) {
                     return responder.respond_with_error(extension_not_negotiated());
                 }
                 let models = models_extension_runner
-                    .available_models(CancellationToken::new())
+                    .available_model_details(CancellationToken::new())
                     .await
                     .map_err(agent_error)?
                     .into_iter()
-                    .map(|id| ModelInfo {
-                        label: id.clone(),
-                        id,
-                        thinking_levels: THINKING_LEVELS
-                            .iter()
-                            .map(ToString::to_string)
-                            .collect(),
+                    .map(|model| {
+                        if model.id.trim().is_empty()
+                            || model.label.trim().is_empty()
+                            || model.short_label.trim().is_empty()
+                            || model.provider_id.trim().is_empty()
+                            || model.provider_label.trim().is_empty()
+                            || model.upstream_model.trim().is_empty()
+                        {
+                            return Err(agent_client_protocol::util::internal_error(
+                                "provider catalog returned incomplete model metadata",
+                            ));
+                        }
+                        Ok(ModelInfo {
+                            label: model.label,
+                            short_label: model.short_label,
+                            provider_id: model.provider_id,
+                            provider_label: model.provider_label,
+                            upstream_model: model.upstream_model,
+                            id: model.id,
+                            thinking_levels: model
+                                .supported_reasoning_efforts
+                                .into_iter()
+                                .map(|level| level.as_str().to_owned())
+                                .collect(),
+                        })
                     })
-                    .collect();
+                    .collect::<agent_client_protocol::Result<Vec<_>>>()?;
                 responder.respond(ListModelsResponse { models })
             },
             agent_client_protocol::on_receive_request!(),
         )
         .on_receive_request(
-            async move |request: SetSessionSettingsRequest,
-                        responder: Responder<SetSessionSettingsResponse>,
-                        connection: ConnectionTo<Client>| {
-                if !extension_enabled(&settings_extension, ExtensionFeature::Settings) {
+            async move |_request: extension::GetProfilePreferencesRequest,
+                        responder: Responder<ProfilePreferencesResponse>,
+                        _connection| {
+                if !extension_enabled(
+                    &stored_preferences_extension,
+                    ExtensionFeature::ProfilePreferences,
+                ) {
                     return responder.respond_with_error(extension_not_negotiated());
                 }
-                if request
-                    .model
-                    .as_ref()
-                    .is_some_and(|value| value.len() > extension::MAX_IDENTIFIER_BYTES)
+                let Some(store) = &stored_preferences_store else {
+                    return responder.respond_with_internal_error(
+                        "durable profile preferences are unavailable",
+                    );
+                };
+                responder.respond(ProfilePreferencesResponse {
+                    preferences: extension_preferences(
+                        store.profile_preferences().map_err(agent_error)?,
+                    ),
+                })
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |request: extension::SetProfilePreferencesRequest,
+                        responder: Responder<ProfilePreferencesResponse>,
+                        connection: ConnectionTo<Client>| {
+                if !extension_enabled(
+                    &update_preferences_extension,
+                    ExtensionFeature::ProfilePreferences,
+                ) {
+                    return responder.respond_with_error(extension_not_negotiated());
+                }
+                let Some(store) = &update_preferences_store else {
+                    return responder.respond_with_internal_error(
+                        "durable profile preferences are unavailable",
+                    );
+                };
+                if request.model.as_ref().is_some_and(|value| {
+                    value.is_empty() || value.len() > extension::MAX_IDENTIFIER_BYTES
+                })
                     || request
                         .thinking_level
                         .as_ref()
-                        .is_some_and(|value| value.len() > extension::MAX_IDENTIFIER_BYTES)
-                    || request
-                        .permission_profile
-                        .as_ref()
-                        .is_some_and(|value| value.len() > extension::MAX_IDENTIFIER_BYTES)
+                        .is_some_and(|value| {
+                            value.is_empty() || value.len() > extension::MAX_IDENTIFIER_BYTES
+                        })
                 {
-                    return responder.respond_with_internal_error("session setting is too long");
+                    return responder.respond_with_internal_error("profile preference is invalid");
                 }
-                let external_id = protocol::SessionId::new(request.session_id);
-                let (internal_id, current_model, current_thinking, current_profile) = {
-                    let sessions = settings_extension_sessions.lock().await;
-                    let Some(session) = sessions.get(&external_id) else {
-                        return responder.respond_with_internal_error("unknown ACP session");
-                    };
-                    if session.cancellation.is_some() {
-                        return responder.respond_with_internal_error(
-                            "cannot change settings while the session has active work",
-                        );
-                    }
-                    (
-                        session.internal_id.clone(),
-                        session.model.clone(),
-                        session.thinking,
-                        session.profile,
-                    )
+                let current = store.profile_preferences().map_err(agent_error)?;
+                let Some(next_model) = request.model.or(current.model) else {
+                    return responder.respond_with_internal_error(
+                        "a model must be selected before saving profile preferences",
+                    );
                 };
-
-                let next_model = request.model.unwrap_or_else(|| current_model.clone());
                 let next_thinking = request
                     .thinking_level
                     .as_deref()
                     .map(crate::app::ThinkingLevel::from_str)
                     .transpose()
                     .map_err(agent_error)?
-                    .unwrap_or(current_thinking);
-                let next_profile = request
-                    .permission_profile
-                    .as_deref()
-                    .map(PermissionProfile::from_str)
-                    .transpose()
-                    .map_err(agent_error)?
-                    .unwrap_or(current_profile);
-
-                let models = settings_extension_runner
-                    .available_models(CancellationToken::new())
+                    .unwrap_or(current.thinking_level);
+                let models = update_preferences_runner
+                    .available_model_details(CancellationToken::new())
                     .await
                     .map_err(agent_error)?;
-                if !models.iter().any(|model| model == &next_model) {
+                let Some(model) = models.iter().find(|model| model.id == next_model) else {
                     return responder
                         .respond_with_internal_error("model is not in the provider catalog");
-                }
-                if next_model != current_model {
-                    settings_extension_runner
-                        .set_model(&internal_id, next_model.clone())
-                        .await
-                        .map_err(agent_error)?;
-                    let events = settings_extension_runtime
-                        .dispatch(AppCommand::ChangeModel {
-                            session_id: internal_id.clone(),
-                            model: next_model.clone(),
-                        })
-                        .await
-                        .map_err(agent_error)?;
-                    if let Some(store) = &settings_extension_store {
-                        store.append_all(&events).map_err(agent_error)?;
-                    }
-                }
-                if next_thinking != current_thinking {
-                    settings_extension_runner
-                        .set_thinking_level(&internal_id, next_thinking)
-                        .await
-                        .map_err(agent_error)?;
-                    let events = settings_extension_runtime
-                        .dispatch(AppCommand::ChangeThinkingLevel {
-                            session_id: internal_id.clone(),
-                            level: next_thinking,
-                        })
-                        .await
-                        .map_err(agent_error)?;
-                    if let Some(store) = &settings_extension_store {
-                        store.append_all(&events).map_err(agent_error)?;
-                    }
-                }
-                if next_profile != current_profile {
-                    let events = settings_extension_runtime
-                        .dispatch(AppCommand::ChangePermissionProfile {
-                            session_id: internal_id,
-                            profile: next_profile,
-                        })
-                        .await
-                        .map_err(agent_error)?;
-                    if let Some(store) = &settings_extension_store {
-                        store.append_all(&events).map_err(agent_error)?;
-                    }
-                }
-
-                let settings = ExtensionSessionSettings {
-                    model: next_model.clone(),
-                    thinking_level: next_thinking.to_string(),
-                    permission_profile: next_profile.to_string(),
                 };
-                if let Some(session) = settings_extension_sessions.lock().await.get_mut(&external_id)
-                {
-                    session.model.clone_from(&next_model);
-                    session.thinking = next_thinking;
-                    session.profile = next_profile;
-                    session.models.clone_from(&models);
-                }
-                if let Some(store) = &settings_extension_store {
+                let next_thinking = reconcile_model_settings(model, next_thinking).thinking;
+                let preferences = extension_preferences(
                     store
-                        .set_last_used_model(&next_model)
-                        .map_err(agent_error)?;
-                    store
-                        .set_last_used_thinking(next_thinking)
-                        .map_err(agent_error)?;
-                }
-                connection.send_notification(protocol::SessionNotification::new(
-                    external_id.clone(),
-                    protocol::SessionUpdate::CurrentModeUpdate(protocol::CurrentModeUpdate::new(
-                        next_profile.to_string(),
-                    )),
-                ))?;
-                send_config_update(
-                    &connection,
-                    &external_id,
-                    &next_model,
-                    &models,
-                    next_thinking,
-                )?;
+                        .set_profile_preferences(&next_model, next_thinking)
+                        .map_err(agent_error)?,
+                );
                 send_extension_activity(
                     &connection,
-                    &settings_extension,
-                    Some(&external_id),
-                    ActivityEvent::SettingsChanged {
-                        settings: settings.clone(),
+                    &update_preferences_extension,
+                    None,
+                    ActivityEvent::ProfilePreferencesChanged {
+                        preferences: preferences.clone(),
                     },
                 )?;
-                responder.respond(SetSessionSettingsResponse { settings })
+                responder.respond(ProfilePreferencesResponse { preferences })
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_request: extension::ListCollectionsRequest,
+                        responder: Responder<CollectionStateResponse>,
+                        _connection| {
+                if !extension_enabled(&collections_list_extension, ExtensionFeature::Collections) {
+                    return responder.respond_with_error(extension_not_negotiated());
+                }
+                let Some(store) = &collections_list_store else {
+                    return responder.respond_with_internal_error("collections are unavailable");
+                };
+                responder.respond(CollectionStateResponse {
+                    state: extension_collections(store.list_collections().map_err(agent_error)?),
+                })
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |request: extension::CreateCollectionRequest,
+                        responder: Responder<CollectionStateResponse>,
+                        connection: ConnectionTo<Client>| {
+                if !extension_enabled(&collection_create_extension, ExtensionFeature::Collections) {
+                    return responder.respond_with_error(extension_not_negotiated());
+                }
+                let Some(store) = &collection_create_store else {
+                    return responder.respond_with_internal_error("collections are unavailable");
+                };
+                if request.name.len() > extension::MAX_COLLECTION_NAME_BYTES {
+                    return responder.respond_with_internal_error("collection name is too long");
+                }
+                let state = extension_collections(store.create_collection(&request.name).map_err(agent_error)?.state);
+                send_extension_activity(&connection, &collection_create_extension, None, ActivityEvent::CollectionsChanged { state: state.clone() })?;
+                responder.respond(CollectionStateResponse { state })
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |request: extension::RenameCollectionRequest,
+                        responder: Responder<CollectionStateResponse>,
+                        connection: ConnectionTo<Client>| {
+                if !extension_enabled(&collection_rename_extension, ExtensionFeature::Collections) {
+                    return responder.respond_with_error(extension_not_negotiated());
+                }
+                let Some(store) = &collection_rename_store else {
+                    return responder.respond_with_internal_error("collections are unavailable");
+                };
+                if request.name.len() > extension::MAX_COLLECTION_NAME_BYTES {
+                    return responder.respond_with_internal_error("collection name is too long");
+                }
+                let state = extension_collections(store.rename_collection(&request.collection_id, &request.name).map_err(agent_error)?.state);
+                send_extension_activity(&connection, &collection_rename_extension, None, ActivityEvent::CollectionsChanged { state: state.clone() })?;
+                responder.respond(CollectionStateResponse { state })
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |request: extension::SetCollectionCollapsedRequest,
+                        responder: Responder<CollectionStateResponse>,
+                        connection: ConnectionTo<Client>| {
+                if !extension_enabled(&collection_collapsed_extension, ExtensionFeature::Collections) {
+                    return responder.respond_with_error(extension_not_negotiated());
+                }
+                let Some(store) = &collection_collapsed_store else {
+                    return responder.respond_with_internal_error("collections are unavailable");
+                };
+                let state = extension_collections(store.set_collection_collapsed(&request.collection_id, request.collapsed).map_err(agent_error)?.state);
+                send_extension_activity(&connection, &collection_collapsed_extension, None, ActivityEvent::CollectionsChanged { state: state.clone() })?;
+                responder.respond(CollectionStateResponse { state })
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |request: extension::MoveCollectionRequest,
+                        responder: Responder<CollectionStateResponse>,
+                        connection: ConnectionTo<Client>| {
+                if !extension_enabled(&collection_move_extension, ExtensionFeature::Collections) {
+                    return responder.respond_with_error(extension_not_negotiated());
+                }
+                let Some(store) = &collection_move_store else {
+                    return responder.respond_with_internal_error("collections are unavailable");
+                };
+                let state = extension_collections(store.move_collection(&request.collection_id, request.position).map_err(agent_error)?.state);
+                send_extension_activity(&connection, &collection_move_extension, None, ActivityEvent::CollectionsChanged { state: state.clone() })?;
+                responder.respond(CollectionStateResponse { state })
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |request: extension::DeleteCollectionRequest,
+                        responder: Responder<CollectionStateResponse>,
+                        connection: ConnectionTo<Client>| {
+                if !extension_enabled(&collection_delete_extension, ExtensionFeature::Collections) {
+                    return responder.respond_with_error(extension_not_negotiated());
+                }
+                let Some(store) = &collection_delete_store else {
+                    return responder.respond_with_internal_error("collections are unavailable");
+                };
+                let state = extension_collections(store.delete_collection(&request.collection_id).map_err(agent_error)?.state);
+                send_extension_activity(&connection, &collection_delete_extension, None, ActivityEvent::CollectionsChanged { state: state.clone() })?;
+                responder.respond(CollectionStateResponse { state })
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |request: extension::AssignThreadCollectionRequest,
+                        responder: Responder<extension::AssignThreadCollectionResponse>,
+                        connection: ConnectionTo<Client>| {
+                if !extension_enabled(&collection_assign_extension, ExtensionFeature::Collections) {
+                    return responder.respond_with_error(extension_not_negotiated());
+                }
+                let Some(store) = &collection_assign_store else {
+                    return responder.respond_with_internal_error("collections are unavailable");
+                };
+                let thread_id = SessionId::from_str(&request.thread_id)
+                    .map_err(|_| agent_client_protocol::util::internal_error("invalid thread ID"))?;
+                let state = extension_collections(store.assign_thread_collection(&thread_id, request.collection_id.as_deref()).map_err(agent_error)?.state);
+                let revision = store.thread_revision(&thread_id).map_err(agent_error)?;
+                send_extension_activity(&connection, &collection_assign_extension, None, ActivityEvent::CollectionsChanged { state: state.clone() })?;
+                responder.respond(extension::AssignThreadCollectionResponse {
+                    state,
+                    thread_revision: revision.revision,
+                    last_timeline_sequence: revision.last_timeline_sequence,
+                })
             },
             agent_client_protocol::on_receive_request!(),
         )
@@ -2355,7 +2822,7 @@ pub async fn serve_stdio(
                 if !extension_enabled(&security_extension, ExtensionFeature::SecurityEvidence) {
                     return responder.respond_with_error(extension_not_negotiated());
                 }
-                let external_id = protocol::SessionId::new(request.session_id);
+                let external_id = protocol::SessionId::new(request.thread_id);
                 let model = {
                     let mut sessions = security_extension_sessions.lock().await;
                     let Some(session) = sessions.get_mut(&external_id) else {
@@ -2416,11 +2883,36 @@ pub async fn serve_stdio(
                         return responder.respond_with_internal_error(error);
                     }
                 };
+                let (verification_status, evidence) =
+                    match strict_extension_security_verification(verification) {
+                        Ok(result) => result,
+                        Err(error) => {
+                        if let Some(session) = security_extension_sessions
+                            .lock()
+                            .await
+                            .get_mut(&external_id)
+                        {
+                            session.security = crate::app::SecurityStatus::Failed;
+                        }
+                        send_extension_activity(
+                            &connection,
+                            &security_extension,
+                            Some(&external_id),
+                            ActivityEvent::SecurityChanged {
+                                status: ExtensionSecurityStatus {
+                                    state: ExtensionSecurityState::Failed,
+                                    detail: Some(error.to_string()),
+                                },
+                            },
+                        )?;
+                        return responder.respond_with_internal_error(error);
+                        }
+                    };
                 if let Some(session) = security_extension_sessions.lock().await.get_mut(&external_id)
                 {
-                    session.security = verification.status;
+                    session.security = verification_status;
                 }
-                let status = extension_security_status(verification.status);
+                let status = extension_security_status(verification_status);
                 send_extension_activity(
                     &connection,
                     &security_extension,
@@ -2429,9 +2921,6 @@ pub async fn serve_stdio(
                         status: status.clone(),
                     },
                 )?;
-                let evidence = verification
-                    .evidence
-                    .map(|evidence| extension_security_evidence(verification.status, evidence));
                 responder.respond(VerifySecurityResponse { evidence, status })
             },
             agent_client_protocol::on_receive_request!(),
@@ -2450,7 +2939,7 @@ pub async fn serve_stdio(
                 {
                     return responder.respond_with_internal_error("compaction focus is too long");
                 }
-                let external_id = protocol::SessionId::new(request.session_id);
+                let external_id = protocol::SessionId::new(request.thread_id);
                 let request_cancellation = responder.cancellation();
                 let cancellation = CancellationToken::new();
                 let internal_id = {
@@ -2491,15 +2980,21 @@ pub async fn serve_stdio(
                                 .emit(internal_id.clone(), event.clone())
                                 .await
                                 .map_err(agent_error)?;
-                            if let Some(store) = &compact_extension_store {
-                                store.append(&envelope).map_err(agent_error)?;
-                            }
+                            let revision = match &compact_extension_store {
+                                Some(store) => Some(store.append(&envelope).map_err(agent_error)?),
+                                None => None,
+                            };
                             send_event(
                                 &connection,
                                 &external_id,
                                 event,
-                                Some(&compact_extension),
-                                Some(envelope.correlation_id.to_string()),
+                                EventDelivery {
+                                    cwd: None,
+                                    extension_state: Some(&compact_extension),
+                                    correlation_id: Some(envelope.correlation_id.to_string()),
+                                    revision: revision.as_ref(),
+                                    client_item_id: None,
+                                },
                             )?;
                         }
                         () = request_cancellation.cancelled() => {
@@ -2523,16 +3018,22 @@ pub async fn serve_stdio(
                             })
                             .await
                             .map_err(agent_error)?;
-                        if let Some(store) = &compact_extension_store {
-                            store.append_all(&events).map_err(agent_error)?;
-                        }
+                        let revision = match &compact_extension_store {
+                            Some(store) => Some(store.append_all(&events).map_err(agent_error)?),
+                            None => None,
+                        };
                         for event in events {
                             send_event(
                                 &connection,
                                 &external_id,
                                 event.event,
-                                Some(&compact_extension),
-                                Some(event.correlation_id.to_string()),
+                                EventDelivery {
+                                    cwd: None,
+                                    extension_state: Some(&compact_extension),
+                                    correlation_id: Some(event.correlation_id.to_string()),
+                                    revision: revision.as_ref(),
+                                    client_item_id: None,
+                                },
                             )?;
                         }
                         responder.respond(CompactResponse {
@@ -2565,6 +3066,14 @@ pub async fn serve_stdio(
                         connection: ConnectionTo<Client>| {
                 let profile = PermissionProfile::from_str(request.mode_id.0.as_ref())
                     .map_err(agent_error)?;
+                if mode_frontend == FrontendKind::DesktopChat && profile != PermissionProfile::Web {
+                    return responder.respond_with_error(extension_rpc_error(
+                        -32003,
+                        ExtensionErrorCode::PermissionDenied,
+                        "desktop chat permission profile is fixed to web",
+                        false,
+                    ));
+                }
                 let internal_id = {
                     let sessions = mode_sessions.lock().await;
                     let Some(session) = sessions.get(&request.session_id) else {
@@ -2603,14 +3112,14 @@ pub async fn serve_stdio(
         .on_receive_request(
             async move |request: protocol::SetSessionConfigOptionRequest,
                         responder: Responder<protocol::SetSessionConfigOptionResponse>,
-                        _connection| {
+                        connection: ConnectionTo<Client>| {
                 let Some(value) = request.value.as_value_id() else {
                     return responder.respond_with_internal_error(
                         "session config requires a selected value ID",
                     );
                 };
                 let selected = value.0.to_string();
-                let (internal_id, model, thinking, models) = {
+                let (internal_id, model, thinking) = {
                     let sessions = config_sessions.lock().await;
                     let Some(session) = sessions.get(&request.session_id) else {
                         return responder.respond_with_internal_error("unknown ACP session");
@@ -2624,59 +3133,143 @@ pub async fn serve_stdio(
                         session.internal_id.clone(),
                         session.model.clone(),
                         session.thinking,
-                        session.models.clone(),
                     )
                 };
-                let (next_model, next_thinking, events) = match request.config_id.0.as_ref() {
+                if !matches!(
+                    request.config_id.0.as_ref(),
+                    MODEL_CONFIG_ID | THINKING_CONFIG_ID
+                ) {
+                    return responder.respond_with_internal_error("unknown session config option");
+                }
+                let details = config_runner
+                    .available_model_details(CancellationToken::new())
+                    .await
+                    .map_err(agent_error)?;
+                let mut models = details
+                    .iter()
+                    .map(|candidate| candidate.id.clone())
+                    .collect::<Vec<_>>();
+                models.sort();
+                models.dedup();
+                let (settings, supported_thinking, events) = match request.config_id.0.as_ref() {
                     MODEL_CONFIG_ID => {
-                        if !models.iter().any(|candidate| candidate == &selected) {
+                        let Some(selected_model) =
+                            details.iter().find(|candidate| candidate.id == selected)
+                        else {
                             return responder.respond_with_internal_error(
                                 "model is not in the provider catalog",
                             );
-                        }
+                        };
+                        let model_changed = selected_model.id != model;
+                        let settings = reconcile_model_settings(selected_model, thinking);
                         config_runner
-                            .set_model(&internal_id, selected.clone())
+                            .set_model_settings(&internal_id, &settings)
                             .await
                             .map_err(agent_error)?;
                         let events = config_runtime
-                            .dispatch(AppCommand::ChangeModel {
-                                session_id: internal_id,
-                                model: selected.clone(),
+                            .dispatch(AppCommand::ChangeModelSettings {
+                                session_id: internal_id.clone(),
+                                model: settings.model.clone(),
+                                thinking: settings.thinking,
+                                reset_security: model_changed,
                             })
                             .await
                             .map_err(agent_error)?;
-                        (selected, thinking, events)
+                        (
+                            settings,
+                            supported_thinking_levels(selected_model),
+                            events,
+                        )
                     }
                     THINKING_CONFIG_ID => {
                         let level = crate::app::ThinkingLevel::from_str(&selected)
                             .map_err(agent_error)?;
+                        let Some(selected_model) =
+                            details.iter().find(|candidate| candidate.id == model)
+                        else {
+                            return responder.respond_with_internal_error(
+                                "current model is not in the provider catalog",
+                            );
+                        };
+                        let settings = reconcile_model_settings(selected_model, level);
+                        if settings.supports_reasoning && settings.thinking != level {
+                            return responder.respond_with_internal_error(
+                                "thinking level is not supported by the selected model",
+                            );
+                        }
                         config_runner
                             .set_thinking_level(&internal_id, level)
                             .await
                             .map_err(agent_error)?;
                         let events = config_runtime
                             .dispatch(AppCommand::ChangeThinkingLevel {
-                                session_id: internal_id,
+                                session_id: internal_id.clone(),
                                 level,
                             })
                             .await
                             .map_err(agent_error)?;
-                        (model, level, events)
+                        (
+                            settings,
+                            supported_thinking_levels(selected_model),
+                            events,
+                        )
                     }
-                    _ => {
-                        return responder
-                            .respond_with_internal_error("unknown session config option");
-                    }
+                    _ => unreachable!("configuration ID was validated above"),
                 };
+                let reset_security = events.iter().any(|event| {
+                    matches!(
+                        &event.event,
+                        AppEvent::SecurityStatusChanged {
+                            state: crate::app::SecurityStatus::Unverified
+                        }
+                    )
+                });
+                let next_model = settings.model;
+                let next_thinking = settings.thinking;
                 if let Some(store) = &config_store {
-                    store.append_all(&events).map_err(agent_error)?;
+                    let (_, stored) = store
+                        .append_all_and_set_profile_preferences(
+                            &events,
+                            &next_model,
+                            next_thinking,
+                        )
+                        .map_err(agent_error)?;
+                    let preferences = extension_preferences(stored);
+                    send_extension_activity(
+                        &connection,
+                        &config_extension,
+                        None,
+                        ActivityEvent::ProfilePreferencesChanged { preferences },
+                    )?;
                 }
                 if let Some(session) = config_sessions.lock().await.get_mut(&request.session_id) {
-                    session.model.clone_from(&next_model);
-                    session.thinking = next_thinking;
+                    apply_session_model_settings(
+                        session,
+                        &next_model,
+                        next_thinking,
+                        &models,
+                        reset_security,
+                    );
+                }
+                if reset_security {
+                    send_extension_activity(
+                        &connection,
+                        &config_extension,
+                        Some(&request.session_id),
+                        ActivityEvent::SecurityChanged {
+                            status: extension_security_status(
+                                crate::app::SecurityStatus::Unverified,
+                            ),
+                        },
+                    )?;
                 }
                 responder.respond(protocol::SetSessionConfigOptionResponse::new(
-                    session_config_options(&next_model, &models, next_thinking),
+                    session_config_options(
+                        &next_model,
+                        &models,
+                        next_thinking,
+                        Some(&supported_thinking),
+                    ),
                 ))
             },
             agent_client_protocol::on_receive_request!(),
@@ -2723,13 +3316,27 @@ fn prompt_text(blocks: &[protocol::ContentBlock]) -> std::result::Result<String,
     }
 }
 
+struct EventDelivery<'a> {
+    cwd: Option<&'a Path>,
+    extension_state: Option<&'a ExtensionState>,
+    correlation_id: Option<String>,
+    revision: Option<&'a crate::session::ThreadRevision>,
+    client_item_id: Option<&'a str>,
+}
+
 fn send_event(
     connection: &ConnectionTo<Client>,
     session_id: &protocol::SessionId,
     event: AppEvent,
-    extension_state: Option<&ExtensionState>,
-    correlation_id: Option<String>,
+    delivery: EventDelivery<'_>,
 ) -> agent_client_protocol::Result<()> {
+    let EventDelivery {
+        cwd,
+        extension_state,
+        correlation_id,
+        revision,
+        client_item_id,
+    } = delivery;
     if let Some(extension_state) = extension_state
         && let Some(activity) = extension_activity(&event)
     {
@@ -2737,121 +3344,163 @@ fn send_event(
             connection,
             extension_state,
             Some(session_id),
-            correlation_id,
+            correlation_id.clone(),
             activity,
         )?;
     }
     match event {
-        AppEvent::TextDelta { text, .. } => send_text(connection, session_id, text),
-        AppEvent::ReasoningDelta { text, .. } => {
-            connection.send_notification(protocol::SessionNotification::new(
-                session_id.clone(),
-                protocol::SessionUpdate::AgentThoughtChunk(protocol::ContentChunk::new(
-                    protocol::ContentBlock::Text(protocol::TextContent::new(text)),
-                )),
+        AppEvent::PromptAccepted { turn_id, text } => {
+            let message_id =
+                client_item_id.map_or_else(|| format!("user:{turn_id}"), ToOwned::to_owned);
+            let chunk = protocol::ContentChunk::new(protocol::ContentBlock::Text(
+                protocol::TextContent::new(text),
             ))
-        }
-        AppEvent::PermissionProfileChanged { profile } => {
-            connection.send_notification(protocol::SessionNotification::new(
-                session_id.clone(),
-                protocol::SessionUpdate::CurrentModeUpdate(protocol::CurrentModeUpdate::new(
-                    profile.to_string(),
-                )),
-            ))?;
-            send_text(
+            .message_id(message_id.as_str());
+            send_session_update(
                 connection,
                 session_id,
-                format!("[settings] permission profile: {profile}"),
+                protocol::SessionUpdate::UserMessageChunk(chunk),
+                revision,
+                None,
+                client_item_id.map(ToOwned::to_owned),
             )
         }
-        AppEvent::ModelChanged { model } => {
-            connection.send_notification(protocol::SessionNotification::new(
-                session_id.clone(),
-                protocol::SessionUpdate::ConfigOptionUpdate(protocol::ConfigOptionUpdate::new(
-                    vec![model_config_option(&model, std::slice::from_ref(&model))],
-                )),
-            ))?;
-            send_text(connection, session_id, format!("[settings] model: {model}"))
-        }
-        AppEvent::ThinkingLevelChanged { level } => {
-            connection.send_notification(protocol::SessionNotification::new(
-                session_id.clone(),
-                protocol::SessionUpdate::ConfigOptionUpdate(protocol::ConfigOptionUpdate::new(
-                    vec![thinking_config_option(level)],
-                )),
-            ))?;
-            send_text(
+        AppEvent::TextDelta { turn_id, text } => {
+            let message_id = format!("assistant:{turn_id}");
+            let chunk = protocol::ContentChunk::new(protocol::ContentBlock::Text(
+                protocol::TextContent::new(text),
+            ))
+            .message_id(message_id.as_str());
+            send_session_update(
                 connection,
                 session_id,
-                format!("[settings] thinking: {level}"),
+                protocol::SessionUpdate::AgentMessageChunk(chunk),
+                revision,
+                None,
+                None,
             )
         }
-        AppEvent::ContextCompacted {
-            messages_before, ..
-        } => send_text(
+        AppEvent::ReasoningDelta { turn_id, text } => {
+            let message_id = format!("reasoning:{turn_id}");
+            let chunk = protocol::ContentChunk::new(protocol::ContentBlock::Text(
+                protocol::TextContent::new(text),
+            ))
+            .message_id(message_id.as_str());
+            send_session_update(
+                connection,
+                session_id,
+                protocol::SessionUpdate::AgentThoughtChunk(chunk),
+                revision,
+                None,
+                None,
+            )
+        }
+        AppEvent::PermissionProfileChanged { profile } => send_session_update(
             connection,
             session_id,
-            format!("[context] compacted {messages_before} conversation message(s)"),
+            protocol::SessionUpdate::CurrentModeUpdate(protocol::CurrentModeUpdate::new(
+                profile.to_string(),
+            )),
+            revision,
+            None,
+            None,
+        ),
+        AppEvent::ModelChanged { model } => send_session_update(
+            connection,
+            session_id,
+            protocol::SessionUpdate::ConfigOptionUpdate(protocol::ConfigOptionUpdate::new(vec![
+                model_config_option(&model, std::slice::from_ref(&model)),
+            ])),
+            revision,
+            None,
+            None,
+        ),
+        AppEvent::ThinkingLevelChanged { level } => send_session_update(
+            connection,
+            session_id,
+            protocol::SessionUpdate::ConfigOptionUpdate(protocol::ConfigOptionUpdate::new(vec![
+                thinking_config_option(level),
+            ])),
+            revision,
+            None,
+            None,
         ),
         AppEvent::ProviderStatusChanged { connected, detail } => {
-            connection.send_notification(protocol::SessionNotification::new(
-                session_id.clone(),
-                protocol::SessionUpdate::AgentThoughtChunk(protocol::ContentChunk::new(
-                    protocol::ContentBlock::Text(protocol::TextContent::new(format!(
-                        "[{}] {detail}",
-                        if connected {
-                            "provider"
-                        } else {
-                            "provider status"
-                        }
-                    ))),
+            let message_id = format!("provider:{}", revision.map_or(0, |value| value.revision));
+            let chunk = protocol::ContentChunk::new(protocol::ContentBlock::Text(
+                protocol::TextContent::new(format!(
+                    "[{}] {detail}",
+                    if connected {
+                        "provider"
+                    } else {
+                        "provider status"
+                    }
                 )),
             ))
+            .message_id(message_id.as_str());
+            send_session_update(
+                connection,
+                session_id,
+                protocol::SessionUpdate::AgentThoughtChunk(chunk),
+                revision,
+                None,
+                None,
+            )
         }
         AppEvent::ProgressUpdated {
             message,
             completed,
             total,
-        } => connection.send_notification(protocol::SessionNotification::new(
-            session_id.clone(),
-            protocol::SessionUpdate::AgentThoughtChunk(protocol::ContentChunk::new(
-                protocol::ContentBlock::Text(protocol::TextContent::new(
-                    match (completed, total) {
-                        (Some(completed), Some(total)) => {
-                            format!("[progress {completed}/{total}] {message}")
-                        }
-                        _ => format!("[progress] {message}"),
-                    },
-                )),
-            )),
-        )),
-        AppEvent::TaskListUpdated { items } => {
-            connection.send_notification(protocol::SessionNotification::new(
-                session_id.clone(),
-                protocol::SessionUpdate::Plan(protocol::Plan::new(
-                    items
-                        .into_iter()
-                        .map(|item| {
-                            protocol::PlanEntry::new(
-                                format!("{} · {}", item.id, item.title),
-                                protocol::PlanEntryPriority::Medium,
-                                match item.status {
-                                    crate::app::TaskStatus::Pending => {
-                                        protocol::PlanEntryStatus::Pending
-                                    }
-                                    crate::app::TaskStatus::InProgress => {
-                                        protocol::PlanEntryStatus::InProgress
-                                    }
-                                    crate::app::TaskStatus::Completed => {
-                                        protocol::PlanEntryStatus::Completed
-                                    }
-                                },
-                            )
-                        })
-                        .collect(),
-                )),
+        } => {
+            let text = match (completed, total) {
+                (Some(completed), Some(total)) => {
+                    format!("[progress {completed}/{total}] {message}")
+                }
+                _ => format!("[progress] {message}"),
+            };
+            let message_id = format!("progress:{}", revision.map_or(0, |value| value.revision));
+            let chunk = protocol::ContentChunk::new(protocol::ContentBlock::Text(
+                protocol::TextContent::new(text),
             ))
+            .message_id(message_id.as_str());
+            send_session_update(
+                connection,
+                session_id,
+                protocol::SessionUpdate::AgentThoughtChunk(chunk),
+                revision,
+                None,
+                None,
+            )
         }
+        AppEvent::TaskListUpdated { items } => send_session_update(
+            connection,
+            session_id,
+            protocol::SessionUpdate::Plan(protocol::Plan::new(
+                items
+                    .into_iter()
+                    .map(|item| {
+                        protocol::PlanEntry::new(
+                            format!("{} · {}", item.id, item.title),
+                            protocol::PlanEntryPriority::Medium,
+                            match item.status {
+                                crate::app::TaskStatus::Pending => {
+                                    protocol::PlanEntryStatus::Pending
+                                }
+                                crate::app::TaskStatus::InProgress => {
+                                    protocol::PlanEntryStatus::InProgress
+                                }
+                                crate::app::TaskStatus::Completed => {
+                                    protocol::PlanEntryStatus::Completed
+                                }
+                            },
+                        )
+                    })
+                    .collect(),
+            )),
+            revision,
+            None,
+            None,
+        ),
         AppEvent::ToolProposed {
             call_id,
             name,
@@ -2859,21 +3508,33 @@ fn send_event(
             ..
         } => {
             let kind = tool_kind(&name);
-            connection.send_notification(protocol::SessionNotification::new(
-                session_id.clone(),
+            // ACP has no separate field for the provider-neutral tool name. Keep
+            // that stable identity in the title for generic clients while making
+            // the leading text useful to a person watching the task run.
+            let title = format!(
+                "{} · {name}",
+                describe_tool(&name, &arguments, ToolDisplayPhase::Proposed, cwd)
+            );
+            send_session_update(
+                connection,
+                session_id,
                 protocol::SessionUpdate::ToolCall(
-                    protocol::ToolCall::new(call_id, name)
+                    protocol::ToolCall::new(call_id, title)
                         .kind(kind)
                         .status(protocol::ToolCallStatus::Pending)
                         .raw_input(arguments),
                 ),
-            ))
+                revision,
+                None,
+                None,
+            )
         }
         AppEvent::ToolStarted { call_id, .. } => send_tool_update(
             connection,
             session_id,
             call_id,
             protocol::ToolCallUpdateFields::new().status(protocol::ToolCallStatus::InProgress),
+            revision,
         ),
         AppEvent::ToolOutput {
             call_id, content, ..
@@ -2884,6 +3545,7 @@ fn send_event(
             protocol::ToolCallUpdateFields::new().content(vec![
                 protocol::ContentBlock::Text(protocol::TextContent::new(content)).into(),
             ]),
+            revision,
         ),
         AppEvent::ToolCompleted { call_id, success } => send_tool_update(
             connection,
@@ -2894,6 +3556,7 @@ fn send_event(
             } else {
                 protocol::ToolCallStatus::Failed
             }),
+            revision,
         ),
         AppEvent::DiffAvailable {
             call_id,
@@ -2934,70 +3597,34 @@ fn send_event(
                 protocol::ToolCallUpdateFields::new()
                     .content(content)
                     .locations(locations),
+                revision,
             )
-        }
-        AppEvent::BackgroundTaskChanged { task_id, state } => {
-            connection.send_notification(protocol::SessionNotification::new(
-                session_id.clone(),
-                protocol::SessionUpdate::AgentThoughtChunk(protocol::ContentChunk::new(
-                    protocol::ContentBlock::Text(protocol::TextContent::new(format!(
-                        "[background {task_id}] {state}"
-                    ))),
-                )),
-            ))
-        }
-        AppEvent::QuestionsAsked { request } => {
-            connection.send_notification(protocol::SessionNotification::new(
-                session_id.clone(),
-                protocol::SessionUpdate::AgentThoughtChunk(protocol::ContentChunk::new(
-                    protocol::ContentBlock::Text(protocol::TextContent::new(format!(
-                        "[attention {}] {} structured question(s)",
-                        request.request_id,
-                        request.questions.len()
-                    ))),
-                )),
-            ))
-        }
-        AppEvent::QuestionsAnswered { request_id, .. } => {
-            connection.send_notification(protocol::SessionNotification::new(
-                session_id.clone(),
-                protocol::SessionUpdate::AgentThoughtChunk(protocol::ContentChunk::new(
-                    protocol::ContentBlock::Text(protocol::TextContent::new(format!(
-                        "[attention {request_id}] answered"
-                    ))),
-                )),
-            ))
-        }
-        AppEvent::QuestionsFailed { request_id, reason } => {
-            connection.send_notification(protocol::SessionNotification::new(
-                session_id.clone(),
-                protocol::SessionUpdate::AgentThoughtChunk(protocol::ContentChunk::new(
-                    protocol::ContentBlock::Text(protocol::TextContent::new(format!(
-                        "[attention {request_id}] closed without answers: {reason}"
-                    ))),
-                )),
-            ))
         }
         AppEvent::PlanProposed {
             plan_id,
-            revision,
+            revision: plan_revision,
             markdown,
-        } => connection.send_notification(protocol::SessionNotification::new(
-            session_id.clone(),
+        } => send_session_update(
+            connection,
+            session_id,
             protocol::SessionUpdate::Plan(protocol::Plan::new(vec![protocol::PlanEntry::new(
-                format!("{plan_id} r{revision}\n{markdown}"),
+                format!("{plan_id} r{plan_revision}\n{markdown}"),
                 protocol::PlanEntryPriority::High,
                 protocol::PlanEntryStatus::Pending,
             )])),
-        )),
+            revision,
+            None,
+            None,
+        ),
         AppEvent::PlanReviewed {
             plan_id,
-            revision,
+            revision: plan_revision,
             decision,
-        } => connection.send_notification(protocol::SessionNotification::new(
-            session_id.clone(),
+        } => send_session_update(
+            connection,
+            session_id,
             protocol::SessionUpdate::Plan(protocol::Plan::new(vec![protocol::PlanEntry::new(
-                format!("{plan_id} r{revision}: {decision}"),
+                format!("{plan_id} r{plan_revision}: {decision}"),
                 protocol::PlanEntryPriority::High,
                 if decision == "approved" || decision == "abandoned" {
                     protocol::PlanEntryStatus::Completed
@@ -3005,7 +3632,29 @@ fn send_event(
                     protocol::PlanEntryStatus::InProgress
                 },
             )])),
-        )),
+            revision,
+            None,
+            None,
+        ),
+        AppEvent::WarningRaised { message } | AppEvent::ErrorRaised { message, .. } => {
+            let message_id = format!(
+                "notice:{}:{}",
+                revision.map_or(0, |value| value.revision),
+                correlation_id.as_deref().unwrap_or("unknown")
+            );
+            let chunk = protocol::ContentChunk::new(protocol::ContentBlock::Text(
+                protocol::TextContent::new(message),
+            ))
+            .message_id(message_id.as_str());
+            send_session_update(
+                connection,
+                session_id,
+                protocol::SessionUpdate::AgentMessageChunk(chunk),
+                revision,
+                None,
+                None,
+            )
+        }
         _ => Ok(()),
     }
 }
@@ -3015,11 +3664,16 @@ fn send_tool_update(
     session_id: &protocol::SessionId,
     call_id: String,
     fields: protocol::ToolCallUpdateFields,
+    revision: Option<&crate::session::ThreadRevision>,
 ) -> agent_client_protocol::Result<()> {
-    connection.send_notification(protocol::SessionNotification::new(
-        session_id.clone(),
+    send_session_update(
+        connection,
+        session_id,
         protocol::SessionUpdate::ToolCallUpdate(protocol::ToolCallUpdate::new(call_id, fields)),
-    ))
+        revision,
+        None,
+        None,
+    )
 }
 
 fn send_text(
@@ -3063,5 +3717,122 @@ mod tests {
             .expect("resource link"),
             "[Referenced resource: source](file:///tmp/source.rs)"
         );
+    }
+
+    #[test]
+    fn every_builtin_tool_has_an_intentional_acp_kind() {
+        for name in [
+            "list_files",
+            "glob_files",
+            "inspect_metadata",
+            "select_context",
+            "inspect_git",
+            "view_session_diff",
+            "search_text",
+            "read_file",
+            "apply_patch",
+            "replace_text",
+            "run_command",
+            "run_shell",
+            "start_background",
+            "background_list",
+            "background_status",
+            "background_wait",
+            "web_search",
+            "fetch_url",
+            "stop_background",
+            "plan_create",
+            "plan_revise",
+            "plan_propose",
+            "ask_user_questions",
+            "update_progress",
+        ] {
+            assert_ne!(tool_kind(name), protocol::ToolKind::Other, "{name}");
+        }
+    }
+
+    #[test]
+    fn verified_security_cannot_be_serialized_without_evidence() {
+        let result = strict_extension_security_verification(SecurityVerification {
+            status: crate::app::SecurityStatus::Verified,
+            evidence: None,
+        });
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn verified_security_rejects_incomplete_lease_evidence_even_for_fixtures() {
+        let evidence = axiom_secure_client::SecurityEvidence {
+            state: axiom_secure_client::SecurityState::Verified,
+            provider_id: "fixture".into(),
+            model_id: "fixture-model".into(),
+            attestation_protocol: "fixture-attestation-v1".into(),
+            e2ee_protocol: "fixture-e2ee-v1".into(),
+            e2ee_encryption_version: 1,
+            trust_policy_version: "fixture-policy".into(),
+            verified_at_unix_seconds: 1,
+            attestation_generation: None,
+            hard_expires_at_unix_seconds: None,
+            model_key_fingerprint: "00".repeat(32),
+            tls_spki_fingerprint: None,
+            checks: Vec::new(),
+            provider_claims: Vec::new(),
+            workload_manifest: None,
+            workload_identity_allowlist_configured: false,
+            approved_workload_identity: false,
+        };
+        assert!(
+            extension_security_evidence(crate::app::SecurityStatus::Verified, evidence).is_err()
+        );
+    }
+
+    #[test]
+    fn applying_a_different_model_invalidates_verified_session_security() {
+        let mut session = AcpSession {
+            internal_id: SessionId::new(),
+            cwd: PathBuf::from("/workspace"),
+            profile: PermissionProfile::Web,
+            model: "near/model-a".into(),
+            thinking: crate::app::ThinkingLevel::High,
+            models: vec!["near/model-a".into(), "phala/model-b".into()],
+            active_turn: None,
+            cancellation: None,
+            has_prompt: false,
+            security: crate::app::SecurityStatus::Verified,
+        };
+
+        apply_session_model_settings(
+            &mut session,
+            "phala/model-b",
+            crate::app::ThinkingLevel::Medium,
+            &["near/model-a".into(), "phala/model-b".into()],
+            true,
+        );
+        assert_eq!(session.security, crate::app::SecurityStatus::Unverified);
+
+        session.security = crate::app::SecurityStatus::Verified;
+        apply_session_model_settings(
+            &mut session,
+            "phala/model-b",
+            crate::app::ThinkingLevel::Medium,
+            &["near/model-a".into(), "phala/model-b".into()],
+            false,
+        );
+        assert_eq!(session.security, crate::app::SecurityStatus::Verified);
+    }
+
+    #[test]
+    fn prompt_client_item_identity_is_bounded_and_nonempty() {
+        let mut meta = protocol::Meta::new();
+        meta.insert(
+            extension::META_KEY.into(),
+            serde_json::json!({"clientItemId": ""}),
+        );
+        assert!(prompt_metadata(Some(&meta)).is_err());
+        meta.insert(
+            extension::META_KEY.into(),
+            serde_json::json!({"clientItemId": "x".repeat(extension::MAX_IDENTIFIER_BYTES + 1)}),
+        );
+        assert!(prompt_metadata(Some(&meta)).is_err());
     }
 }

@@ -503,6 +503,11 @@ fn merge_stable(
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProviderEvent {
     SecurityState(ProviderSecurityState),
+    /// The exact response associated with this provider call passed its
+    /// terminal cryptographic verification. Secure adapters emit this only
+    /// after the verified stream has returned successfully; preflight
+    /// attestation alone must never produce it.
+    ResponseVerified,
     Status {
         connected: bool,
         detail: String,

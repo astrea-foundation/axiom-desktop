@@ -123,7 +123,7 @@ async fn long_stream_and_many_transcript_entries_stay_within_recorded_budgets() 
     assert!(started.elapsed() < Duration::from_secs(10));
 
     let state = tempfile::tempdir().expect("state");
-    let database = state.path().join("sessions.sqlite3");
+    let database = state.path().join("state.sqlite3");
     let store = SessionStore::open(&database).expect("store");
     let runtime = Runtime::new(8);
     let session_id = runtime.session_id();
@@ -137,13 +137,23 @@ async fn long_stream_and_many_transcript_entries_stay_within_recorded_budgets() 
         .await
         .expect("create session");
     store.append_all(&created).expect("persist creation");
-    let journal_started = std::time::Instant::now();
+    let turn_id = TurnId::new();
+    let submitted = runtime
+        .dispatch(AppCommand::SubmitPrompt {
+            session_id: session_id.clone(),
+            turn_id: turn_id.clone(),
+            text: "stream a long response".into(),
+        })
+        .await
+        .expect("submit prompt");
+    store.append_all(&submitted).expect("persist prompt");
+    let persistence_started = std::time::Instant::now();
     for index in 0..5_000 {
         let event = runtime
             .emit(
                 session_id.clone(),
                 AppEvent::TextDelta {
-                    turn_id: TurnId::new(),
+                    turn_id: turn_id.clone(),
                     text: format!("entry-{index:04}-{}", "x".repeat(64)),
                 },
             )
@@ -157,20 +167,29 @@ async fn long_stream_and_many_transcript_entries_stay_within_recorded_budgets() 
             ExportOptions {
                 include_prompts: false,
                 include_tool_output: false,
-                max_events: 1_000,
+                max_items: 1_000,
             },
         )
         .expect("bounded export");
     let value: serde_json::Value = serde_json::from_str(&export).expect("export JSON");
-    assert_eq!(value["events"].as_array().expect("events").len(), 1_000);
+    let timeline_items = value["timeline_items"].as_array().expect("timeline items");
+    assert_eq!(timeline_items.len(), 3);
+    assert_eq!(
+        timeline_items
+            .iter()
+            .filter(|item| item["kind"] == "assistant_message")
+            .count(),
+        1,
+        "streaming deltas must merge into one assistant timeline item"
+    );
     assert!(export.len() < 512 * 1024);
-    let journal_elapsed = journal_started.elapsed();
+    let persistence_elapsed = persistence_started.elapsed();
     let database_bytes = std::fs::metadata(database).expect("database").len();
-    assert!(journal_elapsed < Duration::from_secs(10));
+    assert!(persistence_elapsed < Duration::from_secs(10));
     assert!(database_bytes < 16 * 1024 * 1024);
     eprintln!(
-        "long-session summary: stream_chunks={CHUNKS} transcript_entries=5000 journal_ms={} database_bytes={database_bytes}",
-        journal_elapsed.as_millis()
+        "long-session summary: stream_chunks={CHUNKS} transcript_checkpoints=5000 persistence_ms={} database_bytes={database_bytes}",
+        persistence_elapsed.as_millis()
     );
 }
 

@@ -4,12 +4,8 @@ Status: accepted for the early implementation.
 
 Plans are explicit revisioned artifacts with draft, proposed,
 revision-requested, approved, and abandoned states plus line-range comments.
-The original `plan` policy profile was a hard intersection: reads were allowed,
-the dedicated `.axiomcli/plans` capability was allowed, and all other effects
-were denied before configurable asks or session grants. That profile has since
-been retired: legacy sessions migrate to Observe, while modifying plan
-artifacts now follows the selected tool profile. Approval records review; it
-does not execute a plan.
+Modifying plan artifacts follows the selected tool profile. Approval records
+review; it does not execute a plan.
 
 Structured questions support one to three fields. The TUI keeps question input
 separate from the message draft. ACP uses form elicitation only when the client

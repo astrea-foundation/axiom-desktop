@@ -8,6 +8,9 @@ use std::{
     time::Duration,
 };
 
+#[cfg(any(windows, test))]
+use std::path::{Path, PathBuf};
+
 use async_trait::async_trait;
 use rmcp::{
     RoleClient, ServiceExt as _,
@@ -159,13 +162,9 @@ pub async fn connect_tools(
 }
 
 async fn connect(config: &McpServerConfig) -> Result<McpService> {
-    let mut command = tokio::process::Command::new(&config.command);
-    command.args(&config.args).env_clear().stdin(Stdio::null());
-    for variable in ["PATH", "LANG", "LC_ALL"] {
-        if let Ok(value) = std::env::var(variable) {
-            command.env(variable, value);
-        }
-    }
+    let mut command = configured_command(config)?;
+    crate::process_env::apply_sanitized_environment(&mut command);
+    command.stdin(Stdio::null());
     let transport = TokioChildProcess::builder(command)
         .stderr(Stdio::null())
         .spawn()
@@ -180,6 +179,111 @@ async fn connect(config: &McpServerConfig) -> Result<McpService> {
         .await
         .map_err(|_| bounded_mcp_error(&config.name, "initialization timed out"))?
         .map_err(|error| bounded_mcp_error(&config.name, error))
+}
+
+#[cfg(not(windows))]
+// Keep the platform implementations type-identical: Windows resolution is
+// fallible even though spawning a direct POSIX executable is not.
+#[allow(clippy::unnecessary_wraps)]
+fn configured_command(config: &McpServerConfig) -> Result<tokio::process::Command> {
+    let mut command = tokio::process::Command::new(&config.command);
+    command.args(&config.args);
+    Ok(command)
+}
+
+#[cfg(windows)]
+fn configured_command(config: &McpServerConfig) -> Result<tokio::process::Command> {
+    let cwd = std::env::current_dir().map_err(AxiomError::Io)?;
+    let program =
+        crate::process_env::resolve_windows_program(&config.command, &cwd).ok_or_else(|| {
+            AxiomError::Config(format!(
+                "MCP server `{}` executable `{}` was not found on the sanitized Windows PATH",
+                config.name, config.command
+            ))
+        })?;
+    let system_root = std::env::var_os("SystemRoot")
+        .map(PathBuf::from)
+        .ok_or_else(|| AxiomError::Config("Windows SystemRoot is unavailable".into()))?;
+    let (launcher, arguments) = windows_mcp_launch(&program, &config.args, &system_root)?;
+    if !launcher.is_file() {
+        return Err(AxiomError::Config(format!(
+            "Windows MCP launcher is missing: {}",
+            launcher.display()
+        )));
+    }
+    let mut command = tokio::process::Command::new(launcher);
+    command.args(arguments);
+    Ok(command)
+}
+
+#[cfg(any(windows, test))]
+fn windows_mcp_launch(
+    program: &Path,
+    arguments: &[String],
+    system_root: &Path,
+) -> Result<(PathBuf, Vec<String>)> {
+    let extension = program
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    match extension.as_str() {
+        "cmd" | "bat" => {
+            let mut tokens = Vec::with_capacity(arguments.len() + 1);
+            tokens.push(cmd_literal(program.as_os_str().to_string_lossy().as_ref())?);
+            for argument in arguments {
+                tokens.push(cmd_literal(argument)?);
+            }
+            // `/S /C` has one documented outer quote pair around the complete command. Every
+            // inner token is separately quoted, and expansion-bearing `%`/quotes/newlines are
+            // rejected so configured arguments cannot escape their token boundary.
+            let invocation = format!("\"{}\"", tokens.join(" "));
+            Ok((
+                system_root.join("System32").join("cmd.exe"),
+                vec![
+                    "/D".into(),
+                    "/V:OFF".into(),
+                    "/S".into(),
+                    "/C".into(),
+                    invocation,
+                ],
+            ))
+        }
+        "ps1" => {
+            let mut launch_arguments = vec![
+                "-NoLogo".into(),
+                "-NoProfile".into(),
+                "-NonInteractive".into(),
+                "-File".into(),
+                program.as_os_str().to_string_lossy().into_owned(),
+            ];
+            launch_arguments.extend(arguments.iter().cloned());
+            Ok((
+                system_root
+                    .join("System32")
+                    .join("WindowsPowerShell")
+                    .join("v1.0")
+                    .join("powershell.exe"),
+                launch_arguments,
+            ))
+        }
+        _ => Ok((program.to_path_buf(), arguments.to_vec())),
+    }
+}
+
+#[cfg(any(windows, test))]
+fn cmd_literal(value: &str) -> Result<String> {
+    if value.is_empty()
+        || value
+            .chars()
+            .any(|character| matches!(character, '\0' | '\r' | '\n' | '"' | '%'))
+    {
+        return Err(AxiomError::Config(
+            "Windows .cmd/.bat MCP paths and arguments cannot contain quotes, percent signs, or line breaks; use an executable wrapper for those values"
+                .into(),
+        ));
+    }
+    Ok(format!("\"{value}\""))
 }
 
 async fn discover_tools(
@@ -475,5 +579,41 @@ mod tests {
         let rendered = error.to_string();
         assert!(!rendered.contains("axm_"));
         assert!(rendered.len() < MAX_DESCRIPTION_BYTES + 100);
+    }
+
+    #[test]
+    fn windows_cmd_mcp_shim_uses_the_absolute_system_launcher() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let system_root = root.path().join("Windows");
+        let shim = root.path().join("node-bin").join("npx.cmd");
+        let arguments = vec![
+            "-y".into(),
+            "@modelcontextprotocol/server-filesystem".into(),
+        ];
+
+        let (launcher, launcher_arguments) =
+            windows_mcp_launch(&shim, &arguments, &system_root).expect("build Windows launch");
+
+        assert_eq!(launcher, system_root.join("System32").join("cmd.exe"));
+        assert_eq!(&launcher_arguments[..4], &["/D", "/V:OFF", "/S", "/C"]);
+        assert_eq!(
+            launcher_arguments[4],
+            format!(
+                "\"\"{}\" \"-y\" \"@modelcontextprotocol/server-filesystem\"\"",
+                shim.display()
+            )
+        );
+    }
+
+    #[test]
+    fn windows_cmd_mcp_shim_rejects_expansion_bearing_arguments() {
+        let error = windows_mcp_launch(
+            Path::new(r"C:\nodejs\npx.cmd"),
+            &["%PATH%".into()],
+            Path::new(r"C:\Windows"),
+        )
+        .expect_err("percent expansion must be rejected");
+
+        assert!(error.to_string().contains("cannot contain quotes"));
     }
 }

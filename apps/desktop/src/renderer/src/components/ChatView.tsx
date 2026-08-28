@@ -1,11 +1,12 @@
 import { ArrowDown } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import type { ProviderModel, ReasoningEffort, Thread } from "../types";
+import type { ClientSessionState } from "@axiom/axiom-acp-client";
+import type { PendingUserMessage, ProviderModel, ReasoningEffort } from "../types";
 import { ChatComposer } from "./ChatComposer";
-import { MessageBubble } from "./MessageBubble";
+import { TimelineView } from "./TimelineView";
 
 interface ChatViewProps {
-  thread: Thread;
+  session: ClientSessionState;
   draft: string;
   onDraftChange: (value: string) => void;
   onSubmit: () => void;
@@ -14,12 +15,14 @@ interface ChatViewProps {
   models: ProviderModel[];
   selectedModelId: string;
   onModelChange: (modelId: string) => void;
-  reasoningEffort?: ReasoningEffort;
-  onReasoningEffortChange: (effort: ReasoningEffort | undefined) => void;
+  reasoningEffort: ReasoningEffort;
+  onReasoningEffortChange: (effort: ReasoningEffort) => void;
+  pendingUserMessage?: PendingUserMessage | null;
+  onVerifySecurity: () => void;
 }
 
 export function ChatView({
-  thread,
+  session,
   draft,
   onDraftChange,
   onSubmit,
@@ -30,6 +33,8 @@ export function ChatView({
   onModelChange,
   reasoningEffort,
   onReasoningEffortChange,
+  pendingUserMessage,
+  onVerifySecurity,
 }: ChatViewProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -40,7 +45,7 @@ export function ChatView({
     if (followRef.current) {
       bottomRef.current?.scrollIntoView({ block: "end" });
     }
-  }, [thread.messages, isStreaming]);
+  }, [session.timeline, isStreaming, pendingUserMessage?.id]);
 
   return (
     <div className="relative flex h-full min-h-0 flex-col">
@@ -55,9 +60,7 @@ export function ChatView({
         }}
       >
         <div className="mx-auto flex w-full max-w-[760px] flex-col gap-5 pb-5 pt-12">
-          {thread.messages.map((message) => (
-            <MessageBubble key={message.id} message={message} />
-          ))}
+          <TimelineView session={session} pendingUserMessage={pendingUserMessage} />
           <div ref={bottomRef} />
         </div>
       </div>
@@ -90,6 +93,8 @@ export function ChatView({
             onModelChange={onModelChange}
             reasoningEffort={reasoningEffort}
             onReasoningEffortChange={onReasoningEffortChange}
+            security={session.security}
+            onVerifySecurity={onVerifySecurity}
           />
         </div>
       </div>

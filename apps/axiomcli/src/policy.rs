@@ -527,10 +527,9 @@ impl PolicyEngine {
                 }
                 env.sort();
                 env.dedup_by(|left, right| left.0 == right.0);
-                let basename = program.rsplit('/').next().unwrap_or(&program);
-                let shell = shell
-                    || (matches!(basename, "sh" | "bash" | "zsh" | "fish" | "dash")
-                        && args.first().is_some_and(|argument| argument == "-c"));
+                let basename = normalized_executable_name(&program);
+                let shell =
+                    shell || windows_script_program(&program) || invokes_shell(&basename, &args);
                 Ok(Effect::Process {
                     program,
                     args,
@@ -673,7 +672,7 @@ impl PolicyEngine {
             ),
             Effect::Process { program, .. }
                 if matches!(
-                    program.rsplit('/').next().unwrap_or(program),
+                    normalized_executable_name(program).as_str(),
                     "sudo"
                         | "doas"
                         | "su"
@@ -925,6 +924,52 @@ pub fn is_allowed_child_env_key(key: &str) -> bool {
         key,
         "CI" | "RUST_BACKTRACE" | "RUST_LOG" | "NODE_ENV" | "CARGO_TERM_COLOR" | "NO_COLOR"
     )
+}
+
+pub(crate) fn normalized_executable_name(program: &str) -> String {
+    let trimmed = program.trim().trim_matches(|character: char| {
+        matches!(character, '\'' | '"' | '`' | '&' | '(' | ')' | ';' | '|')
+    });
+    let basename = trimmed.rsplit(['/', '\\']).next().unwrap_or(trimmed);
+    let lowercase = basename.to_ascii_lowercase();
+    for suffix in [".exe", ".com", ".cmd", ".bat"] {
+        if let Some(stem) = lowercase.strip_suffix(suffix) {
+            return stem.to_owned();
+        }
+    }
+    lowercase
+}
+
+fn invokes_shell(program: &str, args: &[String]) -> bool {
+    match program {
+        "sh" | "bash" | "zsh" | "fish" | "dash" => args.iter().take(2).any(|argument| {
+            let argument = argument.to_ascii_lowercase();
+            argument.starts_with('-') && argument.contains('c')
+        }),
+        "cmd" => args
+            .iter()
+            .take(2)
+            .any(|argument| matches!(argument.to_ascii_lowercase().as_str(), "/c" | "/k")),
+        "powershell" | "pwsh" => args.iter().any(|argument| {
+            matches!(
+                argument.to_ascii_lowercase().as_str(),
+                "-c" | "-command" | "-ec" | "-encodedcommand" | "-f" | "-file"
+            )
+        }),
+        _ => false,
+    }
+}
+
+fn windows_script_program(program: &str) -> bool {
+    let basename = program
+        .trim()
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    [".cmd", ".bat", ".ps1"]
+        .iter()
+        .any(|extension| basename.ends_with(extension))
 }
 
 #[must_use]
@@ -1312,6 +1357,37 @@ mod tests {
             policy.evaluate(PermissionProfile::Confirm, structured).kind,
             DecisionKind::Allow
         );
+    }
+
+    #[test]
+    fn windows_script_shims_are_shell_classified_without_reinterpreting_arguments() {
+        let root = tempdir().expect("root");
+        let policy = PolicyEngine::for_workspace(root.path()).expect("policy");
+        let arguments = vec![
+            "run".into(),
+            "build & echo not-a-second-command".into(),
+            "literal|pipe".into(),
+        ];
+        let decision = policy.evaluate(
+            PermissionProfile::FullAccess,
+            Effect::Process {
+                program: r"C:\tools\npm.cmd".into(),
+                args: arguments.clone(),
+                shell: false,
+                cwd: root.path().to_path_buf(),
+                env: Vec::new(),
+            },
+        );
+
+        assert_eq!(decision.kind, DecisionKind::Allow);
+        assert!(matches!(
+            decision.normalized_effect,
+            Effect::Process {
+                shell: true,
+                ref args,
+                ..
+            } if args == &arguments
+        ));
     }
 
     proptest! {

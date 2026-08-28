@@ -20,8 +20,10 @@ use crate::{
     ApiCredential, EvidenceCheck, EvidenceClaim, Result, SecureClientConfig, SecureClientError,
     SecureProvider, SecurityEvidence, SecurityState, TrustPolicy, VerifiedSession,
     http::{bounded_body, pinned_client},
+    lease::AttestationBinding,
     provider::sealed,
     providers::near::{crypto, inference},
+    test_support::fixture_response_signing_address,
 };
 
 pub(crate) const PROVIDER_ID: &str = "axiom-test-fixture";
@@ -78,9 +80,19 @@ impl SecureProvider for FixtureProvider {
         self.supports(model)?;
         let (model_key, evidence) =
             verify_fixture_evidence(&self.config, model, policy, &cancellation).await?;
+        let binding = AttestationBinding {
+            generation: 1,
+            model_key_fingerprint: evidence.model_key_fingerprint.clone(),
+            keyset_digest: None,
+            hard_expires_at_unix_seconds: evidence
+                .hard_expires_at_unix_seconds
+                .ok_or_else(|| rejected("fixture evidence omitted its hard expiry"))?,
+        };
         Ok(Box::new(FixtureSession {
             evidence,
             model_key,
+            response_signing_address: fixture_response_signing_address(),
+            binding,
             config: self.config.clone(),
             credential: Arc::clone(&self.credential),
             model: model.clone(),
@@ -91,6 +103,8 @@ impl SecureProvider for FixtureProvider {
 struct FixtureSession {
     evidence: SecurityEvidence,
     model_key: crypto::Ed25519PublicKey,
+    response_signing_address: String,
+    binding: AttestationBinding,
     config: SecureClientConfig,
     credential: Arc<ApiCredential>,
     model: ModelInfo,
@@ -110,10 +124,14 @@ impl VerifiedSession for FixtureSession {
         cancellation: CancellationToken,
     ) -> Result<InferenceResponse> {
         inference::complete(
-            &self.config,
-            &self.credential,
-            &self.model,
-            self.model_key,
+            inference::NearInferenceContext {
+                config: &self.config,
+                credential: &self.credential,
+                model: &self.model,
+                model_key: self.model_key,
+                response_signing_address: &self.response_signing_address,
+                binding: &self.binding,
+            },
             request,
             &cancellation,
         )
@@ -127,10 +145,14 @@ impl VerifiedSession for FixtureSession {
         cancellation: CancellationToken,
     ) -> Result<InferenceResponse> {
         inference::stream(
-            &self.config,
-            &self.credential,
-            &self.model,
-            self.model_key,
+            inference::NearInferenceContext {
+                config: &self.config,
+                credential: &self.credential,
+                model: &self.model,
+                model_key: self.model_key,
+                response_signing_address: &self.response_signing_address,
+                binding: &self.binding,
+            },
             request,
             events,
             &cancellation,
@@ -227,6 +249,8 @@ async fn verify_fixture_evidence(
             e2ee_encryption_version: ENCRYPTION_VERSION,
             trust_policy_version: policy.version.clone(),
             verified_at_unix_seconds,
+            attestation_generation: Some(1),
+            hard_expires_at_unix_seconds: Some(verified_at_unix_seconds.saturating_add(600)),
             model_key_fingerprint: fingerprint,
             tls_spki_fingerprint: None,
             checks: vec![
@@ -243,10 +267,16 @@ async fn verify_fixture_evidence(
                     passed: true,
                 },
             ],
-            provider_claims: vec![EvidenceClaim {
-                name: "scope".to_owned(),
-                value: "process integration testing only; not TEE attestation".to_owned(),
-            }],
+            provider_claims: vec![
+                EvidenceClaim {
+                    name: "scope".to_owned(),
+                    value: "process integration testing only; not TEE attestation".to_owned(),
+                },
+                EvidenceClaim {
+                    name: "response_signing_address".to_owned(),
+                    value: fixture_response_signing_address(),
+                },
+            ],
             workload_manifest: None,
             workload_identity_allowlist_configured: false,
             approved_workload_identity: false,

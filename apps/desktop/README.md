@@ -1,15 +1,17 @@
 # Axiom desktop
 
-The current renderer is the Axiom desktop visual concept: sidebar, loose
-threads, the chat surface, and a Proxy pane. Its production boundary is now
-wired: Electron main supervises `axiomcli acp`, negotiates the versioned Axiom
-extension, and exposes a narrow typed API through the sandboxed preload.
+Electron main supervises `axiomcli acp --frontend desktop-chat`, negotiates the
+versioned Axiom extension, and exposes a narrow typed API through the sandboxed
+preload. The renderer uses the real session catalog and ACP event stream for
+messages, reasoning, tool calls, plans, questions, cancellation, and settings;
+it does not synthesize a conversation or choose a filesystem workspace.
 
-The visual prototype still uses its demo conversation data. A separate desktop
-UI pass can consume `window.axiomDesktop.agent` without importing Rust, parsing
-JSON-RPC, spawning a process, or reimplementing policy. The API covers sessions,
-streaming prompts, cancellation, model/thinking/permission settings, account
-login, attestation evidence, compaction, deletion, approvals, and questions.
+AxiomCLI supplies the canonical desktop chat directory and enforces the Web
+permission profile. Threads, timeline items, profile preferences, sidebar
+collections, and assignments all live in AxiomCLI's Desktop-profile state
+database. Electron has no SQLite connection and owns only presentation state.
+Folder names never become filesystem paths. Login identity is shared with
+AxiomCLI, while CLI and Desktop conversation databases remain separate.
 
 Brand treatment (palette, Geist, wordmark, sakura/ember empty state, message
 chrome) is copied into this package. The closed-source website is not a
@@ -21,12 +23,24 @@ From the repository root:
 
 ```text
 pnpm install
-cargo build -p axiomcli
 pnpm desktop
 ```
 
+`pnpm desktop` compiles AxiomCLI before starting Electron, so it always drives
+the current Rust code. On Linux, `pnpm desktop:install` is an optional one-time
+step that installs development launcher metadata.
+
+The Linux desktop entry gives the development build its own application ID,
+icon, and taskbar group instead of letting the desktop shell group it with
+other programs running through the generic Electron executable. Re-run
+`pnpm desktop:install` after moving the repository.
+
 The window is frameless. Drag the top of the sidebar or the chat header to
 move it. There is no File / Edit / View menu.
+
+The renderer is sandboxed with context isolation, Node integration disabled,
+a restrictive CSP, and HTTP(S)-only external-link handling. Packaged builds
+embed the desktop product prompt in AxiomCLI.
 
 Sakura petal animation is vendored from sakura-js (MIT).
 

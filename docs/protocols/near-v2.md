@@ -27,9 +27,13 @@ E2EE terminates the request.
 
 ## 2. Key material
 
-The provider attests a 32-byte Ed25519 public key encoded as 64 lowercase hex
-characters. A leading `0x` may be accepted on input but is removed during
-canonicalization.
+The provider supplies two independently attested keys for the same measured
+workload and client nonce:
+
+- a 32-byte Ed25519 model-encryption public key encoded as 64 lowercase hex
+  characters (an input `0x` prefix is canonicalized away); and
+- an ECDSA response-signing identity encoded as a canonical lowercase Ethereum
+  address (`0x` followed by 40 hex characters).
 
 For every inference request, the client creates a fresh Ed25519 signing key from
 a 32-byte OS-CSPRNG seed. It publishes only the 32-byte Ed25519 public key. The
@@ -87,52 +91,64 @@ nonce, ephemeral key, or ciphertext is reused as protocol state.
 
 All inputs below are decoded raw bytes, not their hex-string bytes:
 
-```text
-binding_hash = SHA256(model_ed25519_public_key || tls_spki_sha256)
+Each report binds its own signing identity to TLS and the shared nonce:
 
-report_data[0..32]  == binding_hash
-report_data[32..64] == request_nonce
+```text
+model_binding    = SHA256(model_ed25519_public_key || tls_spki_sha256)
+response_binding = SHA256(response_signing_address_20_bytes || tls_spki_sha256)
+
+model_report_data[0..32]     == model_binding
+model_report_data[32..64]    == request_nonce
+response_report_data[0..32]  == response_binding
+response_report_data[32..64] == request_nonce
 ```
 
-The signing key, TLS SPKI fingerprint, and nonce must each decode to exactly 32
-bytes. `report_data` must contain at least 64 bytes. Extra report-data bytes are
-not interpreted by protocol v2.
+The model key, TLS SPKI fingerprint, and nonce decode to exactly 32 bytes. The
+response address decodes to exactly 20 bytes. Both `report_data` values contain
+at least 64 bytes; extra bytes are not interpreted by protocol v2.
 
 ## 6. Attestation request and verification
 
-The client generates a fresh 32-byte nonce and requests:
+The client generates one fresh 32-byte nonce and requests both reports with that
+same nonce:
 
 ```text
 GET {model_base_url}/attestation/report
     ?signing_algo=ed25519
     &nonce={64 lowercase hex characters}
     &include_tls_fingerprint=true
+
+GET {model_base_url}/attestation/report
+    ?signing_algo=ecdsa
+    &nonce={the same 64 lowercase hex characters}
+    &include_tls_fingerprint=true
 ```
 
 The NEAR multi-model gateway also receives `model={upstream_model}`. Per-model
 hosts do not require that selector. Redirects are disabled for this request.
 
-From the exact TLS connection carrying the successful report response, the
+From each exact TLS connection carrying a successful report response, the
 client hashes the leaf certificate's DER-encoded SubjectPublicKeyInfo with
-SHA-256. A separate probe connection is not an acceptable substitute.
+SHA-256. A separate probe connection is not an acceptable substitute. Both
+responses must resolve to the same live SPKI identity.
 
 The client accepts a report only when:
 
-- `signing_algo` is exactly `ed25519`;
-- `signing_public_key`, or the documented legacy `signing_address` alias, is a
-  valid 32-byte key;
-- the echoed nonce equals the requested nonce;
-- `model_name`, when present, equals the selected upstream model;
-- the report's TLS fingerprint equals the exact live SPKI hash;
-- Intel DCAP QVL validates the TDX quote and returns `UpToDate` or
-  `SWHardeningNeeded` under trust-policy version 1;
-- the TDX report data has the binding in Section 5;
-- NVIDIA NRAS verifies the GPU evidence and binds the same request nonce;
-- the NVIDIA result status is exactly `verified`;
+- the algorithms are exactly `ed25519` and `ecdsa`, respectively;
+- the model report contains a valid 32-byte model key and the response report
+  contains a canonical 20-byte Ethereum address;
+- both echoed nonces equal the single requested nonce;
+- both reports select the same upstream model and workload manifest;
+- both report TLS fingerprints equal the same exact live SPKI hash;
+- Intel DCAP QVL validates both TDX quotes as `UpToDate` under signed
+  trust-policy version 2, and the measured workload identities agree;
+- both TDX report-data values have their respective binding from Section 5;
+- NVIDIA NRAS verifies both GPU evidence payloads against the same nonce and
+  returns exactly `verified`;
 - the provider catalog's provider, E2EE protocol/version, and attestation
   protocol match the compiled NEAR driver.
 
-Trust-policy version 1 proves verified vendor evidence and key/model/live-TLS
+Signed trust-policy version 2 proves verified vendor evidence and key/model/live-TLS
 binding. It does not claim an Axiom-approved workload measurement until a
 separately maintained measurement or workload-manifest allowlist is available.
 
@@ -196,6 +212,10 @@ max_tokens?
 sampling?
 response_format?
 reasoning_effort?
+provider_e2ee_context = {
+  request_body_hash,
+  response_signing_address
+}
 ```
 
 Each message preserves only the required role and tool-call routing metadata in
@@ -223,27 +243,64 @@ The initial client bounds are no broader than the current backend:
 Limits are validated before expensive cryptography where possible and again on
 the serialized encrypted request.
 
+Before relay, the native client reconstructs the exact compact provider HTTP
+JSON from ciphertext—not plaintext—and SHA-256 hashes its UTF-8 bytes. Field
+order follows the provider builder, strings remain raw UTF-8 (`ensure_ascii =
+false`), floating-point values use Python `json.dumps` spelling, and
+`max_tokens` is the effective cap advertised by the authenticated catalog when
+the caller omits a smaller limit. The relay must independently derive the same
+hash before sending. No plaintext-hash compatibility path exists.
+
 ## 9. Relay response and streaming
 
-A non-stream response contains encrypted content, reasoning, refusal, and tool
-calls plus plaintext operational metadata such as ID, model, finish reason, and
-usage. Every encrypted field is decrypted locally with the request's fresh
-client secret.
+A non-stream response contains provisional encrypted content, reasoning,
+refusal, and tool calls plus plaintext operational metadata such as ID, model,
+finish reason, and usage. It also contains a closed-schema receipt proof:
+
+```text
+{
+  provider = "near",
+  protocol = "near-v2",
+  chat_id,
+  model,
+  request_hash,
+  response_hash,
+  response_body_base64,
+  signed_text,
+  signature,
+  signing_address
+}
+```
+
+The client requires every field, hashes the exact decoded raw provider response
+bytes, and accepts `signed_text` only as `request_hash:response_hash` or
+`model:request_hash:response_hash`. It recovers the signer from the canonical
+65-byte Ethereum personal-signature and requires the recovered address to equal
+the independently attested response signer. The signed raw response is then
+parsed and decrypted locally and must match the relay's provisional response
+semantically. Backend success alone never establishes a verified completion.
 
 For streaming, the relay uses SSE event names:
 
 - `message.encrypted_delta`: optional encrypted content/reasoning/refusal and
   encrypted tool-call fragments, plus a monotonically increasing sequence;
-- `message.encrypted_completed`: usage and optional finish reason;
+- `message.encrypted_completed`: usage, optional finish reason, and the exact
+  receipt proof above;
 - `run.cancelled`: optional non-secret reason;
 - `run.failed`: bounded error;
 - `run.created` and `run.completed`: lifecycle notifications without message
   output.
 
-Unknown events, malformed fields, invalid sequence, invalid tool indices, failed
-decryption, excessive aggregate output, and EOF without an encrypted-completed
-terminal event fail closed. A cancelled or failed stream cannot later become a
-verified completion.
+For streams, the receipt's decoded body is the exact upstream SSE transcript,
+including `data:` framing, newline bytes, and `[DONE]`. The client reconstructs
+and decrypts that transcript and requires it to match every provisional content,
+reasoning, refusal, tool, usage, finish, and delta-count observation. Terminal
+ordering is encrypted deltas, then one proof-bearing
+`message.encrypted_completed`, then `run.completed`. Unknown events, malformed
+fields, invalid sequence, invalid tool indices, failed decryption, excessive
+aggregate output, missing `[DONE]`, a proof after completion, or EOF without the
+full terminal sequence fail closed. A cancelled or failed stream cannot later
+become a verified completion.
 
 ## 10. Compatibility vectors
 
@@ -256,7 +313,7 @@ The source vector set is generated by:
 and currently lives at:
 
 ```text
-/home/salt/clone/axiom/proxy/fixtures/e2ee_vectors/near-v2.json
+fixtures/e2ee_vectors/near-v2.json
 ```
 
 The committed AxiomAI fixture must include its source commit and SHA-256 in a

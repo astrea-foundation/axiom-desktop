@@ -21,10 +21,9 @@ cannot be introduced by repository configuration. The Rust policy engine decides
 whether normalized effects may run. A user approval is authority only for the
 operation and scope shown in the approval request.
 
-The default inference implementation is the secure provider. The old plaintext
-adapter is absent from default/package selection and requires both a deliberate
-Cargo feature and runtime opt-in; that mode must always report
-`UNATTESTED DEV`.
+Production/provider E2EE is the only inference path reachable from AxiomCLI and
+the desktop sidecar. No Cargo feature, environment variable, or runtime option
+can select a plaintext provider adapter.
 
 ## Production inference trust boundary
 

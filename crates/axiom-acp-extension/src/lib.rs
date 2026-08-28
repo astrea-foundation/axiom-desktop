@@ -24,6 +24,8 @@ pub const MAX_EVIDENCE_CLAIMS: usize = 128;
 pub const MAX_EVIDENCE_VALUE_BYTES: usize = 8 * 1024;
 pub const MAX_WORKLOAD_MANIFEST_BYTES: usize = 64 * 1024;
 pub const MAX_IDENTIFIER_BYTES: usize = 512;
+pub const MAX_COLLECTION_NAME_BYTES: usize = 256;
+pub const MAX_TIMELINE_PAGE_SIZE: u32 = 500;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -62,8 +64,12 @@ impl ExtensionCapabilities {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct FeatureVersions {
-    pub session_catalog: u16,
-    pub settings: u16,
+    pub desktop_chat: u16,
+    pub thread_catalog: u16,
+    pub timeline: u16,
+    pub model_catalog: u16,
+    pub profile_preferences: u16,
+    pub collections: u16,
     pub account: u16,
     pub security_evidence: u16,
     pub compaction: u16,
@@ -74,14 +80,60 @@ impl FeatureVersions {
     #[must_use]
     pub const fn all() -> Self {
         Self {
-            session_catalog: 1,
-            settings: 1,
+            desktop_chat: 1,
+            thread_catalog: 1,
+            timeline: 1,
+            model_catalog: 1,
+            profile_preferences: 1,
+            collections: 1,
             account: 1,
             security_evidence: 1,
             compaction: 1,
             activity: 1,
         }
     }
+}
+
+#[derive(
+    Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcRequest,
+)]
+#[request(method = "_axiom/desktop/bootstrap", response = DesktopBootstrapResponse)]
+pub struct DesktopBootstrapRequest {}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcResponse)]
+#[serde(rename_all = "camelCase")]
+pub struct DesktopBootstrapResponse {
+    /// Stable front-end identifier selected when the sidecar was launched.
+    pub frontend: String,
+    /// Canonical workspace used for every desktop chat thread.
+    pub chat_cwd: String,
+    /// Effective, immutable permission profile for desktop chat.
+    pub permission_profile: String,
+    /// Settings `AxiomCLI` will apply to the next thread. On a clean profile the
+    /// thinking level is `medium`; afterward these are the last-used values.
+    pub new_thread_settings: ProfilePreferences,
+}
+
+/// Metadata Axiom Desktop attaches beneath the standard ACP `_meta.axiom`
+/// namespace when submitting a user message.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptMetadata {
+    pub client_item_id: String,
+}
+
+/// Durable identity attached beneath `_meta.axiom` on standard ACP
+/// notifications. Content still belongs exclusively to standard ACP; this
+/// metadata lets a client reconcile it with an authoritative timeline page.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeliveryMetadata {
+    pub thread_revision: u64,
+    pub last_timeline_sequence: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeline_item_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_item_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -113,7 +165,7 @@ pub struct ExtensionError {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum SessionLifecycle {
+pub enum ThreadLifecycle {
     Ready,
     Running,
     WaitingForApproval,
@@ -124,42 +176,64 @@ pub enum SessionLifecycle {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct SessionSettings {
-    pub model: String,
+pub struct ThreadSummary {
+    pub thread_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    pub cwd: String,
+    pub origin: String,
+    pub profile: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_model: Option<String>,
     pub thinking_level: String,
-    pub permission_profile: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct SessionSummary {
-    pub session_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub title: Option<String>,
-    pub cwd: String,
-    pub updated_at: String,
-    pub settings: SessionSettings,
+    pub lifecycle: ThreadLifecycle,
     pub archived: bool,
-    pub history_truncated: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_outcome: Option<String>,
+    pub revision: u64,
+    pub last_timeline_sequence: u64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TimelineItemKind {
+    UserMessage,
+    AssistantMessage,
+    Reasoning,
+    ToolCall,
+    Plan,
+    Notice,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TimelineItemStatus {
+    Pending,
+    InProgress,
+    Completed,
+    Cancelled,
+    Failed,
+    Interrupted,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct SessionSnapshot {
-    pub runtime_instance_id: String,
+pub struct TimelineItem {
+    pub id: String,
+    pub thread_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
     pub sequence: u64,
-    pub session_id: String,
+    pub kind: TimelineItemKind,
+    pub status: TimelineItemStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub title: Option<String>,
-    pub cwd: String,
-    pub lifecycle: SessionLifecycle,
-    pub settings: SessionSettings,
-    pub security: SecurityStatus,
+    pub client_item_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub active_turn_id: Option<String>,
-    pub has_prompt: bool,
+    pub external_id: Option<String>,
+    pub content: String,
+    pub metadata: serde_json::Value,
+    pub created_at: String,
+    pub updated_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -206,6 +280,8 @@ pub struct SecurityEvidence {
     pub e2ee_encryption_version: u16,
     pub trust_policy_version: String,
     pub verified_at_unix_seconds: u64,
+    pub attestation_generation: u64,
+    pub hard_expires_at_unix_seconds: u64,
     pub model_key_fingerprint: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tls_spki_fingerprint: Option<String>,
@@ -222,7 +298,39 @@ pub struct SecurityEvidence {
 pub struct ModelInfo {
     pub id: String,
     pub label: String,
+    pub short_label: String,
+    pub provider_id: String,
+    pub provider_label: String,
+    pub upstream_model: String,
     pub thinking_levels: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfilePreferences {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    pub thinking_level: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Collection {
+    pub id: String,
+    pub name: String,
+    pub collapsed: bool,
+    pub position: i64,
+    pub thread_ids: Vec<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CollectionState {
+    pub revision: u64,
+    pub collections: Vec<Collection>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -258,28 +366,11 @@ pub struct BrowserLoginState {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ActivityEvent {
-    SessionState {
-        snapshot: SessionSnapshot,
-    },
-    TitleChanged {
-        title: String,
-    },
-    SettingsChanged {
-        settings: SessionSettings,
-    },
     SecurityChanged {
         status: SecurityStatus,
     },
     AccountChanged {
         status: AccountStatus,
-    },
-    Progress {
-        message: String,
-        completed: Option<u64>,
-        total: Option<u64>,
-    },
-    TaskList {
-        items: Vec<TaskItem>,
     },
     BackgroundTask {
         task_id: String,
@@ -292,20 +383,12 @@ pub enum ActivityEvent {
         phase: CompactionPhase,
         detail: Option<String>,
     },
-    Warning {
-        message: String,
+    CollectionsChanged {
+        state: CollectionState,
     },
-    Error {
-        message: String,
+    ProfilePreferencesChanged {
+        preferences: ProfilePreferences,
     },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct TaskItem {
-    pub id: String,
-    pub title: String,
-    pub status: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -331,15 +414,19 @@ pub struct EventNotification {
     pub occurred_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub correlation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_revision: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_timeline_sequence: Option<u64>,
     pub event: ActivityEvent,
 }
 
 #[derive(
     Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcRequest,
 )]
-#[request(method = "_axiom/session/list", response = ListSessionsResponse)]
+#[request(method = "_axiom/thread/list", response = ListThreadsResponse)]
 #[serde(rename_all = "camelCase")]
-pub struct ListSessionsRequest {
+pub struct ListThreadsRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub query: Option<String>,
     #[serde(default)]
@@ -353,30 +440,37 @@ pub struct ListSessionsRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcResponse)]
 #[serde(rename_all = "camelCase")]
-pub struct ListSessionsResponse {
-    pub sessions: Vec<SessionSummary>,
+pub struct ListThreadsResponse {
+    pub threads: Vec<ThreadSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcRequest)]
-#[request(method = "_axiom/session/get_state", response = GetSessionStateResponse)]
+#[request(method = "_axiom/thread/timeline", response = GetThreadTimelineResponse)]
 #[serde(rename_all = "camelCase")]
-pub struct GetSessionStateRequest {
-    pub session_id: String,
+pub struct GetThreadTimelineRequest {
+    pub thread_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after_sequence: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcResponse)]
 #[serde(rename_all = "camelCase")]
-pub struct GetSessionStateResponse {
-    pub snapshot: SessionSnapshot,
+pub struct GetThreadTimelineResponse {
+    pub thread: ThreadSummary,
+    pub items: Vec<TimelineItem>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcRequest)]
-#[request(method = "_axiom/session/delete_preview", response = DeletePreviewResponse)]
+#[request(method = "_axiom/thread/delete_preview", response = DeletePreviewResponse)]
 #[serde(rename_all = "camelCase")]
 pub struct DeletePreviewRequest {
-    pub session_ids: Vec<String>,
+    pub thread_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcResponse)]
@@ -384,15 +478,15 @@ pub struct DeletePreviewRequest {
 pub struct DeletePreviewResponse {
     pub confirmation_token: String,
     pub expires_at_unix_seconds: u64,
-    pub sessions: Vec<SessionSummary>,
+    pub threads: Vec<ThreadSummary>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcRequest)]
-#[request(method = "_axiom/session/delete_confirm", response = DeleteConfirmResponse)]
+#[request(method = "_axiom/thread/delete_confirm", response = DeleteConfirmResponse)]
 #[serde(rename_all = "camelCase")]
 pub struct DeleteConfirmRequest {
     pub confirmation_token: String,
-    pub session_ids: Vec<String>,
+    pub thread_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcResponse)]
@@ -413,23 +507,93 @@ pub struct ListModelsResponse {
     pub models: Vec<ModelInfo>,
 }
 
+#[derive(
+    Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcRequest,
+)]
+#[request(method = "_axiom/profile/preferences", response = ProfilePreferencesResponse)]
+pub struct GetProfilePreferencesRequest {}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcRequest)]
-#[request(method = "_axiom/session/set_settings", response = SetSessionSettingsResponse)]
+#[request(method = "_axiom/profile/preferences/set", response = ProfilePreferencesResponse)]
 #[serde(rename_all = "camelCase")]
-pub struct SetSessionSettingsRequest {
-    pub session_id: String,
+pub struct SetProfilePreferencesRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking_level: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub permission_profile: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcResponse)]
 #[serde(rename_all = "camelCase")]
-pub struct SetSessionSettingsResponse {
-    pub settings: SessionSettings,
+pub struct ProfilePreferencesResponse {
+    pub preferences: ProfilePreferences,
+}
+
+#[derive(
+    Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcRequest,
+)]
+#[request(method = "_axiom/collection/list", response = CollectionStateResponse)]
+pub struct ListCollectionsRequest {}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcRequest)]
+#[request(method = "_axiom/collection/create", response = CollectionStateResponse)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateCollectionRequest {
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcRequest)]
+#[request(method = "_axiom/collection/rename", response = CollectionStateResponse)]
+#[serde(rename_all = "camelCase")]
+pub struct RenameCollectionRequest {
+    pub collection_id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcRequest)]
+#[request(method = "_axiom/collection/set_collapsed", response = CollectionStateResponse)]
+#[serde(rename_all = "camelCase")]
+pub struct SetCollectionCollapsedRequest {
+    pub collection_id: String,
+    pub collapsed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcRequest)]
+#[request(method = "_axiom/collection/move", response = CollectionStateResponse)]
+#[serde(rename_all = "camelCase")]
+pub struct MoveCollectionRequest {
+    pub collection_id: String,
+    pub position: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcRequest)]
+#[request(method = "_axiom/collection/delete", response = CollectionStateResponse)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteCollectionRequest {
+    pub collection_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcRequest)]
+#[request(method = "_axiom/collection/assign", response = AssignThreadCollectionResponse)]
+#[serde(rename_all = "camelCase")]
+pub struct AssignThreadCollectionRequest {
+    pub thread_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collection_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcResponse)]
+#[serde(rename_all = "camelCase")]
+pub struct CollectionStateResponse {
+    pub state: CollectionState,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcResponse)]
+#[serde(rename_all = "camelCase")]
+pub struct AssignThreadCollectionResponse {
+    pub state: CollectionState,
+    pub thread_revision: u64,
+    pub last_timeline_sequence: u64,
 }
 
 #[derive(
@@ -489,7 +653,7 @@ pub struct LogoutRequest {}
 #[request(method = "_axiom/security/verify", response = VerifySecurityResponse)]
 #[serde(rename_all = "camelCase")]
 pub struct VerifySecurityRequest {
-    pub session_id: String,
+    pub thread_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcResponse)]
@@ -503,7 +667,7 @@ pub struct VerifySecurityResponse {
 #[request(method = "_axiom/compaction/start", response = CompactResponse)]
 #[serde(rename_all = "camelCase")]
 pub struct CompactRequest {
-    pub session_id: String,
+    pub thread_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub focus: Option<String>,
 }
@@ -519,18 +683,32 @@ pub struct CompactResponse {
 #[serde(rename_all = "camelCase")]
 pub struct ProtocolSchema {
     pub capabilities: ExtensionCapabilities,
-    pub list_sessions_request: ListSessionsRequest,
-    pub list_sessions_response: ListSessionsResponse,
-    pub get_session_state_request: GetSessionStateRequest,
-    pub get_session_state_response: GetSessionStateResponse,
+    pub desktop_bootstrap_request: DesktopBootstrapRequest,
+    pub desktop_bootstrap_response: DesktopBootstrapResponse,
+    pub prompt_metadata: PromptMetadata,
+    pub delivery_metadata: DeliveryMetadata,
+    pub list_threads_request: ListThreadsRequest,
+    pub list_threads_response: ListThreadsResponse,
+    pub get_thread_timeline_request: GetThreadTimelineRequest,
+    pub get_thread_timeline_response: GetThreadTimelineResponse,
     pub delete_preview_request: DeletePreviewRequest,
     pub delete_preview_response: DeletePreviewResponse,
     pub delete_confirm_request: DeleteConfirmRequest,
     pub delete_confirm_response: DeleteConfirmResponse,
     pub list_models_request: ListModelsRequest,
     pub list_models_response: ListModelsResponse,
-    pub set_session_settings_request: SetSessionSettingsRequest,
-    pub set_session_settings_response: SetSessionSettingsResponse,
+    pub get_profile_preferences_request: GetProfilePreferencesRequest,
+    pub set_profile_preferences_request: SetProfilePreferencesRequest,
+    pub profile_preferences_response: ProfilePreferencesResponse,
+    pub list_collections_request: ListCollectionsRequest,
+    pub create_collection_request: CreateCollectionRequest,
+    pub rename_collection_request: RenameCollectionRequest,
+    pub set_collection_collapsed_request: SetCollectionCollapsedRequest,
+    pub move_collection_request: MoveCollectionRequest,
+    pub delete_collection_request: DeleteCollectionRequest,
+    pub assign_thread_collection_request: AssignThreadCollectionRequest,
+    pub collection_state_response: CollectionStateResponse,
+    pub assign_thread_collection_response: AssignThreadCollectionResponse,
     pub account_status_request: AccountStatusRequest,
     pub account_status_response: AccountStatusResponse,
     pub browser_login_start_request: BrowserLoginStartRequest,
@@ -580,8 +758,11 @@ mod tests {
     fn schema_contains_every_extension_domain() {
         let schema = schema_json();
         for needle in [
-            "ListSessionsRequest",
-            "SetSessionSettingsRequest",
+            "ListThreadsRequest",
+            "DesktopBootstrapRequest",
+            "GetThreadTimelineRequest",
+            "SetProfilePreferencesRequest",
+            "CreateCollectionRequest",
             "BrowserLoginStartRequest",
             "VerifySecurityRequest",
             "CompactRequest",
@@ -615,9 +796,12 @@ mod tests {
 
         #[test]
         fn arbitrary_api_keys_never_appear_in_debug(secret in ".{1,1024}") {
-            let request = UseApiKeyRequest { api_key: secret.clone() };
+            let request = UseApiKeyRequest { api_key: secret };
             let debug = format!("{request:?}");
-            prop_assert!(!debug.contains(&secret));
+            prop_assert_eq!(
+                debug,
+                r#"UseApiKeyRequest { api_key: "[REDACTED]" }"#,
+            );
         }
     }
 }

@@ -2,20 +2,34 @@
 
 AxiomCLI's default build performs provider attestation and end-to-end
 encryption directly in-process through `axiom-secure-client`; it does not route
-inference through the local proxy. For each inference request it fetches fresh
-evidence, verifies the nonce, selected model, provider signing key, Intel and
-NVIDIA evidence, and exact live TLS SPKI binding, then encrypts secret-bearing
-fields to the verified model key. An attestation, binding, encryption, or
-decryption failure stops the request without a plaintext or TLS-only fallback.
+inference through the local proxy. It reuses only bounded, locally verified
+public evidence and never beyond provider evidence, backend lease, signed-policy,
+or local cache expiry. Fresh client secrets, nonces, ciphertext, and receipt
+bindings are created for every inference. Secret-bearing fields are encrypted
+only after the selected offering's exact provider/protocol tuple verifies. NEAR verification
+binds the nonce, selected model, signing key, Intel and NVIDIA evidence, and live
+TLS SPKI. Phala ACI v2 verification binds the nonce-quoted gateway, measured
+workflow and keyset, source-transparency values, and content-addressed eligible
+worker sessions. An attestation, binding, encryption, receipt, or decryption
+failure stops the request without a plaintext or TLS-only fallback.
+
+Phala completion ciphertext is not accepted merely because it decrypts.
+Non-streaming output remains untrusted until its signed receipt binds the exact
+local request hash, exact encrypted response bytes, model, and a preverified
+worker session. Streaming deltas are decrypted into a bounded local buffer but
+are not emitted to the agent or journal until the terminal receipt verifies the
+exact stream transcript. Missing, reordered, truncated, or mismatched receipts
+fail closed and do not produce a successful or persisted assistant turn.
 
 The Axiom relay necessarily sees authentication, billing, routing, provider and
 model identifiers, public client key material, ciphertext, bounded inference
 parameters, usage, and terminal status. It must not see plaintext prompts,
 conversation content, reasoning, refusals, model output, tool names,
-descriptions, schemas, arguments, or results. Current evidence verifies genuine
-hardware and the runtime-provided workload manifest, but does not yet enforce
-an Axiom-approved workload measurement allowlist. Status text and audit
-evidence preserve that distinction.
+descriptions, schemas, arguments, or results. The signed policy currently
+observes workload identity while production measurements and Phala commits are
+collected for an enforce-mode rollout. Evidence explicitly reports whether an
+allowlist was configured and whether the quote-bound identity was approved;
+observation is never presented as approval.
 
 `axiom-proxy` accepts plaintext OpenAI-compatible requests from authenticated
 clients on loopback, then uses the same secure client for the remote hop. A
@@ -55,12 +69,22 @@ retention policy. Package uninstall intentionally preserves user configuration
 and session data. Remove the config/data paths printed by `axiomcli doctor`
 manually only when permanent local-data deletion is intended.
 
+Axiom Desktop and AxiomCLI share the platform `axiom` root, persisted account
+credential, and installation identity, but use separate conversation journals.
+Desktop chats use only the app-owned `desktop/chat` cwd under the local data
+root. Sidebar folders and thread membership are stored separately in
+`desktop/state.sqlite3`; their names are UI labels and never filesystem paths.
+The desktop product profile exposes only Web tools and does not start configured
+MCP servers or grant local file/process access. Web queries and fetched URLs have
+the same network privacy implications described above.
+
 Provider credentials come from browser authorization, direct API-key entry, or
 the explicit `AXIOM_API_KEY` automation override. Persisted login uses the
 operating-system keyring when available and otherwise an owner-only local file.
 Browser authorization uses PKCE plus a one-time device secret: the website can
 approve and trigger the loopback callback, but it never receives the permanent
-API key. Its displayed `axc_` fallback is single-use and short-lived. The
+API key. PKCE polling completes authorization even when the loopback callback is
+blocked; the callback only accelerates completion. The
 credential is wrapped as a secret in memory, redacted from debug output,
 excluded from child environments and session journals, and absent from release
 artifacts. Proxy clients use a separate generated `AXIOM_PROXY_TOKEN`.
@@ -68,7 +92,3 @@ Ordinary logs, panic messages, security receipts, and desktop control messages
 must contain only bounded metadata and fingerprints—not credentials, key
 pairs, shared secrets, ciphertext dumps, plaintext request/response fields, or
 raw attestation artifacts.
-
-The legacy plaintext provider is compiled only for tests or with the explicit
-`development-provider` Cargo feature. Selecting it also requires
-`AXIOMCLI_UNATTESTED_DEV=1`; default and packaged binaries cannot select it.

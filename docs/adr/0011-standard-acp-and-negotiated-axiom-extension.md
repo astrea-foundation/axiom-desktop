@@ -33,6 +33,18 @@ attestation, policy decisions, tool execution, journals, and destructive
 session operations. Electron main owns subprocess supervision. The sandboxed
 renderer receives a narrow preload API and cannot submit raw ACP methods.
 
+The first-party chat client launches the explicit
+`axiomcli acp --frontend desktop-chat` profile and negotiates
+`desktopChat@1`. `_axiom/desktop/bootstrap` returns the canonical app-owned chat
+cwd and effective Web policy. AxiomCLI rejects other cwd or permission values,
+does not connect configured MCP servers, and uses an embedded desktop product
+prompt. Generic `axiomcli acp` behavior remains workspace-oriented.
+
+Both frontends use a platform-native `axiom` root. Credentials and installation
+identity are shared, while CLI and desktop session journals are partitioned.
+Electron main owns desktop-only collection metadata; renderer folder labels do
+not influence filesystem paths.
+
 ## Bounds and failure behavior
 
 - ACP is newline-delimited JSON-RPC on stdout; diagnostics use stderr.

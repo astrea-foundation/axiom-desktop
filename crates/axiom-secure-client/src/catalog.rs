@@ -2,7 +2,8 @@ use std::collections::BTreeSet;
 
 use axiom_inference::{ModelInfo, ReasoningEffort};
 use reqwest::StatusCode;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
@@ -14,7 +15,7 @@ use crate::{
 const MAX_MODELS: usize = 512;
 const MAX_MODEL_TOKENS: u32 = 16 * 1024 * 1024;
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct CatalogModel {
     id: String,
@@ -65,13 +66,13 @@ pub(crate) async fn fetch_models(
         return Err(error_for_status(response.status()));
     }
     let body = bounded_body(response, config.limits.model_catalog_bytes).await?;
-    let wire: Vec<CatalogModel> = serde_json::from_slice(&body)
+    let wire: Vec<Value> = serde_json::from_slice(&body)
         .map_err(|_| SecureClientError::catalog("model catalog schema is invalid"))?;
-    validate_models(wire, config, providers).await
+    validate_models(wire, config, providers)
 }
 
-async fn validate_models(
-    wire: Vec<CatalogModel>,
+fn validate_models(
+    wire: Vec<Value>,
     config: &SecureClientConfig,
     providers: &ProviderRegistry,
 ) -> Result<Vec<ModelInfo>> {
@@ -82,55 +83,75 @@ async fn validate_models(
     }
     let mut ids = BTreeSet::new();
     let mut output = Vec::with_capacity(wire.len());
-    for item in wire {
-        validate_identifier(&item.id, 80, "model ID is invalid")?;
+    for raw in wire {
+        let item: CatalogModel = if let Ok(item) = serde_json::from_value(raw) {
+            item
+        } else {
+            tracing::warn!("malformed model catalog entry was quarantined");
+            continue;
+        };
+        if let Err(error) = validate_identifier(&item.id, 80, "model ID is invalid") {
+            tracing::warn!(
+                "invalid model catalog entry was quarantined: {}",
+                error.safe_detail()
+            );
+            continue;
+        }
         if !ids.insert(item.id.clone()) {
             return Err(SecureClientError::catalog(
-                "model catalog contains duplicate IDs",
+                "model catalog contains a duplicate model ID",
             ));
         }
-        validate_text(&item.label, 200, "model label is invalid")?;
-        validate_text(&item.short_label, 100, "model short label is invalid")?;
-        validate_text(&item.model, 256, "upstream model name is invalid")?;
-        validate_identifier(&item.provider, 64, "provider ID is invalid")?;
-        validate_text(&item.provider_label, 100, "provider label is invalid")?;
-        validate_identifier(&item.e2ee_protocol, 64, "E2EE protocol ID is invalid")?;
-        validate_identifier(
-            &item.attestation_protocol,
-            64,
-            "attestation protocol ID is invalid",
-        )?;
+        if validate_identifier(&item.provider, 64, "provider ID is invalid").is_err() {
+            tracing::warn!(model = %item.id, "model with invalid provider ID was quarantined");
+            continue;
+        }
+        if !providers.contains(&item.provider) {
+            tracing::warn!(
+                provider = %item.provider,
+                model = %item.id,
+                "model omitted because this client has no local provider engine"
+            );
+            continue;
+        }
+        let metadata_valid = validate_text(&item.label, 200, "model label is invalid").is_ok()
+            && validate_text(&item.short_label, 100, "model short label is invalid").is_ok()
+            && validate_text(&item.model, 256, "upstream model name is invalid").is_ok()
+            && validate_text(&item.provider_label, 100, "provider label is invalid").is_ok()
+            && validate_identifier(&item.e2ee_protocol, 64, "E2EE protocol ID is invalid").is_ok()
+            && validate_identifier(
+                &item.attestation_protocol,
+                64,
+                "attestation protocol ID is invalid",
+            )
+            .is_ok();
+        if !metadata_valid {
+            tracing::warn!(model = %item.id, "model with invalid metadata was quarantined");
+            continue;
+        }
         if item.context_window_tokens == 0
             || item.max_output_tokens == 0
             || item.context_window_tokens > MAX_MODEL_TOKENS
             || item.max_output_tokens > item.context_window_tokens
         {
-            return Err(SecureClientError::catalog("model token limits are invalid"));
+            tracing::warn!(model = %item.id, "model with invalid token limits was quarantined");
+            continue;
         }
         let mut efforts = BTreeSet::new();
         for effort in &item.supported_reasoning_efforts {
             if *effort == ReasoningEffort::Minimal || !efforts.insert(effort.as_str()) {
-                return Err(SecureClientError::catalog(
-                    "model reasoning capabilities are invalid",
-                ));
+                tracing::warn!(model = %item.id, "model with invalid reasoning metadata was quarantined");
+                efforts.clear();
+                break;
             }
+        }
+        if efforts.len() != item.supported_reasoning_efforts.len() {
+            continue;
         }
 
         let provider_url = config
             .endpoint_policy
             .validate_provider_url(&item.base_url)?;
-        // Resolve and pin once during validation so a catalog hostname whose
-        // current answers include a local address is rejected before the user
-        // can select it. Establishment repeats this check and pins its own
-        // exact request connection.
-        let _ = pinned_client(
-            &provider_url,
-            &config.endpoint_policy,
-            config.attestation_timeout,
-            false,
-        )
-        .await?;
-
         let mut model = ModelInfo {
             id: item.id,
             label: item.label,
@@ -147,8 +168,21 @@ async fn validate_models(
             supported_reasoning_efforts: item.supported_reasoning_efforts,
             ..ModelInfo::default()
         };
-        providers.validate_model(&mut model)?;
+        if let Err(error) = providers.validate_model(&mut model) {
+            tracing::warn!(
+                model = %model.id,
+                provider = %model.provider_id,
+                detail = error.safe_detail(),
+                "model with an unsupported provider contract was quarantined"
+            );
+            continue;
+        }
         output.push(model);
+    }
+    if output.is_empty() {
+        return Err(SecureClientError::capability(
+            "model catalog contains no providers supported by this client",
+        ));
     }
     Ok(output)
 }
@@ -244,8 +278,12 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn catalog_rejects_duplicates_contract_mismatches_and_impossible_limits() {
+    fn wire(model: CatalogModel) -> Value {
+        serde_json::to_value(model).unwrap()
+    }
+
+    #[test]
+    fn catalog_rejects_duplicates_contract_mismatches_and_impossible_limits() {
         let config = config();
         let providers = ProviderRegistry::production(
             config.clone(),
@@ -253,26 +291,103 @@ mod tests {
         )
         .unwrap();
         assert!(
-            validate_models(vec![model("same"), model("same")], &config, &providers)
-                .await
-                .is_err()
+            validate_models(
+                vec![wire(model("same")), wire(model("same"))],
+                &config,
+                &providers,
+            )
+            .is_err()
         );
 
         let mut invalid = model("invalid");
         invalid.e2ee_protocol = "near-v3".into();
-        assert!(
-            validate_models(vec![invalid], &config, &providers)
-                .await
-                .is_err()
-        );
+        assert!(validate_models(vec![wire(invalid)], &config, &providers).is_err());
 
         let mut invalid = model("invalid");
         invalid.max_output_tokens = invalid.context_window_tokens + 1;
-        assert!(
-            validate_models(vec![invalid], &config, &providers)
-                .await
-                .is_err()
+        assert!(validate_models(vec![wire(invalid)], &config, &providers).is_err());
+    }
+
+    #[test]
+    fn catalog_omits_unknown_providers_without_weakening_known_contracts() {
+        let config = config();
+        let providers = ProviderRegistry::production(
+            config.clone(),
+            Arc::new(ApiCredential::new("test-credential")),
+        )
+        .unwrap();
+        let mut unknown = model("future-model");
+        unknown.provider = "future-provider".into();
+        unknown.base_url = "http://127.0.0.1/this-must-not-be-resolved".into();
+
+        let supported = validate_models(
+            vec![wire(model("near-model")), wire(unknown.clone())],
+            &config,
+            &providers,
+        )
+        .unwrap();
+        assert_eq!(supported.len(), 1);
+        assert_eq!(supported[0].id, "near-model");
+
+        assert!(validate_models(vec![wire(unknown)], &config, &providers).is_err());
+
+        let mut mismatched_near = model("bad-near");
+        mismatched_near.e2ee_protocol = "near-v3".into();
+        assert!(validate_models(vec![wire(mismatched_near)], &config, &providers).is_err());
+    }
+
+    #[test]
+    fn catalog_rejects_unknown_fields_and_quarantines_malformed_neighbors() {
+        let config = config();
+        let providers = ProviderRegistry::production(
+            config.clone(),
+            Arc::new(ApiCredential::new("test-credential")),
+        )
+        .unwrap();
+        let mut unknown = wire(model("unknown-contract"));
+        unknown.as_object_mut().unwrap().insert(
+            "future_server_metadata".into(),
+            serde_json::json!({"version": 2}),
         );
+        let models = validate_models(
+            vec![
+                serde_json::json!({"broken": true}),
+                unknown.clone(),
+                wire(model("supported")),
+            ],
+            &config,
+            &providers,
+        )
+        .unwrap();
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "supported");
+        assert!(validate_models(vec![unknown], &config, &providers).is_err());
+    }
+
+    #[test]
+    fn catalog_rejects_contract_negotiation_fields_and_newer_contracts() {
+        let config = config();
+        let providers = ProviderRegistry::production(
+            config.clone(),
+            Arc::new(ApiCredential::new("test-credential")),
+        )
+        .unwrap();
+        let mut forward = model("newer");
+        forward.e2ee_protocol = "near-v3".into();
+        forward.e2ee_encryption_version = 3;
+        forward.attestation_protocol = "near-tdx-nvidia-v2".into();
+        assert!(validate_models(vec![wire(forward)], &config, &providers).is_err());
+
+        let mut ambiguous = wire(model("ambiguous"));
+        ambiguous.as_object_mut().unwrap().insert(
+            "e2ee_contracts".into(),
+            serde_json::json!([{
+                "e2ee_protocol": "near-v2",
+                "e2ee_encryption_version": 2,
+                "attestation_protocol": "near-tdx-nvidia-v1"
+            }]),
+        );
+        assert!(validate_models(vec![ambiguous], &config, &providers).is_err());
     }
 
     #[test]

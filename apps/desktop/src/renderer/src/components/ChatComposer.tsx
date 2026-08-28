@@ -7,7 +7,11 @@ import {
   Square,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import type { ClientSessionState } from "@axiom/axiom-acp-client";
 import type { ProviderModel, ReasoningEffort } from "../types";
+import { ModelBrandIcon } from "./ModelBrandIcon";
+import { ModelPicker } from "./ModelPicker";
+import { TeeVerificationBadge } from "./TeeVerificationBadge";
 
 function reasoningEffortLabel(effort: ReasoningEffort): string {
   if (effort === "xhigh") return "Extra high";
@@ -27,8 +31,10 @@ interface ChatComposerProps {
   models: ProviderModel[];
   selectedModelId: string;
   onModelChange: (modelId: string) => void;
-  reasoningEffort?: ReasoningEffort;
-  onReasoningEffortChange: (effort: ReasoningEffort | undefined) => void;
+  reasoningEffort: ReasoningEffort;
+  onReasoningEffortChange: (effort: ReasoningEffort) => void;
+  security?: ClientSessionState["security"];
+  onVerifySecurity?: () => void;
 }
 
 export function ChatComposer({
@@ -44,6 +50,8 @@ export function ChatComposer({
   onModelChange,
   reasoningEffort,
   onReasoningEffortChange,
+  security,
+  onVerifySecurity,
 }: ChatComposerProps) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const controlsRef = useRef<HTMLDivElement>(null);
@@ -123,44 +131,25 @@ export function ChatComposer({
                 aria-expanded={openMenu === "model"}
                 title="Select model"
               >
-                <span className="h-1.5 w-1.5 rounded-full bg-[var(--color-cherry)]" />
+                {selectedModel ? (
+                  <ModelBrandIcon model={selectedModel} className="h-3.5 w-3.5 shrink-0" />
+                ) : (
+                  <span className="h-1.5 w-1.5 rounded-full bg-[var(--color-cherry)]" />
+                )}
                 <span className="max-w-[9rem] truncate sm:max-w-none">
                   {selectedModel?.shortLabel ?? "Model"}
                 </span>
                 <ChevronDown size={12} className="opacity-70" />
               </button>
               {openMenu === "model" ? (
-                <div
-                  role="menu"
-                  aria-label="Select model"
-                  className="absolute bottom-9 left-0 z-30 w-[230px] overflow-hidden rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-surface)]/98 p-1 shadow-2xl shadow-black/40 backdrop-blur"
-                >
-                  {models.map((model) => (
-                    <button
-                      key={model.id}
-                      type="button"
-                      role="menuitemradio"
-                      aria-checked={model.id === selectedModelId}
-                      onClick={() => {
-                        onModelChange(model.id);
-                        setOpenMenu(null);
-                      }}
-                      className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[12.5px] text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-surface-hover)] hover:text-[var(--color-text-primary)]"
-                    >
-                      <span className="flex h-4 w-4 shrink-0 items-center justify-center text-[var(--color-cherry)]">
-                        {model.id === selectedModelId ? <Check size={13} /> : null}
-                      </span>
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate text-[var(--color-text-primary)]">
-                          {model.label}
-                        </span>
-                        <span className="block truncate text-[11px] text-[var(--color-text-tertiary)]">
-                          {model.providerLabel} · {model.model}
-                        </span>
-                      </span>
-                    </button>
-                  ))}
-                </div>
+                <ModelPicker
+                  models={models}
+                  selectedModelId={selectedModelId}
+                  onSelect={(modelId) => {
+                    onModelChange(modelId);
+                    setOpenMenu(null);
+                  }}
+                />
               ) : null}
             </div>
 
@@ -178,14 +167,10 @@ export function ChatComposer({
                 >
                   <BrainCog
                     size={13}
-                    className={
-                      reasoningEffort
-                        ? "text-[var(--color-cherry)]"
-                        : "text-[var(--color-text-tertiary)]"
-                    }
+                    className="text-[var(--color-cherry)]"
                   />
                   <span className="hidden sm:inline">
-                    {reasoningEffort ? reasoningEffortLabel(reasoningEffort) : "Auto"}
+                    {reasoningEffortLabel(reasoningEffort)}
                   </span>
                   <ChevronDown size={12} className="opacity-70" />
                 </button>
@@ -195,21 +180,6 @@ export function ChatComposer({
                     aria-label="Thinking level"
                     className="absolute bottom-9 left-0 z-30 w-[168px] overflow-hidden rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-surface)]/98 p-1 shadow-2xl shadow-black/40 backdrop-blur"
                   >
-                    <button
-                      type="button"
-                      role="menuitemradio"
-                      aria-checked={reasoningEffort === undefined}
-                      onClick={() => {
-                        onReasoningEffortChange(undefined);
-                        setOpenMenu(null);
-                      }}
-                      className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[12.5px] text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-surface-hover)] hover:text-[var(--color-text-primary)]"
-                    >
-                      <span className="flex h-4 w-4 shrink-0 items-center justify-center text-[var(--color-cherry)]">
-                        {reasoningEffort === undefined ? <Check size={13} /> : null}
-                      </span>
-                      <span className="text-[var(--color-text-primary)]">Auto</span>
-                    </button>
                     {supportedReasoningEfforts.map((effort) => (
                       <button
                         key={effort}
@@ -237,6 +207,9 @@ export function ChatComposer({
           </div>
 
           <div className="flex items-center gap-1">
+            {security !== undefined && onVerifySecurity ? (
+              <TeeVerificationBadge security={security} onVerify={onVerifySecurity} />
+            ) : null}
             {isStreaming ? (
               <button
                 type="button"

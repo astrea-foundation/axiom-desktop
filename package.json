@@ -8,6 +8,7 @@
     "typecheck": "pnpm --recursive typecheck",
     "test": "pnpm --recursive test",
     "build:desktop": "pnpm --filter axiom-desktop build",
-    "desktop": "pnpm --filter axiom-desktop dev"
+    "desktop:install": "pnpm --filter axiom-desktop install:desktop",
+    "desktop": "cargo build -p axiomcli && pnpm --filter axiom-desktop dev"
   }
 }

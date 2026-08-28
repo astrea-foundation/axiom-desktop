@@ -1,9 +1,8 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { isAbsolute } from "node:path";
-import { fileURLToPath } from "node:url";
-import { app, BrowserWindow, ipcMain, Menu, nativeImage, shell } from "electron";
-import type { ElicitationOutcome, ListSessionsRequest, PermissionOutcome, SetSessionSettingsRequest } from "@axiom/axiom-acp-client";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { app, BrowserWindow, ipcMain, Menu, nativeImage, shell, type IpcMainInvokeEvent } from "electron";
+import type { ElicitationOutcome, ListThreadsRequest, PermissionOutcome, ThreadSettingsRequest } from "@axiom/axiom-acp-client";
 import { AgentSidecar } from "./agent-sidecar";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -11,8 +10,25 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const WINDOW_WIDTH = 1320;
 const WINDOW_HEIGHT = 860;
 const BACKGROUND = "#0e0e10";
+const APP_NAME = "Axiom";
+const APP_ID = "stream.axiom.desktop";
+const LINUX_DESKTOP_FILE = `${APP_ID}.desktop`;
 const sidecar = new AgentSidecar();
 let shutdownStarted = false;
+
+app.setName(APP_NAME);
+app.setAppUserModelId(APP_ID);
+if (process.platform === "linux") {
+  const linuxApp = app as typeof app & { setDesktopName?: (name: string) => void };
+  linuxApp.setDesktopName?.(LINUX_DESKTOP_FILE);
+  app.commandLine.appendSwitch("class", APP_ID);
+}
+const primaryInstance = app.requestSingleInstanceLock();
+if (!primaryInstance) app.quit();
+
+function developmentRendererUrl(): string | undefined {
+  return app.isPackaged ? undefined : process.env.ELECTRON_RENDERER_URL;
+}
 
 function boundedString(value: unknown, label: string, max = 4096): string {
   if (typeof value !== "string" || !value || value.length > max) {
@@ -21,7 +37,7 @@ function boundedString(value: unknown, label: string, max = 4096): string {
   return value;
 }
 
-function sessionIds(value: unknown): string[] {
+function threadIds(value: unknown): string[] {
   if (!Array.isArray(value) || value.length === 0 || value.length > 1_000) {
     throw new Error("session selection is invalid");
   }
@@ -30,39 +46,51 @@ function sessionIds(value: unknown): string[] {
   return ids;
 }
 
+type AgentHandler = (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown;
+
+function agentHandle(channel: string, handler: AgentHandler): void {
+  ipcMain.handle(channel, (event, ...args) => {
+    if (event.senderFrame !== event.sender.mainFrame) throw new Error("agent IPC requires the main renderer frame");
+    const actual = new URL(event.senderFrame.url);
+    const development = developmentRendererUrl();
+    const trusted = development
+      ? actual.origin === new URL(development).origin
+      : actual.href === pathToFileURL(join(__dirname, "../renderer/index.html")).href;
+    if (!trusted || !BrowserWindow.fromWebContents(event.sender)) {
+      throw new Error("agent IPC rejected an untrusted renderer");
+    }
+    return handler(event, ...args);
+  });
+}
+
 function installAgentIpc(): void {
-  ipcMain.handle("agent:state", () => sidecar.state());
-  ipcMain.handle("agent:choose-workspace", () => sidecar.chooseWorkspace());
-  ipcMain.handle("agent:session-new", (_event, cwd: unknown) => {
-    const path = boundedString(cwd, "workspace path", 16_384);
-    if (!isAbsolute(path)) throw new Error("workspace path must be absolute");
-    return sidecar.newSession(path);
-  });
-  ipcMain.handle("agent:session-load", (_event, sessionId: unknown, cwd: unknown) => {
-    const path = boundedString(cwd, "workspace path", 16_384);
-    if (!isAbsolute(path)) throw new Error("workspace path must be absolute");
-    return sidecar.loadSession(boundedString(sessionId, "session ID", 128), path);
-  });
-  ipcMain.handle("agent:prompt", (_event, sessionId: unknown, prompt: unknown) =>
-    sidecar.prompt(boundedString(sessionId, "session ID", 128), boundedString(prompt, "prompt", 4 * 1024 * 1024)),
+  agentHandle("agent:state", () => sidecar.state());
+  agentHandle("agent:desktop-bootstrap", () => sidecar.desktopBootstrap());
+  agentHandle("agent:chat-new", () => sidecar.newChat());
+  agentHandle("agent:chat-load", (_event, sessionId: unknown) =>
+    sidecar.loadChat(boundedString(sessionId, "session ID", 128)),
   );
-  ipcMain.handle("agent:cancel", (_event, sessionId: unknown) =>
+  agentHandle("agent:prompt", (_event, sessionId: unknown, prompt: unknown, clientItemId: unknown) =>
+    sidecar.prompt(
+      boundedString(sessionId, "thread ID", 128),
+      boundedString(prompt, "prompt", 4 * 1024 * 1024),
+      boundedString(clientItemId, "client item ID", 512),
+    ),
+  );
+  agentHandle("agent:cancel", (_event, sessionId: unknown) =>
     sidecar.cancel(boundedString(sessionId, "session ID", 128)),
   );
-  ipcMain.handle("agent:set-mode", (_event, sessionId: unknown, modeId: unknown) =>
-    sidecar.setMode(boundedString(sessionId, "session ID", 128), boundedString(modeId, "mode ID", 64)),
-  );
-  ipcMain.handle("agent:set-config", (_event, sessionId: unknown, configId: unknown, value: unknown) =>
+  agentHandle("agent:set-config", (_event, sessionId: unknown, configId: unknown, value: unknown) =>
     sidecar.setConfig(
       boundedString(sessionId, "session ID", 128),
       boundedString(configId, "config ID", 64),
       boundedString(value, "configuration value", 512),
     ),
   );
-  ipcMain.handle("agent:sessions-list", (_event, value: unknown) => {
-    if (value !== undefined && (!value || typeof value !== "object")) throw new Error("session query is invalid");
+  agentHandle("agent:threads-list", (_event, value: unknown) => {
+    if (value !== undefined && (!value || typeof value !== "object")) throw new Error("thread query is invalid");
     const raw = (value ?? {}) as Record<string, unknown>;
-    const request: ListSessionsRequest = {};
+    const request: ListThreadsRequest = {};
     if (raw.query !== undefined) request.query = boundedString(raw.query, "query", 512);
     if (raw.cursor !== undefined) request.cursor = boundedString(raw.cursor, "cursor", 64);
     if (raw.includeArchived !== undefined) {
@@ -73,53 +101,92 @@ function installAgentIpc(): void {
       if (!Number.isInteger(raw.limit) || (raw.limit as number) < 1 || (raw.limit as number) > 500) throw new Error("session limit is invalid");
       request.limit = raw.limit as number;
     }
-    return sidecar.listSessions(request);
+    return sidecar.listThreads(request);
   });
-  ipcMain.handle("agent:models-list", () => sidecar.listModels());
-  ipcMain.handle("agent:set-settings", (_event, value: unknown) => {
+  agentHandle("agent:models-list", () => sidecar.listModels());
+  agentHandle("agent:set-settings", (_event, value: unknown) => {
     if (!value || typeof value !== "object") throw new Error("settings are invalid");
     const raw = value as Record<string, unknown>;
-    const settings: SetSessionSettingsRequest = {
-      sessionId: boundedString(raw.sessionId, "session ID", 128),
+    const settings: ThreadSettingsRequest = {
+      threadId: boundedString(raw.threadId, "thread ID", 128),
     };
     if (raw.model !== undefined) settings.model = boundedString(raw.model, "model", 512);
     if (raw.thinkingLevel !== undefined) settings.thinkingLevel = boundedString(raw.thinkingLevel, "thinking level", 32);
-    if (raw.permissionProfile !== undefined) settings.permissionProfile = boundedString(raw.permissionProfile, "permission profile", 32);
+    if (raw.permissionProfile !== undefined) {
+      throw new Error("desktop chat permission profile cannot be changed");
+    }
     return sidecar.setSettings(settings);
   });
-  ipcMain.handle("agent:account-status", () => sidecar.accountStatus());
-  ipcMain.handle("agent:browser-login-start", () => sidecar.browserLoginStart());
-  ipcMain.handle("agent:browser-login-complete", (_event, loginId: unknown) =>
+  agentHandle("agent:account-status", () => sidecar.accountStatus());
+  agentHandle("agent:browser-login-start", () => sidecar.browserLoginStart());
+  agentHandle("agent:browser-login-complete", (_event, loginId: unknown) =>
     sidecar.browserLoginComplete(boundedString(loginId, "login ID", 128)),
   );
-  ipcMain.handle("agent:browser-login-cancel", (_event, loginId: unknown) => {
+  agentHandle("agent:browser-login-cancel", (_event, loginId: unknown) => {
     sidecar.browserLoginCancel(boundedString(loginId, "login ID", 128));
   });
-  ipcMain.handle("agent:use-api-key", (_event, apiKey: unknown) =>
+  agentHandle("agent:use-api-key", (_event, apiKey: unknown) =>
     sidecar.useApiKey(boundedString(apiKey, "Axiom API key", 4096)),
   );
-  ipcMain.handle("agent:logout", () => sidecar.logout());
-  ipcMain.handle("agent:security-verify", (_event, sessionId: unknown) =>
+  agentHandle("agent:logout", () => sidecar.logout());
+  agentHandle("agent:security-verify", (_event, sessionId: unknown) =>
     sidecar.verifySecurity(boundedString(sessionId, "session ID", 128)),
   );
-  ipcMain.handle("agent:compact", (_event, sessionId: unknown, focus: unknown) =>
+  agentHandle("agent:compact", (_event, sessionId: unknown, focus: unknown) =>
     sidecar.compact(
       boundedString(sessionId, "session ID", 128),
       focus === undefined ? undefined : boundedString(focus, "compaction focus", 4096),
     ),
   );
-  ipcMain.handle("agent:delete-preview", (_event, ids: unknown) => sidecar.deletePreview(sessionIds(ids)));
-  ipcMain.handle("agent:delete-confirm", (_event, token: unknown, ids: unknown) =>
-    sidecar.deleteConfirm(boundedString(token, "confirmation token", 128), sessionIds(ids)),
+  agentHandle("agent:delete-preview", (_event, ids: unknown) => sidecar.deletePreview(threadIds(ids)));
+  agentHandle("agent:delete-confirm", (_event, token: unknown, ids: unknown) =>
+    sidecar.deleteConfirm(boundedString(token, "confirmation token", 128), threadIds(ids)),
   );
-  ipcMain.handle("agent:permission-resolve", (_event, interactionId: unknown, outcome: PermissionOutcome) => {
-    if (!outcome || (outcome.outcome !== "selected" && outcome.outcome !== "cancelled")) throw new Error("permission outcome is invalid");
-    sidecar.resolvePermission(boundedString(interactionId, "interaction ID", 128), outcome);
+  agentHandle("agent:permission-resolve", (_event, interactionId: unknown, outcome: unknown) => {
+    if (!outcome || typeof outcome !== "object") throw new Error("permission outcome is invalid");
+    const permission = outcome as PermissionOutcome;
+    if (permission.outcome !== "selected" && permission.outcome !== "cancelled") throw new Error("permission outcome is invalid");
+    sidecar.resolvePermission(boundedString(interactionId, "interaction ID", 128), permission);
   });
-  ipcMain.handle("agent:elicitation-resolve", (_event, interactionId: unknown, outcome: ElicitationOutcome) => {
-    if (!outcome || !["accept", "decline", "cancel"].includes(outcome.action)) throw new Error("elicitation outcome is invalid");
-    sidecar.resolveElicitation(boundedString(interactionId, "interaction ID", 128), outcome);
+  agentHandle("agent:elicitation-resolve", (_event, interactionId: unknown, outcome: unknown) => {
+    if (!outcome || typeof outcome !== "object") throw new Error("elicitation outcome is invalid");
+    const elicitation = outcome as ElicitationOutcome;
+    if (!["accept", "decline", "cancel"].includes(elicitation.action)) throw new Error("elicitation outcome is invalid");
+    sidecar.resolveElicitation(boundedString(interactionId, "interaction ID", 128), elicitation);
   });
+  agentHandle("agent:collections-list", () => sidecar.listCollections());
+  agentHandle("agent:collection-create", (_event, name: unknown) =>
+    sidecar.createCollection(boundedString(name, "collection name", 256)),
+  );
+  agentHandle("agent:collection-rename", (_event, collectionId: unknown, name: unknown) =>
+    sidecar.renameCollection(
+      boundedString(collectionId, "collection ID", 128),
+      boundedString(name, "collection name", 256),
+    ),
+  );
+  agentHandle("agent:collection-collapsed", (_event, collectionId: unknown, collapsed: unknown) => {
+    if (typeof collapsed !== "boolean") throw new Error("collection collapsed state is invalid");
+    return sidecar.setCollectionCollapsed(
+      boundedString(collectionId, "collection ID", 128),
+      collapsed,
+    );
+  });
+  agentHandle("agent:collection-move", (_event, collectionId: unknown, position: unknown) => {
+    if (!Number.isSafeInteger(position)) throw new Error("collection position is invalid");
+    return sidecar.moveCollection(
+      boundedString(collectionId, "collection ID", 128),
+      position as number,
+    );
+  });
+  agentHandle("agent:collection-delete", (_event, collectionId: unknown) =>
+    sidecar.deleteCollection(boundedString(collectionId, "collection ID", 128)),
+  );
+  agentHandle("agent:collection-assign", (_event, threadId: unknown, collectionId: unknown) =>
+    sidecar.assignThreadCollection(
+      boundedString(threadId, "thread ID", 128),
+      collectionId === null ? null : boundedString(collectionId, "collection ID", 128),
+    ),
+  );
 }
 
 function captureDirFromArgv(argv: string[]): string | null {
@@ -151,10 +218,10 @@ function createWindow(): BrowserWindow {
     show: false,
     icon: icon.isEmpty() ? undefined : icon,
     webPreferences: {
-      preload: join(__dirname, "../preload/index.mjs"),
+      preload: join(__dirname, "../preload/index.cjs"),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      sandbox: true,
     },
   });
 
@@ -168,8 +235,14 @@ function createWindow(): BrowserWindow {
   });
 
   window.webContents.setWindowOpenHandler((details) => {
-    void shell.openExternal(details.url);
+    const target = new URL(details.url);
+    if (target.protocol === "https:" || target.protocol === "http:") {
+      void shell.openExternal(target.toString());
+    }
     return { action: "deny" };
+  });
+  window.webContents.on("will-navigate", (event, url) => {
+    if (url !== window.webContents.getURL()) event.preventDefault();
   });
 
   const emitMaximized = () => {
@@ -178,8 +251,9 @@ function createWindow(): BrowserWindow {
   window.on("maximize", emitMaximized);
   window.on("unmaximize", emitMaximized);
 
-  if (process.env.ELECTRON_RENDERER_URL) {
-    void window.loadURL(process.env.ELECTRON_RENDERER_URL);
+  const development = developmentRendererUrl();
+  if (development) {
+    void window.loadURL(development);
   } else {
     void window.loadFile(join(__dirname, "../renderer/index.html"));
   }
@@ -199,6 +273,7 @@ async function captureStates(window: BrowserWindow, outputDir: string): Promise<
   const shots: Array<{ name: string; script?: string; wait: number }> = [
     { name: "conversation", wait: 400 },
     { name: "welcome", script: `window.__axiomDemo?.showWelcome()`, wait: 1600 },
+    { name: "models", script: `window.__axiomDemo?.openModelPicker()`, wait: 400 },
     { name: "proxy", script: `window.__axiomDemo?.showProxy()`, wait: 900 },
     { name: "folder", script: `window.__axiomDemo?.showFolder()`, wait: 700 },
   ];
@@ -213,7 +288,15 @@ async function captureStates(window: BrowserWindow, outputDir: string): Promise<
   }
 }
 
-app.whenReady().then(() => {
+if (primaryInstance) app.on("second-instance", () => {
+  const window = BrowserWindow.getAllWindows()[0];
+  if (!window) return;
+  if (window.isMinimized()) window.restore();
+  window.show();
+  window.focus();
+});
+
+if (primaryInstance) void app.whenReady().then(() => {
   installAgentIpc();
   ipcMain.on("window:minimize", (event) => {
     BrowserWindow.fromWebContents(event.sender)?.minimize();

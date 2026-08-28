@@ -5,7 +5,7 @@ use axiom_openai_compat::{
     ChatCompletionRequest, CompatError, CompatMode, done_sse, encode_sse, error_envelope,
     model_list, stream_event, stream_start,
 };
-use axiom_secure_client::{ApiCredential, SecureClient, SecureClientConfig, TrustPolicy};
+use axiom_secure_client::{ApiCredential, SecureClient, SecureClientConfig};
 use axum::{
     Json, Router,
     body::{Body, Bytes},
@@ -277,9 +277,14 @@ async fn chat_completions(
             kind: "invalid_request_error",
             code: "model_not_found",
         })?;
+    let trust_policy = state
+        .client
+        .trust_policy(cancellation.clone())
+        .await
+        .map_err(map_secure_error)?;
     let mut session = state
         .client
-        .establish(model, &TrustPolicy::default(), cancellation.clone())
+        .establish(model, &trust_policy, cancellation.clone())
         .await
         .map_err(|error| {
             log_security_failure(&id, &model_id, error.kind());
@@ -314,6 +319,13 @@ async fn chat_completions(
         })
     );
     let (output_tx, output_rx) = mpsc::channel::<Bytes>(STREAM_CHANNEL_CAPACITY);
+    // The secure providers intentionally withhold decrypted deltas until the
+    // terminal receipt is verified. That can leave this producer silent for
+    // the whole upstream request, so a failed `send_chunk` is not a reliable
+    // way to discover that the HTTP client disconnected. Give the response
+    // body its own cancellation guard so dropping the body always tears down
+    // the secure session and its upstream response stream.
+    let response_cancellation = cancellation.clone();
     tokio::spawn(async move {
         let _permit = permit;
         let start = encode_sse(&stream_start(&id, &model_id, created));
@@ -373,12 +385,15 @@ async fn chat_completions(
         }
     });
 
-    let body_stream = stream::unfold(output_rx, |mut receiver| async move {
-        receiver
-            .recv()
-            .await
-            .map(|bytes| (Ok::<Bytes, Infallible>(bytes), receiver))
-    });
+    let body_stream = stream::unfold(
+        (output_rx, CancelRequestOnDrop::new(response_cancellation)),
+        |(mut receiver, cancellation)| async move {
+            receiver
+                .recv()
+                .await
+                .map(|bytes| (Ok::<Bytes, Infallible>(bytes), (receiver, cancellation)))
+        },
+    );
     let mut response = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "text/event-stream")
@@ -501,6 +516,25 @@ async fn send_chunk(
                 Ok(())
             }
         }
+    }
+}
+
+/// Couples an HTTP response body's lifetime to its upstream inference.
+///
+/// Hyper drops the body stream when the client disconnects. Secure inference
+/// may not produce an eligible downstream chunk before terminal verification,
+/// so cancellation must not depend on observing a failed channel send.
+struct CancelRequestOnDrop(CancellationToken);
+
+impl CancelRequestOnDrop {
+    fn new(cancellation: CancellationToken) -> Self {
+        Self(cancellation)
+    }
+}
+
+impl Drop for CancelRequestOnDrop {
+    fn drop(&mut self) {
+        self.0.cancel();
     }
 }
 
@@ -648,5 +682,15 @@ mod tests {
         let mapped = map_secure_error(error);
         assert_eq!(mapped.code, "secure_inference_failed");
         assert!(!mapped.message.contains("provider data"));
+    }
+
+    #[test]
+    fn dropping_response_body_guard_cancels_silent_upstream_work() {
+        let cancellation = CancellationToken::new();
+        {
+            let _guard = CancelRequestOnDrop::new(cancellation.clone());
+            assert!(!cancellation.is_cancelled());
+        }
+        assert!(cancellation.is_cancelled());
     }
 }

@@ -2,12 +2,16 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use axiom_inference::{InferenceRequest, InferenceResponse, ModelInfo, ProviderEvent};
+use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
     ApiCredential, Result, SecureClientConfig, SecureClientError, SecureProvider, SecurityEvidence,
-    TrustPolicy, VerifiedSession, provider::sealed,
+    TrustPolicy, VerifiedSession,
+    lease::{AttestationBinding, VerifiedMaterialCache, key_fingerprint},
+    provider::sealed,
+    relay::{client::RelayClient, dto::ProviderKeyLease},
 };
 
 pub(crate) mod attestation;
@@ -23,12 +27,23 @@ pub(crate) const ATTESTATION_PROTOCOL: &str = "near-tdx-nvidia-v1";
 pub(crate) struct NearProvider {
     config: SecureClientConfig,
     credential: Arc<ApiCredential>,
+    cache: VerifiedMaterialCache<NearVerifiedMaterial>,
 }
 
 impl NearProvider {
-    pub(crate) const fn new(config: SecureClientConfig, credential: Arc<ApiCredential>) -> Self {
-        Self { config, credential }
+    pub(crate) fn new(config: SecureClientConfig, credential: Arc<ApiCredential>) -> Self {
+        Self {
+            config,
+            credential,
+            cache: VerifiedMaterialCache::default(),
+        }
     }
+}
+
+#[derive(Clone)]
+struct NearVerifiedMaterial {
+    verified: attestation::VerifiedNearAttestation,
+    binding: AttestationBinding,
 }
 
 impl sealed::Provider for NearProvider {}
@@ -70,31 +85,96 @@ impl SecureProvider for NearProvider {
         cancellation: CancellationToken,
     ) -> Result<Box<dyn VerifiedSession>> {
         self.supports(model)?;
-        let verified = attestation::verify_model(
+        if let Some(material) = self.cache.get(model, policy).await {
+            return Ok(session_from_material(
+                material,
+                &self.config,
+                &self.credential,
+                model,
+            ));
+        }
+        let _singleflight = self.cache.model_lock(&model.id).await;
+        if let Some(material) = self.cache.get(model, policy).await {
+            return Ok(session_from_material(
+                material,
+                &self.config,
+                &self.credential,
+                model,
+            ));
+        }
+        let mut verified = Box::pin(attestation::verify_model(
             &self.config,
             &model.id,
             &model.upstream_model,
             &model.provider_base_url,
             policy,
             &cancellation,
-        )
+        ))
         .await?;
-        Ok(Box::new(NearVerifiedSession {
-            evidence: verified.evidence,
-            model_key: verified.model_key,
-            config: self.config.clone(),
-            credential: Arc::clone(&self.credential),
-            model: model.clone(),
-        }))
+        let observed_key_fingerprint = key_fingerprint(&verified.model_key.to_hex())?;
+        let wire: ProviderKeyLease = RelayClient::new(&self.config, &self.credential)
+            .provider_e2ee_key(
+                &model.id,
+                Some(&observed_key_fingerprint),
+                None,
+                &cancellation,
+            )
+            .await?;
+        verify_response_signing_binding(&wire, &verified.response_signing_address)?;
+        let binding = AttestationBinding::verify(wire, model, &verified.model_key.to_hex())?;
+        verified.evidence.attestation_generation = Some(binding.generation);
+        verified.evidence.hard_expires_at_unix_seconds = Some(binding.hard_expires_at_unix_seconds);
+        let material = NearVerifiedMaterial { verified, binding };
+        self.cache
+            .insert(
+                model.clone(),
+                policy.clone(),
+                material.clone(),
+                material
+                    .binding
+                    .hard_expires_at_unix_seconds
+                    .min(policy.expires_at_unix_seconds),
+                self.config.verified_session_ttl,
+            )
+            .await;
+        Ok(session_from_material(
+            material,
+            &self.config,
+            &self.credential,
+            model,
+        ))
     }
+
+    async fn invalidate(&self, model_id: &str) {
+        self.cache.invalidate(model_id).await;
+    }
+}
+
+fn session_from_material(
+    material: NearVerifiedMaterial,
+    config: &SecureClientConfig,
+    credential: &Arc<ApiCredential>,
+    model: &ModelInfo,
+) -> Box<dyn VerifiedSession> {
+    Box::new(NearVerifiedSession {
+        evidence: material.verified.evidence,
+        model_key: material.verified.model_key,
+        response_signing_address: material.verified.response_signing_address,
+        config: config.clone(),
+        credential: Arc::clone(credential),
+        model: model.clone(),
+        binding: material.binding,
+    })
 }
 
 struct NearVerifiedSession {
     evidence: SecurityEvidence,
     model_key: crypto::Ed25519PublicKey,
+    response_signing_address: String,
     config: SecureClientConfig,
     credential: Arc<ApiCredential>,
     model: ModelInfo,
+    binding: AttestationBinding,
 }
 
 impl sealed::Session for NearVerifiedSession {}
@@ -111,10 +191,14 @@ impl VerifiedSession for NearVerifiedSession {
         _cancellation: CancellationToken,
     ) -> Result<InferenceResponse> {
         inference::complete(
-            &self.config,
-            &self.credential,
-            &self.model,
-            self.model_key,
+            inference::NearInferenceContext {
+                config: &self.config,
+                credential: &self.credential,
+                model: &self.model,
+                model_key: self.model_key,
+                response_signing_address: &self.response_signing_address,
+                binding: &self.binding,
+            },
             _request,
             &_cancellation,
         )
@@ -128,16 +212,59 @@ impl VerifiedSession for NearVerifiedSession {
         _cancellation: CancellationToken,
     ) -> Result<InferenceResponse> {
         inference::stream(
-            &self.config,
-            &self.credential,
-            &self.model,
-            self.model_key,
+            inference::NearInferenceContext {
+                config: &self.config,
+                credential: &self.credential,
+                model: &self.model,
+                model_key: self.model_key,
+                response_signing_address: &self.response_signing_address,
+                binding: &self.binding,
+            },
             _request,
             _events,
             &_cancellation,
         )
         .await
     }
+}
+
+fn verify_response_signing_binding(wire: &ProviderKeyLease, locally_attested: &str) -> Result<()> {
+    let wire_address = wire.response_signing_address.as_deref().ok_or_else(|| {
+        SecureClientError::attestation("backend lease omitted the NEAR response-signing address")
+    })?;
+    let wire_fingerprint = wire
+        .response_signing_key_fingerprint
+        .as_deref()
+        .ok_or_else(|| {
+            SecureClientError::attestation(
+                "backend lease omitted the NEAR response-signing fingerprint",
+            )
+        })?;
+    if !canonical_response_signing_address(wire_address)
+        || !canonical_response_signing_address(locally_attested)
+        || wire_address != locally_attested
+    {
+        return Err(SecureClientError::attestation(
+            "backend lease response signer does not match local provider evidence",
+        ));
+    }
+    let address_bytes = hex::decode(&wire_address[2..])
+        .map_err(|_| SecureClientError::attestation("backend lease response signer is invalid"))?;
+    let expected_fingerprint = hex::encode(Sha256::digest(address_bytes));
+    if wire_fingerprint != expected_fingerprint {
+        return Err(SecureClientError::attestation(
+            "backend lease response-signer fingerprint is invalid",
+        ));
+    }
+    Ok(())
+}
+
+fn canonical_response_signing_address(value: &str) -> bool {
+    value.len() == 42
+        && value.starts_with("0x")
+        && value[2..]
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
 #[cfg(test)]
@@ -185,5 +312,36 @@ mod tests {
         ] {
             assert!(provider.supports(&mutated).is_err());
         }
+    }
+
+    #[test]
+    fn response_signer_lease_must_match_local_attestation_and_fingerprint() {
+        let address = format!("0x{}", "12".repeat(20));
+        let fingerprint = hex::encode(Sha256::digest(hex::decode(&address[2..]).unwrap()));
+        let mut wire = ProviderKeyLease {
+            model_id: "model-id".into(),
+            model: "model/upstream".into(),
+            base_url: "https://model.example/v1".into(),
+            provider: PROVIDER_ID.into(),
+            attestation_protocol: ATTESTATION_PROTOCOL.into(),
+            encryption_version: ENCRYPTION_VERSION,
+            e2ee_protocol: E2EE_PROTOCOL.into(),
+            model_public_key: "34".repeat(32),
+            verified: true,
+            attestation_generation: 1,
+            model_key_fingerprint: "56".repeat(32),
+            keyset_digest: None,
+            response_signing_address: Some(address.clone()),
+            response_signing_key_fingerprint: Some(fingerprint),
+            hard_expires_at_unix_seconds: u64::MAX,
+        };
+        assert!(verify_response_signing_binding(&wire, &address).is_ok());
+
+        wire.response_signing_key_fingerprint = Some("00".repeat(32));
+        assert!(verify_response_signing_binding(&wire, &address).is_err());
+        wire.response_signing_key_fingerprint = None;
+        assert!(verify_response_signing_binding(&wire, &address).is_err());
+        wire.response_signing_address = Some(format!("0x{}", "13".repeat(20)));
+        assert!(verify_response_signing_binding(&wire, &address).is_err());
     }
 }

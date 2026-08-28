@@ -3,34 +3,35 @@ import type {
   AccountStatusResponse,
   BrowserLoginStartResponse,
   ClientState,
+  CollectionStateResponse,
   CompactResponse,
   DeleteConfirmResponse,
   DeletePreviewResponse,
+  DesktopBootstrapResponse,
   ElicitationOutcome,
   ListModelsResponse,
-  ListSessionsRequest,
-  ListSessionsResponse,
+  ListThreadsRequest,
+  ListThreadsResponse,
   PendingInteraction,
   PermissionOutcome,
   PromptResult,
   SessionStartResult,
-  SetSessionSettingsRequest,
-  SetSessionSettingsResponse,
+  ThreadSettingsRequest,
+  ThreadSettingsResult,
   VerifySecurityResponse,
 } from "@axiom/axiom-acp-client";
 
 export interface AgentApi {
   getState: () => Promise<ClientState>;
-  chooseWorkspace: () => Promise<string | null>;
-  newSession: (cwd: string) => Promise<SessionStartResult>;
-  loadSession: (sessionId: string, cwd: string) => Promise<SessionStartResult>;
-  prompt: (sessionId: string, text: string) => Promise<PromptResult>;
+  desktopBootstrap: () => Promise<DesktopBootstrapResponse>;
+  newChat: () => Promise<SessionStartResult>;
+  loadChat: (sessionId: string) => Promise<SessionStartResult>;
+  prompt: (sessionId: string, text: string, clientItemId: string) => Promise<PromptResult>;
   cancel: (sessionId: string) => Promise<void>;
-  setMode: (sessionId: string, modeId: string) => Promise<void>;
   setConfig: (sessionId: string, configId: string, value: string) => Promise<void>;
-  listSessions: (request?: ListSessionsRequest) => Promise<ListSessionsResponse>;
+  listThreads: (request?: ListThreadsRequest) => Promise<ListThreadsResponse>;
   listModels: () => Promise<ListModelsResponse>;
-  setSettings: (settings: SetSessionSettingsRequest) => Promise<SetSessionSettingsResponse>;
+  setSettings: (settings: ThreadSettingsRequest) => Promise<ThreadSettingsResult>;
   accountStatus: () => Promise<AccountStatusResponse>;
   browserLoginStart: () => Promise<BrowserLoginStartResponse>;
   browserLoginComplete: (loginId: string) => Promise<AccountStatusResponse>;
@@ -43,6 +44,13 @@ export interface AgentApi {
   deleteConfirm: (confirmationToken: string, sessionIds: string[]) => Promise<DeleteConfirmResponse>;
   resolvePermission: (interactionId: string, outcome: PermissionOutcome) => Promise<void>;
   resolveElicitation: (interactionId: string, outcome: ElicitationOutcome) => Promise<void>;
+  listCollections: () => Promise<CollectionStateResponse>;
+  createCollection: (name: string) => Promise<CollectionStateResponse>;
+  renameCollection: (collectionId: string, name: string) => Promise<CollectionStateResponse>;
+  setCollectionCollapsed: (collectionId: string, collapsed: boolean) => Promise<CollectionStateResponse>;
+  moveCollection: (collectionId: string, position: number) => Promise<CollectionStateResponse>;
+  deleteCollection: (collectionId: string) => Promise<CollectionStateResponse>;
+  assignThreadCollection: (threadId: string, collectionId: string | null) => Promise<unknown>;
   onState: (callback: (state: ClientState) => void) => () => void;
   onInteraction: (callback: (interaction: PendingInteraction) => void) => () => void;
 }
@@ -53,14 +61,13 @@ function invoke<T>(method: string, ...args: unknown[]): Promise<T> {
 
 export const agentApi: AgentApi = {
   getState: () => invoke("state"),
-  chooseWorkspace: () => invoke("choose-workspace"),
-  newSession: (cwd) => invoke("session-new", cwd),
-  loadSession: (sessionId, cwd) => invoke("session-load", sessionId, cwd),
-  prompt: (sessionId, text) => invoke("prompt", sessionId, text),
+  desktopBootstrap: () => invoke("desktop-bootstrap"),
+  newChat: () => invoke("chat-new"),
+  loadChat: (sessionId) => invoke("chat-load", sessionId),
+  prompt: (sessionId, text, clientItemId) => invoke("prompt", sessionId, text, clientItemId),
   cancel: (sessionId) => invoke("cancel", sessionId),
-  setMode: (sessionId, modeId) => invoke("set-mode", sessionId, modeId),
   setConfig: (sessionId, configId, value) => invoke("set-config", sessionId, configId, value),
-  listSessions: (request) => invoke("sessions-list", request),
+  listThreads: (request) => invoke("threads-list", request),
   listModels: () => invoke("models-list"),
   setSettings: (settings) => invoke("set-settings", settings),
   accountStatus: () => invoke("account-status"),
@@ -75,6 +82,13 @@ export const agentApi: AgentApi = {
   deleteConfirm: (confirmationToken, sessionIds) => invoke("delete-confirm", confirmationToken, sessionIds),
   resolvePermission: (interactionId, outcome) => invoke("permission-resolve", interactionId, outcome),
   resolveElicitation: (interactionId, outcome) => invoke("elicitation-resolve", interactionId, outcome),
+  listCollections: () => invoke("collections-list"),
+  createCollection: (name) => invoke("collection-create", name),
+  renameCollection: (collectionId, name) => invoke("collection-rename", collectionId, name),
+  setCollectionCollapsed: (collectionId, collapsed) => invoke("collection-collapsed", collectionId, collapsed),
+  moveCollection: (collectionId, position) => invoke("collection-move", collectionId, position),
+  deleteCollection: (collectionId) => invoke("collection-delete", collectionId),
+  assignThreadCollection: (threadId, collectionId) => invoke("collection-assign", threadId, collectionId),
   onState: (callback) => {
     const listener = (_event: unknown, state: ClientState) => callback(state);
     ipcRenderer.on("agent:state-changed", listener);

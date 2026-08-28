@@ -6,6 +6,7 @@ members = [
     "crates/axiom-acp-extension",
     "crates/axiom-inference",
     "crates/axiom-openai-compat",
+    "crates/axiom-phala-core",
     "crates/axiom-secure-client",
 ]
 default-members = [
@@ -14,6 +15,7 @@ default-members = [
     "crates/axiom-acp-extension",
     "crates/axiom-inference",
     "crates/axiom-openai-compat",
+    "crates/axiom-phala-core",
     "crates/axiom-secure-client",
 ]
 

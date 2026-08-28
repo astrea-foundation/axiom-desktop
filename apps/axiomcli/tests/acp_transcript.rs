@@ -1,6 +1,10 @@
 use std::{path::Path, process::Stdio, time::Duration};
 
-use axiomcli::planning::{PlanArtifact, PlanState};
+use axiomcli::{
+    app::{AppCommand, Origin, PermissionProfile, Runtime, SessionId, ThinkingLevel},
+    planning::{PlanArtifact, PlanState},
+    session::{SessionStore, model_for_resume, thinking_for_resume},
+};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use tokio::{
@@ -13,6 +17,39 @@ struct AcpProcess {
     stdin: Option<ChildStdin>,
     stdout: Lines<BufReader<ChildStdout>>,
     _state: Option<TempDir>,
+}
+
+async fn seed_session_settings(
+    store: &SessionStore,
+    cwd: &Path,
+    model: &str,
+    thinking: ThinkingLevel,
+) -> SessionId {
+    let runtime = Runtime::new(32);
+    let session_id = runtime.session_id();
+    let created = runtime
+        .dispatch(AppCommand::CreateSession {
+            session_id: session_id.clone(),
+            cwd: cwd.to_path_buf(),
+            origin: Origin::Acp,
+            profile: PermissionProfile::Confirm,
+        })
+        .await
+        .expect("create seeded session");
+    store.append_all(&created).expect("persist seeded session");
+    let settings = runtime
+        .dispatch(AppCommand::ChangeModelSettings {
+            session_id: session_id.clone(),
+            model: model.into(),
+            thinking,
+            reset_security: false,
+        })
+        .await
+        .expect("seed model settings");
+    store
+        .append_all(&settings)
+        .expect("persist seeded model settings");
+    session_id
 }
 
 impl AcpProcess {
@@ -96,8 +133,12 @@ impl AcpProcess {
                 "axiom": {
                     "protocolVersion": "0.1",
                     "features": {
-                        "sessionCatalog": 1,
-                        "settings": 1,
+                        "desktopChat": 1,
+                        "threadCatalog": 1,
+                        "timeline": 1,
+                        "modelCatalog": 1,
+                        "profilePreferences": 1,
+                        "collections": 1,
                         "account": 1,
                         "securityEvidence": 1,
                         "compaction": 1,
@@ -164,43 +205,63 @@ async fn axiom_extension_negotiates_and_exposes_typed_settings_security_and_comp
     .await;
     let models = acp.response(3).await;
     assert_eq!(models["result"]["models"][0]["id"], "alternate-model");
-
-    acp.send(&json!({
-        "jsonrpc":"2.0","id":4,"method":"_axiom/session/set_settings",
-        "params":{
-            "sessionId":session,
-            "model":"alternate-model",
-            "thinkingLevel":"high",
-            "permissionProfile":"observe"
-        }
-    }))
-    .await;
-    let settings = acp.response(4).await;
-    assert_eq!(settings["result"]["settings"]["model"], "alternate-model");
-    assert_eq!(settings["result"]["settings"]["thinkingLevel"], "high");
+    assert_eq!(models["result"]["models"][0]["providerId"], "axiom");
+    assert_eq!(models["result"]["models"][0]["providerLabel"], "Axiom");
     assert_eq!(
-        settings["result"]["settings"]["permissionProfile"],
-        "observe"
+        models["result"]["models"][0]["shortLabel"],
+        "alternate-model"
     );
 
     acp.send(&json!({
-        "jsonrpc":"2.0","id":5,"method":"_axiom/session/get_state",
-        "params":{"sessionId":session}
+        "jsonrpc":"2.0","id":4,"method":"session/set_config_option",
+        "params":{"sessionId":session,"configId":"model","value":"alternate-model"}
     }))
     .await;
-    let state = acp.response(5).await;
-    assert_eq!(state["result"]["snapshot"]["lifecycle"], "ready");
+    assert!(acp.response(4).await.get("result").is_some());
+
+    acp.send(&json!({
+        "jsonrpc":"2.0","id":5,"method":"session/set_config_option",
+        "params":{"sessionId":session,"configId":"thinking","value":"high"}
+    }))
+    .await;
+    assert!(acp.response(5).await.get("result").is_some());
+
+    acp.send(&json!({
+        "jsonrpc":"2.0","id":6,"method":"session/set_mode",
+        "params":{"sessionId":session,"modeId":"observe"}
+    }))
+    .await;
+    assert!(acp.response(6).await.get("result").is_some());
+
+    acp.send(&json!({
+        "jsonrpc":"2.0","id":7,"method":"_axiom/profile/preferences","params":{}
+    }))
+    .await;
+    let preferences = acp.response(7).await;
     assert_eq!(
-        state["result"]["snapshot"]["settings"]["permissionProfile"],
-        "observe"
+        preferences["result"]["preferences"]["model"],
+        "alternate-model"
+    );
+    assert_eq!(
+        preferences["result"]["preferences"]["thinkingLevel"],
+        "high"
     );
 
     acp.send(&json!({
-        "jsonrpc":"2.0","id":6,"method":"_axiom/security/verify",
-        "params":{"sessionId":session}
+        "jsonrpc":"2.0","id":8,"method":"_axiom/thread/timeline",
+        "params":{"threadId":session,"limit":100}
     }))
     .await;
-    let security = acp.response(6).await;
+    let state = acp.response(8).await;
+    assert_eq!(state["result"]["thread"]["lifecycle"], "ready");
+    assert_eq!(state["result"]["thread"]["profile"], "observe");
+
+    acp.send(&json!({
+        "jsonrpc":"2.0","id":9,"method":"_axiom/security/verify",
+        "params":{"threadId":session}
+    }))
+    .await;
+    let security = acp.response(9).await;
     assert_eq!(
         security["result"]["status"]["state"],
         "unattested_development"
@@ -208,15 +269,15 @@ async fn axiom_extension_negotiates_and_exposes_typed_settings_security_and_comp
     assert!(security["result"]["evidence"].is_null());
 
     acp.send(&json!({
-        "jsonrpc":"2.0","id":7,"method":"_axiom/compaction/start",
-        "params":{"sessionId":session,"focus":"extension coverage"}
+        "jsonrpc":"2.0","id":10,"method":"_axiom/compaction/start",
+        "params":{"threadId":session,"focus":"extension coverage"}
     }))
     .await;
-    let compacted = acp.response(7).await;
+    let compacted = acp.response(10).await;
     assert_eq!(compacted["result"]["messagesBefore"], 2);
 
     acp.send(&json!({
-        "jsonrpc":"2.0","id":8,"method":"session/prompt",
+        "jsonrpc":"2.0","id":11,"method":"session/prompt",
         "params":{"sessionId":session,"prompt":[{"type":"text","text":"desktop title notification"}]}
     }))
     .await;
@@ -224,7 +285,7 @@ async fn axiom_extension_negotiates_and_exposes_typed_settings_security_and_comp
     loop {
         let value = acp.read().await;
         prompt_wire.push_str(&value.to_string());
-        if value.get("id").and_then(Value::as_i64) == Some(8) {
+        if value.get("id").and_then(Value::as_i64) == Some(11) {
             break;
         }
     }
@@ -233,6 +294,174 @@ async fn axiom_extension_negotiates_and_exposes_typed_settings_security_and_comp
         "generated titles must be published without polling"
     );
     acp.close().await;
+}
+
+#[tokio::test]
+async fn model_changes_reconcile_disjoint_reasoning_capabilities_atomically() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let mut acp = AcpProcess::spawn("echo");
+    acp.initialize_extension().await;
+    let session = acp.new_session(2, workspace.path()).await;
+
+    for (id, config_id, value) in [(3, "model", "alternate-model"), (4, "thinking", "xhigh")] {
+        acp.send(&json!({
+            "jsonrpc":"2.0","id":id,"method":"session/set_config_option",
+            "params":{"sessionId":session,"configId":config_id,"value":value}
+        }))
+        .await;
+        assert!(acp.response(id).await.get("result").is_some());
+    }
+
+    acp.send(&json!({
+        "jsonrpc":"2.0","id":5,"method":"session/set_config_option",
+        "params":{"sessionId":session,"configId":"model","value":"grok-code"}
+    }))
+    .await;
+    let mut reset_security = false;
+    let nonreasoning = loop {
+        let value = acp.read().await;
+        if value["method"] == "_axiom/event"
+            && value["params"]["event"]["kind"] == "security_changed"
+            && value["params"]["event"]["status"]["state"] == "unverified"
+        {
+            reset_security = true;
+        }
+        if value.get("id").and_then(Value::as_i64) == Some(5) {
+            break value;
+        }
+    };
+    assert!(
+        reset_security,
+        "a different model must invalidate the prior model-bound security status"
+    );
+    let options = nonreasoning["result"]["configOptions"]
+        .as_array()
+        .expect("configuration options");
+    assert!(options.iter().all(|option| option["id"] != "thinking"));
+
+    acp.send(&json!({
+        "jsonrpc":"2.0","id":6,"method":"_axiom/profile/preferences","params":{}
+    }))
+    .await;
+    let retained = acp.response(6).await;
+    assert_eq!(retained["result"]["preferences"]["model"], "grok-code");
+    assert_eq!(retained["result"]["preferences"]["thinkingLevel"], "xhigh");
+
+    acp.send(&json!({
+        "jsonrpc":"2.0","id":7,"method":"session/set_config_option",
+        "params":{"sessionId":session,"configId":"model","value":"medium-only"}
+    }))
+    .await;
+    let reconciled = acp.response(7).await;
+    let thinking = reconciled["result"]["configOptions"]
+        .as_array()
+        .and_then(|options| options.iter().find(|option| option["id"] == "thinking"))
+        .expect("reasoning-capable model exposes thinking");
+    assert_eq!(thinking["currentValue"], "medium");
+    assert_eq!(
+        thinking["options"].as_array().map(Vec::len),
+        Some(1),
+        "only supported values are advertised"
+    );
+
+    acp.send(&json!({
+        "jsonrpc":"2.0","id":8,"method":"_axiom/thread/timeline",
+        "params":{"threadId":session,"limit":100}
+    }))
+    .await;
+    let thread = acp.response(8).await;
+    assert_eq!(thread["result"]["thread"]["selectedModel"], "medium-only");
+    assert_eq!(thread["result"]["thread"]["thinkingLevel"], "medium");
+
+    acp.send(&json!({
+        "jsonrpc":"2.0","id":9,"method":"_axiom/profile/preferences","params":{}
+    }))
+    .await;
+    let preferences = acp.response(9).await;
+    assert_eq!(preferences["result"]["preferences"]["model"], "medium-only");
+    assert_eq!(
+        preferences["result"]["preferences"]["thinkingLevel"],
+        "medium"
+    );
+    acp.close().await;
+}
+
+#[tokio::test]
+async fn new_acp_sessions_reconcile_stale_catalog_preferences_before_use() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let state = tempfile::tempdir().expect("shared state");
+    let database = state
+        .path()
+        .join("data")
+        .join("axiom")
+        .join("cli")
+        .join("state.sqlite3");
+
+    {
+        let store = SessionStore::open(&database).expect("seed durable preferences");
+        store
+            .set_profile_preferences("retired-model", ThinkingLevel::High)
+            .expect("retired preference");
+    }
+    let mut retired = AcpProcess::spawn_with_state("echo", state.path());
+    retired.initialize_extension().await;
+    retired
+        .send(&json!({
+            "jsonrpc":"2.0","id":2,"method":"session/new",
+            "params":{"cwd":workspace.path(),"mcpServers":[]}
+        }))
+        .await;
+    let created = retired.response(2).await;
+    let options = created["result"]["configOptions"]
+        .as_array()
+        .expect("new-session config options");
+    assert!(
+        options
+            .iter()
+            .any(|option| { option["id"] == "model" && option["currentValue"] == "glm-5-2" })
+    );
+    retired
+        .send(&json!({
+            "jsonrpc":"2.0","id":3,"method":"_axiom/profile/preferences","params":{}
+        }))
+        .await;
+    let corrected = retired.response(3).await;
+    assert_eq!(corrected["result"]["preferences"]["model"], "glm-5-2");
+    assert_eq!(corrected["result"]["preferences"]["thinkingLevel"], "high");
+    retired.close().await;
+
+    {
+        let store = SessionStore::open(&database).expect("reopen durable preferences");
+        store
+            .set_profile_preferences("medium-only", ThinkingLevel::ExtraHigh)
+            .expect("stale reasoning preference");
+    }
+    let mut changed_reasoning = AcpProcess::spawn_with_state("echo", state.path());
+    changed_reasoning.initialize_extension().await;
+    changed_reasoning
+        .send(&json!({
+            "jsonrpc":"2.0","id":2,"method":"session/new",
+            "params":{"cwd":workspace.path(),"mcpServers":[]}
+        }))
+        .await;
+    let created = changed_reasoning.response(2).await;
+    let thinking = created["result"]["configOptions"]
+        .as_array()
+        .and_then(|options| options.iter().find(|option| option["id"] == "thinking"))
+        .expect("reasoning config option");
+    assert_eq!(thinking["currentValue"], "medium");
+    assert_eq!(thinking["options"].as_array().map(Vec::len), Some(1));
+    changed_reasoning
+        .send(&json!({
+            "jsonrpc":"2.0","id":3,"method":"_axiom/profile/preferences","params":{}
+        }))
+        .await;
+    let corrected = changed_reasoning.response(3).await;
+    assert_eq!(
+        corrected["result"]["preferences"]["thinkingLevel"],
+        "medium"
+    );
+    changed_reasoning.close().await;
 }
 
 #[tokio::test]
@@ -257,8 +486,12 @@ async fn axiom_extension_negotiates_each_feature_independently() {
             "axiom": {
                 "protocolVersion": "0.1",
                 "features": {
-                    "sessionCatalog": 1,
-                    "settings": 0,
+                    "desktopChat": 0,
+                    "threadCatalog": 1,
+                    "timeline": 0,
+                    "modelCatalog": 0,
+                    "profilePreferences": 0,
+                    "collections": 0,
                     "account": 0,
                     "securityEvidence": 0,
                     "compaction": 0,
@@ -270,7 +503,7 @@ async fn axiom_extension_negotiates_each_feature_independently() {
     .await;
 
     acp.send(&json!({
-        "jsonrpc":"2.0","id":2,"method":"_axiom/session/list","params":{}
+        "jsonrpc":"2.0","id":2,"method":"_axiom/thread/list","params":{}
     }))
     .await;
     assert!(acp.response(2).await.get("result").is_some());
@@ -308,21 +541,21 @@ async fn axiom_extension_lists_and_deletes_durable_sessions_with_single_use_conf
     second.initialize_extension().await;
     second
         .send(&json!({
-            "jsonrpc":"2.0","id":2,"method":"_axiom/session/list",
+            "jsonrpc":"2.0","id":2,"method":"_axiom/thread/list",
             "params":{"limit":20}
         }))
         .await;
     let listed = second.response(2).await;
     assert!(
-        listed["result"]["sessions"]
+        listed["result"]["threads"]
             .as_array()
-            .is_some_and(|sessions| sessions.iter().any(|item| item["sessionId"] == session))
+            .is_some_and(|threads| threads.iter().any(|item| item["threadId"] == session))
     );
 
     second
         .send(&json!({
-            "jsonrpc":"2.0","id":3,"method":"_axiom/session/delete_preview",
-            "params":{"sessionIds":[session]}
+            "jsonrpc":"2.0","id":3,"method":"_axiom/thread/delete_preview",
+            "params":{"threadIds":[session]}
         }))
         .await;
     let preview = second.response(3).await;
@@ -332,16 +565,16 @@ async fn axiom_extension_lists_and_deletes_durable_sessions_with_single_use_conf
         .to_owned();
     second
         .send(&json!({
-            "jsonrpc":"2.0","id":4,"method":"_axiom/session/delete_confirm",
-            "params":{"confirmationToken":token,"sessionIds":[session]}
+            "jsonrpc":"2.0","id":4,"method":"_axiom/thread/delete_confirm",
+            "params":{"confirmationToken":token,"threadIds":[session]}
         }))
         .await;
     assert_eq!(second.response(4).await["result"]["deleted"], 1);
 
     second
         .send(&json!({
-            "jsonrpc":"2.0","id":5,"method":"_axiom/session/delete_confirm",
-            "params":{"confirmationToken":token,"sessionIds":[session]}
+            "jsonrpc":"2.0","id":5,"method":"_axiom/thread/delete_confirm",
+            "params":{"confirmationToken":token,"threadIds":[session]}
         }))
         .await;
     assert!(second.response(5).await.get("error").is_some());
@@ -358,19 +591,25 @@ async fn resumed_acp_sessions_restore_model_thinking_and_permissions() {
         let session = first.new_session(2, workspace.path()).await;
         first
             .send(&json!({
-                "jsonrpc":"2.0","id":3,"method":"_axiom/session/set_settings",
-                "params":{
-                    "sessionId":session,
-                    "model":"grok-code",
-                    "thinkingLevel":"xhigh",
-                    "permissionProfile":"full_access"
-                }
+                "jsonrpc":"2.0","id":3,"method":"session/set_config_option",
+                "params":{"sessionId":session,"configId":"model","value":"alternate-model"}
             }))
             .await;
-        assert_eq!(
-            first.response(3).await["result"]["settings"]["permissionProfile"],
-            "full_access"
-        );
+        assert!(first.response(3).await.get("result").is_some());
+        first
+            .send(&json!({
+                "jsonrpc":"2.0","id":4,"method":"session/set_config_option",
+                "params":{"sessionId":session,"configId":"thinking","value":"xhigh"}
+            }))
+            .await;
+        assert!(first.response(4).await.get("result").is_some());
+        first
+            .send(&json!({
+                "jsonrpc":"2.0","id":5,"method":"session/set_mode",
+                "params":{"sessionId":session,"modeId":"full_access"}
+            }))
+            .await;
+        assert!(first.response(5).await.get("result").is_some());
         first.close().await;
         session
     };
@@ -389,9 +628,9 @@ async fn resumed_acp_sessions_restore_model_thinking_and_permissions() {
         .as_array()
         .expect("config options");
     assert!(
-        options
-            .iter()
-            .any(|option| { option["id"] == "model" && option["currentValue"] == "grok-code" })
+        options.iter().any(|option| {
+            option["id"] == "model" && option["currentValue"] == "alternate-model"
+        })
     );
     assert!(
         options
@@ -399,6 +638,87 @@ async fn resumed_acp_sessions_restore_model_thinking_and_permissions() {
             .any(|option| { option["id"] == "thinking" && option["currentValue"] == "xhigh" })
     );
     resumed.close().await;
+}
+
+#[tokio::test]
+async fn resumed_acp_sessions_reconcile_retired_models_and_changed_reasoning_support() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let state = tempfile::tempdir().expect("shared state");
+    let database = state
+        .path()
+        .join("data")
+        .join("axiom")
+        .join("cli")
+        .join("state.sqlite3");
+    let (retired_id, changed_reasoning_id) = {
+        let store = SessionStore::open(&database).expect("state store");
+        let retired = seed_session_settings(
+            &store,
+            workspace.path(),
+            "retired-model",
+            ThinkingLevel::High,
+        )
+        .await;
+        let changed_reasoning = seed_session_settings(
+            &store,
+            workspace.path(),
+            "medium-only",
+            ThinkingLevel::ExtraHigh,
+        )
+        .await;
+        (retired, changed_reasoning)
+    };
+
+    let mut acp = AcpProcess::spawn_with_state("echo", state.path());
+    acp.initialize_extension().await;
+    for (request_id, session_id, expected_model, expected_thinking) in [
+        (2, &retired_id, "glm-5-2", "high"),
+        (3, &changed_reasoning_id, "medium-only", "medium"),
+    ] {
+        acp.send(&json!({
+            "jsonrpc":"2.0","id":request_id,"method":"session/load",
+            "params":{
+                "sessionId":session_id.to_string(),
+                "cwd":workspace.path(),
+                "mcpServers":[]
+            }
+        }))
+        .await;
+        let loaded = acp.response(request_id).await;
+        let options = loaded["result"]["configOptions"]
+            .as_array()
+            .expect("load config options");
+        assert!(
+            options.iter().any(|option| {
+                option["id"] == "model" && option["currentValue"] == expected_model
+            })
+        );
+        assert!(options.iter().any(|option| {
+            option["id"] == "thinking" && option["currentValue"] == expected_thinking
+        }));
+    }
+    acp.close().await;
+
+    let store = SessionStore::open(&database).expect("reopen corrected state");
+    let retired = store
+        .load_recovering(&retired_id)
+        .expect("load retired-model correction");
+    assert_eq!(model_for_resume(&retired.events, "fallback"), "glm-5-2");
+    assert_eq!(
+        thinking_for_resume(&retired.events, ThinkingLevel::Medium),
+        ThinkingLevel::High
+    );
+    let changed_reasoning = store
+        .load_recovering(&changed_reasoning_id)
+        .expect("load reasoning correction");
+    assert_eq!(
+        model_for_resume(&changed_reasoning.events, "fallback"),
+        "medium-only"
+    );
+    assert_eq!(
+        thinking_for_resume(&changed_reasoning.events, ThinkingLevel::ExtraHigh),
+        ThinkingLevel::Medium
+    );
 }
 
 #[tokio::test]
@@ -615,8 +935,7 @@ async fn workspace_edit_reaches_the_expected_acp_semantics_and_final_workspace()
 async fn structured_questions_map_to_acp_elicitation_and_shared_updates() {
     let workspace = tempfile::tempdir().expect("workspace");
     let mut acp = AcpProcess::spawn("questions");
-    acp.initialize_with_capabilities(json!({"elicitation":{"form":{}}}))
-        .await;
+    acp.initialize_extension().await;
     let session = acp.new_session(2, workspace.path()).await;
     acp.send(&json!({
         "jsonrpc":"2.0","id":3,"method":"session/prompt",
@@ -627,7 +946,9 @@ async fn structured_questions_map_to_acp_elicitation_and_shared_updates() {
     let mut saw_answer = false;
     loop {
         let value = acp.read().await;
-        if value["method"] == "session/update" {
+        if value["method"] == "session/update"
+            && value["params"]["update"]["sessionUpdate"] == "agent_thought_chunk"
+        {
             saw_question_update |= value.to_string().contains("structured question");
             saw_answer |= value.to_string().contains("cherry");
         }
@@ -651,8 +972,26 @@ async fn structured_questions_map_to_acp_elicitation_and_shared_updates() {
             break;
         }
     }
-    assert!(saw_question_update);
-    assert!(saw_answer);
+    assert!(
+        !saw_question_update && !saw_answer,
+        "question state must not be duplicated as standard transcript content"
+    );
+    acp.send(&json!({
+        "jsonrpc":"2.0","id":4,"method":"_axiom/thread/timeline",
+        "params":{"threadId":session,"limit":100}
+    }))
+    .await;
+    let timeline = acp.response(4).await;
+    assert!(
+        timeline["result"]["items"]
+            .as_array()
+            .is_some_and(|items| items.iter().any(|item| {
+                item["kind"] == "notice"
+                    && item["status"] == "completed"
+                    && item["metadata"].to_string().contains("cherry")
+            })),
+        "structured answers must be durable in the authoritative timeline"
+    );
     acp.close().await;
 }
 
@@ -709,7 +1048,26 @@ async fn approval_maps_all_narrow_choices_and_resumes_the_acp_turn() {
 async fn unsupported_structured_questions_close_cleanly_instead_of_sticking() {
     let workspace = tempfile::tempdir().expect("workspace");
     let mut acp = AcpProcess::spawn("questions");
-    acp.initialize().await;
+    acp.initialize_with_capabilities(json!({
+        "_meta": {
+            "axiom": {
+                "protocolVersion": "0.1",
+                "features": {
+                    "desktopChat": 0,
+                    "threadCatalog": 0,
+                    "timeline": 1,
+                    "modelCatalog": 0,
+                    "profilePreferences": 0,
+                    "collections": 0,
+                    "account": 0,
+                    "securityEvidence": 0,
+                    "compaction": 0,
+                    "activity": 0
+                }
+            }
+        }
+    }))
+    .await;
     let session = acp.new_session(2, workspace.path()).await;
     acp.send(&json!({
         "jsonrpc":"2.0","id":3,"method":"session/prompt",
@@ -727,7 +1085,28 @@ async fn unsupported_structured_questions_close_cleanly_instead_of_sticking() {
             break;
         }
     }
-    assert!(saw_closed_attention);
+    assert!(
+        !saw_closed_attention,
+        "failed question state must not be duplicated as standard transcript content"
+    );
+    acp.send(&json!({
+        "jsonrpc":"2.0","id":4,"method":"_axiom/thread/timeline",
+        "params":{"threadId":session,"limit":100}
+    }))
+    .await;
+    let timeline = acp.response(4).await;
+    assert!(
+        timeline["result"]["items"]
+            .as_array()
+            .is_some_and(|items| items.iter().any(|item| {
+                item["kind"] == "notice"
+                    && item["status"] == "failed"
+                    && item["metadata"]
+                        .to_string()
+                        .contains("structured elicitation support")
+            })),
+        "unsupported elicitation must close the durable notice with a reason"
+    );
     acp.close().await;
 }
 

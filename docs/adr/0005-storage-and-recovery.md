@@ -1,30 +1,24 @@
-# ADR 0005: SQLite event journal and non-replay recovery
+# ADR 0005: Materialized SQLite thread state and non-replay recovery
 
-Status: accepted for the early implementation.
+Status: accepted for v1.
 
-AxiomCLI stores redacted semantic event envelopes in a versioned SQLite schema.
-Session metadata and append-only events are written transactionally. On startup
-or inspection, an unmatched started turn is reported as interrupted; no tool,
-process, network request, or other side effect is automatically replayed.
+AxiomCLI stores user-domain records in SQLite: threads, turns, ordered timeline
+items, collections, assignments, and profile preferences. Runtime command/event
+envelopes are translated transactionally and are not the durable schema.
 
-SQLite keeps the implementation local and inspectable while schemas are still
-changing. Versioned, forward-only migrations are transactional. The append-only
-journal is authoritative; bounded recovery snapshots are rebuildable indexes,
-so a snapshot failure never creates an ambiguous journal append result.
+Turn admission writes the turn, user item, and assistant placeholder atomically.
+Terminal persistence writes the assembled assistant/reasoning state and turn
+status atomically. On startup, any nonterminal turn and timeline item becomes
+interrupted; recovery never replays a tool, process, network request, or other
+side effect.
 
-Resume restores the kernel and a bounded reconstruction of provider-visible
-conversation history. It marks unmatched turns, tools, and background tasks as
-interrupted/unknown, exposes recorded workspace changes, and never invokes an
-executor during restoration. TUI `--resume` and ACP `session/load` use the same
-internal session UUID and require the canonical workspace identity to match.
+TUI resume and ACP `session/load` read the same authoritative materialized
+snapshot and require the canonical workspace identity to match. Every thread
+has a monotonically increasing revision and every timeline item has a unique
+thread-local sequence, so ACP clients can detect gaps and replace local state.
 
-Retention is explicit. It can remove old events while preserving the creation
-record and newest bounded tail, marking the session as history-truncated; it can
-also permanently remove archived sessions after a requested age. JSON export
-can omit prompts and/or tool output, is event-bounded, and passes through the
-same structured redaction layer as stored records.
-
-The storage API remains deliberately small so encryption-at-rest or a different
-backend can replace it later. The database file is owner-only on Unix. The early
-schema does not claim encryption at rest, so local OS account and filesystem
-security remain part of the trust boundary.
+The first supported database has SQLite `user_version=1` and a fixed application
+identifier. Empty databases are initialized; pre-release or unknown schemas are
+rejected with an explicit reset instruction rather than migrated implicitly.
+The database file is owner-only where Unix permissions are available. Local OS
+account and filesystem security remain part of the trust boundary.

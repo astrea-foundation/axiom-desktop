@@ -781,6 +781,7 @@ pub fn stream_event(
             None,
         )),
         ProviderEvent::SecurityState(_)
+        | ProviderEvent::ResponseVerified
         | ProviderEvent::Status { .. }
         | ProviderEvent::Usage { .. } => None,
     }

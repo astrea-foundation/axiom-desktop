@@ -8,10 +8,15 @@ use std::{
 };
 
 use clap::ValueEnum;
-use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 
-use crate::{Result, app::PermissionProfile, error::AxiomError, policy::PolicyRule};
+use crate::{
+    Result,
+    app::PermissionProfile,
+    error::AxiomError,
+    paths::{AxiomPaths, FrontendKind},
+    policy::PolicyRule,
+};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
 #[serde(rename_all = "snake_case")]
@@ -132,6 +137,15 @@ impl ConfigLayer {
         }
     }
 
+    fn apply_desktop_shared(mut self, config: &mut Config) {
+        // The shared file is also the CLI's trusted configuration. Desktop
+        // consumes its common fields, but these two CLI-only authority
+        // surfaces cannot alter the fixed Web/no-MCP desktop product profile.
+        self.permission_profile = None;
+        self.mcp_servers = None;
+        self.apply_trusted(config);
+    }
+
     fn apply_project(self, config: &mut Config) -> Result<()> {
         if self.base_url.is_some() || self.searxng_url.is_some() || self.mcp_servers.is_some() {
             return Err(AxiomError::Config(
@@ -229,13 +243,50 @@ impl Default for Config {
 
 impl Config {
     pub fn load() -> Result<Self> {
+        let paths = AxiomPaths::discover()?;
+        Self::load_for(FrontendKind::Cli, &paths)
+    }
+
+    pub fn load_for(frontend: FrontendKind, paths: &AxiomPaths) -> Result<Self> {
         let mut config = Self::default();
-        if let Some(path) = Self::user_path()
-            && path.exists()
+        let shared_path = paths.shared_config_path();
+        if shared_path.exists() {
+            let layer = read_layer(&shared_path)?;
+            if frontend == FrontendKind::DesktopChat {
+                layer.apply_desktop_shared(&mut config);
+            } else {
+                layer.apply_trusted(&mut config);
+            }
+        }
+        let frontend_path = paths.frontend_config_path(frontend);
+        if frontend_path.exists() {
+            let layer = read_layer(&frontend_path)?;
+            if frontend == FrontendKind::DesktopChat
+                && layer
+                    .permission_profile
+                    .is_some_and(|profile| profile != PermissionProfile::Web)
+            {
+                return Err(AxiomError::Config(format!(
+                    "{}: desktop chat permission_profile is fixed to web",
+                    frontend_path.display()
+                )));
+            }
+            layer.apply_trusted(&mut config);
+        }
+        if frontend == FrontendKind::DesktopChat
+            && let Ok(profile) = std::env::var("AXIOM_PERMISSION_PROFILE")
+            && profile != "web"
         {
-            read_layer(&path)?.apply_trusted(&mut config);
+            return Err(AxiomError::Config(
+                "AXIOM_PERMISSION_PROFILE cannot override desktop chat; use web".into(),
+            ));
         }
         apply_environment(&mut config)?;
+        if frontend == FrontendKind::DesktopChat {
+            // This is a product invariant, not a mutable user preference.
+            config.permission_profile = PermissionProfile::Web;
+            config.mcp_servers.clear();
+        }
         config.validate()?;
         Ok(config)
     }
@@ -359,15 +410,15 @@ impl Config {
     }
 
     #[must_use]
-    pub fn user_path() -> Option<PathBuf> {
-        ProjectDirs::from("ai", "AxiomAI", "axiomcli")
-            .map(|dirs| dirs.config_dir().join("config.toml"))
+    pub fn user_dir() -> Option<PathBuf> {
+        AxiomPaths::discover()
+            .ok()
+            .map(|paths| paths.frontend_config_dir(FrontendKind::Cli))
     }
 
     #[must_use]
-    pub fn data_dir() -> Option<PathBuf> {
-        ProjectDirs::from("ai", "AxiomAI", "axiomcli")
-            .map(|dirs| dirs.data_local_dir().to_path_buf())
+    pub fn user_path() -> Option<PathBuf> {
+        Self::user_dir().map(|directory| directory.join("config.toml"))
     }
 
     /// Persist one restrictive project policy rule through an explicit user
@@ -456,6 +507,13 @@ fn apply_environment(config: &mut Config) -> Result<()> {
 }
 
 fn read_layer(path: &std::path::Path) -> Result<ConfigLayer> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(AxiomError::Config(format!(
+            "{} must be a regular non-symlink file",
+            path.display()
+        )));
+    }
     let content = std::fs::read_to_string(path)?;
     toml::from_str(&content)
         .map_err(|error| AxiomError::Config(format!("{}: {error}", path.display())))
@@ -464,6 +522,70 @@ fn read_layer(path: &std::path::Path) -> Result<ConfigLayer> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn user_config_lives_in_the_shared_axiom_cli_directory() {
+        let directory = Config::user_dir().expect("platform config directory");
+        let path = Config::user_path().expect("user config path");
+
+        assert!(directory.ends_with(Path::new("axiom/cli")));
+        assert_eq!(path, directory.join("config.toml"));
+    }
+
+    #[test]
+    fn desktop_configuration_is_layered_but_web_policy_is_immutable() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let paths = AxiomPaths::from_roots(root.path().join("config"), root.path().join("data"));
+        paths.prepare().expect("prepare paths");
+        std::fs::write(
+            paths.frontend_config_path(FrontendKind::DesktopChat),
+            "model = \"desktop-model\"\npermission_profile = \"web\"\n",
+        )
+        .expect("desktop config");
+
+        for (profile, expected) in [
+            ("confirm", PermissionProfile::Confirm),
+            ("full_access", PermissionProfile::FullAccess),
+        ] {
+            std::fs::write(
+                paths.shared_config_path(),
+                format!(
+                    "model = \"shared-model\"\npermission_profile = \"{profile}\"\nrequest_timeout_secs = 321\n[[mcp_servers]]\nname = \"shared-tools\"\ncommand = \"shared-command\"\n"
+                ),
+            )
+            .expect("shared config");
+
+            let desktop =
+                Config::load_for(FrontendKind::DesktopChat, &paths).expect("desktop config");
+            assert_eq!(desktop.model, "desktop-model");
+            assert_eq!(desktop.request_timeout_secs, 321);
+            assert_eq!(desktop.permission_profile, PermissionProfile::Web);
+            assert!(desktop.mcp_servers.is_empty());
+
+            let cli = Config::load_for(FrontendKind::Cli, &paths).expect("CLI config");
+            assert_eq!(cli.model, "shared-model");
+            assert_eq!(cli.request_timeout_secs, 321);
+            assert_eq!(cli.permission_profile, expected);
+            assert_eq!(cli.mcp_servers.len(), 1);
+            assert_eq!(cli.mcp_servers[0].name, "shared-tools");
+        }
+
+        std::fs::write(
+            paths.frontend_config_path(FrontendKind::DesktopChat),
+            "permission_profile = \"confirm\"\n",
+        )
+        .expect("invalid desktop config");
+        assert!(Config::load_for(FrontendKind::DesktopChat, &paths).is_err());
+
+        std::fs::write(
+            paths.frontend_config_path(FrontendKind::DesktopChat),
+            "permission_profile = \"web\"\n",
+        )
+        .expect("restored desktop config");
+        std::fs::write(paths.shared_config_path(), "unknown_shared_field = true\n")
+            .expect("invalid shared config");
+        assert!(Config::load_for(FrontendKind::DesktopChat, &paths).is_err());
+    }
 
     #[test]
     fn invalid_urls_fail_validation() {
@@ -507,18 +629,9 @@ mod tests {
             PermissionProfile::from_str("full_access").expect("profile"),
             PermissionProfile::FullAccess
         );
-        assert_eq!(
-            PermissionProfile::from_str("workspace").expect("legacy profile"),
-            PermissionProfile::Confirm
-        );
-        assert_eq!(
-            PermissionProfile::from_str("autonomous").expect("legacy profile"),
-            PermissionProfile::FullAccess
-        );
-        assert_eq!(
-            PermissionProfile::from_str("plan").expect("legacy profile"),
-            PermissionProfile::Observe
-        );
+        assert!(PermissionProfile::from_str("workspace").is_err());
+        assert!(PermissionProfile::from_str("autonomous").is_err());
+        assert!(PermissionProfile::from_str("plan").is_err());
         assert!(PermissionProfile::from_str("YOLO").is_err());
     }
 

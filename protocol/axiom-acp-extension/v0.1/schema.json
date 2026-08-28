@@ -7,17 +7,29 @@
     "capabilities": {
       "$ref": "#/$defs/ExtensionCapabilities"
     },
-    "listSessionsRequest": {
-      "$ref": "#/$defs/ListSessionsRequest"
+    "desktopBootstrapRequest": {
+      "$ref": "#/$defs/DesktopBootstrapRequest"
     },
-    "listSessionsResponse": {
-      "$ref": "#/$defs/ListSessionsResponse"
+    "desktopBootstrapResponse": {
+      "$ref": "#/$defs/DesktopBootstrapResponse"
     },
-    "getSessionStateRequest": {
-      "$ref": "#/$defs/GetSessionStateRequest"
+    "promptMetadata": {
+      "$ref": "#/$defs/PromptMetadata"
     },
-    "getSessionStateResponse": {
-      "$ref": "#/$defs/GetSessionStateResponse"
+    "deliveryMetadata": {
+      "$ref": "#/$defs/DeliveryMetadata"
+    },
+    "listThreadsRequest": {
+      "$ref": "#/$defs/ListThreadsRequest"
+    },
+    "listThreadsResponse": {
+      "$ref": "#/$defs/ListThreadsResponse"
+    },
+    "getThreadTimelineRequest": {
+      "$ref": "#/$defs/GetThreadTimelineRequest"
+    },
+    "getThreadTimelineResponse": {
+      "$ref": "#/$defs/GetThreadTimelineResponse"
     },
     "deletePreviewRequest": {
       "$ref": "#/$defs/DeletePreviewRequest"
@@ -37,11 +49,41 @@
     "listModelsResponse": {
       "$ref": "#/$defs/ListModelsResponse"
     },
-    "setSessionSettingsRequest": {
-      "$ref": "#/$defs/SetSessionSettingsRequest"
+    "getProfilePreferencesRequest": {
+      "$ref": "#/$defs/GetProfilePreferencesRequest"
     },
-    "setSessionSettingsResponse": {
-      "$ref": "#/$defs/SetSessionSettingsResponse"
+    "setProfilePreferencesRequest": {
+      "$ref": "#/$defs/SetProfilePreferencesRequest"
+    },
+    "profilePreferencesResponse": {
+      "$ref": "#/$defs/ProfilePreferencesResponse"
+    },
+    "listCollectionsRequest": {
+      "$ref": "#/$defs/ListCollectionsRequest"
+    },
+    "createCollectionRequest": {
+      "$ref": "#/$defs/CreateCollectionRequest"
+    },
+    "renameCollectionRequest": {
+      "$ref": "#/$defs/RenameCollectionRequest"
+    },
+    "setCollectionCollapsedRequest": {
+      "$ref": "#/$defs/SetCollectionCollapsedRequest"
+    },
+    "moveCollectionRequest": {
+      "$ref": "#/$defs/MoveCollectionRequest"
+    },
+    "deleteCollectionRequest": {
+      "$ref": "#/$defs/DeleteCollectionRequest"
+    },
+    "assignThreadCollectionRequest": {
+      "$ref": "#/$defs/AssignThreadCollectionRequest"
+    },
+    "collectionStateResponse": {
+      "$ref": "#/$defs/CollectionStateResponse"
+    },
+    "assignThreadCollectionResponse": {
+      "$ref": "#/$defs/AssignThreadCollectionResponse"
     },
     "accountStatusRequest": {
       "$ref": "#/$defs/AccountStatusRequest"
@@ -89,18 +131,32 @@
   },
   "required": [
     "capabilities",
-    "listSessionsRequest",
-    "listSessionsResponse",
-    "getSessionStateRequest",
-    "getSessionStateResponse",
+    "desktopBootstrapRequest",
+    "desktopBootstrapResponse",
+    "promptMetadata",
+    "deliveryMetadata",
+    "listThreadsRequest",
+    "listThreadsResponse",
+    "getThreadTimelineRequest",
+    "getThreadTimelineResponse",
     "deletePreviewRequest",
     "deletePreviewResponse",
     "deleteConfirmRequest",
     "deleteConfirmResponse",
     "listModelsRequest",
     "listModelsResponse",
-    "setSessionSettingsRequest",
-    "setSessionSettingsResponse",
+    "getProfilePreferencesRequest",
+    "setProfilePreferencesRequest",
+    "profilePreferencesResponse",
+    "listCollectionsRequest",
+    "createCollectionRequest",
+    "renameCollectionRequest",
+    "setCollectionCollapsedRequest",
+    "moveCollectionRequest",
+    "deleteCollectionRequest",
+    "assignThreadCollectionRequest",
+    "collectionStateResponse",
+    "assignThreadCollectionResponse",
     "accountStatusRequest",
     "accountStatusResponse",
     "browserLoginStartRequest",
@@ -141,13 +197,37 @@
     "FeatureVersions": {
       "type": "object",
       "properties": {
-        "sessionCatalog": {
+        "desktopChat": {
           "type": "integer",
           "format": "uint16",
           "minimum": 0,
           "maximum": 65535
         },
-        "settings": {
+        "threadCatalog": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "timeline": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "modelCatalog": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "profilePreferences": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "collections": {
           "type": "integer",
           "format": "uint16",
           "minimum": 0,
@@ -179,15 +259,114 @@
         }
       },
       "required": [
-        "sessionCatalog",
-        "settings",
+        "desktopChat",
+        "threadCatalog",
+        "timeline",
+        "modelCatalog",
+        "profilePreferences",
+        "collections",
         "account",
         "securityEvidence",
         "compaction",
         "activity"
       ]
     },
-    "ListSessionsRequest": {
+    "DesktopBootstrapRequest": {
+      "type": "object"
+    },
+    "DesktopBootstrapResponse": {
+      "type": "object",
+      "properties": {
+        "frontend": {
+          "description": "Stable front-end identifier selected when the sidecar was launched.",
+          "type": "string"
+        },
+        "chatCwd": {
+          "description": "Canonical workspace used for every desktop chat thread.",
+          "type": "string"
+        },
+        "permissionProfile": {
+          "description": "Effective, immutable permission profile for desktop chat.",
+          "type": "string"
+        },
+        "newThreadSettings": {
+          "description": "Settings `AxiomCLI` will apply to the next thread. On a clean profile the\nthinking level is `medium`; afterward these are the last-used values.",
+          "$ref": "#/$defs/ProfilePreferences"
+        }
+      },
+      "required": [
+        "frontend",
+        "chatCwd",
+        "permissionProfile",
+        "newThreadSettings"
+      ]
+    },
+    "ProfilePreferences": {
+      "type": "object",
+      "properties": {
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "thinkingLevel": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "thinkingLevel",
+        "updatedAt"
+      ]
+    },
+    "PromptMetadata": {
+      "description": "Metadata Axiom Desktop attaches beneath the standard ACP `_meta.axiom`\nnamespace when submitting a user message.",
+      "type": "object",
+      "properties": {
+        "clientItemId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "clientItemId"
+      ]
+    },
+    "DeliveryMetadata": {
+      "description": "Durable identity attached beneath `_meta.axiom` on standard ACP\nnotifications. Content still belongs exclusively to standard ACP; this\nmetadata lets a client reconcile it with an authoritative timeline page.",
+      "type": "object",
+      "properties": {
+        "threadRevision": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "lastTimelineSequence": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "timelineItemId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "clientItemId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "threadRevision",
+        "lastTimelineSequence"
+      ]
+    },
+    "ListThreadsRequest": {
       "type": "object",
       "properties": {
         "query": {
@@ -217,13 +396,13 @@
         }
       }
     },
-    "ListSessionsResponse": {
+    "ListThreadsResponse": {
       "type": "object",
       "properties": {
-        "sessions": {
+        "threads": {
           "type": "array",
           "items": {
-            "$ref": "#/$defs/SessionSummary"
+            "$ref": "#/$defs/ThreadSummary"
           }
         },
         "nextCursor": {
@@ -234,13 +413,13 @@
         }
       },
       "required": [
-        "sessions"
+        "threads"
       ]
     },
-    "SessionSummary": {
+    "ThreadSummary": {
       "type": "object",
       "properties": {
-        "sessionId": {
+        "threadId": {
           "type": "string"
         },
         "title": {
@@ -252,129 +431,59 @@
         "cwd": {
           "type": "string"
         },
-        "updatedAt": {
+        "origin": {
           "type": "string"
         },
-        "settings": {
-          "$ref": "#/$defs/SessionSettings"
+        "profile": {
+          "type": "string"
         },
-        "archived": {
-          "type": "boolean"
-        },
-        "historyTruncated": {
-          "type": "boolean"
-        },
-        "lastOutcome": {
+        "selectedModel": {
           "type": [
             "string",
             "null"
           ]
-        }
-      },
-      "required": [
-        "sessionId",
-        "cwd",
-        "updatedAt",
-        "settings",
-        "archived",
-        "historyTruncated"
-      ]
-    },
-    "SessionSettings": {
-      "type": "object",
-      "properties": {
-        "model": {
-          "type": "string"
         },
         "thinkingLevel": {
           "type": "string"
         },
-        "permissionProfile": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "model",
-        "thinkingLevel",
-        "permissionProfile"
-      ]
-    },
-    "GetSessionStateRequest": {
-      "type": "object",
-      "properties": {
-        "sessionId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "sessionId"
-      ]
-    },
-    "GetSessionStateResponse": {
-      "type": "object",
-      "properties": {
-        "snapshot": {
-          "$ref": "#/$defs/SessionSnapshot"
-        }
-      },
-      "required": [
-        "snapshot"
-      ]
-    },
-    "SessionSnapshot": {
-      "type": "object",
-      "properties": {
-        "runtimeInstanceId": {
-          "type": "string"
+        "lifecycle": {
+          "$ref": "#/$defs/ThreadLifecycle"
         },
-        "sequence": {
+        "archived": {
+          "type": "boolean"
+        },
+        "revision": {
           "type": "integer",
           "format": "uint64",
           "minimum": 0
         },
-        "sessionId": {
+        "lastTimelineSequence": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "createdAt": {
           "type": "string"
         },
-        "title": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "cwd": {
+        "updatedAt": {
           "type": "string"
-        },
-        "lifecycle": {
-          "$ref": "#/$defs/SessionLifecycle"
-        },
-        "settings": {
-          "$ref": "#/$defs/SessionSettings"
-        },
-        "security": {
-          "$ref": "#/$defs/SecurityStatus"
-        },
-        "activeTurnId": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "hasPrompt": {
-          "type": "boolean"
         }
       },
       "required": [
-        "runtimeInstanceId",
-        "sequence",
-        "sessionId",
+        "threadId",
         "cwd",
+        "origin",
+        "profile",
+        "thinkingLevel",
         "lifecycle",
-        "settings",
-        "security",
-        "hasPrompt"
+        "archived",
+        "revision",
+        "lastTimelineSequence",
+        "createdAt",
+        "updatedAt"
       ]
     },
-    "SessionLifecycle": {
+    "ThreadLifecycle": {
       "type": "string",
       "enum": [
         "ready",
@@ -385,37 +494,146 @@
         "closed"
       ]
     },
-    "SecurityStatus": {
+    "GetThreadTimelineRequest": {
       "type": "object",
       "properties": {
-        "state": {
-          "$ref": "#/$defs/SecurityState"
+        "threadId": {
+          "type": "string"
         },
-        "detail": {
+        "afterSequence": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "limit": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "threadId"
+      ]
+    },
+    "GetThreadTimelineResponse": {
+      "type": "object",
+      "properties": {
+        "thread": {
+          "$ref": "#/$defs/ThreadSummary"
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TimelineItem"
+          }
+        },
+        "nextCursor": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "thread",
+        "items"
+      ]
+    },
+    "TimelineItem": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "turnId": {
           "type": [
             "string",
             "null"
           ]
+        },
+        "sequence": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "kind": {
+          "$ref": "#/$defs/TimelineItemKind"
+        },
+        "status": {
+          "$ref": "#/$defs/TimelineItemStatus"
+        },
+        "clientItemId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "externalId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "content": {
+          "type": "string"
+        },
+        "metadata": true,
+        "createdAt": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "type": "string"
         }
       },
       "required": [
-        "state"
+        "id",
+        "threadId",
+        "sequence",
+        "kind",
+        "status",
+        "content",
+        "metadata",
+        "createdAt",
+        "updatedAt"
       ]
     },
-    "SecurityState": {
+    "TimelineItemKind": {
       "type": "string",
       "enum": [
-        "unverified",
-        "verifying",
-        "unattested_development",
-        "verified",
-        "failed"
+        "user_message",
+        "assistant_message",
+        "reasoning",
+        "tool_call",
+        "plan",
+        "notice"
+      ]
+    },
+    "TimelineItemStatus": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "in_progress",
+        "completed",
+        "cancelled",
+        "failed",
+        "interrupted"
       ]
     },
     "DeletePreviewRequest": {
       "type": "object",
       "properties": {
-        "sessionIds": {
+        "threadIds": {
           "type": "array",
           "items": {
             "type": "string"
@@ -423,7 +641,7 @@
         }
       },
       "required": [
-        "sessionIds"
+        "threadIds"
       ]
     },
     "DeletePreviewResponse": {
@@ -437,17 +655,17 @@
           "format": "uint64",
           "minimum": 0
         },
-        "sessions": {
+        "threads": {
           "type": "array",
           "items": {
-            "$ref": "#/$defs/SessionSummary"
+            "$ref": "#/$defs/ThreadSummary"
           }
         }
       },
       "required": [
         "confirmationToken",
         "expiresAtUnixSeconds",
-        "sessions"
+        "threads"
       ]
     },
     "DeleteConfirmRequest": {
@@ -456,7 +674,7 @@
         "confirmationToken": {
           "type": "string"
         },
-        "sessionIds": {
+        "threadIds": {
           "type": "array",
           "items": {
             "type": "string"
@@ -465,7 +683,7 @@
       },
       "required": [
         "confirmationToken",
-        "sessionIds"
+        "threadIds"
       ]
     },
     "DeleteConfirmResponse": {
@@ -507,6 +725,18 @@
         "label": {
           "type": "string"
         },
+        "shortLabel": {
+          "type": "string"
+        },
+        "providerId": {
+          "type": "string"
+        },
+        "providerLabel": {
+          "type": "string"
+        },
+        "upstreamModel": {
+          "type": "string"
+        },
         "thinkingLevels": {
           "type": "array",
           "items": {
@@ -517,15 +747,19 @@
       "required": [
         "id",
         "label",
+        "shortLabel",
+        "providerId",
+        "providerLabel",
+        "upstreamModel",
         "thinkingLevels"
       ]
     },
-    "SetSessionSettingsRequest": {
+    "GetProfilePreferencesRequest": {
+      "type": "object"
+    },
+    "SetProfilePreferencesRequest": {
       "type": "object",
       "properties": {
-        "sessionId": {
-          "type": "string"
-        },
         "model": {
           "type": [
             "string",
@@ -537,8 +771,98 @@
             "string",
             "null"
           ]
+        }
+      }
+    },
+    "ProfilePreferencesResponse": {
+      "type": "object",
+      "properties": {
+        "preferences": {
+          "$ref": "#/$defs/ProfilePreferences"
+        }
+      },
+      "required": [
+        "preferences"
+      ]
+    },
+    "ListCollectionsRequest": {
+      "type": "object"
+    },
+    "CreateCollectionRequest": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ]
+    },
+    "RenameCollectionRequest": {
+      "type": "object",
+      "properties": {
+        "collectionId": {
+          "type": "string"
         },
-        "permissionProfile": {
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "collectionId",
+        "name"
+      ]
+    },
+    "SetCollectionCollapsedRequest": {
+      "type": "object",
+      "properties": {
+        "collectionId": {
+          "type": "string"
+        },
+        "collapsed": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "collectionId",
+        "collapsed"
+      ]
+    },
+    "MoveCollectionRequest": {
+      "type": "object",
+      "properties": {
+        "collectionId": {
+          "type": "string"
+        },
+        "position": {
+          "type": "integer",
+          "format": "int64"
+        }
+      },
+      "required": [
+        "collectionId",
+        "position"
+      ]
+    },
+    "DeleteCollectionRequest": {
+      "type": "object",
+      "properties": {
+        "collectionId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "collectionId"
+      ]
+    },
+    "AssignThreadCollectionRequest": {
+      "type": "object",
+      "properties": {
+        "threadId": {
+          "type": "string"
+        },
+        "collectionId": {
           "type": [
             "string",
             "null"
@@ -546,18 +870,100 @@
         }
       },
       "required": [
-        "sessionId"
+        "threadId"
       ]
     },
-    "SetSessionSettingsResponse": {
+    "CollectionStateResponse": {
       "type": "object",
       "properties": {
-        "settings": {
-          "$ref": "#/$defs/SessionSettings"
+        "state": {
+          "$ref": "#/$defs/CollectionState"
         }
       },
       "required": [
-        "settings"
+        "state"
+      ]
+    },
+    "CollectionState": {
+      "type": "object",
+      "properties": {
+        "revision": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "collections": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Collection"
+          }
+        }
+      },
+      "required": [
+        "revision",
+        "collections"
+      ]
+    },
+    "Collection": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "collapsed": {
+          "type": "boolean"
+        },
+        "position": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "threadIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "createdAt": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "collapsed",
+        "position",
+        "threadIds",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "AssignThreadCollectionResponse": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "$ref": "#/$defs/CollectionState"
+        },
+        "threadRevision": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "lastTimelineSequence": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "state",
+        "threadRevision",
+        "lastTimelineSequence"
       ]
     },
     "AccountStatusRequest": {
@@ -677,12 +1083,12 @@
     "VerifySecurityRequest": {
       "type": "object",
       "properties": {
-        "sessionId": {
+        "threadId": {
           "type": "string"
         }
       },
       "required": [
-        "sessionId"
+        "threadId"
       ]
     },
     "VerifySecurityResponse": {
@@ -738,6 +1144,16 @@
           "format": "uint64",
           "minimum": 0
         },
+        "attestationGeneration": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "hardExpiresAtUnixSeconds": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
         "modelKeyFingerprint": {
           "type": "string"
         },
@@ -781,11 +1197,40 @@
         "e2eeEncryptionVersion",
         "trustPolicyVersion",
         "verifiedAtUnixSeconds",
+        "attestationGeneration",
+        "hardExpiresAtUnixSeconds",
         "modelKeyFingerprint",
         "checks",
         "providerClaims",
         "workloadIdentityAllowlistConfigured",
         "approvedWorkloadIdentity"
+      ]
+    },
+    "SecurityStatus": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "$ref": "#/$defs/SecurityState"
+        },
+        "detail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "state"
+      ]
+    },
+    "SecurityState": {
+      "type": "string",
+      "enum": [
+        "unverified",
+        "verifying",
+        "unattested_development",
+        "verified",
+        "failed"
       ]
     },
     "EvidenceCheck": {
@@ -825,7 +1270,7 @@
     "CompactRequest": {
       "type": "object",
       "properties": {
-        "sessionId": {
+        "threadId": {
           "type": "string"
         },
         "focus": {
@@ -836,7 +1281,7 @@
         }
       },
       "required": [
-        "sessionId"
+        "threadId"
       ]
     },
     "CompactResponse": {
@@ -879,6 +1324,22 @@
             "null"
           ]
         },
+        "threadRevision": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "lastTimelineSequence": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
         "event": {
           "$ref": "#/$defs/ActivityEvent"
         }
@@ -892,54 +1353,6 @@
     },
     "ActivityEvent": {
       "oneOf": [
-        {
-          "type": "object",
-          "properties": {
-            "snapshot": {
-              "$ref": "#/$defs/SessionSnapshot"
-            },
-            "kind": {
-              "type": "string",
-              "const": "session_state"
-            }
-          },
-          "required": [
-            "kind",
-            "snapshot"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "title": {
-              "type": "string"
-            },
-            "kind": {
-              "type": "string",
-              "const": "title_changed"
-            }
-          },
-          "required": [
-            "kind",
-            "title"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "settings": {
-              "$ref": "#/$defs/SessionSettings"
-            },
-            "kind": {
-              "type": "string",
-              "const": "settings_changed"
-            }
-          },
-          "required": [
-            "kind",
-            "settings"
-          ]
-        },
         {
           "type": "object",
           "properties": {
@@ -970,57 +1383,6 @@
           "required": [
             "kind",
             "status"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "message": {
-              "type": "string"
-            },
-            "completed": {
-              "type": [
-                "integer",
-                "null"
-              ],
-              "format": "uint64",
-              "minimum": 0
-            },
-            "total": {
-              "type": [
-                "integer",
-                "null"
-              ],
-              "format": "uint64",
-              "minimum": 0
-            },
-            "kind": {
-              "type": "string",
-              "const": "progress"
-            }
-          },
-          "required": [
-            "kind",
-            "message"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "items": {
-              "type": "array",
-              "items": {
-                "$ref": "#/$defs/TaskItem"
-              }
-            },
-            "kind": {
-              "type": "string",
-              "const": "task_list"
-            }
-          },
-          "required": [
-            "kind",
-            "items"
           ]
         },
         {
@@ -1087,54 +1449,35 @@
         {
           "type": "object",
           "properties": {
-            "message": {
-              "type": "string"
+            "state": {
+              "$ref": "#/$defs/CollectionState"
             },
             "kind": {
               "type": "string",
-              "const": "warning"
+              "const": "collections_changed"
             }
           },
           "required": [
             "kind",
-            "message"
+            "state"
           ]
         },
         {
           "type": "object",
           "properties": {
-            "message": {
-              "type": "string"
+            "preferences": {
+              "$ref": "#/$defs/ProfilePreferences"
             },
             "kind": {
               "type": "string",
-              "const": "error"
+              "const": "profile_preferences_changed"
             }
           },
           "required": [
             "kind",
-            "message"
+            "preferences"
           ]
         }
-      ]
-    },
-    "TaskItem": {
-      "type": "object",
-      "properties": {
-        "id": {
-          "type": "string"
-        },
-        "title": {
-          "type": "string"
-        },
-        "status": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "id",
-        "title",
-        "status"
       ]
     },
     "CompactionPhase": {

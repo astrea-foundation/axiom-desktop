@@ -1,25 +1,12 @@
 /* Generated from protocol/axiom-acp-extension/v0.1/schema.json. Do not edit. */
 
-export type SessionLifecycle =
+export type ThreadLifecycle =
   "ready" | "running" | "waiting_for_approval" | "waiting_for_answer" | "compacting" | "closed";
-export type SecurityState = "unverified" | "verifying" | "unattested_development" | "verified" | "failed";
+export type TimelineItemKind = "user_message" | "assistant_message" | "reasoning" | "tool_call" | "plan" | "notice";
+export type TimelineItemStatus = "pending" | "in_progress" | "completed" | "cancelled" | "failed" | "interrupted";
 export type AccountState = "missing" | "valid" | "invalid" | "unavailable";
+export type SecurityState = "unverified" | "verifying" | "unattested_development" | "verified" | "failed";
 export type ActivityEvent =
-  | {
-      snapshot: SessionSnapshot;
-      kind: "session_state";
-      [k: string]: unknown;
-    }
-  | {
-      title: string;
-      kind: "title_changed";
-      [k: string]: unknown;
-    }
-  | {
-      settings: SessionSettings;
-      kind: "settings_changed";
-      [k: string]: unknown;
-    }
   | {
       status: SecurityStatus;
       kind: "security_changed";
@@ -28,18 +15,6 @@ export type ActivityEvent =
   | {
       status: AccountStatus;
       kind: "account_changed";
-      [k: string]: unknown;
-    }
-  | {
-      message: string;
-      completed?: number | null;
-      total?: number | null;
-      kind: "progress";
-      [k: string]: unknown;
-    }
-  | {
-      items: TaskItem[];
-      kind: "task_list";
       [k: string]: unknown;
     }
   | {
@@ -60,13 +35,13 @@ export type ActivityEvent =
       [k: string]: unknown;
     }
   | {
-      message: string;
-      kind: "warning";
+      state: CollectionState;
+      kind: "collections_changed";
       [k: string]: unknown;
     }
   | {
-      message: string;
-      kind: "error";
+      preferences: ProfilePreferences1;
+      kind: "profile_preferences_changed";
       [k: string]: unknown;
     };
 export type CompactionPhase = "started" | "summarizing" | "replacing_context" | "completed" | "cancelled" | "failed";
@@ -89,18 +64,32 @@ export type ExtensionErrorCode =
  */
 export interface ProtocolSchema {
   capabilities: ExtensionCapabilities;
-  listSessionsRequest: ListSessionsRequest;
-  listSessionsResponse: ListSessionsResponse;
-  getSessionStateRequest: GetSessionStateRequest;
-  getSessionStateResponse: GetSessionStateResponse;
+  desktopBootstrapRequest: DesktopBootstrapRequest;
+  desktopBootstrapResponse: DesktopBootstrapResponse;
+  promptMetadata: PromptMetadata;
+  deliveryMetadata: DeliveryMetadata;
+  listThreadsRequest: ListThreadsRequest;
+  listThreadsResponse: ListThreadsResponse;
+  getThreadTimelineRequest: GetThreadTimelineRequest;
+  getThreadTimelineResponse: GetThreadTimelineResponse;
   deletePreviewRequest: DeletePreviewRequest;
   deletePreviewResponse: DeletePreviewResponse;
   deleteConfirmRequest: DeleteConfirmRequest;
   deleteConfirmResponse: DeleteConfirmResponse;
   listModelsRequest: ListModelsRequest;
   listModelsResponse: ListModelsResponse;
-  setSessionSettingsRequest: SetSessionSettingsRequest;
-  setSessionSettingsResponse: SetSessionSettingsResponse;
+  getProfilePreferencesRequest: GetProfilePreferencesRequest;
+  setProfilePreferencesRequest: SetProfilePreferencesRequest;
+  profilePreferencesResponse: ProfilePreferencesResponse;
+  listCollectionsRequest: ListCollectionsRequest;
+  createCollectionRequest: CreateCollectionRequest;
+  renameCollectionRequest: RenameCollectionRequest;
+  setCollectionCollapsedRequest: SetCollectionCollapsedRequest;
+  moveCollectionRequest: MoveCollectionRequest;
+  deleteCollectionRequest: DeleteCollectionRequest;
+  assignThreadCollectionRequest: AssignThreadCollectionRequest;
+  collectionStateResponse: CollectionStateResponse;
+  assignThreadCollectionResponse: AssignThreadCollectionResponse;
   accountStatusRequest: AccountStatusRequest;
   accountStatusResponse: AccountStatusResponse;
   browserLoginStartRequest: BrowserLoginStartRequest;
@@ -126,15 +115,68 @@ export interface ExtensionCapabilities {
   [k: string]: unknown;
 }
 export interface FeatureVersions {
-  sessionCatalog: number;
-  settings: number;
+  desktopChat: number;
+  threadCatalog: number;
+  timeline: number;
+  modelCatalog: number;
+  profilePreferences: number;
+  collections: number;
   account: number;
   securityEvidence: number;
   compaction: number;
   activity: number;
   [k: string]: unknown;
 }
-export interface ListSessionsRequest {
+export interface DesktopBootstrapRequest {
+  [k: string]: unknown;
+}
+export interface DesktopBootstrapResponse {
+  /**
+   * Stable front-end identifier selected when the sidecar was launched.
+   */
+  frontend: string;
+  /**
+   * Canonical workspace used for every desktop chat thread.
+   */
+  chatCwd: string;
+  /**
+   * Effective, immutable permission profile for desktop chat.
+   */
+  permissionProfile: string;
+  newThreadSettings: ProfilePreferences;
+  [k: string]: unknown;
+}
+/**
+ * Settings `AxiomCLI` will apply to the next thread. On a clean profile the
+ * thinking level is `medium`; afterward these are the last-used values.
+ */
+export interface ProfilePreferences {
+  model?: string | null;
+  thinkingLevel: string;
+  updatedAt: string;
+  [k: string]: unknown;
+}
+/**
+ * Metadata Axiom Desktop attaches beneath the standard ACP `_meta.axiom`
+ * namespace when submitting a user message.
+ */
+export interface PromptMetadata {
+  clientItemId: string;
+  [k: string]: unknown;
+}
+/**
+ * Durable identity attached beneath `_meta.axiom` on standard ACP
+ * notifications. Content still belongs exclusively to standard ACP; this
+ * metadata lets a client reconcile it with an authoritative timeline page.
+ */
+export interface DeliveryMetadata {
+  threadRevision: number;
+  lastTimelineSequence: number;
+  timelineItemId?: string | null;
+  clientItemId?: string | null;
+  [k: string]: unknown;
+}
+export interface ListThreadsRequest {
   query?: string | null;
   includeArchived?: boolean;
   limit?: number | null;
@@ -144,67 +186,67 @@ export interface ListSessionsRequest {
   cursor?: string | null;
   [k: string]: unknown;
 }
-export interface ListSessionsResponse {
-  sessions: SessionSummary[];
+export interface ListThreadsResponse {
+  threads: ThreadSummary[];
   nextCursor?: string | null;
   [k: string]: unknown;
 }
-export interface SessionSummary {
-  sessionId: string;
+export interface ThreadSummary {
+  threadId: string;
   title?: string | null;
   cwd: string;
-  updatedAt: string;
-  settings: SessionSettings;
-  archived: boolean;
-  historyTruncated: boolean;
-  lastOutcome?: string | null;
-  [k: string]: unknown;
-}
-export interface SessionSettings {
-  model: string;
+  origin: string;
+  profile: string;
+  selectedModel?: string | null;
   thinkingLevel: string;
-  permissionProfile: string;
+  lifecycle: ThreadLifecycle;
+  archived: boolean;
+  revision: number;
+  lastTimelineSequence: number;
+  createdAt: string;
+  updatedAt: string;
   [k: string]: unknown;
 }
-export interface GetSessionStateRequest {
-  sessionId: string;
+export interface GetThreadTimelineRequest {
+  threadId: string;
+  afterSequence?: number | null;
+  limit?: number | null;
   [k: string]: unknown;
 }
-export interface GetSessionStateResponse {
-  snapshot: SessionSnapshot;
+export interface GetThreadTimelineResponse {
+  thread: ThreadSummary;
+  items: TimelineItem[];
+  nextCursor?: number | null;
   [k: string]: unknown;
 }
-export interface SessionSnapshot {
-  runtimeInstanceId: string;
+export interface TimelineItem {
+  id: string;
+  threadId: string;
+  turnId?: string | null;
   sequence: number;
-  sessionId: string;
-  title?: string | null;
-  cwd: string;
-  lifecycle: SessionLifecycle;
-  settings: SessionSettings;
-  security: SecurityStatus;
-  activeTurnId?: string | null;
-  hasPrompt: boolean;
-  [k: string]: unknown;
-}
-export interface SecurityStatus {
-  state: SecurityState;
-  detail?: string | null;
+  kind: TimelineItemKind;
+  status: TimelineItemStatus;
+  clientItemId?: string | null;
+  externalId?: string | null;
+  content: string;
+  metadata: unknown;
+  createdAt: string;
+  updatedAt: string;
   [k: string]: unknown;
 }
 export interface DeletePreviewRequest {
-  sessionIds: string[];
+  threadIds: string[];
   [k: string]: unknown;
 }
 export interface DeletePreviewResponse {
   confirmationToken: string;
   expiresAtUnixSeconds: number;
-  sessions: SessionSummary[];
+  threads: ThreadSummary[];
   [k: string]: unknown;
 }
 export interface DeleteConfirmRequest {
   confirmationToken: string;
-  sessionIds: string[];
+  threadIds: string[];
   [k: string]: unknown;
 }
 export interface DeleteConfirmResponse {
@@ -221,18 +263,85 @@ export interface ListModelsResponse {
 export interface ModelInfo {
   id: string;
   label: string;
+  shortLabel: string;
+  providerId: string;
+  providerLabel: string;
+  upstreamModel: string;
   thinkingLevels: string[];
   [k: string]: unknown;
 }
-export interface SetSessionSettingsRequest {
-  sessionId: string;
-  model?: string | null;
-  thinkingLevel?: string | null;
-  permissionProfile?: string | null;
+export interface GetProfilePreferencesRequest {
   [k: string]: unknown;
 }
-export interface SetSessionSettingsResponse {
-  settings: SessionSettings;
+export interface SetProfilePreferencesRequest {
+  model?: string | null;
+  thinkingLevel?: string | null;
+  [k: string]: unknown;
+}
+export interface ProfilePreferencesResponse {
+  preferences: ProfilePreferences1;
+  [k: string]: unknown;
+}
+export interface ProfilePreferences1 {
+  model?: string | null;
+  thinkingLevel: string;
+  updatedAt: string;
+  [k: string]: unknown;
+}
+export interface ListCollectionsRequest {
+  [k: string]: unknown;
+}
+export interface CreateCollectionRequest {
+  name: string;
+  [k: string]: unknown;
+}
+export interface RenameCollectionRequest {
+  collectionId: string;
+  name: string;
+  [k: string]: unknown;
+}
+export interface SetCollectionCollapsedRequest {
+  collectionId: string;
+  collapsed: boolean;
+  [k: string]: unknown;
+}
+export interface MoveCollectionRequest {
+  collectionId: string;
+  position: number;
+  [k: string]: unknown;
+}
+export interface DeleteCollectionRequest {
+  collectionId: string;
+  [k: string]: unknown;
+}
+export interface AssignThreadCollectionRequest {
+  threadId: string;
+  collectionId?: string | null;
+  [k: string]: unknown;
+}
+export interface CollectionStateResponse {
+  state: CollectionState;
+  [k: string]: unknown;
+}
+export interface CollectionState {
+  revision: number;
+  collections: Collection[];
+  [k: string]: unknown;
+}
+export interface Collection {
+  id: string;
+  name: string;
+  collapsed: boolean;
+  position: number;
+  threadIds: string[];
+  createdAt: string;
+  updatedAt: string;
+  [k: string]: unknown;
+}
+export interface AssignThreadCollectionResponse {
+  state: CollectionState;
+  threadRevision: number;
+  lastTimelineSequence: number;
   [k: string]: unknown;
 }
 export interface AccountStatusRequest {
@@ -275,7 +384,7 @@ export interface LogoutRequest {
   [k: string]: unknown;
 }
 export interface VerifySecurityRequest {
-  sessionId: string;
+  threadId: string;
   [k: string]: unknown;
 }
 export interface VerifySecurityResponse {
@@ -292,6 +401,8 @@ export interface SecurityEvidence {
   e2eeEncryptionVersion: number;
   trustPolicyVersion: string;
   verifiedAtUnixSeconds: number;
+  attestationGeneration: number;
+  hardExpiresAtUnixSeconds: number;
   modelKeyFingerprint: string;
   tlsSpkiFingerprint?: string | null;
   checks: EvidenceCheck[];
@@ -299,6 +410,11 @@ export interface SecurityEvidence {
   workloadManifest?: string | null;
   workloadIdentityAllowlistConfigured: boolean;
   approvedWorkloadIdentity: boolean;
+  [k: string]: unknown;
+}
+export interface SecurityStatus {
+  state: SecurityState;
+  detail?: string | null;
   [k: string]: unknown;
 }
 export interface EvidenceCheck {
@@ -313,7 +429,7 @@ export interface EvidenceClaim {
   [k: string]: unknown;
 }
 export interface CompactRequest {
-  sessionId: string;
+  threadId: string;
   focus?: string | null;
   [k: string]: unknown;
 }
@@ -330,13 +446,9 @@ export interface EventNotification {
    */
   occurredAt: string;
   correlationId?: string | null;
+  threadRevision?: number | null;
+  lastTimelineSequence?: number | null;
   event: ActivityEvent;
-  [k: string]: unknown;
-}
-export interface TaskItem {
-  id: string;
-  title: string;
-  status: string;
   [k: string]: unknown;
 }
 export interface ExtensionError {

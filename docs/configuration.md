@@ -1,17 +1,48 @@
 # Configuration reference
 
-AxiomCLI merges configuration in this order: built-in defaults, trusted user
-configuration, the selected workspace's repository configuration, then the
-supported environment overrides. Unknown TOML keys and invalid values are
-errors. TUI and `exec` resolve the full project layer after canonicalizing their
-workspace. ACP resolves the permission profile and restrictive policy rules
-independently for every session rather than using the server process's launch
-directory; provider/model/tool construction remains process-wide for now.
+Axiom loads built-in defaults, shared trusted configuration, frontend trusted
+configuration, supported environment overrides, and—only for CLI workspaces—the
+selected repository's restrictive configuration. Unknown TOML keys and invalid
+values are errors. TUI, `exec`, and generic ACP resolve the project layer after
+canonicalizing their workspace.
 
-On Linux, trusted configuration is normally
-`$XDG_CONFIG_HOME/axiomcli/config.toml` or
-`~/.config/axiomcli/config.toml`. `axiomcli doctor` prints the exact path and
-the session database location for the current platform.
+On Linux, shared configuration is normally
+`$XDG_CONFIG_HOME/axiom/config.toml`; CLI and desktop overrides live in
+`axiom/cli/config.toml` and `axiom/desktop/config.toml`. The equivalent
+platform-native roots are used on macOS and Windows. `axiomcli doctor` prints
+the exact roots, databases, and desktop chat directory.
+
+Local data uses one Axiom namespace with explicit ownership:
+
+```text
+<local data>/axiom/
+  shared/identity/client-id
+  shared/credentials/
+  shared/trust-policy.json
+  cli/state.sqlite3
+  desktop/state.sqlite3
+  desktop/chat/
+```
+
+The protected credential fallback and installation identity are shared so the
+desktop and CLI use the same account. Conversation databases are separate. This
+first-release layout does not import pre-release local databases.
+
+During pre-release development, reset exactly one frontend database with
+`axiomcli reset-local-state --frontend cli --confirm` or
+`axiomcli reset-local-state --frontend desktop-chat --confirm`. The command
+removes only that profile's `state.sqlite3` and SQLite sidecars. It preserves
+configuration, shared identity, credentials, trust policy, the other frontend's
+database, and `desktop/chat/`; no reset happens implicitly.
+
+`axiomcli acp --frontend desktop-chat` is a product profile: its cwd is the
+canonical `desktop/chat` directory, MCP servers are disabled, its embedded
+desktop system prompt cannot be replaced with `--system-prompt-file`, and its
+permission profile is exactly `web`. Desktop still strictly parses the shared
+configuration and applies its common fields, but ignores shared
+`permission_profile` and `mcp_servers` because those fields configure the CLI.
+A non-Web permission setting in `desktop/config.toml`, the environment, ACP
+mode, or extension settings is rejected.
 
 ## Trusted user file
 
@@ -44,9 +75,8 @@ Tool profiles are `none`, `web`, `observe`, `confirm`, and `full_access`.
 page fetching; Observe exposes only read-only tools; Confirm exposes all tools
 but asks once for every invocation; Full Access exposes all tools without tool
 approval prompts. Structural runtime boundaries and explicit deny rules still
-apply to every profile. Existing journals and configuration using `plan`,
-`workspace`, or `autonomous` migrate to Observe, Confirm, or Full Access
-respectively. Resume always restores the journaled profile.
+apply to every profile. Permission names are strict; retired aliases are
+rejected. Resume restores the thread's durable profile.
 
 ## Session slash commands
 
@@ -56,7 +86,7 @@ argument and opens a two-tab window. Tools selects and explains the five tool
 profiles; Crypto is marked Coming soon and will later hold wallet, network,
 spending, and transaction authority separately. `/model` opens a searchable
 picker populated from the provider's discovered catalog; arbitrary model IDs
-are not accepted. These changes are journaled and restored with the session.
+are not accepted. These changes are stored on the thread.
 When an ordinary prompt is submitted, its active model becomes the durable
 application-wide default for future chats. Resume derives the model from the
 latest prompt in the selected transcript, so a later `/model` selection that
@@ -74,13 +104,13 @@ transcript. Space toggles one row, Ctrl+A toggles all visible search matches,
 Enter advances to a permanent-deletion warning, and `y` atomically deletes the
 selection.
 `/compact [focus]` uses the current session
-model to summarize live history with an empty tool set, then journals and
-installs that summary as successor context. It can be cancelled with Escape.
-`/login` offers browser sign-in or an existing Axiom API key. During browser
-sign-in, a one-time completion code can be pasted as a fallback. `/account`
-validates the current credential without revealing it, and
+model to summarize live history with an empty tool set, then installs that
+summary as successor context. It can be cancelled with Escape.
+`/login` offers browser sign-in or an existing Axiom API key. Browser sign-in
+completes through PKCE polling even when the loopback callback is blocked; the
+callback only accelerates completion. `/account` validates the current credential without revealing it, and
 `/logout` clears a persisted credential. Login state is application-wide and is
-never written to a session journal.
+never written to a conversation timeline.
 `/security` opens the latest in-memory attestation inspector. It shows hardware
 checks, endpoint and encryption-key bindings, workload measurements, parsed
 Compose services, and the exact quote-bound `app_compose` manifest. `R` performs
@@ -95,10 +125,34 @@ short result fills the session title only when one has not already been set;
 failure is non-fatal and does not alter the conversation or tracked token usage.
 
 The direct secure client validates the changed model ID against Axiom's signed-in
-catalog, establishes a fresh verified provider session for each inference, and
-sends the explicit thinking level only when the selected model advertises it.
+catalog and establishes a verified provider session. Only verified public
+material is reused, for at most four minutes and never beyond provider evidence,
+backend lease, or signed-policy expiry. Every inference still creates fresh
+client key material, nonces, request ciphertext, and receipt bindings. The
+explicit thinking level is sent only when the selected model advertises it.
 Unsupported model/thinking combinations fail locally rather than being guessed
 from model names.
+
+The authenticated relay publishes a signed trust manifest. AxiomCLI verifies it
+locally and keeps the highest accepted sequence in
+`<local data>/axiom/shared/trust-policy.json`. Network failure uses the still-valid
+last-known-good manifest; an expired policy, invalid signature, rollback,
+same-sequence equivocation, or unsafe NVIDIA/workload rule fails closed. The
+cache is atomic, bounded, non-symlinked, and shared by CLI and desktop so the two
+frontends cannot disagree after a policy upgrade.
+
+The catalog may contain offerings for more than one provider. Production builds
+currently register NEAR (`near-v2` / `near-tdx-nvidia-v1`) and Phala
+(`phala-aci-v2` / `phala-aci-tdx-v1`). A catalog entry for an unregistered future
+provider is ignored without hiding otherwise supported models; an entry that
+claims a registered provider with the wrong protocol tuple still fails closed.
+Phala offerings are chat-only for now: streaming is supported, but tool and
+parallel-tool capabilities are disabled until every tool field has a receipt-bound
+AAD contract. The outer `phala-aci-v2` contract accepts exactly two measured
+artifact subprofiles: `dstack-aci-draft-d567f6` for the currently deployed,
+pinned draft and `aci-v1-08d550` for the pinned standard ACI artifact. Selection
+uses the measured repository commit plus a structurally disjoint report shape;
+unknown commits and hybrid draft/standard documents fail closed.
 
 Limits are validated as follows:
 
@@ -204,11 +258,6 @@ confidently wrong answer rather than a degraded one:
 Text delivered as a content part array is accepted in both modes and joined with
 newlines, since the OpenAI SDKs emit that shape even for plain text.
 
-The old unattested adapter is not part of the default build. For deliberate
-local protocol development only, compile with `development-provider` and set
-`AXIOMCLI_UNATTESTED_DEV=1`. Never distribute that feature as a production
-binary. See the provider migration note for the exact quarantine boundary.
-
 At startup, the AxiomCLI TUI validates a discovered credential with Axiom. A
 rejected or revoked persisted credential is removed and the TUI opens the login
 surface; an `AXIOM_API_KEY` override must instead be unset by the caller. A
@@ -216,8 +265,8 @@ temporary network failure is reported but does not erase the credential.
 After credential validation, the TUI establishes and locally verifies a real
 model-specific attested session without sending a prompt. The header animates
 while this preflight runs and fails visibly if verification does not succeed.
-Inference requests still establish and verify fresh secure sessions; startup
-preflight is not treated as a reusable attestation result.
+Inference requests use only the bounded verified-material cache described above;
+startup preflight is never an authorization to outlive those bounds.
 Browser authorization listens on a random `127.0.0.1` port and
 expires after the server-defined short lifetime. The protected-file fallback is
 stored beneath the platform data directory with `0700` directory and `0600`

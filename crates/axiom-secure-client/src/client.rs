@@ -1,6 +1,16 @@
-use std::sync::Arc;
+use std::{
+    fs::{self, OpenOptions},
+    io::Write as _,
+    path::Path,
+    sync::Arc,
+    time::{Instant, SystemTime, UNIX_EPOCH},
+};
 
 use axiom_inference::ModelInfo;
+use fs2::FileExt as _;
+use rand_core::{OsRng, RngCore as _};
+use serde::{Deserialize, Serialize};
+use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -12,6 +22,25 @@ pub struct SecureClient {
     config: SecureClientConfig,
     credential: Arc<ApiCredential>,
     providers: ProviderRegistry,
+    catalog_cache: RwLock<Option<CachedCatalog>>,
+    trust_policy: RwLock<CachedTrustPolicy>,
+}
+
+struct CachedCatalog {
+    fetched_at: Instant,
+    models: Vec<ModelInfo>,
+}
+
+struct CachedTrustPolicy {
+    policy: TrustPolicy,
+    refreshed_at: Option<Instant>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct PersistedTrustPolicy {
+    highest_sequence: u64,
+    signed_policy: String,
 }
 
 impl SecureClient {
@@ -23,21 +52,49 @@ impl SecureClient {
         }
         let credential = Arc::new(credential);
         let providers = ProviderRegistry::production(config.clone(), Arc::clone(&credential))?;
+        let trust_policy = load_initial_policy(&config)?;
         Ok(Self {
             config,
             credential,
             providers,
+            catalog_cache: RwLock::new(None),
+            trust_policy: RwLock::new(CachedTrustPolicy {
+                policy: trust_policy,
+                refreshed_at: None,
+            }),
         })
     }
 
     pub async fn models(&self, cancellation: CancellationToken) -> Result<Vec<ModelInfo>> {
-        catalog::fetch_models(
+        let result = catalog::fetch_models(
             &self.config,
             &self.credential,
             &self.providers,
             &cancellation,
         )
-        .await
+        .await;
+        match result {
+            Ok(models) => {
+                *self.catalog_cache.write().await = Some(CachedCatalog {
+                    fetched_at: Instant::now(),
+                    models: models.clone(),
+                });
+                Ok(models)
+            }
+            Err(error) => {
+                let cache = self.catalog_cache.read().await;
+                if let Some(cached) = cache.as_ref()
+                    && cached.fetched_at.elapsed() <= self.config.catalog_max_stale
+                {
+                    tracing::warn!(
+                        detail = error.safe_detail(),
+                        "using last-known-good model catalog after refresh failure"
+                    );
+                    return Ok(cached.models.clone());
+                }
+                Err(error)
+            }
+        }
     }
 
     pub async fn establish(
@@ -47,6 +104,235 @@ impl SecureClient {
         cancellation: CancellationToken,
     ) -> Result<Box<dyn VerifiedSession>> {
         self.providers.establish(model, policy, cancellation).await
+    }
+
+    /// Resolve the newest valid signed trust policy without making policy
+    /// availability a single point of failure. A valid local policy remains
+    /// usable during relay outages; rollback, expiry, equivocation, and an
+    /// unpersistable sequence upgrade fail closed.
+    pub async fn trust_policy(&self, cancellation: CancellationToken) -> Result<TrustPolicy> {
+        let now = now_unix();
+        {
+            let cached = self.trust_policy.read().await;
+            if cached.policy.is_valid_at(now)
+                && cached.refreshed_at.is_some_and(|refreshed| {
+                    refreshed.elapsed() < self.config.trust_policy_refresh_interval
+                })
+            {
+                return Ok(cached.policy.clone());
+            }
+        }
+
+        let wire = crate::relay::client::RelayClient::new(&self.config, &self.credential)
+            .signed_trust_policy(&cancellation)
+            .await;
+        let refresh = async {
+            let bytes = wire?;
+            let signed_policy = String::from_utf8(bytes).map_err(|_| {
+                crate::SecureClientError::configuration("trust policy encoding is invalid")
+            })?;
+            let current = self.trust_policy.read().await.policy.clone();
+            let candidate = TrustPolicy::from_signed_json(&signed_policy, current.sequence, now)?;
+            if candidate.sequence == current.sequence && candidate != current {
+                return Err(crate::SecureClientError::configuration(
+                    "trust policy sequence equivocation was rejected",
+                ));
+            }
+            if candidate.sequence > current.sequence
+                && let Some(path) = &self.config.trust_policy_cache_path
+            {
+                persist_policy(
+                    path,
+                    &signed_policy,
+                    &candidate,
+                    self.config.limits.trust_policy_bytes,
+                )?;
+            }
+            let mut cached = self.trust_policy.write().await;
+            cached.policy = candidate.clone();
+            cached.refreshed_at = Some(Instant::now());
+            Ok(candidate)
+        }
+        .await;
+
+        match refresh {
+            Ok(policy) => Ok(policy),
+            Err(error) if !cancellation.is_cancelled() => {
+                let mut cached = self.trust_policy.write().await;
+                if cached.policy.is_valid_at(now) {
+                    tracing::warn!(
+                        detail = error.safe_detail(),
+                        sequence = cached.policy.sequence,
+                        "using last-known-good signed trust policy after refresh failure"
+                    );
+                    cached.refreshed_at = Some(Instant::now());
+                    return Ok(cached.policy.clone());
+                }
+                Err(error)
+            }
+            Err(_) => Err(crate::SecureClientError::cancelled()),
+        }
+    }
+
+    pub async fn invalidate(&self, model: &ModelInfo) -> Result<()> {
+        self.providers.invalidate(model).await
+    }
+}
+
+fn now_unix() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs())
+}
+
+fn load_initial_policy(config: &SecureClientConfig) -> Result<TrustPolicy> {
+    let bundled = TrustPolicy::production()?;
+    let Some(path) = &config.trust_policy_cache_path else {
+        return Ok(bundled);
+    };
+    let persisted = match read_persisted(path, config.limits.trust_policy_bytes) {
+        Ok(Some(persisted)) => persisted,
+        Ok(None) => return Ok(bundled),
+        Err(error) => return Err(error),
+    };
+    if persisted.highest_sequence < bundled.sequence {
+        return Ok(bundled);
+    }
+    let cached = TrustPolicy::from_signed_json_for_rollback(
+        &persisted.signed_policy,
+        persisted.highest_sequence.max(bundled.sequence),
+        now_unix(),
+    )?;
+    if cached.sequence != persisted.highest_sequence {
+        return Err(crate::SecureClientError::configuration(
+            "trust policy rollback journal is inconsistent",
+        ));
+    }
+    if cached.sequence == bundled.sequence && cached != bundled {
+        return Err(crate::SecureClientError::configuration(
+            "trust policy sequence equivocation was rejected",
+        ));
+    }
+    Ok(cached)
+}
+
+fn read_persisted(path: &Path, limit: usize) -> Result<Option<PersistedTrustPolicy>> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => {
+            return Err(crate::SecureClientError::configuration(
+                "trust policy rollback journal is unavailable",
+            ));
+        }
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() > limit as u64 {
+        return Err(crate::SecureClientError::configuration(
+            "trust policy rollback journal is invalid",
+        ));
+    }
+    let bytes = fs::read(path).map_err(|_| {
+        crate::SecureClientError::configuration("trust policy rollback journal is unavailable")
+    })?;
+    let persisted = serde_json::from_slice(&bytes).map_err(|_| {
+        crate::SecureClientError::configuration("trust policy rollback journal is invalid")
+    })?;
+    Ok(Some(persisted))
+}
+
+fn persist_policy(
+    path: &Path,
+    signed_policy: &str,
+    policy: &TrustPolicy,
+    limit: usize,
+) -> Result<()> {
+    let parent = path.parent().ok_or_else(|| {
+        crate::SecureClientError::configuration("trust policy cache path is invalid")
+    })?;
+    fs::create_dir_all(parent).map_err(|_| {
+        crate::SecureClientError::configuration("trust policy cache directory is unavailable")
+    })?;
+    let parent_metadata = fs::symlink_metadata(parent).map_err(|_| {
+        crate::SecureClientError::configuration("trust policy cache directory is unavailable")
+    })?;
+    if parent_metadata.file_type().is_symlink() || !parent_metadata.is_dir() {
+        return Err(crate::SecureClientError::configuration(
+            "trust policy cache directory is invalid",
+        ));
+    }
+
+    let lock_path = path.with_extension("lock");
+    reject_symlink_or_nonfile(&lock_path)?;
+    let mut lock_options = OpenOptions::new();
+    lock_options.create(true).read(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        lock_options.mode(0o600);
+    }
+    let lock = lock_options.open(&lock_path).map_err(|_| {
+        crate::SecureClientError::configuration("trust policy rollback lock is unavailable")
+    })?;
+    lock.lock_exclusive().map_err(|_| {
+        crate::SecureClientError::configuration("trust policy rollback lock is unavailable")
+    })?;
+
+    if let Some(existing) = read_persisted(path, limit)?
+        && existing.highest_sequence > policy.sequence
+    {
+        return Err(crate::SecureClientError::configuration(
+            "trust policy rollback was rejected",
+        ));
+    }
+    let encoded = serde_json::to_vec(&PersistedTrustPolicy {
+        highest_sequence: policy.sequence,
+        signed_policy: signed_policy.to_owned(),
+    })
+    .map_err(|_| crate::SecureClientError::configuration("trust policy cache is invalid"))?;
+    if encoded.len() > limit {
+        return Err(crate::SecureClientError::configuration(
+            "trust policy cache exceeds its configured bound",
+        ));
+    }
+    reject_symlink_or_nonfile(path)?;
+    let mut random = [0_u8; 8];
+    OsRng.fill_bytes(&mut random);
+    let temporary = path.with_extension(format!("tmp-{}", hex::encode(random)));
+    let mut options = OpenOptions::new();
+    options.create_new(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    let write_result = (|| -> std::io::Result<()> {
+        let mut file = options.open(&temporary)?;
+        file.write_all(&encoded)?;
+        file.sync_all()?;
+        fs::rename(&temporary, path)?;
+        #[cfg(unix)]
+        fs::File::open(parent)?.sync_all()?;
+        Ok(())
+    })();
+    if write_result.is_err() {
+        let _ = fs::remove_file(&temporary);
+        return Err(crate::SecureClientError::configuration(
+            "trust policy rollback journal could not be committed",
+        ));
+    }
+    Ok(())
+}
+
+fn reject_symlink_or_nonfile(path: &Path) -> Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => Err(
+            crate::SecureClientError::configuration("trust policy cache path is invalid"),
+        ),
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(_) => Err(crate::SecureClientError::configuration(
+            "trust policy cache path is unavailable",
+        )),
     }
 }
 
@@ -70,5 +356,29 @@ mod tests {
         assert!(SecureClient::new(config.clone(), ApiCredential::new("")).is_err());
         let client = SecureClient::new(config, ApiCredential::new("axm_not_for_logs")).unwrap();
         assert!(!format!("{client:?}").contains("axm_not_for_logs"));
+    }
+
+    #[test]
+    fn trust_policy_journal_is_atomic_bounded_and_rollback_protected() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("trust-policy.json");
+        let mut config = SecureClientConfig::new("https://api.axiom.stream").unwrap();
+        config.trust_policy_cache_path = Some(path.clone());
+        let policy = TrustPolicy::production().unwrap();
+        persist_policy(
+            &path,
+            crate::security::bundled_signed_policy(),
+            &policy,
+            config.limits.trust_policy_bytes,
+        )
+        .unwrap();
+        assert_eq!(load_initial_policy(&config).unwrap(), policy);
+
+        let impossible_rollback = PersistedTrustPolicy {
+            highest_sequence: policy.sequence + 1,
+            signed_policy: crate::security::bundled_signed_policy().into(),
+        };
+        fs::write(&path, serde_json::to_vec(&impossible_rollback).unwrap()).unwrap();
+        assert!(load_initial_policy(&config).is_err());
     }
 }

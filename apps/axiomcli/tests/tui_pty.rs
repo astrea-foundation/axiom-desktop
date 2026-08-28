@@ -10,6 +10,48 @@ use std::{
 
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
+use axiomcli::{
+    app::{AppCommand, Origin, PermissionProfile, Runtime, SessionId, ThinkingLevel},
+    session::{SessionStore, model_for_resume, thinking_for_resume},
+};
+
+fn seed_tui_session_settings(
+    store: &SessionStore,
+    cwd: &Path,
+    model: &str,
+    thinking: ThinkingLevel,
+) -> SessionId {
+    tokio::runtime::Runtime::new()
+        .expect("test runtime")
+        .block_on(async {
+            let runtime = Runtime::new(32);
+            let session_id = runtime.session_id();
+            let created = runtime
+                .dispatch(AppCommand::CreateSession {
+                    session_id: session_id.clone(),
+                    cwd: cwd.to_path_buf(),
+                    origin: Origin::Tui,
+                    profile: PermissionProfile::Confirm,
+                })
+                .await
+                .expect("create seeded TUI session");
+            store.append_all(&created).expect("persist TUI session");
+            let settings = runtime
+                .dispatch(AppCommand::ChangeModelSettings {
+                    session_id: session_id.clone(),
+                    model: model.into(),
+                    thinking,
+                    reset_security: false,
+                })
+                .await
+                .expect("seed TUI model settings");
+            store
+                .append_all(&settings)
+                .expect("persist TUI model settings");
+            session_id
+        })
+}
+
 fn run_tui(runner: &str, panic_probe: bool) -> (String, bool) {
     let state = tempfile::tempdir().expect("isolated TUI state");
     run_tui_at(runner, panic_probe, state.path(), &[])
@@ -38,7 +80,12 @@ fn run_tui_at(
         "AXIOMCLI_TEST_RUNNER",
         if matches!(
             runner,
-            "resume" | "remembered_model" | "delete" | "composer"
+            "resume"
+                | "resume_reconcile"
+                | "remembered_model"
+                | "preference_bootstrap"
+                | "delete"
+                | "composer"
         ) {
             "echo"
         } else {
@@ -476,6 +523,68 @@ fn durable_tui_session_resumes_in_the_same_workspace() {
 }
 
 #[test]
+fn resumed_tui_sessions_reconcile_retired_models_and_changed_reasoning_support() {
+    let state = tempfile::tempdir().expect("shared TUI state");
+    let workspace = tempfile::tempdir().expect("workspace");
+    let database = state
+        .path()
+        .join("data")
+        .join("axiom")
+        .join("cli")
+        .join("state.sqlite3");
+    let (retired_id, changed_reasoning_id) = {
+        let store = SessionStore::open(&database).expect("state store");
+        (
+            seed_tui_session_settings(
+                &store,
+                workspace.path(),
+                "retired-model",
+                ThinkingLevel::High,
+            ),
+            seed_tui_session_settings(
+                &store,
+                workspace.path(),
+                "medium-only",
+                ThinkingLevel::ExtraHigh,
+            ),
+        )
+    };
+    let cwd = workspace.path().to_string_lossy().into_owned();
+
+    for session_id in [&retired_id, &changed_reasoning_id] {
+        let session_id = session_id.to_string();
+        let (output, success) = run_tui_at(
+            "resume_reconcile",
+            false,
+            state.path(),
+            &["--cwd", &cwd, "--resume", &session_id],
+        );
+        assert!(success, "reconciled TUI resume failed: {output:?}");
+    }
+
+    let store = SessionStore::open(&database).expect("reopen corrected state");
+    let retired = store
+        .load_recovering(&retired_id)
+        .expect("load retired-model correction");
+    assert_eq!(model_for_resume(&retired.events, "fallback"), "glm-5-2");
+    assert_eq!(
+        thinking_for_resume(&retired.events, ThinkingLevel::Medium),
+        ThinkingLevel::High
+    );
+    let changed_reasoning = store
+        .load_recovering(&changed_reasoning_id)
+        .expect("load reasoning correction");
+    assert_eq!(
+        model_for_resume(&changed_reasoning.events, "fallback"),
+        "medium-only"
+    );
+    assert_eq!(
+        thinking_for_resume(&changed_reasoning.events, ThinkingLevel::ExtraHigh),
+        ThinkingLevel::Medium
+    );
+}
+
+#[test]
 fn a_new_tui_session_starts_with_the_last_model_that_ran() {
     let state = tempfile::tempdir().expect("shared TUI state");
     let (first_output, first_success) = run_tui_at("echo", false, state.path(), &[]);
@@ -487,6 +596,45 @@ fn a_new_tui_session_starts_with_the_last_model_that_ran() {
         next_output.contains("alternate-model") && next_output.contains("high"),
         "new session did not start with the last used model and thinking: {next_output:?}"
     );
+}
+
+#[test]
+fn a_new_tui_session_reconciles_preferences_against_the_current_catalog() {
+    let state = tempfile::tempdir().expect("shared TUI state");
+    let database = state
+        .path()
+        .join("data")
+        .join("axiom")
+        .join("cli")
+        .join("state.sqlite3");
+
+    {
+        let store = SessionStore::open(&database).expect("seed retired preference");
+        store
+            .set_profile_preferences("retired-model", ThinkingLevel::High)
+            .expect("retired model preference");
+    }
+    let (output, success) = run_tui_at("preference_bootstrap", false, state.path(), &[]);
+    assert!(success, "TUI failed with retired preference: {output:?}");
+    {
+        let store = SessionStore::open(&database).expect("read corrected preference");
+        let preferences = store.profile_preferences().expect("profile preferences");
+        assert_eq!(preferences.model.as_deref(), Some("glm-5-2"));
+        assert_eq!(preferences.thinking_level, ThinkingLevel::High);
+        store
+            .set_profile_preferences("medium-only", ThinkingLevel::ExtraHigh)
+            .expect("changed reasoning preference");
+    }
+
+    let (output, success) = run_tui_at("preference_bootstrap", false, state.path(), &[]);
+    assert!(
+        success,
+        "TUI failed with changed reasoning support: {output:?}"
+    );
+    let store = SessionStore::open(&database).expect("read reconciled reasoning preference");
+    let preferences = store.profile_preferences().expect("profile preferences");
+    assert_eq!(preferences.model.as_deref(), Some("medium-only"));
+    assert_eq!(preferences.thinking_level, ThinkingLevel::Medium);
 }
 
 #[test]
@@ -569,7 +717,10 @@ fn workspace_edit_reaches_the_expected_tui_semantics_and_final_workspace() {
         std::fs::read_to_string(workspace.path().join("frontend.txt")).expect("result"),
         "after\n"
     );
-    assert!(output.contains("replace_text"), "missing tool identity");
+    assert!(
+        output.contains("frontend.txt"),
+        "missing edited-file feedback"
+    );
     assert!(
         output.contains("Edited") || output.contains("Changed"),
         "missing folded workspace-change summary"
@@ -595,12 +746,43 @@ fn workspace_edit_reaches_the_expected_tui_semantics_and_final_workspace() {
         .output()
         .expect("export TUI session");
     assert!(exported.status.success());
-    let journal = String::from_utf8(exported.stdout).expect("journal JSON");
+    let state: serde_json::Value = serde_json::from_slice(&exported.stdout).expect("state JSON");
+    let timeline = state["timeline_items"].as_array().expect("timeline items");
     assert!(
-        journal.contains("Updated frontend.txt through the shared turn contract.")
-            && journal.contains("diff_available")
-            && journal.contains("tool_completed"),
-        "missing shared semantic events: {journal}"
+        timeline.iter().any(|item| {
+            item["kind"] == "tool_call"
+                && item["status"] == "completed"
+                && item["external_id"] == "frontend-edit"
+                && item["metadata"]["name"] == "replace_text"
+                && item["metadata"]["success"] == true
+                && item["metadata"]["diff"]
+                    .as_str()
+                    .is_some_and(|diff| diff.contains("-before") && diff.contains("+after"))
+                && item["metadata"]["files"].as_array().is_some_and(|files| {
+                    files.iter().any(|file| {
+                        file["path"]
+                            .as_str()
+                            .is_some_and(|path| path.ends_with("frontend.txt"))
+                    })
+                })
+        }),
+        "missing completed workspace-edit tool item: {state}"
+    );
+    assert!(
+        timeline.iter().any(|item| {
+            item["kind"] == "notice"
+                && item["status"] == "completed"
+                && item["metadata"]["code"] == "workspace_changed"
+        }),
+        "missing workspace-change notice: {state}"
+    );
+    assert!(
+        timeline.iter().any(|item| {
+            item["kind"] == "assistant_message"
+                && item["status"] == "completed"
+                && item["content"] == "Updated frontend.txt through the shared turn contract."
+        }),
+        "missing final assistant item: {state}"
     );
     assert!(output.contains("\u{1b}[?1049l"));
 }

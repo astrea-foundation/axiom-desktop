@@ -13,7 +13,7 @@ numbers and must not be compared as if they were one version.
 | `initialize` | ACP v1, implementation metadata, load-session capability, and optional `_meta.axiom` negotiation |
 | `session/new` | canonical absolute cwd, durable `CreateSession`, native modes and config options |
 | `session/load` | journal recovery/replay, exact cwd identity, restored model/thinking/profile |
-| `session/prompt` | text/resource-link prompts, ordered message/reasoning chunks, structured tool activity and stop reason |
+| `session/prompt` | text/resource-link prompts, ordered user/assistant/reasoning chunks, structured tool activity and stop reason |
 | `session/cancel` | cancels the session's active prompt or compaction |
 | `$/cancel_request` | cooperatively cancels prompt, security, compaction, and browser-login completion requests |
 | `session/set_mode` | permission profile; policy remains enforced inside AxiomCLI |
@@ -40,9 +40,10 @@ without negotiation fail safely and do not weaken standard behavior.
 
 Version 0.1 adds:
 
+- desktop profile bootstrap with the canonical chat cwd and immutable Web policy;
 - searchable/paginated session catalog, authoritative snapshots, safe batch
   deletion, title/settings/outcome metadata;
-- typed model catalog and atomic session settings;
+- typed model catalog with provider metadata and atomic session settings;
 - browser/API-key account flow and logout/status;
 - fresh security verification and bounded attestation/workload evidence;
 - cancellable compaction phases and structured progress/task/workspace events.

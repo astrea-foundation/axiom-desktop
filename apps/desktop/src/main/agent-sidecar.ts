@@ -1,15 +1,16 @@
-import { access } from "node:fs/promises";
+import { access, stat } from "node:fs/promises";
 import { constants } from "node:fs";
 import { resolve } from "node:path";
-import { app, BrowserWindow, dialog, shell } from "electron";
+import { app, BrowserWindow, shell } from "electron";
 import {
   AxiomAcpClient,
   type ClientState,
+  type DesktopBootstrapResponse,
   type ElicitationOutcome,
-  type ListSessionsRequest,
+  type ListThreadsRequest,
   type PendingInteraction,
   type PermissionOutcome,
-  type SetSessionSettingsRequest,
+  type ThreadSettingsRequest,
 } from "@axiom/axiom-acp-client";
 
 export const AGENT_STATE_CHANNEL = "agent:state-changed";
@@ -21,6 +22,9 @@ function broadcast(channel: string, value: unknown): void {
 
 async function executable(path: string): Promise<boolean> {
   try {
+    const metadata = await stat(path);
+    if (!metadata.isFile()) return false;
+    if (process.platform === "win32") return true;
     await access(path, constants.X_OK);
     return true;
   } catch {
@@ -52,6 +56,8 @@ export class AgentSidecar {
     lastSequence: 0,
     sessions: {},
     catalog: [],
+    collections: { revision: 0, collections: [] },
+    preferences: null,
     account: null,
     diagnostic: "",
     error: null,
@@ -59,6 +65,7 @@ export class AgentSidecar {
   private starting: Promise<void> | null = null;
   private shuttingDown = false;
   private restartAttempt = 0;
+  private bootstrap: DesktopBootstrapResponse | null = null;
   private readonly loginControllers = new Map<string, AbortController>();
 
   async start(): Promise<void> {
@@ -71,31 +78,39 @@ export class AgentSidecar {
   }
 
   private async startOnce(): Promise<void> {
-    const command = await resolveSidecar();
-    const client = new AxiomAcpClient({ command, args: ["acp"], cwd: app.getPath("home") });
-    this.client = client;
-    client.on("state", (state: ClientState) => {
-      this.lastState = state;
-      broadcast(AGENT_STATE_CHANNEL, state);
-    });
-    client.on("interaction", (interaction: PendingInteraction) => {
-      broadcast(AGENT_INTERACTION_CHANNEL, interaction);
-    });
-    client.process.once("exit", () => {
-      if (this.client === client) this.client = null;
-      if (!this.shuttingDown && this.restartAttempt < 3) {
-        const delay = 250 * 2 ** this.restartAttempt++;
-        setTimeout(() => void this.start().catch(() => undefined), delay);
-      }
-    });
+    let client: AxiomAcpClient | null = null;
     try {
+      const command = await resolveSidecar();
+      client = new AxiomAcpClient({
+        command,
+        args: ["acp", "--frontend", "desktop-chat"],
+        cwd: app.getPath("home"),
+      });
+      this.client = client;
+      client.on("state", (state: ClientState) => {
+        this.lastState = state;
+        broadcast(AGENT_STATE_CHANNEL, state);
+      });
+      client.on("interaction", (interaction: PendingInteraction) => {
+        broadcast(AGENT_INTERACTION_CHANNEL, interaction);
+      });
+      client.process.once("exit", () => {
+        if (this.client === client) {
+          this.client = null;
+          this.bootstrap = null;
+        }
+        if (!this.shuttingDown && this.restartAttempt < 3) {
+          const delay = 250 * 2 ** this.restartAttempt++;
+          setTimeout(() => void this.start().catch(() => undefined), delay);
+        }
+      });
       await client.initialize();
+      this.bootstrap = await client.bootstrapDesktop();
       this.restartAttempt = 0;
-      await client.accountStatus();
-      await client.listSessions();
+      await Promise.all([client.accountStatus(), client.initializeDesktopState()]);
     } catch (error) {
-      if (this.client === client) this.client = null;
-      await client.close().catch(() => undefined);
+      if (client && this.client === client) this.client = null;
+      if (client) await client.close().catch(() => undefined);
       this.lastState = {
         ...this.lastState,
         connected: false,
@@ -112,6 +127,7 @@ export class AgentSidecar {
     this.loginControllers.clear();
     const client = this.client;
     this.client = null;
+    this.bootstrap = null;
     if (client) await client.close();
   }
 
@@ -119,44 +135,40 @@ export class AgentSidecar {
     return this.client?.getState() ?? structuredClone(this.lastState);
   }
 
-  async chooseWorkspace(): Promise<string | null> {
-    const result = await dialog.showOpenDialog({ properties: ["openDirectory", "createDirectory"] });
-    return result.canceled ? null : (result.filePaths[0] ?? null);
+  desktopBootstrap(): DesktopBootstrapResponse {
+    if (!this.bootstrap) throw new Error("Axiom Desktop sidecar has not finished bootstrapping");
+    return structuredClone(this.bootstrap);
   }
 
-  newSession(cwd: string) {
-    return this.requireClient().newSession(cwd);
+  newChat() {
+    return this.requireClient().newChat();
   }
 
-  loadSession(sessionId: string, cwd: string) {
-    return this.requireClient().loadSession(sessionId, cwd);
+  loadChat(sessionId: string) {
+    return this.requireClient().loadChat(sessionId);
   }
 
-  prompt(sessionId: string, text: string) {
-    return this.requireClient().prompt(sessionId, text);
+  prompt(sessionId: string, text: string, clientItemId: string) {
+    return this.requireClient().prompt(sessionId, text, clientItemId);
   }
 
   cancel(sessionId: string) {
     return this.requireClient().cancel(sessionId);
   }
 
-  setMode(sessionId: string, modeId: string) {
-    return this.requireClient().setMode(sessionId, modeId);
-  }
-
   setConfig(sessionId: string, configId: string, value: string) {
     return this.requireClient().setConfig(sessionId, configId, value);
   }
 
-  listSessions(request: ListSessionsRequest = {}) {
-    return this.requireClient().listSessions(request);
+  listThreads(request: ListThreadsRequest = {}) {
+    return this.requireClient().listThreads(request);
   }
 
   listModels() {
     return this.requireClient().listModels();
   }
 
-  setSettings(settings: SetSessionSettingsRequest) {
+  setSettings(settings: ThreadSettingsRequest) {
     return this.requireClient().setSettings(settings);
   }
 
@@ -206,6 +218,34 @@ export class AgentSidecar {
 
   deleteConfirm(confirmationToken: string, sessionIds: string[]) {
     return this.requireClient().deleteConfirm(confirmationToken, sessionIds);
+  }
+
+  listCollections() {
+    return this.requireClient().listCollections();
+  }
+
+  createCollection(name: string) {
+    return this.requireClient().createCollection(name);
+  }
+
+  renameCollection(collectionId: string, name: string) {
+    return this.requireClient().renameCollection(collectionId, name);
+  }
+
+  setCollectionCollapsed(collectionId: string, collapsed: boolean) {
+    return this.requireClient().setCollectionCollapsed(collectionId, collapsed);
+  }
+
+  moveCollection(collectionId: string, position: number) {
+    return this.requireClient().moveCollection(collectionId, position);
+  }
+
+  deleteCollection(collectionId: string) {
+    return this.requireClient().deleteCollection(collectionId);
+  }
+
+  assignThreadCollection(threadId: string, collectionId: string | null) {
+    return this.requireClient().assignThreadCollection(threadId, collectionId);
   }
 
   resolvePermission(interactionId: string, outcome: PermissionOutcome): void {

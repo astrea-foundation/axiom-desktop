@@ -13,8 +13,8 @@ interface WelcomeViewProps {
   models: ProviderModel[];
   selectedModelId: string;
   onModelChange: (modelId: string) => void;
-  reasoningEffort?: ReasoningEffort;
-  onReasoningEffortChange: (effort: ReasoningEffort | undefined) => void;
+  reasoningEffort: ReasoningEffort;
+  onReasoningEffortChange: (effort: ReasoningEffort) => void;
 }
 
 export function WelcomeView({

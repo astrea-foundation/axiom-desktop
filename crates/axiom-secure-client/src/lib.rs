@@ -8,6 +8,7 @@ mod client;
 mod config;
 mod error;
 mod http;
+mod lease;
 mod provider;
 mod providers;
 mod relay;
@@ -15,9 +16,11 @@ mod security;
 
 pub use client::SecureClient;
 pub use config::{EndpointPolicy, SecureClientConfig, SecureClientLimits};
-pub use error::{Result, SecureClientError};
+pub use error::{Result, SecureClientError, SecureErrorCode};
 pub use provider::{ProviderRegistry, SecureProvider, VerifiedSession};
-pub use security::{EvidenceCheck, EvidenceClaim, SecurityEvidence, SecurityState, TrustPolicy};
+pub use security::{
+    EvidenceCheck, EvidenceClaim, SecurityEvidence, SecurityState, TrustPolicy, WorkloadEnforcement,
+};
 
 /// Cryptographic helpers for the deterministic process-level fixture.
 ///

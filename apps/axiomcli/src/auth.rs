@@ -1,8 +1,8 @@
 //! Native-client authentication and credential storage.
 //!
 //! Browser login uses a one-time backend authorization plus PKCE. The browser
-//! can notify the loopback listener that approval happened, but it never
-//! receives or forwards the permanent API key. Only the initiating CLI can
+//! can notify the loopback listener that approval happened, while PKCE polling
+//! also completes when that callback is blocked. Only the initiating CLI can
 //! exchange the authorization, and credentials never enter config or journals.
 
 use std::{
@@ -15,6 +15,7 @@ use std::{
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Utc};
+use fs2::FileExt as _;
 use reqwest::{Client, StatusCode, Url};
 use secrecy::{ExposeSecret as _, SecretString};
 use serde::{Deserialize, Serialize};
@@ -25,13 +26,11 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::{AxiomError, Result, config::Config};
+use crate::{AxiomError, Result};
 
 const KEYRING_SERVICE: &str = "stream.axiom.axiomcli";
 const KEYRING_ACCOUNT: &str = "inference-api-key";
-const CLIENT_ID_FILENAME: &str = "client-id";
 const API_KEY_PREFIX: &str = "axm_";
-const COMPLETION_CODE_PREFIX: &str = "axc_";
 const MAX_HTTP_REQUEST_BYTES: usize = 16 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -72,14 +71,13 @@ trait CredentialStore: Send + Sync {
     fn load(&self) -> std::result::Result<Option<String>, String>;
     fn save(&self, credential: &str) -> std::result::Result<(), String>;
     fn delete(&self) -> std::result::Result<(), String>;
-
-    fn client_id_path(&self) -> Option<PathBuf> {
-        client_id_path()
-    }
+    fn client_id_path(&self) -> &Path;
 }
 
 #[derive(Debug)]
-struct KeyringStore;
+struct KeyringStore {
+    client_id_path: PathBuf,
+}
 
 impl KeyringStore {
     fn entry() -> std::result::Result<keyring::Entry, String> {
@@ -113,22 +111,25 @@ impl CredentialStore for KeyringStore {
             Err(error) => Err(format!("could not clear the system keyring: {error}")),
         }
     }
+
+    fn client_id_path(&self) -> &Path {
+        &self.client_id_path
+    }
 }
 
 #[derive(Debug)]
 struct FileStore {
     path: PathBuf,
+    client_id_path: PathBuf,
 }
 
 impl FileStore {
-    fn new() -> Result<Self> {
-        let directory = Config::data_dir()
-            .ok_or_else(|| AxiomError::Storage("platform data directory is unavailable".into()))?
-            .join("credentials");
-        fs::create_dir_all(&directory)?;
-        set_directory_permissions(&directory)?;
+    fn new(directory: &Path, client_id_path: PathBuf) -> Result<Self> {
+        fs::create_dir_all(directory)?;
+        set_directory_permissions(directory)?;
         Ok(Self {
             path: directory.join("api-key"),
+            client_id_path,
         })
     }
 }
@@ -173,6 +174,10 @@ impl CredentialStore for FileStore {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(format!("could not remove credential file: {error}")),
         }
+    }
+
+    fn client_id_path(&self) -> &Path {
+        &self.client_id_path
     }
 }
 
@@ -240,6 +245,15 @@ impl std::fmt::Debug for AuthManager {
 
 impl AuthManager {
     pub fn new(api_base_url: &str, timeout: Duration) -> Result<Self> {
+        let paths = crate::paths::AxiomPaths::discover()?;
+        Self::new_with_paths(api_base_url, timeout, &paths)
+    }
+
+    pub fn new_with_paths(
+        api_base_url: &str,
+        timeout: Duration,
+        paths: &crate::paths::AxiomPaths,
+    ) -> Result<Self> {
         let api_base_url = parse_service_url(api_base_url, "API")?;
         let web_url =
             std::env::var("AXIOM_WEB_URL").unwrap_or_else(|_| "https://axiom.stream".to_owned());
@@ -252,7 +266,9 @@ impl AuthManager {
 
         if let Ok(value) = std::env::var("AXIOM_API_KEY") {
             validate_api_key_shape(&value)?;
-            let store: Arc<dyn CredentialStore> = Arc::new(EnvironmentStore);
+            let store: Arc<dyn CredentialStore> = Arc::new(EnvironmentStore {
+                client_id_path: paths.identity_path(),
+            });
             return Ok(Self {
                 state: Arc::new(RwLock::new(AuthState {
                     credential: Some(SecretString::from(value)),
@@ -268,15 +284,35 @@ impl AuthManager {
 
         let requested_store = std::env::var("AXIOMCLI_CREDENTIAL_STORE").ok();
         let store: Arc<dyn CredentialStore> = match requested_store.as_deref() {
-            Some("file") => Arc::new(FileStore::new()?),
+            Some("file") => Arc::new(FileStore::new(
+                &paths.credentials_dir(),
+                paths.identity_path(),
+            )?),
             Some("keyring") | None => {
-                let keyring: Arc<dyn CredentialStore> = Arc::new(KeyringStore);
+                let keyring: Arc<dyn CredentialStore> = Arc::new(KeyringStore {
+                    client_id_path: paths.identity_path(),
+                });
                 match keyring.load() {
                     Ok(_) => keyring,
                     Err(error) if requested_store.is_some() => {
                         return Err(AxiomError::Storage(error));
                     }
-                    Err(_) => Arc::new(FileStore::new()?),
+                    Err(error) => {
+                        #[cfg(windows)]
+                        {
+                            return Err(AxiomError::Storage(format!(
+                                "Windows Credential Manager is unavailable: {error}; refusing an implicit plaintext credential fallback (set AXIOMCLI_CREDENTIAL_STORE=file to opt in explicitly)"
+                            )));
+                        }
+                        #[cfg(not(windows))]
+                        {
+                            let _ = error;
+                            Arc::new(FileStore::new(
+                                &paths.credentials_dir(),
+                                paths.identity_path(),
+                            )?)
+                        }
+                    }
                 }
             }
             Some(other) => {
@@ -406,11 +442,7 @@ impl AuthManager {
         let state = random_urlsafe(32)?;
         let code_challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
         let callback_uri = format!("http://127.0.0.1:{port}/callback");
-        let client_id_path = self
-            .store
-            .client_id_path()
-            .ok_or_else(|| AxiomError::Storage("platform data directory is unavailable".into()))?;
-        let client_id = load_or_create_client_id(&client_id_path)?;
+        let client_id = load_or_create_client_id(self.store.client_id_path())?;
         let client_name = client_name(&client_id);
         let response = self
             .client
@@ -457,25 +489,6 @@ impl AuthManager {
             interval: Duration::from_secs(created.interval_seconds.clamp(1, 10)),
             browser_opened,
         })
-    }
-
-    pub async fn complete_with_code(&self, completion_code: &str) -> Result<AccountStatus> {
-        let completion_code = completion_code.trim();
-        let authorization_id = completion_code
-            .strip_prefix(COMPLETION_CODE_PREFIX)
-            .and_then(|value| value.split_once('.'))
-            .map(|(id, _)| id)
-            .filter(|id| id.len() == 32 && id.bytes().all(|byte| byte.is_ascii_hexdigit()))
-            .ok_or_else(|| AxiomError::Config("invalid one-time authorization code".into()))?;
-        let response = self
-            .exchange(ExchangeRequest {
-                authorization_id,
-                device_code: None,
-                code_verifier: None,
-                completion_code: Some(completion_code),
-            })
-            .await?;
-        self.finish_exchange(response)
     }
 
     async fn exchange(&self, request: ExchangeRequest<'_>) -> Result<ExchangeResponse> {
@@ -539,7 +552,9 @@ impl AuthManager {
 }
 
 #[derive(Debug)]
-struct EnvironmentStore;
+struct EnvironmentStore {
+    client_id_path: PathBuf,
+}
 
 impl CredentialStore for EnvironmentStore {
     fn source(&self) -> CredentialSource {
@@ -556,6 +571,10 @@ impl CredentialStore for EnvironmentStore {
 
     fn delete(&self) -> std::result::Result<(), String> {
         Err("AXIOM_API_KEY is controlled by the process environment; unset it to sign out".into())
+    }
+
+    fn client_id_path(&self) -> &Path {
+        &self.client_id_path
     }
 }
 
@@ -647,9 +666,8 @@ impl BrowserLogin {
             .manager
             .exchange(ExchangeRequest {
                 authorization_id: &self.authorization_id,
-                device_code: Some(self.device_code.expose_secret()),
-                code_verifier: Some(self.verifier.expose_secret()),
-                completion_code: None,
+                device_code: self.device_code.expose_secret(),
+                code_verifier: self.verifier.expose_secret(),
             })
             .await?;
         if response.status == "pending" {
@@ -758,10 +776,6 @@ fn random_urlsafe(size: usize) -> Result<String> {
     Ok(URL_SAFE_NO_PAD.encode(bytes))
 }
 
-fn client_id_path() -> Option<PathBuf> {
-    Config::data_dir().map(|directory| directory.join("identity").join(CLIENT_ID_FILENAME))
-}
-
 fn load_or_create_client_id(path: &Path) -> Result<String> {
     match read_client_id(path) {
         Ok(client_id) => return Ok(client_id),
@@ -775,7 +789,28 @@ fn load_or_create_client_id(path: &Path) -> Result<String> {
     fs::create_dir_all(directory)?;
     set_directory_permissions(directory)?;
 
+    let lock_path = directory.join(".client-id.lock");
+    let mut lock_options = OpenOptions::new();
+    lock_options.create(true).read(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        lock_options.mode(0o600);
+    }
+    let lock = lock_options.open(&lock_path)?;
+    lock.lock_exclusive().map_err(|error| {
+        AxiomError::Storage(format!(
+            "could not coordinate installation identity: {error}"
+        ))
+    })?;
+    match read_client_id(path) {
+        Ok(client_id) => return Ok(client_id),
+        Err(AxiomError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+
     let client_id = random_urlsafe(32)?;
+    let temporary = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
     let mut options = OpenOptions::new();
     options.create_new(true).write(true);
     #[cfg(unix)]
@@ -783,17 +818,22 @@ fn load_or_create_client_id(path: &Path) -> Result<String> {
         use std::os::unix::fs::OpenOptionsExt as _;
         options.mode(0o600);
     }
-    match options.open(path) {
-        Ok(mut file) => {
-            file.write_all(client_id.as_bytes())?;
-            file.write_all(b"\n")?;
-            file.sync_all()?;
-            set_file_permissions(path)?;
-            Ok(client_id)
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => read_client_id(path),
-        Err(error) => Err(error.into()),
+    let result = (|| -> Result<()> {
+        let mut file = options.open(&temporary)?;
+        file.write_all(client_id.as_bytes())?;
+        file.write_all(b"\n")?;
+        file.sync_all()?;
+        set_file_permissions(&temporary)?;
+        fs::rename(&temporary, path)?;
+        #[cfg(unix)]
+        fs::File::open(directory)?.sync_all()?;
+        Ok(())
+    })();
+    if let Err(error) = result {
+        let _ = fs::remove_file(&temporary);
+        return Err(error);
     }
+    Ok(client_id)
 }
 
 fn read_client_id(path: &Path) -> Result<String> {
@@ -883,12 +923,8 @@ struct CreatedAuthorization {
 #[derive(Serialize)]
 struct ExchangeRequest<'a> {
     authorization_id: &'a str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    device_code: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    code_verifier: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    completion_code: Option<&'a str>,
+    device_code: &'a str,
+    code_verifier: &'a str,
 }
 
 #[derive(Deserialize)]
@@ -952,8 +988,8 @@ mod tests {
             Ok(())
         }
 
-        fn client_id_path(&self) -> Option<PathBuf> {
-            Some(self.client_id_path.clone())
+        fn client_id_path(&self) -> &Path {
+            &self.client_id_path
         }
     }
 
@@ -1013,19 +1049,15 @@ mod tests {
         State(state): State<Arc<MockAuthorizationState>>,
         Json(body): Json<Value>,
     ) -> Json<Value> {
-        if let Some(verifier) = body["code_verifier"].as_str() {
-            let actual = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
-            assert_eq!(
-                state.challenge.lock().expect("challenge lock").as_deref(),
-                Some(actual.as_str())
-            );
-        } else {
-            assert!(
-                body["completion_code"]
-                    .as_str()
-                    .is_some_and(|value| value.starts_with("axc_0123456789abcdef0123456789abcdef."))
-            );
-        }
+        let verifier = body["code_verifier"]
+            .as_str()
+            .expect("exchange must carry the PKCE verifier");
+        let actual = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
+        assert_eq!(
+            state.challenge.lock().expect("challenge lock").as_deref(),
+            Some(actual.as_str())
+        );
+        assert_eq!(body.as_object().map(serde_json::Map::len), Some(3));
         if !state.approved.load(Ordering::Acquire) {
             return Json(json!({ "status": "pending", "token": null, "key": null }));
         }
@@ -1073,9 +1105,10 @@ mod tests {
         tokio::spawn(async move {
             axum::serve(listener, app).await.expect("mock auth server");
         });
+        let client_id_path = state.identity_directory.path().join("client-id");
         let store: Arc<dyn CredentialStore> = Arc::new(MemoryStore {
             credential: Mutex::new(None),
-            client_id_path: state.identity_directory.path().join(CLIENT_ID_FILENAME),
+            client_id_path,
         });
         let manager = AuthManager {
             state: Arc::new(RwLock::new(AuthState {
@@ -1112,7 +1145,7 @@ mod tests {
     #[test]
     fn installation_identity_is_stable_and_has_a_distinct_device_label() {
         let directory = tempfile::tempdir().expect("identity temp directory");
-        let path = directory.path().join(CLIENT_ID_FILENAME);
+        let path = directory.path().join("client-id");
         let first = load_or_create_client_id(&path).expect("create client ID");
         let second = load_or_create_client_id(&path).expect("reload client ID");
 
@@ -1177,23 +1210,6 @@ mod tests {
             manager.validate().await,
             ValidationStatus::Valid(_)
         ));
-    }
-
-    #[tokio::test]
-    async fn one_time_browser_code_can_finish_login_after_a_restart() {
-        let (manager, state) = mock_manager().await;
-        state.approved.store(true, Ordering::Release);
-
-        let account = manager
-            .complete_with_code("axc_0123456789abcdef0123456789abcdef.synthetic-completion-secret")
-            .await
-            .expect("complete fallback login");
-
-        assert_eq!(account.key_name, "AxiomCLI");
-        assert_eq!(
-            manager.credential().expect("saved credential"),
-            "axm_mock-browser-exchange-token"
-        );
     }
 
     #[tokio::test]

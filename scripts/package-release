@@ -98,6 +98,17 @@ done < <(
     | @tsv
   ' <<< "$metadata"
 )
+mkdir -p "$third_party_files/axiom-phala-core-0.1.0"
+install -m 0644 "$workspace_root/crates/axiom-phala-core/LICENSE" \
+  "$third_party_files/axiom-phala-core-0.1.0/LICENSE"
+install -m 0644 "$workspace_root/crates/axiom-phala-core/ORIGIN.md" \
+  "$third_party_files/axiom-phala-core-0.1.0/ORIGIN.md"
+printf '%s\t%s\t%s\t%s\n' \
+  'axiom-phala-core' '0.1.0' 'MIT' 'axiom-phala-core-0.1.0/LICENSE' \
+  >> "$third_party_manifest"
+printf '%s\t%s\t%s\t%s\n' \
+  'axiom-phala-core' '0.1.0' 'MIT' 'axiom-phala-core-0.1.0/ORIGIN.md' \
+  >> "$third_party_manifest"
 install -m 0644 "$workspace_root/README.md" "$package_root/share/doc/axiomcli/README.md"
 install -m 0644 "$workspace_root/docs/acp-compatibility.md" "$package_root/share/doc/axiomcli/acp-compatibility.md"
 install -m 0644 "$workspace_root/docs/configuration.md" "$package_root/share/doc/axiomcli/configuration.md"

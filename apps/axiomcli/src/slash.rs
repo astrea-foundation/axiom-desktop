@@ -46,7 +46,7 @@ pub const COMMANDS: &[SlashCommandSpec] = &[
         name: "permissions",
         usage: "/permissions",
         description: "Open tool and crypto permission settings",
-        aliases: &["permission", "mode"],
+        aliases: &[],
     },
     SlashCommandSpec {
         name: "compact",
@@ -234,9 +234,7 @@ pub fn completions(input: &str) -> Vec<SlashCompletion> {
                     || spec.aliases.iter().any(|alias| alias.starts_with(body))
             })
             .collect::<Vec<_>>();
-        // Prefer a canonical command-name match over an alias match. For
-        // example, `/mod` should complete to `/model`, not the `/mode` alias
-        // for permissions.
+        // Keep canonical command-name matches ahead of any alias matches.
         matches.sort_by_key(|spec| !spec.name.starts_with(body));
         return matches
             .into_iter()
@@ -313,7 +311,6 @@ mod tests {
     #[test]
     fn parses_every_required_command_and_aliases() {
         assert_eq!(parse("/permissions"), Some(Ok(SlashCommand::Permissions)));
-        assert_eq!(parse("/mode"), Some(Ok(SlashCommand::Permissions)));
         assert_eq!(
             parse("/compact preserve the failing test names"),
             Some(Ok(SlashCommand::Compact {
@@ -340,6 +337,8 @@ mod tests {
     #[test]
     fn invalid_commands_fail_closed_instead_of_becoming_prompts() {
         assert!(parse("/wat").expect("slash input").is_err());
+        assert!(parse("/permission").expect("slash input").is_err());
+        assert!(parse("/mode").expect("slash input").is_err());
         assert!(parse("/model glm-5-2").expect("slash input").is_err());
         assert!(parse("/resume latest").expect("slash input").is_err());
         assert!(parse("/delete latest").expect("slash input").is_err());

@@ -1,13 +1,21 @@
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 
 const require = createRequire(import.meta.url);
 const electronDir = dirname(require.resolve("electron/package.json"));
-const binary = join(electronDir, "dist", "electron");
 
-if (existsSync(binary)) {
+function installedBinary() {
+  const pathFile = join(electronDir, "path.txt");
+  if (!existsSync(pathFile)) return null;
+  const relative = readFileSync(pathFile, "utf8").trim();
+  if (!relative) return null;
+  const binary = join(electronDir, "dist", relative);
+  return existsSync(binary) ? binary : null;
+}
+
+if (installedBinary()) {
   process.exit(0);
 }
 
@@ -20,7 +28,7 @@ const install = spawnSync(process.execPath, [join(electronDir, "install.js")], {
   env,
 });
 
-if (!existsSync(binary)) {
+if (!installedBinary()) {
   console.error("Electron binary is missing. Re-run pnpm install.");
   process.exit(1);
 }

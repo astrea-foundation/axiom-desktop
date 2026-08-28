@@ -16,7 +16,7 @@ fn exec_uses_the_shared_runtime_and_persists_a_terminal_turn() {
     let mut exec = Command::new(binary);
     configure(&mut exec);
     let output = exec
-        .args(["exec", "journal this turn"])
+        .args(["exec", "persist this turn"])
         .output()
         .expect("headless exec");
     assert!(
@@ -25,7 +25,7 @@ fn exec_uses_the_shared_runtime_and_persists_a_terminal_turn() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        String::from_utf8_lossy(&output.stdout).contains("AxiomCLI received: journal this turn")
+        String::from_utf8_lossy(&output.stdout).contains("AxiomCLI received: persist this turn")
     );
 
     let mut list = Command::new(binary);
@@ -45,26 +45,22 @@ fn exec_uses_the_shared_runtime_and_persists_a_terminal_turn() {
         .output()
         .expect("show session");
     assert!(output.status.success());
-    let journal: serde_json::Value = serde_json::from_slice(&output.stdout).expect("journal JSON");
-    let events = journal["events"].as_array().expect("events");
-    assert!(events.iter().any(|event| {
-        event["origin"] == "headless" && event["event"]["kind"] == "session_created"
+    let state: serde_json::Value = serde_json::from_slice(&output.stdout).expect("state JSON");
+    assert_eq!(state["thread"]["origin"], "headless");
+    assert_eq!(state["thread"]["lifecycle"], "ready");
+    assert!(
+        state["turns"]
+            .as_array()
+            .expect("turns")
+            .iter()
+            .any(|turn| turn["status"] == "completed")
+    );
+    let timeline = state["timeline_items"].as_array().expect("timeline items");
+    assert!(timeline.iter().any(|item| item["kind"] == "user_message"));
+    assert!(timeline.iter().any(|item| {
+        item["kind"] == "assistant_message"
+            && item["content"] == "AxiomCLI received: persist this turn"
     }));
-    assert!(
-        events
-            .iter()
-            .any(|event| event["event"]["kind"] == "prompt_accepted")
-    );
-    assert!(
-        events
-            .iter()
-            .any(|event| event["event"]["kind"] == "text_delta")
-    );
-    assert!(
-        events
-            .iter()
-            .any(|event| event["event"]["kind"] == "turn_completed")
-    );
 }
 
 #[test]

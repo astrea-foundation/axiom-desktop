@@ -134,12 +134,9 @@ pub enum Origin {
 pub enum PermissionProfile {
     None,
     Web,
-    #[serde(alias = "plan")]
     Observe,
     #[default]
-    #[serde(alias = "workspace")]
     Confirm,
-    #[serde(alias = "autonomous")]
     FullAccess,
 }
 
@@ -176,16 +173,14 @@ impl PermissionProfile {
 }
 
 /// Provider-neutral reasoning preference for a session. Reasoning is always
-/// explicit; legacy journals that stored `auto` deserialize as `medium`. The
-/// direct secure Axiom transport validates the selected value against model
-/// catalog capabilities before sending it.
+/// explicit. The direct secure Axiom transport validates the selected value
+/// against model catalog capabilities before sending it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ThinkingLevel {
     Minimal,
     Low,
     #[default]
-    #[serde(alias = "auto")]
     Medium,
     High,
     ExtraHigh,
@@ -212,7 +207,7 @@ impl FromStr for ThinkingLevel {
             "low" => Ok(Self::Low),
             "medium" => Ok(Self::Medium),
             "high" => Ok(Self::High),
-            "xhigh" | "extra-high" | "extra_high" => Ok(Self::ExtraHigh),
+            "xhigh" => Ok(Self::ExtraHigh),
             _ => Err(AxiomError::Config(format!(
                 "unknown thinking level `{input}`"
             ))),
@@ -239,11 +234,9 @@ impl FromStr for PermissionProfile {
         match input {
             "none" => Ok(Self::None),
             "web" => Ok(Self::Web),
-            // Compatibility aliases keep early transcripts/configuration
-            // loadable without exposing the retired profiles in the UI.
-            "plan" | "observe" => Ok(Self::Observe),
-            "workspace" | "confirm" => Ok(Self::Confirm),
-            "autonomous" | "full_access" | "full-access" | "full" => Ok(Self::FullAccess),
+            "observe" => Ok(Self::Observe),
+            "confirm" => Ok(Self::Confirm),
+            "full_access" => Ok(Self::FullAccess),
             _ => Err(AxiomError::Config(format!(
                 "unknown permission profile `{input}`"
             ))),
@@ -302,6 +295,12 @@ pub enum AppCommand {
         session_id: SessionId,
         model: String,
     },
+    ChangeModelSettings {
+        session_id: SessionId,
+        model: String,
+        thinking: ThinkingLevel,
+        reset_security: bool,
+    },
     ChangeThinkingLevel {
         session_id: SessionId,
         level: ThinkingLevel,
@@ -328,6 +327,7 @@ impl AppCommand {
             | Self::FailTurn { session_id, .. }
             | Self::ChangePermissionProfile { session_id, .. }
             | Self::ChangeModel { session_id, .. }
+            | Self::ChangeModelSettings { session_id, .. }
             | Self::ChangeThinkingLevel { session_id, .. }
             | Self::RecordContextCompaction { session_id, .. }
             | Self::CloseSession { session_id } => session_id,
@@ -395,17 +395,14 @@ pub enum AppEvent {
         request_id: String,
         explanation: String,
         /// Serialized normalized policy effect. Kept provider-neutral so the
-        /// application event journal does not depend on presentation strings.
-        #[serde(default)]
+        /// application runtime does not depend on presentation strings.
         effect: serde_json::Value,
         /// Stable response choices that were actually offered for this request.
-        #[serde(default)]
         choices: Vec<String>,
     },
     PermissionResolved {
         request_id: String,
         allowed: bool,
-        #[serde(default)]
         choice: Option<String>,
     },
     ToolStarted {
@@ -428,7 +425,6 @@ pub enum AppEvent {
         call_id: String,
         diff: String,
         truncated: bool,
-        #[serde(default)]
         files: Vec<FileDiff>,
     },
     QuestionAsked {
@@ -485,6 +481,12 @@ pub enum AppEvent {
     SecurityStatusChanged {
         state: SecurityStatus,
     },
+    /// Every provider response contributing to this completed turn carried
+    /// terminal cryptographic proof. Preflight attestation is represented by
+    /// `SecurityStatusChanged` and is intentionally insufficient here.
+    ResponseVerified {
+        turn_id: TurnId,
+    },
     WarningRaised {
         message: String,
     },
@@ -503,7 +505,7 @@ pub enum AppEvent {
 
 /// Presentation-neutral before/after file content for clients that support
 /// native diff rendering. The unified diff remains alongside this structure
-/// for the TUI and backwards-compatible journals.
+/// for the TUI.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileDiff {
     pub path: PathBuf,
@@ -563,9 +565,7 @@ pub struct EventEnvelope {
     pub schema_version: u32,
     pub sequence: u64,
     pub occurred_at: DateTime<Utc>,
-    #[serde(default)]
     pub correlation_id: CorrelationId,
-    #[serde(default)]
     pub origin: Origin,
     pub session_id: SessionId,
     pub event: AppEvent,
@@ -765,6 +765,36 @@ impl Kernel {
                 }
                 vec![AppEvent::ModelChanged { model }]
             }
+            AppCommand::ChangeModelSettings {
+                session_id,
+                model,
+                thinking,
+                reset_security,
+            } => {
+                if model.trim().is_empty() || model.chars().any(char::is_whitespace) {
+                    return Err(AxiomError::InvalidTransition(
+                        "model ID must be a non-empty value without whitespace".into(),
+                    ));
+                }
+                let session = self.session_mut(&session_id)?;
+                if session.lifecycle != SessionLifecycle::Ready {
+                    return Err(AxiomError::InvalidTransition(
+                        "model settings may change only while the session is ready".into(),
+                    ));
+                }
+                let mut events = vec![AppEvent::ThinkingLevelChanged { level: thinking }];
+                if reset_security {
+                    events.push(AppEvent::SecurityStatusChanged {
+                        state: SecurityStatus::Unverified,
+                    });
+                }
+                // Keep the user-visible result focused on the action they
+                // took. Front ends apply this atomic batch in order, so the
+                // model event deliberately follows reconciled thinking and
+                // security invalidation and owns the final status message.
+                events.push(AppEvent::ModelChanged { model });
+                events
+            }
             AppCommand::ChangeThinkingLevel { session_id, level } => {
                 let session = self.session_mut(&session_id)?;
                 if session.lifecycle != SessionLifecycle::Ready {
@@ -922,7 +952,7 @@ impl Kernel {
         // A close event records that the previous front end shut down; it does
         // not tombstone a durable session. Unknown in-flight work is never
         // replayed. Every successfully restored session resumes ready and the
-        // journal retains interrupted evidence for the recovery surface.
+        // durable turn records retain interrupted evidence for recovery.
         state.lifecycle = SessionLifecycle::Ready;
         state.active_turn = None;
         state.pending_permission = None;
@@ -968,7 +998,7 @@ impl Kernel {
     ) -> EventEnvelope {
         self.next_sequence += 1;
         EventEnvelope {
-            schema_version: 3,
+            schema_version: 1,
             sequence: self.next_sequence,
             occurred_at: self.services.now(),
             correlation_id,
@@ -1183,16 +1213,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn legacy_auto_thinking_deserializes_as_explicit_medium() {
+    fn thinking_levels_are_explicit() {
         assert_eq!(
-            serde_json::from_str::<ThinkingLevel>("\"auto\"").expect("legacy thinking"),
+            serde_json::from_str::<ThinkingLevel>("\"medium\"").expect("thinking"),
             ThinkingLevel::Medium
         );
         assert_eq!(
             serde_json::to_string(&ThinkingLevel::Medium).expect("explicit thinking"),
             "\"medium\""
         );
+        assert!(serde_json::from_str::<ThinkingLevel>("\"auto\"").is_err());
         assert!(ThinkingLevel::from_str("auto").is_err());
+        assert!(ThinkingLevel::from_str("extra-high").is_err());
+        assert!(ThinkingLevel::from_str("extra_high").is_err());
     }
 
     fn services() -> Arc<DeterministicServices> {
@@ -1252,7 +1285,7 @@ mod tests {
     }
 
     #[test]
-    fn session_setting_and_compaction_commands_are_validated_and_journaled() {
+    fn session_setting_and_compaction_commands_are_validated_and_emitted() {
         let mut kernel = Kernel::with_services(services());
         let session_id = create(&mut kernel);
         assert!(

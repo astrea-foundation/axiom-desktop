@@ -12,9 +12,9 @@ configuration/session paths without printing credentials.
 - Run `axiomcli models` to test bounded model discovery.
 - Set `AXIOM_API_KEY` only as an automation override. It prevents `/login` from
   replacing the credential until the environment variable is unset.
-- If browser approval succeeds but the loopback callback is blocked, copy the
-  one-time `axc_` code from the website into AxiomCLI. It is not the permanent
-  API key and becomes unusable after one successful exchange.
+- If browser approval succeeds but the loopback callback is blocked, leave the
+  login window open. PKCE polling completes the authorization; the loopback
+  callback only accelerates it.
 - Authentication errors are not retried; rate limits and transient errors use
   bounded retries with a stable idempotency key.
 - A truncated or malformed stream fails the turn. It is never treated as a
