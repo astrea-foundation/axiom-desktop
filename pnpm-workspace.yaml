@@ -1,0 +1,6 @@
+packages:
+  - "apps/desktop"
+  - "packages/*"
+allowBuilds:
+  electron: true
+  esbuild: true

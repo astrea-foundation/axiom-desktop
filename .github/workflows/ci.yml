@@ -1,0 +1,70 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.1
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y bubblewrap jq
+      - run: cargo fmt --all -- --check
+      - run: cargo check --workspace --all-targets --all-features
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: cargo install cargo-deny --locked
+      - run: cargo test --workspace --all-features
+      - run: cargo test --target-dir target/acp-sdk-vendor --locked --manifest-path vendor/agent-client-protocol-2.0.0/Cargo.toml --test jsonrpc_deep_chain_stack
+      - run: scripts/axiomcli-eval deterministic
+      - run: cargo deny check
+
+  portability:
+    name: source portability (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.1
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --workspace --all-targets --all-features
+      - run: cargo test --target-dir target/acp-sdk-vendor --locked --manifest-path vendor/agent-client-protocol-2.0.0/Cargo.toml --test jsonrpc_deep_chain_stack
+
+  release-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.1
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y bubblewrap jq
+      - run: cargo install cargo-deny --locked
+      - run: scripts/package-release
+        env:
+          SOURCE_DATE_EPOCH: "1700000000"
+      - run: scripts/verify-release dist/*.tar.gz
+
+  real-searxng:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.1
+      - uses: astral-sh/setup-uv@v6
+      - uses: Swatinem/rust-cache@v2
+      - run: scripts/searxng-dev integration-test
