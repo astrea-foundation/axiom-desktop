@@ -1,0 +1,65 @@
+import { HelpCircle, ShieldAlert } from "lucide-react";
+import { useMemo, useState } from "react";
+import type { PendingInteraction } from "@axiom/axiom-acp-client";
+
+type Field = { id: string; title: string };
+
+function interactionFields(payload: unknown): Field[] {
+  if (!payload || typeof payload !== "object") return [];
+  const params = payload as Record<string, unknown>;
+  const mode = params.mode && typeof params.mode === "object" ? params.mode as Record<string, unknown> : null;
+  const schema = mode?.schema && typeof mode.schema === "object" ? mode.schema as Record<string, unknown> : null;
+  const properties = schema?.properties && typeof schema.properties === "object"
+    ? schema.properties as Record<string, unknown>
+    : {};
+  return Object.entries(properties).map(([id, value]) => {
+    const property = value && typeof value === "object" ? value as Record<string, unknown> : {};
+    return { id, title: typeof property.title === "string" ? property.title : id };
+  });
+}
+
+export function InteractionCard({ interaction }: { interaction: PendingInteraction }) {
+  const fields = useMemo(() => interactionFields(interaction.payload), [interaction.payload]);
+  const [answers, setAnswers] = useState<Record<string, string>>({});
+  const payload = interaction.payload && typeof interaction.payload === "object"
+    ? interaction.payload as Record<string, unknown>
+    : {};
+  const options = Array.isArray(payload.options) ? payload.options as Array<Record<string, unknown>> : [];
+
+  if (interaction.kind === "permission") {
+    return (
+      <div className="ml-11 rounded-xl border border-amber-400/20 bg-amber-400/[0.06] p-3 text-[12.5px]">
+        <div className="mb-2 flex items-center gap-2 text-amber-200"><ShieldAlert size={14} />Permission requested</div>
+        <div className="flex flex-wrap gap-2">
+          {options.map((option) => {
+            const id = typeof option.optionId === "string" ? option.optionId : "";
+            return id ? (
+              <button key={id} type="button" onClick={() => void window.axiomDesktop?.agent.resolvePermission(interaction.id, { outcome: "selected", optionId: id })} className="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-surface)] px-3 py-1.5 text-[var(--color-text-primary)]">
+                {typeof option.name === "string" ? option.name : id}
+              </button>
+            ) : null;
+          })}
+          <button type="button" onClick={() => void window.axiomDesktop?.agent.resolvePermission(interaction.id, { outcome: "cancelled" })} className="rounded-lg px-3 py-1.5 text-[var(--color-text-tertiary)]">Deny</button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="ml-11 rounded-xl border border-[var(--color-border-accent)] bg-[var(--color-cherry-glow)] p-3 text-[12.5px]">
+      <div className="mb-3 flex items-center gap-2 text-[var(--color-text-primary)]"><HelpCircle size={14} />Axiom needs your input</div>
+      <div className="flex flex-col gap-2">
+        {fields.map((field) => (
+          <label key={field.id} className="flex flex-col gap-1 text-[var(--color-text-secondary)]">
+            <span>{field.title}</span>
+            <input value={answers[field.id] ?? ""} onChange={(event) => setAnswers((current) => ({ ...current, [field.id]: event.target.value }))} className="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-input)] px-3 py-2 text-[var(--color-text-primary)] outline-none" />
+          </label>
+        ))}
+        <div className="mt-1 flex gap-2">
+          <button type="button" disabled={fields.some((field) => !(answers[field.id] ?? "").trim())} onClick={() => void window.axiomDesktop?.agent.resolveElicitation(interaction.id, { action: "accept", content: answers })} className="rounded-lg bg-[var(--color-cherry)] px-3 py-1.5 text-[#140709] disabled:opacity-40">Continue</button>
+          <button type="button" onClick={() => void window.axiomDesktop?.agent.resolveElicitation(interaction.id, { action: "decline" })} className="rounded-lg px-3 py-1.5 text-[var(--color-text-tertiary)]">Decline</button>
+        </div>
+      </div>
+    </div>
+  );
+}
