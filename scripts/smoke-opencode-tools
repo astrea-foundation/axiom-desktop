@@ -1,0 +1,260 @@
+#!/usr/bin/env bash
+
+# Protected Lane E test: real OpenCode -> real axiom-proxy -> live Axiom.
+
+set +x
+set -euo pipefail
+
+fail() {
+  printf 'OpenCode tool smoke failed: %s\n' "$1" >&2
+  exit 1
+}
+
+for required in cargo cmp curl find grep jq opencode openssl timeout; do
+  command -v "$required" >/dev/null 2>&1 || fail "missing required command: $required"
+done
+[[ -n "${AXIOM_API_KEY:-}" ]] || fail "export AXIOM_API_KEY in the protected environment"
+
+upstream_key="$AXIOM_API_KEY"
+unset AXIOM_API_KEY
+repository="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+proxy_bin="${AXIOM_PROXY_BIN:-$repository/target/debug/axiom-proxy}"
+axiom_base_url="${AXIOM_BASE_URL:-https://api.axiom.stream}"
+requested_model="${AXIOM_LIVE_MODEL:-}"
+reasoning_effort="${AXIOM_LIVE_REASONING_EFFORT:-medium}"
+timeout_seconds="${AXIOM_OPENCODE_TIMEOUT_SECONDS:-300}"
+keep_artifacts="${KEEP_LIVE_ARTIFACTS:-0}"
+
+[[ "$reasoning_effort" =~ ^(low|medium|high|xhigh)$ ]] \
+  || fail "AXIOM_LIVE_REASONING_EFFORT must be low, medium, high, or xhigh"
+[[ "$timeout_seconds" =~ ^[0-9]+$ ]] && ((timeout_seconds > 0)) \
+  || fail "AXIOM_OPENCODE_TIMEOUT_SECONDS must be positive"
+
+if [[ ! -x "$proxy_bin" ]]; then
+  cargo build --manifest-path "$repository/Cargo.toml" -p axiom-proxy
+fi
+
+artifact_root="$(mktemp -d "${TMPDIR:-/tmp}/axiom-opencode-tools.XXXXXX")"
+workspace="$artifact_root/workspace"
+isolated_home="$artifact_root/home"
+events_file="$artifact_root/opencode.events.jsonl"
+client_log="$artifact_root/opencode.stderr.log"
+proxy_stdout="$artifact_root/proxy.stdout.jsonl"
+proxy_log="$artifact_root/proxy.stderr.jsonl"
+proxy_pid=""
+
+cleanup() {
+  status=$?
+  trap - EXIT INT TERM
+  if [[ -n "$proxy_pid" ]] && kill -0 "$proxy_pid" 2>/dev/null; then
+    kill -INT "$proxy_pid" 2>/dev/null || true
+    wait "$proxy_pid" 2>/dev/null || true
+  fi
+  if ((status != 0)) || [[ "$keep_artifacts" == "1" ]]; then
+    printf 'Tool smoke artifacts retained at %s\n' "$artifact_root" >&2
+  else
+    rm -rf -- "$artifact_root"
+  fi
+  exit "$status"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+mkdir -p -- "$workspace" "$isolated_home" \
+  "$artifact_root/xdg-config" "$artifact_root/xdg-data" \
+  "$artifact_root/xdg-cache" "$artifact_root/xdg-state"
+printf 'TOKEN=before\n' >"$workspace/target.txt"
+printf 'TOKEN=after\n' >"$artifact_root/expected.txt"
+
+local_token="$(openssl rand -hex 32)"
+AXIOM_API_KEY="$upstream_key" AXIOM_PROXY_TOKEN="$local_token" \
+  "$proxy_bin" --bind 127.0.0.1:0 --axiom-base-url "$axiom_base_url" \
+  >"$proxy_stdout" 2>"$proxy_log" &
+proxy_pid=$!
+
+address=""
+for _attempt in $(seq 1 120); do
+  if [[ -s "$proxy_stdout" ]]; then
+    address="$(jq -r 'select(.event == "ready") | .address' "$proxy_stdout" 2>/dev/null | head -n 1)"
+    [[ -n "$address" && "$address" != "null" ]] && break
+  fi
+  kill -0 "$proxy_pid" 2>/dev/null || fail "proxy exited before readiness"
+  sleep 0.25
+done
+[[ -n "$address" ]] || fail "proxy did not announce readiness"
+proxy_url="http://$address"
+
+models_json="$(curl --fail --silent --show-error --max-time 60 \
+  -H "Authorization: Bearer $local_token" "$proxy_url/v1/models")" \
+  || fail "live model discovery failed"
+if [[ -n "$requested_model" ]]; then
+  jq -e --arg model "$requested_model" --arg effort "$reasoning_effort" \
+    'any(.data[]; .id == $model and (.supported_reasoning_efforts | index($effort)))' \
+    <<<"$models_json" >/dev/null \
+    || fail "AXIOM_LIVE_MODEL is absent or does not support the requested reasoning effort"
+  model="$requested_model"
+else
+  model="$(jq -r --arg effort "$reasoning_effort" \
+    '[.data[] | select(.supported_reasoning_efforts | index($effort))][0].id // empty' \
+    <<<"$models_json")"
+fi
+[[ -n "$model" ]] || fail "live catalog returned no model supporting $reasoning_effort"
+context_window="$(jq -r --arg model "$model" '.data[] | select(.id == $model) | .context_window_tokens' <<<"$models_json")"
+max_output_tokens="$(jq -r --arg model "$model" '.data[] | select(.id == $model) | .max_output_tokens' <<<"$models_json")"
+[[ "$context_window" =~ ^[0-9]+$ && "$max_output_tokens" =~ ^[0-9]+$ ]] \
+  || fail "selected model omitted numeric context/output limits"
+
+opencode_config="$(jq -cn \
+  --arg endpoint "$proxy_url/v1" --arg token "$local_token" \
+  --arg model "$model" --arg effort "$reasoning_effort" \
+  --argjson context "$context_window" --argjson output "$max_output_tokens" \
+  '{provider:{axiom:{npm:"@ai-sdk/openai-compatible",name:"Axiom Secure Proxy",
+      options:{baseURL:$endpoint,apiKey:$token},
+      models:{($model):{name:("Axiom " + $model),tool_call:true,
+        limit:{context:$context,output:$output},options:{reasoningEffort:$effort}}}}},
+    permission:{"*":"deny",read:"allow",edit:"allow",write:"allow",glob:"allow",list:"allow",
+      external_directory:"deny",bash:"deny",task:"deny",webfetch:"deny",question:"deny"}}')"
+
+prompt='Operate only in this disposable directory. First read target.txt. Then replace exactly TOKEN=before with TOKEN=after using edit or write. Read target.txt again after the edit. Finally return a non-empty completion message. Do not invoke a shell, network access, subagents, or any path outside this directory.'
+
+set +e
+(
+  cd "$workspace"
+  export HOME="$isolated_home"
+  export XDG_CONFIG_HOME="$artifact_root/xdg-config"
+  export XDG_DATA_HOME="$artifact_root/xdg-data"
+  export XDG_CACHE_HOME="$artifact_root/xdg-cache"
+  export XDG_STATE_HOME="$artifact_root/xdg-state"
+  export OPENCODE_CONFIG_CONTENT="$opencode_config"
+  export OPENCODE_DISABLE_AUTOUPDATE=true
+  unset AXIOM_API_KEY AXIOM_BASE_URL AXIOM_PROXY_TOKEN
+  timeout --signal=TERM --kill-after=10 "${timeout_seconds}s" \
+    opencode run --pure --format json --model "axiom/$model" "$prompt"
+) >"$events_file" 2>"$client_log"
+client_status=$?
+set -e
+((client_status == 0)) || fail "OpenCode exited with status $client_status"
+
+[[ -s "$events_file" ]] || fail "OpenCode emitted no structured events"
+while IFS= read -r line; do jq -e . <<<"$line" >/dev/null || fail "OpenCode emitted invalid JSONL"; done <"$events_file"
+jq -e 'select(.type == "error")' "$events_file" >/dev/null \
+  && fail "OpenCode emitted an error event"
+
+jq -s -e '
+  [to_entries[] | select(.value.type == "tool_use" and .value.part.tool == "read" and
+    .value.part.state.status == "completed")] as $reads |
+  [to_entries[] | select(.value.type == "tool_use" and
+    (.value.part.tool == "edit" or .value.part.tool == "write") and
+    .value.part.state.status == "completed")] as $writes |
+  [to_entries[] | select(.value.type == "text" and
+    (.value.part.text | type == "string") and (.value.part.text | length > 0))] as $text |
+  ($reads|length) >= 2 and ($writes|length) >= 1 and ($text|length) >= 1 and
+  $reads[0].key < $writes[0].key and $writes[0].key < $reads[-1].key and
+  $reads[-1].key < $text[-1].key
+' "$events_file" >/dev/null || fail "events did not prove ordered read/edit/read/final text"
+
+cmp -s "$workspace/target.txt" "$artifact_root/expected.txt" \
+  || fail "target.txt does not equal the exact expected output"
+unexpected="$(find "$workspace" -mindepth 1 ! -path "$workspace/target.txt" -print -quit)"
+[[ -z "$unexpected" ]] || fail "OpenCode created an unexpected workspace entry"
+
+# The selected catalog entry advertises parallel tools. Require two independent
+# reads in one assistant message and prove both completed before final text.
+printf 'ALPHA=one\n' >"$workspace/alpha.txt"
+printf 'BETA=two\n' >"$workspace/beta.txt"
+parallel_events="$artifact_root/parallel.events.jsonl"
+set +e
+(
+  cd "$workspace"
+  export HOME="$isolated_home" XDG_CONFIG_HOME="$artifact_root/xdg-config" \
+    XDG_DATA_HOME="$artifact_root/xdg-data" XDG_CACHE_HOME="$artifact_root/xdg-cache" \
+    XDG_STATE_HOME="$artifact_root/xdg-state" OPENCODE_CONFIG_CONTENT="$opencode_config" \
+    OPENCODE_DISABLE_AUTOUPDATE=true
+  unset AXIOM_API_KEY AXIOM_BASE_URL AXIOM_PROXY_TOKEN
+  timeout --signal=TERM --kill-after=10 "${timeout_seconds}s" \
+    opencode run --pure --format json --model "axiom/$model" \
+      'In one assistant step, issue exactly two independent read tool calls in parallel: one for alpha.txt and one for beta.txt. After both finish, return a non-empty final text response. Do not call any other tool.'
+) >"$parallel_events" 2>"$artifact_root/parallel.stderr.log"
+parallel_status=$?
+set -e
+((parallel_status == 0)) || fail "parallel OpenCode run exited with status $parallel_status"
+jq -s -e '
+  [.[] | select(.type == "tool_use" and .part.tool == "read" and
+    .part.state.status == "completed" and
+    (.part.state.input.filePath | (endswith("/alpha.txt") or endswith("/beta.txt"))))] as $reads |
+  [.[] | select(.type == "text" and (.part.text | type == "string") and
+    (.part.text | length > 0))] as $text |
+  ($reads|length) == 2 and ($reads|map(.part.messageID)|unique|length) == 1 and
+  ($reads|map(.part.state.input.filePath)|map(endswith("/alpha.txt"))|any) and
+  ($reads|map(.part.state.input.filePath)|map(endswith("/beta.txt"))|any) and
+  ($text|length) >= 1
+' "$parallel_events" >/dev/null \
+  || fail "events did not prove two parallel reads in one assistant message"
+
+# A second run is terminated before it can receive authority to change a fresh
+# file. This proves partial/incomplete calls do not execute after disconnect.
+printf 'TOKEN=before\n' >"$workspace/cancel-target.txt"
+stream_open_before="$(grep -Fc '"event":"request_stream_open"' "$proxy_log" || true)"
+cancelled_before="$(grep -Fc '"terminal":"cancelled"' "$proxy_log" || true)"
+(
+  cd "$workspace"
+  export HOME="$isolated_home" XDG_CONFIG_HOME="$artifact_root/xdg-config" \
+    XDG_DATA_HOME="$artifact_root/xdg-data" XDG_CACHE_HOME="$artifact_root/xdg-cache" \
+    XDG_STATE_HOME="$artifact_root/xdg-state" OPENCODE_CONFIG_CONTENT="$opencode_config" \
+    OPENCODE_DISABLE_AUTOUPDATE=true
+  unset AXIOM_API_KEY AXIOM_BASE_URL AXIOM_PROXY_TOKEN
+  exec timeout --signal=TERM --kill-after=2 300 \
+    opencode run --pure --format json --model "axiom/$model" \
+      'Reason at length before doing anything. Only after that, edit cancel-target.txt from TOKEN=before to TOKEN=after.'
+) >"$artifact_root/cancel.events.jsonl" 2>"$artifact_root/cancel.stderr.log" &
+cancel_pid=$!
+
+stream_open=0
+for _attempt in $(seq 1 240); do
+  current="$(grep -Fc '"event":"request_stream_open"' "$proxy_log" || true)"
+  if ((current > stream_open_before)); then
+    stream_open=1
+    break
+  fi
+  kill -0 "$cancel_pid" 2>/dev/null || fail "cancellation client exited before opening a stream"
+  sleep 0.25
+done
+((stream_open == 1)) || fail "cancellation client did not open a verified stream"
+sleep 0.25
+kill -TERM "$cancel_pid" 2>/dev/null || true
+set +e
+wait "$cancel_pid"
+cancel_status=$?
+set -e
+[[ "$cancel_status" == "124" || "$cancel_status" == "143" ]] \
+  || fail "cancelled OpenCode run exited with unexpected status $cancel_status"
+
+cancelled=0
+for _attempt in $(seq 1 80); do
+  current="$(grep -Fc '"terminal":"cancelled"' "$proxy_log" || true)"
+  if ((current > cancelled_before)); then
+    cancelled=1
+    break
+  fi
+  sleep 0.25
+done
+((cancelled == 1)) || fail "proxy did not record the OpenCode stream as cancelled"
+cmp -s "$workspace/cancel-target.txt" <(printf 'TOKEN=before\n') \
+  || fail "a partial tool call changed cancel-target.txt"
+
+if grep -Fq -e 'TOKEN=before' -e 'TOKEN=after' -e 'target.txt' \
+  -e 'ALPHA=one' -e 'BETA=two' -e 'alpha.txt' -e 'beta.txt' "$proxy_log"; then
+  fail "tool plaintext appeared in proxy operational logs"
+fi
+if grep -R -Fq -- "$upstream_key" "$artifact_root"; then
+  fail "Axiom credential reached a client artifact"
+fi
+if grep -R -Fq -- "$local_token" "$artifact_root"; then
+  fail "local proxy credential appeared in output or logs"
+fi
+jq -Rse '[split("\n")[] | fromjson? | select(.event == "security_verified")] | length > 0' \
+  "$proxy_log" >/dev/null || fail "proxy recorded no verified live security evidence"
+
+printf 'OpenCode %s secure tool loop passed through %s using %s.\n' \
+  "$(opencode --version)" "$model" "$reasoning_effort"
