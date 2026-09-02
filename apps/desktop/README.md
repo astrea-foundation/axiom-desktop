@@ -38,8 +38,8 @@ other programs running through the generic Electron executable. Re-run
 
 On macOS the window keeps its native traffic lights over a hidden title bar
 and has a minimal application menu (About, Edit, Window). Windows and Linux
-are frameless with the app's own window controls and no menu. Drag the top
-strip or the header to move the window.
+use their native window controls in a transparent title-bar overlay and have
+no menu. Drag the top strip or the header to move the window.
 
 The renderer is sandboxed with context isolation, Node integration disabled,
 a restrictive CSP, and HTTP(S)-only external-link handling. Packaged builds

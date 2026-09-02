@@ -8,7 +8,6 @@ import { SignInDialog } from "./components/SignInDialog";
 import { Sidebar } from "./components/Sidebar";
 import { WelcomeView } from "./components/WelcomeView";
 import { TrafficLightGhost } from "./components/TrafficLightGhost";
-import { WindowControls } from "./components/WindowControls";
 import { setThemePreference, useTheme } from "./lib/theme";
 import { isMac, MAC_TRAFFIC_LIGHT_INSET_CLASS, useFullScreen } from "./lib/window-chrome";
 import { accountPresentation, desktopErrorMessage, signInErrorMessage, type SignInState } from "./signInFlow";
@@ -644,7 +643,7 @@ export function App() {
           className={[
             "drag-region absolute inset-x-0 top-0 z-30 flex h-11 items-center bg-transparent",
             macNotch ? MAC_TRAFFIC_LIGHT_INSET_CLASS : "pl-3",
-            "pr-2",
+            !isMac && !fullScreen ? "window-controls-inset" : "pr-2",
           ].join(" ")}
         >
           {!sidebarOpen ? <button type="button" onClick={() => setSidebarOpen(true)} className="no-drag mr-2 rounded-md p-1.5 text-[var(--color-text-tertiary)] hover:bg-[var(--color-bg-surface-hover)]" aria-label="Open sidebar"><PanelLeftOpen size={16} /></button> : null}
@@ -669,7 +668,6 @@ export function App() {
               </button>
             ) : null}
           </div>
-          <WindowControls />
         </header>
 
         {uiError || agentState.error ? (

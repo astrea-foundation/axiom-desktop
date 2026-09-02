@@ -5,9 +5,10 @@ const platform = desktop?.platform;
 
 export const isMac = platform === "darwin";
 export const isWindows = platform === "win32";
+export const isLinux = platform === "linux";
 
-/** Only macOS draws its own window controls; elsewhere the app renders them. */
-export const hasNativeWindowControls = isMac;
+/** Every supported desktop platform uses OS-level window controls. */
+export const hasNativeWindowControls = isMac || isWindows || isLinux;
 
 /** Width reserved for the macOS traffic lights when they overlap our chrome. */
 export const MAC_TRAFFIC_LIGHT_INSET_CLASS = "pl-[76px]";

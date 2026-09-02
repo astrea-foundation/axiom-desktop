@@ -37,7 +37,7 @@ Headline outcomes:
 ```text
 pnpm install
 pnpm desktop                     # builds axiomcli, starts electron-vite dev
-pnpm --filter axiom-desktop test # 13 node:test cases
+pnpm --filter axiom-desktop test # 16 node:test cases
 pnpm --filter axiom-desktop typecheck
 pnpm --filter axiom-desktop capture   # ~/axiom-desktop-captures/{light,dark}-*.png
 ```
@@ -45,9 +45,8 @@ pnpm --filter axiom-desktop capture   # ~/axiom-desktop-captures/{light,dark}-*.
 - `AXIOMCLI_SIDECAR=/path/to/binary-or-script` overrides the sidecar in dev
   **and** in capture mode (packaged builds ignore it, as before).
 - `AXIOM_DESKTOP_PLATFORM_PREVIEW=win32 pnpm desktop` on a Mac renders the
-  Windows chrome (frameless controls, no traffic-light inset). It only changes
-  what the preload reports as `platform` and hides the macOS buttons; the
-  BrowserWindow itself is still macOS.
+  Windows content insets and hides the macOS traffic lights. The BrowserWindow
+  itself is still macOS, so this mode cannot emulate Windows' native controls.
 - `electron-vite dev` hot-reloads the renderer only. Anything under
   `src/main` or `src/preload` needs the app restarted.
 - Capture shots: `conversation, welcome, models, signin, proxy, folder, markdown,
@@ -120,23 +119,25 @@ pnpm --filter axiom-desktop capture   # ~/axiom-desktop-captures/{light,dark}-*.
 
 ### 3.3 Window chrome per platform
 
-- `src/main/window-chrome.ts` (new, unit-tested): darwin →
-  `{ titleBarStyle: "hiddenInset" }`; others → `{ frame: false }`. **Never add
-  `trafficLightPosition` or `titleBarOverlay`**: a custom position re-parents
-  the buttons and they render empty when the window is inactive
-  (electron#27295).
+- `src/main/window-chrome.ts` (new, unit-tested): darwin uses
+  `{ titleBarStyle: "hiddenInset" }`; Windows and Linux use Electron's native
+  Window Controls Overlay over a hidden title bar. The overlay is transparent,
+  44 px tall, and its symbols track the resolved light/dark theme. Never add a
+  custom `trafficLightPosition` on macOS: it re-parents the buttons and they
+  render empty when the window is inactive (electron#27295).
 - Electron also draws the traffic lights fully transparent while the window
   is blurred (electron#44034). `TrafficLightGhost.tsx` paints three grey dots
   (centres x 20/40/60, top 12) only when `isMac && !active && !fullScreen`;
   the real buttons cover them exactly when AppKit redraws.
 - New IPC: `window:isFullScreen` / `window:fullscreen-changed`,
   `window:isFocused` / `window:active-changed`, consumed only through
-  `src/renderer/src/lib/window-chrome.ts` (`isMac`, `isWindows`,
-  `hasNativeWindowControls`, `MAC_TRAFFIC_LIGHT_INSET_CLASS = "pl-[76px]"`,
+  `src/renderer/src/lib/window-chrome.ts` (`isMac`, `isWindows`, `isLinux`,
+  `MAC_TRAFFIC_LIGHT_INSET_CLASS = "pl-[76px]"`,
   `useFullScreen()`, `useWindowActive()`; values are cached at module level so
   late-mounting components paint correctly on first render).
-- `WindowControls.tsx` renders only on frameless platforms: three 28 px round
-  buttons in the header's top-right, glyphs floating, circles on hover.
+- Windows/Linux header content uses `.window-controls-inset`, backed by
+  Electron's `env(titlebar-area-width)`, so app actions never sit underneath
+  the OS-owned minimize, maximize, and close hit targets.
 - The notch: when `isMac && !sidebarOpen && !fullScreen`, `.stage-frame` gets
   `data-notch="true"` and `--nt` transitions 0 → 1 in the same 300 ms as the
   sidebar slide. Geometry: card radius 22, tab 70 × 26 px, convex corner 12,
@@ -158,7 +159,7 @@ pnpm --filter axiom-desktop capture   # ~/axiom-desktop-captures/{light,dark}-*.
   The old pointer-drag resize handle and the sidebar wordmark are gone.
 - Header (44 px, absolute, drag region): open-sidebar button when collapsed,
   title, folder chip, a `···` "Thread actions" button (**placeholder, no
-  onClick yet**), then `WindowControls`.
+  onClick yet**), with space reserved for the native controls overlay.
 - Content fades out under the title strip via `.title-fade`, a `mask-image`
   on the ChatView and ProxyView scrollers (transparent to 44 px, opaque at
   84 px). A painted scrim was tried first and produced a visible edge in dark

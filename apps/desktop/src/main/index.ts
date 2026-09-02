@@ -4,7 +4,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { app, BrowserWindow, ipcMain, Menu, nativeImage, nativeTheme, shell, type IpcMainInvokeEvent } from "electron";
 import type { ElicitationOutcome, ListThreadsRequest, PermissionOutcome, ThreadSettingsRequest } from "@axiom/axiom-acp-client";
 import { AgentSidecar } from "./agent-sidecar";
-import { platformWindowChrome } from "./window-chrome";
+import { platformWindowChrome, windowControlsOverlay } from "./window-chrome";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -258,7 +258,7 @@ function createWindow(): BrowserWindow {
     minWidth: 960,
     minHeight: 640,
     backgroundColor: nativeTheme.shouldUseDarkColors ? BACKGROUND_DARK : BACKGROUND,
-    ...platformWindowChrome(process.platform),
+    ...platformWindowChrome(process.platform, nativeTheme.shouldUseDarkColors ? "dark" : "light"),
     autoHideMenuBar: true,
     title: "Axiom",
     show: false,
@@ -292,12 +292,6 @@ function createWindow(): BrowserWindow {
   window.webContents.on("will-navigate", (event, url) => {
     if (url !== window.webContents.getURL()) event.preventDefault();
   });
-
-  const emitMaximized = () => {
-    window.webContents.send("window:maximized-changed", window.isMaximized());
-  };
-  window.on("maximize", emitMaximized);
-  window.on("unmaximize", emitMaximized);
 
   const emitFullScreen = () => {
     window.webContents.send("window:fullscreen-changed", window.isFullScreen());
@@ -393,21 +387,6 @@ if (primaryInstance) app.on("second-instance", () => {
 
 if (primaryInstance) void app.whenReady().then(() => {
   installAgentIpc();
-  ipcMain.on("window:minimize", (event) => {
-    BrowserWindow.fromWebContents(event.sender)?.minimize();
-  });
-  ipcMain.on("window:maximize", (event) => {
-    const window = BrowserWindow.fromWebContents(event.sender);
-    if (!window) return;
-    if (window.isMaximized()) window.unmaximize();
-    else window.maximize();
-  });
-  ipcMain.on("window:close", (event) => {
-    BrowserWindow.fromWebContents(event.sender)?.close();
-  });
-  ipcMain.handle("window:isMaximized", (event) => {
-    return BrowserWindow.fromWebContents(event.sender)?.isMaximized() ?? false;
-  });
   ipcMain.handle("window:isFullScreen", (event) => {
     return BrowserWindow.fromWebContents(event.sender)?.isFullScreen() ?? false;
   });
@@ -421,6 +400,9 @@ if (primaryInstance) void app.whenReady().then(() => {
     const window = BrowserWindow.fromWebContents(event.sender);
     if (window && (resolved === "light" || resolved === "dark")) {
       window.setBackgroundColor(resolved === "dark" ? BACKGROUND_DARK : BACKGROUND);
+      if (process.platform !== "darwin") {
+        window.setTitleBarOverlay(windowControlsOverlay(resolved));
+      }
     }
   });
 

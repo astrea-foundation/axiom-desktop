@@ -3,11 +3,6 @@ import { agentApi, type AgentApi } from "./agent-api";
 
 export type DesktopApi = {
   platform: NodeJS.Platform;
-  minimize: () => void;
-  maximize: () => void;
-  close: () => void;
-  isMaximized: () => Promise<boolean>;
-  onMaximizedChange: (callback: (maximized: boolean) => void) => () => void;
   isFullScreen: () => Promise<boolean>;
   onFullScreenChange: (callback: (fullScreen: boolean) => void) => () => void;
   isFocused: () => Promise<boolean>;
@@ -21,25 +16,6 @@ const previewPlatform = previewArgument?.slice("--axiom-platform-preview=".lengt
 
 const api: DesktopApi = {
   platform: previewPlatform ?? process.platform,
-  minimize: () => {
-    ipcRenderer.send("window:minimize");
-  },
-  maximize: () => {
-    ipcRenderer.send("window:maximize");
-  },
-  close: () => {
-    ipcRenderer.send("window:close");
-  },
-  isMaximized: () => ipcRenderer.invoke("window:isMaximized"),
-  onMaximizedChange: (callback) => {
-    const listener = (_event: unknown, maximized: boolean) => {
-      callback(maximized);
-    };
-    ipcRenderer.on("window:maximized-changed", listener);
-    return () => {
-      ipcRenderer.removeListener("window:maximized-changed", listener);
-    };
-  },
   isFullScreen: () => ipcRenderer.invoke("window:isFullScreen"),
   onFullScreenChange: (callback) => {
     const listener = (_event: unknown, fullScreen: boolean) => {
