@@ -274,6 +274,7 @@ async function captureStates(window: BrowserWindow, outputDir: string): Promise<
     { name: "conversation", wait: 400 },
     { name: "welcome", script: `window.__axiomDemo?.showWelcome()`, wait: 1600 },
     { name: "models", script: `window.__axiomDemo?.openModelPicker()`, wait: 400 },
+    { name: "signin", script: `window.__axiomDemo?.showSignIn()`, wait: 400 },
     { name: "proxy", script: `window.__axiomDemo?.showProxy()`, wait: 900 },
     { name: "folder", script: `window.__axiomDemo?.showFolder()`, wait: 700 },
   ];

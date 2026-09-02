@@ -2,6 +2,7 @@ import { Check, Search } from "lucide-react";
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ProviderModel } from "../types";
 import { ModelBrandIcon, ProviderBrandIcon } from "./ModelBrandIcon";
+import { formatModelPricing } from "./modelPricing";
 
 interface ProviderGroup {
   id: string;
@@ -170,6 +171,7 @@ export function ModelPicker({ models, selectedModelId, onSelect }: ModelPickerPr
         {activeGroup?.models.length ? (
           activeGroup.models.map((model) => {
             const selected = model.id === selectedModelId;
+            const pricing = formatModelPricing(model);
             return (
               <button
                 key={model.id}
@@ -197,6 +199,22 @@ export function ModelPicker({ models, selectedModelId, onSelect }: ModelPickerPr
                   <span className="mt-0.5 block truncate font-mono text-[10.5px] text-[var(--color-text-tertiary)]">
                     {model.model}
                   </span>
+                </span>
+                <span className="w-[8.75rem] shrink-0 text-right">
+                  {pricing ? (
+                    <>
+                      <span className="block whitespace-nowrap text-[10.5px] font-medium tabular-nums text-[var(--color-text-secondary)]">
+                        {pricing}
+                      </span>
+                      <span className="mt-0.5 block text-[9.5px] text-[var(--color-text-muted)]">
+                        per 1M tokens
+                      </span>
+                    </>
+                  ) : (
+                    <span className="block text-[10px] text-[var(--color-text-muted)]">
+                      Pricing unavailable
+                    </span>
+                  )}
                 </span>
               </button>
             );

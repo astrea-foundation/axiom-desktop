@@ -2,6 +2,8 @@ use reqwest::{Response, StatusCode, header};
 use serde::{Deserialize, de::DeserializeOwned};
 use tokio_util::sync::CancellationToken;
 
+use axiom_inference::ModelInfo;
+
 use crate::{
     ApiCredential, Result, SecureClientConfig, SecureClientError,
     catalog::{error_for_status, relay_endpoint},
@@ -47,12 +49,18 @@ impl<'a> RelayClient<'a> {
 
     pub(crate) async fn provider_e2ee_key<T: DeserializeOwned>(
         &self,
-        model_id: &str,
+        model: &ModelInfo,
         observed_key_fingerprint: Option<&str>,
         observed_keyset_digest: Option<&str>,
         cancellation: &CancellationToken,
     ) -> Result<T> {
-        let mut query = vec![("model_id", model_id)];
+        let encryption_version = model.e2ee_encryption_version.to_string();
+        let mut query = vec![
+            ("model_id", model.id.as_str()),
+            ("e2ee_protocol", model.e2ee_protocol.as_str()),
+            ("encryption_version", encryption_version.as_str()),
+            ("attestation_protocol", model.attestation_protocol.as_str()),
+        ];
         if let Some(fingerprint) = observed_key_fingerprint {
             query.push(("observed_key_fingerprint", fingerprint));
         }
@@ -72,11 +80,21 @@ impl<'a> RelayClient<'a> {
         &self,
         model_id: &str,
         nonce: &str,
+        e2ee_protocol: &str,
+        e2ee_encryption_version: u16,
+        attestation_protocol: &str,
         cancellation: &CancellationToken,
     ) -> Result<T> {
+        let encryption_version = e2ee_encryption_version.to_string();
         self.get_json(
             "/api/v1/provider/attestation/report",
-            &[("model_id", model_id), ("nonce", nonce)],
+            &[
+                ("model_id", model_id),
+                ("nonce", nonce),
+                ("e2ee_protocol", e2ee_protocol),
+                ("encryption_version", encryption_version.as_str()),
+                ("attestation_protocol", attestation_protocol),
+            ],
             self.config.limits.attestation_report_bytes,
             cancellation,
         )

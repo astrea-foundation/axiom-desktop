@@ -115,16 +115,16 @@ export interface ExtensionCapabilities {
   [k: string]: unknown;
 }
 export interface FeatureVersions {
-  desktopChat: number;
-  threadCatalog: number;
-  timeline: number;
-  modelCatalog: number;
-  profilePreferences: number;
-  collections: number;
-  account: number;
-  securityEvidence: number;
-  compaction: number;
-  activity: number;
+  desktopChat?: number;
+  threadCatalog?: number;
+  timeline?: number;
+  modelCatalog?: number;
+  profilePreferences?: number;
+  collections?: number;
+  account?: number;
+  securityEvidence?: number;
+  compaction?: number;
+  activity?: number;
   [k: string]: unknown;
 }
 export interface DesktopBootstrapRequest {
@@ -268,6 +268,11 @@ export interface ModelInfo {
   providerLabel: string;
   upstreamModel: string;
   thinkingLevels: string[];
+  contextWindowTokens: number;
+  maxOutputTokens: number;
+  autoCompactThresholdTokens: number;
+  inputPriceMicrousdPerMillionTokens?: number | null;
+  outputPriceMicrousdPerMillionTokens?: number | null;
   [k: string]: unknown;
 }
 export interface GetProfilePreferencesRequest {

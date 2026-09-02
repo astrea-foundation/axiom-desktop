@@ -210,6 +210,15 @@ input {
   animation: check-pop 0.4s var(--ease-spring) both;
 }
 
+@keyframes progress-in {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
 .dot-bounce {
   animation: dot-bounce 1.2s ease-in-out infinite;
 }
@@ -350,6 +359,9 @@ input {
   .animate-pulse-glow {
     animation-duration: 0.01ms;
     animation-iteration-count: 1;
+  }
+  [class*="animate-[progress-in"] {
+    animation-duration: 0.01ms;
   }
   .dot-bounce {
     animation: none;

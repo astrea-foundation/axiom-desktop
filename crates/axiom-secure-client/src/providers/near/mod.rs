@@ -72,6 +72,17 @@ impl SecureProvider for NearProvider {
         Ok(())
     }
 
+    fn supports_contract(
+        &self,
+        e2ee_protocol: &str,
+        e2ee_encryption_version: u16,
+        attestation_protocol: &str,
+    ) -> bool {
+        e2ee_protocol == E2EE_PROTOCOL
+            && e2ee_encryption_version == ENCRYPTION_VERSION
+            && attestation_protocol == ATTESTATION_PROTOCOL
+    }
+
     fn populate_capabilities(&self, model: &mut ModelInfo) {
         model.supports_tools = true;
         model.supports_parallel_tools = true;
@@ -113,12 +124,7 @@ impl SecureProvider for NearProvider {
         .await?;
         let observed_key_fingerprint = key_fingerprint(&verified.model_key.to_hex())?;
         let wire: ProviderKeyLease = RelayClient::new(&self.config, &self.credential)
-            .provider_e2ee_key(
-                &model.id,
-                Some(&observed_key_fingerprint),
-                None,
-                &cancellation,
-            )
+            .provider_e2ee_key(model, Some(&observed_key_fingerprint), None, &cancellation)
             .await?;
         verify_response_signing_binding(&wire, &verified.response_signing_address)?;
         let binding = AttestationBinding::verify(wire, model, &verified.model_key.to_hex())?;

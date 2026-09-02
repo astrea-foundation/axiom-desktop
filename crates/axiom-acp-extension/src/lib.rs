@@ -15,6 +15,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 pub const PROTOCOL_VERSION: &str = "0.1";
+const PROTOCOL_FAMILY: &str = "0";
 pub const META_KEY: &str = "axiom";
 pub const MAX_SESSION_IDS: usize = 1_000;
 pub const MAX_QUERY_BYTES: usize = 512;
@@ -57,12 +58,15 @@ impl ExtensionCapabilities {
 
     #[must_use]
     pub fn is_compatible(&self) -> bool {
-        self.protocol_version == PROTOCOL_VERSION
+        self.protocol_version
+            .split('.')
+            .next()
+            .is_some_and(|family| family == PROTOCOL_FAMILY)
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(default, rename_all = "camelCase")]
 pub struct FeatureVersions {
     pub desktop_chat: u16,
     pub thread_catalog: u16,
@@ -303,6 +307,13 @@ pub struct ModelInfo {
     pub provider_label: String,
     pub upstream_model: String,
     pub thinking_levels: Vec<String>,
+    pub context_window_tokens: u32,
+    pub max_output_tokens: u32,
+    pub auto_compact_threshold_tokens: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_price_microusd_per_million_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_price_microusd_per_million_tokens: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -745,6 +756,27 @@ mod tests {
         assert!(client.is_compatible());
         assert!(client.runtime_instance_id.is_none());
         assert_eq!(client.features, FeatureVersions::all());
+
+        let mut additive = client.clone();
+        additive.protocol_version = "0.9".into();
+        assert!(additive.is_compatible());
+        additive.protocol_version = "1.0".into();
+        assert!(!additive.is_compatible());
+    }
+
+    #[test]
+    fn missing_and_unknown_feature_versions_are_additive() {
+        let decoded: ExtensionCapabilities = serde_json::from_value(serde_json::json!({
+            "protocolVersion": "0.2",
+            "features": {
+                "desktopChat": 1,
+                "futureFeature": 4
+            }
+        }))
+        .unwrap();
+        assert!(decoded.is_compatible());
+        assert_eq!(decoded.features.desktop_chat, 1);
+        assert_eq!(decoded.features.timeline, 0);
     }
 
     #[test]

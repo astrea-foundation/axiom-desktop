@@ -204,7 +204,6 @@ pub(crate) struct NearCompletionProof {
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
 #[allow(clippy::struct_field_names)]
 pub(crate) struct RelayUsage {
     #[serde(default)]
@@ -218,7 +217,6 @@ pub(crate) struct RelayUsage {
 }
 
 #[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct RelayCompletion {
     pub id: String,
     #[serde(default)]
@@ -260,14 +258,12 @@ pub(crate) struct EncryptedToolCallDelta {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct CreatedPayload {
     pub run_id: String,
     pub inference_encryption: String,
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct DeltaPayload {
     pub run_id: String,
     #[serde(default)]
@@ -290,7 +286,6 @@ pub(crate) struct DeltaPayload {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct CompletedPayload {
     pub run_id: String,
     #[serde(default)]
@@ -301,13 +296,11 @@ pub(crate) struct CompletedPayload {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct RunPayload {
     pub run_id: String,
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct CancelledPayload {
     pub run_id: String,
     #[serde(default)]
@@ -315,10 +308,41 @@ pub(crate) struct CancelledPayload {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct FailedPayload {
     pub run_id: String,
     pub error: String,
     #[serde(default)]
     pub code: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn relay_response_metadata_is_additive_but_encrypted_tool_calls_stay_exact() {
+        let completion: RelayCompletion = serde_json::from_value(serde_json::json!({
+            "id": "response-1",
+            "encrypted_content": "a".repeat(120),
+            "finish_reason": "stop",
+            "usage": {
+                "prompt_tokens": 4,
+                "future_cached_tokens": 2
+            },
+            "future_provider_metadata": {"revision": 2}
+        }))
+        .unwrap();
+        assert_eq!(completion.usage.prompt_tokens, Some(4));
+
+        let strict_tool_call = serde_json::from_value::<EncryptedToolCall>(serde_json::json!({
+            "id": "call-1",
+            "type": "function",
+            "function": {
+                "encrypted_name": "a".repeat(120),
+                "encrypted_arguments": "b".repeat(120)
+            },
+            "future_execution_semantics": true
+        }));
+        assert!(strict_tool_call.is_err());
+    }
 }

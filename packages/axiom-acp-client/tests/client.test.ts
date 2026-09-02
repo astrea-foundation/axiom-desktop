@@ -5,7 +5,12 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { AxiomAcpClient, AxiomStateStore, type GetThreadTimelineResponse } from "../src/index.js";
+import {
+  AxiomAcpClient,
+  AxiomStateStore,
+  type GetThreadTimelineResponse,
+  validateDesktopExtension,
+} from "../src/index.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const binary = resolve(
@@ -65,6 +70,33 @@ function timelinePage(revision = 1): GetThreadTimelineResponse {
   };
 }
 
+test("extension negotiation accepts additive families and optional features only", () => {
+  const required = {
+    desktopChat: 1,
+    threadCatalog: 1,
+    timeline: 1,
+    modelCatalog: 1,
+    profilePreferences: 1,
+    collections: 1,
+    account: 1,
+    securityEvidence: 1,
+    futureFeature: 7,
+  };
+  assert.doesNotThrow(() => validateDesktopExtension({
+    protocolVersion: "0.9",
+    features: required,
+  }));
+  assert.throws(() => validateDesktopExtension({
+    protocolVersion: "1.0",
+    features: required,
+  }));
+  const { timeline: _, ...missingTimeline } = required;
+  assert.throws(() => validateDesktopExtension({
+    protocolVersion: "0.2",
+    features: missingTimeline,
+  }));
+});
+
 test("production client negotiates, streams, and controls standard ACP settings", async () => {
   const { client, workspace } = await fixture();
   try {
@@ -72,7 +104,13 @@ test("production client negotiates, streams, and controls standard ACP settings"
     const models = await client.listModels();
     assert.ok(models.models.some((model) => model.id === "alternate-model"));
     assert.ok(models.models.every((model) =>
-      model.providerId && model.providerLabel && model.shortLabel && model.upstreamModel,
+      model.providerId && model.providerLabel && model.shortLabel && model.upstreamModel
+      && model.contextWindowTokens > 0 && model.maxOutputTokens > 0
+      && model.autoCompactThresholdTokens === Math.floor(model.contextWindowTokens * 0.85),
+    ));
+    assert.ok(models.models.every((model) =>
+      (model.inputPriceMicrousdPerMillionTokens ?? 0) > 0
+      && (model.outputPriceMicrousdPerMillionTokens ?? 0) > 0,
     ));
     await client.setSettings({
       threadId: created.sessionId,
@@ -350,6 +388,22 @@ test("revision gaps are repaired by authoritative timeline replacement", () => {
   store.replaceTimeline([timelinePage(3)]);
   assert.equal(store.snapshot().sessions.session?.needsResync, false);
   assert.equal(store.snapshot().sessions.session?.timeline.length, 1);
+});
+
+test("unknown durable timeline kinds remain visible as generic activity", () => {
+  const store = new AxiomStateStore();
+  const page = timelinePage(2);
+  page.items[0] = {
+    ...page.items[0],
+    kind: "future_checkpoint",
+    content: "Checkpoint created by a newer sidecar",
+  } as unknown as GetThreadTimelineResponse["items"][number];
+  store.replaceTimeline([page]);
+
+  const item = store.snapshot().sessions.session?.timeline[0];
+  assert.equal(item?.kind, "activity");
+  assert.equal(item?.text, "Checkpoint created by a newer sidecar");
+  assert.equal((item?.raw as { kind?: string })?.kind, "future_checkpoint");
 });
 
 test("catalog summaries neither masquerade as loaded sessions nor roll live state backward", () => {

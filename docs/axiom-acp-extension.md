@@ -61,10 +61,24 @@ Extension failures retain ordinary JSON-RPC codes and include a bounded typed
 `correlationId`. Unnegotiated feature calls return `unsupported_feature`;
 clients must not infer behavior from presentation text.
 
+Compatibility is negotiated at two levels. `protocolVersion` values in the
+same leading-number family are compatible (for example `0.1` and `0.2`), while
+each feature advertises the maximum schema version understood by that peer.
+Missing feature keys mean version zero and unknown feature keys are ignored.
+Desktop checks only the features required for its core chat and verification
+experience; adding an optional capability does not turn it into a new minimum
+sidecar requirement. Unknown durable timeline kinds are retained as generic
+activity until the client learns their richer presentation.
+
 Model catalog entries require stable model and provider IDs, display and short
-labels, the exact upstream model name, and supported thinking levels. Missing
-or empty identity fields fail the request; clients never infer a provider from
-a model ID, label, URL, or suffix.
+labels, the exact upstream model name, supported thinking levels, the live
+context/output token limits, and the derived 85% automatic-compaction token
+threshold. When live or stale provider pricing is available, entries also carry
+paired `inputPriceMicrousdPerMillionTokens` and
+`outputPriceMicrousdPerMillionTokens` integers derived from the exact per-token
+prices used for billing. Both fields are absent together during a cold pricing
+catalog outage. Missing or empty identity fields fail the request; clients
+never infer a provider from a model ID, label, URL, or suffix.
 
 Verified security evidence requires a nonzero attestation generation and hard
 expiry in addition to provider/model identity and key fingerprints. A sidecar

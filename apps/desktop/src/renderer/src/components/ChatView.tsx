@@ -16,6 +16,8 @@ interface ChatViewProps {
   selectedModelId: string;
   modelStatusLabel: string;
   onModelChange: (modelId: string) => void;
+  requiresSignIn: boolean;
+  onSignIn: () => void;
   reasoningEffort: ReasoningEffort;
   onReasoningEffortChange: (effort: ReasoningEffort) => void;
   pendingUserMessage?: PendingUserMessage | null;
@@ -33,6 +35,8 @@ export function ChatView({
   selectedModelId,
   modelStatusLabel,
   onModelChange,
+  requiresSignIn,
+  onSignIn,
   reasoningEffort,
   onReasoningEffortChange,
   pendingUserMessage,
@@ -94,6 +98,8 @@ export function ChatView({
             selectedModelId={selectedModelId}
             modelStatusLabel={modelStatusLabel}
             onModelChange={onModelChange}
+            requiresSignIn={requiresSignIn}
+            onSignIn={onSignIn}
             reasoningEffort={reasoningEffort}
             onReasoningEffortChange={onReasoningEffortChange}
             security={session.security}

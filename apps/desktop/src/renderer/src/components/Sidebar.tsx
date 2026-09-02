@@ -14,6 +14,7 @@ import {
   ChevronDown,
   Folder,
   FolderPlus,
+  LogIn,
   MoreHorizontal,
   PanelLeftClose,
   Plus,
@@ -24,6 +25,7 @@ import {
 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { AxiomLogo } from "../brand/AxiomLogo";
+import type { AccountPresentation } from "../signInFlow";
 import type { Folder as FolderType, Thread } from "../types";
 
 interface SidebarProps {
@@ -43,6 +45,8 @@ interface SidebarProps {
   onDeleteFolder: (id: string) => void;
   onDeleteThread: (id: string) => void;
   onMoveThread: (threadId: string, folderId: string | null) => void;
+  account: AccountPresentation;
+  onSignIn: () => void;
   onOpenSettings: () => void;
 }
 
@@ -244,6 +248,8 @@ export function Sidebar({
   onDeleteFolder,
   onDeleteThread,
   onMoveThread,
+  account,
+  onSignIn,
   onOpenSettings,
 }: SidebarProps) {
   const [query, setQuery] = useState("");
@@ -311,6 +317,8 @@ export function Sidebar({
         onRenameFolder={onRenameFolder}
         onDeleteFolder={onDeleteFolder}
         onDeleteThread={onDeleteThread}
+        account={account}
+        onSignIn={onSignIn}
         onOpenSettings={onOpenSettings}
       />
     </DndContext>
@@ -336,6 +344,8 @@ function SidebarFrame({
   onRenameFolder,
   onDeleteFolder,
   onDeleteThread,
+  account,
+  onSignIn,
   onOpenSettings,
 }: {
   folders: FolderType[];
@@ -356,6 +366,8 @@ function SidebarFrame({
   onRenameFolder: (id: string, name: string) => void;
   onDeleteFolder: (id: string) => void;
   onDeleteThread: (id: string) => void;
+  account: AccountPresentation;
+  onSignIn: () => void;
   onOpenSettings: () => void;
 }) {
   const { setNodeRef: setLooseRef, isOver: looseOver } = useDroppable({
@@ -481,22 +493,31 @@ function SidebarFrame({
         </div>
 
         <div className="no-drag border-t border-white/[0.045] px-2 py-2">
-          <button
-            type="button"
-            onClick={onOpenSettings}
-            className="flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 transition-colors hover:bg-[var(--color-bg-surface-hover)]"
-          >
-            <div className="flex h-7 w-7 items-center justify-center rounded-full bg-gradient-to-br from-[var(--color-cherry)] to-[var(--color-cherry-deep)] text-[11px] font-semibold text-[#140709]">
-              SA
-            </div>
-            <div className="flex min-w-0 flex-1 flex-col items-start leading-tight">
-              <span className="max-w-full truncate text-[12.5px] text-[var(--color-text-primary)]">
-                salt
-              </span>
-              <span className="text-[11px] text-[var(--color-text-tertiary)]">Private account</span>
-            </div>
-            <Settings size={14} className="text-[var(--color-text-tertiary)]" />
-          </button>
+          <div className="flex w-full items-center rounded-lg transition-colors hover:bg-[var(--color-bg-surface-hover)]">
+            <button
+              type="button"
+              onClick={account.kind === "signed-out" || account.kind === "invalid" ? onSignIn : onOpenSettings}
+              className="flex min-w-0 flex-1 items-center gap-2.5 rounded-lg px-2 py-1.5 text-left"
+            >
+              <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-[var(--color-cherry)] to-[var(--color-cherry-deep)] text-[11px] font-semibold text-[#140709]">
+                {account.kind === "valid" ? "AX" : <LogIn size={13} strokeWidth={2.3} />}
+              </div>
+              <div className="flex min-w-0 flex-1 flex-col items-start leading-tight">
+                <span className="max-w-full truncate text-[12.5px] text-[var(--color-text-primary)]">
+                  {account.title}
+                </span>
+                <span className="max-w-full truncate text-[11px] text-[var(--color-text-tertiary)]">{account.detail}</span>
+              </div>
+            </button>
+            <button
+              type="button"
+              onClick={onOpenSettings}
+              className="mr-1 rounded-md p-1.5 text-[var(--color-text-tertiary)] transition-colors hover:bg-white/[0.045] hover:text-[var(--color-text-secondary)]"
+              aria-label="Open settings"
+            >
+              <Settings size={14} />
+            </button>
+          </div>
         </div>
       </aside>
 

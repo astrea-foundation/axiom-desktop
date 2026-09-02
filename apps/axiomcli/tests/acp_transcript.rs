@@ -285,7 +285,10 @@ async fn desktop_bootstrap_is_local_and_does_not_require_provider_or_auth() {
     assert!(bootstrap.get("error").is_none(), "{bootstrap}");
     assert_eq!(bootstrap["result"]["frontend"], "desktop-chat");
     assert_eq!(bootstrap["result"]["permissionProfile"], "web");
-    assert_eq!(bootstrap["result"]["newThreadSettings"]["model"], "glm-5-2");
+    assert_eq!(
+        bootstrap["result"]["newThreadSettings"]["model"],
+        "deepseek-v4-flash"
+    );
     assert_eq!(
         bootstrap["result"]["newThreadSettings"]["thinkingLevel"],
         "medium"
@@ -357,6 +360,20 @@ async fn axiom_extension_negotiates_and_exposes_typed_settings_security_and_comp
     assert_eq!(
         models["result"]["models"][0]["shortLabel"],
         "alternate-model"
+    );
+    assert_eq!(models["result"]["models"][0]["contextWindowTokens"], 8192);
+    assert_eq!(models["result"]["models"][0]["maxOutputTokens"], 2048);
+    assert_eq!(
+        models["result"]["models"][0]["inputPriceMicrousdPerMillionTokens"],
+        440_000
+    );
+    assert_eq!(
+        models["result"]["models"][0]["outputPriceMicrousdPerMillionTokens"],
+        1_320_000
+    );
+    assert_eq!(
+        models["result"]["models"][0]["autoCompactThresholdTokens"],
+        6963
     );
 
     acp.send(&json!({
@@ -655,18 +672,19 @@ async fn new_acp_sessions_reconcile_stale_catalog_preferences_before_use() {
     let options = created["result"]["configOptions"]
         .as_array()
         .expect("new-session config options");
-    assert!(
-        options
-            .iter()
-            .any(|option| { option["id"] == "model" && option["currentValue"] == "glm-5-2" })
-    );
+    assert!(options.iter().any(|option| {
+        option["id"] == "model" && option["currentValue"] == "deepseek-v4-flash"
+    }));
     retired
         .send(&json!({
             "jsonrpc":"2.0","id":3,"method":"_axiom/profile/preferences","params":{}
         }))
         .await;
     let corrected = retired.response(3).await;
-    assert_eq!(corrected["result"]["preferences"]["model"], "glm-5-2");
+    assert_eq!(
+        corrected["result"]["preferences"]["model"],
+        "deepseek-v4-flash"
+    );
     assert_eq!(corrected["result"]["preferences"]["thinkingLevel"], "high");
     retired.close().await;
 
@@ -912,8 +930,8 @@ async fn resumed_acp_sessions_reconcile_retired_models_and_changed_reasoning_sup
     let mut acp = AcpProcess::spawn_with_state("echo", state.path());
     acp.initialize_extension().await;
     for (request_id, session_id, expected_model, expected_thinking) in [
-        (2, &retired_id, "glm-5-2", "high"),
-        (3, &changed_reasoning_id, "medium-only", "medium"),
+        (2, &retired_id, "deepseek-v4-flash", None),
+        (3, &changed_reasoning_id, "medium-only", Some("medium")),
     ] {
         acp.send(&json!({
             "jsonrpc":"2.0","id":request_id,"method":"session/load",
@@ -933,9 +951,13 @@ async fn resumed_acp_sessions_reconcile_retired_models_and_changed_reasoning_sup
                 option["id"] == "model" && option["currentValue"] == expected_model
             })
         );
-        assert!(options.iter().any(|option| {
-            option["id"] == "thinking" && option["currentValue"] == expected_thinking
-        }));
+        if let Some(expected_thinking) = expected_thinking {
+            assert!(options.iter().any(|option| {
+                option["id"] == "thinking" && option["currentValue"] == expected_thinking
+            }));
+        } else {
+            assert!(options.iter().all(|option| option["id"] != "thinking"));
+        }
     }
     acp.close().await;
 
@@ -943,7 +965,10 @@ async fn resumed_acp_sessions_reconcile_retired_models_and_changed_reasoning_sup
     let retired = store
         .load_recovering(&retired_id)
         .expect("load retired-model correction");
-    assert_eq!(model_for_resume(&retired.events, "fallback"), "glm-5-2");
+    assert_eq!(
+        model_for_resume(&retired.events, "fallback"),
+        "deepseek-v4-flash"
+    );
     assert_eq!(
         thinking_for_resume(&retired.events, ThinkingLevel::Medium),
         ThinkingLevel::High

@@ -195,6 +195,19 @@ function fromDurable(item: DurableTimelineItem): ClientTimelineItem {
       return { id: item.id, turnId: item.turnId ?? undefined, sequence: item.sequence, kind: "plan", text: item.content || "Plan updated", status: item.status, raw: item };
     case "notice":
       return { id: item.id, turnId: item.turnId ?? undefined, sequence: item.sequence, kind: item.status === "failed" ? "error" : "activity", text: item.content, status: item.status, raw: item };
+    default:
+      // Timeline pages are durable state. Preserve an additive item kind as a
+      // generic activity instead of dropping it (or inserting `undefined`).
+      return {
+        id: item.id,
+        turnId: item.turnId ?? undefined,
+        clientItemId,
+        sequence: item.sequence,
+        kind: item.status === "failed" ? "error" : "activity",
+        text: item.content || `Unsupported timeline item: ${String(item.kind)}`,
+        status: item.status,
+        raw: item,
+      };
   }
 }
 

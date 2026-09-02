@@ -89,14 +89,16 @@ impl SseDecoder {
             let name = self
                 .event_name
                 .take()
-                .ok_or_else(|| invalid("relay SSE event name is missing"))?;
+                .unwrap_or_else(|| "message".to_owned());
             if self.data.is_empty() {
                 return Err(invalid("relay SSE event data is missing"));
             }
             let data = self.data.join("\n");
             self.data.clear();
             self.event_bytes = 0;
-            events.push(parse_event(&name, &data)?);
+            if let Some(event) = parse_event(&name, &data)? {
+                events.push(event);
+            }
             return Ok(());
         }
         if line.starts_with(':') {
@@ -108,17 +110,21 @@ impl SseDecoder {
             "event" if self.event_name.is_none() => self.event_name = Some(value.to_owned()),
             "data" => self.data.push(value.to_owned()),
             "event" => return Err(invalid("relay SSE event name is duplicated")),
-            _ => return Err(invalid("relay SSE field is not supported")),
+            // `id`, `retry`, and future SSE fields are transport metadata.
+            // They remain covered by the event and stream byte limits and do
+            // not alter Axiom's own run IDs or sequence validation.
+            _ => {}
         }
         Ok(())
     }
 }
 
-fn parse_event(name: &str, data: &str) -> Result<RelayEvent> {
+fn parse_event(name: &str, data: &str) -> Result<Option<RelayEvent>> {
     macro_rules! decode {
         ($payload:ty, $variant:ident) => {
             serde_json::from_str::<$payload>(data)
                 .map(RelayEvent::$variant)
+                .map(Some)
                 .map_err(|_| invalid("relay SSE event schema is invalid"))
         };
     }
@@ -129,7 +135,10 @@ fn parse_event(name: &str, data: &str) -> Result<RelayEvent> {
         "run.completed" => decode!(RunPayload, RunCompleted),
         "run.cancelled" => decode!(CancelledPayload, Cancelled),
         "run.failed" => decode!(FailedPayload, Failed),
-        _ => Err(invalid("relay SSE event name is not supported")),
+        // Additive event types are skipped. A server cannot use this to omit
+        // required known terminal events: the relay state machine still
+        // rejects an incomplete stream at EOF.
+        _ => Ok(None),
     }
 }
 
@@ -169,9 +178,24 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unknown_events_invalid_utf8_oversize_and_abrupt_eof() {
+    fn skips_unknown_events_and_fields_but_rejects_malformed_transport() {
         let mut unknown = SseDecoder::new(1024, 4096);
-        assert!(unknown.feed(b"event: surprise\ndata: {}\n\n").is_err());
+        assert!(
+            unknown
+                .feed(b"event: surprise\nid: 42\nfuture: metadata\ndata: {}\n\n")
+                .unwrap()
+                .is_empty()
+        );
+        unknown.finish().unwrap();
+
+        let mut additive = SseDecoder::new(1024, 4096);
+        let events = additive
+            .feed(
+                b"event: run.created\nid: 42\ndata: {\"run_id\":\"r1\",\"inference_encryption\":\"provider_e2ee_v2\",\"future\":true}\n\n",
+            )
+            .unwrap();
+        assert!(matches!(events.as_slice(), [RelayEvent::RunCreated(_)]));
+        additive.finish().unwrap();
 
         let mut utf8 = SseDecoder::new(1024, 4096);
         assert!(utf8.feed(b"event: run.created\ndata: \xff\n\n").is_err());

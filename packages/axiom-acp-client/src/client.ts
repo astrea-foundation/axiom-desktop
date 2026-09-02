@@ -47,6 +47,41 @@ const EXTENSION_CAPABILITIES = {
   },
 } as const;
 
+type ExtensionFeature = keyof typeof EXTENSION_CAPABILITIES.features;
+
+// Adding a new optional extension feature must not make a newer Desktop
+// unable to talk to an otherwise usable older sidecar. Keep this list limited
+// to features required for the core desktop and its security indicator.
+const REQUIRED_DESKTOP_FEATURES: readonly ExtensionFeature[] = [
+  "desktopChat",
+  "threadCatalog",
+  "timeline",
+  "modelCatalog",
+  "profilePreferences",
+  "collections",
+  "account",
+  "securityEvidence",
+];
+
+function compatibleExtensionFamily(version: string | undefined): boolean {
+  return version?.split(".", 1)[0] === EXTENSION_CAPABILITIES.protocolVersion.split(".", 1)[0];
+}
+
+export function validateDesktopExtension(meta: {
+  protocolVersion?: string;
+  features?: Record<string, number>;
+} | undefined): void {
+  if (!compatibleExtensionFamily(meta?.protocolVersion)) {
+    throw new ProtocolError("AxiomCLI does not support the required Axiom desktop extension");
+  }
+  for (const feature of REQUIRED_DESKTOP_FEATURES) {
+    const requiredVersion = EXTENSION_CAPABILITIES.features[feature];
+    if ((meta?.features?.[feature] ?? 0) < requiredVersion) {
+      throw new ProtocolError(`AxiomCLI does not support required desktop feature ${feature}@${requiredVersion}`);
+    }
+  }
+}
+
 const TIMELINE_PAGE_SIZE = 250;
 const TIMELINE_RESTART_LIMIT = 3;
 
@@ -105,16 +140,9 @@ export class AxiomAcpClient extends EventEmitter {
     if (result.protocolVersion !== 1) throw new ProtocolError("AxiomCLI selected an unsupported ACP version");
     const meta = result.agentCapabilities._meta?.axiom as {
       protocolVersion?: string;
-      features?: Partial<Record<keyof typeof EXTENSION_CAPABILITIES.features, number>>;
+      features?: Record<string, number>;
     } | undefined;
-    if (meta?.protocolVersion !== EXTENSION_CAPABILITIES.protocolVersion) {
-      throw new ProtocolError("AxiomCLI does not support the required Axiom desktop extension");
-    }
-    for (const [feature, requiredVersion] of Object.entries(EXTENSION_CAPABILITIES.features)) {
-      if ((meta.features?.[feature as keyof typeof EXTENSION_CAPABILITIES.features] ?? 0) < requiredVersion) {
-        throw new ProtocolError(`AxiomCLI does not support required desktop feature ${feature}@${requiredVersion}`);
-      }
-    }
+    validateDesktopExtension(meta);
     this.initialized = true;
     this.state.setConnected(true);
     return result;
