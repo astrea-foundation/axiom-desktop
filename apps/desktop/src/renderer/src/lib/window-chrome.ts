@@ -6,14 +6,11 @@ const platform = desktop?.platform;
 export const isMac = platform === "darwin";
 export const isWindows = platform === "win32";
 
-/** macOS traffic lights and the Windows title-bar overlay are drawn by the OS. */
-export const hasNativeWindowControls = isMac || isWindows;
+/** Only macOS draws its own window controls; elsewhere the app renders them. */
+export const hasNativeWindowControls = isMac;
 
 /** Width reserved for the macOS traffic lights when they overlap our chrome. */
 export const MAC_TRAFFIC_LIGHT_INSET_CLASS = "pl-[76px]";
-
-/** Right inset for the native Windows caption buttons, sized from the WCO env vars. */
-export const WINDOWS_CAPTION_INSET_CLASS = "pad-titlebar-overlay";
 
 // Fullscreen state is cached at module level so components that mount later
 // (e.g. the sidebar after reopening) paint the correct inset on first render.

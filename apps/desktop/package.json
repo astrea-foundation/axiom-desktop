@@ -14,7 +14,9 @@
     "test": "tsx --test tests/*.test.ts",
     "preview": "node ./scripts/ensure-electron.mjs && node ./scripts/run-electron.mjs vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.json --composite false",
-    "capture": "node ./scripts/ensure-electron.mjs && node ./scripts/run-electron.mjs vite build && node ./scripts/run-electron.mjs electron . --capture"
+    "capture": "node ./scripts/ensure-electron.mjs && node ./scripts/run-electron.mjs vite build && node ./scripts/run-electron.mjs electron . --capture",
+    "brand:assets": "python3 ./scripts/brand-assets.py",
+    "dist": "electron-vite build && electron-builder"
   },
   "dependencies": {
     "@axiom/axiom-acp-client": "workspace:*",

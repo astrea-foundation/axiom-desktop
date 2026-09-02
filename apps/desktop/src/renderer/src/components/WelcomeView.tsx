@@ -29,10 +29,23 @@ export function WelcomeView({
 }: WelcomeViewProps) {
   return (
     <div className="relative flex h-full w-full items-center justify-center px-6">
+      {/* A fixed 2000×1400 composition pinned to the view's centre: the window
+          reveals more or less of it instead of moving the blooms around. */}
       <div className="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden="true">
-        <div className="bg-orb -left-[140px] top-[16%] h-[560px] w-[560px]" />
-        <div className="bg-orb -right-[120px] top-[8%] h-[480px] w-[480px] opacity-70" />
-        <div className="bg-orb bottom-[-160px] left-[38%] h-[620px] w-[620px] opacity-60" />
+        <div className="absolute left-1/2 top-1/2 h-[1400px] w-[2000px] -translate-x-1/2 -translate-y-1/2">
+          <div
+            className="bg-blob"
+            style={{ left: 120, top: 250, width: 780, height: 640, borderRadius: "62% 38% 55% 45% / 48% 57% 43% 52%", transform: "rotate(-14deg)" }}
+          />
+          <div
+            className="bg-blob"
+            style={{ left: 1190, top: 130, width: 720, height: 560, borderRadius: "41% 59% 47% 53% / 62% 36% 64% 38%", transform: "rotate(23deg)", opacity: 0.8 }}
+          />
+          <div
+            className="bg-blob"
+            style={{ left: 640, top: 830, width: 900, height: 620, borderRadius: "56% 44% 63% 37% / 39% 55% 45% 61%", transform: "rotate(8deg)", opacity: 0.7 }}
+          />
+        </div>
       </div>
 
       <div className="relative z-10 flex w-full max-w-[760px] flex-col items-center animate-fade-in">

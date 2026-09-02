@@ -54,7 +54,7 @@ export function ChatView({
       <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
       <div
         ref={scrollRef}
-        className="h-full overflow-y-auto px-6"
+        className="title-fade h-full overflow-y-auto px-6"
         onScroll={(event) => {
           const el = event.currentTarget;
           const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
@@ -62,7 +62,7 @@ export function ChatView({
           setShowJump(!atBottom);
         }}
       >
-        <div className="mx-auto flex w-full max-w-[760px] flex-col gap-7 pb-8 pt-14">
+        <div className="mx-auto flex w-full max-w-[760px] flex-col gap-7 pb-8 pt-[88px]">
           <TimelineView session={session} pendingUserMessage={pendingUserMessage} />
           <div ref={bottomRef} />
         </div>
@@ -77,7 +77,7 @@ export function ChatView({
             setShowJump(false);
           }}
           aria-label="Scroll to latest"
-          className="shadow-glass-pop animate-fade-in absolute bottom-3 left-1/2 z-10 flex h-9 w-9 -translate-x-1/2 items-center justify-center rounded-full bg-[rgba(255,255,255,0.85)] text-[var(--color-text-secondary)] transition-[transform,color] hover:text-[var(--color-text-primary)] active:scale-90"
+          className="shadow-glass-pop animate-fade-in absolute bottom-3 left-1/2 z-10 flex h-9 w-9 -translate-x-1/2 items-center justify-center rounded-full bg-[var(--surface-float)] text-[var(--color-text-secondary)] transition-[transform,color] hover:text-[var(--color-text-primary)] active:scale-90"
         >
           <ArrowDown size={16} />
         </button>

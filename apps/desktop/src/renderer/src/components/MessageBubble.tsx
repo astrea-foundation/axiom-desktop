@@ -34,7 +34,7 @@ export function MessageBubble({ message }: { message: Message }) {
     return (
       <div className="group flex min-w-0 justify-end animate-fade-in-up">
         <div className="flex min-w-0 max-w-[min(80%,48rem)] flex-col items-end gap-1">
-          <div className="shadow-glass-tile min-w-0 max-w-full overflow-hidden rounded-[19px] rounded-br-[8px] bg-[rgba(255,255,255,0.82)] px-4 py-2.5 text-[15px] leading-6 text-[var(--color-text-primary)]">
+          <div className="shadow-glass-tile min-w-0 max-w-full overflow-hidden rounded-[19px] rounded-br-[8px] bg-[var(--surface-bubble-user)] px-4 py-2.5 text-[15px] leading-6 text-[var(--color-text-primary)]">
             <ChatMarkdown text={message.content} />
           </div>
           <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
@@ -53,29 +53,30 @@ export function MessageBubble({ message }: { message: Message }) {
 
   return (
     <div className="group flex min-w-0 w-full max-w-full flex-col gap-1 animate-fade-in-up">
-      <div className="min-w-0 max-w-full self-start rounded-[19px] rounded-bl-[8px] bg-[var(--color-cherry-glow)] px-4 py-2.5 text-[15px] leading-7 text-[var(--color-text-primary)]">
-        <div className="min-w-0 max-w-full">
-          {reasoning ? (
-            <div className="mb-3 text-[13px] leading-6 text-[var(--color-text-secondary)]">
-              <button
-                type="button"
-                onClick={() => setReasoningOpen((open) => !open)}
-                className="inline-flex items-center gap-1.5 rounded-md px-1.5 py-1 text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-bg-surface-hover)] hover:text-[var(--color-text-secondary)]"
-                aria-expanded={reasoningOpen}
-              >
-                <ChevronDown
-                  size={14}
-                  className={`transition-transform ${reasoningOpen ? "rotate-0" : "-rotate-90"}`}
-                />
-                <span>{thoughtLabel(message.reasoningDurationMs)}</span>
-              </button>
-              {reasoningOpen ? (
-                <div className="mt-2 border-l border-[var(--color-border)] pl-3 text-[var(--color-text-secondary)]">
-                  <ChatMarkdown text={reasoning} />
-                </div>
-              ) : null}
+      {reasoning ? (
+        <div className="min-w-0 self-start text-[13px] leading-6 text-[var(--color-text-secondary)]">
+          <button
+            type="button"
+            onClick={() => setReasoningOpen((open) => !open)}
+            className="inline-flex items-center gap-1.5 rounded-md px-1.5 py-1 text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-bg-surface-hover)] hover:text-[var(--color-text-secondary)]"
+            aria-expanded={reasoningOpen}
+          >
+            <ChevronDown
+              size={14}
+              className={`transition-transform ${reasoningOpen ? "rotate-0" : "-rotate-90"}`}
+            />
+            <span>{thoughtLabel(message.reasoningDurationMs)}</span>
+          </button>
+          {reasoningOpen ? (
+            <div className="mt-1.5 rounded-[10px] bg-[var(--wash-row)] px-3.5 py-2.5 text-[var(--color-text-secondary)]">
+              <ChatMarkdown text={reasoning} />
             </div>
           ) : null}
+        </div>
+      ) : null}
+      {message.content || isStreaming || terminalFailure ? (
+      <div className="min-w-0 max-w-full self-start px-1.5 py-1 text-[15px] leading-7 text-[var(--color-text-primary)]">
+        <div className="min-w-0 max-w-full">
           {message.content ? <ChatMarkdown text={message.content} /> : null}
           {isStreaming && !message.content ? (
             <div className="flex items-center gap-2 py-1 text-[13px] text-[var(--color-text-tertiary)]">
@@ -94,13 +95,14 @@ export function MessageBubble({ message }: { message: Message }) {
             </div>
           ) : null}
           {terminalFailure ? (
-            <div className="mt-3 flex items-center gap-2 rounded-lg border border-[var(--color-danger-border)] bg-[var(--color-danger-soft)] px-3 py-2 text-[12px] leading-5 text-[var(--color-danger-strong)]">
+            <div className="mt-3 flex items-center gap-2 rounded-[8px] border border-[var(--color-danger-border)] bg-[var(--color-danger-soft)] px-3 py-2 text-[12px] leading-5 text-[var(--color-danger-strong)]">
               <AlertTriangle size={13} className="shrink-0 text-[var(--color-danger)]" />
               <span>{terminalFailure}. Partial output is unverified and cannot be copied.</span>
             </div>
           ) : null}
         </div>
       </div>
+      ) : null}
       <div className="flex max-w-full items-center gap-1.5 self-start opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
           <div className="flex items-center gap-0.5">
             <button

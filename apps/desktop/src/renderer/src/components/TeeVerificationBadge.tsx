@@ -1,10 +1,4 @@
-import {
-  LoaderCircle,
-  RotateCcw,
-  ShieldAlert,
-  ShieldCheck,
-  ShieldQuestion,
-} from "lucide-react";
+import { Check, LoaderCircle, RotateCcw, Shield, X } from "lucide-react";
 import type { ClientSessionState } from "@axiom/axiom-acp-client";
 
 type TeeVerificationBadgeProps = {
@@ -12,53 +6,49 @@ type TeeVerificationBadgeProps = {
   onVerify: () => void;
 };
 
+type Glyph = "check" | "x" | null;
+
 export function TeeVerificationBadge({ security, onVerify }: TeeVerificationBadgeProps) {
   const state = security?.state ?? "unverified";
-  const presentation = state === "verified"
+  const presentation: { label: string; detail: string; shell: string; fill: string; glyph: Glyph } = state === "verified"
     ? {
         label: "TEE verified",
         detail: security?.detail ?? "The model's confidential-computing evidence was verified locally.",
-        icon: ShieldCheck,
         shell: "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-surface-hover)]",
-        iconTone: "text-[var(--color-cherry)]",
-        dot: "bg-[var(--color-success)] shadow-[0_0_7px_rgba(30,127,76,0.45)]",
+        fill: "var(--color-success)",
+        glyph: "check",
       }
     : state === "verifying"
       ? {
           label: "Verifying TEE",
           detail: security?.detail ?? "Checking fresh confidential-computing evidence.",
-          icon: LoaderCircle,
           shell: "text-[var(--color-text-secondary)]",
-          iconTone: "text-[var(--color-text-tertiary)]",
-          dot: "bg-[var(--color-cherry)]",
+          fill: "",
+          glyph: null,
         }
       : state === "failed"
         ? {
             label: "TEE check failed",
             detail: security?.detail ?? "The model's confidential-computing evidence could not be verified.",
-            icon: ShieldAlert,
             shell: "text-[var(--color-danger-strong)] hover:bg-[var(--color-danger-soft)]",
-            iconTone: "text-[var(--color-danger)]",
-            dot: "bg-[var(--color-danger)] shadow-[0_0_7px_rgba(217,48,54,0.4)]",
+            fill: "var(--color-danger)",
+            glyph: "x",
           }
         : state === "unattested_development"
           ? {
               label: "Unattested dev",
               detail: security?.detail ?? "This development session is not backed by production TEE attestation.",
-              icon: ShieldAlert,
-              shell: "text-[var(--color-text-secondary)] hover:bg-[#fdf6e8]",
-              iconTone: "text-amber-600",
-              dot: "bg-amber-500 shadow-[0_0_7px_rgba(217,119,6,0.35)]",
+              shell: "text-[var(--color-text-secondary)] hover:bg-warning-soft",
+              fill: "var(--color-warning)",
+              glyph: null,
             }
           : {
               label: "Verify TEE",
               detail: security?.detail ?? "Fresh confidential-computing evidence has not been verified yet.",
-              icon: ShieldQuestion,
               shell: "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-surface-hover)]",
-              iconTone: "text-[var(--color-text-tertiary)]",
-              dot: "bg-[var(--color-text-muted)]",
+              fill: "var(--color-text-muted)",
+              glyph: null,
             };
-  const Icon = presentation.icon;
   const verifying = state === "verifying";
 
   return (
@@ -66,17 +56,35 @@ export function TeeVerificationBadge({ security, onVerify }: TeeVerificationBadg
       type="button"
       onClick={onVerify}
       disabled={verifying}
-      className={`group inline-flex h-7 shrink-0 items-center gap-2 rounded-full bg-white px-2.5 text-[11.5px] font-medium tracking-[-0.01em] shadow-[0_0_0_1px_rgba(16,16,20,0.045),0_1px_2px_rgba(16,16,20,0.03)] transition-all disabled:cursor-wait ${presentation.shell}`}
+      className={`group/tee inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full bg-[var(--surface-tile)] pl-2 pr-2.5 text-[11.5px] font-medium tracking-[-0.01em] shadow-[0_0_0_1px_var(--ring-hairline),0_1px_2px_var(--shade-xs)] transition-all disabled:cursor-wait ${presentation.shell}`}
       title={`${presentation.detail}${verifying ? "" : " Click to verify again."}`}
       aria-label={`${presentation.label}. ${presentation.detail}${verifying ? "" : " Activate to verify again."}`}
       aria-live="polite"
     >
       <span className="relative flex h-4 w-4 items-center justify-center">
-        <Icon size={14} strokeWidth={1.9} className={`${presentation.iconTone} ${verifying ? "animate-spin" : ""}`} />
-        <span className={`absolute -bottom-0.5 -right-0.5 h-1.5 w-1.5 rounded-full ring-2 ring-white ${presentation.dot}`} />
+        {verifying ? (
+          <LoaderCircle size={15} strokeWidth={1.9} className="animate-spin text-[var(--color-text-tertiary)]" />
+        ) : (
+          <>
+            {/* Solid silhouette: no stroke, so no outline on any background. */}
+            <Shield size={15} strokeWidth={0} stroke="none" fill="currentColor" style={{ color: presentation.fill }} />
+            {presentation.glyph === "check" ? (
+              <Check size={8} strokeWidth={3.5} className="absolute text-on-accent" />
+            ) : presentation.glyph === "x" ? (
+              <X size={8} strokeWidth={3.5} className="absolute text-on-accent" />
+            ) : null}
+          </>
+        )}
       </span>
-      <span>{presentation.label}</span>
-      {!verifying ? <RotateCcw size={10.5} className="ml-0.5 opacity-0 transition-opacity group-hover:opacity-60 group-focus-visible:opacity-60" /> : null}
+      <span className="flex items-center">
+        {presentation.label}
+        {!verifying ? (
+          <RotateCcw
+            size={10.5}
+            className="ml-0 w-0 shrink-0 opacity-0 transition-[width,margin,opacity] duration-200 group-hover/tee:ml-1.5 group-hover/tee:w-[10.5px] group-hover/tee:opacity-60 group-focus-visible/tee:ml-1.5 group-focus-visible/tee:w-[10.5px] group-focus-visible/tee:opacity-60"
+          />
+        ) : null}
+      </span>
     </button>
   );
 }

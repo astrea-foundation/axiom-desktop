@@ -46,21 +46,23 @@ export function ToolCallCard({ tool }: { tool: ToolActivity }) {
   const hasDetails = tool.input !== null || tool.content.length > 0 || tool.locations.length > 0;
 
   return (
-    <div className="shadow-glass-tile overflow-hidden rounded-xl bg-white/70 text-[12.5px]">
+    <div className="min-w-0 text-[13px]">
       <button
         type="button"
         onClick={() => hasDetails && setOpen((value) => !value)}
-        className="flex w-full items-center gap-2.5 px-3 py-2.5 text-left text-[var(--color-text-secondary)]"
+        className="inline-flex max-w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-bg-surface-hover)] hover:text-[var(--color-text-secondary)]"
         aria-expanded={open}
       >
-        <span className="text-[var(--color-text-tertiary)]">{toolIcon(tool.kind)}</span>
-        <span className="min-w-0 flex-1 truncate">{tool.title}</span>
-        <span className="capitalize text-[11px] text-[var(--color-text-tertiary)]">{tool.status.replaceAll("_", " ")}</span>
+        {hasDetails ? (
+          <ChevronDown size={14} className={`shrink-0 transition-transform ${open ? "rotate-0" : "-rotate-90"}`} />
+        ) : (
+          <span className="shrink-0">{toolIcon(tool.kind)}</span>
+        )}
+        <span className="min-w-0 truncate">{tool.title}</span>
         {statusIcon(tool.status)}
-        {hasDetails ? <ChevronDown size={13} className={`transition-transform ${open ? "" : "-rotate-90"}`} /> : null}
       </button>
       {open ? (
-        <pre className="max-h-80 overflow-auto border-t border-[var(--color-border)] bg-[var(--color-bg-input)] px-3 py-2.5 font-mono text-[11.5px] leading-5 text-[var(--color-text-secondary)] whitespace-pre-wrap break-words">
+        <pre className="mt-1.5 max-h-80 overflow-auto rounded-[10px] bg-[var(--wash-row)] px-3.5 py-2.5 font-mono text-[11.5px] leading-5 text-[var(--color-text-secondary)] whitespace-pre-wrap break-words">
           {details}
         </pre>
       ) : null}

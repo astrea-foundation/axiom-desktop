@@ -71,18 +71,27 @@ function ThreadRow({
         "group relative flex h-8 w-full items-center rounded-[9px] text-[13px] transition-colors",
         nested ? "pl-2" : "",
         active
-          ? "bg-white text-[var(--color-text-primary)] shadow-glass-tile"
-          : "text-[var(--color-text-secondary)] hover:bg-[rgba(16,16,20,0.055)] hover:text-[var(--color-text-primary)]",
+          ? "bg-[var(--surface-tile)] text-[var(--color-text-primary)] shadow-glass-tile"
+          : "text-[var(--color-text-secondary)] hover:bg-[var(--wash-hover)] hover:text-[var(--color-text-primary)]",
         isDragging ? "opacity-40" : "",
       ].join(" ")}
     >
       <button
         type="button"
         onClick={onSelect}
-        className="flex h-full min-w-0 flex-1 items-center rounded-[9px] pl-2 text-left"
+        className="flex h-full min-w-0 flex-1 items-center gap-2 rounded-[9px] pl-2 text-left"
         {...listeners}
         {...attributes}
       >
+        <i
+          className={[
+            "thread-dot",
+            thread.status === "unread" ? "thread-dot-unread" : "",
+            thread.status === "working" ? "thread-dot-working" : "",
+          ].join(" ")}
+          role="img"
+          aria-label={thread.status === "working" ? "Replying" : thread.status === "unread" ? "Unread reply" : "Viewed"}
+        />
         <span className="min-w-0 flex-1 truncate">{thread.title}</span>
       </button>
       <div className="relative mr-1 shrink-0">
@@ -98,14 +107,14 @@ function ThreadRow({
           <MoreHorizontal size={14} />
         </button>
         {menuOpen ? (
-          <div className="glass-panel shadow-glass-pop animate-pop-in absolute right-0 top-7 z-40 w-36 origin-top-right rounded-xl py-1">
+          <div className="glass-panel shadow-glass-pop animate-pop-in absolute right-0 top-7 z-40 w-36 origin-top-right overflow-hidden rounded-[10px] p-1">
             <button
               type="button"
               onClick={() => {
                 setMenuOpen(false);
                 onDelete();
               }}
-              className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[12.5px] text-[var(--color-danger)] transition-colors hover:bg-[var(--color-danger-soft)]"
+              className="flex w-full items-center gap-2 rounded-[6px] px-2 py-1.5 text-left text-[12.5px] text-[var(--color-danger-strong)] transition-colors hover:bg-[var(--color-danger-soft)]"
             >
               <Trash2 size={13} />
               <span>Delete thread</span>
@@ -155,7 +164,7 @@ function FolderBlock({
         <button
           type="button"
           onClick={onToggle}
-          className="flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[12.5px] text-[var(--color-text-secondary)] transition-colors hover:bg-[rgba(16,16,20,0.055)] hover:text-[var(--color-text-primary)]"
+          className="flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[12.5px] text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--wash-hover)] hover:text-[var(--color-text-primary)]"
         >
           <ChevronDown
             size={14}
@@ -203,7 +212,7 @@ function FolderBlock({
         </button>
       </div>
       {!folder.collapsed ? (
-        <div className="ml-3 border-l border-[rgba(16,16,20,0.06)] pl-1 pb-1">
+        <div className="ml-3 pl-1 pb-1">
           {threads.length === 0 ? (
             <div className="px-3 py-1.5 text-[11.5px] text-[var(--color-text-muted)]">
               Drop threads here
@@ -363,11 +372,16 @@ function SidebarFrame({
 
   return (
     <>
-      <aside className="flex h-full w-full shrink-0 flex-col bg-transparent">
+      <aside className="relative flex h-full w-full shrink-0 flex-col bg-transparent">
+        {/* macOS reserves a top row beside the traffic lights; frameless
+            platforms have no lights, so the button floats on the first row
+            and the nav starts at the top. */}
         <div
           className={[
-            "drag-region flex h-10 shrink-0 items-center justify-end pr-2",
-            trafficLightInset ? MAC_TRAFFIC_LIGHT_INSET_CLASS : "pl-3",
+            isMac
+              ? "drag-region flex h-10 shrink-0 items-center justify-end pr-2"
+              : "drag-region absolute right-2 top-1.5 z-10 flex",
+            trafficLightInset ? MAC_TRAFFIC_LIGHT_INSET_CLASS : isMac ? "pl-3" : "",
           ].join(" ")}
         >
           <button
@@ -380,13 +394,13 @@ function SidebarFrame({
           </button>
         </div>
 
-        <nav className="no-drag flex flex-col gap-2.5 px-3 pb-2 pt-1">
+        <nav className={`no-drag flex flex-col gap-2.5 px-3 pb-2 ${isMac ? "pt-1" : "pt-1.5"}`}>
           <div className="flex flex-col gap-0.5">
           <button
             type="button"
             onClick={onNewChat}
             aria-current={welcomeActive ? "page" : undefined}
-            className="flex h-8 w-full items-center gap-2 rounded-[9px] pl-0 text-[13px] text-[var(--color-text-secondary)] transition-[background-color,color,padding-left] duration-200 ease-[var(--ease-out-expo)] hover:bg-[rgba(16,16,20,0.055)] hover:pl-2 hover:text-[var(--color-text-primary)]"
+            className="flex h-8 w-full items-center gap-2 rounded-[9px] pl-0 text-[13px] text-[var(--color-text-secondary)] transition-[background-color,color,padding-left] duration-200 ease-[var(--ease-out-expo)] hover:bg-[var(--wash-hover)] hover:pl-2 hover:text-[var(--color-text-primary)]"
           >
             <span className="flex h-[15px] w-[15px] shrink-0 items-center justify-center rounded-full border border-current">
               <Plus size={9} strokeWidth={2.6} />
@@ -399,8 +413,8 @@ function SidebarFrame({
             className={[
               "flex h-8 w-full items-center gap-2 rounded-[9px] text-[13px] transition-[background-color,color,padding-left] duration-200 ease-[var(--ease-out-expo)]",
               proxyActive
-                ? "bg-white pl-2 text-[var(--color-text-primary)] shadow-glass-tile"
-                : "pl-0 text-[var(--color-text-secondary)] hover:bg-[rgba(16,16,20,0.055)] hover:pl-2 hover:text-[var(--color-text-primary)]",
+                ? "bg-[var(--surface-tile)] pl-2 text-[var(--color-text-primary)] shadow-glass-tile"
+                : "pl-0 text-[var(--color-text-secondary)] hover:bg-[var(--wash-hover)] hover:pl-2 hover:text-[var(--color-text-primary)]",
             ].join(" ")}
           >
             <span className="flex h-[15px] w-[15px] shrink-0 items-center justify-center">
@@ -411,7 +425,7 @@ function SidebarFrame({
           </div>
 
           <div className="flex items-center gap-1">
-            <div className="flex min-w-0 flex-1 items-center gap-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-input)] px-2.5 py-1.5 transition-[border-color,box-shadow] focus-within:border-[var(--color-border-accent)] focus-within:shadow-[0_0_0_3px_rgba(16,16,20,0.06)]">
+            <div className="flex min-w-0 flex-1 items-center gap-2 rounded-[8px] border border-[var(--color-border)] bg-[var(--color-bg-input)] px-2.5 py-1.5 transition-[border-color,box-shadow] hover:border-[var(--border-hover)] focus-within:border-[var(--color-border-accent)] focus-within:shadow-[0_0_0_3px_var(--ring-focus-halo)]">
               <Search size={14} className="text-[var(--color-text-tertiary)]" />
               <input
                 value={query}
@@ -423,7 +437,7 @@ function SidebarFrame({
             <button
               type="button"
               onClick={onCreateFolder}
-              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-[var(--color-text-tertiary)] transition-colors hover:bg-[rgba(16,16,20,0.055)] hover:text-[var(--color-text-primary)]"
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--wash-hover)] hover:text-[var(--color-text-primary)]"
               title="New folder"
               aria-label="New folder"
             >
@@ -476,9 +490,9 @@ function SidebarFrame({
           <button
             type="button"
             onClick={onOpenSettings}
-            className="flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 transition-colors hover:bg-[var(--color-bg-surface-hover)]"
+            className="flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 transition-colors hover:bg-[var(--wash-hover)]"
           >
-            <div className="flex h-7 w-7 items-center justify-center rounded-full bg-[var(--color-cherry)] text-[11px] font-semibold text-white">
+            <div className="flex h-7 w-7 items-center justify-center rounded-full bg-[var(--color-cherry)] text-[11px] font-semibold text-on-accent">
               SA
             </div>
             <div className="flex min-w-0 flex-1 flex-col items-start leading-tight">
@@ -487,14 +501,14 @@ function SidebarFrame({
               </span>
               <span className="text-[11px] text-[var(--color-text-tertiary)]">Private account</span>
             </div>
-            <Settings size={14} className="text-[var(--color-text-tertiary)]" />
+            <Settings size={14} className="mr-1 text-[var(--color-text-tertiary)]" />
           </button>
         </div>
       </aside>
 
       <DragOverlay>
         {draggingThread ? (
-          <div className="glass-panel shadow-glass-pop rounded-lg px-3 py-1.5 text-[13px] text-[var(--color-text-primary)]">
+          <div className="glass-panel shadow-glass-pop rounded-[8px] px-3 py-1.5 text-[13px] text-[var(--color-text-primary)]">
             {draggingThread.title}
           </div>
         ) : null}

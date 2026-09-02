@@ -1,6 +1,13 @@
 import { ArrowLeft, LogIn, LogOut, RefreshCw, ShieldCheck } from "lucide-react";
 import { useEffect, type ReactNode } from "react";
 import type { AccountStatus } from "@axiom/axiom-acp-client";
+import { useTheme, type ThemePreference } from "../lib/theme";
+
+const THEME_OPTIONS: Array<{ value: ThemePreference; label: string }> = [
+  { value: "light", label: "Light" },
+  { value: "dark", label: "Dark" },
+  { value: "system", label: "System" },
+];
 
 interface SettingsSheetProps {
   onClose: () => void;
@@ -24,7 +31,7 @@ function SettingsCard({
 }) {
   return (
     <section
-      className="animate-panel-in rounded-2xl bg-white/70 shadow-glass-card"
+      className="animate-panel-in rounded-2xl bg-[var(--surface-card)] shadow-glass-card"
       style={{ animationDelay: `${index * 40}ms` }}
     >
       <div className="px-6 pb-4 pt-5">
@@ -53,6 +60,7 @@ export function SettingsSheet({
     return () => document.removeEventListener("keydown", onKey);
   }, [onClose]);
 
+  const theme = useTheme();
   const signedIn = account?.state === "valid";
   const accountLabel = signedIn
     ? (account.keyName || account.keyId || "Connected Axiom account")
@@ -66,7 +74,7 @@ export function SettingsSheet({
     <div
       role="region"
       aria-label="Settings"
-      className="light-canvas animate-fade-in fixed inset-0 z-50 overflow-y-auto outline-none"
+      className="app-canvas animate-fade-in fixed inset-0 z-50 overflow-y-auto outline-none"
     >
       <div className="drag-region absolute inset-x-0 top-0 h-11" aria-hidden="true" />
       <div className="mx-auto w-full max-w-[640px] px-6 pb-24">
@@ -74,7 +82,7 @@ export function SettingsSheet({
           <button
             type="button"
             onClick={onClose}
-            className="ax-pill no-drag transition-[background-color,box-shadow,transform] duration-150 hover:bg-white hover:text-[var(--color-text-primary)] active:scale-[0.97]"
+            className="ax-pill ax-pill-button no-drag"
           >
             <ArrowLeft size={13} />
             Back
@@ -92,7 +100,43 @@ export function SettingsSheet({
           <SettingsCard index={0} title="Appearance" sub="How the app looks.">
             <div className="flex items-center justify-between gap-3 text-[13.5px]">
               <span className="text-[var(--color-text-primary)]">Theme</span>
-              <span className="text-[var(--color-text-tertiary)]">Light</span>
+              <div
+                className="flex gap-1 rounded-[8px] bg-[var(--surface-track)] p-0.5"
+                role="radiogroup"
+                aria-label="Theme"
+                onKeyDown={(event) => {
+                  const current = THEME_OPTIONS.findIndex((option) => option.value === theme.preference);
+                  const step = event.key === "ArrowRight" || event.key === "ArrowDown" ? 1
+                    : event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1 : 0;
+                  const target = event.key === "Home" ? 0
+                    : event.key === "End" ? THEME_OPTIONS.length - 1
+                    : step ? (current + step + THEME_OPTIONS.length) % THEME_OPTIONS.length : -1;
+                  const next = target < 0 ? undefined : THEME_OPTIONS[target];
+                  if (!next) return;
+                  event.preventDefault();
+                  theme.setPreference(next.value);
+                  (event.currentTarget.children[target] as HTMLElement | undefined)?.focus();
+                }}
+              >
+                {THEME_OPTIONS.map((option) => (
+                  <button
+                    key={option.value}
+                    type="button"
+                    role="radio"
+                    aria-checked={theme.preference === option.value}
+                    tabIndex={theme.preference === option.value ? 0 : -1}
+                    onClick={() => theme.setPreference(option.value)}
+                    className={[
+                      "rounded-[6px] px-2.5 py-1 text-[12.5px] transition-colors",
+                      theme.preference === option.value
+                        ? "bg-[var(--surface-tile)] text-[var(--color-text-primary)] shadow-glass-tile"
+                        : "text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]",
+                    ].join(" ")}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
             </div>
           </SettingsCard>
 
@@ -125,7 +169,7 @@ export function SettingsSheet({
               type="button"
               disabled={!connected}
               onClick={signedIn ? onLogout : onLogin}
-              className="mt-4 flex items-center gap-1.5 rounded-md border border-[var(--color-border)] bg-white/60 px-3 py-1.5 text-[12.5px] text-[var(--color-text-secondary)] transition-[background-color,border-color,color,transform] duration-150 hover:border-[var(--color-border-accent)] hover:bg-white hover:text-[var(--color-text-primary)] active:scale-[0.97] disabled:opacity-50"
+              className="mt-4 flex items-center gap-1.5 rounded-md border border-[var(--color-border)] bg-[var(--surface-button-secondary)] px-3 py-1.5 text-[12.5px] text-[var(--color-text-secondary)] transition-[background-color,border-color,color,transform] duration-150 hover:border-[var(--color-border-accent)] hover:bg-[var(--surface-button-secondary-hover)] hover:text-[var(--color-text-primary)] active:scale-[0.97] disabled:opacity-50"
             >
               {signedIn ? <LogOut size={13} /> : <LogIn size={13} />}
               {signedIn ? "Sign out" : account?.state === "invalid" ? "Sign in again" : "Sign in with browser"}

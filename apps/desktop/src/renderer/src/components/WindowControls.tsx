@@ -7,6 +7,9 @@ export function WindowControls() {
   return <FramelessWindowControls />;
 }
 
+const CONTROL_CLASS =
+  "flex h-7 w-7 items-center justify-center rounded-full text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--wash-hover-strong)] hover:text-[var(--color-text-primary)]";
+
 function FramelessWindowControls() {
   const [maximized, setMaximized] = useState(false);
 
@@ -20,20 +23,14 @@ function FramelessWindowControls() {
   const desktop = window.axiomDesktop;
 
   return (
-    <div className="no-drag relative z-40 flex h-11 shrink-0 items-center">
-      <button
-        type="button"
-        onClick={() => desktop?.minimize()}
-        className="flex h-11 w-11 items-center justify-center text-[var(--color-text-secondary)] transition-colors hover:bg-[rgba(16,16,20,0.06)] hover:text-[var(--color-text-primary)]"
-        aria-label="Minimize"
-        title="Minimize"
-      >
+    <div className="no-drag relative z-40 flex shrink-0 items-center gap-0.5">
+      <button type="button" onClick={() => desktop?.minimize()} className={CONTROL_CLASS} aria-label="Minimize" title="Minimize">
         <Minus size={14} />
       </button>
       <button
         type="button"
         onClick={() => desktop?.maximize()}
-        className="flex h-11 w-11 items-center justify-center text-[var(--color-text-secondary)] transition-colors hover:bg-[rgba(16,16,20,0.06)] hover:text-[var(--color-text-primary)]"
+        className={CONTROL_CLASS}
         aria-label={maximized ? "Restore" : "Maximize"}
         title={maximized ? "Restore" : "Maximize"}
       >
@@ -42,7 +39,7 @@ function FramelessWindowControls() {
       <button
         type="button"
         onClick={() => desktop?.close()}
-        className="flex h-11 w-11 items-center justify-center text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-danger)] hover:text-white"
+        className={`${CONTROL_CLASS} hover:text-[var(--color-danger)]`}
         aria-label="Close"
         title="Close"
       >

@@ -1,4 +1,4 @@
-import { MoreHorizontal, PanelLeftOpen } from "lucide-react";
+import { Folder, MoreHorizontal, PanelLeftOpen } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ClientState, ListModelsResponse } from "@axiom/axiom-acp-client";
 import { ChatView } from "./components/ChatView";
@@ -8,7 +8,8 @@ import { Sidebar } from "./components/Sidebar";
 import { WelcomeView } from "./components/WelcomeView";
 import { TrafficLightGhost } from "./components/TrafficLightGhost";
 import { WindowControls } from "./components/WindowControls";
-import { isMac, isWindows, MAC_TRAFFIC_LIGHT_INSET_CLASS, WINDOWS_CAPTION_INSET_CLASS, useFullScreen } from "./lib/window-chrome";
+import { setThemePreference, useTheme } from "./lib/theme";
+import { isMac, MAC_TRAFFIC_LIGHT_INSET_CLASS, useFullScreen } from "./lib/window-chrome";
 import type { MainSurface, PendingUserMessage, ProviderModel, ReasoningEffort, Thread } from "./types";
 
 const SIDEBAR_WIDTH = 260;
@@ -93,6 +94,7 @@ export function App() {
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const fullScreen = useFullScreen();
+  useTheme();
   const [draft, setDraft] = useState("");
   const [modelId, setModelId] = useState("");
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("medium");
@@ -104,6 +106,7 @@ export function App() {
   const [desktopReady, setDesktopReady] = useState(false);
   const [pendingUserMessage, setPendingUserMessage] = useState<PendingUserMessage | null>(null);
   const loadingSessions = useRef(new Set<string>());
+  const seenRevisions = useRef(new Map<string, number>());
   const settingsGeneration = useRef(0);
   const preferredModelId = useRef("");
   const preferredReasoningEffort = useRef<ReasoningEffort>("medium");
@@ -132,16 +135,30 @@ export function App() {
           cwd: session.cwd,
           updatedAt: new Date().toISOString(),
           archived: false,
+          revision: session.threadRevision,
+          lifecycle: session.running ? "running" as const : "ready" as const,
         })),
     ];
-    return summaries.map((summary) => ({
-      id: summary.threadId,
-      title: summary.title?.trim() || "New thread",
-      folderId: collectionAssignments[summary.threadId] ?? null,
-      updatedAt: relativeTime(summary.updatedAt),
-      messages: [],
-    }));
-  }, [agentState.catalog, agentState.sessions, collectionAssignments]);
+    const seen = seenRevisions.current;
+    return summaries.map((summary) => {
+      const session = agentState.sessions[summary.threadId];
+      const revision = Math.max(summary.revision ?? 0, session?.threadRevision ?? 0);
+      if (!seen.has(summary.threadId) || summary.threadId === activeThreadId) {
+        seen.set(summary.threadId, revision);
+      }
+      const working = (session?.running ?? false)
+        || !["ready", "closed"].includes(summary.lifecycle ?? "ready");
+      const unread = !working && revision > (seen.get(summary.threadId) ?? revision);
+      return {
+        id: summary.threadId,
+        title: summary.title?.trim() || "New thread",
+        folderId: collectionAssignments[summary.threadId] ?? null,
+        updatedAt: relativeTime(summary.updatedAt),
+        status: (working ? "working" : unread ? "unread" : "idle") as Thread["status"],
+        messages: [],
+      };
+    });
+  }, [agentState.catalog, agentState.sessions, collectionAssignments, activeThreadId]);
 
   const activeThread = threads.find((thread) => thread.id === activeThreadId) ?? null;
   const activeSession = activeThreadId ? agentState.sessions[activeThreadId] ?? null : null;
@@ -296,6 +313,9 @@ export function App() {
 
   useEffect(() => {
     window.__axiomDemo = {
+      setTheme: (theme) => setThemePreference(theme, { persist: false }),
+      setSidebar: setSidebarOpen,
+      showSettings: setSettingsOpen,
       showWelcome,
       openModelPicker: () => {
         document.querySelector<HTMLButtonElement>('[title="Select model"]')?.click();
@@ -430,16 +450,20 @@ export function App() {
     });
   };
 
+  const macNotch = isMac && !sidebarOpen && !fullScreen;
+
   return (
-    <div className="light-canvas flex h-full overflow-hidden p-2.5 text-[var(--color-text-primary)]">
+    <div className="app-canvas flex h-full overflow-hidden p-2.5 text-[var(--color-text-primary)]">
       <TrafficLightGhost />
       {/* The canvas gutter above the stage card is still window chrome. */}
       <div className="drag-region fixed inset-x-0 top-0 z-40 h-2.5" aria-hidden="true" />
       {/* In-flow column that collapses via the margin trick; stays mounted so
           the 300ms slide can play both ways. */}
       <div
-        className="relative flex h-full w-[260px] shrink-0 flex-col transition-[margin-left] duration-300 ease-[var(--ease-out-expo)]"
-        style={{ marginLeft: sidebarOpen ? 0 : -(SIDEBAR_WIDTH + 10) }}
+        className="relative flex h-full w-[260px] shrink-0 flex-col transition-[margin-left,transform] duration-300 ease-[var(--ease-out-expo)]"
+        // −260 keeps the card in the 10px gutter; the extra −10px transform takes
+        // the wrapper (and its scrollbar) fully off-canvas without moving layout.
+        style={{ marginLeft: sidebarOpen ? 0 : -SIDEBAR_WIDTH, transform: sidebarOpen ? "none" : "translateX(-10px)" }}
         inert={!sidebarOpen}
         aria-hidden={!sidebarOpen}
       >
@@ -481,25 +505,46 @@ export function App() {
           />
       </div>
 
-      <section className="shadow-glass-card relative flex min-w-0 flex-1 flex-col overflow-hidden rounded-[22px] bg-white/72">
+      <div className="stage-frame relative min-w-0 flex-1" data-notch={macNotch}>
+        <div className="stage-shadow pointer-events-none absolute inset-0 rounded-[22px]" aria-hidden="true" />
+        <div className="stage-ring pointer-events-none absolute inset-0" aria-hidden="true" />
+        <section className="stage-card absolute inset-px flex flex-col overflow-hidden rounded-[21px] bg-[var(--surface-stage)]">
         <header
           className={[
             "drag-region absolute inset-x-0 top-0 z-30 flex h-11 items-center bg-transparent",
-            isMac && !sidebarOpen && !fullScreen ? MAC_TRAFFIC_LIGHT_INSET_CLASS : "pl-3",
-            isMac ? "pr-2" : "",
-            isWindows ? WINDOWS_CAPTION_INSET_CLASS : "",
+            macNotch ? MAC_TRAFFIC_LIGHT_INSET_CLASS : "pl-3",
+            "pr-2",
           ].join(" ")}
         >
           {!sidebarOpen ? <button type="button" onClick={() => setSidebarOpen(true)} className="no-drag mr-2 rounded-md p-1.5 text-[var(--color-text-tertiary)] hover:bg-[var(--color-bg-surface-hover)]" aria-label="Open sidebar"><PanelLeftOpen size={16} /></button> : null}
-          <div className="min-w-0 flex-1 truncate pl-1 text-[13px] font-medium tracking-tight">{title}</div>
-          {surface === "thread" ? <button type="button" className="no-drag mr-1 rounded-md p-1.5 text-[var(--color-text-tertiary)]" aria-label="Thread actions"><MoreHorizontal size={16} /></button> : null}
+          <div className="flex min-w-0 flex-1 items-center gap-2 pl-1 text-[13px] font-medium tracking-tight">
+            <span className="min-w-0 truncate">{title}</span>
+            {surface === "thread" && activeThread?.folderId ? (() => {
+              const folder = folders.find((entry) => entry.id === activeThread.folderId);
+              return folder ? (
+                <span className="pointer-events-none inline-flex shrink-0 items-center gap-1 rounded-full bg-[var(--wash-chip)] px-2 py-0.5 text-[11px] font-normal text-[var(--color-text-tertiary)]">
+                  <Folder size={10} />
+                  <span className="max-w-[10rem] truncate">{folder.name}</span>
+                </span>
+              ) : null;
+            })() : null}
+            {surface === "thread" ? (
+              <button
+                type="button"
+                className="no-drag shrink-0 rounded-md p-1 text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--wash-hover-strong)] hover:text-[var(--color-text-secondary)]"
+                aria-label="Thread actions"
+              >
+                <MoreHorizontal size={15} />
+              </button>
+            ) : null}
+          </div>
           <WindowControls />
         </header>
 
         {uiError || agentState.error ? (
-          <div className="shadow-glass-pop absolute left-1/2 top-12 z-40 max-w-[80%] -translate-x-1/2 truncate rounded-full bg-[rgba(255,255,255,0.85)] px-4 py-2 text-[12.5px] text-[var(--color-danger-strong)] backdrop-blur">{uiError ?? agentState.error}</div>
+          <div className="shadow-glass-pop absolute left-1/2 top-12 z-40 max-w-[80%] -translate-x-1/2 truncate rounded-full bg-[var(--surface-float)] px-4 py-2 text-[12.5px] text-[var(--color-danger-strong)] backdrop-blur">{uiError ?? agentState.error}</div>
         ) : modelCatalogError ? (
-          <div className="shadow-glass-pop absolute left-1/2 top-12 z-40 max-w-[80%] -translate-x-1/2 truncate rounded-full bg-[rgba(255,255,255,0.85)] px-4 py-2 text-[12.5px] text-[var(--color-text-secondary)] backdrop-blur">{modelCatalogError}</div>
+          <div className="shadow-glass-pop absolute left-1/2 top-12 z-40 max-w-[80%] -translate-x-1/2 truncate rounded-full bg-[var(--surface-float)] px-4 py-2 text-[12.5px] text-[var(--color-text-secondary)] backdrop-blur">{modelCatalogError}</div>
         ) : null}
 
         <div className="relative min-h-0 flex-1">
@@ -543,50 +588,51 @@ export function App() {
               }}
             />
           )}
-          {settingsOpen ? (
-            <SettingsSheet
-              onClose={() => setSettingsOpen(false)}
-              connected={agentState.connected}
-              account={agentState.account}
-              onRefreshAccount={() => {
-                void (async () => {
-                  try {
-                    await window.axiomDesktop?.agent.accountStatus();
-                    setModelCatalogRefresh((version) => version + 1);
-                    setUiError(null);
-                  } catch (error) {
-                    setUiError(error instanceof Error ? error.message : String(error));
-                  }
-                })();
-              }}
-              onLogin={() => {
-                void (async () => {
-                  try {
-                    const started = await window.axiomDesktop?.agent.browserLoginStart();
-                    if (started) await window.axiomDesktop?.agent.browserLoginComplete(started.login.loginId);
-                    setModelCatalogRefresh((version) => version + 1);
-                    setUiError(null);
-                  } catch (error) {
-                    setUiError(error instanceof Error ? error.message : String(error));
-                  }
-                })();
-              }}
-              onLogout={() => {
-                void (async () => {
-                  try {
-                    await window.axiomDesktop?.agent.logout();
-                    setModels([]);
-                    setModelCatalogError(null);
-                    setUiError(null);
-                  } catch (error) {
-                    setUiError(error instanceof Error ? error.message : String(error));
-                  }
-                })();
-              }}
-            />
-          ) : null}
         </div>
       </section>
+      </div>
+      {settingsOpen ? (
+        <SettingsSheet
+          onClose={() => setSettingsOpen(false)}
+          connected={agentState.connected}
+          account={agentState.account}
+          onRefreshAccount={() => {
+            void (async () => {
+              try {
+                await window.axiomDesktop?.agent.accountStatus();
+                setModelCatalogRefresh((version) => version + 1);
+                setUiError(null);
+              } catch (error) {
+                setUiError(error instanceof Error ? error.message : String(error));
+              }
+            })();
+          }}
+          onLogin={() => {
+            void (async () => {
+              try {
+                const started = await window.axiomDesktop?.agent.browserLoginStart();
+                if (started) await window.axiomDesktop?.agent.browserLoginComplete(started.login.loginId);
+                setModelCatalogRefresh((version) => version + 1);
+                setUiError(null);
+              } catch (error) {
+                setUiError(error instanceof Error ? error.message : String(error));
+              }
+            })();
+          }}
+          onLogout={() => {
+            void (async () => {
+              try {
+                await window.axiomDesktop?.agent.logout();
+                setModels([]);
+                setModelCatalogError(null);
+                setUiError(null);
+              } catch (error) {
+                setUiError(error instanceof Error ? error.message : String(error));
+              }
+            })();
+          }}
+        />
+      ) : null}
     </div>
   );
 }

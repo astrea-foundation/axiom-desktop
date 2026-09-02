@@ -32,11 +32,14 @@ export interface PendingUserMessage {
   text: string;
 }
 
+export type ThreadStatus = "idle" | "unread" | "working";
+
 export interface Thread {
   id: string;
   title: string;
   folderId: string | null;
   updatedAt: string;
+  status: ThreadStatus;
   messages: Message[];
 }
 
@@ -47,9 +50,12 @@ export interface Folder {
 }
 
 export interface DemoApi {
+  setTheme: (theme: "light" | "dark" | "system") => void;
   showWelcome: () => void;
   openModelPicker: () => void;
   showProxy: () => void;
   showFolder: () => void;
   showThread: (id?: string) => void;
+  showSettings: (open: boolean) => void;
+  setSidebar: (open: boolean) => void;
 }

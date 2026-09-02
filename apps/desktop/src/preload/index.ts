@@ -12,11 +12,15 @@ export type DesktopApi = {
   onFullScreenChange: (callback: (fullScreen: boolean) => void) => () => void;
   isFocused: () => Promise<boolean>;
   onActiveChange: (callback: (active: boolean) => void) => () => void;
+  setTheme: (preference: "light" | "dark" | "system", resolved: "light" | "dark") => void;
   agent: AgentApi;
 };
 
+const previewArgument = process.argv.find((argument) => argument.startsWith("--axiom-platform-preview="));
+const previewPlatform = previewArgument?.slice("--axiom-platform-preview=".length) as NodeJS.Platform | undefined;
+
 const api: DesktopApi = {
-  platform: process.platform,
+  platform: previewPlatform ?? process.platform,
   minimize: () => {
     ipcRenderer.send("window:minimize");
   },
@@ -47,6 +51,9 @@ const api: DesktopApi = {
     };
   },
   isFocused: () => ipcRenderer.invoke("window:isFocused"),
+  setTheme: (preference, resolved) => {
+    ipcRenderer.send("window:set-theme", preference, resolved);
+  },
   onActiveChange: (callback) => {
     const listener = (_event: unknown, active: boolean) => {
       callback(active);

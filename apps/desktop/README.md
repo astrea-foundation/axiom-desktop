@@ -13,9 +13,10 @@ database. Electron has no SQLite connection and owns only presentation state.
 Folder names never become filesystem paths. Login identity is shared with
 AxiomCLI, while CLI and Desktop conversation databases remain separate.
 
-Brand treatment (palette, Geist, wordmark, sakura/ember empty state, message
-chrome) is copied into this package. The closed-source website is not a
-runtime or build dependency.
+Brand treatment (light and dark token themes, DM Sans / DM Mono, the PP Cirka
+display face, the falcon symbol) lives in this package; the closed-source
+website is not a runtime or build dependency. `REDESIGN.md` explains the
+design system, its conventions, and the packaging pipeline.
 
 ## Run
 
@@ -35,14 +36,14 @@ icon, and taskbar group instead of letting the desktop shell group it with
 other programs running through the generic Electron executable. Re-run
 `pnpm desktop:install` after moving the repository.
 
-The window is frameless. Drag the top of the sidebar or the chat header to
-move it. There is no File / Edit / View menu.
+On macOS the window keeps its native traffic lights over a hidden title bar
+and has a minimal application menu (About, Edit, Window). Windows and Linux
+are frameless with the app's own window controls and no menu. Drag the top
+strip or the header to move the window.
 
 The renderer is sandboxed with context isolation, Node integration disabled,
 a restrictive CSP, and HTTP(S)-only external-link handling. Packaged builds
 embed the desktop product prompt in AxiomCLI.
-
-Sakura petal animation is vendored from sakura-js (MIT).
 
 Unpackaged development resolves `../../target/debug/axiomcli` from this app.
 `AXIOMCLI_SIDECAR` may override that development path. Packaged builds never
@@ -52,4 +53,15 @@ use the override and require `resources/bin/axiomcli`.
 pnpm capture
 ```
 
-writes PNG snapshots to `~/axiom-desktop-captures` (or `--capture=/path`).
+writes PNG snapshots of every UI state in both themes
+(`light-*.png`, `dark-*.png`) to `~/axiom-desktop-captures` (or
+`--capture=/path`). `AXIOMCLI_SIDECAR` is honoured here too.
+
+## Package
+
+```text
+pnpm brand:assets   # regenerate build/ from the design masters (macOS, python3 + Pillow)
+pnpm dist           # electron-vite build && electron-builder (needs electron-builder installed)
+```
+
+`electron-builder.yml` and `build/README.md` describe the targets and assets.

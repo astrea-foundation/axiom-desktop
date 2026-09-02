@@ -9,7 +9,7 @@ const ERRORS = [
   { id: "2", at: "8m", model: "kimi-k2.5", detail: "401" },
 ];
 
-const well = "shadow-glass-card relative rounded-2xl bg-white/70";
+const well = "shadow-glass-card relative rounded-2xl bg-[var(--surface-card)]";
 
 type Copied = "url" | "token" | null;
 
@@ -81,8 +81,8 @@ export function ProxyView({
   }
 
   return (
-    <div className="relative flex h-full min-h-0 flex-col overflow-y-auto">
-      <div className="mx-auto flex w-full max-w-[760px] flex-1 flex-col gap-3 px-6 pb-8 pt-20">
+    <div className="title-fade relative flex h-full min-h-0 flex-col overflow-y-auto">
+      <div className="mx-auto flex w-full max-w-[760px] flex-1 flex-col gap-3 px-6 pb-8 pt-[88px]">
         <div className={`${well} overflow-hidden px-5 pb-5 pt-5`}>
           <div className="relative flex items-start justify-between gap-3">
             <div className="flex min-w-0 items-center gap-3">
@@ -91,7 +91,7 @@ export function ProxyView({
                   className={[
                     "relative flex h-11 w-11 items-center justify-center rounded-full",
                     running
-                      ? "bg-[var(--color-cherry)] text-white"
+                      ? "bg-[var(--color-cherry)] text-on-accent"
                       : "bg-[var(--color-cherry-glow)] text-[var(--color-text-tertiary)]",
                   ].join(" ")}
                 >
@@ -137,7 +137,7 @@ export function ProxyView({
           <button
             type="button"
             onClick={() => void copy("url", liveUrl)}
-            className="relative mt-5 flex w-full items-center gap-2 rounded-2xl border border-[var(--color-border)] bg-[var(--color-bg-input)] px-3.5 py-2.5 text-left transition-colors hover:border-[var(--color-border-accent)]"
+            className="relative mt-5 flex w-full items-center gap-2 rounded-[8px] border border-[var(--color-border)] bg-[var(--color-bg-input)] px-3.5 py-2.5 text-left transition-colors hover:border-[var(--color-border-accent)]"
             title="Copy URL"
           >
             <span className="min-w-0 flex-1 truncate font-mono text-[13px] text-[var(--color-text-secondary)]">
@@ -198,7 +198,7 @@ export function ProxyView({
           <button
             type="button"
             onClick={() => setErrorsOpen((open) => !open)}
-            className={`${well} px-4 py-3.5 text-left transition-colors hover:bg-white`}
+            className={`${well} px-4 py-3.5 text-left transition-colors hover:bg-[var(--surface-card-hover)]`}
           >
             <div className="flex items-center justify-between gap-2">
               <span className="text-[11px] uppercase tracking-[0.08em] text-[var(--color-text-tertiary)]">
@@ -238,7 +238,7 @@ export function ProxyView({
         <button
           type="button"
           onClick={() => setInspecting(true)}
-          className={`${well} flex items-center gap-3 px-4 py-3.5 text-left transition-colors hover:bg-white`}
+          className={`${well} flex items-center gap-3 px-4 py-3.5 text-left transition-colors hover:bg-[var(--surface-card-hover)]`}
         >
           <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[var(--color-cherry-glow)] text-[var(--color-cherry)]">
             <ShieldCheck size={15} />
@@ -294,7 +294,7 @@ function IconButton({
       className={[
         "flex h-9 w-9 items-center justify-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-35",
         accent
-          ? "bg-[var(--color-cherry)] text-white hover:bg-[var(--color-cherry-bright)]"
+          ? "bg-[var(--color-cherry)] text-on-accent hover:bg-[var(--color-cherry-bright)]"
           : "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-surface-hover)] hover:text-[var(--color-text-primary)]",
       ].join(" ")}
     >

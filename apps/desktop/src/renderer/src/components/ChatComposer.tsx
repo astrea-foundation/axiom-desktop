@@ -104,9 +104,9 @@ export function ChatComposer({
 
   return (
     <div className="group relative w-full">
-      <div className="relative flex flex-col rounded-[22px] bg-[rgba(255,255,255,0.72)] pl-4 pr-2.5 pb-2 pt-3 backdrop-blur shadow-[0_0_0_1px_rgba(16,16,20,0.045),0_0_0_0_rgba(16,16,20,0),0_2px_6px_-2px_rgba(16,16,20,0.06),inset_0_1px_0_rgba(255,255,255,0.9)] transition-[box-shadow,background-color] duration-300 ease-[var(--ease-out-expo)] hover:bg-[rgba(255,255,255,0.78)] focus-within:bg-[rgba(255,255,255,0.8)] focus-within:shadow-[0_0_0_1px_rgba(16,16,20,0.3),0_0_0_4px_rgba(16,16,20,0.06),0_2px_6px_-2px_rgba(16,16,20,0.06),inset_0_1px_0_rgba(255,255,255,0.9)]">
+      <div className="composer-shell relative flex flex-col rounded-[22px] pl-4 pr-2.5 pb-2 pt-3 backdrop-blur">
         <div className="flex items-start gap-3">
-          <Lock size={16} aria-hidden="true" className="mt-1 shrink-0 text-[var(--color-text-muted)]" />
+          <Lock size={13} aria-hidden="true" className="mt-[5.5px] shrink-0 text-[var(--color-text-muted)]" />
           <textarea
             ref={ref}
             value={value}
@@ -130,7 +130,7 @@ export function ChatComposer({
                 type="button"
                 disabled={models.length === 0}
                 onClick={() => setOpenMenu((open) => (open === "model" ? null : "model"))}
-                className="flex h-7 items-center gap-1.5 rounded-[7px] bg-[rgba(16,16,20,0.045)] px-2.5 text-[12px] font-medium text-[var(--color-text-secondary)] transition-colors hover:bg-[rgba(16,16,20,0.1)] hover:text-[var(--color-text-primary)] disabled:cursor-default disabled:hover:bg-[rgba(16,16,20,0.045)] disabled:hover:text-[var(--color-text-secondary)]"
+                className="flex h-7 items-center gap-1.5 rounded-[7px] bg-[var(--wash-chip)] px-2.5 text-[12px] font-medium text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--wash-chip-hover)] hover:text-[var(--color-text-primary)] disabled:cursor-default disabled:hover:bg-[var(--wash-chip)] disabled:hover:text-[var(--color-text-secondary)]"
                 aria-haspopup="menu"
                 aria-expanded={openMenu === "model"}
                 title={models.length === 0 ? modelStatusLabel : "Select model"}
@@ -164,7 +164,7 @@ export function ChatComposer({
                   onClick={() =>
                     setOpenMenu((open) => (open === "thinking" ? null : "thinking"))
                   }
-                  className="flex h-7 items-center gap-1.5 rounded-[7px] bg-[rgba(16,16,20,0.045)] px-2.5 text-[12px] font-medium text-[var(--color-text-secondary)] transition-colors hover:bg-[rgba(16,16,20,0.1)] hover:text-[var(--color-text-primary)]"
+                  className="flex h-7 items-center gap-1.5 rounded-[7px] bg-[var(--wash-chip)] px-2.5 text-[12px] font-medium text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--wash-chip-hover)] hover:text-[var(--color-text-primary)]"
                   aria-haspopup="menu"
                   aria-expanded={openMenu === "thinking"}
                   title="Thinking level"
@@ -182,7 +182,7 @@ export function ChatComposer({
                   <div
                     role="menu"
                     aria-label="Thinking level"
-                    className="glass-panel shadow-glass-pop animate-pop-in absolute bottom-9 left-0 z-30 w-[168px] origin-bottom-left overflow-hidden rounded-xl p-1"
+                    className="glass-panel shadow-glass-pop animate-pop-in absolute bottom-9 left-0 z-30 w-[168px] origin-bottom-left overflow-hidden rounded-[10px] p-1"
                   >
                     {supportedReasoningEfforts.map((effort) => (
                       <button
@@ -194,7 +194,7 @@ export function ChatComposer({
                           onReasoningEffortChange(effort);
                           setOpenMenu(null);
                         }}
-                        className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[12.5px] text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-surface-hover)] hover:text-[var(--color-text-primary)]"
+                        className="flex w-full items-center gap-2 rounded-[6px] px-2.5 py-2 text-left text-[12.5px] text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-surface-hover)] hover:text-[var(--color-text-primary)]"
                       >
                         <span className="flex h-4 w-4 shrink-0 items-center justify-center text-[var(--color-cherry)]">
                           {reasoningEffort === effort ? <Check size={13} /> : null}
@@ -219,7 +219,7 @@ export function ChatComposer({
               <button
                 type="button"
                 onClick={onStop}
-                className="flex h-[34px] w-[34px] items-center justify-center rounded-full bg-[var(--color-cherry)] text-white shadow-[0_1px_3px_rgba(16,16,20,0.24)] transition-[background-color,transform] hover:bg-[var(--color-cherry-bright)] active:scale-[0.94] disabled:cursor-not-allowed disabled:opacity-40"
+                className="flex h-[34px] w-[34px] items-center justify-center rounded-full bg-[var(--color-cherry)] text-on-accent shadow-[0_1px_3px_var(--shade-button)] transition-[background-color,transform] hover:bg-[var(--color-cherry-bright)] active:scale-[0.94] disabled:cursor-not-allowed disabled:opacity-40"
                 aria-label="Stop generating"
               >
                 <Square size={12} fill="currentColor" strokeWidth={2.5} />
@@ -229,7 +229,7 @@ export function ChatComposer({
                 type="button"
                 onClick={submit}
                 disabled={!canSend}
-                className="flex h-[34px] w-[34px] items-center justify-center rounded-full bg-[var(--color-cherry)] text-white shadow-[0_1px_3px_rgba(16,16,20,0.24)] transition-[background-color,transform] hover:bg-[var(--color-cherry-bright)] active:scale-[0.94] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-[var(--color-cherry)] disabled:active:scale-100"
+                className="flex h-[34px] w-[34px] items-center justify-center rounded-full bg-[var(--color-cherry)] text-on-accent shadow-[0_1px_3px_var(--shade-button)] transition-[background-color,transform] hover:bg-[var(--color-cherry-bright)] active:scale-[0.94] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-[var(--color-cherry)] disabled:active:scale-100"
                 aria-label="Send"
               >
                 <ArrowUp size={15} strokeWidth={2.5} />

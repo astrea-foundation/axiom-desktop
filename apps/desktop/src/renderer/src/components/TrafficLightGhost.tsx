@@ -21,8 +21,8 @@ export function TrafficLightGhost() {
           style={{
             left: center - 6,
             top: 12,
-            background: "#d9d9d9",
-            boxShadow: "inset 0 0 0 0.5px rgba(0, 0, 0, 0.12)",
+            background: "var(--chrome-ghost-dot)",
+            boxShadow: "inset 0 0 0 0.5px var(--chrome-ghost-ring)",
           }}
         />
       ))}

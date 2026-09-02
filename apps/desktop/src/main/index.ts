@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { app, BrowserWindow, ipcMain, Menu, nativeImage, shell, type IpcMainInvokeEvent } from "electron";
+import { app, BrowserWindow, ipcMain, Menu, nativeImage, nativeTheme, shell, type IpcMainInvokeEvent } from "electron";
 import type { ElicitationOutcome, ListThreadsRequest, PermissionOutcome, ThreadSettingsRequest } from "@axiom/axiom-acp-client";
 import { AgentSidecar } from "./agent-sidecar";
 import { platformWindowChrome } from "./window-chrome";
@@ -11,11 +11,16 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const WINDOW_WIDTH = 1320;
 const WINDOW_HEIGHT = 860;
 const BACKGROUND = "#f2f2f4";
+const BACKGROUND_DARK = "#141416";
 const APP_NAME = "Axiom";
 const APP_ID = "stream.axiom.desktop";
+// TODO(brand): confirm the legal line before release.
+const COPYRIGHT = "© 2026 Astrea Foundation";
 const LINUX_DESKTOP_FILE = `${APP_ID}.desktop`;
 const sidecar = new AgentSidecar();
 let shutdownStarted = false;
+// Dev-only: preview another platform's chrome (AXIOM_DESKTOP_PLATFORM_PREVIEW=win32).
+const PLATFORM_PREVIEW = app.isPackaged ? undefined : process.env.AXIOM_DESKTOP_PLATFORM_PREVIEW;
 
 app.setName(APP_NAME);
 app.setAppUserModelId(APP_ID);
@@ -203,16 +208,56 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * macOS gets a minimal application menu: it is where "About Axiom" lives, and
+ * without an Edit menu the system text-editing shortcuts don't reach the
+ * renderer. Windows/Linux keep no menu — the window hides its menu bar anyway.
+ */
+function installApplicationMenu(): void {
+  if (process.platform !== "darwin") {
+    Menu.setApplicationMenu(null);
+    return;
+  }
+  app.setAboutPanelOptions({
+    applicationName: APP_NAME,
+    applicationVersion: app.getVersion(),
+    version: "",
+    copyright: COPYRIGHT,
+    iconPath: join(__dirname, "../../resources/icon-mac.png"),
+  });
+  Menu.setApplicationMenu(Menu.buildFromTemplate([
+    {
+      label: APP_NAME,
+      submenu: [
+        { role: "about", label: `About ${APP_NAME}` },
+        { type: "separator" },
+        { role: "hide", label: `Hide ${APP_NAME}` },
+        { role: "hideOthers" },
+        { role: "unhide" },
+        { type: "separator" },
+        { role: "quit", label: `Quit ${APP_NAME}` },
+      ],
+    },
+    { role: "editMenu" },
+    { role: "windowMenu" },
+  ]));
+}
+
 function createWindow(): BrowserWindow {
   const iconPath = join(__dirname, "../../resources/icon.png");
   const icon = nativeImage.createFromPath(iconPath);
+  if (!app.isPackaged && process.platform === "darwin") {
+    // Packaged builds carry icon.icns; in dev the Dock would show Electron's.
+    const dockIcon = nativeImage.createFromPath(join(__dirname, "../../resources/icon-mac.png"));
+    if (!dockIcon.isEmpty()) app.dock?.setIcon(dockIcon);
+  }
 
   const window = new BrowserWindow({
     width: WINDOW_WIDTH,
     height: WINDOW_HEIGHT,
     minWidth: 960,
     minHeight: 640,
-    backgroundColor: BACKGROUND,
+    backgroundColor: nativeTheme.shouldUseDarkColors ? BACKGROUND_DARK : BACKGROUND,
     ...platformWindowChrome(process.platform),
     autoHideMenuBar: true,
     title: "Axiom",
@@ -223,11 +268,13 @@ function createWindow(): BrowserWindow {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      additionalArguments: PLATFORM_PREVIEW ? [`--axiom-platform-preview=${PLATFORM_PREVIEW}`] : [],
     },
   });
 
   window.setMenuBarVisibility(false);
-  Menu.setApplicationMenu(null);
+  installApplicationMenu();
+  if (PLATFORM_PREVIEW && process.platform === "darwin") window.setWindowButtonVisibility(false);
 
   window.on("ready-to-show", () => {
     if (!captureDirFromArgv(process.argv)) {
@@ -289,21 +336,48 @@ async function captureStates(window: BrowserWindow, outputDir: string): Promise<
   window.webContents.send("window:fullscreen-changed", true);
   await delay(1800);
 
-  const shots: Array<{ name: string; script?: string; wait: number }> = [
+  const shots: Array<{ name: string; script?: string; wait: number; chrome?: boolean }> = [
     { name: "conversation", wait: 400 },
     { name: "welcome", script: `window.__axiomDemo?.showWelcome()`, wait: 1600 },
     { name: "models", script: `window.__axiomDemo?.openModelPicker()`, wait: 400 },
     { name: "proxy", script: `window.__axiomDemo?.showProxy()`, wait: 900 },
     { name: "folder", script: `window.__axiomDemo?.showFolder()`, wait: 700 },
+    { name: "markdown", script: `window.__axiomDemo?.showThread("thread-markdown")`, wait: 900 },
+    {
+      name: "markdown-top",
+      script: `[...document.querySelectorAll("div")].find((el) => getComputedStyle(el).overflowY === "auto" && el.scrollHeight > el.clientHeight)?.scrollTo(0, 0)`,
+      wait: 500,
+    },
+    {
+      name: "markdown-open",
+      script: `document.querySelectorAll('.title-fade button[aria-expanded="false"]').forEach((el) => el.click())`,
+      wait: 500,
+    },
+    { name: "errors", script: `window.__axiomDemo?.showThread("thread-states")`, wait: 900 },
+    { name: "settings", script: `window.__axiomDemo?.showSettings(true)`, wait: 700 },
+    // Windowed, inactive, sidebar collapsed: the traffic-light notch with its ghosts.
+    { name: "collapsed", script: `window.__axiomDemo?.showSettings(false); window.__axiomDemo?.setSidebar(false)`, wait: 700, chrome: true },
   ];
 
-  for (const shot of shots) {
-    if (shot.script) {
-      await window.webContents.executeJavaScript(shot.script);
+  for (const theme of ["light", "dark"] as const) {
+    await window.webContents.executeJavaScript(`window.__axiomDemo?.setTheme(${JSON.stringify(theme)})`);
+    window.webContents.send("window:fullscreen-changed", true);
+    window.webContents.send("window:active-changed", true);
+    await window.webContents.executeJavaScript(`window.__axiomDemo?.showSettings(false); window.__axiomDemo?.setSidebar(true)`);
+    await window.webContents.executeJavaScript(`window.__axiomDemo?.showThread()`);
+    await delay(600);
+    for (const shot of shots) {
+      if (shot.chrome) {
+        window.webContents.send("window:fullscreen-changed", false);
+        window.webContents.send("window:active-changed", false);
+      }
+      if (shot.script) {
+        await window.webContents.executeJavaScript(shot.script);
+      }
+      await delay(shot.wait);
+      const image = await window.capturePage();
+      await writeFile(join(outputDir, `${theme}-${shot.name}.png`), image.toPNG());
     }
-    await delay(shot.wait);
-    const image = await window.capturePage();
-    await writeFile(join(outputDir, `${shot.name}.png`), image.toPNG());
   }
 }
 
@@ -337,6 +411,15 @@ if (primaryInstance) void app.whenReady().then(() => {
   });
   ipcMain.handle("window:isFocused", (event) => {
     return BrowserWindow.fromWebContents(event.sender)?.isFocused() ?? true;
+  });
+  ipcMain.on("window:set-theme", (event, preference: unknown, resolved: unknown) => {
+    if (preference === "light" || preference === "dark" || preference === "system") {
+      nativeTheme.themeSource = preference;
+    }
+    const window = BrowserWindow.fromWebContents(event.sender);
+    if (window && (resolved === "light" || resolved === "dark")) {
+      window.setBackgroundColor(resolved === "dark" ? BACKGROUND_DARK : BACKGROUND);
+    }
   });
 
   const window = createWindow();

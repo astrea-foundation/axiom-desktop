@@ -51,23 +51,177 @@
   --color-text-tertiary: #84848e;
   --color-text-muted: #a6a6af;
 
-  --color-success: #1e7f4c;
-  --color-success-glow: rgba(30, 127, 76, 0.1);
+  --color-success: #3f9b46;
+  --color-success-glow: rgba(63, 155, 70, 0.1);
+
+  --color-brand: #ff7653;
+  --color-on-accent: #ffffff;
+
+  --color-warning: #d97706;
+  --color-warning-strong: #92400e;
+  --color-warning-soft: #fdf6e8;
+  --color-warning-border: rgba(217, 119, 6, 0.25);
 
   --font-sans: "DM Sans Variable", "DM Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --font-mono: "DM Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   --font-display: "PP Cirka", "Times New Roman", serif;
 
-  --radius-xs: 6px;
-  --radius-sm: 8px;
-  --radius-md: 10px;
-  --radius-lg: 14px;
-  --radius-xl: 18px;
-  --radius-2xl: 24px;
-  --radius-3xl: 28px;
+  /* Deliberately tighter than the webapp's scale; the window card, composer,
+     bubbles, popovers, inputs, and rows carry explicit radii and don't follow it. */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 12px;
+  --radius-2xl: 14px;
+  --radius-3xl: 16px;
 
   --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
   --ease-spring: cubic-bezier(0.34, 1.4, 0.64, 1);
+}
+
+/* Semantic surfaces. The light language layers white-alpha over a bright
+   canvas; the dark language layers white-alpha over a deep one, so the same
+   names carry both — components never reach for white or ink directly. */
+:root {
+  color-scheme: light;
+  --chrome-ghost-dot: #d9d9d9;
+  --chrome-ghost-ring: rgba(0, 0, 0, 0.12);
+
+  --surface-stage: rgba(255, 255, 255, 0.72);
+  --surface-card: rgba(255, 255, 255, 0.7);
+  --surface-card-hover: #ffffff;
+  --surface-tile: #ffffff;
+  --surface-float: rgba(255, 255, 255, 0.85);
+  --surface-pill: rgba(255, 255, 255, 0.62);
+  --surface-pill-hover: #e3e3e7;
+  --surface-bubble-user: rgba(255, 255, 255, 0.82);
+  --surface-button-secondary: rgba(255, 255, 255, 0.6);
+  --surface-button-secondary-hover: #ffffff;
+  --surface-glass: rgba(255, 255, 255, 0.72);
+  --surface-glass-hover: rgba(255, 255, 255, 0.78);
+  --surface-glass-focus: rgba(255, 255, 255, 0.8);
+
+  --wash-chip: rgba(16, 16, 20, 0.045);
+  --wash-chip-hover: rgba(16, 16, 20, 0.1);
+  --wash-hover: rgba(16, 16, 20, 0.055);
+  --wash-hover-strong: rgba(16, 16, 20, 0.07);
+  --wash-row: rgba(16, 16, 20, 0.025);
+  --wash-code: rgba(16, 16, 20, 0.055);
+  --wash-table-head: rgba(16, 16, 20, 0.04);
+
+  --ring-hairline: rgba(16, 16, 20, 0.045);
+  --ring-hairline-hover: rgba(16, 16, 20, 0.14);
+  --ring-focus-halo: rgba(16, 16, 20, 0.06);
+  --ring-focus-visible: rgba(16, 16, 20, 0.4);
+  --border-hover: rgba(16, 16, 20, 0.16);
+  --border-quote: rgba(16, 16, 20, 0.18);
+  --link-underline: rgba(16, 16, 20, 0.35);
+  --link-underline-hover: rgba(16, 16, 20, 0.7);
+  --scrollbar-thumb: rgba(16, 16, 20, 0.16);
+  --scrollbar-thumb-hover: rgba(16, 16, 20, 0.28);
+
+  --shade-xs: rgba(16, 16, 20, 0.03);
+  --shade-soft: rgba(16, 16, 20, 0.06);
+  --shade-button: rgba(16, 16, 20, 0.24);
+  --glass-inset: rgba(255, 255, 255, 0.85);
+  --glass-inset-strong: rgba(255, 255, 255, 0.9);
+  --glass-inset-soft: rgba(255, 255, 255, 0.7);
+
+  --dot-idle: #c9c9ce;
+  --stage-ring: rgba(16, 16, 20, 0.045);
+  --blob-fill: rgba(255, 255, 255, 0.92);
+  --surface-track: rgba(16, 16, 20, 0.05);
+}
+
+/* Dark theme: overrides the @theme tokens by name. Utilities resolve them at
+   use time, so every var()-driven surface follows. */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --chrome-ghost-dot: #4a4a52;
+  --chrome-ghost-ring: rgba(255, 255, 255, 0.1);
+
+  --color-bg-base: #141416;
+  --color-bg-sidebar: #18181b;
+  --color-bg-surface: #1e1e22;
+  --color-bg-surface-hover: #27272c;
+  --color-bg-elevated: #232327;
+  --color-bg-input: #1a1a1e;
+
+  --color-border: rgba(255, 255, 255, 0.08);
+  --color-border-strong: rgba(255, 255, 255, 0.14);
+  --color-border-accent: rgba(255, 255, 255, 0.3);
+
+  --color-cherry: #f4f4f6;
+  --color-cherry-bright: #ffffff;
+  --color-cherry-soft: #e4e4e8;
+  --color-cherry-deep: #6b6b73;
+  --color-cherry-glow: rgba(255, 255, 255, 0.06);
+
+  --color-danger: #f0565b;
+  --color-danger-strong: #ff7075;
+  --color-danger-soft: rgba(240, 86, 91, 0.12);
+  --color-danger-border: rgba(240, 86, 91, 0.35);
+
+  --color-text-primary: #f4f4f6;
+  --color-text-secondary: #b4b4ba;
+  --color-text-tertiary: #86868e;
+  --color-text-muted: #5f5f67;
+
+  --color-success: #5cb86a;
+  --color-success-glow: rgba(92, 184, 106, 0.14);
+
+  --color-on-accent: #101014;
+
+  --color-warning: #f0a33a;
+  --color-warning-strong: #f5bd6b;
+  --color-warning-soft: rgba(240, 163, 58, 0.1);
+  --color-warning-border: rgba(240, 163, 58, 0.3);
+
+  --surface-stage: rgba(255, 255, 255, 0.045);
+  --surface-card: rgba(255, 255, 255, 0.045);
+  --surface-card-hover: rgba(255, 255, 255, 0.08);
+  --surface-tile: #2c2c31;
+  --surface-float: rgba(40, 40, 45, 0.92);
+  --surface-pill: rgba(255, 255, 255, 0.06);
+  --surface-pill-hover: rgba(255, 255, 255, 0.13);
+  --surface-bubble-user: rgba(255, 255, 255, 0.075);
+  --surface-button-secondary: rgba(255, 255, 255, 0.05);
+  --surface-button-secondary-hover: rgba(255, 255, 255, 0.11);
+  --surface-glass: rgba(255, 255, 255, 0.05);
+  --surface-glass-hover: rgba(255, 255, 255, 0.065);
+  --surface-glass-focus: rgba(255, 255, 255, 0.075);
+
+  --wash-chip: rgba(255, 255, 255, 0.07);
+  --wash-chip-hover: rgba(255, 255, 255, 0.14);
+  --wash-hover: rgba(255, 255, 255, 0.07);
+  --wash-hover-strong: rgba(255, 255, 255, 0.1);
+  --wash-row: rgba(255, 255, 255, 0.035);
+  --wash-code: rgba(255, 255, 255, 0.09);
+  --wash-table-head: rgba(255, 255, 255, 0.06);
+
+  --ring-hairline: rgba(255, 255, 255, 0.08);
+  --ring-hairline-hover: rgba(255, 255, 255, 0.18);
+  --ring-focus-halo: rgba(255, 255, 255, 0.08);
+  --ring-focus-visible: rgba(255, 255, 255, 0.5);
+  --border-hover: rgba(255, 255, 255, 0.18);
+  --border-quote: rgba(255, 255, 255, 0.2);
+  --link-underline: rgba(255, 255, 255, 0.35);
+  --link-underline-hover: rgba(255, 255, 255, 0.7);
+  --scrollbar-thumb: rgba(255, 255, 255, 0.18);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.3);
+
+  --shade-xs: rgba(0, 0, 0, 0.3);
+  --shade-soft: rgba(0, 0, 0, 0.4);
+  --shade-button: rgba(0, 0, 0, 0.5);
+  --glass-inset: rgba(255, 255, 255, 0.06);
+  --glass-inset-strong: rgba(255, 255, 255, 0.08);
+  --glass-inset-soft: rgba(255, 255, 255, 0.05);
+
+  --dot-idle: #4d4d55;
+  --stage-ring: rgba(255, 255, 255, 0.07);
+  --blob-fill: rgba(255, 255, 255, 0.07);
+  --surface-track: rgba(0, 0, 0, 0.28);
 }
 
 html,
@@ -109,7 +263,7 @@ button {
 }
 
 :focus-visible:not([tabindex="-1"]):not(input):not(textarea):not(select) {
-  outline: 2px solid rgba(16, 16, 20, 0.4);
+  outline: 2px solid var(--ring-focus-visible);
   outline-offset: 2px;
   border-radius: 8px;
 }
@@ -127,13 +281,13 @@ input {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(16, 16, 20, 0.16);
+  background: var(--scrollbar-thumb);
   border-radius: 8px;
   border: 2px solid transparent;
   background-clip: padding-box;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(16, 16, 20, 0.28);
+  background: var(--scrollbar-thumb-hover);
   background-clip: padding-box;
   border: 2px solid transparent;
 }
@@ -148,31 +302,134 @@ input {
   app-region: no-drag;
 }
 
-/* Right inset matching the native Windows caption buttons. The WCO env vars
-   collapse when the overlay is hidden (e.g. fullscreen), so the padding does too. */
-.pad-titlebar-overlay {
-  padding-right: calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw));
-}
-
 /* The frosted-glass canvas the whole app sits on. */
-.light-canvas {
+.app-canvas {
   background:
     radial-gradient(1200px 700px at 12% -8%, #ffffff 0%, rgba(255, 255, 255, 0) 62%),
     radial-gradient(900px 620px at 88% 4%, #f4f3f6 0%, rgba(244, 243, 246, 0) 60%),
     radial-gradient(1100px 900px at 70% 92%, #edecef 0%, rgba(237, 236, 239, 0) 65%),
     linear-gradient(168deg, #f7f7f8 0%, #edecef 48%, #e8e7eb 100%);
 }
+:root[data-theme="dark"] .app-canvas {
+  background:
+    radial-gradient(1200px 700px at 12% -8%, rgba(255, 255, 255, 0.07) 0%, rgba(255, 255, 255, 0) 62%),
+    radial-gradient(900px 620px at 88% 4%, rgba(255, 255, 255, 0.035) 0%, rgba(255, 255, 255, 0) 60%),
+    radial-gradient(1100px 900px at 70% 92%, rgba(255, 255, 255, 0.03) 0%, rgba(255, 255, 255, 0) 65%),
+    linear-gradient(168deg, #18181b 0%, #121214 48%, #0e0e10 100%);
+}
 
-/* Static white bloom — a gradient on purpose, never filter:blur, never animated. */
-.bg-orb {
-  position: absolute;
-  border-radius: 50%;
-  background: radial-gradient(
-    closest-side,
-    rgba(255, 255, 255, 0.85) 0%,
-    rgba(255, 255, 255, 0.35) 55%,
-    rgba(255, 255, 255, 0) 72%
+/* Stage card frame. The card is clipped to a shape() so macOS can carve a
+   tab for the traffic lights out of its top-left corner; the hairline ring is
+   a sibling with an even-odd hole one pixel inside, and the drop shadow lives
+   on the frame so it follows the notch. --nt animates 0→1 as the notch opens. */
+@property --nt {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0;
+}
+.stage-frame {
+  --r: 22px;
+  --nw: 70px;
+  --nh: calc(26px * var(--nt));
+  --rt: calc(12px * var(--nt));
+  --rf: calc(11px * var(--nt));
+  /* One-pixel inset of the same geometry, in the card's own coordinates. */
+  --i: calc(1px * var(--nt));
+  --sr: calc(var(--r) - 1px);
+  --snw: calc(var(--nw) + var(--i) - 1px);
+  --snh: max(0px, calc(var(--nh) + var(--i) - 1px));
+  --srt: max(0px, calc(var(--rt) - var(--i)));
+  --srf: calc(var(--rf) + var(--i));
+  transition: --nt 0.3s var(--ease-out-expo);
+}
+.stage-frame[data-notch="true"] {
+  --nt: 1;
+}
+/* The drop shadow comes from a transparent rounded-rect sibling, not a
+   filter: a filter would shadow the translucent card's *content* (halos under
+   every opaque child) and would make the frame a containing block for fixed
+   descendants. Outer box-shadows paint only outside the box, so nothing shows
+   inside the notch, and the offset keeps the top edge shadow-free anyway. */
+.stage-shadow {
+  box-shadow:
+    0 1px 1px rgba(16, 16, 20, 0.03),
+    0 12px 26px -14px rgba(16, 16, 20, 0.12);
+}
+:root[data-theme="dark"] .stage-shadow {
+  box-shadow:
+    0 1px 1px rgba(0, 0, 0, 0.3),
+    0 14px 30px -14px rgba(0, 0, 0, 0.6);
+}
+.stage-ring {
+  background: var(--stage-ring);
+  clip-path: shape(
+    evenodd from calc(var(--nw) + var(--rt)) 0,
+    hline to calc(100% - var(--r)),
+    arc to 100% var(--r) of var(--r) cw,
+    vline to calc(100% - var(--r)),
+    arc to calc(100% - var(--r)) 100% of var(--r) cw,
+    hline to var(--r),
+    arc to 0 calc(100% - var(--r)) of var(--r) cw,
+    vline to calc(var(--nh) + var(--r)),
+    arc to var(--r) var(--nh) of var(--r) cw,
+    hline to calc(var(--nw) - var(--rf)),
+    arc to var(--nw) calc(var(--nh) - var(--rf)) of var(--rf) ccw,
+    vline to var(--rt),
+    arc to calc(var(--nw) + var(--rt)) 0 of var(--rt) cw,
+    close,
+    move to calc(var(--snw) + var(--srt) + 1px) 1px,
+    hline to calc(100% - var(--r)),
+    arc to calc(100% - 1px) var(--r) of var(--sr) cw,
+    vline to calc(100% - var(--r)),
+    arc to calc(100% - var(--r)) calc(100% - 1px) of var(--sr) cw,
+    hline to var(--r),
+    arc to 1px calc(100% - var(--r)) of var(--sr) cw,
+    vline to calc(var(--snh) + var(--r)),
+    arc to var(--r) calc(var(--snh) + 1px) of var(--sr) cw,
+    hline to calc(var(--snw) - var(--srf) + 1px),
+    arc to calc(var(--snw) + 1px) calc(var(--snh) - var(--srf) + 1px) of var(--srf) ccw,
+    vline to calc(var(--srt) + 1px),
+    arc to calc(var(--snw) + var(--srt) + 1px) 1px of var(--srt) cw,
+    close
   );
+}
+.stage-card {
+  box-shadow: inset 0 1px 0 var(--glass-inset);
+  clip-path: shape(
+    from calc(var(--snw) + var(--srt)) 0,
+    hline to calc(100% - var(--sr)),
+    arc to 100% var(--sr) of var(--sr) cw,
+    vline to calc(100% - var(--sr)),
+    arc to calc(100% - var(--sr)) 100% of var(--sr) cw,
+    hline to var(--sr),
+    arc to 0 calc(100% - var(--sr)) of var(--sr) cw,
+    vline to calc(var(--snh) + var(--sr)),
+    arc to var(--sr) var(--snh) of var(--sr) cw,
+    hline to calc(var(--snw) - var(--srf)),
+    arc to var(--snw) calc(var(--snh) - var(--srf)) of var(--srf) ccw,
+    vline to var(--srt),
+    arc to calc(var(--snw) + var(--srt)) 0 of var(--srt) cw,
+    close
+  );
+}
+
+/* Scrolling content fades to nothing under the title strip. A mask on the
+   scroller, not a painted scrim: the card is a translucent layer over a
+   gradient canvas, so no flat colour could match it without showing an edge.
+   The band must end inside the scrollers' top padding (88px) so content at
+   rest is never inside it. */
+.title-fade {
+  -webkit-mask-image: linear-gradient(to bottom, transparent 44px, #000 84px);
+  mask-image: linear-gradient(to bottom, transparent 44px, #000 84px);
+}
+
+/* Welcome blooms: irregular blobs (eight-value border-radius) on a fixed
+   composition anchored to the view centre. Static — never animated — so the
+   blur rasterises once and resizing only reveals more of the same shapes. */
+.bg-blob {
+  position: absolute;
+  background: var(--blob-fill);
+  filter: blur(90px);
   pointer-events: none;
 }
 
@@ -186,6 +443,12 @@ input {
 }
 .glass-panel-solid {
   background: linear-gradient(178deg, rgba(255, 255, 255, 0.97) 0%, rgba(255, 255, 255, 0.92) 100%);
+}
+:root[data-theme="dark"] .glass-panel {
+  background: linear-gradient(178deg, rgba(40, 40, 45, 0.9) 0%, rgba(32, 32, 36, 0.84) 100%);
+}
+:root[data-theme="dark"] .glass-panel-solid {
+  background: linear-gradient(178deg, #29292e 0%, #232327 100%);
 }
 
 .shadow-glass-card {
@@ -208,6 +471,65 @@ input {
     0 1px 1px rgba(16, 16, 20, 0.02),
     inset 0 1px 0 rgba(255, 255, 255, 0.7);
 }
+:root[data-theme="dark"] .shadow-glass-card {
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.07),
+    0 1px 1px rgba(0, 0, 0, 0.3),
+    0 12px 26px -14px rgba(0, 0, 0, 0.6),
+    inset 0 1px 0 var(--glass-inset);
+}
+:root[data-theme="dark"] .shadow-glass-pop {
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.1),
+    0 2px 4px rgba(0, 0, 0, 0.35),
+    0 18px 40px -20px rgba(0, 0, 0, 0.7),
+    inset 0 1px 0 var(--glass-inset-strong);
+}
+:root[data-theme="dark"] .shadow-glass-tile {
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.07),
+    0 1px 1px rgba(0, 0, 0, 0.3),
+    inset 0 1px 0 var(--glass-inset-soft);
+}
+
+/* Composer glass. Lives in CSS so the four-layer shadow stack has one home
+   and its ring/halo layers can follow the theme. */
+.composer-shell {
+  background: var(--surface-glass);
+  box-shadow:
+    0 0 0 1px var(--ring-hairline),
+    0 0 0 0 transparent,
+    0 2px 6px -2px var(--shade-soft),
+    inset 0 1px 0 var(--glass-inset-strong);
+  transition:
+    box-shadow 0.3s var(--ease-out-expo),
+    background-color 0.3s var(--ease-out-expo);
+}
+.composer-shell:hover {
+  background: var(--surface-glass-hover);
+  box-shadow:
+    0 0 0 1px var(--ring-hairline-hover),
+    0 0 0 0 transparent,
+    0 2px 6px -2px var(--shade-soft),
+    inset 0 1px 0 var(--glass-inset-strong);
+}
+.composer-shell:focus-within {
+  background: var(--surface-glass-focus);
+  box-shadow:
+    0 0 0 1px var(--color-border-accent),
+    0 0 0 4px var(--ring-focus-halo),
+    0 2px 6px -2px var(--shade-soft),
+    inset 0 1px 0 var(--glass-inset-strong);
+}
+
+/* Monochrome provider marks are black SVGs; the dark theme inverts them. */
+.brand-mono {
+  filter: brightness(0);
+  opacity: 0.8;
+}
+:root[data-theme="dark"] .brand-mono {
+  filter: brightness(0) invert(1);
+}
 
 .ax-label {
   font-size: 10.5px;
@@ -226,10 +548,24 @@ input {
   font-size: 12px;
   font-weight: 500;
   color: var(--color-text-secondary);
-  background: rgba(255, 255, 255, 0.62);
-  box-shadow: 0 0 0 1px rgba(16, 16, 20, 0.045);
+  background: var(--surface-pill);
+  box-shadow: 0 0 0 1px var(--ring-hairline);
   white-space: nowrap;
 }
+/* Companion for interactive ax-pills: .ax-pill's unlayered background always
+   beats layered hover: utilities, so the hover must be unlayered too. */
+.ax-pill-button {
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease, transform 0.15s ease;
+}
+.ax-pill-button:hover {
+  background: var(--surface-pill-hover);
+  color: var(--color-text-primary);
+}
+.ax-pill-button:active {
+  transform: scale(0.97);
+}
+
 .ax-chip {
   display: inline-flex;
   align-items: center;
@@ -240,7 +576,7 @@ input {
   font-size: 11.5px;
   font-weight: 500;
   color: var(--color-text-secondary);
-  background: rgba(16, 16, 20, 0.045);
+  background: var(--wash-chip);
   white-space: nowrap;
 }
 .ax-dot {
@@ -265,6 +601,36 @@ input {
 .ax-dot-working {
   animation: dot-working 2s ease-in-out infinite;
 }
+/* Thread status dots: viewed grey, unread brand, working breathes between. */
+.thread-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--dot-idle);
+  flex: 0 0 auto;
+}
+.thread-dot-unread {
+  background: var(--color-brand);
+}
+@keyframes thread-dot-working {
+  0%,
+  100% {
+    background: var(--dot-idle);
+  }
+  50% {
+    background: var(--color-brand);
+  }
+}
+.thread-dot-working {
+  animation: thread-dot-working 1.8s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .thread-dot-working {
+    animation: none;
+    background: var(--color-brand);
+  }
+}
+
 .ax-meta {
   font-family: var(--font-mono);
   font-size: 11px;
@@ -278,6 +644,14 @@ input {
     ellipse at center,
     rgba(255, 255, 255, 0.9) 0%,
     rgba(255, 255, 255, 0.45) 35%,
+    transparent 70%
+  );
+}
+:root[data-theme="dark"] .cherry-glow {
+  background: radial-gradient(
+    ellipse at center,
+    rgba(255, 255, 255, 0.08) 0%,
+    rgba(255, 255, 255, 0.04) 35%,
     transparent 70%
   );
 }
@@ -471,7 +845,7 @@ input {
   font-style: italic;
 }
 .markdown-prose code {
-  background: rgba(16, 16, 20, 0.055);
+  background: var(--wash-code);
   padding: 0.12em 0.4em;
   border-radius: 5px;
   font-family: var(--font-mono);
@@ -524,14 +898,14 @@ input {
 .markdown-prose a {
   color: var(--color-text-primary);
   text-decoration: underline;
-  text-decoration-color: rgba(16, 16, 20, 0.35);
+  text-decoration-color: var(--link-underline);
   text-underline-offset: 2px;
 }
 .markdown-prose a:hover {
-  text-decoration-color: rgba(16, 16, 20, 0.7);
+  text-decoration-color: var(--link-underline-hover);
 }
 .markdown-prose blockquote {
-  border-left: 2px solid rgba(16, 16, 20, 0.18);
+  border-left: 2px solid var(--border-quote);
   padding-left: 0.9em;
   color: var(--color-text-secondary);
   margin: 0.5em 0;
@@ -555,7 +929,7 @@ input {
   text-align: left;
 }
 .markdown-prose th {
-  background: rgba(16, 16, 20, 0.04);
+  background: var(--wash-table-head);
   font-weight: 600;
 }
 

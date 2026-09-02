@@ -9,7 +9,7 @@ import { presentTimeline } from "./timelinePresentation";
 function ActivityRow({ item }: { item: ClientTimelineItem }) {
   const error = item.kind === "error";
   return (
-    <div className={`flex items-start gap-2 rounded-lg px-3 py-2 text-[12.5px] ${error ? "bg-[var(--color-danger-soft)] text-[var(--color-danger-strong)]" : "bg-[rgba(16,16,20,0.025)] text-[var(--color-text-tertiary)]"}`}>
+    <div className={`flex items-start gap-2 rounded-lg px-3 py-2 text-[12.5px] ${error ? "bg-[var(--color-danger-soft)] text-[var(--color-danger-strong)]" : "bg-[var(--wash-row)] text-[var(--color-text-tertiary)]"}`}>
       {error ? <AlertTriangle size={14} className="mt-0.5 shrink-0" /> : item.kind === "plan" ? <ListChecks size={14} className="mt-0.5 shrink-0" /> : <CheckCircle2 size={14} className="mt-0.5 shrink-0" />}
       <span>{item.text}</span>
     </div>
