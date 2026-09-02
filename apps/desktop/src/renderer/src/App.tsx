@@ -1,17 +1,17 @@
 import { MoreHorizontal, PanelLeftOpen } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ClientState, ListModelsResponse } from "@axiom/axiom-acp-client";
 import { ChatView } from "./components/ChatView";
 import { ProxyView } from "./components/ProxyView";
 import { SettingsSheet } from "./components/SettingsSheet";
 import { Sidebar } from "./components/Sidebar";
 import { WelcomeView } from "./components/WelcomeView";
+import { TrafficLightGhost } from "./components/TrafficLightGhost";
 import { WindowControls } from "./components/WindowControls";
+import { isMac, isWindows, MAC_TRAFFIC_LIGHT_INSET_CLASS, WINDOWS_CAPTION_INSET_CLASS, useFullScreen } from "./lib/window-chrome";
 import type { MainSurface, PendingUserMessage, ProviderModel, ReasoningEffort, Thread } from "./types";
 
-const SIDEBAR_MIN = 220;
-const SIDEBAR_MAX = 360;
-const SIDEBAR_DEFAULT = 268;
+const SIDEBAR_WIDTH = 260;
 const REASONING_EFFORTS: readonly ReasoningEffort[] = ["minimal", "low", "medium", "high", "xhigh"];
 
 function isReasoningEffort(value: string | undefined): value is ReasoningEffort {
@@ -92,7 +92,7 @@ export function App() {
   const [surface, setSurface] = useState<MainSurface>("welcome");
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_DEFAULT);
+  const fullScreen = useFullScreen();
   const [draft, setDraft] = useState("");
   const [modelId, setModelId] = useState("");
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("medium");
@@ -424,21 +424,6 @@ export function App() {
             ? "Loading models…"
             : "Sign in for models";
 
-  const beginResize = (event: ReactPointerEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    const startX = event.clientX;
-    const startWidth = sidebarWidth;
-    const onMove = (moveEvent: PointerEvent) => setSidebarWidth(
-      Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, startWidth + moveEvent.clientX - startX)),
-    );
-    const onUp = () => {
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
-    };
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
-  };
-
   const runCollectionIntent = (intent: Promise<unknown> | undefined) => {
     void intent?.catch((error: unknown) => {
       setUiError(error instanceof Error ? error.message : String(error));
@@ -446,16 +431,24 @@ export function App() {
   };
 
   return (
-    <div className="flex h-full overflow-hidden bg-[var(--color-bg-base)] text-[var(--color-text-primary)]">
-      {sidebarOpen ? (
-        <div className="relative flex h-full shrink-0 flex-col border-r border-white/[0.045]" style={{ width: sidebarWidth }}>
+    <div className="light-canvas flex h-full overflow-hidden p-2.5 text-[var(--color-text-primary)]">
+      <TrafficLightGhost />
+      {/* The canvas gutter above the stage card is still window chrome. */}
+      <div className="drag-region fixed inset-x-0 top-0 z-40 h-2.5" aria-hidden="true" />
+      {/* In-flow column that collapses via the margin trick; stays mounted so
+          the 300ms slide can play both ways. */}
+      <div
+        className="relative flex h-full w-[260px] shrink-0 flex-col transition-[margin-left] duration-300 ease-[var(--ease-out-expo)]"
+        style={{ marginLeft: sidebarOpen ? 0 : -(SIDEBAR_WIDTH + 10) }}
+        inert={!sidebarOpen}
+        aria-hidden={!sidebarOpen}
+      >
           <Sidebar
             folders={folders}
             threads={threads}
             activeThreadId={surface === "thread" ? activeThreadId : null}
             proxyActive={surface === "proxy"}
             welcomeActive={surface === "welcome"}
-            collapsed={!sidebarOpen}
             onCollapse={() => setSidebarOpen(false)}
             onNewChat={showWelcome}
             onOpenProxy={showProxy}
@@ -486,22 +479,27 @@ export function App() {
             })())}
             onOpenSettings={() => setSettingsOpen(true)}
           />
-          <div role="separator" aria-orientation="vertical" onPointerDown={beginResize} className="absolute inset-y-0 right-0 z-20 w-1.5 cursor-col-resize hover:bg-[var(--color-cherry)]/30" />
-        </div>
-      ) : null}
+      </div>
 
-      <section className="relative flex min-w-0 flex-1 flex-col">
-        <header className="drag-region absolute inset-x-0 top-0 z-30 flex h-11 items-center bg-transparent pl-3">
+      <section className="shadow-glass-card relative flex min-w-0 flex-1 flex-col overflow-hidden rounded-[22px] bg-white/72">
+        <header
+          className={[
+            "drag-region absolute inset-x-0 top-0 z-30 flex h-11 items-center bg-transparent",
+            isMac && !sidebarOpen && !fullScreen ? MAC_TRAFFIC_LIGHT_INSET_CLASS : "pl-3",
+            isMac ? "pr-2" : "",
+            isWindows ? WINDOWS_CAPTION_INSET_CLASS : "",
+          ].join(" ")}
+        >
           {!sidebarOpen ? <button type="button" onClick={() => setSidebarOpen(true)} className="no-drag mr-2 rounded-md p-1.5 text-[var(--color-text-tertiary)] hover:bg-[var(--color-bg-surface-hover)]" aria-label="Open sidebar"><PanelLeftOpen size={16} /></button> : null}
-          <div className="min-w-0 flex-1 truncate text-[13px] font-medium tracking-tight">{title}</div>
+          <div className="min-w-0 flex-1 truncate pl-1 text-[13px] font-medium tracking-tight">{title}</div>
           {surface === "thread" ? <button type="button" className="no-drag mr-1 rounded-md p-1.5 text-[var(--color-text-tertiary)]" aria-label="Thread actions"><MoreHorizontal size={16} /></button> : null}
           <WindowControls />
         </header>
 
         {uiError || agentState.error ? (
-          <div className="absolute inset-x-4 top-12 z-40 rounded-lg border border-red-400/20 bg-red-950/90 px-3 py-2 text-[12px] text-red-200 shadow-lg">{uiError ?? agentState.error}</div>
+          <div className="shadow-glass-pop absolute left-1/2 top-12 z-40 max-w-[80%] -translate-x-1/2 truncate rounded-full bg-[rgba(255,255,255,0.85)] px-4 py-2 text-[12.5px] text-[var(--color-danger-strong)] backdrop-blur">{uiError ?? agentState.error}</div>
         ) : modelCatalogError ? (
-          <div className="absolute inset-x-4 top-12 z-40 rounded-lg border border-amber-300/20 bg-amber-950/90 px-3 py-2 text-[12px] text-amber-100 shadow-lg">{modelCatalogError}</div>
+          <div className="shadow-glass-pop absolute left-1/2 top-12 z-40 max-w-[80%] -translate-x-1/2 truncate rounded-full bg-[rgba(255,255,255,0.85)] px-4 py-2 text-[12.5px] text-[var(--color-text-secondary)] backdrop-blur">{modelCatalogError}</div>
         ) : null}
 
         <div className="relative min-h-0 flex-1">

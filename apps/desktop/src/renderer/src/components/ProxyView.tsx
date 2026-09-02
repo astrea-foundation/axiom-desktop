@@ -9,8 +9,7 @@ const ERRORS = [
   { id: "2", at: "8m", model: "kimi-k2.5", detail: "401" },
 ];
 
-const well =
-  "relative rounded-[26px] border border-white/[0.05] bg-[var(--color-bg-input)]/70";
+const well = "shadow-glass-card relative rounded-2xl bg-white/70";
 
 type Copied = "url" | "token" | null;
 
@@ -68,7 +67,7 @@ export function ProxyView({
             Back
           </button>
           <div className={`${well} px-5 py-8`}>
-            <div className="flex h-12 w-12 items-center justify-center rounded-full border border-[var(--color-border-accent)] bg-[var(--color-cherry-glow)] text-[var(--color-cherry)]">
+            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-[var(--color-cherry-glow)] text-[var(--color-cherry)]">
               <ShieldCheck size={22} />
             </div>
             <h1 className="mt-4 text-[22px] font-medium tracking-tight">Attestation</h1>
@@ -85,19 +84,15 @@ export function ProxyView({
     <div className="relative flex h-full min-h-0 flex-col overflow-y-auto">
       <div className="mx-auto flex w-full max-w-[760px] flex-1 flex-col gap-3 px-6 pb-8 pt-20">
         <div className={`${well} overflow-hidden px-5 pb-5 pt-5`}>
-          <div className="pointer-events-none absolute -right-16 -top-24 h-64 w-64 rounded-full cherry-glow" />
           <div className="relative flex items-start justify-between gap-3">
             <div className="flex min-w-0 items-center gap-3">
               <div className="relative flex h-11 w-11 shrink-0 items-center justify-center">
-                {running ? (
-                  <div className="animate-pulse-glow absolute inset-0 rounded-full bg-[var(--color-cherry)] opacity-40 blur-xl" />
-                ) : null}
                 <div
                   className={[
-                    "relative flex h-11 w-11 items-center justify-center rounded-full border",
+                    "relative flex h-11 w-11 items-center justify-center rounded-full",
                     running
-                      ? "border-[var(--color-border-accent)] bg-[var(--color-cherry-glow)] text-[var(--color-cherry)]"
-                      : "border-[var(--color-border)] bg-[var(--color-bg-surface)] text-[var(--color-text-tertiary)]",
+                      ? "bg-[var(--color-cherry)] text-white"
+                      : "bg-[var(--color-cherry-glow)] text-[var(--color-text-tertiary)]",
                   ].join(" ")}
                 >
                   <ShieldCheck size={20} />
@@ -108,7 +103,7 @@ export function ProxyView({
                   <span
                     className={[
                       "h-1.5 w-1.5 rounded-full",
-                      running ? "bg-[var(--color-cherry)]" : "bg-[var(--color-text-muted)]",
+                      running ? "bg-[var(--color-success)]" : "bg-[var(--color-text-muted)]",
                     ].join(" ")}
                   />
                   <span className="text-[16px] font-medium tracking-tight">
@@ -142,7 +137,7 @@ export function ProxyView({
           <button
             type="button"
             onClick={() => void copy("url", liveUrl)}
-            className="relative mt-5 flex w-full items-center gap-2 rounded-2xl border border-white/[0.05] bg-[var(--color-bg-base)]/50 px-3.5 py-2.5 text-left transition-colors hover:border-[var(--color-border-accent)]"
+            className="relative mt-5 flex w-full items-center gap-2 rounded-2xl border border-[var(--color-border)] bg-[var(--color-bg-input)] px-3.5 py-2.5 text-left transition-colors hover:border-[var(--color-border-accent)]"
             title="Copy URL"
           >
             <span className="min-w-0 flex-1 truncate font-mono text-[13px] text-[var(--color-text-secondary)]">
@@ -203,7 +198,7 @@ export function ProxyView({
           <button
             type="button"
             onClick={() => setErrorsOpen((open) => !open)}
-            className={`${well} px-4 py-3.5 text-left transition-colors hover:border-white/[0.08]`}
+            className={`${well} px-4 py-3.5 text-left transition-colors hover:bg-white`}
           >
             <div className="flex items-center justify-between gap-2">
               <span className="text-[11px] uppercase tracking-[0.08em] text-[var(--color-text-tertiary)]">
@@ -228,13 +223,13 @@ export function ProxyView({
             {ERRORS.map((entry) => (
               <div
                 key={entry.id}
-                className="flex items-baseline gap-3 border-b border-white/[0.04] py-2.5 last:border-b-0 font-mono text-[12.5px]"
+                className="flex items-baseline gap-3 border-b border-[var(--color-border)] py-2.5 last:border-b-0 font-mono text-[12.5px]"
               >
                 <span className="w-8 shrink-0 text-[var(--color-text-muted)]">{entry.at}</span>
                 <span className="min-w-0 flex-1 truncate text-[var(--color-text-secondary)]">
                   {entry.model}
                 </span>
-                <span className="text-[var(--color-cherry-bright)]">{entry.detail}</span>
+                <span className="text-[var(--color-danger)]">{entry.detail}</span>
               </div>
             ))}
           </div>
@@ -243,7 +238,7 @@ export function ProxyView({
         <button
           type="button"
           onClick={() => setInspecting(true)}
-          className={`${well} flex items-center gap-3 px-4 py-3.5 text-left transition-colors hover:border-white/[0.08]`}
+          className={`${well} flex items-center gap-3 px-4 py-3.5 text-left transition-colors hover:bg-white`}
         >
           <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[var(--color-cherry-glow)] text-[var(--color-cherry)]">
             <ShieldCheck size={15} />
@@ -268,7 +263,7 @@ function Field({
   action?: ReactNode;
 }) {
   return (
-    <div className="flex min-h-11 items-center gap-4 border-b border-white/[0.04] last:border-b-0">
+    <div className="flex min-h-11 items-center gap-4 border-b border-[var(--color-border)] last:border-b-0">
       <span className="w-12 shrink-0 text-[12.5px] text-[var(--color-text-tertiary)]">{label}</span>
       <div className="min-w-0 flex-1">{children}</div>
       {action ? <div className="shrink-0">{action}</div> : null}
@@ -299,7 +294,7 @@ function IconButton({
       className={[
         "flex h-9 w-9 items-center justify-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-35",
         accent
-          ? "bg-[var(--color-cherry)] text-[#140709] hover:bg-[var(--color-cherry-bright)]"
+          ? "bg-[var(--color-cherry)] text-white hover:bg-[var(--color-cherry-bright)]"
           : "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-surface-hover)] hover:text-[var(--color-text-primary)]",
       ].join(" ")}
     >

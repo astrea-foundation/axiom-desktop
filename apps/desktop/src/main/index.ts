@@ -4,12 +4,13 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { app, BrowserWindow, ipcMain, Menu, nativeImage, shell, type IpcMainInvokeEvent } from "electron";
 import type { ElicitationOutcome, ListThreadsRequest, PermissionOutcome, ThreadSettingsRequest } from "@axiom/axiom-acp-client";
 import { AgentSidecar } from "./agent-sidecar";
+import { platformWindowChrome } from "./window-chrome";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const WINDOW_WIDTH = 1320;
 const WINDOW_HEIGHT = 860;
-const BACKGROUND = "#0e0e10";
+const BACKGROUND = "#f2f2f4";
 const APP_NAME = "Axiom";
 const APP_ID = "stream.axiom.desktop";
 const LINUX_DESKTOP_FILE = `${APP_ID}.desktop`;
@@ -212,7 +213,7 @@ function createWindow(): BrowserWindow {
     minWidth: 960,
     minHeight: 640,
     backgroundColor: BACKGROUND,
-    frame: false,
+    ...platformWindowChrome(process.platform),
     autoHideMenuBar: true,
     title: "Axiom",
     show: false,
@@ -251,6 +252,20 @@ function createWindow(): BrowserWindow {
   window.on("maximize", emitMaximized);
   window.on("unmaximize", emitMaximized);
 
+  const emitFullScreen = () => {
+    window.webContents.send("window:fullscreen-changed", window.isFullScreen());
+  };
+  window.on("enter-full-screen", emitFullScreen);
+  window.on("leave-full-screen", emitFullScreen);
+
+  const emitActive = () => {
+    window.webContents.send("window:active-changed", window.isFocused());
+  };
+  window.on("focus", emitActive);
+  window.on("blur", emitActive);
+
+
+
   const development = developmentRendererUrl();
   if (development) {
     void window.loadURL(development);
@@ -268,6 +283,10 @@ async function captureStates(window: BrowserWindow, outputDir: string): Promise<
   await window.webContents.executeJavaScript(
     `document.fonts?.ready ?? Promise.resolve()`,
   );
+  // capturePage never includes OS-drawn window controls, so render the
+  // fullscreen layout: no reserved insets, no dead notch in the shots. Sent
+  // after fonts settle so the renderer's listener is guaranteed registered.
+  window.webContents.send("window:fullscreen-changed", true);
   await delay(1800);
 
   const shots: Array<{ name: string; script?: string; wait: number }> = [
@@ -312,6 +331,12 @@ if (primaryInstance) void app.whenReady().then(() => {
   });
   ipcMain.handle("window:isMaximized", (event) => {
     return BrowserWindow.fromWebContents(event.sender)?.isMaximized() ?? false;
+  });
+  ipcMain.handle("window:isFullScreen", (event) => {
+    return BrowserWindow.fromWebContents(event.sender)?.isFullScreen() ?? false;
+  });
+  ipcMain.handle("window:isFocused", (event) => {
+    return BrowserWindow.fromWebContents(event.sender)?.isFocused() ?? true;
   });
 
   const window = createWindow();

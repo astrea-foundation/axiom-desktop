@@ -66,7 +66,7 @@ function AssetIcon({ asset, className }: { asset: BrandAsset; className: string 
       alt=""
       aria-hidden="true"
       title={asset.name}
-      className={`${className} object-contain ${asset.monochrome ? "brightness-0 invert opacity-90" : ""}`}
+      className={`${className} object-contain ${asset.monochrome ? "brightness-0 opacity-80" : ""}`}
     />
   );
 }

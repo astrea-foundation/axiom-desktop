@@ -1,6 +1,5 @@
 import { AlertTriangle, Check, ChevronDown, Copy, Lock, Pencil, RotateCcw } from "lucide-react";
 import { useState } from "react";
-import { AxiomMark } from "../brand/AxiomLogo";
 import type { Message } from "../types";
 import { ChatMarkdown } from "./ChatMarkdown";
 
@@ -34,8 +33,8 @@ export function MessageBubble({ message }: { message: Message }) {
   if (message.role === "user") {
     return (
       <div className="group flex min-w-0 justify-end animate-fade-in-up">
-        <div className="flex min-w-0 max-w-[min(100%,48rem)] flex-col items-end gap-1.5">
-          <div className="min-w-0 max-w-full overflow-hidden rounded-[20px] rounded-tr-[6px] border border-[var(--color-border)] bg-[var(--color-bg-surface)] px-4 py-2.5 text-[15px] leading-6 text-[var(--color-text-primary)]">
+        <div className="flex min-w-0 max-w-[min(80%,48rem)] flex-col items-end gap-1">
+          <div className="shadow-glass-tile min-w-0 max-w-full overflow-hidden rounded-[19px] rounded-br-[8px] bg-[rgba(255,255,255,0.82)] px-4 py-2.5 text-[15px] leading-6 text-[var(--color-text-primary)]">
             <ChatMarkdown text={message.content} />
           </div>
           <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
@@ -53,12 +52,9 @@ export function MessageBubble({ message }: { message: Message }) {
   }
 
   return (
-    <div className="group flex min-w-0 w-full max-w-full gap-3 animate-fade-in-up">
-      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-[var(--color-border-strong)] bg-[var(--color-bg-surface)] text-[var(--color-cherry)]">
-        <AxiomMark className="h-[13px] w-auto" />
-      </div>
-      <div className="flex min-w-0 flex-1 flex-col gap-2 pt-0.5">
-        <div className="min-w-0 max-w-full text-[15px] leading-7 text-[var(--color-text-primary)]">
+    <div className="group flex min-w-0 w-full max-w-full flex-col gap-1 animate-fade-in-up">
+      <div className="min-w-0 max-w-full self-start rounded-[19px] rounded-bl-[8px] bg-[var(--color-cherry-glow)] px-4 py-2.5 text-[15px] leading-7 text-[var(--color-text-primary)]">
+        <div className="min-w-0 max-w-full">
           {reasoning ? (
             <div className="mb-3 text-[13px] leading-6 text-[var(--color-text-secondary)]">
               <button
@@ -84,13 +80,13 @@ export function MessageBubble({ message }: { message: Message }) {
           {isStreaming && !message.content ? (
             <div className="flex items-center gap-2 py-1 text-[13px] text-[var(--color-text-tertiary)]">
               <span className="flex items-center gap-1">
-                <span className="h-1.5 w-1.5 rounded-full bg-[var(--color-cherry)] dot-bounce" />
+                <span className="h-1.5 w-1.5 rounded-full bg-[var(--color-text-tertiary)] dot-bounce" />
                 <span
-                  className="h-1.5 w-1.5 rounded-full bg-[var(--color-cherry)] dot-bounce"
+                  className="h-1.5 w-1.5 rounded-full bg-[var(--color-text-tertiary)] dot-bounce"
                   style={{ animationDelay: "0.16s" }}
                 />
                 <span
-                  className="h-1.5 w-1.5 rounded-full bg-[var(--color-cherry)] dot-bounce"
+                  className="h-1.5 w-1.5 rounded-full bg-[var(--color-text-tertiary)] dot-bounce"
                   style={{ animationDelay: "0.32s" }}
                 />
               </span>
@@ -98,13 +94,14 @@ export function MessageBubble({ message }: { message: Message }) {
             </div>
           ) : null}
           {terminalFailure ? (
-            <div className="mt-3 flex items-center gap-2 rounded-lg border border-red-400/15 bg-red-400/[0.055] px-3 py-2 text-[12px] leading-5 text-red-200/85">
-              <AlertTriangle size={13} className="shrink-0 text-red-300" />
+            <div className="mt-3 flex items-center gap-2 rounded-lg border border-[var(--color-danger-border)] bg-[var(--color-danger-soft)] px-3 py-2 text-[12px] leading-5 text-[var(--color-danger-strong)]">
+              <AlertTriangle size={13} className="shrink-0 text-[var(--color-danger)]" />
               <span>{terminalFailure}. Partial output is unverified and cannot be copied.</span>
             </div>
           ) : null}
         </div>
-        <div className="flex items-center gap-1.5 opacity-0 transition-opacity group-hover:opacity-100">
+      </div>
+      <div className="flex max-w-full items-center gap-1.5 self-start opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
           <div className="flex items-center gap-0.5">
             <button
               type="button"
@@ -130,7 +127,6 @@ export function MessageBubble({ message }: { message: Message }) {
               E2EE
             </span>
           ) : null}
-        </div>
       </div>
     </div>
   );

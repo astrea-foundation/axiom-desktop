@@ -101,14 +101,14 @@ export function ModelPicker({ models, selectedModelId, onSelect }: ModelPickerPr
       role="dialog"
       aria-label="Choose a model"
       style={{ bottom: `calc(2.5rem - ${downwardOffset}px)` }}
-      className="animate-pop-in absolute left-0 z-40 flex max-h-[min(430px,calc(100vh-4rem))] w-[min(32rem,calc(100vw-3rem))] origin-bottom-left flex-col overflow-hidden rounded-2xl border border-white/[0.08] bg-[var(--color-bg-surface)]/98 shadow-2xl shadow-black/50 backdrop-blur-xl"
+      className="glass-panel-solid shadow-glass-pop animate-pop-in absolute left-0 z-40 flex max-h-[min(430px,calc(100vh-4rem))] w-[min(32rem,calc(100vw-3rem))] origin-bottom-left flex-col overflow-hidden rounded-2xl"
     >
-      <div className="border-b border-white/[0.06] px-3.5 pb-0 pt-3.5">
+      <div className="border-b border-[var(--color-border)] px-3.5 pb-0 pt-3.5">
         <div className="mb-3 text-center text-[13px] font-medium text-[var(--color-text-primary)]">
           Choose your model
         </div>
 
-        <label className="flex h-9 items-center gap-2 rounded-lg border border-white/[0.06] bg-[var(--color-bg-input)] px-2.5 transition-colors focus-within:border-[var(--color-border-accent)]">
+        <label className="flex h-9 items-center gap-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-input)] px-2.5 transition-colors focus-within:border-[var(--color-border-accent)]">
           <Search size={14} className="shrink-0 text-[var(--color-text-tertiary)]" />
           <input
             ref={searchRef}
@@ -140,7 +140,7 @@ export function ModelPicker({ models, selectedModelId, onSelect }: ModelPickerPr
                 className={[
                   "flex shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[12px] transition-colors",
                   active
-                    ? "bg-[var(--color-cherry-glow)] text-[var(--color-text-primary)] ring-1 ring-inset ring-[var(--color-border-accent)]"
+                    ? "bg-white text-[var(--color-text-primary)] shadow-glass-tile"
                     : "text-[var(--color-text-tertiary)] hover:bg-[var(--color-bg-surface-hover)] hover:text-[var(--color-text-secondary)]",
                 ].join(" ")}
               >
@@ -154,8 +154,8 @@ export function ModelPicker({ models, selectedModelId, onSelect }: ModelPickerPr
                   className={[
                     "min-w-5 rounded-full px-1.5 py-0.5 text-center text-[10px] tabular-nums",
                     active
-                      ? "bg-[var(--color-cherry)]/15 text-[var(--color-cherry-bright)]"
-                      : "bg-white/[0.05] text-[var(--color-text-muted)]",
+                      ? "bg-[var(--color-cherry)] text-white"
+                      : "bg-[rgba(16,16,20,0.05)] text-[var(--color-text-muted)]",
                   ].join(" ")}
                 >
                   {group.models.length}
@@ -182,10 +182,10 @@ export function ModelPicker({ models, selectedModelId, onSelect }: ModelPickerPr
                     : "hover:bg-[var(--color-bg-surface-hover)]/70",
                 ].join(" ")}
               >
-                <span className="relative flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-white/[0.06] bg-white/[0.025] text-[var(--color-text-secondary)] transition-colors group-hover/model:border-white/[0.1]">
+                <span className="relative flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-[var(--color-border)] bg-white text-[var(--color-text-secondary)] transition-colors group-hover/model:border-[var(--color-border-strong)]">
                   <ModelBrandIcon model={model} className="h-[18px] w-[18px]" />
                   {selected ? (
-                    <span className="absolute -bottom-1 -right-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-[var(--color-cherry)] text-[#140709] ring-2 ring-[var(--color-bg-surface-hover)]">
+                    <span className="absolute -bottom-1 -right-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-[var(--color-cherry)] text-white ring-2 ring-white">
                       <Check size={8} strokeWidth={3.5} />
                     </span>
                   ) : null}

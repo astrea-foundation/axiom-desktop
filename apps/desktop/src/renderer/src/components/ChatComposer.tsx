@@ -3,12 +3,13 @@ import {
   BrainCog,
   Check,
   ChevronDown,
-  Plus,
+  Lock,
   Square,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { ClientSessionState } from "@axiom/axiom-acp-client";
 import type { ProviderModel, ReasoningEffort } from "../types";
+import { isMac } from "../lib/window-chrome";
 import { ModelBrandIcon } from "./ModelBrandIcon";
 import { ModelPicker } from "./ModelPicker";
 import { TeeVerificationBadge } from "./TeeVerificationBadge";
@@ -103,39 +104,33 @@ export function ChatComposer({
 
   return (
     <div className="group relative w-full">
-      <div className="relative flex flex-col rounded-[26px] border border-white/[0.05] bg-[var(--color-bg-input)]/70 px-3.5 pt-3 pb-2.5 transition-[border-color,box-shadow,background-color] duration-200 hover:border-white/[0.08] hover:bg-[var(--color-bg-input)]/80 focus-within:border-[var(--color-border-accent)] focus-within:bg-[var(--color-bg-input)]/80 focus-within:shadow-[0_0_0_3px_rgba(255,77,109,0.08)]">
-        <textarea
-          ref={ref}
-          value={value}
-          onChange={(event) => onChange(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" && !event.shiftKey) {
-              event.preventDefault();
-              submit();
-            }
-          }}
-          rows={1}
-          placeholder={placeholder}
-          className="w-full resize-none bg-transparent p-0 pl-2 text-[15px] leading-6 text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-tertiary)]"
-        />
+      <div className="relative flex flex-col rounded-[22px] bg-[rgba(255,255,255,0.72)] pl-4 pr-2.5 pb-2 pt-3 backdrop-blur shadow-[0_0_0_1px_rgba(16,16,20,0.045),0_0_0_0_rgba(16,16,20,0),0_2px_6px_-2px_rgba(16,16,20,0.06),inset_0_1px_0_rgba(255,255,255,0.9)] transition-[box-shadow,background-color] duration-300 ease-[var(--ease-out-expo)] hover:bg-[rgba(255,255,255,0.78)] focus-within:bg-[rgba(255,255,255,0.8)] focus-within:shadow-[0_0_0_1px_rgba(16,16,20,0.3),0_0_0_4px_rgba(16,16,20,0.06),0_2px_6px_-2px_rgba(16,16,20,0.06),inset_0_1px_0_rgba(255,255,255,0.9)]">
+        <div className="flex items-start gap-3">
+          <Lock size={16} aria-hidden="true" className="mt-1 shrink-0 text-[var(--color-text-muted)]" />
+          <textarea
+            ref={ref}
+            value={value}
+            onChange={(event) => onChange(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault();
+                submit();
+              }
+            }}
+            rows={1}
+            placeholder={placeholder}
+            className="w-full resize-none bg-transparent p-0 text-[14.5px] leading-6 text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-muted)]"
+          />
+        </div>
 
-        <div className="mt-1.5 flex items-center justify-between">
-          <div ref={controlsRef} className="flex min-w-0 items-center gap-0.5">
-            <button
-              type="button"
-              className="flex h-8 w-8 items-center justify-center rounded-full text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-bg-surface-hover)] hover:text-[var(--color-text-secondary)]"
-              aria-label="Attach"
-              title="Attach"
-            >
-              <Plus size={16} />
-            </button>
-
+        <div className="mt-2 flex items-center justify-between gap-2">
+          <div ref={controlsRef} className="flex min-w-0 items-center gap-1.5">
             <div className="relative shrink-0">
               <button
                 type="button"
                 disabled={models.length === 0}
                 onClick={() => setOpenMenu((open) => (open === "model" ? null : "model"))}
-                className="flex items-center gap-1.5 rounded-full px-2.5 py-1.5 text-[12.5px] text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-surface-hover)] hover:text-[var(--color-text-primary)] disabled:cursor-default disabled:opacity-70 disabled:hover:bg-transparent disabled:hover:text-[var(--color-text-secondary)]"
+                className="flex h-7 items-center gap-1.5 rounded-[7px] bg-[rgba(16,16,20,0.045)] px-2.5 text-[12px] font-medium text-[var(--color-text-secondary)] transition-colors hover:bg-[rgba(16,16,20,0.1)] hover:text-[var(--color-text-primary)] disabled:cursor-default disabled:hover:bg-[rgba(16,16,20,0.045)] disabled:hover:text-[var(--color-text-secondary)]"
                 aria-haspopup="menu"
                 aria-expanded={openMenu === "model"}
                 title={models.length === 0 ? modelStatusLabel : "Select model"}
@@ -169,7 +164,7 @@ export function ChatComposer({
                   onClick={() =>
                     setOpenMenu((open) => (open === "thinking" ? null : "thinking"))
                   }
-                  className="flex items-center gap-1.5 rounded-full px-2.5 py-1.5 text-[12.5px] text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-surface-hover)] hover:text-[var(--color-text-primary)]"
+                  className="flex h-7 items-center gap-1.5 rounded-[7px] bg-[rgba(16,16,20,0.045)] px-2.5 text-[12px] font-medium text-[var(--color-text-secondary)] transition-colors hover:bg-[rgba(16,16,20,0.1)] hover:text-[var(--color-text-primary)]"
                   aria-haspopup="menu"
                   aria-expanded={openMenu === "thinking"}
                   title="Thinking level"
@@ -187,7 +182,7 @@ export function ChatComposer({
                   <div
                     role="menu"
                     aria-label="Thinking level"
-                    className="absolute bottom-9 left-0 z-30 w-[168px] overflow-hidden rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-surface)]/98 p-1 shadow-2xl shadow-black/40 backdrop-blur"
+                    className="glass-panel shadow-glass-pop animate-pop-in absolute bottom-9 left-0 z-30 w-[168px] origin-bottom-left overflow-hidden rounded-xl p-1"
                   >
                     {supportedReasoningEfforts.map((effort) => (
                       <button
@@ -215,15 +210,16 @@ export function ChatComposer({
             ) : null}
           </div>
 
-          <div className="flex items-center gap-1">
+          <div className="flex shrink-0 items-center gap-2">
             {security !== undefined && onVerifySecurity ? (
               <TeeVerificationBadge security={security} onVerify={onVerifySecurity} />
             ) : null}
+            <span className="ax-chip hidden sm:inline-flex" aria-hidden="true">{isMac ? "\u2318\u21b5" : "Ctrl\u21b5"}</span>
             {isStreaming ? (
               <button
                 type="button"
                 onClick={onStop}
-                className="flex h-8 w-8 items-center justify-center rounded-full bg-[var(--color-cherry)] text-[#140709] transition-colors hover:bg-[var(--color-cherry-bright)]"
+                className="flex h-[34px] w-[34px] items-center justify-center rounded-full bg-[var(--color-cherry)] text-white shadow-[0_1px_3px_rgba(16,16,20,0.24)] transition-[background-color,transform] hover:bg-[var(--color-cherry-bright)] active:scale-[0.94] disabled:cursor-not-allowed disabled:opacity-40"
                 aria-label="Stop generating"
               >
                 <Square size={12} fill="currentColor" strokeWidth={2.5} />
@@ -233,7 +229,7 @@ export function ChatComposer({
                 type="button"
                 onClick={submit}
                 disabled={!canSend}
-                className="flex h-8 w-8 items-center justify-center rounded-full bg-[var(--color-cherry)] text-[#140709] transition-colors hover:bg-[var(--color-cherry-bright)] disabled:cursor-not-allowed disabled:bg-[var(--color-bg-elevated)] disabled:text-[var(--color-text-tertiary)] disabled:hover:bg-[var(--color-bg-elevated)]"
+                className="flex h-[34px] w-[34px] items-center justify-center rounded-full bg-[var(--color-cherry)] text-white shadow-[0_1px_3px_rgba(16,16,20,0.24)] transition-[background-color,transform] hover:bg-[var(--color-cherry-bright)] active:scale-[0.94] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-[var(--color-cherry)] disabled:active:scale-100"
                 aria-label="Send"
               >
                 <ArrowUp size={15} strokeWidth={2.5} />

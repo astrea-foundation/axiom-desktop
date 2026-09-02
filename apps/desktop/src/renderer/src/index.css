@@ -1,35 +1,70 @@
-@import "@fontsource-variable/geist";
-@import "@fontsource-variable/geist-mono";
+@import "@fontsource-variable/dm-sans";
+@import "@fontsource/dm-mono/400.css";
+@import "@fontsource/dm-mono/500.css";
 @import "tailwindcss";
 
+@font-face {
+  font-family: "PP Cirka";
+  src: url("./brand/fonts/PPCirka-Light.otf") format("opentype");
+  font-weight: 300;
+  font-display: swap;
+}
+@font-face {
+  font-family: "PP Cirka";
+  src: url("./brand/fonts/PPCirka-Regular.otf") format("opentype");
+  font-weight: 400;
+  font-display: swap;
+}
+@font-face {
+  font-family: "PP Cirka";
+  src: url("./brand/fonts/PPCirka-Bold.otf") format("opentype");
+  font-weight: 700;
+  font-display: swap;
+}
+
 @theme {
-  --color-bg-base: #0e0e10;
-  --color-bg-sidebar: #0a0a0b;
-  --color-bg-surface: #18181b;
-  --color-bg-surface-hover: #232327;
-  --color-bg-elevated: #2a2a2e;
-  --color-bg-input: #141416;
+  --color-bg-base: #f2f2f4;
+  --color-bg-sidebar: #ececef;
+  --color-bg-surface: #ffffff;
+  --color-bg-surface-hover: #ececef;
+  --color-bg-elevated: #ffffff;
+  --color-bg-input: #f7f7f8;
 
-  --color-border: #26262b;
-  --color-border-strong: #38383e;
-  --color-border-accent: rgba(255, 77, 109, 0.22);
+  --color-border: rgba(16, 16, 20, 0.08);
+  --color-border-strong: rgba(16, 16, 20, 0.15);
+  --color-border-accent: rgba(16, 16, 20, 0.3);
 
-  --color-cherry: #ff4d6d;
-  --color-cherry-bright: #ff6b85;
-  --color-cherry-soft: #e63d5b;
-  --color-cherry-deep: #8a1f30;
-  --color-cherry-glow: rgba(255, 77, 109, 0.12);
+  /* Ink family (formerly cherry). Names kept so consumers don't churn. */
+  --color-cherry: #101014;
+  --color-cherry-bright: #33333b;
+  --color-cherry-soft: #26262b;
+  --color-cherry-deep: #a6a6af;
+  --color-cherry-glow: rgba(16, 16, 20, 0.05);
 
-  --color-text-primary: #f4f4f6;
-  --color-text-secondary: #a8a8ad;
-  --color-text-tertiary: #6f6f76;
-  --color-text-muted: #4d4d52;
+  --color-danger: #d93036;
+  --color-danger-strong: #b8262c;
+  --color-danger-soft: rgba(217, 48, 54, 0.08);
+  --color-danger-border: rgba(217, 48, 54, 0.28);
 
-  --color-success: #7ee2a8;
-  --color-success-glow: rgba(126, 226, 168, 0.12);
+  --color-text-primary: #101014;
+  --color-text-secondary: #56565f;
+  --color-text-tertiary: #84848e;
+  --color-text-muted: #a6a6af;
 
-  --font-sans: "Geist Variable", "Geist", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  --font-mono: "Geist Mono Variable", "Geist Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --color-success: #1e7f4c;
+  --color-success-glow: rgba(30, 127, 76, 0.1);
+
+  --font-sans: "DM Sans Variable", "DM Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "DM Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --font-display: "PP Cirka", "Times New Roman", serif;
+
+  --radius-xs: 6px;
+  --radius-sm: 8px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 18px;
+  --radius-2xl: 24px;
+  --radius-3xl: 28px;
 
   --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
   --ease-spring: cubic-bezier(0.34, 1.4, 0.64, 1);
@@ -46,9 +81,10 @@ body,
 body {
   background: var(--color-bg-base);
   color: var(--color-text-primary);
-  font-family: "Geist Variable", "Geist", var(--font-sans);
+  font-family: var(--font-sans);
+  font-optical-sizing: auto;
   font-size: 14px;
-  letter-spacing: -0.012em;
+  letter-spacing: -0.011em;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
@@ -73,9 +109,9 @@ button {
 }
 
 :focus-visible:not([tabindex="-1"]):not(input):not(textarea):not(select) {
-  outline: 2px solid rgba(255, 77, 109, 0.55);
+  outline: 2px solid rgba(16, 16, 20, 0.4);
   outline-offset: 2px;
-  border-radius: 6px;
+  border-radius: 8px;
 }
 
 textarea,
@@ -91,13 +127,13 @@ input {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: var(--color-border-strong);
+  background: rgba(16, 16, 20, 0.16);
   border-radius: 8px;
   border: 2px solid transparent;
   background-clip: padding-box;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--color-cherry-deep);
+  background: rgba(16, 16, 20, 0.28);
   background-clip: padding-box;
   border: 2px solid transparent;
 }
@@ -112,13 +148,159 @@ input {
   app-region: no-drag;
 }
 
+/* Right inset matching the native Windows caption buttons. The WCO env vars
+   collapse when the overlay is hidden (e.g. fullscreen), so the padding does too. */
+.pad-titlebar-overlay {
+  padding-right: calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw));
+}
+
+/* The frosted-glass canvas the whole app sits on. */
+.light-canvas {
+  background:
+    radial-gradient(1200px 700px at 12% -8%, #ffffff 0%, rgba(255, 255, 255, 0) 62%),
+    radial-gradient(900px 620px at 88% 4%, #f4f3f6 0%, rgba(244, 243, 246, 0) 60%),
+    radial-gradient(1100px 900px at 70% 92%, #edecef 0%, rgba(237, 236, 239, 0) 65%),
+    linear-gradient(168deg, #f7f7f8 0%, #edecef 48%, #e8e7eb 100%);
+}
+
+/* Static white bloom — a gradient on purpose, never filter:blur, never animated. */
+.bg-orb {
+  position: absolute;
+  border-radius: 50%;
+  background: radial-gradient(
+    closest-side,
+    rgba(255, 255, 255, 0.85) 0%,
+    rgba(255, 255, 255, 0.35) 55%,
+    rgba(255, 255, 255, 0) 72%
+  );
+  pointer-events: none;
+}
+
+/* Glass fills. .glass-panel is for LEAF surfaces only (menus, popovers,
+   toasts) — its backdrop-filter makes it the containing block for fixed
+   descendants. Modal-scale panels use .glass-panel-solid. */
+.glass-panel {
+  background: linear-gradient(178deg, rgba(255, 255, 255, 0.86) 0%, rgba(255, 255, 255, 0.68) 100%);
+  -webkit-backdrop-filter: blur(30px) saturate(175%);
+  backdrop-filter: blur(30px) saturate(175%);
+}
+.glass-panel-solid {
+  background: linear-gradient(178deg, rgba(255, 255, 255, 0.97) 0%, rgba(255, 255, 255, 0.92) 100%);
+}
+
+.shadow-glass-card {
+  box-shadow:
+    0 0 0 1px rgba(16, 16, 20, 0.045),
+    0 1px 1px rgba(16, 16, 20, 0.03),
+    0 12px 26px -14px rgba(16, 16, 20, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.85);
+}
+.shadow-glass-pop {
+  box-shadow:
+    0 0 0 1px rgba(16, 16, 20, 0.05),
+    0 2px 4px rgba(16, 16, 20, 0.03),
+    0 18px 40px -20px rgba(16, 16, 20, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+.shadow-glass-tile {
+  box-shadow:
+    0 0 0 1px rgba(16, 16, 20, 0.04),
+    0 1px 1px rgba(16, 16, 20, 0.02),
+    inset 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+
+.ax-label {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--color-text-tertiary);
+}
+.ax-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 28px;
+  padding: 0 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+  background: rgba(255, 255, 255, 0.62);
+  box-shadow: 0 0 0 1px rgba(16, 16, 20, 0.045);
+  white-space: nowrap;
+}
+.ax-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 25px;
+  padding: 0 9px;
+  border-radius: 7px;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+  background: rgba(16, 16, 20, 0.045);
+  white-space: nowrap;
+}
+.ax-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-cherry);
+  flex: 0 0 auto;
+}
+.ax-dot-hollow {
+  background: var(--color-text-muted);
+}
+@keyframes dot-working {
+  0%,
+  100% {
+    opacity: 0.26;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+.ax-dot-working {
+  animation: dot-working 2s ease-in-out infinite;
+}
+.ax-meta {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: -0.01em;
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
 .cherry-glow {
   background: radial-gradient(
     ellipse at center,
-    rgba(255, 77, 109, 0.07) 0%,
-    rgba(255, 77, 109, 0.025) 35%,
+    rgba(255, 255, 255, 0.9) 0%,
+    rgba(255, 255, 255, 0.45) 35%,
     transparent 70%
   );
+}
+
+/* Line unmask for the PP Cirka greeting. The padding/negative-margin pair
+   gives ascenders and descenders clip room. */
+.unmask {
+  display: block;
+  overflow: hidden;
+  padding: 0.14em 0 0.18em;
+  margin: -0.14em 0 -0.18em;
+}
+.unmask-word {
+  display: inline-block;
+}
+.unmask-inner {
+  display: block;
+  transform: translateY(calc(100% + 0.6em));
+  transition: transform 1.05s var(--ease-out-expo);
+  transition-delay: var(--ld, 0s);
+}
+.unmask-in .unmask-inner {
+  transform: translateY(0);
 }
 
 @keyframes fade-in-up {
@@ -131,7 +313,6 @@ input {
     transform: translateY(0);
   }
 }
-
 .animate-fade-in-up {
   animation: fade-in-up 0.35s ease-out both;
 }
@@ -144,7 +325,6 @@ input {
     opacity: 1;
   }
 }
-
 .animate-fade-in {
   animation: fade-in 0.35s ease-out both;
 }
@@ -158,11 +338,12 @@ input {
     opacity: 0.7;
   }
 }
-
 .animate-pulse-glow {
   animation: pulse-glow 2.5s ease-in-out infinite;
 }
 
+/* Fill-mode backwards on purpose: a retained filter: blur(0) would make the
+   card the containing block for position:fixed descendants. */
 @keyframes panel-in {
   from {
     opacity: 0;
@@ -176,7 +357,7 @@ input {
   }
 }
 .animate-panel-in {
-  animation: panel-in 0.25s var(--ease-out-expo) both;
+  animation: panel-in 0.25s var(--ease-out-expo) backwards;
 }
 
 @keyframes pop-in {
@@ -208,6 +389,19 @@ input {
 }
 .animate-check-pop {
   animation: check-pop 0.4s var(--ease-spring) both;
+}
+
+@keyframes arm-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 10px rgba(217, 48, 54, 0.12);
+  }
+  50% {
+    box-shadow: 0 0 20px rgba(217, 48, 54, 0.3);
+  }
+}
+.animate-arm-pulse {
+  animation: arm-pulse 1.4s ease-in-out infinite;
 }
 
 .dot-bounce {
@@ -253,6 +447,7 @@ input {
 .markdown-prose h4 {
   color: var(--color-text-primary);
   font-weight: 600;
+  letter-spacing: -0.02em;
   margin: 1em 0 0.45em;
   line-height: 1.25;
 }
@@ -276,18 +471,20 @@ input {
   font-style: italic;
 }
 .markdown-prose code {
-  background: var(--color-bg-elevated);
+  background: rgba(16, 16, 20, 0.055);
   padding: 0.12em 0.4em;
-  border-radius: 4px;
+  border-radius: 5px;
   font-family: var(--font-mono);
   font-size: 0.88em;
-  color: var(--color-cherry-bright);
+  color: var(--color-text-primary);
 }
 .markdown-prose pre {
   display: block;
-  background: #08080a;
+  background: var(--color-bg-input);
   border: 1px solid var(--color-border);
-  border-radius: 10px;
+  border-radius: 12px;
+  overscroll-behavior-x: contain;
+  contain: inline-size;
   padding: 0.85em 1em;
   margin: 0.7em 0;
   width: 100%;
@@ -325,12 +522,16 @@ input {
   white-space: normal;
 }
 .markdown-prose a {
-  color: var(--color-cherry-bright);
+  color: var(--color-text-primary);
   text-decoration: underline;
+  text-decoration-color: rgba(16, 16, 20, 0.35);
   text-underline-offset: 2px;
 }
+.markdown-prose a:hover {
+  text-decoration-color: rgba(16, 16, 20, 0.7);
+}
 .markdown-prose blockquote {
-  border-left: 2px solid var(--color-cherry-deep);
+  border-left: 2px solid rgba(16, 16, 20, 0.18);
   padding-left: 0.9em;
   color: var(--color-text-secondary);
   margin: 0.5em 0;
@@ -341,18 +542,48 @@ input {
   border-top: 1px solid var(--color-border);
   margin: 1em 0;
 }
+.markdown-prose table {
+  border-collapse: collapse;
+  font-size: 0.92em;
+  margin: 0.7em 0;
+  max-width: 100%;
+}
+.markdown-prose th,
+.markdown-prose td {
+  border: 1px solid var(--color-border);
+  padding: 0.4em 0.7em;
+  text-align: left;
+}
+.markdown-prose th {
+  background: rgba(16, 16, 20, 0.04);
+  font-weight: 600;
+}
 
 @media (prefers-reduced-motion: reduce) {
   .animate-panel-in,
   .animate-check-pop,
+  .animate-arm-pulse,
   .animate-pop-in,
   .animate-fade-in-up,
-  .animate-pulse-glow {
+  .animate-fade-in {
     animation-duration: 0.01ms;
+    animation-delay: 0ms !important;
     animation-iteration-count: 1;
+  }
+  .animate-pulse-glow {
+    animation: none;
+    opacity: 0.55;
+  }
+  .ax-dot-working {
+    animation: none;
+    opacity: 0.55;
   }
   .dot-bounce {
     animation: none;
     opacity: 0.7;
+  }
+  .unmask-inner {
+    transform: none;
+    transition: none;
   }
 }

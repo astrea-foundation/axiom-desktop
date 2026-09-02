@@ -1,7 +1,13 @@
 import { Minus, Square, X } from "lucide-react";
 import { useEffect, useState } from "react";
+import { hasNativeWindowControls } from "../lib/window-chrome";
 
 export function WindowControls() {
+  if (hasNativeWindowControls) return null;
+  return <FramelessWindowControls />;
+}
+
+function FramelessWindowControls() {
   const [maximized, setMaximized] = useState(false);
 
   useEffect(() => {
@@ -18,7 +24,7 @@ export function WindowControls() {
       <button
         type="button"
         onClick={() => desktop?.minimize()}
-        className="flex h-11 w-11 items-center justify-center text-[var(--color-text-secondary)] transition-colors hover:bg-black/35 hover:text-[var(--color-text-primary)]"
+        className="flex h-11 w-11 items-center justify-center text-[var(--color-text-secondary)] transition-colors hover:bg-[rgba(16,16,20,0.06)] hover:text-[var(--color-text-primary)]"
         aria-label="Minimize"
         title="Minimize"
       >
@@ -27,7 +33,7 @@ export function WindowControls() {
       <button
         type="button"
         onClick={() => desktop?.maximize()}
-        className="flex h-11 w-11 items-center justify-center text-[var(--color-text-secondary)] transition-colors hover:bg-black/35 hover:text-[var(--color-text-primary)]"
+        className="flex h-11 w-11 items-center justify-center text-[var(--color-text-secondary)] transition-colors hover:bg-[rgba(16,16,20,0.06)] hover:text-[var(--color-text-primary)]"
         aria-label={maximized ? "Restore" : "Maximize"}
         title={maximized ? "Restore" : "Maximize"}
       >
@@ -36,7 +42,7 @@ export function WindowControls() {
       <button
         type="button"
         onClick={() => desktop?.close()}
-        className="flex h-11 w-11 items-center justify-center text-[var(--color-text-secondary)] transition-colors hover:bg-[#3d1118]/80 hover:text-[var(--color-cherry-bright)]"
+        className="flex h-11 w-11 items-center justify-center text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-danger)] hover:text-white"
         aria-label="Close"
         title="Close"
       >

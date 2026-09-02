@@ -50,10 +50,11 @@ export function ChatView({
   }, [session.timeline, isStreaming, pendingUserMessage?.id]);
 
   return (
-    <div className="relative flex h-full min-h-0 flex-col">
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
       <div
         ref={scrollRef}
-        className="min-h-0 flex-1 overflow-y-auto px-6"
+        className="h-full overflow-y-auto px-6"
         onScroll={(event) => {
           const el = event.currentTarget;
           const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
@@ -61,7 +62,7 @@ export function ChatView({
           setShowJump(!atBottom);
         }}
       >
-        <div className="mx-auto flex w-full max-w-[760px] flex-col gap-5 pb-5 pt-12">
+        <div className="mx-auto flex w-full max-w-[760px] flex-col gap-7 pb-8 pt-14">
           <TimelineView session={session} pendingUserMessage={pendingUserMessage} />
           <div ref={bottomRef} />
         </div>
@@ -75,14 +76,15 @@ export function ChatView({
             bottomRef.current?.scrollIntoView({ block: "end", behavior: "smooth" });
             setShowJump(false);
           }}
-          className="absolute bottom-[118px] left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-[var(--color-border)] bg-[var(--color-bg-surface)] px-3 py-1.5 text-[12.5px] text-[var(--color-text-secondary)] shadow-lg transition-colors hover:text-[var(--color-text-primary)]"
+          aria-label="Scroll to latest"
+          className="shadow-glass-pop animate-fade-in absolute bottom-3 left-1/2 z-10 flex h-9 w-9 -translate-x-1/2 items-center justify-center rounded-full bg-[rgba(255,255,255,0.85)] text-[var(--color-text-secondary)] transition-[transform,color] hover:text-[var(--color-text-primary)] active:scale-90"
         >
-          <ArrowDown size={13} />
-          Jump to latest
+          <ArrowDown size={16} />
         </button>
       ) : null}
+      </div>
 
-      <div className="shrink-0 px-6 pb-3 pt-1">
+      <div className="shrink-0 px-6 pb-5 pt-2">
         <div className="mx-auto w-full max-w-[760px]">
           <ChatComposer
             value={draft}

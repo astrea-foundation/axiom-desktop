@@ -32,9 +32,9 @@ function toolIcon(kind: string) {
 }
 
 function statusIcon(status: string) {
-  if (status === "completed") return <Check size={13} className="text-emerald-400" />;
-  if (status === "failed") return <X size={13} className="text-red-400" />;
-  return <CircleEllipsis size={13} className="text-[var(--color-cherry)]" />;
+  if (status === "completed") return <Check size={13} className="text-[var(--color-success)]" />;
+  if (status === "failed") return <X size={13} className="text-[var(--color-danger)]" />;
+  return <CircleEllipsis size={13} className="text-[var(--color-text-tertiary)]" />;
 }
 
 export function ToolCallCard({ tool }: { tool: ToolActivity }) {
@@ -46,7 +46,7 @@ export function ToolCallCard({ tool }: { tool: ToolActivity }) {
   const hasDetails = tool.input !== null || tool.content.length > 0 || tool.locations.length > 0;
 
   return (
-    <div className="ml-11 overflow-hidden rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-surface)]/55 text-[12.5px]">
+    <div className="shadow-glass-tile overflow-hidden rounded-xl bg-white/70 text-[12.5px]">
       <button
         type="button"
         onClick={() => hasDetails && setOpen((value) => !value)}
@@ -60,7 +60,7 @@ export function ToolCallCard({ tool }: { tool: ToolActivity }) {
         {hasDetails ? <ChevronDown size={13} className={`transition-transform ${open ? "" : "-rotate-90"}`} /> : null}
       </button>
       {open ? (
-        <pre className="max-h-80 overflow-auto border-t border-[var(--color-border)] bg-black/20 px-3 py-2.5 font-mono text-[11.5px] leading-5 text-[var(--color-text-tertiary)] whitespace-pre-wrap break-words">
+        <pre className="max-h-80 overflow-auto border-t border-[var(--color-border)] bg-[var(--color-bg-input)] px-3 py-2.5 font-mono text-[11.5px] leading-5 text-[var(--color-text-secondary)] whitespace-pre-wrap break-words">
           {details}
         </pre>
       ) : null}

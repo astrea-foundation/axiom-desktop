@@ -28,13 +28,13 @@ export function InteractionCard({ interaction }: { interaction: PendingInteracti
 
   if (interaction.kind === "permission") {
     return (
-      <div className="ml-11 rounded-xl border border-amber-400/20 bg-amber-400/[0.06] p-3 text-[12.5px]">
-        <div className="mb-2 flex items-center gap-2 text-amber-200"><ShieldAlert size={14} />Permission requested</div>
+      <div className="rounded-xl border border-amber-600/25 bg-[#fdf6e8] p-3 text-[12.5px]">
+        <div className="mb-2 flex items-center gap-2 text-amber-800"><ShieldAlert size={14} />Permission requested</div>
         <div className="flex flex-wrap gap-2">
           {options.map((option) => {
             const id = typeof option.optionId === "string" ? option.optionId : "";
             return id ? (
-              <button key={id} type="button" onClick={() => void window.axiomDesktop?.agent.resolvePermission(interaction.id, { outcome: "selected", optionId: id })} className="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-surface)] px-3 py-1.5 text-[var(--color-text-primary)]">
+              <button key={id} type="button" onClick={() => void window.axiomDesktop?.agent.resolvePermission(interaction.id, { outcome: "selected", optionId: id })} className="shadow-glass-tile rounded-lg bg-white px-3 py-1.5 text-[var(--color-text-primary)] transition-colors hover:bg-[var(--color-bg-surface-hover)]">
                 {typeof option.name === "string" ? option.name : id}
               </button>
             ) : null;
@@ -46,17 +46,17 @@ export function InteractionCard({ interaction }: { interaction: PendingInteracti
   }
 
   return (
-    <div className="ml-11 rounded-xl border border-[var(--color-border-accent)] bg-[var(--color-cherry-glow)] p-3 text-[12.5px]">
+    <div className="shadow-glass-card rounded-xl bg-white/70 p-3 text-[12.5px]">
       <div className="mb-3 flex items-center gap-2 text-[var(--color-text-primary)]"><HelpCircle size={14} />Axiom needs your input</div>
       <div className="flex flex-col gap-2">
         {fields.map((field) => (
           <label key={field.id} className="flex flex-col gap-1 text-[var(--color-text-secondary)]">
             <span>{field.title}</span>
-            <input value={answers[field.id] ?? ""} onChange={(event) => setAnswers((current) => ({ ...current, [field.id]: event.target.value }))} className="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-input)] px-3 py-2 text-[var(--color-text-primary)] outline-none" />
+            <input value={answers[field.id] ?? ""} onChange={(event) => setAnswers((current) => ({ ...current, [field.id]: event.target.value }))} className="rounded-lg border border-[var(--color-border)] bg-white px-3 py-2 text-[var(--color-text-primary)] outline-none transition-[border-color,box-shadow] focus:border-[var(--color-border-accent)] focus:shadow-[0_0_0_3px_rgba(16,16,20,0.06)]" />
           </label>
         ))}
         <div className="mt-1 flex gap-2">
-          <button type="button" disabled={fields.some((field) => !(answers[field.id] ?? "").trim())} onClick={() => void window.axiomDesktop?.agent.resolveElicitation(interaction.id, { action: "accept", content: answers })} className="rounded-lg bg-[var(--color-cherry)] px-3 py-1.5 text-[#140709] disabled:opacity-40">Continue</button>
+          <button type="button" disabled={fields.some((field) => !(answers[field.id] ?? "").trim())} onClick={() => void window.axiomDesktop?.agent.resolveElicitation(interaction.id, { action: "accept", content: answers })} className="rounded-lg bg-[var(--color-cherry)] px-3 py-1.5 text-white transition-colors hover:bg-[var(--color-cherry-bright)] disabled:opacity-40">Continue</button>
           <button type="button" onClick={() => void window.axiomDesktop?.agent.resolveElicitation(interaction.id, { action: "decline" })} className="rounded-lg px-3 py-1.5 text-[var(--color-text-tertiary)]">Decline</button>
         </div>
       </div>
