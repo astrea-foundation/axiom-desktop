@@ -201,75 +201,73 @@
           "type": "integer",
           "format": "uint16",
           "minimum": 0,
-          "maximum": 65535
+          "maximum": 65535,
+          "default": 0
         },
         "threadCatalog": {
           "type": "integer",
           "format": "uint16",
           "minimum": 0,
-          "maximum": 65535
+          "maximum": 65535,
+          "default": 0
         },
         "timeline": {
           "type": "integer",
           "format": "uint16",
           "minimum": 0,
-          "maximum": 65535
+          "maximum": 65535,
+          "default": 0
         },
         "modelCatalog": {
           "type": "integer",
           "format": "uint16",
           "minimum": 0,
-          "maximum": 65535
+          "maximum": 65535,
+          "default": 0
         },
         "profilePreferences": {
           "type": "integer",
           "format": "uint16",
           "minimum": 0,
-          "maximum": 65535
+          "maximum": 65535,
+          "default": 0
         },
         "collections": {
           "type": "integer",
           "format": "uint16",
           "minimum": 0,
-          "maximum": 65535
+          "maximum": 65535,
+          "default": 0
         },
         "account": {
           "type": "integer",
           "format": "uint16",
           "minimum": 0,
-          "maximum": 65535
+          "maximum": 65535,
+          "default": 0
         },
         "securityEvidence": {
           "type": "integer",
           "format": "uint16",
           "minimum": 0,
-          "maximum": 65535
+          "maximum": 65535,
+          "default": 0
         },
         "compaction": {
           "type": "integer",
           "format": "uint16",
           "minimum": 0,
-          "maximum": 65535
+          "maximum": 65535,
+          "default": 0
         },
         "activity": {
           "type": "integer",
           "format": "uint16",
           "minimum": 0,
-          "maximum": 65535
+          "maximum": 65535,
+          "default": 0
         }
-      },
-      "required": [
-        "desktopChat",
-        "threadCatalog",
-        "timeline",
-        "modelCatalog",
-        "profilePreferences",
-        "collections",
-        "account",
-        "securityEvidence",
-        "compaction",
-        "activity"
-      ]
+      }
     },
     "DesktopBootstrapRequest": {
       "type": "object"
@@ -742,6 +740,37 @@
           "items": {
             "type": "string"
           }
+        },
+        "contextWindowTokens": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "maxOutputTokens": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "autoCompactThresholdTokens": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "inputPriceMicrousdPerMillionTokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "outputPriceMicrousdPerMillionTokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
         }
       },
       "required": [
@@ -751,7 +780,10 @@
         "providerId",
         "providerLabel",
         "upstreamModel",
-        "thinkingLevels"
+        "thinkingLevels",
+        "contextWindowTokens",
+        "maxOutputTokens",
+        "autoCompactThresholdTokens"
       ]
     },
     "GetProfilePreferencesRequest": {

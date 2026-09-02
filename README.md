@@ -108,7 +108,8 @@ an error. `/permissions` opens a keyboard-controlled window rather than taking
 an argument. Its Tools tab describes and selects the active tool profile; the
 separate Crypto tab is reserved for future wallet and transaction permissions.
 `/model` loads the configured provider's real model catalog on demand and opens
-a searchable, scrollable picker. Model IDs cannot be entered manually.
+a searchable, scrollable picker. Each priced entry shows its live uncached
+input/output rate per one million tokens. Model IDs cannot be entered manually.
 
 `/resume` opens a searchable, scrollable list of saved transcripts from the
 current workspace. Selecting one restores its transcript, model context, and
@@ -125,8 +126,10 @@ deletion confirmation. The selected rows are deleted together only after `y`.
 `/compact` is a real, cancellable inference operation: it exposes no tools,
 creates a successor summary, replaces the model's live conversation context,
 and journals that summary so resume restores the compacted context. Escape
-cancels compaction just like foreground agent work. Repeated compaction is
-lossy, so it is explicit in this early version rather than automatic.
+cancels compaction just like foreground agent work. AxiomCLI also compacts
+automatically when provider-reported active usage reaches 85% of the selected
+model's live context window. Automatic and explicit compaction use the same
+durable successor-summary path.
 
 Active task cards use a small cherry-blossom animation and a moving accent rail.
 Its weighted cycle rests, blooms, holds, and quickly wilts instead of advancing
@@ -282,9 +285,12 @@ than bypassing the event journal.
   `/thinking` is always explicit, defaults to `medium`, becomes the default for
   future chats after it is used for a prompt, and is restored per transcript.
   Unsupported levels are rejected against the selected model's catalog entry.
-- Axiom's relay catalog now supplies authoritative context limits to the secure
-  client. The TUI still uses its configured local compaction safety budget and
-  does not yet render a model-relative context percentage.
+- Axiom's relay catalog supplies live NEAR/Phala context and output limits to
+  the secure client and ACP model catalog, along with the same live per-token
+  prices used for billing. The TUI uses the selected model's 85% threshold for
+  automatic compaction and shows normalized input/output prices per million
+  tokens in the model picker; local context settings remain only as
+  configurable memory-safety ceilings.
 - Linux is the currently exercised development platform.
 - ACP v1 and durable `session/load` are supported. Per-session MCP configuration
   is not advertised yet; MCP servers come only from trusted user configuration.

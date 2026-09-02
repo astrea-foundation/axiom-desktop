@@ -1,4 +1,7 @@
-use std::collections::BTreeSet;
+use std::{
+    collections::BTreeSet,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use axiom_inference::{ModelInfo, ReasoningEffort};
 use reqwest::StatusCode;
@@ -10,13 +13,29 @@ use url::Url;
 use crate::{
     ApiCredential, ProviderRegistry, Result, SecureClientConfig, SecureClientError,
     http::{bounded_body, pinned_client},
+    provider::ProviderContract,
 };
 
 const MAX_MODELS: usize = 512;
+const MAX_E2EE_CONTRACTS_PER_MODEL: usize = 8;
+const MAX_REASONING_EFFORTS_PER_MODEL: usize = 16;
 const MAX_MODEL_TOKENS: u32 = 16 * 1024 * 1024;
+// $1,000,000 per million tokens. This is intentionally far above real catalog
+// rates while remaining well inside JavaScript's exact integer range.
+const MAX_MODEL_PRICE_MICROUSD_PER_MILLION_TOKENS: u64 = 1_000_000_000_000;
 
 #[derive(Clone, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
+struct CatalogE2eeContract {
+    e2ee_protocol: String,
+    e2ee_encryption_version: u16,
+    attestation_protocol: String,
+    #[serde(default)]
+    preferred: bool,
+    #[serde(default)]
+    retire_after_unix_seconds: Option<u64>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
 struct CatalogModel {
     id: String,
     label: String,
@@ -31,7 +50,13 @@ struct CatalogModel {
     context_window_tokens: u32,
     max_output_tokens: u32,
     #[serde(default)]
-    supported_reasoning_efforts: Vec<ReasoningEffort>,
+    input_price_microusd_per_million_tokens: Option<u64>,
+    #[serde(default)]
+    output_price_microusd_per_million_tokens: Option<u64>,
+    #[serde(default)]
+    supported_reasoning_efforts: Vec<String>,
+    #[serde(default)]
+    e2ee_contracts: Vec<CatalogE2eeContract>,
 }
 
 pub(crate) async fn fetch_models(
@@ -84,11 +109,12 @@ fn validate_models(
     let mut ids = BTreeSet::new();
     let mut output = Vec::with_capacity(wire.len());
     for raw in wire {
-        let item: CatalogModel = if let Ok(item) = serde_json::from_value(raw) {
-            item
-        } else {
-            tracing::warn!("malformed model catalog entry was quarantined");
-            continue;
+        let item: CatalogModel = match serde_json::from_value(raw) {
+            Ok(item) => item,
+            Err(error) => {
+                tracing::warn!(%error, "malformed model catalog entry was quarantined");
+                continue;
+            }
         };
         if let Err(error) = validate_identifier(&item.id, 80, "model ID is invalid") {
             tracing::warn!(
@@ -129,6 +155,23 @@ fn validate_models(
             tracing::warn!(model = %item.id, "model with invalid metadata was quarantined");
             continue;
         }
+        let Some(contract_candidates) = contract_candidates(&item) else {
+            tracing::warn!(
+                model = %item.id,
+                "model with invalid E2EE contract advertisements was quarantined"
+            );
+            continue;
+        };
+        let Some(selected_contract) =
+            providers.select_contract(&item.provider, &contract_candidates)
+        else {
+            tracing::warn!(
+                model = %item.id,
+                provider = %item.provider,
+                "model omitted because no advertised E2EE contract is supported locally"
+            );
+            continue;
+        };
         if item.context_window_tokens == 0
             || item.max_output_tokens == 0
             || item.context_window_tokens > MAX_MODEL_TOKENS
@@ -137,15 +180,45 @@ fn validate_models(
             tracing::warn!(model = %item.id, "model with invalid token limits was quarantined");
             continue;
         }
-        let mut efforts = BTreeSet::new();
-        for effort in &item.supported_reasoning_efforts {
-            if *effort == ReasoningEffort::Minimal || !efforts.insert(effort.as_str()) {
-                tracing::warn!(model = %item.id, "model with invalid reasoning metadata was quarantined");
-                efforts.clear();
-                break;
+        match (
+            item.input_price_microusd_per_million_tokens,
+            item.output_price_microusd_per_million_tokens,
+        ) {
+            (None, None) => {}
+            (Some(input), Some(output))
+                if input > 0
+                    && output > 0
+                    && input <= MAX_MODEL_PRICE_MICROUSD_PER_MILLION_TOKENS
+                    && output <= MAX_MODEL_PRICE_MICROUSD_PER_MILLION_TOKENS => {}
+            _ => {
+                tracing::warn!(model = %item.id, "model with invalid pricing metadata was quarantined");
+                continue;
             }
         }
-        if efforts.len() != item.supported_reasoning_efforts.len() {
+        if item.supported_reasoning_efforts.len() > MAX_REASONING_EFFORTS_PER_MODEL {
+            tracing::warn!(model = %item.id, "model with excessive reasoning metadata was quarantined");
+            continue;
+        }
+        let mut effort_names = BTreeSet::new();
+        let mut supported_reasoning_efforts = Vec::new();
+        let mut invalid_reasoning = false;
+        for effort in &item.supported_reasoning_efforts {
+            if effort.len() > 32 || effort.chars().any(char::is_control) {
+                tracing::warn!(model = %item.id, "model with invalid reasoning metadata was quarantined");
+                invalid_reasoning = true;
+                break;
+            }
+            let Some(parsed) = parse_reasoning_effort(effort) else {
+                tracing::debug!(model = %item.id, effort, "unknown reasoning effort was ignored");
+                continue;
+            };
+            if !effort_names.insert(parsed.as_str()) {
+                invalid_reasoning = true;
+                break;
+            }
+            supported_reasoning_efforts.push(parsed);
+        }
+        if invalid_reasoning {
             continue;
         }
 
@@ -160,12 +233,14 @@ fn validate_models(
             provider_label: item.provider_label,
             upstream_model: item.model,
             provider_base_url: provider_url.to_string(),
-            e2ee_protocol: item.e2ee_protocol,
-            e2ee_encryption_version: item.e2ee_encryption_version,
-            attestation_protocol: item.attestation_protocol,
+            e2ee_protocol: selected_contract.e2ee_protocol,
+            e2ee_encryption_version: selected_contract.e2ee_encryption_version,
+            attestation_protocol: selected_contract.attestation_protocol,
             context_window_tokens: item.context_window_tokens,
             max_output_tokens: item.max_output_tokens,
-            supported_reasoning_efforts: item.supported_reasoning_efforts,
+            input_price_microusd_per_million_tokens: item.input_price_microusd_per_million_tokens,
+            output_price_microusd_per_million_tokens: item.output_price_microusd_per_million_tokens,
+            supported_reasoning_efforts,
             ..ModelInfo::default()
         };
         if let Err(error) = providers.validate_model(&mut model) {
@@ -185,6 +260,88 @@ fn validate_models(
         ));
     }
     Ok(output)
+}
+
+fn contract_candidates(item: &CatalogModel) -> Option<Vec<ProviderContract>> {
+    let top_level = ProviderContract {
+        e2ee_protocol: item.e2ee_protocol.clone(),
+        e2ee_encryption_version: item.e2ee_encryption_version,
+        attestation_protocol: item.attestation_protocol.clone(),
+    };
+    if item.e2ee_contracts.is_empty() {
+        return Some(vec![top_level]);
+    }
+    if item.e2ee_contracts.len() > MAX_E2EE_CONTRACTS_PER_MODEL {
+        return None;
+    }
+
+    let mut seen = BTreeSet::new();
+    let mut top_level_advertised = false;
+    let mut preferred_contracts = 0usize;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let mut candidates = Vec::with_capacity(item.e2ee_contracts.len());
+    for contract in &item.e2ee_contracts {
+        if validate_identifier(
+            &contract.e2ee_protocol,
+            64,
+            "advertised E2EE protocol ID is invalid",
+        )
+        .is_err()
+            || validate_identifier(
+                &contract.attestation_protocol,
+                64,
+                "advertised attestation protocol ID is invalid",
+            )
+            .is_err()
+            || contract.e2ee_encryption_version == 0
+            || contract.retire_after_unix_seconds == Some(0)
+            || !seen.insert((
+                contract.e2ee_protocol.as_str(),
+                contract.e2ee_encryption_version,
+                contract.attestation_protocol.as_str(),
+            ))
+        {
+            return None;
+        }
+
+        let is_top_level = contract.e2ee_protocol == item.e2ee_protocol
+            && contract.e2ee_encryption_version == item.e2ee_encryption_version
+            && contract.attestation_protocol == item.attestation_protocol;
+        top_level_advertised |= is_top_level;
+        if contract.preferred {
+            preferred_contracts += 1;
+            if !is_top_level || preferred_contracts > 1 {
+                return None;
+            }
+        }
+        if contract
+            .retire_after_unix_seconds
+            .is_none_or(|retire_after| retire_after > now)
+        {
+            let candidate = ProviderContract {
+                e2ee_protocol: contract.e2ee_protocol.clone(),
+                e2ee_encryption_version: contract.e2ee_encryption_version,
+                attestation_protocol: contract.attestation_protocol.clone(),
+            };
+            if is_top_level {
+                candidates.insert(0, candidate);
+            } else {
+                candidates.push(candidate);
+            }
+        }
+    }
+    top_level_advertised.then_some(candidates)
+}
+
+fn parse_reasoning_effort(value: &str) -> Option<ReasoningEffort> {
+    match value {
+        "minimal" => Some(ReasoningEffort::Minimal),
+        "low" => Some(ReasoningEffort::Low),
+        "medium" => Some(ReasoningEffort::Medium),
+        "high" => Some(ReasoningEffort::High),
+        "xhigh" => Some(ReasoningEffort::ExtraHigh),
+        _ => None,
+    }
 }
 
 pub(crate) fn relay_endpoint(base_url: &Url, path: &str) -> Result<Url> {
@@ -274,7 +431,10 @@ mod tests {
             attestation_protocol: "near-tdx-nvidia-v1".into(),
             context_window_tokens: 1_000_000,
             max_output_tokens: 8_192,
-            supported_reasoning_efforts: vec![ReasoningEffort::Medium],
+            input_price_microusd_per_million_tokens: Some(440_000),
+            output_price_microusd_per_million_tokens: Some(1_320_000),
+            supported_reasoning_efforts: vec!["medium".into()],
+            e2ee_contracts: Vec::new(),
         }
     }
 
@@ -305,6 +465,10 @@ mod tests {
 
         let mut invalid = model("invalid");
         invalid.max_output_tokens = invalid.context_window_tokens + 1;
+        assert!(validate_models(vec![wire(invalid)], &config, &providers).is_err());
+
+        let mut invalid = model("invalid-price");
+        invalid.output_price_microusd_per_million_tokens = None;
         assert!(validate_models(vec![wire(invalid)], &config, &providers).is_err());
     }
 
@@ -337,7 +501,7 @@ mod tests {
     }
 
     #[test]
-    fn catalog_rejects_unknown_fields_and_quarantines_malformed_neighbors() {
+    fn catalog_accepts_additive_fields_and_quarantines_malformed_neighbors() {
         let config = config();
         let providers = ProviderRegistry::production(
             config.clone(),
@@ -359,13 +523,19 @@ mod tests {
             &providers,
         )
         .unwrap();
-        assert_eq!(models.len(), 1);
-        assert_eq!(models[0].id, "supported");
-        assert!(validate_models(vec![unknown], &config, &providers).is_err());
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].id, "unknown-contract");
+        assert_eq!(models[1].id, "supported");
+        assert_eq!(
+            validate_models(vec![unknown], &config, &providers)
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[test]
-    fn catalog_rejects_contract_negotiation_fields_and_newer_contracts() {
+    fn catalog_negotiates_the_newest_locally_supported_advertised_contract() {
         let config = config();
         let providers = ProviderRegistry::production(
             config.clone(),
@@ -378,16 +548,79 @@ mod tests {
         forward.attestation_protocol = "near-tdx-nvidia-v2".into();
         assert!(validate_models(vec![wire(forward)], &config, &providers).is_err());
 
-        let mut ambiguous = wire(model("ambiguous"));
-        ambiguous.as_object_mut().unwrap().insert(
-            "e2ee_contracts".into(),
-            serde_json::json!([{
-                "e2ee_protocol": "near-v2",
-                "e2ee_encryption_version": 2,
-                "attestation_protocol": "near-tdx-nvidia-v1"
-            }]),
+        let mut advertised = model("advertised");
+        advertised.e2ee_protocol = "near-v3".into();
+        advertised.e2ee_encryption_version = 3;
+        advertised.attestation_protocol = "near-tdx-nvidia-v2".into();
+        advertised.e2ee_contracts = vec![
+            CatalogE2eeContract {
+                e2ee_protocol: "near-v3".into(),
+                e2ee_encryption_version: 3,
+                attestation_protocol: "near-tdx-nvidia-v2".into(),
+                preferred: true,
+                retire_after_unix_seconds: None,
+            },
+            CatalogE2eeContract {
+                e2ee_protocol: "near-v2".into(),
+                e2ee_encryption_version: 2,
+                attestation_protocol: "near-tdx-nvidia-v1".into(),
+                preferred: false,
+                retire_after_unix_seconds: None,
+            },
+        ];
+        let supported = validate_models(vec![wire(advertised)], &config, &providers).unwrap();
+        assert_eq!(supported.len(), 1);
+        assert_eq!(supported[0].e2ee_protocol, "near-v2");
+        assert_eq!(supported[0].e2ee_encryption_version, 2);
+
+        let mut retired = model("retired");
+        retired.e2ee_protocol = "near-v3".into();
+        retired.e2ee_encryption_version = 3;
+        retired.attestation_protocol = "near-tdx-nvidia-v2".into();
+        retired.e2ee_contracts = vec![
+            CatalogE2eeContract {
+                e2ee_protocol: "near-v3".into(),
+                e2ee_encryption_version: 3,
+                attestation_protocol: "near-tdx-nvidia-v2".into(),
+                preferred: true,
+                retire_after_unix_seconds: None,
+            },
+            CatalogE2eeContract {
+                e2ee_protocol: "near-v2".into(),
+                e2ee_encryption_version: 2,
+                attestation_protocol: "near-tdx-nvidia-v1".into(),
+                preferred: false,
+                retire_after_unix_seconds: Some(1),
+            },
+        ];
+        assert!(validate_models(vec![wire(retired)], &config, &providers).is_err());
+
+        let mut contradictory = model("contradictory");
+        contradictory.e2ee_contracts = vec![CatalogE2eeContract {
+            e2ee_protocol: "near-v3".into(),
+            e2ee_encryption_version: 3,
+            attestation_protocol: "near-tdx-nvidia-v2".into(),
+            preferred: true,
+            retire_after_unix_seconds: None,
+        }];
+        assert!(validate_models(vec![wire(contradictory)], &config, &providers).is_err());
+    }
+
+    #[test]
+    fn catalog_ignores_unknown_reasoning_values_but_keeps_known_values() {
+        let config = config();
+        let providers = ProviderRegistry::production(
+            config.clone(),
+            Arc::new(ApiCredential::new("test-credential")),
+        )
+        .unwrap();
+        let mut item = model("reasoning-rollout");
+        item.supported_reasoning_efforts = vec!["medium".into(), "ultra".into()];
+        let models = validate_models(vec![wire(item)], &config, &providers).unwrap();
+        assert_eq!(
+            models[0].supported_reasoning_efforts,
+            vec![ReasoningEffort::Medium]
         );
-        assert!(validate_models(vec![ambiguous], &config, &providers).is_err());
     }
 
     #[test]

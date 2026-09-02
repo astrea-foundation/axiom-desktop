@@ -28,7 +28,7 @@ Headline outcomes:
   idle / unread / working dots.
 - Composer, bubbles, disclosures, model picker, TEE badge, proxy page and
   settings all restyled. Assistant replies have no bubble; user messages do.
-- `pnpm capture` now produces 22 PNGs (11 states × light/dark).
+- `pnpm capture` now produces 24 PNGs (12 states × light/dark).
 - Brand assets are generated from designer masters (`pnpm brand:assets`),
   `electron-builder.yml` exists, macOS gets an About panel and menu.
 
@@ -50,7 +50,7 @@ pnpm --filter axiom-desktop capture   # ~/axiom-desktop-captures/{light,dark}-*.
   BrowserWindow itself is still macOS.
 - `electron-vite dev` hot-reloads the renderer only. Anything under
   `src/main` or `src/preload` needs the app restarted.
-- Capture shots: `conversation, welcome, models, proxy, folder, markdown,
+- Capture shots: `conversation, welcome, models, signin, proxy, folder, markdown,
   markdown-top, markdown-open, errors, settings, collapsed`. `collapsed` is
   taken windowed + inactive so the notch and the grey ghost traffic lights
   are visible. Shots are driven by `window.__axiomDemo` hooks (typed as
@@ -180,6 +180,11 @@ pnpm --filter axiom-desktop capture   # ~/axiom-desktop-captures/{light,dark}-*.
   moves them. Do not animate them.
 - Settings is a full-window page (`fixed inset-0`, Back pill, staggered glass
   cards), not a modal.
+- Live account state replaces the placeholder identity in the sidebar footer.
+  Signed-out, invalid, and unavailable states use the same semantic glass,
+  status, and action tokens as the rest of the shell. `SignInDialog` is a
+  modal-scale `.glass-panel-solid` rendered beside the stage frame so its
+  fixed scrim covers the whole window without being clipped by stage chrome.
 
 ### 3.5 Chat surfaces
 
@@ -329,8 +334,8 @@ overlay inset, and the `AxiomLogo` wordmark component.
 
 ## 8. How this was verified
 
-`pnpm typecheck` clean, `pnpm test` 13/13, both themes captured for every
-state after each change, and a five-lens adversarial code review over the
-whole diff (CSS/Chromium support, React/TS, Electron main/preload, token
-completeness/contrast, behavioural regressions) whose confirmed findings were
-fixed before this hand-off.
+`pnpm typecheck` clean, the integrated desktop suite 16/16, and all 24 current
+states captured across both themes. The original redesign also received a
+five-lens adversarial code review over the whole diff (CSS/Chromium support,
+React/TS, Electron main/preload, token completeness/contrast, behavioural
+regressions) whose confirmed findings were fixed before this hand-off.

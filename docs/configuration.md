@@ -2,9 +2,11 @@
 
 Axiom loads built-in defaults, shared trusted configuration, frontend trusted
 configuration, supported environment overrides, and—only for CLI workspaces—the
-selected repository's restrictive configuration. Unknown TOML keys and invalid
-values are errors. TUI, `exec`, and generic ACP resolve the project layer after
-canonicalizing their workspace.
+selected repository's restrictive configuration. Unknown additive top-level
+and MCP keys are ignored with a warning so a newer config does not prevent an
+older binary from starting. Invalid known values, policy-rule fields,
+permission names, and authority-bearing structures remain errors. TUI, `exec`,
+and generic ACP resolve the project layer after canonicalizing their workspace.
 
 On Linux, shared configuration is normally
 `$XDG_CONFIG_HOME/axiom/config.toml`; CLI and desktop overrides live in
@@ -25,8 +27,9 @@ Local data uses one Axiom namespace with explicit ownership:
 ```
 
 The protected credential fallback and installation identity are shared so the
-desktop and CLI use the same account. Conversation databases are separate. This
-first-release layout does not import pre-release local databases.
+desktop and CLI use the same account. Conversation databases are separate.
+Versioned databases are upgraded through ordered, transactional migrations.
+Unversioned pre-release layouts are not guessed at and must be reset explicitly.
 
 During pre-release development, reset exactly one frontend database with
 `axiomcli reset-local-state --frontend cli --confirm` or
@@ -38,8 +41,8 @@ database, and `desktop/chat/`; no reset happens implicitly.
 `axiomcli acp --frontend desktop-chat` is a product profile: its cwd is the
 canonical `desktop/chat` directory, MCP servers are disabled, its embedded
 desktop system prompt cannot be replaced with `--system-prompt-file`, and its
-permission profile is exactly `web`. Desktop still strictly parses the shared
-configuration and applies its common fields, but ignores shared
+permission profile is exactly `web`. Desktop parses known shared configuration
+and applies its common fields, but ignores additive unknown keys and shared
 `permission_profile` and `mcp_servers` because those fields configure the CLI.
 A non-Web permission setting in `desktop/config.toml`, the environment, ACP
 mode, or extension settings is rejected.
@@ -47,12 +50,12 @@ mode, or extension settings is rejected.
 ## Trusted user file
 
 ```toml
-model = "glm-5-2"
+model = "deepseek-v4-flash"
 base_url = "https://api.axiom.stream"
 permission_profile = "confirm"
 searxng_url = "http://127.0.0.1:8888"
-max_context_bytes = 2097152
-max_context_tokens = 262144
+max_context_bytes = 16777216
+max_context_tokens = 4194304
 max_tool_output_bytes = 131072
 request_timeout_secs = 120
 animation = true
@@ -159,8 +162,8 @@ Limits are validated as follows:
 | Key | Valid range/default |
 |---|---|
 | `max_agent_steps` | Optional 1–256; disabled when omitted (default) |
-| `max_context_bytes` | 4 KiB–64 MiB; default 2 MiB |
-| `max_context_tokens` | 1 Ki–4 Mi tokens; default 256 Ki |
+| `max_context_bytes` | 4 KiB–64 MiB; default 16 MiB local safety ceiling |
+| `max_context_tokens` | 1 Ki–4 Mi tokens; default 4 Mi model-independent safety ceiling |
 | `max_tool_output_bytes` | 1 KiB–64 MiB; default 128 KiB |
 | `max_turn_secs` | Optional 1–86,400; disabled when omitted (default) |
 | `request_timeout_secs` | 1–3,600; default 120 |
@@ -168,6 +171,12 @@ Limits are validated as follows:
 `request_timeout_secs` bounds provider HTTP requests. It does not time out a
 permission card or structured question. Human waits end on a response,
 cancellation/disconnect, or an enabled whole-turn limit.
+
+Normal context rollover is model-relative: the relay reads each curated
+offering's current `context_length` and `max_output_length` from the live NEAR
+or Phala catalog, and AxiomCLI automatically compacts at 85% of that context
+window. `max_context_bytes` and `max_context_tokens` can deliberately lower
+the local hard ceiling, but their defaults do not replace provider metadata.
 
 `base_url` and `searxng_url` must be HTTP(S) URLs. MCP names must be unique;
 name and command cannot be empty. A listed `read_only_tools` entry is an

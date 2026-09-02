@@ -340,6 +340,7 @@ async function captureStates(window: BrowserWindow, outputDir: string): Promise<
     { name: "conversation", wait: 400 },
     { name: "welcome", script: `window.__axiomDemo?.showWelcome()`, wait: 1600 },
     { name: "models", script: `window.__axiomDemo?.openModelPicker()`, wait: 400 },
+    { name: "signin", script: `window.__axiomDemo?.showSignIn()`, wait: 400 },
     { name: "proxy", script: `window.__axiomDemo?.showProxy()`, wait: 900 },
     { name: "folder", script: `window.__axiomDemo?.showFolder()`, wait: 700 },
     { name: "markdown", script: `window.__axiomDemo?.showThread("thread-markdown")`, wait: 900 },
@@ -367,6 +368,7 @@ async function captureStates(window: BrowserWindow, outputDir: string): Promise<
     await window.webContents.executeJavaScript(`window.__axiomDemo?.showThread()`);
     await delay(600);
     for (const shot of shots) {
+      await window.webContents.executeJavaScript(`window.__axiomDemo?.showSignIn(false)`);
       if (shot.chrome) {
         window.webContents.send("window:fullscreen-changed", false);
         window.webContents.send("window:active-changed", false);

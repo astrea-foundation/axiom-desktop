@@ -14,6 +14,8 @@ export interface ProviderModel {
   providerLabel: string;
   model: string;
   supportedReasoningEfforts: ReasoningEffort[];
+  inputPriceMicrousdPerMillionTokens: number | null;
+  outputPriceMicrousdPerMillionTokens: number | null;
 }
 
 export interface Message {
@@ -58,4 +60,5 @@ export interface DemoApi {
   showThread: (id?: string) => void;
   showSettings: (open: boolean) => void;
   setSidebar: (open: boolean) => void;
+  showSignIn: (open?: boolean) => void;
 }

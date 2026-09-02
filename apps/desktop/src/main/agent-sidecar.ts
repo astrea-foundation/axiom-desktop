@@ -3,6 +3,7 @@ import { constants } from "node:fs";
 import { resolve } from "node:path";
 import { app, BrowserWindow, shell } from "electron";
 import {
+  AcpError,
   AxiomAcpClient,
   type ClientState,
   type DesktopBootstrapResponse,
@@ -19,6 +20,13 @@ export const AGENT_INTERACTION_CHANNEL = "agent:interaction";
 
 function broadcast(channel: string, value: unknown): void {
   for (const window of BrowserWindow.getAllWindows()) window.webContents.send(channel, value);
+}
+
+function actionableAcpError(error: unknown): Error {
+  if (error instanceof AcpError && typeof error.data === "string" && error.data.trim()) {
+    return new Error(error.data.trim());
+  }
+  return error instanceof Error ? error : new Error(String(error));
 }
 
 async function executable(path: string): Promise<boolean> {
@@ -215,8 +223,12 @@ export class AgentSidecar {
     return this.requireClient().listThreads(request);
   }
 
-  listModels() {
-    return this.requireClient().listModels();
+  async listModels() {
+    try {
+      return await this.requireClient().listModels();
+    } catch (error) {
+      throw actionableAcpError(error);
+    }
   }
 
   setSettings(settings: ThreadSettingsRequest) {

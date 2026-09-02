@@ -2,6 +2,7 @@ import { Check, Search } from "lucide-react";
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ProviderModel } from "../types";
 import { ModelBrandIcon, ProviderBrandIcon } from "./ModelBrandIcon";
+import { formatModelPricing } from "./modelPricing";
 
 interface ProviderGroup {
   id: string;
@@ -166,6 +167,7 @@ export function ModelPicker({ models, selectedModelId, onSelect }: ModelPickerPr
         {activeGroup?.models.length ? (
           activeGroup.models.map((model) => {
             const selected = model.id === selectedModelId;
+            const pricing = formatModelPricing(model);
             return (
               <button
                 key={model.id}
@@ -183,11 +185,29 @@ export function ModelPicker({ models, selectedModelId, onSelect }: ModelPickerPr
                     </span>
                   ) : null}
                 </span>
-                <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-[var(--color-text-primary)]">
-                  {model.label}
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-[12.5px] font-medium text-[var(--color-text-primary)]">
+                    {model.label}
+                  </span>
+                  <span className="mt-0.5 block truncate font-mono text-[10px] text-[var(--color-text-muted)]">
+                    {model.model}
+                  </span>
                 </span>
-                <span className="max-w-[8rem] shrink-0 truncate text-[11px] text-[var(--color-text-muted)]">
-                  {model.model}
+                <span className="w-[8.25rem] shrink-0 text-right">
+                  {pricing ? (
+                    <>
+                      <span className="block whitespace-nowrap text-[10px] font-medium tabular-nums text-[var(--color-text-secondary)]">
+                        {pricing}
+                      </span>
+                      <span className="mt-0.5 block text-[9.5px] text-[var(--color-text-muted)]">
+                        per 1M tokens
+                      </span>
+                    </>
+                  ) : (
+                    <span className="block text-[10px] text-[var(--color-text-muted)]">
+                      Price unavailable
+                    </span>
+                  )}
                 </span>
               </button>
             );

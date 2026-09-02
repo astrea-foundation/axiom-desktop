@@ -4,12 +4,14 @@ import type { ClientState, ListModelsResponse } from "@axiom/axiom-acp-client";
 import { ChatView } from "./components/ChatView";
 import { ProxyView } from "./components/ProxyView";
 import { SettingsSheet } from "./components/SettingsSheet";
+import { SignInDialog } from "./components/SignInDialog";
 import { Sidebar } from "./components/Sidebar";
 import { WelcomeView } from "./components/WelcomeView";
 import { TrafficLightGhost } from "./components/TrafficLightGhost";
 import { WindowControls } from "./components/WindowControls";
 import { setThemePreference, useTheme } from "./lib/theme";
 import { isMac, MAC_TRAFFIC_LIGHT_INSET_CLASS, useFullScreen } from "./lib/window-chrome";
+import { accountPresentation, desktopErrorMessage, signInErrorMessage, type SignInState } from "./signInFlow";
 import type { MainSurface, PendingUserMessage, ProviderModel, ReasoningEffort, Thread } from "./types";
 
 const SIDEBAR_WIDTH = 260;
@@ -67,6 +69,15 @@ function providerModels(response: ListModelsResponse): ProviderModel[] {
     ) throw new Error("AxiomCLI returned incomplete provider model metadata");
     const label = withoutProviderSuffix(model.label, providerId, providerLabel);
     const shortLabel = withoutProviderSuffix(model.shortLabel, providerId, providerLabel);
+    const inputPrice = model.inputPriceMicrousdPerMillionTokens ?? null;
+    const outputPrice = model.outputPriceMicrousdPerMillionTokens ?? null;
+    const validPrice = (value: number | null): boolean => value === null
+      || (Number.isSafeInteger(value) && value > 0);
+    if (
+      !validPrice(inputPrice)
+      || !validPrice(outputPrice)
+      || (inputPrice === null) !== (outputPrice === null)
+    ) throw new Error("AxiomCLI returned invalid provider pricing metadata");
     return {
       id: model.id,
       label,
@@ -75,6 +86,8 @@ function providerModels(response: ListModelsResponse): ProviderModel[] {
       providerLabel,
       model: model.upstreamModel.trim(),
       supportedReasoningEfforts: model.thinkingLevels.filter(isReasoningEffort),
+      inputPriceMicrousdPerMillionTokens: inputPrice,
+      outputPriceMicrousdPerMillionTokens: outputPrice,
     };
   });
 }
@@ -105,11 +118,15 @@ export function App() {
   const [modelCatalogRefresh, setModelCatalogRefresh] = useState(0);
   const [desktopReady, setDesktopReady] = useState(false);
   const [pendingUserMessage, setPendingUserMessage] = useState<PendingUserMessage | null>(null);
+  const [signInState, setSignInState] = useState<SignInState>({ kind: "closed" });
   const loadingSessions = useRef(new Set<string>());
   const seenRevisions = useRef(new Map<string, number>());
   const settingsGeneration = useRef(0);
   const preferredModelId = useRef("");
   const preferredReasoningEffort = useRef<ReasoningEffort>("medium");
+  const signInGeneration = useRef(0);
+  const activeLoginId = useRef<string | null>(null);
+  const signInCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const folders = useMemo(() => agentState.collections.collections.map((collection) => ({
     id: collection.id,
@@ -163,6 +180,8 @@ export function App() {
   const activeThread = threads.find((thread) => thread.id === activeThreadId) ?? null;
   const activeSession = activeThreadId ? agentState.sessions[activeThreadId] ?? null : null;
   const isStreaming = activeSession?.running ?? false;
+  const accountView = accountPresentation(agentState.connected, desktopReady, agentState.account);
+  const requiresSignIn = accountView.kind === "signed-out" || accountView.kind === "invalid";
 
   useEffect(() => {
     const api = window.axiomDesktop?.agent;
@@ -220,6 +239,95 @@ export function App() {
     return () => { cancelled = true; };
   }, [agentState.connected, agentState.runtimeInstanceId]);
 
+  const refreshAccount = useCallback(async () => {
+    const api = window.axiomDesktop?.agent;
+    if (!api || !agentState.connected) return;
+    try {
+      await api.accountStatus();
+      setModelCatalogRefresh((version) => version + 1);
+      setUiError(null);
+    } catch (error) {
+      setUiError(error instanceof Error ? error.message : String(error));
+    }
+  }, [agentState.connected]);
+
+  const cancelBrowserSignIn = useCallback(() => {
+    signInGeneration.current += 1;
+    if (signInCloseTimer.current) {
+      clearTimeout(signInCloseTimer.current);
+      signInCloseTimer.current = null;
+    }
+    const loginId = activeLoginId.current;
+    activeLoginId.current = null;
+    setSignInState({ kind: "closed" });
+    if (loginId) {
+      void window.axiomDesktop?.agent.browserLoginCancel(loginId).catch(() => undefined);
+    }
+  }, []);
+
+  const beginBrowserSignIn = useCallback(() => {
+    const api = window.axiomDesktop?.agent;
+    if (!api || !agentState.connected) {
+      setSignInState({
+        kind: "error",
+        message: "AxiomCLI is not connected yet. Wait a moment and try again.",
+      });
+      return;
+    }
+
+    const generation = ++signInGeneration.current;
+    if (signInCloseTimer.current) {
+      clearTimeout(signInCloseTimer.current);
+      signInCloseTimer.current = null;
+    }
+    activeLoginId.current = null;
+    setSettingsOpen(false);
+    setUiError(null);
+    setSignInState({ kind: "starting" });
+
+    void (async () => {
+      try {
+        const started = await api.browserLoginStart();
+        const loginId = started.login.loginId;
+        if (generation !== signInGeneration.current) {
+          // A cancelled start can still finish its ACP round trip. Completing and
+          // immediately cancelling it removes the short-lived login from AxiomCLI.
+          void api.browserLoginComplete(loginId).catch(() => undefined);
+          void api.browserLoginCancel(loginId).catch(() => undefined);
+          return;
+        }
+
+        activeLoginId.current = loginId;
+        setSignInState({ kind: "waiting", login: started.login });
+        const completed = await api.browserLoginComplete(loginId);
+        if (activeLoginId.current === loginId) activeLoginId.current = null;
+        if (generation !== signInGeneration.current) return;
+        if (completed.status.state !== "valid") {
+          throw new Error(completed.status.detail || "Axiom did not return a valid account after approval.");
+        }
+
+        setSignInState({ kind: "success" });
+        setModelCatalogRefresh((version) => version + 1);
+        setUiError(null);
+        signInCloseTimer.current = setTimeout(() => {
+          if (generation === signInGeneration.current) setSignInState({ kind: "closed" });
+          signInCloseTimer.current = null;
+        }, 900);
+      } catch (error) {
+        if (generation !== signInGeneration.current) return;
+        activeLoginId.current = null;
+        setSignInState({ kind: "error", message: signInErrorMessage(error) });
+      }
+    })();
+  }, [agentState.connected]);
+
+  useEffect(() => () => {
+    signInGeneration.current += 1;
+    if (signInCloseTimer.current) clearTimeout(signInCloseTimer.current);
+    const loginId = activeLoginId.current;
+    if (loginId) void window.axiomDesktop?.agent.browserLoginCancel(loginId).catch(() => undefined);
+  }, []);
+
   useEffect(() => {
     const api = window.axiomDesktop?.agent;
     if (!api || !agentState.connected || !desktopReady || agentState.account?.state !== "valid") {
@@ -243,7 +351,7 @@ export function App() {
       preferredModelId.current = nextModel;
     }).catch((error: unknown) => {
       if (cancelled) return;
-      const detail = error instanceof Error ? error.message : String(error);
+      const detail = desktopErrorMessage(error, "AxiomCLI could not load the model catalog.");
       setModelCatalogError(`Could not load models. Check your connection or refresh your account in Settings. ${detail}`);
     });
     return () => { cancelled = true; };
@@ -332,6 +440,23 @@ export function App() {
         const target = id && threads.some((thread) => thread.id === id) ? id : threads[0]?.id;
         if (target) void loadThread(target);
       },
+      showSignIn: (open = true) => {
+        document.querySelector<HTMLButtonElement>('[title="Select model"][aria-expanded="true"]')?.click();
+        setSettingsOpen(false);
+        if (!open) {
+          setSignInState({ kind: "closed" });
+          return;
+        }
+        setSignInState({
+          kind: "waiting",
+          login: {
+            loginId: "desktop-preview",
+            userCode: "AXM7-K9Q2",
+            authorizationUrl: "https://axiom.trade/cli/authorize",
+            browserOpened: true,
+          },
+        });
+      },
     };
     return () => { delete window.__axiomDemo; };
   }, [folders, loadThread, showProxy, showWelcome, threads]);
@@ -340,6 +465,10 @@ export function App() {
     const text = draft.trim();
     const api = window.axiomDesktop?.agent;
     if (!text || !api || !agentState.connected) return;
+    if (requiresSignIn) {
+      beginBrowserSignIn();
+      return;
+    }
     const submissionId = crypto.randomUUID();
     const showPendingMessage = (sessionId: string) => {
       setPendingUserMessage({
@@ -501,6 +630,8 @@ export function App() {
               }
               await window.axiomDesktop?.agent.assignThreadCollection(threadId, folderId);
             })())}
+            account={accountView}
+            onSignIn={beginBrowserSignIn}
             onOpenSettings={() => setSettingsOpen(true)}
           />
       </div>
@@ -560,6 +691,8 @@ export function App() {
               selectedModelId={modelId || models[0]?.id || ""}
               modelStatusLabel={modelStatusLabel}
               onModelChange={(id) => updateSettings(id, undefined)}
+              requiresSignIn={requiresSignIn}
+              onSignIn={beginBrowserSignIn}
               reasoningEffort={reasoningEffort}
               onReasoningEffortChange={(effort) => updateSettings(undefined, effort)}
               pendingUserMessage={pendingUserMessage}
@@ -581,6 +714,9 @@ export function App() {
               selectedModelId={modelId || models[0]?.id || ""}
               modelStatusLabel={modelStatusLabel}
               onModelChange={(id) => { setModelId(id); preferredModelId.current = id; }}
+              account={accountView}
+              onSignIn={beginBrowserSignIn}
+              onRefreshAccount={() => void refreshAccount()}
               reasoningEffort={reasoningEffort}
               onReasoningEffortChange={(effort) => {
                 setReasoningEffort(effort);
@@ -597,28 +733,9 @@ export function App() {
           connected={agentState.connected}
           account={agentState.account}
           onRefreshAccount={() => {
-            void (async () => {
-              try {
-                await window.axiomDesktop?.agent.accountStatus();
-                setModelCatalogRefresh((version) => version + 1);
-                setUiError(null);
-              } catch (error) {
-                setUiError(error instanceof Error ? error.message : String(error));
-              }
-            })();
+            void refreshAccount();
           }}
-          onLogin={() => {
-            void (async () => {
-              try {
-                const started = await window.axiomDesktop?.agent.browserLoginStart();
-                if (started) await window.axiomDesktop?.agent.browserLoginComplete(started.login.loginId);
-                setModelCatalogRefresh((version) => version + 1);
-                setUiError(null);
-              } catch (error) {
-                setUiError(error instanceof Error ? error.message : String(error));
-              }
-            })();
-          }}
+          onLogin={beginBrowserSignIn}
           onLogout={() => {
             void (async () => {
               try {
@@ -631,6 +748,13 @@ export function App() {
               }
             })();
           }}
+        />
+      ) : null}
+      {signInState.kind !== "closed" ? (
+        <SignInDialog
+          state={signInState}
+          onCancel={cancelBrowserSignIn}
+          onRetry={beginBrowserSignIn}
         />
       ) : null}
     </div>

@@ -332,11 +332,6 @@ impl SessionStore {
                 "local state schema {version} is newer than supported schema {SCHEMA_VERSION}"
             )));
         }
-        if version != 0 && version != SCHEMA_VERSION {
-            return Err(AxiomError::Storage(format!(
-                "unsupported pre-release local state schema {version}; reset this development database"
-            )));
-        }
         if version == 0 {
             let user_tables: i64 = connection
                 .query_row(
@@ -350,12 +345,8 @@ impl SessionStore {
                     "unversioned or pre-release local state is not compatible with Axiom schema v1; reset the development database".into(),
                 ));
             }
-            let transaction = connection.transaction().map_err(storage_error)?;
-            transaction
-                .execute_batch(SCHEMA_V1)
-                .map_err(storage_error)?;
-            transaction.commit().map_err(storage_error)?;
         }
+        migrate_schema(&mut connection, version)?;
         let application_id: i64 = connection
             .query_row("PRAGMA application_id", [], |row| row.get(0))
             .map_err(storage_error)?;
@@ -426,6 +417,47 @@ impl SessionStore {
             .lock()
             .map_err(|_| AxiomError::Storage("local state database lock was poisoned".into()))
     }
+}
+
+struct SchemaMigration {
+    from: i64,
+    to: i64,
+    sql: &'static str,
+}
+
+const SCHEMA_MIGRATIONS: &[SchemaMigration] = &[SchemaMigration {
+    from: 0,
+    to: 1,
+    sql: SCHEMA_V1,
+}];
+
+fn migrate_schema(connection: &mut Connection, mut version: i64) -> Result<()> {
+    while version < SCHEMA_VERSION {
+        let migration = SCHEMA_MIGRATIONS
+            .iter()
+            .find(|migration| migration.from == version)
+            .ok_or_else(|| {
+                AxiomError::Storage(format!(
+                    "no local state migration is available from schema {version}"
+                ))
+            })?;
+        let transaction = connection.transaction().map_err(storage_error)?;
+        transaction
+            .execute_batch(migration.sql)
+            .map_err(storage_error)?;
+        let migrated_version: i64 = transaction
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .map_err(storage_error)?;
+        if migrated_version != migration.to {
+            return Err(AxiomError::Storage(format!(
+                "local state migration from {} did not select schema {}",
+                migration.from, migration.to
+            )));
+        }
+        transaction.commit().map_err(storage_error)?;
+        version = migration.to;
+    }
+    Ok(())
 }
 
 const SCHEMA_V1: &str = r"
@@ -3448,7 +3480,7 @@ mod tests {
     }
 
     #[test]
-    fn fresh_database_is_the_only_supported_schema_v1() {
+    fn fresh_and_current_databases_use_the_ordered_schema_migrations() {
         let directory = tempdir().expect("temp dir");
         let fresh = directory.path().join("state.sqlite3");
         let store = SessionStore::open(&fresh).expect("fresh store");
@@ -3477,6 +3509,7 @@ mod tests {
         }
         drop(connection);
         drop(store);
+        SessionStore::open(&fresh).expect("current schema reopens without migration");
 
         let old = directory.path().join("old.sqlite3");
         Connection::open(&old)

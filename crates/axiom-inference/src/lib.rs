@@ -572,6 +572,12 @@ pub struct ModelInfo {
     pub context_window_tokens: u32,
     #[serde(default)]
     pub max_output_tokens: u32,
+    /// Exact display price in micro-USD per one million uncached input tokens.
+    #[serde(default)]
+    pub input_price_microusd_per_million_tokens: Option<u64>,
+    /// Exact display price in micro-USD per one million output tokens.
+    #[serde(default)]
+    pub output_price_microusd_per_million_tokens: Option<u64>,
     #[serde(default)]
     pub supported_reasoning_efforts: Vec<ReasoningEffort>,
     #[serde(default)]
@@ -580,6 +586,19 @@ pub struct ModelInfo {
     pub supports_parallel_tools: bool,
     #[serde(default)]
     pub supports_streaming: bool,
+}
+
+pub const AUTO_COMPACT_CONTEXT_PERCENT: u32 = 85;
+
+impl ModelInfo {
+    /// Token occupancy at which conversation context should be compacted.
+    /// The provider's live full context window is the source of truth.
+    #[must_use]
+    pub fn auto_compact_threshold_tokens(&self) -> u32 {
+        self.context_window_tokens
+            .saturating_mul(AUTO_COMPACT_CONTEXT_PERCENT)
+            / 100
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -646,6 +665,18 @@ mod tests {
         assert!(!model.supports_tools);
         assert!(!model.supports_streaming);
         assert!(model.supported_reasoning_efforts.is_empty());
+        assert_eq!(model.auto_compact_threshold_tokens(), 0);
+    }
+
+    #[test]
+    fn auto_compaction_uses_eighty_five_percent_of_live_context() {
+        let model = ModelInfo {
+            id: "cherry".into(),
+            context_window_tokens: 1_048_576,
+            ..ModelInfo::default()
+        };
+
+        assert_eq!(model.auto_compact_threshold_tokens(), 891_289);
     }
 
     #[test]

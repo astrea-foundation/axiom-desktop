@@ -65,6 +65,17 @@ impl SecureProvider for FixtureProvider {
         Ok(())
     }
 
+    fn supports_contract(
+        &self,
+        e2ee_protocol: &str,
+        e2ee_encryption_version: u16,
+        attestation_protocol: &str,
+    ) -> bool {
+        e2ee_protocol == E2EE_PROTOCOL
+            && e2ee_encryption_version == ENCRYPTION_VERSION
+            && attestation_protocol == ATTESTATION_PROTOCOL
+    }
+
     fn populate_capabilities(&self, model: &mut ModelInfo) {
         model.supports_tools = true;
         model.supports_parallel_tools = true;

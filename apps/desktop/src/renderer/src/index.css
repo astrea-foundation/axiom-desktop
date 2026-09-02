@@ -132,6 +132,7 @@
   --stage-ring: rgba(16, 16, 20, 0.045);
   --blob-fill: rgba(255, 255, 255, 0.92);
   --surface-track: rgba(16, 16, 20, 0.05);
+  --surface-scrim: rgba(16, 16, 20, 0.28);
 }
 
 /* Dark theme: overrides the @theme tokens by name. Utilities resolve them at
@@ -222,6 +223,7 @@
   --stage-ring: rgba(255, 255, 255, 0.07);
   --blob-fill: rgba(255, 255, 255, 0.07);
   --surface-track: rgba(0, 0, 0, 0.28);
+  --surface-scrim: rgba(0, 0, 0, 0.58);
 }
 
 html,
@@ -778,6 +780,18 @@ input {
   animation: arm-pulse 1.4s ease-in-out infinite;
 }
 
+@keyframes progress-in {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+.animate-progress-in {
+  animation: progress-in 0.7s var(--ease-out-expo) both;
+}
+
 .dot-bounce {
   animation: dot-bounce 1.2s ease-in-out infinite;
 }
@@ -937,6 +951,7 @@ input {
   .animate-panel-in,
   .animate-check-pop,
   .animate-arm-pulse,
+  .animate-progress-in,
   .animate-pop-in,
   .animate-fade-in-up,
   .animate-fade-in {

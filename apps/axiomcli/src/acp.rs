@@ -3242,18 +3242,36 @@ pub async fn serve_stdio(
                             || model.provider_id.trim().is_empty()
                             || model.provider_label.trim().is_empty()
                             || model.upstream_model.trim().is_empty()
+                            || model.context_window_tokens == 0
+                            || model.max_output_tokens == 0
+                            || model.max_output_tokens > model.context_window_tokens
+                            || !matches!(
+                                (
+                                    model.input_price_microusd_per_million_tokens,
+                                    model.output_price_microusd_per_million_tokens,
+                                ),
+                                (None, None) | (Some(1..), Some(1..))
+                            )
                         {
                             return Err(agent_client_protocol::util::internal_error(
                                 "provider catalog returned incomplete model metadata",
                             ));
                         }
                         Ok(ModelInfo {
+                            auto_compact_threshold_tokens: model
+                                .auto_compact_threshold_tokens(),
                             label: model.label,
                             short_label: model.short_label,
                             provider_id: model.provider_id,
                             provider_label: model.provider_label,
                             upstream_model: model.upstream_model,
                             id: model.id,
+                            context_window_tokens: model.context_window_tokens,
+                            max_output_tokens: model.max_output_tokens,
+                            input_price_microusd_per_million_tokens: model
+                                .input_price_microusd_per_million_tokens,
+                            output_price_microusd_per_million_tokens: model
+                                .output_price_microusd_per_million_tokens,
                             thinking_levels: model
                                 .supported_reasoning_efforts
                                 .into_iter()

@@ -546,6 +546,7 @@ pub struct TuiState {
     thinking: ThinkingLevel,
     splash_message: &'static str,
     model_candidates: Vec<String>,
+    model_details: BTreeMap<String, axiom_inference::ModelInfo>,
     model_catalog_loaded: bool,
     model_catalog_loading: bool,
     slash_completion: Option<SlashCompletionCycle>,
@@ -607,6 +608,7 @@ impl TuiState {
             thinking: ThinkingLevel::Medium,
             splash_message: pick_splash_message(),
             model_candidates: Vec::new(),
+            model_details: BTreeMap::new(),
             model_catalog_loaded: false,
             model_catalog_loading: false,
             slash_completion: None,
@@ -1243,7 +1245,6 @@ impl TuiState {
             AppEvent::ContextCompacted {
                 messages_before, ..
             } => {
-                self.running = false;
                 self.compacting = false;
                 self.status = "Context compacted".into();
                 self.status_tone = StatusTone::Success;
@@ -2295,7 +2296,21 @@ impl TuiState {
             .iter()
             .enumerate()
             .filter_map(|(index, model)| {
-                (query.is_empty() || model.to_lowercase().contains(&query)).then_some(index)
+                let matches = self.model_details.get(model).map_or_else(
+                    || model.to_lowercase().contains(&query),
+                    |details| {
+                        [
+                            details.id.as_str(),
+                            details.label.as_str(),
+                            details.short_label.as_str(),
+                            details.upstream_model.as_str(),
+                            details.provider_label.as_str(),
+                        ]
+                        .iter()
+                        .any(|value| value.to_lowercase().contains(&query))
+                    },
+                );
+                (query.is_empty() || matches).then_some(index)
             })
             .collect()
     }
@@ -2717,7 +2732,7 @@ enum UiMessage {
     Done(TurnId, Result<()>),
     SecurityPreflightDone(u64, Result<SecurityVerification>),
     CompactionDone(Result<CompactionResult>),
-    ModelsLoaded(Result<Vec<String>>),
+    ModelsLoaded(Result<Vec<axiom_inference::ModelInfo>>),
     TitleGenerated(SessionId, Result<String>),
     Approval(ApprovalRequest, oneshot::Sender<ApprovalResponse>),
     Questions(
@@ -4112,7 +4127,7 @@ pub async fn run(
                                                     let task_tx = ui_tx.clone();
                                                     tokio::spawn(async move {
                                                         let result = task_runner
-                                                            .available_models(
+                                                            .available_model_details(
                                                                 CancellationToken::new(),
                                                             )
                                                             .await;
@@ -4645,10 +4660,18 @@ pub async fn run(
                         state.reset_slash_completion();
                         match result {
                             Ok(mut models) => {
-                                models.retain(|model| !model.trim().is_empty());
-                                models.sort();
-                                models.dedup();
-                                state.model_candidates = models;
+                                models.retain(|model| {
+                                    !model.id.trim().is_empty()
+                                        && !model.id.chars().any(char::is_whitespace)
+                                });
+                                models.sort_by(|left, right| left.id.cmp(&right.id));
+                                models.dedup_by(|left, right| left.id == right.id);
+                                state.model_candidates =
+                                    models.iter().map(|model| model.id.clone()).collect();
+                                state.model_details = models
+                                    .into_iter()
+                                    .map(|model| (model.id.clone(), model))
+                                    .collect();
                                 if state.model_candidates.is_empty() {
                                     state.status = "Provider returned no available models".into();
                                 } else {
@@ -4662,6 +4685,7 @@ pub async fn run(
                             Err(error) => {
                                 state.model_catalog_loaded = false;
                                 state.model_candidates.clear();
+                                state.model_details.clear();
                                 state.status = format!(
                                     "Could not load available models: {error} · Esc to close"
                                 );
@@ -7014,9 +7038,33 @@ fn render_model_picker(frame: &mut Frame<'_>, state: &TuiState, theme: Theme) {
             } else {
                 ""
             };
-            let label = truncate_end(
-                &format!("{marker} {model}{current}"),
-                usize::from(rows[2].width),
+            let row_width = usize::from(rows[2].width);
+            let model_label = state
+                .model_details
+                .get(model)
+                .map_or(model.as_str(), |details| details.short_label.as_str());
+            let left = format!("{marker} {model_label}{current}");
+            let pricing = state
+                .model_details
+                .get(model)
+                .and_then(model_pricing_summary);
+            let label = pricing.map_or_else(
+                || truncate_end(&left, row_width),
+                |pricing| {
+                    let pricing_width = display_width(&pricing);
+                    if pricing_width.saturating_add(4) >= row_width {
+                        truncate_end(&left, row_width)
+                    } else {
+                        let left = truncate_end(
+                            &left,
+                            row_width.saturating_sub(pricing_width).saturating_sub(2),
+                        );
+                        let padding = row_width
+                            .saturating_sub(display_width(&left))
+                            .saturating_sub(pricing_width);
+                        format!("{left}{}{pricing}", " ".repeat(padding))
+                    }
+                },
             );
             let style = if is_selected {
                 Style::default()
@@ -7051,6 +7099,26 @@ fn render_model_picker(frame: &mut Frame<'_>, state: &TuiState, theme: Theme) {
         .saturating_add(u16::try_from(display_width(&visible_query)).unwrap_or(u16::MAX))
         .min(rows[0].right().saturating_sub(1));
     frame.set_cursor_position((cursor_x, rows[0].y));
+}
+
+fn format_price_microusd(microusd: u64) -> String {
+    let dollars = microusd / 1_000_000;
+    let fraction = microusd % 1_000_000;
+    if fraction == 0 {
+        return format!("${dollars}");
+    }
+    let fraction = format!("{fraction:06}").trim_end_matches('0').to_owned();
+    format!("${dollars}.{fraction}")
+}
+
+fn model_pricing_summary(model: &axiom_inference::ModelInfo) -> Option<String> {
+    let input = model.input_price_microusd_per_million_tokens?;
+    let output = model.output_price_microusd_per_million_tokens?;
+    Some(format!(
+        "{}/{} · 1M",
+        format_price_microusd(input),
+        format_price_microusd(output)
+    ))
 }
 
 fn render_resume_picker(frame: &mut Frame<'_>, state: &TuiState, theme: Theme) {
@@ -7935,6 +8003,16 @@ mod tests {
             PermissionProfile::Confirm,
         );
         state.model_candidates = vec!["glm-5-2".into(), "grok-code".into(), "qwen-code".into()];
+        state.model_details.insert(
+            "grok-code".into(),
+            axiom_inference::ModelInfo {
+                id: "grok-code".into(),
+                short_label: "Grok Code".into(),
+                input_price_microusd_per_million_tokens: Some(200_000),
+                output_price_microusd_per_million_tokens: Some(1_500_000),
+                ..axiom_inference::ModelInfo::default()
+            },
+        );
         state.model_catalog_loaded = true;
 
         state.open_model_picker();
@@ -7949,7 +8027,8 @@ mod tests {
         assert!(output.contains("Select model"));
         assert!(output.contains("Search"));
         assert!(output.contains("glm-5-2"));
-        assert!(output.contains("grok-code"));
+        assert!(output.contains("Grok Code"));
+        assert!(output.contains("$0.2/$1.5 · 1M"));
         assert!(!output.contains("qwen-code"));
     }
 
@@ -8136,6 +8215,10 @@ mod tests {
             messages_before: 4,
         });
         assert!(!state.compacting);
+        assert!(
+            state.running,
+            "automatic compaction does not finish the active turn"
+        );
         assert!(render_symbols(100, 30, &state).contains("* Context compacted"));
     }
 

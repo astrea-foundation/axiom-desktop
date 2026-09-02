@@ -97,6 +97,17 @@ impl SecureProvider for PhalaProvider {
         Ok(())
     }
 
+    fn supports_contract(
+        &self,
+        e2ee_protocol: &str,
+        e2ee_encryption_version: u16,
+        attestation_protocol: &str,
+    ) -> bool {
+        e2ee_protocol == PHALA_ACI_V2_PROTOCOL
+            && e2ee_encryption_version == u16::from(PHALA_ACI_V2_ENCRYPTION_VERSION)
+            && attestation_protocol == PHALA_ATTESTATION_PROTOCOL
+    }
+
     fn populate_capabilities(&self, model: &mut ModelInfo) {
         // ACI v2 has field-specific AAD for chat text and reasoning. Tool
         // fields stay disabled until the upstream protocol covers every tool
@@ -133,6 +144,9 @@ impl SecureProvider for PhalaProvider {
         let relay = AttestationRelay {
             config: self.config.clone(),
             credential: Arc::clone(&self.credential),
+            e2ee_protocol: model.e2ee_protocol.clone(),
+            e2ee_encryption_version: model.e2ee_encryption_version,
+            attestation_protocol: model.attestation_protocol.clone(),
         };
         let request = AttestationRequest {
             model_id: &model.id,
@@ -160,7 +174,7 @@ impl SecureProvider for PhalaProvider {
         let observed_key_fingerprint = key_fingerprint(&verified.model_public_key_hex)?;
         let wire: ProviderKeyLease = RelayClient::new(&self.config, &self.credential)
             .provider_e2ee_key(
-                &model.id,
+                model,
                 Some(&observed_key_fingerprint),
                 locally_verified_keyset,
                 &cancellation,
@@ -250,6 +264,9 @@ fn session_from_material(
 struct AttestationRelay {
     config: SecureClientConfig,
     credential: Arc<ApiCredential>,
+    e2ee_protocol: String,
+    e2ee_encryption_version: u16,
+    attestation_protocol: String,
 }
 
 #[async_trait]
@@ -260,7 +277,14 @@ impl RelayApi for AttestationRelay {
         nonce: &str,
     ) -> axiom_phala_core::Result<ProviderAttestationEvidence> {
         RelayClient::new(&self.config, &self.credential)
-            .provider_attestation_report(model_id, nonce, &CancellationToken::new())
+            .provider_attestation_report(
+                model_id,
+                nonce,
+                &self.e2ee_protocol,
+                self.e2ee_encryption_version,
+                &self.attestation_protocol,
+                &CancellationToken::new(),
+            )
             .await
             .map_err(|error| map_transport_to_core(&error))
     }

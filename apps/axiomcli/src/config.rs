@@ -42,7 +42,7 @@ impl From<PermissionProfileArg> for PermissionProfile {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 pub struct Config {
     pub model: String,
     pub base_url: String,
@@ -64,7 +64,6 @@ pub struct Config {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct McpServerConfig {
     pub name: String,
     pub command: String,
@@ -77,7 +76,7 @@ pub struct McpServerConfig {
 }
 
 #[derive(Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 struct ConfigLayer {
     model: Option<String>,
     base_url: Option<String>,
@@ -223,13 +222,16 @@ const fn profile_is_narrower_or_equal(
 impl Default for Config {
     fn default() -> Self {
         Self {
-            model: "glm-5-2".into(),
+            model: "deepseek-v4-flash".into(),
             base_url: "https://api.axiom.stream".into(),
             permission_profile: PermissionProfile::Confirm,
             searxng_url: "http://127.0.0.1:8888".into(),
             max_agent_steps: None,
-            max_context_bytes: 2 * 1024 * 1024,
-            max_context_tokens: 256 * 1024,
+            // Provider model metadata owns the normal context/compaction
+            // limit. These deliberately larger values are only local memory
+            // safety ceilings and may still be lowered by trusted config.
+            max_context_bytes: 16 * 1024 * 1024,
+            max_context_tokens: 4 * 1024 * 1024,
             max_tool_output_bytes: 128 * 1024,
             max_turn_secs: None,
             request_timeout_secs: 120,
@@ -515,8 +517,59 @@ fn read_layer(path: &std::path::Path) -> Result<ConfigLayer> {
         )));
     }
     let content = std::fs::read_to_string(path)?;
+    warn_about_unknown_config_fields(path, &content)?;
     toml::from_str(&content)
         .map_err(|error| AxiomError::Config(format!("{}: {error}", path.display())))
+}
+
+fn warn_about_unknown_config_fields(path: &Path, content: &str) -> Result<()> {
+    const TOP_LEVEL_FIELDS: &[&str] = &[
+        "model",
+        "base_url",
+        "permission_profile",
+        "searxng_url",
+        "max_agent_steps",
+        "max_context_bytes",
+        "max_context_tokens",
+        "max_tool_output_bytes",
+        "max_turn_secs",
+        "request_timeout_secs",
+        "animation",
+        "policy_rules",
+        "mcp_servers",
+    ];
+    const MCP_FIELDS: &[&str] = &["name", "command", "args", "read_only_tools"];
+
+    let document: toml::Value = toml::from_str(content)
+        .map_err(|error| AxiomError::Config(format!("{}: {error}", path.display())))?;
+    let Some(table) = document.as_table() else {
+        return Err(AxiomError::Config(format!(
+            "{}: configuration root must be a TOML table",
+            path.display()
+        )));
+    };
+    for field in table.keys() {
+        if !TOP_LEVEL_FIELDS.contains(&field.as_str()) {
+            tracing::warn!(path = %path.display(), field, "unknown config field was ignored");
+        }
+    }
+    if let Some(toml::Value::Array(servers)) = table.get("mcp_servers") {
+        for (index, server) in servers.iter().enumerate() {
+            if let Some(server) = server.as_table() {
+                for field in server.keys() {
+                    if !MCP_FIELDS.contains(&field.as_str()) {
+                        tracing::warn!(
+                            path = %path.display(),
+                            index,
+                            field,
+                            "unknown MCP config field was ignored"
+                        );
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -583,8 +636,10 @@ mod tests {
         )
         .expect("restored desktop config");
         std::fs::write(paths.shared_config_path(), "unknown_shared_field = true\n")
-            .expect("invalid shared config");
-        assert!(Config::load_for(FrontendKind::DesktopChat, &paths).is_err());
+            .expect("additive shared config");
+        let desktop = Config::load_for(FrontendKind::DesktopChat, &paths)
+            .expect("unknown additive keys do not block desktop");
+        assert_eq!(desktop.permission_profile, PermissionProfile::Web);
     }
 
     #[test]
@@ -643,6 +698,22 @@ mod tests {
         assert_eq!(config.model, "cherry");
         assert_eq!(config.permission_profile, PermissionProfile::Confirm);
         assert_eq!(config.searxng_url, "http://127.0.0.1:8888");
+    }
+
+    #[test]
+    fn additive_config_and_mcp_fields_are_ignored_without_losing_known_values() {
+        let root = tempfile::tempdir().expect("config root");
+        let path = root.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "model='cherry'\nfuture_ui_setting=true\n[[mcp_servers]]\nname='future'\ncommand='helper'\nfuture_transport='v2'\n",
+        )
+        .expect("config fixture");
+        let layer = read_layer(&path).expect("additive config");
+        let mut config = Config::default();
+        layer.apply_trusted(&mut config);
+        assert_eq!(config.model, "cherry");
+        assert_eq!(config.mcp_servers[0].name, "future");
     }
 
     #[test]

@@ -33,6 +33,8 @@ interface ChatComposerProps {
   selectedModelId: string;
   modelStatusLabel: string;
   onModelChange: (modelId: string) => void;
+  requiresSignIn?: boolean;
+  onSignIn?: () => void;
   reasoningEffort: ReasoningEffort;
   onReasoningEffortChange: (effort: ReasoningEffort) => void;
   security?: ClientSessionState["security"];
@@ -51,6 +53,8 @@ export function ChatComposer({
   selectedModelId,
   modelStatusLabel,
   onModelChange,
+  requiresSignIn = false,
+  onSignIn,
   reasoningEffort,
   onReasoningEffortChange,
   security,
@@ -62,7 +66,7 @@ export function ChatComposer({
   const selectedModel = models.find((model) => model.id === selectedModelId) ?? models[0];
   const supportedReasoningEfforts = selectedModel?.supportedReasoningEfforts ?? [];
   const showThinkingSelector = supportedReasoningEfforts.length > 0;
-  const canSend = Boolean(value.trim()) && Boolean(selectedModel) && !isStreaming;
+  const canSend = Boolean(value.trim()) && (Boolean(selectedModel) || requiresSignIn) && !isStreaming;
 
   useEffect(() => {
     const el = ref.current;
@@ -128,12 +132,18 @@ export function ChatComposer({
             <div className="relative shrink-0">
               <button
                 type="button"
-                disabled={models.length === 0}
-                onClick={() => setOpenMenu((open) => (open === "model" ? null : "model"))}
+                disabled={models.length === 0 && !requiresSignIn}
+                onClick={() => {
+                  if (requiresSignIn) {
+                    onSignIn?.();
+                    return;
+                  }
+                  setOpenMenu((open) => (open === "model" ? null : "model"));
+                }}
                 className="flex h-7 items-center gap-1.5 rounded-[7px] bg-[var(--wash-chip)] px-2.5 text-[12px] font-medium text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--wash-chip-hover)] hover:text-[var(--color-text-primary)] disabled:cursor-default disabled:hover:bg-[var(--wash-chip)] disabled:hover:text-[var(--color-text-secondary)]"
                 aria-haspopup="menu"
                 aria-expanded={openMenu === "model"}
-                title={models.length === 0 ? modelStatusLabel : "Select model"}
+                title={requiresSignIn ? "Sign in to choose a model" : models.length === 0 ? modelStatusLabel : "Select model"}
               >
                 {selectedModel ? (
                   <ModelBrandIcon model={selectedModel} className="h-3.5 w-3.5 shrink-0" />
@@ -230,7 +240,7 @@ export function ChatComposer({
                 onClick={submit}
                 disabled={!canSend}
                 className="flex h-[34px] w-[34px] items-center justify-center rounded-full bg-[var(--color-cherry)] text-on-accent shadow-[0_1px_3px_var(--shade-button)] transition-[background-color,transform] hover:bg-[var(--color-cherry-bright)] active:scale-[0.94] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-[var(--color-cherry)] disabled:active:scale-100"
-                aria-label="Send"
+                aria-label={requiresSignIn ? "Sign in to send" : "Send"}
               >
                 <ArrowUp size={15} strokeWidth={2.5} />
               </button>

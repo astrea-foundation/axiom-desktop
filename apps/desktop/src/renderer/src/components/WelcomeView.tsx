@@ -1,6 +1,7 @@
-import { Cpu, EyeOff, ShieldCheck } from "lucide-react";
+import { Cpu, EyeOff, LogIn, RefreshCw, ShieldAlert, ShieldCheck } from "lucide-react";
 import { AxiomMark } from "../brand/AxiomLogo";
 import { GreetingHeadline } from "../brand/GreetingHeadline";
+import type { AccountPresentation } from "../signInFlow";
 import type { ProviderModel, ReasoningEffort } from "../types";
 import { ChatComposer } from "./ChatComposer";
 
@@ -12,6 +13,9 @@ interface WelcomeViewProps {
   selectedModelId: string;
   modelStatusLabel: string;
   onModelChange: (modelId: string) => void;
+  account: AccountPresentation;
+  onSignIn: () => void;
+  onRefreshAccount: () => void;
   reasoningEffort: ReasoningEffort;
   onReasoningEffortChange: (effort: ReasoningEffort) => void;
 }
@@ -24,6 +28,9 @@ export function WelcomeView({
   selectedModelId,
   modelStatusLabel,
   onModelChange,
+  account,
+  onSignIn,
+  onRefreshAccount,
   reasoningEffort,
   onReasoningEffortChange,
 }: WelcomeViewProps) {
@@ -51,6 +58,32 @@ export function WelcomeView({
       <div className="relative z-10 flex w-full max-w-[760px] flex-col items-center animate-fade-in">
         <AxiomMark className="mb-7 h-10 w-auto" />
         <GreetingHeadline />
+        {account.kind !== "valid" && account.kind !== "starting" ? (
+          <div className="shadow-glass-card mb-3 flex w-full items-center gap-3 rounded-[14px] bg-[var(--surface-card)] px-4 py-3">
+            <div
+              className={[
+                "flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px]",
+                account.kind === "unavailable"
+                  ? "bg-[var(--color-warning-soft)] text-[var(--color-warning)]"
+                  : "bg-[var(--wash-chip)] text-[var(--color-text-secondary)]",
+              ].join(" ")}
+            >
+              {account.kind === "unavailable" ? <ShieldAlert size={17} /> : <LogIn size={17} />}
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="text-[13px] font-medium text-[var(--color-text-primary)]">{account.title}</div>
+              <div className="mt-0.5 truncate text-[11.5px] text-[var(--color-text-tertiary)]">{account.detail}</div>
+            </div>
+            <button
+              type="button"
+              onClick={account.kind === "unavailable" ? onRefreshAccount : onSignIn}
+              className="flex shrink-0 items-center gap-1.5 rounded-full bg-[var(--color-cherry)] px-3.5 py-1.5 text-[11.5px] font-medium text-on-accent shadow-[0_1px_3px_var(--shade-button)] transition-[background-color,transform] hover:bg-[var(--color-cherry-bright)] active:scale-[0.97]"
+            >
+              {account.kind === "unavailable" ? <RefreshCw size={12} /> : <LogIn size={12} />}
+              {account.kind === "unavailable" ? "Try again" : account.kind === "invalid" ? "Sign in again" : "Continue in browser"}
+            </button>
+          </div>
+        ) : null}
         <div className="w-full">
           <ChatComposer
             value={draft}
@@ -61,6 +94,8 @@ export function WelcomeView({
             selectedModelId={selectedModelId}
             modelStatusLabel={modelStatusLabel}
             onModelChange={onModelChange}
+            requiresSignIn={account.kind === "signed-out" || account.kind === "invalid"}
+            onSignIn={onSignIn}
             reasoningEffort={reasoningEffort}
             onReasoningEffortChange={onReasoningEffortChange}
           />
