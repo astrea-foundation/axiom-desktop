@@ -10,6 +10,7 @@
     "test": "pnpm --recursive test",
     "build:desktop": "pnpm --filter axiom-desktop build",
     "desktop:install": "pnpm --filter axiom-desktop install:desktop",
-    "desktop": "cargo build -p axiomcli && pnpm --filter axiom-desktop dev"
+    "desktop": "cargo build -p axiomcli && pnpm --filter axiom-desktop dev",
+    "desktop:staging": "cargo build -p axiomcli && pnpm --filter axiom-desktop dev:staging"
   }
 }

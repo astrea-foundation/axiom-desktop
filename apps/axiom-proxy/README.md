@@ -1,7 +1,10 @@
 # Axiom secure proxy
 
-`axiom-proxy` is the standalone loopback sidecar for the future desktop app.
-It exposes the initial OpenAI-compatible `/v1/models` and
+`axiom-proxy` is a standalone loopback integration for third-party
+OpenAI-compatible clients. Its server implementation is also a library hosted
+by `axiomcli desktop-proxy` for the Desktop Proxy screen. Desktop chat continues
+to use `axiomcli acp`. The proxy exposes the
+initial OpenAI-compatible `/v1/models` and
 `/v1/chat/completions` surface while using `axiom-secure-client` for local TEE
 verification and E2EE.
 
@@ -11,6 +14,16 @@ Required environment:
 AXIOM_API_KEY=...            upstream Axiom credential
 AXIOM_PROXY_TOKEN=...        separate random local-client credential (32+ bytes)
 ```
+
+These variables describe the standalone executable. Desktop's native host
+instead uses the signed-in account from the OS credential store, refreshes
+access tokens before requests, and rejects an account change. Electron starts
+it only after a user action, pins the expected account and service origin, and
+generates a new random local token for each start. Copy token writes that token
+directly to the clipboard; upstream credentials never reach the renderer.
+Sign-out, account/runtime changes, app shutdown, and supervisor stdin EOF stop
+the hosted proxy. Port changes take effect on Restart. UI usage and evidence
+come from bounded native metadata and apply only to the current run.
 
 Optional environment:
 
@@ -40,12 +53,14 @@ semantics but never executes or authorizes a tool.
 
 The local HTTP hop is plaintext by design and is protected by loopback binding,
 the independent bearer token, and the user's operating-system process boundary.
-The remote hop is never downgraded: every request performs fresh local provider
-attestation, establishes E2EE to the verified model key, and fails closed when
-evidence, TLS binding, encryption, stream ordering, or decryption is invalid.
+The remote hop is never downgraded: every request establishes provider E2EE
+using fresh secrets and a provider key accepted only from current, locally
+verified attestation evidence. Bounded verified public evidence may be reused
+only within its validity limits. Evidence, TLS binding, encryption, stream
+ordering, receipt, or decryption failure closes the request.
 
-The packaged Linux sidecar remains dormant until a supervisor starts it. A
-desktop supervisor should generate the local token, pass both secrets through
-the child environment, parse exactly one readiness JSON object from stdout,
-consume metadata-only JSON logs from stderr, and terminate the child when the
-proxy toggle or application shuts down.
+The packaged Linux proxy remains dormant until an OpenAI-compatible integration
+explicitly starts it. Its supervisor must generate the local token, pass both
+secrets through the child environment, parse exactly one readiness JSON object
+from stdout, consume metadata-only JSON logs from stderr, and terminate the
+process when the integration shuts down.

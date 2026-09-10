@@ -37,6 +37,8 @@ struct CatalogE2eeContract {
 
 #[derive(Clone, Deserialize, Serialize)]
 struct CatalogModel {
+    #[serde(default)]
+    relay_contract_version: u32,
     id: String,
     label: String,
     short_label: String,
@@ -55,6 +57,10 @@ struct CatalogModel {
     output_price_microusd_per_million_tokens: Option<u64>,
     #[serde(default)]
     supported_reasoning_efforts: Vec<String>,
+    #[serde(default)]
+    supported_thinking_modes: Vec<axiom_inference::ThinkingMode>,
+    #[serde(default)]
+    reasoning_replay: bool,
     #[serde(default)]
     e2ee_contracts: Vec<CatalogE2eeContract>,
 }
@@ -195,6 +201,11 @@ fn validate_models(
                 continue;
             }
         }
+        if item.relay_contract_version != 2 {
+            return Err(SecureClientError::capability(
+                "The backend does not support this client\'s inference contract. Update the backend before sending messages.",
+            ));
+        }
         if item.supported_reasoning_efforts.len() > MAX_REASONING_EFFORTS_PER_MODEL {
             tracing::warn!(model = %item.id, "model with excessive reasoning metadata was quarantined");
             continue;
@@ -241,6 +252,8 @@ fn validate_models(
             input_price_microusd_per_million_tokens: item.input_price_microusd_per_million_tokens,
             output_price_microusd_per_million_tokens: item.output_price_microusd_per_million_tokens,
             supported_reasoning_efforts,
+            supported_thinking_modes: item.supported_thinking_modes,
+            reasoning_replay: item.reasoning_replay,
             ..ModelInfo::default()
         };
         if let Err(error) = providers.validate_model(&mut model) {
@@ -419,6 +432,9 @@ mod tests {
 
     fn model(id: &str) -> CatalogModel {
         CatalogModel {
+            relay_contract_version: 2,
+            supported_thinking_modes: Vec::new(),
+            reasoning_replay: false,
             id: id.into(),
             label: "Model".into(),
             short_label: "Model".into(),
@@ -458,6 +474,10 @@ mod tests {
             )
             .is_err()
         );
+
+        let mut legacy = model("legacy");
+        legacy.relay_contract_version = 0;
+        assert!(validate_models(vec![wire(legacy)], &config, &providers).is_err());
 
         let mut invalid = model("invalid");
         invalid.e2ee_protocol = "near-v3".into();

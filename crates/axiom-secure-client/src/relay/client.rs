@@ -21,6 +21,65 @@ impl<'a> RelayClient<'a> {
         Self { config, credential }
     }
 
+    pub(crate) async fn accounting(
+        &self,
+        request_ids: &[String],
+        cancellation: &CancellationToken,
+    ) -> Result<Vec<axiom_inference::RequestUsage>> {
+        if request_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        if request_ids.len() > 100
+            || request_ids.iter().any(|id| {
+                id.len() != 32
+                    || !id
+                        .bytes()
+                        .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+            })
+        {
+            return Err(SecureClientError::configuration(
+                "invalid accounting lookup IDs",
+            ));
+        }
+        let endpoint = relay_endpoint(&self.config.relay_base_url, "/api/v1/usage/requests")?;
+        let client = pinned_client(
+            &endpoint,
+            &self.config.endpoint_policy,
+            std::time::Duration::from_secs(10),
+            false,
+        )
+        .await?;
+        let response = tokio::select! {
+            () = cancellation.cancelled() => return Err(SecureClientError::cancelled()),
+            response = client.post(endpoint).bearer_auth(self.credential.expose()).json(&serde_json::json!({"request_ids":request_ids})).send() =>
+                response.map_err(|_| SecureClientError::new(axiom_inference::ProviderFailureKind::Transient, "Accounting recovery is unavailable."))?,
+        };
+        if response.status() != StatusCode::OK {
+            return Err(self.error_for_response(response).await);
+        }
+        #[derive(Deserialize)]
+        struct Accounting {
+            requests: Vec<axiom_inference::RequestUsage>,
+        }
+        let bytes = bounded_body(response, 256 * 1024).await?;
+        let data: Accounting = serde_json::from_slice(&bytes)
+            .map_err(|_| SecureClientError::catalog("invalid accounting response"))?;
+        let mut seen = std::collections::HashSet::new();
+        if data.requests.len() > request_ids.len()
+            || data.requests.iter().any(|record| {
+                !request_ids.contains(&record.request_id)
+                    || !record.validate_counters()
+                    || record.response_verified
+                    || !seen.insert(&record.request_id)
+            })
+        {
+            return Err(SecureClientError::catalog(
+                "invalid accounting response identity",
+            ));
+        }
+        Ok(data.requests)
+    }
+
     pub(crate) async fn complete(
         &self,
         request: &RelayChatRequest,
@@ -29,7 +88,15 @@ impl<'a> RelayClient<'a> {
         let response = self.send(request, cancellation).await?;
         let body = tokio::select! {
             () = cancellation.cancelled() => return Err(SecureClientError::cancelled()),
-            body = bounded_body(response, self.config.limits.relay_response_bytes) => body?,
+            body = bounded_body(response, self.config.limits.relay_response_bytes) => body.map_err(|error| {
+                if error.safe_detail() == "remote response exceeds the configured limit" {
+                    SecureClientError::with_code(axiom_inference::ProviderFailureKind::InvalidResponse,
+                        crate::SecureErrorCode::ResponseTooLarge, "Response exceeded the allowed size.", false)
+                } else {
+                    SecureClientError::with_code(axiom_inference::ProviderFailureKind::Transient,
+                        crate::SecureErrorCode::ProviderDisconnected, "The provider connection was interrupted.", true)
+                }
+            })?,
         };
         serde_json::from_slice(&body).map_err(|_| {
             SecureClientError::new(
@@ -163,6 +230,13 @@ impl<'a> RelayClient<'a> {
                 ))?,
         };
         if response.status() != StatusCode::OK {
+            // Static route and status only: never log the credential, query,
+            // evidence body, or any request/response ciphertext.
+            tracing::warn!(
+                path,
+                status = response.status().as_u16(),
+                "Axiom evidence endpoint rejected request"
+            );
             return Err(self.error_for_response(response).await);
         }
         bounded_body(response, body_limit).await
@@ -183,12 +257,17 @@ impl<'a> RelayClient<'a> {
         let client = pinned_client(
             &endpoint,
             &self.config.endpoint_policy,
-            self.config.request_timeout,
+            if request.stream {
+                None
+            } else {
+                Some(std::time::Duration::from_secs(360))
+            },
             false,
         )
         .await?;
         let body = request.serialize_bounded(self.config.limits.serialized_relay_request_bytes)?;
         let response = tokio::select! {
+            () = tokio::time::sleep(std::time::Duration::from_secs(300)) => return Err(SecureClientError::with_code(axiom_inference::ProviderFailureKind::Transient, crate::SecureErrorCode::StreamTimeout, "Timed out starting the encrypted request.", true)),
             () = cancellation.cancelled() => return Err(SecureClientError::cancelled()),
             response = client
                 .post(endpoint)
@@ -206,6 +285,11 @@ impl<'a> RelayClient<'a> {
                 ))?,
         };
         if response.status() != StatusCode::OK {
+            tracing::warn!(
+                path = "/api/v1/relay/chat/completions",
+                status = response.status().as_u16(),
+                "Axiom encrypted relay rejected request"
+            );
             return Err(self.error_for_response(response).await);
         }
         Ok(response)
@@ -218,6 +302,34 @@ impl<'a> RelayClient<'a> {
             .unwrap_or_default();
         error_for_status_body(status, &body)
     }
+}
+
+pub(crate) fn stream_failure(code: Option<&str>) -> SecureClientError {
+    use crate::SecureErrorCode;
+    let (code, detail) = match code {
+        Some("response_too_large") => (
+            SecureErrorCode::ResponseTooLarge,
+            "The model response exceeded the response size budget.",
+        ),
+        Some("provider_timeout") => (
+            SecureErrorCode::StreamTimeout,
+            "The provider stopped responding. Please retry.",
+        ),
+        Some("provider_disconnected") => (
+            SecureErrorCode::ProviderDisconnected,
+            "The provider connection was interrupted.",
+        ),
+        _ => (
+            SecureErrorCode::Transient,
+            "The provider could not finish this response. Please retry.",
+        ),
+    };
+    SecureClientError::with_code(
+        axiom_inference::ProviderFailureKind::Transient,
+        code,
+        detail,
+        true,
+    )
 }
 
 fn error_for_status_body(status: StatusCode, body: &[u8]) -> SecureClientError {

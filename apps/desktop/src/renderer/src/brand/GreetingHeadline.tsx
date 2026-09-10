@@ -1,4 +1,3 @@
-import { animate, stagger } from "animejs";
 import { useEffect, useRef, useState } from "react";
 
 const GREETINGS = [
@@ -16,55 +15,44 @@ function pickGreeting(): string {
 
 export function GreetingHeadline() {
   const ref = useRef<HTMLHeadingElement>(null);
-  const didAnimate = useRef(false);
   const [line] = useState(pickGreeting);
   const words = line.split(" ");
 
   useEffect(() => {
-    if (didAnimate.current) return;
-    didAnimate.current = true;
-
     const el = ref.current;
     if (!el) return;
-    const wordEls = el.querySelectorAll<HTMLElement>("[data-word]");
-    if (!wordEls.length) return;
-
-    const prefersReduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
-    if (prefersReduced) {
-      wordEls.forEach((w) => {
-        w.style.opacity = "1";
-        w.style.transform = "none";
-        w.style.filter = "none";
+    let cancelled = false;
+    // Rise only after PP Cirka is ready, so the unmask never plays in a fallback
+    // face. fonts.load() forces the face to start loading; ready alone can
+    // resolve before a lazily-triggered face finishes.
+    void Promise.all([document.fonts.load('400 1em "PP Cirka"'), document.fonts.ready])
+      .catch(() => undefined)
+      .then(() => {
+        // Double rAF: the first frame paints the masked state, the second rises.
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            if (!cancelled) el.classList.add("unmask-in");
+          });
+        });
       });
-      return;
-    }
-
-    animate(wordEls, {
-      opacity: [0, 1],
-      translateY: [18, 0],
-      filter: ["blur(7px)", "blur(0px)"],
-      duration: 900,
-      delay: stagger(75, { start: 90 }),
-      ease: "outExpo",
-    });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   return (
     <h1
       ref={ref}
-      className="mb-8 text-center text-[32px] leading-tight tracking-tight text-[var(--color-text-primary)] sm:text-[40px] md:text-[44px]"
+      className="mb-9 text-center text-[42px] font-normal leading-[0.98] tracking-[-0.045em] text-[var(--color-text-primary)] sm:text-[50px] md:text-[56px]"
+      style={{ fontFamily: "var(--font-display)" }}
       aria-label={line}
     >
       {words.map((word, i) => (
-        <span
-          key={i}
-          data-word
-          aria-hidden="true"
-          className="inline-block opacity-0"
-          style={{ willChange: "transform, opacity, filter" }}
-        >
-          {word}
-          {i < words.length - 1 ? "\u00a0" : ""}
+        <span key={i} className="unmask unmask-word align-bottom" aria-hidden="true">
+          <span className="unmask-inner" style={{ "--ld": `${0.08 + i * 0.07}s` } as React.CSSProperties}>
+            {word}
+            {i < words.length - 1 ? "\u00a0" : ""}
+          </span>
         </span>
       ))}
     </h1>

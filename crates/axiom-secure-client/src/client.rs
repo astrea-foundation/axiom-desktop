@@ -65,6 +65,16 @@ impl SecureClient {
         })
     }
 
+    pub async fn request_accounting(
+        &self,
+        ids: &[String],
+        cancellation: CancellationToken,
+    ) -> Result<Vec<axiom_inference::RequestUsage>> {
+        crate::relay::client::RelayClient::new(&self.config, &self.credential)
+            .accounting(ids, &cancellation)
+            .await
+    }
+
     pub async fn models(&self, cancellation: CancellationToken) -> Result<Vec<ModelInfo>> {
         let result = catalog::fetch_models(
             &self.config,

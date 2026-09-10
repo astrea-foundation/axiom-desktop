@@ -25,6 +25,96 @@ export interface SidecarProcessOptions {
   args?: string[];
   cwd?: string;
   env?: NodeJS.ProcessEnv;
+  unsetEnv?: readonly string[];
+  /** Inherit only these parent variables. Omit for the legacy inherit-all behavior. */
+  inheritEnv?: readonly string[];
+}
+
+/**
+ * Variables the native Desktop sidecar may inherit from Electron. This is an
+ * allowlist, so provider keys, database URLs, wallet secrets, API keys, and
+ * unrelated application credentials never enter AxiomCLI or its tool
+ * descendants. The retained values are limited to process execution,
+ * platform data directories, locale, system-browser launch, TLS roots, and
+ * Linux Secret Service access.
+ */
+export const DESKTOP_SIDECAR_INHERITED_ENV = [
+  "PATH",
+  "PATHEXT",
+  "SYSTEMROOT",
+  "WINDIR",
+  "COMSPEC",
+  "HOME",
+  "USER",
+  "LOGNAME",
+  "USERNAME",
+  "USERDOMAIN",
+  "USERPROFILE",
+  "HOMEDRIVE",
+  "HOMEPATH",
+  "APPDATA",
+  "LOCALAPPDATA",
+  "PROGRAMDATA",
+  "TMPDIR",
+  "TMP",
+  "TEMP",
+  "XDG_CONFIG_HOME",
+  "XDG_DATA_HOME",
+  "XDG_CACHE_HOME",
+  "XDG_STATE_HOME",
+  "XDG_RUNTIME_DIR",
+  "DBUS_SESSION_BUS_ADDRESS",
+  "GNOME_KEYRING_CONTROL",
+  "DISPLAY",
+  "WAYLAND_DISPLAY",
+  "XAUTHORITY",
+  "LANG",
+  "LANGUAGE",
+  "LC_ALL",
+  "LC_CTYPE",
+  "TZ",
+  "SHELL",
+  "TERM",
+  "COLORTERM",
+  "SSL_CERT_FILE",
+  "SSL_CERT_DIR",
+] as const;
+
+function deleteCaseInsensitive(environment: NodeJS.ProcessEnv, name: string): void {
+  const normalized = name.toLocaleLowerCase("en-US");
+  for (const existing of Object.keys(environment)) {
+    if (existing.toLocaleLowerCase("en-US") === normalized) delete environment[existing];
+  }
+}
+
+function setCaseInsensitive(
+  environment: NodeJS.ProcessEnv,
+  name: string,
+  value: string | undefined,
+): void {
+  deleteCaseInsensitive(environment, name);
+  if (value !== undefined) environment[name] = value;
+}
+
+export function createChildEnvironment(
+  parent: NodeJS.ProcessEnv,
+  overrides: NodeJS.ProcessEnv = {},
+  unset: readonly string[] = [],
+  inherit: readonly string[] | undefined = undefined,
+): NodeJS.ProcessEnv {
+  const environment: NodeJS.ProcessEnv = {};
+  const inheritedNames = inherit
+    ? new Set(inherit.map((name) => name.toLocaleLowerCase("en-US")))
+    : null;
+  for (const [name, value] of Object.entries(parent)) {
+    if (inheritedNames && !inheritedNames.has(name.toLocaleLowerCase("en-US"))) continue;
+    setCaseInsensitive(environment, name, value);
+  }
+  for (const [name, value] of Object.entries(overrides)) {
+    setCaseInsensitive(environment, name, value);
+  }
+  for (const name of unset) deleteCaseInsensitive(environment, name);
+  return environment;
 }
 
 export class AcpProcess extends EventEmitter {
@@ -48,7 +138,12 @@ export class AcpProcess extends EventEmitter {
     });
     this.child = spawn(options.command, options.args ?? ["acp"], {
       cwd: options.cwd,
-      env: { ...process.env, ...options.env },
+      env: createChildEnvironment(
+        process.env,
+        options.env,
+        options.unsetEnv,
+        options.inheritEnv,
+      ),
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
       shell: false,

@@ -55,6 +55,7 @@ function messageFor(item: ClientTimelineItem, status = item.status): Message {
       content: "",
       reasoningContent: item.text,
       terminalVerified: item.terminalVerified === true,
+      finishReason: item.finishReason,
     };
   }
   return {
@@ -63,6 +64,7 @@ function messageFor(item: ClientTimelineItem, status = item.status): Message {
     status: messageStatus(status, item.kind === "user" ? "complete" : "streaming"),
     content: item.text,
     terminalVerified: item.terminalVerified === true,
+    finishReason: item.finishReason,
   };
 }
 
@@ -77,6 +79,7 @@ function combinedAssistantMessage(
     content: assistant.text,
     reasoningContent: reasoning.text,
     terminalVerified: assistant.terminalVerified === true,
+    finishReason: assistant.finishReason,
   };
 }
 
@@ -90,13 +93,44 @@ function emptyTerminalAssistant(item: ClientTimelineItem): boolean {
     && !["pending", "in_progress", "streaming"].includes(item.status ?? "");
 }
 
+function routineProviderNotice(item: ClientTimelineItem): boolean {
+  // Standard ACP presents connection notices as thought chunks. They are
+  // operational status, not model reasoning. Failed connections remain visible.
+  if (item.kind === "reasoning" && /^provider:\d+$/.test(item.id)) {
+    return item.text.startsWith("[provider] ");
+  }
+  if (item.kind !== "activity" || !item.raw || typeof item.raw !== "object") return false;
+  const raw = item.raw as Record<string, unknown>;
+  if (raw.kind !== "notice" || !raw.metadata || typeof raw.metadata !== "object") return false;
+  const code = (raw.metadata as Record<string, unknown>).code;
+  // Keep these records in durable history; the composer owns their UI.
+  return code === "provider_status" || code === "security_status";
+}
+
+export function hasActiveResponse(rows: TimelinePresentationRow[]): boolean {
+  // A trailing notice or tool row must not create another pending bubble.
+  // Stop at the latest user message so an older turn cannot suppress it.
+  for (let index = rows.length - 1; index >= 0; index -= 1) {
+    const row = rows[index];
+    if (row?.kind === "tool" && ["pending", "in_progress"].includes(row.item.tool?.status ?? "")) return true;
+    if (row?.kind !== "message") continue;
+    if (row.message.role === "user") return false;
+    if (row.message.continues) continue;
+    if (row.message.status === "pending" || row.message.status === "streaming") return true;
+  }
+  return false;
+}
+
 /**
  * Convert protocol timeline records to visual rows without inventing a
  * second transcript. Durable storage creates its assistant placeholder before
  * the optional reasoning item, while live ACP commonly delivers reasoning
  * first, so both adjacent orders are normalized by stable turn identity.
  */
-export function presentTimeline(timeline: ClientTimelineItem[]): TimelinePresentationRow[] {
+export function presentTimeline(items: ClientTimelineItem[]): TimelinePresentationRow[] {
+  // Filter before grouping so invisible status records cannot split a model's
+  // reasoning and assistant output into two separate generation indicators.
+  const timeline = items.filter((item) => !routineProviderNotice(item));
   const rows: TimelinePresentationRow[] = [];
   for (let index = 0; index < timeline.length; index += 1) {
     const item = timeline[index];
@@ -142,5 +176,22 @@ export function presentTimeline(timeline: ClientTimelineItem[]): TimelinePresent
       rows.push({ kind: "activity", key: item.id, item });
     }
   }
-  return rows;
+  // Intermediate segments keep their real verification/status; only their
+  // presentation changes (no duplicate action bar or stale Generating row).
+  const byId = new Map(timeline.map((item) => [item.id, item]));
+  const followingTurns = new Set<string>();
+  for (let index = rows.length - 1; index >= 0; index -= 1) {
+    const row = rows[index];
+    if (!row) continue;
+    const turnId = byId.get(row.key)?.turnId;
+    if (!turnId) continue;
+    if (row.kind === "message" && row.message.role === "assistant") {
+      row.message.continues = followingTurns.has(turnId);
+      followingTurns.add(turnId);
+    } else if (row.kind === "tool") {
+      followingTurns.add(turnId);
+    }
+  }
+  return rows.filter((row) => row.kind !== "message" || !row.message.continues
+    || row.message.content || row.message.reasoningContent);
 }

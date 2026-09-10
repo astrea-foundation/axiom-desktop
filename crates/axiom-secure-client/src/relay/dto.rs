@@ -2,7 +2,8 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::{Result, SecureClientError};
 
-pub(crate) const MAX_CIPHERTEXT_HEX_CHARS: usize = 524_288;
+pub(crate) const MAX_CIPHERTEXT_HEX_CHARS: usize =
+    2 * axiom_inference::MAX_MESSAGE_TEXT_BYTES + 1024;
 // NEAR envelopes are currently at least 144 characters; Phala ACI v2
 // envelopes have a 120-character minimum. Provider implementations perform
 // their exact protocol validation after this transport-level bound.
@@ -119,6 +120,10 @@ pub(crate) struct EncryptedMessage {
 
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct RelayChatRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_request_id: Option<String>,
+    pub provider_id: String,
+    pub inference_encryption: &'static str,
     pub model_id: String,
     pub encryption_version: u16,
     pub e2ee_protocol: String,
@@ -141,6 +146,8 @@ pub(crate) struct RelayChatRequest {
     pub response_format: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking_mode: Option<axiom_inference::ThinkingMode>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider_e2ee_context: Option<serde_json::Value>,
     pub attestation_generation: u64,
@@ -310,7 +317,9 @@ pub(crate) struct CancelledPayload {
 #[derive(Debug, Deserialize)]
 pub(crate) struct FailedPayload {
     pub run_id: String,
-    pub error: String,
+    // Preserve wire validation but never reflect untrusted remote error text.
+    #[serde(rename = "error")]
+    pub _error: String,
     #[serde(default)]
     pub code: Option<String>,
 }

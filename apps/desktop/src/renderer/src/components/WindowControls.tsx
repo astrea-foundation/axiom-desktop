@@ -1,33 +1,32 @@
 import { Minus, Square, X } from "lucide-react";
 import { useEffect, useState } from "react";
+import { hasNativeWindowControls } from "../lib/window-chrome";
+
+const CONTROL_CLASS =
+  "no-drag pointer-events-auto flex h-7 w-7 items-center justify-center rounded-full text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--wash-hover-strong)] hover:text-[var(--color-text-primary)]";
 
 export function WindowControls() {
   const [maximized, setMaximized] = useState(false);
 
   useEffect(() => {
     const desktop = window.axiomDesktop;
-    if (!desktop) return;
+    if (hasNativeWindowControls || !desktop) return;
     void desktop.isMaximized().then(setMaximized);
     return desktop.onMaximizedChange(setMaximized);
   }, []);
 
+  if (hasNativeWindowControls) return null;
   const desktop = window.axiomDesktop;
 
   return (
-    <div className="no-drag relative z-40 flex h-11 shrink-0 items-center">
-      <button
-        type="button"
-        onClick={() => desktop?.minimize()}
-        className="flex h-11 w-11 items-center justify-center text-[var(--color-text-secondary)] transition-colors hover:bg-black/35 hover:text-[var(--color-text-primary)]"
-        aria-label="Minimize"
-        title="Minimize"
-      >
+    <div className="window-controls no-drag pointer-events-auto fixed right-3 top-2 z-50 flex items-center gap-0.5">
+      <button type="button" onClick={() => desktop?.minimize()} className={CONTROL_CLASS} aria-label="Minimize" title="Minimize">
         <Minus size={14} />
       </button>
       <button
         type="button"
         onClick={() => desktop?.maximize()}
-        className="flex h-11 w-11 items-center justify-center text-[var(--color-text-secondary)] transition-colors hover:bg-black/35 hover:text-[var(--color-text-primary)]"
+        className={CONTROL_CLASS}
         aria-label={maximized ? "Restore" : "Maximize"}
         title={maximized ? "Restore" : "Maximize"}
       >
@@ -36,7 +35,7 @@ export function WindowControls() {
       <button
         type="button"
         onClick={() => desktop?.close()}
-        className="flex h-11 w-11 items-center justify-center text-[var(--color-text-secondary)] transition-colors hover:bg-[#3d1118]/80 hover:text-[var(--color-cherry-bright)]"
+        className={`${CONTROL_CLASS} hover:text-[var(--color-danger)]`}
         aria-label="Close"
         title="Close"
       >

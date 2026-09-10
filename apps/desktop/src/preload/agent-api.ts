@@ -1,21 +1,30 @@
 import { ipcRenderer } from "electron";
 import type {
   AccountStatusResponse,
-  BrowserLoginStartResponse,
+  BillingInvoiceResponse,
+  BillingStatusResponse,
+  UsageSummaryResponse,
   ClientState,
   CollectionStateResponse,
   CompactResponse,
   DeleteConfirmResponse,
   DeletePreviewResponse,
   DesktopBootstrapResponse,
+  ConfigureDesktopAgentRequest,
+  ConfigureDesktopAgentResponse,
   ElicitationOutcome,
   ListModelsResponse,
   ListThreadsRequest,
   ListThreadsResponse,
+  LoginMethod,
+  NativeLoginStartResponse,
   PendingInteraction,
   PermissionOutcome,
   PromptResult,
+  RenameThreadResponse,
   SessionStartResult,
+  SteerTurnRequest,
+  SteerTurnResponse,
   ThreadSettingsRequest,
   ThreadSettingsResult,
   VerifySecurityResponse,
@@ -25,18 +34,29 @@ export interface AgentApi {
   getState: () => Promise<ClientState>;
   desktopBootstrap: () => Promise<DesktopBootstrapResponse>;
   newChat: () => Promise<SessionStartResult>;
+  configureDesktopAgent: (request: ConfigureDesktopAgentRequest) => Promise<ConfigureDesktopAgentResponse>;
+  chooseWorkingDirectory: (current?: string) => Promise<string | null>;
   loadChat: (sessionId: string) => Promise<SessionStartResult>;
-  prompt: (sessionId: string, text: string, clientItemId: string) => Promise<PromptResult>;
+  // Deliberately distinct from the legacy prompt API: a hot-reloaded renderer
+  // must never send through a preload/main process that ignores Web consent.
+  promptWithWebConsent: (sessionId: string, text: string, clientItemId: string, webEnabled: boolean, agentRevision?: number) => Promise<PromptResult>;
+  steer: (request: SteerTurnRequest) => Promise<SteerTurnResponse>;
   cancel: (sessionId: string) => Promise<void>;
   setConfig: (sessionId: string, configId: string, value: string) => Promise<void>;
   listThreads: (request?: ListThreadsRequest) => Promise<ListThreadsResponse>;
+  renameThread: (threadId: string, title: string) => Promise<RenameThreadResponse>;
   listModels: () => Promise<ListModelsResponse>;
   setSettings: (settings: ThreadSettingsRequest) => Promise<ThreadSettingsResult>;
   accountStatus: () => Promise<AccountStatusResponse>;
-  browserLoginStart: () => Promise<BrowserLoginStartResponse>;
-  browserLoginComplete: (loginId: string) => Promise<AccountStatusResponse>;
-  browserLoginCancel: (loginId: string) => Promise<void>;
-  useApiKey: (apiKey: string) => Promise<AccountStatusResponse>;
+  billingStatus: () => Promise<BillingStatusResponse>;
+  usageSummary: (accountId: string) => Promise<UsageSummaryResponse>;
+  createBillingInvoice: (amountUsdCents: number, clientRequestId: string, accountId: string) => Promise<BillingInvoiceResponse>;
+  billingInvoiceStatus: (invoiceId: string) => Promise<BillingInvoiceResponse>;
+  openBillingPayment: (paymentUrl: string, accountId: string) => Promise<void>;
+  nativeLoginStart: (methodHint?: LoginMethod) => Promise<NativeLoginStartResponse>;
+  nativeLoginComplete: (loginId: string) => Promise<AccountStatusResponse>;
+  nativeLoginCancel: (loginId: string) => Promise<AccountStatusResponse>;
+  openAccountPortal: () => Promise<void>;
   logout: () => Promise<AccountStatusResponse>;
   verifySecurity: (sessionId: string) => Promise<VerifySecurityResponse>;
   compact: (sessionId: string, focus?: string) => Promise<CompactResponse>;
@@ -63,18 +83,28 @@ export const agentApi: AgentApi = {
   getState: () => invoke("state"),
   desktopBootstrap: () => invoke("desktop-bootstrap"),
   newChat: () => invoke("chat-new"),
+  configureDesktopAgent: (request) => invoke("desktop-agent-configure", request),
+  chooseWorkingDirectory: (current) => invoke("working-directory-choose", current),
   loadChat: (sessionId) => invoke("chat-load", sessionId),
-  prompt: (sessionId, text, clientItemId) => invoke("prompt", sessionId, text, clientItemId),
+  promptWithWebConsent: (sessionId, text, clientItemId, webEnabled, agentRevision = 0) => invoke("prompt-with-agent-context", sessionId, text, clientItemId, webEnabled, agentRevision),
+  steer: (request) => invoke("steer", request),
   cancel: (sessionId) => invoke("cancel", sessionId),
   setConfig: (sessionId, configId, value) => invoke("set-config", sessionId, configId, value),
   listThreads: (request) => invoke("threads-list", request),
+  renameThread: (threadId, title) => invoke("thread-rename", threadId, title),
   listModels: () => invoke("models-list"),
   setSettings: (settings) => invoke("set-settings", settings),
   accountStatus: () => invoke("account-status"),
-  browserLoginStart: () => invoke("browser-login-start"),
-  browserLoginComplete: (loginId) => invoke("browser-login-complete", loginId),
-  browserLoginCancel: (loginId) => invoke("browser-login-cancel", loginId),
-  useApiKey: (apiKey) => invoke("use-api-key", apiKey),
+  billingStatus: () => invoke("billing-status"),
+  usageSummary: (accountId) => invoke("usage-summary", accountId),
+  createBillingInvoice: (amountUsdCents, clientRequestId, accountId) =>
+    invoke("billing-invoice-create", amountUsdCents, clientRequestId, accountId),
+  billingInvoiceStatus: (invoiceId) => invoke("billing-invoice-status", invoiceId),
+  openBillingPayment: (paymentUrl, accountId) => invoke("billing-open-payment", paymentUrl, accountId),
+  nativeLoginStart: (methodHint) => invoke("native-login-start", methodHint),
+  nativeLoginComplete: (loginId) => invoke("native-login-complete", loginId),
+  nativeLoginCancel: (loginId) => invoke("native-login-cancel", loginId),
+  openAccountPortal: () => invoke("account-open"),
   logout: () => invoke("logout"),
   verifySecurity: (sessionId) => invoke("security-verify", sessionId),
   compact: (sessionId, focus) => invoke("compact", sessionId, focus),

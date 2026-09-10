@@ -2,9 +2,7 @@ import { copyFile, mkdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-
-const APP_ID = "stream.axiom.desktop";
-const DESKTOP_FILE = `${APP_ID}.desktop`;
+import { APP_ID, APP_NAME, LINUX_DESKTOP_FILE } from "./desktop-identity.mjs";
 
 if (process.platform !== "linux") {
   console.log("Axiom desktop metadata is only needed on Linux.");
@@ -25,20 +23,21 @@ const workspaceRoot = resolve(desktopRoot, "../..");
 const dataHome = process.env.XDG_DATA_HOME || join(homedir(), ".local", "share");
 const applicationsDir = join(dataHome, "applications");
 const iconsDir = join(dataHome, "icons", "hicolor", "512x512", "apps");
-const desktopPath = join(applicationsDir, DESKTOP_FILE);
+const staging = process.argv.includes("--staging");
+const desktopPath = join(applicationsDir, staging ? `${APP_ID}.staging.desktop` : LINUX_DESKTOP_FILE);
 const iconPath = join(iconsDir, `${APP_ID}.png`);
 
 const desktopEntry = `[Desktop Entry]
 Type=Application
-Name=Axiom
-Comment=Secure AI coding desktop
-Exec=pnpm --dir ${execArgument(workspaceRoot)} desktop
+Name=${staging ? `${APP_NAME} Staging` : APP_NAME}
+Comment=Private AI chat sealed on your machine
+Exec=pnpm --dir ${execArgument(workspaceRoot)} ${staging ? "desktop:staging" : "desktop"}
 Path=${desktopString(workspaceRoot)}
 Icon=${APP_ID}
 Terminal=false
-Categories=Development;
+Categories=Utility;
 StartupNotify=true
-StartupWMClass=Axiom
+StartupWMClass=${APP_NAME}
 `;
 
 await Promise.all([

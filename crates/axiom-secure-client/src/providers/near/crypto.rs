@@ -18,7 +18,7 @@ const NONCE_BYTES: usize = 24;
 const TAG_BYTES: usize = 16;
 const WIRE_PREFIX_BYTES: usize = EPHEMERAL_PUBLIC_BYTES + NONCE_BYTES;
 const MINIMUM_WIRE_BYTES: usize = WIRE_PREFIX_BYTES + TAG_BYTES;
-const MAXIMUM_WIRE_BYTES: usize = 262_000 + MINIMUM_WIRE_BYTES;
+const MAXIMUM_WIRE_BYTES: usize = axiom_inference::MAX_MESSAGE_TEXT_BYTES + MINIMUM_WIRE_BYTES;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Ed25519PublicKey([u8; 32]);
@@ -98,7 +98,7 @@ impl std::fmt::Debug for ClientIdentity {
 }
 
 pub(crate) fn encrypt_hex(recipient: Ed25519PublicKey, plaintext: &[u8]) -> Result<String> {
-    if plaintext.len() > 262_000 {
+    if plaintext.len() > axiom_inference::MAX_MESSAGE_TEXT_BYTES {
         return Err(crypto_error("plaintext exceeds the protocol limit"));
     }
     let recipient_x25519 = X25519PublicKey::from(ed25519_public_to_x25519(&recipient.0)?);
@@ -370,14 +370,24 @@ mod tests {
         assert!(recipient.decrypt_hex(&hex::encode(tampered)).is_err());
         assert!(recipient.decrypt_hex("00").is_err());
         assert!(recipient.decrypt_hex("not-hex").is_err());
-        assert!(encrypt_hex(public, &vec![0; 262_001]).is_err());
+        assert!(
+            encrypt_hex(
+                public,
+                &vec![0; axiom_inference::MAX_MESSAGE_TEXT_BYTES + 1]
+            )
+            .is_err()
+        );
     }
 
     #[test]
     fn boundary_sized_plaintext_round_trips() {
         let recipient = ClientIdentity::generate();
         let public = Ed25519PublicKey::from_hex(&recipient.public_key_hex()).unwrap();
-        for plaintext in [Vec::new(), vec![b'x'; 4_096], vec![b'y'; 262_000]] {
+        for plaintext in [
+            Vec::new(),
+            vec![b'x'; 4_096],
+            vec![b'y'; axiom_inference::MAX_MESSAGE_TEXT_BYTES],
+        ] {
             let wire = encrypt_hex(public, &plaintext).unwrap();
             assert_eq!(recipient.decrypt_hex(&wire).unwrap(), plaintext);
         }

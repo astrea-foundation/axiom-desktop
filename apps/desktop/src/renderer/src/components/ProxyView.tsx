@@ -1,309 +1,141 @@
-import { ArrowLeft, Check, ChevronDown, Copy, Power, RotateCcw, ShieldCheck } from "lucide-react";
-import { useEffect, useState, type ReactNode } from "react";
+import { ArrowLeft, Check, Copy, Power, RotateCcw, ShieldCheck } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { initialProxyState, type ProxyState } from "../../../shared/proxy";
 
-const LOCAL_TOKEN = "axiom-local";
-const DEFAULT_PORT = 8484;
+const well = "shadow-glass-card relative rounded-2xl bg-[var(--surface-card)]";
+const failureLabels: Record<string, string> = {
+  Transient: "Connection interrupted", Authentication: "Sign-in required", LocalAuthentication: "Sign-in required",
+  InsufficientCredit: "Insufficient credit", RateLimited: "Rate limit reached", ModelUnavailable: "Model unavailable",
+  AttestationUnavailable: "Attestation unavailable", AttestationRejected: "Attestation rejected",
+  SessionEstablishment: "Encrypted connection failed", Encryption: "Request encryption failed",
+  Decryption: "Response verification failed", InvalidResponse: "Invalid provider response",
+  Cancelled: "Request cancelled", InvalidRequest: "Unsupported request", CapabilityMismatch: "Unsupported request",
+  Configuration: "Proxy configuration error",
+};
 
-const ERRORS = [
-  { id: "1", at: "12s", model: "deepseek-v4-flash", detail: "timeout" },
-  { id: "2", at: "8m", model: "kimi-k2.5", detail: "401" },
-];
-
-const well =
-  "relative rounded-[26px] border border-white/[0.05] bg-[var(--color-bg-input)]/70";
-
-type Copied = "url" | "token" | null;
-
-export function ProxyView({
-  onInspecting,
-}: {
+export function ProxyView({ accountId, runtimeId, onInspecting }: {
+  accountId: string | null;
+  runtimeId: string | null;
   onInspecting?: (inspecting: boolean) => void;
 }) {
-  const [running, setRunning] = useState(true);
-  const [appliedPort, setAppliedPort] = useState(DEFAULT_PORT);
-  const [portDraft, setPortDraft] = useState(String(DEFAULT_PORT));
-  const [copied, setCopied] = useState<Copied>(null);
-  const [errorsOpen, setErrorsOpen] = useState(false);
+  const [snapshot, setSnapshot] = useState<ProxyState>(initialProxyState);
+  const [portDraft, setPortDraft] = useState("8484");
+  const [copied, setCopied] = useState<"url" | "token" | null>(null);
   const [inspecting, setInspecting] = useState(false);
-  const [restarting, setRestarting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [pending, setPending] = useState(false);
+  const operation = useRef(0);
+  const api = window.axiomDesktop?.proxy;
+  const state = snapshot.accountId === accountId ? snapshot : initialProxyState();
+  const running = state.status === "running";
+  const starting = state.status === "starting";
+  const stopping = state.status === "stopping";
+  const port = Number(portDraft);
+  const portValid = /^\d+$/.test(portDraft) && Number.isInteger(port) && port >= 1 && port <= 65535;
+  const dirty = port !== state.port;
+  const available = !!api && !!accountId && !!runtimeId;
+  const acceptState = (next: ProxyState) => setSnapshot((current) => next.revision >= current.revision ? next : current);
 
-  const port = Number.parseInt(portDraft, 10);
-  const portValid = Number.isInteger(port) && port >= 1 && port <= 65535;
-  const dirty = portValid && port !== appliedPort;
-  const liveUrl = `http://127.0.0.1:${appliedPort}/v1`;
-
+  useEffect(() => {
+    if (!api) return;
+    let disposed = false;
+    const accept = (next: ProxyState) => { if (!disposed) acceptState(next); };
+    const unsubscribe = api.onState(accept);
+    void api.getState().then(accept).catch(() => { if (!disposed) setError("Could not read the proxy status. Restart Axiom and try again."); });
+    return () => { disposed = true; unsubscribe(); };
+  }, [api]);
+  useEffect(() => { setPortDraft(String(state.port)); }, [state.port]);
+  useEffect(() => {
+    operation.current++;
+    setPending(false); setError(null); setCopied(null);
+  }, [accountId, runtimeId]);
+  useEffect(() => () => { operation.current++; }, []);
   useEffect(() => {
     onInspecting?.(inspecting);
     return () => onInspecting?.(false);
   }, [inspecting, onInspecting]);
+  useEffect(() => {
+    if (!copied) return;
+    const timer = setTimeout(() => setCopied(null), 1_200);
+    return () => clearTimeout(timer);
+  }, [copied]);
 
-  const copy = async (which: Exclude<Copied, null>, value: string) => {
-    await navigator.clipboard.writeText(value);
-    setCopied(which);
-    window.setTimeout(() => setCopied(null), 1200);
+  const run = async (action: () => Promise<unknown>) => {
+    const id = ++operation.current;
+    setPending(true); setError(null);
+    try { await action(); }
+    catch (failure) {
+      if (id === operation.current) setError(failure instanceof Error ? failure.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, "") : "The proxy action failed. Try again.");
+    } finally { if (id === operation.current) setPending(false); }
+  };
+  const start = () => {
+    if (!api || !accountId || !runtimeId || !portValid) return;
+    void run(async () => { acceptState(await api.start(port, accountId, runtimeId)); });
+  };
+  const stop = () => { if (api) void run(async () => { acceptState(await api.stop()); }); };
+  const copy = (which: "url" | "token") => {
+    if (!api || !running || !accountId || !runtimeId) return;
+    void run(async () => {
+      if (which === "token") await api.copyToken(accountId, runtimeId);
+      else if (state.baseUrl) await navigator.clipboard.writeText(state.baseUrl);
+      setCopied(which);
+    });
   };
 
-  const restart = () => {
-    if (!portValid) return;
-    setAppliedPort(port);
-    if (!running && !dirty) return;
-    setRestarting(true);
-    setRunning(false);
-    window.setTimeout(() => {
-      setRunning(true);
-      setRestarting(false);
-    }, 280);
-  };
-
-  if (inspecting) {
-    return (
-      <div className="relative flex h-full min-h-0 flex-col">
-        <div className="mx-auto flex w-full max-w-[760px] flex-1 flex-col px-6 pb-8 pt-20">
-          <button
-            type="button"
-            onClick={() => setInspecting(false)}
-            className="mb-8 flex items-center gap-2 self-start text-[13px] text-[var(--color-text-tertiary)] transition-colors hover:text-[var(--color-text-primary)]"
-          >
-            <ArrowLeft size={14} />
-            Back
-          </button>
-          <div className={`${well} px-5 py-8`}>
-            <div className="flex h-12 w-12 items-center justify-center rounded-full border border-[var(--color-border-accent)] bg-[var(--color-cherry-glow)] text-[var(--color-cherry)]">
-              <ShieldCheck size={22} />
-            </div>
-            <h1 className="mt-4 text-[22px] font-medium tracking-tight">Attestation</h1>
-            <p className="mt-2 text-[13.5px] text-[var(--color-text-tertiary)]">
-              Evidence will land here.
-            </p>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
   return (
-    <div className="relative flex h-full min-h-0 flex-col overflow-y-auto">
-      <div className="mx-auto flex w-full max-w-[760px] flex-1 flex-col gap-3 px-6 pb-8 pt-20">
-        <div className={`${well} overflow-hidden px-5 pb-5 pt-5`}>
-          <div className="pointer-events-none absolute -right-16 -top-24 h-64 w-64 rounded-full cherry-glow" />
-          <div className="relative flex items-start justify-between gap-3">
-            <div className="flex min-w-0 items-center gap-3">
-              <div className="relative flex h-11 w-11 shrink-0 items-center justify-center">
-                {running ? (
-                  <div className="animate-pulse-glow absolute inset-0 rounded-full bg-[var(--color-cherry)] opacity-40 blur-xl" />
-                ) : null}
-                <div
-                  className={[
-                    "relative flex h-11 w-11 items-center justify-center rounded-full border",
-                    running
-                      ? "border-[var(--color-border-accent)] bg-[var(--color-cherry-glow)] text-[var(--color-cherry)]"
-                      : "border-[var(--color-border)] bg-[var(--color-bg-surface)] text-[var(--color-text-tertiary)]",
-                  ].join(" ")}
-                >
-                  <ShieldCheck size={20} />
-                </div>
+    <div className="title-fade relative flex h-full min-h-0 flex-col overflow-y-auto">
+      <div className="mx-auto flex w-full max-w-[760px] flex-1 flex-col gap-3 px-6 pb-8 pt-[88px]">
+        {!api ? <p role="status">Restart Axiom to enable the proxy controls.</p> : !available ? <p role="status">Sign in and connect to start the local proxy.</p> : null}
+        {error || state.error ? <p role="alert" className="text-[13px] text-[var(--color-danger)]">{error ?? state.error}</p> : null}
+        {inspecting ? <>
+          <button type="button" onClick={() => setInspecting(false)} className="mb-4 flex items-center gap-2 self-start text-[13px]"><ArrowLeft size={14} />Back</button>
+          <div className={`${well} space-y-3 px-5 py-6`}>
+            <h1 className="flex items-center gap-2 text-[22px]"><ShieldCheck size={22} />Attestation</h1>
+            {state.evidence ? <>
+              <p className="text-[13px] text-[var(--color-text-tertiary)]">Latest locally verified attestation, checked before sending encrypted model traffic.</p>
+              <dl className="grid grid-cols-[auto_1fr] gap-x-5 gap-y-3 break-all text-[13px]">
+                <dt>Model</dt><dd>{state.evidence.modelId}</dd>
+                <dt>Provider</dt><dd>{state.evidence.providerId}</dd>
+                <dt>Protocol</dt><dd>{state.evidence.protocol}</dd>
+                <dt>Verified</dt><dd>{new Date(state.evidence.verifiedAt * 1000).toLocaleString()}</dd>
+                <dt>Key fingerprint</dt><dd className="font-mono text-[12px]">{state.evidence.fingerprint}</dd>
+                <dt>Response receipt</dt><dd>{state.evidence.responseVerified ? "Verified" : "No verified completion recorded for this request"}</dd>
+              </dl>
+            </> : <p className="text-[13px] text-[var(--color-text-tertiary)]">No attestation recorded in this proxy run. Evidence appears after a local client makes a model request.</p>}
+          </div>
+        </> : <>
+          <div className={`${well} px-5 py-5`}>
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div role="status" className="flex items-center gap-2 text-[16px] font-medium"><span className={`h-1.5 w-1.5 rounded-full ${running ? "bg-[var(--color-success)]" : "bg-[var(--color-text-muted)]"}`} />{starting ? "Starting…" : stopping ? "Stopping…" : running ? "Running" : state.status === "failed" ? "Failed" : "Stopped"}</div>
+                <p className="mt-1 text-[12.5px] text-[var(--color-text-tertiary)]">OpenAI-compatible endpoint for local clients</p>
               </div>
-              <div className="min-w-0">
-                <div className="flex items-center gap-2">
-                  <span
-                    className={[
-                      "h-1.5 w-1.5 rounded-full",
-                      running ? "bg-[var(--color-cherry)]" : "bg-[var(--color-text-muted)]",
-                    ].join(" ")}
-                  />
-                  <span className="text-[16px] font-medium tracking-tight">
-                    {restarting ? "Restarting" : running ? "Running" : "Stopped"}
-                  </span>
-                </div>
-                <p className="mt-0.5 text-[12.5px] text-[var(--color-text-tertiary)]">
-                  OpenAI loopback for local clients
-                </p>
+              <div className="flex gap-1">
+                <button type="button" aria-label={running || starting ? "Stop proxy" : "Start proxy"} title={running || starting ? "Stop proxy" : "Start proxy"}
+                  disabled={stopping || (!running && !starting && (!available || !portValid || pending))}
+                  onClick={running || starting ? stop : start} className="rounded-full p-3 hover:bg-[var(--wash-row)] disabled:opacity-35"><Power size={16} /></button>
+                <button type="button" aria-label="Restart proxy" title={dirty ? "Restart to apply port" : "Restart proxy"} disabled={!running || !portValid || pending || !available}
+                  onClick={start} className="rounded-full p-3 hover:bg-[var(--wash-row)] disabled:opacity-35"><RotateCcw size={16} /></button>
               </div>
             </div>
-            <div className="flex shrink-0 items-center gap-1">
-              <IconButton
-                title={running ? "Stop" : "Start"}
-                onClick={() => setRunning((value) => !value)}
-                accent={!running}
-              >
-                <Power size={15} />
-              </IconButton>
-              <IconButton
-                title={dirty ? "Restart to apply" : "Restart"}
-                onClick={restart}
-                disabled={!dirty && !running}
-                accent={dirty}
-              >
-                <RotateCcw size={15} className={restarting ? "animate-spin" : undefined} />
-              </IconButton>
-            </div>
+            <button type="button" title="Copy URL" disabled={!running || pending} onClick={() => copy("url")} className="mt-5 flex w-full items-center gap-2 rounded-lg border border-[var(--color-border)] px-3.5 py-2.5 text-left disabled:opacity-50">
+              <span className="min-w-0 flex-1 truncate font-mono text-[13px]">{state.baseUrl ?? "Start the proxy to get its local URL"}</span>{copied === "url" ? <Check size={14} /> : <Copy size={14} />}
+            </button>
           </div>
-
-          <button
-            type="button"
-            onClick={() => void copy("url", liveUrl)}
-            className="relative mt-5 flex w-full items-center gap-2 rounded-2xl border border-white/[0.05] bg-[var(--color-bg-base)]/50 px-3.5 py-2.5 text-left transition-colors hover:border-[var(--color-border-accent)]"
-            title="Copy URL"
-          >
-            <span className="min-w-0 flex-1 truncate font-mono text-[13px] text-[var(--color-text-secondary)]">
-              {liveUrl}
-            </span>
-            {copied === "url" ? (
-              <Check size={14} className="shrink-0 text-[var(--color-cherry)]" />
-            ) : (
-              <Copy size={14} className="shrink-0 text-[var(--color-text-tertiary)]" />
-            )}
-          </button>
-        </div>
-
-        <div className={`${well} px-5 py-1.5`}>
-          <Field label="Port">
-            <input
-              type="text"
-              inputMode="numeric"
-              value={portDraft}
-              onChange={(event) =>
-                setPortDraft(event.target.value.replace(/[^\d]/g, "").slice(0, 5))
-              }
-              className="w-full bg-transparent font-mono text-[13px] text-[var(--color-text-primary)] outline-none"
-              aria-label="Port"
-            />
-          </Field>
-          <Field
-            label="Token"
-            action={
-              <IconButton
-                title={copied === "token" ? "Copied" : "Copy token"}
-                onClick={() => void copy("token", LOCAL_TOKEN)}
-              >
-                {copied === "token" ? (
-                  <Check size={14} className="text-[var(--color-cherry)]" />
-                ) : (
-                  <Copy size={14} />
-                )}
-              </IconButton>
-            }
-          >
-            <span className="font-mono text-[13px] text-[var(--color-text-secondary)]">••••••••</span>
-          </Field>
-          {dirty ? (
-            <p className="px-0.5 pb-2.5 text-[12px] text-[var(--color-cherry)]">Restart to apply</p>
-          ) : null}
-        </div>
-
-        <div className="grid grid-cols-2 gap-3">
-          <div className={`${well} px-4 py-3.5`}>
-            <div className="text-[11px] uppercase tracking-[0.08em] text-[var(--color-text-tertiary)]">
-              Tokens
-            </div>
-            <div className="mt-1 font-mono text-[18px] tracking-tight text-[var(--color-text-primary)]">
-              12.4k
-            </div>
+          <div className={`${well} px-5 py-3 text-[13px]`}>
+            <label className="flex items-center gap-4">Port<input aria-label="Port" inputMode="numeric" value={portDraft} disabled={starting || stopping} onChange={(event) => setPortDraft(event.target.value.replace(/[^\d]/g, "").slice(0, 5))} className="min-w-0 flex-1 bg-transparent p-2 font-mono outline-none" /></label>
+            {!portValid ? <p className="text-[12px] text-[var(--color-danger)]">Enter a port between 1 and 65535.</p> : dirty && running ? <p className="text-[12px] text-[var(--color-text-tertiary)]">Restart to apply the new port.</p> : null}
+            <div className="mt-2 flex items-center justify-between"><span>Local token</span><button type="button" disabled={!running || pending} onClick={() => copy("token")} className="flex items-center gap-2 rounded-md p-2 hover:bg-[var(--wash-row)] disabled:opacity-35">{copied === "token" ? <Check size={14} /> : <Copy size={14} />}{copied === "token" ? "Copied" : "Copy token"}</button></div>
+            <p className="mt-2 text-[12px] leading-5 text-[var(--color-text-tertiary)]">Use the URL and token in your local client. Each start creates a new token. Local HTTP traffic is plaintext on this machine; remote model traffic uses locally verified TEE attestation and E2EE. Signing out stops the proxy.</p>
           </div>
-          <button
-            type="button"
-            onClick={() => setErrorsOpen((open) => !open)}
-            className={`${well} px-4 py-3.5 text-left transition-colors hover:border-white/[0.08]`}
-          >
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-[11px] uppercase tracking-[0.08em] text-[var(--color-text-tertiary)]">
-                Errors
-              </span>
-              <ChevronDown
-                size={14}
-                className={[
-                  "text-[var(--color-text-tertiary)] transition-transform",
-                  errorsOpen ? "rotate-180" : "",
-                ].join(" ")}
-              />
-            </div>
-            <div className="mt-1 font-mono text-[18px] tracking-tight text-[var(--color-text-primary)]">
-              {ERRORS.length}
-            </div>
-          </button>
-        </div>
-
-        {errorsOpen ? (
-          <div className={`${well} px-4 py-2`}>
-            {ERRORS.map((entry) => (
-              <div
-                key={entry.id}
-                className="flex items-baseline gap-3 border-b border-white/[0.04] py-2.5 last:border-b-0 font-mono text-[12.5px]"
-              >
-                <span className="w-8 shrink-0 text-[var(--color-text-muted)]">{entry.at}</span>
-                <span className="min-w-0 flex-1 truncate text-[var(--color-text-secondary)]">
-                  {entry.model}
-                </span>
-                <span className="text-[var(--color-cherry-bright)]">{entry.detail}</span>
-              </div>
-            ))}
+          <div className="grid grid-cols-2 gap-3">
+            <div className={`${well} px-4 py-3.5`}><div className="text-[11px] uppercase text-[var(--color-text-tertiary)]">Verified requests</div><div className="mt-1 font-mono text-[18px]">{state.completedRequests.toLocaleString()}</div></div>
+            <div className={`${well} px-4 py-3.5`}><div className="text-[11px] uppercase text-[var(--color-text-tertiary)]">Tokens · completed requests</div><div className="mt-1 font-mono text-[18px]">{state.totalTokens.toLocaleString()}</div></div>
           </div>
-        ) : null}
-
-        <button
-          type="button"
-          onClick={() => setInspecting(true)}
-          className={`${well} flex items-center gap-3 px-4 py-3.5 text-left transition-colors hover:border-white/[0.08]`}
-        >
-          <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[var(--color-cherry-glow)] text-[var(--color-cherry)]">
-            <ShieldCheck size={15} />
-          </span>
-          <span className="min-w-0 flex-1">
-            <span className="block text-[13.5px] text-[var(--color-text-primary)]">Attestation</span>
-            <span className="block text-[12px] text-[var(--color-text-tertiary)]">Inspect TEE evidence</span>
-          </span>
-        </button>
+          {state.errors.length ? <div className={`${well} px-4 py-3`}><h2 className="mb-2 text-[13px]">Recent errors</h2>{state.errors.map((entry, i) => <p key={`${entry.at}:${i}`} className="flex justify-between gap-3 py-1 text-[12px]"><span>{failureLabels[entry.kind] ?? "Request failed"}</span><time>{new Date(entry.at).toLocaleTimeString()}</time></p>)}</div> : null}
+          <button type="button" onClick={() => setInspecting(true)} className={`${well} flex items-center gap-3 px-4 py-3.5 text-left hover:bg-[var(--surface-card-hover)]`}><ShieldCheck size={20} /><span><span className="block text-[13.5px]">Attestation</span><span className="block text-[12px] text-[var(--color-text-tertiary)]">Inspect evidence from this proxy run</span></span></button>
+        </>}
       </div>
     </div>
-  );
-}
-
-function Field({
-  label,
-  children,
-  action,
-}: {
-  label: string;
-  children: ReactNode;
-  action?: ReactNode;
-}) {
-  return (
-    <div className="flex min-h-11 items-center gap-4 border-b border-white/[0.04] last:border-b-0">
-      <span className="w-12 shrink-0 text-[12.5px] text-[var(--color-text-tertiary)]">{label}</span>
-      <div className="min-w-0 flex-1">{children}</div>
-      {action ? <div className="shrink-0">{action}</div> : null}
-    </div>
-  );
-}
-
-function IconButton({
-  title,
-  onClick,
-  disabled,
-  accent,
-  children,
-}: {
-  title: string;
-  onClick: () => void;
-  disabled?: boolean;
-  accent?: boolean;
-  children: ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      title={title}
-      aria-label={title}
-      onClick={onClick}
-      disabled={disabled}
-      className={[
-        "flex h-9 w-9 items-center justify-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-35",
-        accent
-          ? "bg-[var(--color-cherry)] text-[#140709] hover:bg-[var(--color-cherry-bright)]"
-          : "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-surface-hover)] hover:text-[var(--color-text-primary)]",
-      ].join(" ")}
-    >
-      {children}
-    </button>
   );
 }

@@ -20,6 +20,24 @@ if [[ $host != "x86_64-unknown-linux-gnu" ]]; then
   exit 1
 fi
 
+if [[ ! -f $workspace_root/.cargo-deny-version ]]; then
+  echo "pinned cargo-deny version file is missing" >&2
+  exit 1
+fi
+IFS= read -r required_cargo_deny_version < "$workspace_root/.cargo-deny-version"
+if [[ ! $required_cargo_deny_version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "pinned cargo-deny version is invalid" >&2
+  exit 1
+fi
+if ! cargo_deny_report=$(cargo deny --version 2>/dev/null); then
+  echo "cargo-deny $required_cargo_deny_version is required to build a release" >&2
+  exit 1
+fi
+if [[ $cargo_deny_report != "cargo-deny $required_cargo_deny_version" ]]; then
+  echo "cargo-deny $required_cargo_deny_version is required; found $cargo_deny_report" >&2
+  exit 1
+fi
+
 if [[ -n ${AXIOMCLI_PACKAGE_BINARY:-} ]]; then
   cli_binary=$AXIOMCLI_PACKAGE_BINARY
 else
@@ -115,8 +133,8 @@ install -m 0644 "$workspace_root/docs/configuration.md" "$package_root/share/doc
 install -m 0644 "$workspace_root/docs/privacy.md" "$package_root/share/doc/axiomcli/privacy.md"
 install -m 0644 "$workspace_root/docs/troubleshooting.md" "$package_root/share/doc/axiomcli/troubleshooting.md"
 install -m 0644 "$workspace_root/docs/versioning.md" "$package_root/share/doc/axiomcli/versioning.md"
-printf 'name=axiomai\nversion=%s\ntarget=%s\nsource_date_epoch=%s\ncomponents=axiomcli,axiom-proxy\n' \
-  "$version" "$host" "$source_date_epoch" \
+printf 'name=axiomai\nversion=%s\ntarget=%s\nsource_date_epoch=%s\ncargo_deny_version=%s\ncomponents=axiomcli,axiom-proxy\n' \
+  "$version" "$host" "$source_date_epoch" "$required_cargo_deny_version" \
   > "$package_root/share/doc/axiomcli/BUILD-METADATA"
 
 artifact="$dist_dir/$package_name.tar.gz"

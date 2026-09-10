@@ -1,32 +1,30 @@
 import { access, stat } from "node:fs/promises";
 import { constants } from "node:fs";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { app, BrowserWindow, shell } from "electron";
 import {
-  AcpError,
   AxiomAcpClient,
+  DESKTOP_SIDECAR_INHERITED_ENV,
   type ClientState,
   type DesktopBootstrapResponse,
+  type ConfigureDesktopAgentRequest,
   type ElicitationOutcome,
   type ListThreadsRequest,
+  type LoginMethod,
   type PendingInteraction,
   type PermissionOutcome,
   type ThreadSettingsRequest,
+  type SteerTurnRequest,
 } from "@axiom/axiom-acp-client";
 import { RestartPolicy } from "./restart-policy";
+import { actionableAcpError } from "./agent-errors";
+import { resolveServiceOrigins, trustedNativeAuthorizationUrl } from "./service-origins";
 
 export const AGENT_STATE_CHANNEL = "agent:state-changed";
 export const AGENT_INTERACTION_CHANNEL = "agent:interaction";
 
 function broadcast(channel: string, value: unknown): void {
   for (const window of BrowserWindow.getAllWindows()) window.webContents.send(channel, value);
-}
-
-function actionableAcpError(error: unknown): Error {
-  if (error instanceof AcpError && typeof error.data === "string" && error.data.trim()) {
-    return new Error(error.data.trim());
-  }
-  return error instanceof Error ? error : new Error(String(error));
 }
 
 async function executable(path: string): Promise<boolean> {
@@ -41,7 +39,7 @@ async function executable(path: string): Promise<boolean> {
   }
 }
 
-async function resolveSidecar(): Promise<string> {
+export async function resolveSidecar(): Promise<string> {
   const packaged = resolve(process.resourcesPath, "bin", process.platform === "win32" ? "axiomcli.exe" : "axiomcli");
   if (app.isPackaged) {
     if (!(await executable(packaged))) throw new Error(`Packaged AxiomCLI sidecar is missing: ${packaged}`);
@@ -58,6 +56,7 @@ async function resolveSidecar(): Promise<string> {
 }
 
 export class AgentSidecar {
+  constructor(private readonly stateChanged: (state: ClientState) => void = () => {}) {}
   private client: AxiomAcpClient | null = null;
   private initializingClient: AxiomAcpClient | null = null;
   private lastState: ClientState = {
@@ -69,6 +68,8 @@ export class AgentSidecar {
     collections: { revision: 0, collections: [] },
     preferences: null,
     account: null,
+    billing: null,
+    invoice: null,
     diagnostic: "",
     error: null,
   };
@@ -77,6 +78,11 @@ export class AgentSidecar {
   private bootstrap: DesktopBootstrapResponse | null = null;
   private readonly restartPolicy = new RestartPolicy();
   private readonly loginControllers = new Map<string, AbortController>();
+  private readonly origins = resolveServiceOrigins({
+    packaged: app.isPackaged,
+    authUrl: process.env.AXIOM_AUTH_URL,
+    apiUrl: process.env.AXIOM_BASE_URL,
+  });
 
   start(): Promise<void> {
     if (this.shuttingDown) return Promise.reject(new Error("Axiom Desktop sidecar is shutting down"));
@@ -99,6 +105,19 @@ export class AgentSidecar {
         command,
         args: ["acp", "--frontend", "desktop-chat"],
         cwd: app.getPath("home"),
+        env: {
+          AXIOM_AUTH_URL: this.origins.auth,
+          AXIOM_BASE_URL: this.origins.api,
+          // Scope only native account storage, not Electron's OS browser lookup.
+          ...(!app.isPackaged && process.env.AXIOM_DESKTOP_STAGING_PROFILE === "1" ? {
+            XDG_CONFIG_HOME: join(app.getPath("home"), ".axiom-staging", "config"),
+            XDG_DATA_HOME: join(app.getPath("home"), ".axiom-staging", "data"),
+          } : {}),
+        },
+        inheritEnv: DESKTOP_SIDECAR_INHERITED_ENV,
+        // API-key automation belongs to the standalone CLI, never the
+        // sandboxed Desktop account surface.
+        unsetEnv: ["AXIOM_API_KEY"],
       });
       this.initializingClient = client;
       client.on("state", (state: ClientState) => {
@@ -106,6 +125,7 @@ export class AgentSidecar {
           ? state
           : { ...state, connected: false };
         this.lastState = visibleState;
+        this.stateChanged(visibleState);
         broadcast(AGENT_STATE_CHANNEL, visibleState);
       });
       client.on("interaction", (interaction: PendingInteraction) => {
@@ -131,6 +151,7 @@ export class AgentSidecar {
       this.bootstrap = bootstrap;
       const readyState = client.getState();
       this.lastState = readyState;
+      this.stateChanged(readyState);
       broadcast(AGENT_STATE_CHANNEL, readyState);
       this.restartPolicy.markReady(() => !this.shuttingDown && this.client === client);
       this.refreshAccountInBackground(client);
@@ -145,6 +166,7 @@ export class AgentSidecar {
         connected: false,
         error: error instanceof Error ? error.message : String(error),
       };
+      this.stateChanged(this.lastState);
       broadcast(AGENT_STATE_CHANNEL, this.lastState);
       this.scheduleRestart();
       throw error;
@@ -207,9 +229,13 @@ export class AgentSidecar {
     return this.requireClient().loadChat(sessionId);
   }
 
-  prompt(sessionId: string, text: string, clientItemId: string) {
-    return this.requireClient().prompt(sessionId, text, clientItemId);
+  configureDesktopAgent(request: ConfigureDesktopAgentRequest) { return this.requireClient().configureDesktopAgent(request); }
+
+  prompt(sessionId: string, text: string, clientItemId: string, webEnabled = false, agentRevision = 0) {
+    return this.requireClient().prompt(sessionId, text, clientItemId, webEnabled, agentRevision);
   }
+
+  steer(request: SteerTurnRequest) { return this.requireClient().steer(request); }
 
   cancel(sessionId: string) {
     return this.requireClient().cancel(sessionId);
@@ -221,6 +247,14 @@ export class AgentSidecar {
 
   listThreads(request: ListThreadsRequest = {}) {
     return this.requireClient().listThreads(request);
+  }
+
+  async renameThread(threadId: string, title: string) {
+    try {
+      return await this.requireClient().renameThread(threadId, title);
+    } catch (error) {
+      throw actionableAcpError(error);
+    }
   }
 
   async listModels() {
@@ -239,28 +273,59 @@ export class AgentSidecar {
     return this.requireClient().accountStatus();
   }
 
-  async browserLoginStart() {
-    const result = await this.requireClient().browserLoginStart();
-    if (!result.login.browserOpened) await shell.openExternal(result.login.authorizationUrl);
-    return result;
+  billingStatus() {
+    return this.requireClient().billingStatus().catch((error: unknown) => {
+      throw actionableAcpError(error);
+    });
   }
 
-  async browserLoginComplete(loginId: string) {
+  usageSummary() {
+    return this.requireClient().usageSummary().catch((error: unknown) => {
+      throw actionableAcpError(error);
+    });
+  }
+
+  createBillingInvoice(amountUsdCents: number, clientRequestId: string) {
+    return this.requireClient().createBillingInvoice(amountUsdCents, clientRequestId).catch((error: unknown) => {
+      throw actionableAcpError(error);
+    });
+  }
+
+  billingInvoiceStatus(invoiceId: string) {
+    return this.requireClient().billingInvoiceStatus(invoiceId).catch((error: unknown) => {
+      throw actionableAcpError(error);
+    });
+  }
+
+  async nativeLoginStart(methodHint?: LoginMethod) {
+    const result = await this.requireClient().nativeLoginStart(methodHint);
+    const authorizationUrl = trustedNativeAuthorizationUrl(
+      result.login.authorizationUrl,
+      this.origins.auth,
+    );
+    if (!result.login.browserOpened) await shell.openExternal(authorizationUrl);
+    return { ...result, login: { ...result.login, browserOpened: true } };
+  }
+
+  async nativeLoginComplete(loginId: string) {
     const controller = new AbortController();
     this.loginControllers.set(loginId, controller);
     try {
-      return await this.requireClient().browserLoginComplete(loginId, controller.signal);
+      return await this.requireClient().nativeLoginComplete(loginId, controller.signal);
+    } catch (error) {
+      throw actionableAcpError(error);
     } finally {
       this.loginControllers.delete(loginId);
     }
   }
 
-  browserLoginCancel(loginId: string): void {
+  nativeLoginCancel(loginId: string) {
     this.loginControllers.get(loginId)?.abort();
+    return this.requireClient().nativeLoginCancel(loginId);
   }
 
-  useApiKey(apiKey: string) {
-    return this.requireClient().useApiKey(apiKey);
+  async openAccountPortal(): Promise<void> {
+    await shell.openExternal(`${this.origins.auth}/account`);
   }
 
   logout() {
@@ -275,12 +340,20 @@ export class AgentSidecar {
     return this.requireClient().compact(sessionId, focus);
   }
 
-  deletePreview(sessionIds: string[]) {
-    return this.requireClient().deletePreview(sessionIds);
+  async deletePreview(sessionIds: string[]) {
+    try {
+      return await this.requireClient().deletePreview(sessionIds, { cancelActiveWork: true });
+    } catch (error) {
+      throw actionableAcpError(error);
+    }
   }
 
-  deleteConfirm(confirmationToken: string, sessionIds: string[]) {
-    return this.requireClient().deleteConfirm(confirmationToken, sessionIds);
+  async deleteConfirm(confirmationToken: string, sessionIds: string[]) {
+    try {
+      return await this.requireClient().deleteConfirm(confirmationToken, sessionIds);
+    } catch (error) {
+      throw actionableAcpError(error);
+    }
   }
 
   listCollections() {
@@ -291,8 +364,12 @@ export class AgentSidecar {
     return this.requireClient().createCollection(name);
   }
 
-  renameCollection(collectionId: string, name: string) {
-    return this.requireClient().renameCollection(collectionId, name);
+  async renameCollection(collectionId: string, name: string) {
+    try {
+      return await this.requireClient().renameCollection(collectionId, name);
+    } catch (error) {
+      throw actionableAcpError(error);
+    }
   }
 
   setCollectionCollapsed(collectionId: string, collapsed: boolean) {

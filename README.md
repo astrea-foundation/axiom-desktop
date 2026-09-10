@@ -1,8 +1,13 @@
 # AxiomAI
 
-This repository is the AxiomAI product monorepo. Rust applications live under
+This repository owns Axiom's native clients and installer builds. Rust applications live under
 `apps/`, reusable Rust contracts and infrastructure live under `crates/`, and
 the ACP client packages live under `packages/`.
+
+The marketing website, downloads and update API, hosted account app, and all
+web deployment tooling live exclusively in the companion
+[axiom backend repository](https://github.com/astrea-foundation/axiom).
+This checkout builds and tests independently of those websites.
 
 The implemented applications today are AxiomCLI—an early Rust coding agent with
 a terminal interface and Agent Client Protocol (ACP) control mode—and
@@ -24,14 +29,19 @@ crates/
   axiom-secure-client/  Provider-modular attestation and E2EE
 packages/
   axiom-acp-client/ Typed Node/Electron-main ACP client and state reducer
+  brand/           Native artwork, fonts, and compiled loopback callback page
+  desktop-releases/ Public release-contract validation for updates and packaging
   sidecar-protocol/ Reserved for generated/shared desktop control types
 ```
 
 The proxy and AxiomCLI share the secure Axiom client; the TUI performs secure
 inference directly rather than routing through localhost. See
 [`docs/adr/0009-monorepo-and-secure-client-boundaries.md`](docs/adr/0009-monorepo-and-secure-client-boundaries.md).
-The first supported storage, ACP, and secure-inference design is defined in the
-[`clean-slate v1 plan`](docs/v1-clean-slate-refactor-plan.md).
+The current account, local-storage, native-auth, and invoice design is defined
+in the
+[`account/auth/billing clean-slate plan`](docs/account-auth-billing-clean-slate-plan.md).
+The older [`v1 plan`](docs/v1-clean-slate-refactor-plan.md) is retained as design
+history rather than the current account contract.
 
 ## Development status
 
@@ -131,17 +141,31 @@ automatically when provider-reported active usage reaches 85% of the selected
 model's live context window. Automatic and explicit compaction use the same
 durable successor-summary path.
 
-Active task cards use a small cherry-blossom animation and a moving accent rail.
-Its weighted cycle rests, blooms, holds, and quickly wilts instead of advancing
-at a mechanically uniform speed. The composer status row uses a static dot whose
-color reflects active, waiting, successful, cancelled, or failed state.
-`AXIOMCLI_REDUCED_MOTION=1` disables task animation; `AXIOMCLI_ASCII=1` uses an
-equivalent `. * o O` sequence.
+The terminal shares the desktop's eagle-and-globe mark, neutral surfaces, and
+orange activity indicators. Model, reasoning, agent permissions, and Web status
+sit beneath the composer. Use `/model`, `/thinking`, and `/permissions` to change
+the corresponding controls; Tab enters the transcript, Enter expands task
+details, and `v` opens the full view.
+
+`/theme dark`, `/theme light`, and `/theme terminal` change appearance for the
+current session. `AXIOMCLI_THEME=dark|light|terminal` sets the startup appearance
+(default: dark). Terminal mode inherits the terminal's foreground/background.
+Color depth remains independent (`AXIOMCLI_COLOR` / `NO_COLOR`).
+
+Web starts off in each terminal session. `/web on` opts into external search and
+URL fetching for subsequent turns; `/web off` disables both. Search queries and
+fetched URLs are shared with external services and are not end-to-end encrypted.
+Model traffic continues to use locally verified provider E2EE.
+
+Active tasks use a small orange pulse and a traveling signal on the task rail.
+Waiting is static; completion settles directly into a check. The composer status
+dot keeps its explicit outcome color. `AXIOMCLI_REDUCED_MOTION=1` disables motion;
+`AXIOMCLI_ASCII=1` uses ASCII indicators and a compact welcome wordmark.
 
 ## Installation
 
 Development installs can use `cargo install --locked --path apps/axiomcli`. The
-supported release artifact is currently Linux x86-64 GNU:
+AxiomCLI coding-agent release artifact is Linux x86-64 GNU:
 
 ```text
 scripts/verify-release dist/axiomai-VERSION-x86_64-unknown-linux-gnu.tar.gz \
@@ -149,6 +173,12 @@ scripts/verify-release dist/axiomai-VERSION-x86_64-unknown-linux-gnu.tar.gz \
 scripts/install-release dist/axiomai-VERSION-x86_64-unknown-linux-gnu.tar.gz PREFIX
 scripts/uninstall-release PREFIX
 ```
+
+The tagged release workflow also builds native Axiom Desktop artifacts for
+macOS Intel, macOS Apple Silicon, Windows x64, and Windows ARM64. Those packages
+embed an architecture-matched AxiomCLI sidecar and are signed on their native
+runners. See [`docs/platform-support.md`](docs/platform-support.md) for the
+separate automated-package and interactive-acceptance support boundaries.
 
 See [`docs/releasing.md`](docs/releasing.md) for reproducible packaging and
 signing, and [`docs/configuration.md`](docs/configuration.md),
@@ -165,20 +195,23 @@ the live provider TLS endpoint, and encrypts inference end to end in-process.
 
 ```text
 AXIOM_BASE_URL=https://api.axiom.stream
-AXIOM_WEB_URL=https://axiom.stream
+AXIOM_AUTH_URL=https://auth.axiom.stream
 AXIOM_MODEL=your-model-id
 ```
 
-On first use, AxiomCLI opens `/login`. Browser login creates a short-lived,
-PKCE-bound authorization, asks the signed-in Axiom website to approve it, and
-stores the resulting revocable API credential in the operating-system keyring.
-The loopback callback is only a best-effort approval notification; AxiomCLI
-continues polling the PKCE-bound device authorization when the callback is not
-reachable. `/login` also accepts an existing `axm_` API key directly, while
-`/account` validates the current credential and `/logout` removes a stored
-credential. `AXIOM_API_KEY` remains an explicit environment override for
-automation; do not put API keys in repository configuration or command-line
-arguments.
+On first use, AxiomCLI opens `/login`. Native authorization creates a
+short-lived, PKCE-bound request in the system browser, where the user chooses
+passkey, Google, email/password, or Ethereum-wallet sign-in. The loopback
+callback is only a best-effort completion notification; AxiomCLI continues
+polling when the callback is unreachable. The resulting access token stays in
+memory and the rotating refresh token is stored only in the operating-system
+credential store. There is no plaintext-file fallback. `/account` validates the
+native session and `/logout` revokes and clears it. `AXIOM_API_KEY` remains a
+separate environment override for standalone automation; Axiom Desktop removes
+it from the sidecar environment and has no manual API-key sign-in path.
+Credits belong to the authenticated account. Top-ups use Shieldz Zcash invoices
+through the hosted account surface, not an Ethereum funding contract; Desktop
+and the model receive no wallet custody or transaction authority.
 
 ## Permission profiles
 
@@ -265,7 +298,9 @@ The configured executable itself is trusted user-selected local code and starts
 with user authority; its protocol data and claims remain untrusted. Repository
 configuration cannot add MCP executables.
 
-Session journals are redacted SQLite records under the platform data directory.
+Session journals are redacted, account-scoped SQLite records under the platform
+data directory. Signing out closes the active account store; signing into
+another account never opens the previous account's threads.
 `sessions list/show/export/rename/archive/unarchive/prune` and the TUI's
 multi-select `/delete` picker manage them. Use
 `axiomcli tui --resume SESSION_ID` to restore a transcript and bounded model
@@ -291,15 +326,19 @@ than bypassing the event journal.
   automatic compaction and shows normalized input/output prices per million
   tokens in the model picker; local context settings remain only as
   configurable memory-safety ceilings.
-- Linux is the currently exercised development platform.
+- Linux is the currently exercised AxiomCLI coding-agent platform. Desktop CI
+  also builds and tests native macOS Intel/Apple-Silicon and Windows x64/ARM64
+  packages; target-machine interactive acceptance remains a separate release
+  gate.
 - ACP v1 and durable `session/load` are supported. Per-session MCP configuration
   is not advertised yet; MCP servers come only from trusted user configuration.
 - SearXNG upstream engines can throttle or fail independently.
 - Background process work is limited to four concurrent children. It has
   independent IDs, time/output budgets, ordered provenance, and inherits parent
   cancellation. Subagents are deliberately not implemented yet.
-- The release package supports Linux x86-64 GNU only. macOS and Windows remain
-  unsupported until their sandbox, PTY, and installer gates match Linux.
+- AxiomCLI's local coding tools remain Linux x86-64 GNU only because they require
+  Bubblewrap. The macOS and Windows Desktop profile is Web-only and does not
+  claim local coding-tool isolation.
 - Active TUI transcript content is retained in memory until the session closes;
   durable exports and loads are bounded.
 

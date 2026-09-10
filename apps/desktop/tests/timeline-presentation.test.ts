@@ -81,3 +81,37 @@ test("empty process-state notices do not create blank transcript cards", () => {
     ["provider-state", "failed-state"],
   );
 });
+
+test("routine security notices do not split reasoning from the assistant", () => {
+  const rows = presentTimeline([
+    item("assistant", "assistant-row", "turn-1", "", "in_progress"),
+    {
+      ...item("activity", "provider-status", "", "Verifying model attestation"),
+      raw: { kind: "notice", metadata: { code: "provider_status" } },
+    },
+    item("reasoning", "provider:17", "", "[provider] Verifying model attestation", "streaming"),
+    {
+      ...item("activity", "security-status", "", "TEE verified"),
+      raw: { kind: "notice", metadata: { code: "security_status" } },
+    },
+    item("reasoning", "reasoning-row", "turn-1", "thinking", "in_progress"),
+  ]);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]?.kind, "message");
+  if (rows[0]?.kind !== "message") return;
+  assert.equal(rows[0].message.reasoningContent, "thinking");
+  assert.equal(rows[0].message.status, "streaming");
+});
+
+test("provider failures and ordinary content mentioning verification remain visible", () => {
+  const timeline: ClientTimelineItem[] = [
+    {
+      ...item("error", "provider-error", "", "Connection failed", "failed"),
+      raw: { kind: "notice", metadata: { code: "provider_status", connected: false } },
+    },
+    item("reasoning", "provider:18", "", "[provider status] Connection failed", "streaming"),
+    item("assistant", "reply", "turn-1", "Verifying model attestation"),
+    item("activity", "warning", "", "Verifying model attestation"),
+  ];
+  assert.deepEqual(presentTimeline(timeline).map((row) => row.key), timeline.map((row) => row.id));
+});

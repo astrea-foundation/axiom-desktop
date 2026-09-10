@@ -26,10 +26,13 @@ use crate::{
         ThinkingLevel, TurnId,
     },
     audit::redact_value,
+    paths::{AxiomPaths, FrontendKind},
 };
 
-const SCHEMA_VERSION: i64 = 1;
-const APPLICATION_ID: i64 = 0x4158_494f;
+const SCHEMA_VERSION: i64 = 6;
+// Clean-slate account-scoped storage contract (`AXA2`). Installation-scoped
+// pre-release databases use a different application ID and are never opened.
+const APPLICATION_ID: i64 = 0x4158_4132;
 const MAX_TIMELINE_PAGE: usize = 1_000;
 const MAX_THREAD_CATALOG_PAGE: usize = 200;
 const MAX_THREAD_QUERY_BYTES: usize = 512;
@@ -40,15 +43,65 @@ const MAX_COLLECTION_NAME_BYTES: usize = 120;
 
 #[derive(Clone)]
 pub struct SessionStore {
-    connection: Arc<Mutex<Connection>>,
+    state: Arc<Mutex<StoreState>>,
+    switch: Arc<Mutex<()>>,
+    route: Option<AccountRoute>,
+    binding: Option<StoreBinding>,
+}
+
+struct StoreState {
+    connection: Option<Connection>,
     path: Option<PathBuf>,
+    account_id: Option<String>,
+    generation: u64,
+}
+
+#[derive(Clone, Debug)]
+struct AccountRoute {
+    paths: AxiomPaths,
+    frontend: FrontendKind,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct StoreBinding {
+    generation: u64,
+    account_id: Option<String>,
+}
+
+struct ConnectionGuard<'a> {
+    guard: MutexGuard<'a, StoreState>,
+}
+
+impl std::ops::Deref for ConnectionGuard<'_> {
+    type Target = Connection;
+
+    fn deref(&self) -> &Self::Target {
+        self.guard
+            .connection
+            .as_ref()
+            .expect("connection guard is created only for active stores")
+    }
+}
+
+impl std::ops::DerefMut for ConnectionGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.guard
+            .connection
+            .as_mut()
+            .expect("connection guard is created only for active stores")
+    }
 }
 
 impl std::fmt::Debug for SessionStore {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("SessionStore")
-            .field("path", &self.path)
+            .field(
+                "path",
+                &self.state.lock().ok().and_then(|state| state.path.clone()),
+            )
+            .field("account_routed", &self.route.is_some())
+            .field("account_bound", &self.binding.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -126,6 +179,10 @@ string_enum!(TimelineItemStatus {
 pub struct ThreadRevision {
     pub revision: u64,
     pub last_timeline_sequence: u64,
+    pub last_message_at: Option<String>,
+    /// Exact durable message segment changed by this append, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeline_item_id: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -143,6 +200,7 @@ pub struct ThreadSummary {
     pub last_timeline_sequence: u64,
     pub created_at: String,
     pub updated_at: String,
+    pub last_message_at: Option<String>,
 }
 
 /// Compact thread projection used by the terminal session picker.
@@ -204,6 +262,8 @@ pub struct TimelineItem {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ThreadSnapshot {
     pub thread: ThreadSummary,
+    pub context_usage: Option<axiom_acp_extension::ContextUsage>,
+    pub request_usage: Vec<axiom_inference::RequestUsage>,
     pub turns: Vec<TurnRecord>,
     pub items: Vec<TimelineItem>,
     pub next_cursor: Option<u64>,
@@ -295,8 +355,15 @@ impl SessionStore {
             .busy_timeout(std::time::Duration::from_secs(5))
             .map_err(storage_error)?;
         let store = Self {
-            connection: Arc::new(Mutex::new(connection)),
-            path: Some(path.to_path_buf()),
+            state: Arc::new(Mutex::new(StoreState {
+                connection: Some(connection),
+                path: Some(path.to_path_buf()),
+                account_id: None,
+                generation: 0,
+            })),
+            switch: Arc::new(Mutex::new(())),
+            route: None,
+            binding: None,
         };
         store.initialize()?;
         #[cfg(unix)]
@@ -310,13 +377,253 @@ impl SessionStore {
 
     pub fn in_memory() -> Result<Self> {
         let store = Self {
-            connection: Arc::new(Mutex::new(
-                Connection::open_in_memory().map_err(storage_error)?,
-            )),
-            path: None,
+            state: Arc::new(Mutex::new(StoreState {
+                connection: Some(Connection::open_in_memory().map_err(storage_error)?),
+                path: None,
+                account_id: None,
+                generation: 0,
+            })),
+            switch: Arc::new(Mutex::new(())),
+            route: None,
+            binding: None,
         };
         store.initialize()?;
         Ok(store)
+    }
+
+    /// Construct a shared store handle that starts signed out. Every clone
+    /// observes the same account switch and therefore cannot retain a static
+    /// installation-scoped database.
+    #[must_use]
+    pub fn account_routed(paths: AxiomPaths, frontend: FrontendKind) -> Self {
+        Self {
+            state: Arc::new(Mutex::new(StoreState {
+                connection: None,
+                path: None,
+                account_id: None,
+                generation: 0,
+            })),
+            switch: Arc::new(Mutex::new(())),
+            route: Some(AccountRoute { paths, frontend }),
+            binding: None,
+        }
+    }
+
+    /// Capture the exact active store generation and account. Database methods
+    /// on the returned handle validate that snapshot while holding the store
+    /// mutex, so delayed work can never resolve against a later account.
+    pub fn bind_active_account(&self) -> Result<Self> {
+        if self.binding.is_some() {
+            self.ensure_active_account_binding()?;
+            return Ok(self.clone());
+        }
+        let state = self.lock_state()?;
+        if state.connection.is_none() || (self.route.is_some() && state.account_id.is_none()) {
+            return Err(authentication_required());
+        }
+        let binding = StoreBinding {
+            generation: state.generation,
+            account_id: state.account_id.clone(),
+        };
+        drop(state);
+        Ok(Self {
+            state: self.state.clone(),
+            switch: self.switch.clone(),
+            route: self.route.clone(),
+            binding: Some(binding),
+        })
+    }
+
+    /// Recheck a previously captured account binding without performing a
+    /// database operation.
+    pub fn ensure_active_account_binding(&self) -> Result<()> {
+        let _connection = self.lock()?;
+        Ok(())
+    }
+
+    /// Close the old database before opening the exact new account. Failure
+    /// leaves every clone inactive and never falls back to the old store.
+    pub fn activate_account(&self, account_id: &str) -> Result<()> {
+        if self.binding.is_some() {
+            return Err(bound_store_switch());
+        }
+        let route = self.route.as_ref().ok_or_else(|| {
+            AxiomError::InvalidTransition("this local store is not account-routed".into())
+        })?;
+        let _switch = self
+            .switch
+            .lock()
+            .map_err(|_| AxiomError::Storage("account store switch lock was poisoned".into()))?;
+        {
+            let mut state = self.lock_state()?;
+            if state.account_id.as_deref() == Some(account_id) && state.connection.is_some() {
+                return Ok(());
+            }
+            advance_store_generation(&mut state)?;
+            state.connection = None;
+            state.path = None;
+            state.account_id = None;
+        }
+        route.paths.prepare_account(account_id)?;
+        let path = route
+            .paths
+            .account_state_database(account_id, route.frontend)?;
+        let candidate = Self::open(&path)?;
+        let connection = candidate
+            .lock_state()?
+            .connection
+            .take()
+            .ok_or_else(|| AxiomError::Storage("new account database did not open".into()))?;
+        let mut state = self.lock_state()?;
+        state.connection = Some(connection);
+        state.path = Some(path);
+        state.account_id = Some(account_id.to_owned());
+        Ok(())
+    }
+
+    pub fn deactivate_account(&self) -> Result<()> {
+        if self.binding.is_some() {
+            return Err(bound_store_switch());
+        }
+        let _switch = self
+            .switch
+            .lock()
+            .map_err(|_| AxiomError::Storage("account store switch lock was poisoned".into()))?;
+        let mut state = self.lock_state()?;
+        advance_store_generation(&mut state)?;
+        state.connection = None;
+        state.path = None;
+        state.account_id = None;
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn active_account_id(&self) -> Option<String> {
+        self.state
+            .lock()
+            .ok()
+            .and_then(|state| {
+                binding_matches(self.binding.as_ref(), &state).then(|| state.account_id.clone())
+            })
+            .flatten()
+    }
+
+    #[must_use]
+    pub fn is_active(&self) -> bool {
+        self.state.lock().is_ok_and(|state| {
+            state.connection.is_some()
+                && (self.route.is_none() || state.account_id.is_some())
+                && binding_matches(self.binding.as_ref(), &state)
+        })
+    }
+
+    pub fn active_desktop_cwd(&self) -> Result<PathBuf> {
+        let route = self.route.as_ref().ok_or_else(|| {
+            AxiomError::InvalidTransition("this local store is not account-routed".into())
+        })?;
+        if route.frontend != FrontendKind::DesktopChat {
+            return Err(AxiomError::InvalidTransition(
+                "desktop workspace requested for a non-desktop account store".into(),
+            ));
+        }
+        let account_id = self
+            .active_account_id()
+            .ok_or_else(authentication_required)?;
+        route.paths.account_desktop_chat_cwd(&account_id)
+    }
+
+    pub fn active_desktop_thread_cwd(&self, thread: &SessionId) -> Result<PathBuf> {
+        self.active_desktop_cwd()?;
+        let route = self.route.as_ref().ok_or_else(authentication_required)?;
+        route.paths.account_desktop_thread_cwd(
+            &self
+                .active_account_id()
+                .ok_or_else(authentication_required)?,
+            thread,
+        )
+    }
+
+    pub fn desktop_agent_settings(
+        &self,
+        thread: &SessionId,
+    ) -> Result<axiom_acp_extension::DesktopAgentSettings> {
+        let default = self.active_desktop_thread_cwd(thread)?;
+        let connection = self.lock()?;
+        let stored: Option<String> = connection
+            .query_row(
+                "SELECT desktop_agent_settings FROM threads WHERE id=?1",
+                [thread.to_string()],
+                |row| row.get(0),
+            )
+            .map_err(storage_error)?;
+        if let Some(stored) = stored {
+            return serde_json::from_str(&stored).map_err(|error| {
+                AxiomError::Storage(format!("invalid saved Agent settings: {error}"))
+            });
+        }
+        let default = default
+            .to_str()
+            .ok_or_else(|| AxiomError::Storage("desktop workspace must be valid Unicode".into()))?
+            .to_owned();
+        Ok(axiom_acp_extension::DesktopAgentSettings {
+            enabled: false,
+            permission: axiom_acp_extension::DesktopAgentPermission::ApproveCommands,
+            working_directory: default.clone(),
+            default_working_directory: default,
+            uses_default_directory: true,
+            revision: 0,
+        })
+    }
+
+    pub fn prepare_desktop_agent_settings(
+        &self,
+        thread: &SessionId,
+        request: &axiom_acp_extension::ConfigureDesktopAgentRequest,
+    ) -> Result<axiom_acp_extension::DesktopAgentSettings> {
+        let current = self.desktop_agent_settings(thread)?;
+        if current.revision != request.expected_revision {
+            return Err(AxiomError::InvalidTransition(
+                "Agent settings changed; refresh before applying".into(),
+            ));
+        }
+        let default = self.active_desktop_thread_cwd(thread)?;
+        let chosen = match &request.working_directory {
+            None => default.clone(),
+            Some(path) => {
+                if path.is_empty()
+                    || path.len() > 32_768
+                    || path.contains('\0')
+                    || !Path::new(path).is_absolute()
+                {
+                    return Err(AxiomError::InvalidTransition(
+                        "working directory must be an absolute path".into(),
+                    ));
+                }
+                let path = PathBuf::from(path).canonicalize()?;
+                if !path.is_dir() {
+                    return Err(AxiomError::InvalidTransition(
+                        "working directory is not a folder".into(),
+                    ));
+                }
+                path
+            }
+        };
+        let to_text = |path: &Path| {
+            path.to_str().map(ToOwned::to_owned).ok_or_else(|| {
+                AxiomError::InvalidTransition("working directory must be valid Unicode".into())
+            })
+        };
+        Ok(axiom_acp_extension::DesktopAgentSettings {
+            enabled: request.enabled,
+            permission: request.permission,
+            uses_default_directory: chosen == default,
+            working_directory: to_text(&chosen)?,
+            default_working_directory: to_text(&default)?,
+            revision: current
+                .revision
+                .checked_add(1)
+                .ok_or_else(|| AxiomError::Storage("Agent settings revision overflow".into()))?,
+        })
     }
 
     fn initialize(&self) -> Result<()> {
@@ -343,6 +650,16 @@ impl SessionStore {
             if user_tables != 0 {
                 return Err(AxiomError::Storage(
                     "unversioned or pre-release local state is not compatible with Axiom schema v1; reset the development database".into(),
+                ));
+            }
+        }
+        if version > 0 {
+            let application_id: i64 = connection
+                .query_row("PRAGMA application_id", [], |row| row.get(0))
+                .map_err(storage_error)?;
+            if application_id != APPLICATION_ID {
+                return Err(AxiomError::Storage(
+                    "local state does not belong to this Axiom storage contract".into(),
                 ));
             }
         }
@@ -376,7 +693,10 @@ impl SessionStore {
                 .collect::<std::result::Result<Vec<_>, _>>()
                 .map_err(storage_error)?
         };
+        transaction.execute("UPDATE request_usage SET record=json_set(record, '$.state','failed', '$.responseVerified',json('false'), '$.errorCode','CLIENT_INTERRUPTED')
+            WHERE json_extract(record,'$.state')='running'", []).map_err(storage_error)?;
         if ids.is_empty() {
+            transaction.commit().map_err(storage_error)?;
             return Ok(());
         }
         transaction
@@ -412,11 +732,54 @@ impl SessionStore {
         transaction.commit().map_err(storage_error)
     }
 
-    fn lock(&self) -> Result<MutexGuard<'_, Connection>> {
-        self.connection
+    fn lock_state(&self) -> Result<MutexGuard<'_, StoreState>> {
+        self.state
             .lock()
             .map_err(|_| AxiomError::Storage("local state database lock was poisoned".into()))
     }
+
+    fn lock(&self) -> Result<ConnectionGuard<'_>> {
+        let guard = self.lock_state()?;
+        if !binding_matches(self.binding.as_ref(), &guard) {
+            return Err(stale_account_binding());
+        }
+        if guard.connection.is_none() {
+            return Err(authentication_required());
+        }
+        Ok(ConnectionGuard { guard })
+    }
+}
+
+fn binding_matches(binding: Option<&StoreBinding>, state: &StoreState) -> bool {
+    binding.is_none_or(|binding| {
+        binding.generation == state.generation && binding.account_id == state.account_id
+    })
+}
+
+fn advance_store_generation(state: &mut StoreState) -> Result<()> {
+    state.generation = state
+        .generation
+        .checked_add(1)
+        .ok_or_else(|| AxiomError::Storage("account store generation overflowed".into()))?;
+    Ok(())
+}
+
+fn stale_account_binding() -> AxiomError {
+    AxiomError::InvalidTransition(
+        "account-scoped local store changed while the operation was pending".into(),
+    )
+}
+
+fn bound_store_switch() -> AxiomError {
+    AxiomError::InvalidTransition(
+        "an account-bound local store handle cannot change the active account".into(),
+    )
+}
+
+fn authentication_required() -> AxiomError {
+    AxiomError::InvalidTransition(
+        "authentication required; no account-scoped local store is active".into(),
+    )
 }
 
 struct SchemaMigration {
@@ -425,11 +788,106 @@ struct SchemaMigration {
     sql: &'static str,
 }
 
-const SCHEMA_MIGRATIONS: &[SchemaMigration] = &[SchemaMigration {
-    from: 0,
-    to: 1,
-    sql: SCHEMA_V1,
-}];
+const SCHEMA_MIGRATIONS: &[SchemaMigration] = &[
+    SchemaMigration {
+        from: 0,
+        to: 1,
+        sql: SCHEMA_V1,
+    },
+    SchemaMigration {
+        from: 1,
+        to: 2,
+        sql: SCHEMA_V2,
+    },
+    SchemaMigration {
+        from: 2,
+        to: 3,
+        sql: SCHEMA_V3,
+    },
+    SchemaMigration {
+        from: 3,
+        to: 4,
+        sql: SCHEMA_V4,
+    },
+    SchemaMigration {
+        from: 4,
+        to: 5,
+        sql: SCHEMA_V5,
+    },
+    SchemaMigration {
+        from: 5,
+        to: 6,
+        sql: SCHEMA_V6,
+    },
+];
+
+// Schema 5 left the initial assistant placeholder without a request binding.
+// Repair only completed, single-request turns with a recorded LOCAL receipt
+// verification. Billing settlement, attestation, and ambiguous turns cannot
+// supply this evidence. Message content and timestamps remain untouched.
+const SCHEMA_V6: &str = r"
+CREATE TEMP TABLE receipt_binding_repairs AS
+SELECT item.id, item.thread_id, usage.request_id,
+       json_extract(usage.record, '$.finishReason') AS finish_reason
+FROM timeline_items AS item
+JOIN turns AS turn ON turn.thread_id=item.thread_id AND turn.id=item.turn_id
+  AND turn.assistant_item_id=item.id
+JOIN request_usage AS usage ON usage.thread_id=item.thread_id
+  AND json_extract(usage.record, '$.turnId')=item.turn_id
+WHERE item.kind='assistant_message' AND item.status='completed'
+  AND turn.status='completed' AND length(item.content)>0
+  AND json_extract(item.metadata, '$.request_id') IS NULL
+  AND COALESCE(json_extract(item.metadata, '$.terminal_verified'), 0)=0
+  AND json_extract(usage.record, '$.purpose')='conversation'
+  AND json_extract(usage.record, '$.state')='completed'
+  AND json_type(usage.record, '$.responseVerified')='true'
+  AND (SELECT COUNT(*) FROM request_usage AS other
+       WHERE other.thread_id=item.thread_id
+         AND json_extract(other.record, '$.turnId')=item.turn_id
+         AND json_extract(other.record, '$.purpose')='conversation')=1;
+UPDATE timeline_items SET metadata=json_set(metadata,
+  '$.request_id', (SELECT request_id FROM receipt_binding_repairs WHERE id=timeline_items.id),
+  '$.terminal_verified', json('true'),
+  '$.finish_reason', (SELECT finish_reason FROM receipt_binding_repairs WHERE id=timeline_items.id))
+WHERE id IN (SELECT id FROM receipt_binding_repairs);
+UPDATE threads SET revision=revision+1
+WHERE id IN (SELECT thread_id FROM receipt_binding_repairs);
+DROP TABLE receipt_binding_repairs;
+PRAGMA user_version=6;
+";
+
+const SCHEMA_V5: &str = r"
+CREATE TABLE request_usage (
+  request_id TEXT PRIMARY KEY,
+  thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+  record TEXT NOT NULL
+);
+CREATE INDEX request_usage_thread ON request_usage(thread_id);
+PRAGMA user_version=5;
+";
+
+const SCHEMA_V4: &str =
+    "ALTER TABLE threads ADD COLUMN desktop_agent_settings TEXT; PRAGMA user_version=4;";
+
+// Historical turn totals may have been overwritten by auxiliary compaction
+// requests and lack model/limit provenance. Do not invent a report from them.
+const SCHEMA_V3: &str = r"
+ALTER TABLE threads ADD COLUMN last_reported_usage TEXT;
+PRAGMA user_version=3;
+";
+
+// Backfill from actual conversation content, never thread metadata or notices.
+// Thereafter only nonempty user/assistant message events advance this clock.
+const SCHEMA_V2: &str = r"
+ALTER TABLE threads ADD COLUMN last_message_at TEXT;
+UPDATE threads SET last_message_at=(
+  SELECT strftime('%Y-%m-%dT%H:%M:%fZ', MAX(updated_at)) FROM timeline_items
+  WHERE thread_id=threads.id AND kind IN ('user_message','assistant_message','reasoning')
+    AND length(content)>0
+);
+CREATE INDEX idx_threads_messages ON threads(archived, COALESCE(last_message_at,'') DESC, id);
+PRAGMA user_version=2;
+";
 
 fn migrate_schema(connection: &mut Connection, mut version: i64) -> Result<()> {
     while version < SCHEMA_VERSION {
@@ -546,7 +1004,7 @@ CREATE TABLE collection_state(
 );
 INSERT INTO collection_state(id, revision) VALUES(1, 0);
 
-PRAGMA application_id=1096304975;
+PRAGMA application_id=1096302898;
 PRAGMA user_version=1;
 ";
 
@@ -579,6 +1037,85 @@ fn validate_schema_v1(connection: &Connection) -> Result<()> {
 impl SessionStore {
     /// Persist one runtime update and return the resulting durable thread
     /// revision. The envelope itself is never serialized.
+    pub fn record_request_usage(
+        &self,
+        id: &SessionId,
+        usage: &axiom_inference::RequestUsage,
+    ) -> Result<()> {
+        if !usage.validate_counters() {
+            return Err(AxiomError::Storage("invalid request accounting".into()));
+        }
+        let mut connection = self.lock()?;
+        let tx = connection.transaction().map_err(storage_error)?;
+        ensure_thread(&tx, id)?;
+        tx.execute("INSERT INTO request_usage(request_id,thread_id,record) VALUES (?1,?2,?3)
+            ON CONFLICT(request_id) DO UPDATE SET record=excluded.record WHERE request_usage.thread_id=excluded.thread_id",
+            params![usage.request_id,id.to_string(),serde_json::to_string(usage)?]).map_err(storage_error)?;
+        tx.execute(
+            "UPDATE threads SET revision=revision+1 WHERE id=?1",
+            [id.to_string()],
+        )
+        .map_err(storage_error)?;
+        tx.commit().map_err(storage_error)
+    }
+
+    pub fn reconcile_request_usage(
+        &self,
+        id: &SessionId,
+        snapshots: &[axiom_inference::RequestUsage],
+    ) -> Result<()> {
+        let mut connection = self.lock()?;
+        let tx = connection.transaction().map_err(storage_error)?;
+        ensure_thread(&tx, id)?;
+        for snapshot in snapshots {
+            if !snapshot.validate_counters() || snapshot.response_verified {
+                return Err(AxiomError::Storage("invalid recovery record".into()));
+            }
+            let stored: Option<String> = tx
+                .query_row(
+                    "SELECT record FROM request_usage WHERE request_id=?1 AND thread_id=?2",
+                    params![snapshot.request_id, id.to_string()],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(storage_error)?;
+            let Some(stored) = stored else { continue };
+            let mut local: axiom_inference::RequestUsage = serde_json::from_str(&stored)?;
+            if local.model_id != snapshot.model_id
+                || (!local.provider_id.is_empty() && local.provider_id != snapshot.provider_id)
+            {
+                return Err(AxiomError::Storage(
+                    "accounting recovery identity mismatch".into(),
+                ));
+            }
+            if local.settled || !snapshot.settled {
+                continue;
+            }
+            local.provider_id = snapshot.provider_id.clone();
+            local.input_tokens = snapshot.input_tokens.clone();
+            local.cached_input_tokens = snapshot.cached_input_tokens.clone();
+            local.output_tokens = snapshot.output_tokens.clone();
+            local.reasoning_tokens = snapshot.reasoning_tokens.clone();
+            local.cost_microusd = snapshot.cost_microusd.clone();
+            local.completeness = snapshot.completeness;
+            local.settled = snapshot.settled;
+            if local.finished_at_ms.is_none() {
+                local.finished_at_ms = snapshot.finished_at_ms.clone();
+            }
+            // Recovery cannot recover a lost receipt or upgrade verification.
+            tx.execute(
+                "UPDATE request_usage SET record=?3 WHERE request_id=?1 AND thread_id=?2",
+                params![
+                    local.request_id,
+                    id.to_string(),
+                    serde_json::to_string(&local)?
+                ],
+            )
+            .map_err(storage_error)?;
+        }
+        tx.commit().map_err(storage_error)
+    }
+
     pub fn append(&self, envelope: &EventEnvelope) -> Result<ThreadRevision> {
         self.append_batch(std::slice::from_ref(envelope), None, None)
             .map(|(revision, _)| revision)
@@ -659,6 +1196,20 @@ impl SessionStore {
         let mut client_item_id = client_item_id.as_deref();
         for envelope in envelopes {
             persist_event(&transaction, envelope, client_item_id)?;
+            if matches!(&envelope.event,
+                AppEvent::PromptAccepted { text, .. }
+                | AppEvent::SteeringApplied { text, .. }
+                | AppEvent::TextDelta { text, .. }
+                | AppEvent::ReasoningDelta { text, .. } if !text.is_empty())
+            {
+                let message_at = envelope
+                    .occurred_at
+                    .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+                transaction.execute(
+                    "UPDATE threads SET last_message_at=MAX(COALESCE(last_message_at,''), ?2) WHERE id=?1",
+                    params![thread_id, message_at],
+                ).map_err(storage_error)?;
+            }
             if matches!(envelope.event, AppEvent::PromptAccepted { .. }) {
                 client_item_id = None;
             }
@@ -684,7 +1235,32 @@ impl SessionStore {
         } else {
             None
         };
-        let revision = query_thread_revision(&transaction, &first.session_id)?;
+        let mut revision = query_thread_revision(&transaction, &first.session_id)?;
+        // ACP retains its standard turn-scoped message ID, but Axiom clients
+        // also receive the exact durable segment ID. A tool boundary must not
+        // cause later deltas to be appended to the pre-tool assistant row.
+        if let Some(envelope) = envelopes.last() {
+            let message = match &envelope.event {
+                AppEvent::TextDelta { turn_id, .. } => {
+                    Some((turn_id, TimelineItemKind::AssistantMessage))
+                }
+                AppEvent::ReasoningDelta { turn_id, .. } => {
+                    Some((turn_id, TimelineItemKind::Reasoning))
+                }
+                _ => None,
+            };
+            if let Some((turn_id, kind)) = message {
+                revision.timeline_item_id = transaction
+                    .query_row(
+                        "SELECT id FROM timeline_items WHERE thread_id=?1 AND turn_id=?2
+                     AND kind=?3 ORDER BY sequence DESC LIMIT 1",
+                        params![thread_id, turn_id.to_string(), kind.to_string()],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(storage_error)?;
+            }
+        }
         transaction.commit().map_err(storage_error)?;
         Ok((revision, updated_preferences))
     }
@@ -745,6 +1321,27 @@ fn persist_event(
                     ],
                 )
                 .map_err(storage_error)?;
+        }
+        AppEvent::SteeringApplied {
+            turn_id,
+            client_item_id,
+            text,
+        } => {
+            let client_id = validate_client_item_id(client_item_id)?;
+            insert_timeline_item(
+                transaction,
+                &thread_id,
+                TimelineItemWrite {
+                    turn_id: Some(&turn_id.to_string()),
+                    kind: TimelineItemKind::UserMessage,
+                    status: TimelineItemStatus::Completed,
+                    client_item_id: Some(&client_id),
+                    external_id: None,
+                    content: &redact_text(text),
+                    metadata: json!({"steering": true}),
+                    now: &now,
+                },
+            )?;
         }
         AppEvent::PromptAccepted { turn_id, text } => {
             let turn_id = turn_id.to_string();
@@ -828,6 +1425,56 @@ fn persist_event(
                 &redact_text(text),
                 &now,
             )?;
+        }
+        // Persist the last complete provider report atomically with its thread
+        // revision, without adding transcript rows or advancing message order.
+        AppEvent::RequestUsageUpdated { usage } => {
+            if !usage.validate_counters() {
+                return Err(AxiomError::Storage("invalid request accounting".into()));
+            }
+            transaction
+                .execute(
+                    "INSERT INTO request_usage(request_id, thread_id, record) VALUES (?1,?2,?3)
+                 ON CONFLICT(request_id) DO UPDATE SET record=excluded.record
+                 WHERE request_usage.thread_id=excluded.thread_id",
+                    params![usage.request_id, thread_id, serde_json::to_string(usage)?],
+                )
+                .map_err(storage_error)?;
+            if usage.purpose == axiom_inference::InvocationPurpose::Conversation
+                && usage.state == axiom_inference::InvocationState::Running
+            {
+                // PromptAccepted creates this row before the request exists.
+                // Bind it on the first request, including tool-only responses
+                // that never emit a text delta into the placeholder.
+                transaction.execute(
+                    "UPDATE timeline_items SET metadata=json_set(metadata, '$.request_id', ?3)
+                     WHERE thread_id=?1 AND turn_id=?2 AND kind='assistant_message'
+                       AND id=(SELECT assistant_item_id FROM turns WHERE thread_id=?1 AND id=?2)
+                       AND status='in_progress' AND content=''
+                       AND json_extract(metadata, '$.request_id') IS NULL
+                       AND NOT EXISTS(SELECT 1 FROM request_usage
+                         WHERE thread_id=?1 AND json_extract(record, '$.turnId')=?2
+                           AND json_extract(record, '$.purpose')='conversation' AND request_id<>?3)",
+                    params![thread_id, usage.turn_id, usage.request_id],
+                ).map_err(storage_error)?;
+            }
+            if usage.response_verified {
+                transaction.execute(
+                    "UPDATE timeline_items SET status='completed',
+                      metadata=json_set(metadata, '$.terminal_verified', json('true'), '$.finish_reason', ?4), updated_at=?3
+                     WHERE thread_id=?1 AND json_extract(metadata, '$.request_id')=?2
+                       AND kind IN ('assistant_message','reasoning')",
+                    params![thread_id, usage.request_id, now, usage.finish_reason],
+                ).map_err(storage_error)?;
+            }
+        }
+        AppEvent::ContextUsageUpdated { usage } => {
+            transaction
+                .execute(
+                    "UPDATE threads SET last_reported_usage=?2 WHERE id=?1",
+                    params![thread_id, serde_json::to_string(usage)?],
+                )
+                .map_err(storage_error)?;
         }
         AppEvent::UsageUpdated {
             input_tokens,
@@ -1205,6 +1852,18 @@ fn persist_event(
                 },
             )?;
         }
+        AppEvent::DesktopAgentConfigured { settings } => {
+            let (encoding, cwd) = encode_path(Path::new(&settings.working_directory))?;
+            let changed = transaction.execute(
+                "UPDATE threads SET cwd=?2, profile=?3, desktop_agent_settings=?4, cwd_encoding=?6 WHERE id=?1 AND lifecycle='ready' AND COALESCE(json_extract(desktop_agent_settings, '$.revision'), 0)=?5",
+                params![thread_id, cwd, PermissionProfile::for_desktop_agent(settings).to_string(), serde_json::to_string(settings)?, i64::try_from(settings.revision.saturating_sub(1)).map_err(|_| AxiomError::Storage("Agent revision overflow".into()))?, encoding],
+            ).map_err(storage_error)?;
+            if changed != 1 {
+                return Err(AxiomError::InvalidTransition(
+                    "Agent settings changed or the thread is busy".into(),
+                ));
+            }
+        }
         AppEvent::PermissionProfileChanged { profile } => {
             ensure_thread(transaction, &envelope.session_id)?;
             transaction
@@ -1373,12 +2032,14 @@ fn ensure_thread(transaction: &Transaction<'_>, id: &SessionId) -> Result<()> {
 fn query_thread_revision(connection: &Connection, id: &SessionId) -> Result<ThreadRevision> {
     connection
         .query_row(
-            "SELECT revision, next_timeline_sequence FROM threads WHERE id=?1",
+            "SELECT revision, next_timeline_sequence, last_message_at FROM threads WHERE id=?1",
             [id.to_string()],
             |row| {
                 Ok(ThreadRevision {
                     revision: checked_u64_sql(row.get::<_, i64>(0)?)?,
                     last_timeline_sequence: checked_u64_sql(row.get::<_, i64>(1)?)?,
+                    last_message_at: row.get(2)?,
+                    timeline_item_id: None,
                 })
             },
         )
@@ -1480,11 +2141,29 @@ fn append_turn_content(
     content: &str,
     now: &str,
 ) -> Result<()> {
+    let request_id: Option<String> = transaction
+        .query_row(
+            "SELECT request_id FROM request_usage WHERE thread_id=?1
+               AND json_extract(record, '$.turnId')=?2
+               AND json_extract(record, '$.purpose')='conversation'
+               AND json_extract(record, '$.state')='running'
+             ORDER BY rowid DESC LIMIT 1",
+            params![thread_id, turn_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(storage_error)?;
     let existing = transaction
         .query_row(
             "SELECT id FROM timeline_items
-             WHERE thread_id=?1 AND turn_id=?2 AND kind=?3 ORDER BY sequence LIMIT 1",
-            params![thread_id, turn_id, kind.to_string()],
+             WHERE thread_id=?1 AND turn_id=?2 AND kind=?3
+               AND COALESCE(json_extract(metadata, '$.terminal_verified'), 0)=0
+               AND status IN ('pending','in_progress')
+               AND json_extract(metadata, '$.request_id') IS ?4
+               AND sequence > COALESCE((SELECT MAX(sequence) FROM timeline_items
+                 WHERE thread_id=?1 AND turn_id=?2 AND kind IN ('tool_call', 'user_message')), 0)
+             ORDER BY sequence DESC LIMIT 1",
+            params![thread_id, turn_id, kind.to_string(), request_id],
             |row| row.get::<_, String>(0),
         )
         .optional()
@@ -1502,7 +2181,7 @@ fn append_turn_content(
                 client_item_id: None,
                 external_id: None,
                 content: "",
-                metadata: json!({}),
+                metadata: json!({"request_id": request_id}),
                 now,
             },
         )?
@@ -1511,6 +2190,7 @@ fn append_turn_content(
     transaction
         .execute(
             "UPDATE timeline_items SET content=content || ?2, status='in_progress',
+               metadata=json_remove(metadata, '$.terminal_verified', '$.terminalVerified'),
                updated_at=?3 WHERE id=?1",
             params![id, content, now],
         )
@@ -1610,6 +2290,13 @@ fn mark_response_verified(
     turn_id: &str,
     now: &str,
 ) -> Result<()> {
+    let has_requests: bool = transaction.query_row("SELECT EXISTS(SELECT 1 FROM request_usage WHERE thread_id=?1 AND json_extract(record,'$.turnId')=?2)",
+        params![thread_id, turn_id], |row| row.get(0)).map_err(storage_error)?;
+    // New requests are verified one at a time. A turn-wide event must never
+    // upgrade an interrupted request left earlier in that turn by steering.
+    if has_requests {
+        return Ok(());
+    }
     let mut statement = transaction
         .prepare(
             "SELECT id, metadata FROM timeline_items
@@ -1891,6 +2578,7 @@ struct StoredThread {
     last_sequence: i64,
     created_at: String,
     updated_at: String,
+    last_message_at: Option<String>,
 }
 
 impl StoredThread {
@@ -1910,6 +2598,7 @@ impl StoredThread {
             last_sequence: row.get(11)?,
             created_at: row.get(12)?,
             updated_at: row.get(13)?,
+            last_message_at: row.get(14)?,
         })
     }
 
@@ -1933,12 +2622,13 @@ impl StoredThread {
             last_timeline_sequence: checked_u64(self.last_sequence, "last timeline sequence")?,
             created_at: self.created_at,
             updated_at: self.updated_at,
+            last_message_at: self.last_message_at,
         })
     }
 }
 
 const THREAD_COLUMNS: &str = "id, title, cwd, cwd_encoding, origin, profile, selected_model, thinking_level, lifecycle, \
-     archived, revision, next_timeline_sequence, created_at, updated_at";
+     archived, revision, next_timeline_sequence, created_at, updated_at, last_message_at";
 
 fn query_thread_summary(connection: &Connection, id: &SessionId) -> Result<ThreadSummary> {
     let sql = format!("SELECT {THREAD_COLUMNS} FROM threads WHERE id=?1");
@@ -1980,8 +2670,8 @@ impl SessionStore {
              WHERE (archived=0 OR ?1=1)
                AND (?2 IS NULL OR instr(lower(COALESCE(title,'')), lower(?2))>0
                                 OR instr(lower(id), lower(?2))>0)
-               AND (?3 IS NULL OR updated_at < ?3 OR (updated_at = ?3 AND id > ?4))
-             ORDER BY updated_at DESC, id ASC LIMIT ?5"
+               AND (?3 IS NULL OR COALESCE(last_message_at,'') < ?3 OR (COALESCE(last_message_at,'') = ?3 AND id > ?4))
+             ORDER BY COALESCE(last_message_at,'') DESC, id ASC LIMIT ?5"
         );
         let mut statement = connection.prepare(&sql).map_err(storage_error)?;
         let stored = statement
@@ -2009,7 +2699,12 @@ impl SessionStore {
         let next_cursor = if has_more {
             threads
                 .last()
-                .map(|thread| encode_thread_cursor(&thread.updated_at, &thread.id))
+                .map(|thread| {
+                    encode_thread_cursor(
+                        thread.last_message_at.as_deref().unwrap_or(""),
+                        &thread.id,
+                    )
+                })
                 .transpose()?
         } else {
             None
@@ -2024,7 +2719,7 @@ impl SessionStore {
         let connection = self.lock()?;
         let sql = format!(
             "SELECT {THREAD_COLUMNS} FROM threads
-             WHERE archived=0 OR ?1=1 ORDER BY updated_at DESC, id LIMIT 1000"
+             WHERE archived=0 OR ?1=1 ORDER BY COALESCE(last_message_at,'') DESC, id LIMIT 1000"
         );
         let mut statement = connection.prepare(&sql).map_err(storage_error)?;
         let stored = statement
@@ -2055,6 +2750,30 @@ impl SessionStore {
         let transaction = connection.transaction().map_err(storage_error)?;
         let thread = query_thread_summary(&transaction, id)?;
         let turns = query_turns(&transaction, id)?;
+        let request_usage = {
+            let mut statement = transaction
+                .prepare("SELECT record FROM request_usage WHERE thread_id=?1 ORDER BY rowid")
+                .map_err(storage_error)?;
+            let records = statement
+                .query_map([id.to_string()], |row| row.get::<_, String>(0))
+                .map_err(storage_error)?
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(storage_error)?;
+            records
+                .into_iter()
+                .map(|json| serde_json::from_str(&json))
+                .collect::<std::result::Result<Vec<_>, _>>()?
+        };
+        let context_usage: Option<String> = transaction
+            .query_row(
+                "SELECT last_reported_usage FROM threads WHERE id=?1",
+                [id.to_string()],
+                |row| row.get(0),
+            )
+            .map_err(storage_error)?;
+        let context_usage = context_usage
+            .map(|json| serde_json::from_str(&json))
+            .transpose()?;
         let after = checked_i64(after_sequence.unwrap_or(0), "timeline cursor")?;
         let fetch = i64::try_from(limit.saturating_add(1)).unwrap_or(i64::MAX);
         let mut statement = transaction
@@ -2088,6 +2807,8 @@ impl SessionStore {
         transaction.commit().map_err(storage_error)?;
         Ok(ThreadSnapshot {
             thread,
+            context_usage,
+            request_usage,
             turns,
             items,
             next_cursor,
@@ -2409,7 +3130,7 @@ fn decode_thread_cursor(cursor: &str) -> Result<(String, String)> {
         .map_err(|_| AxiomError::Storage("thread catalog cursor is invalid".into()))?;
     let (updated_at, id): (String, String) = serde_json::from_slice(&decoded)
         .map_err(|_| AxiomError::Storage("thread catalog cursor is invalid".into()))?;
-    if updated_at.is_empty() || id.is_empty() {
+    if id.is_empty() {
         return Err(AxiomError::Storage(
             "thread catalog cursor is invalid".into(),
         ));
@@ -2951,6 +3672,21 @@ fn project_runtime_events(
             let parsed_turn = TurnId::from_str(turn_id).map_err(|error| {
                 AxiomError::Storage(format!("invalid stored turn ID `{turn_id}`: {error}"))
             })?;
+            if item.metadata.get("steering").and_then(Value::as_bool) == Some(true) {
+                projection.push(
+                    parse_time(&item.created_at),
+                    AppEvent::SteeringApplied {
+                        turn_id: parsed_turn,
+                        client_item_id: item
+                            .client_item_id
+                            .clone()
+                            .unwrap_or_else(|| item.id.clone()),
+                        text: item.content.clone(),
+                    },
+                );
+                active_turn = Some(turn_id);
+                continue;
+            }
             projection.push(
                 parse_time(&item.created_at),
                 AppEvent::PromptAccepted {
@@ -3419,6 +4155,8 @@ fn storage_error(error: rusqlite::Error) -> AxiomError {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Barrier};
+
     use tempfile::tempdir;
 
     use super::*;
@@ -3447,6 +4185,266 @@ mod tests {
                 },
             ))
             .expect("create thread");
+    }
+
+    fn routed_store() -> (tempfile::TempDir, SessionStore) {
+        let root = tempdir().expect("temporary account root");
+        let paths = AxiomPaths::from_roots(root.path().join("config"), root.path().join("data"));
+        paths.prepare().expect("prepare account paths");
+        let store = SessionStore::account_routed(paths, FrontendKind::DesktopChat);
+        (root, store)
+    }
+
+    #[test]
+    fn request_accounting_recovery_is_idempotent_account_scoped_and_never_verifies() {
+        use axiom_inference::{InvocationState, RequestUsage, UsageCompleteness};
+        let (_root, store) = routed_store();
+        store.activate_account("account-a").unwrap();
+        let id = SessionId::new();
+        create(&store, &id);
+        let local = RequestUsage {
+            request_id: "a".repeat(32),
+            model_id: "m".into(),
+            provider_id: "near".into(),
+            state: InvocationState::Failed,
+            turn_id: Some("turn-a".into()),
+            started_at_ms: "1000".into(),
+            error_code: Some("CLIENT_INTERRUPTED".into()),
+            ..RequestUsage::default()
+        };
+        store.record_request_usage(&id, &local).unwrap();
+        let remote = RequestUsage {
+            state: InvocationState::Completed,
+            completeness: UsageCompleteness::Final,
+            input_tokens: Some("9007199254740993".into()),
+            output_tokens: Some("55".into()),
+            reasoning_tokens: Some("40".into()),
+            cost_microusd: Some("112".into()),
+            settled: true,
+            finished_at_ms: Some("8000".into()),
+            ..local.clone()
+        };
+        store
+            .reconcile_request_usage(&id, &[remote.clone(), remote.clone()])
+            .unwrap();
+        let recovered = store.thread_snapshot(&id, None, 100).unwrap().request_usage;
+        assert_eq!(recovered.len(), 1);
+        assert_eq!(
+            recovered[0].input_tokens.as_deref(),
+            Some("9007199254740993")
+        );
+        assert_eq!(recovered[0].state, InvocationState::Failed);
+        assert!(!recovered[0].response_verified);
+        assert_eq!(recovered[0].finished_at_ms.as_deref(), Some("8000"));
+        assert_eq!(recovered[0].turn_id, local.turn_id);
+        assert!(
+            store
+                .reconcile_request_usage(
+                    &id,
+                    &[RequestUsage {
+                        response_verified: true,
+                        ..remote.clone()
+                    }]
+                )
+                .is_err()
+        );
+        store.activate_account("account-b").unwrap();
+        create(&store, &id);
+        store.reconcile_request_usage(&id, &[remote]).unwrap();
+        assert!(
+            store
+                .thread_snapshot(&id, None, 100)
+                .unwrap()
+                .request_usage
+                .is_empty()
+        );
+        store.activate_account("account-a").unwrap();
+        assert_eq!(
+            store.thread_snapshot(&id, None, 100).unwrap().request_usage,
+            recovered
+        );
+    }
+
+    #[test]
+    fn desktop_agent_settings_are_atomic_idle_only_and_account_scoped() {
+        use axiom_acp_extension::{ConfigureDesktopAgentRequest, DesktopAgentPermission};
+        let (root, store) = routed_store();
+        store.activate_account("account-a").unwrap();
+        let id = SessionId::new();
+        create(&store, &id);
+        let original = store.desktop_agent_settings(&id).unwrap();
+        assert!(!original.enabled);
+        let chosen = root.path().join("My Project 日本語");
+        std::fs::create_dir(&chosen).unwrap();
+        let request = ConfigureDesktopAgentRequest {
+            thread_id: id.to_string(),
+            expected_revision: 0,
+            enabled: true,
+            permission: DesktopAgentPermission::FullAccess,
+            working_directory: Some(chosen.to_str().unwrap().into()),
+        };
+        let settings = store.prepare_desktop_agent_settings(&id, &request).unwrap();
+        let event = envelope(
+            &id,
+            2,
+            AppEvent::DesktopAgentConfigured {
+                settings: settings.clone(),
+            },
+        );
+        store.append(&event).unwrap();
+        assert_eq!(store.desktop_agent_settings(&id).unwrap(), settings);
+        let summary = store.thread_summary(&id).unwrap();
+        assert_eq!(summary.profile, PermissionProfile::FullAccess.to_string());
+        assert_eq!(summary.cwd, chosen.canonicalize().unwrap());
+        assert!(summary.last_message_at.is_none());
+        assert!(
+            store.append(&event).is_err(),
+            "stale revisions cannot apply twice"
+        );
+        assert!(store.prepare_desktop_agent_settings(&id, &request).is_err());
+        let mut update = request.clone();
+        update.expected_revision = 1;
+        update.enabled = false;
+        let off = store.prepare_desktop_agent_settings(&id, &update).unwrap();
+        let turn = TurnId::new();
+        begin_turn(&store, &id, &turn, None);
+        assert!(
+            store
+                .append(&envelope(
+                    &id,
+                    5,
+                    AppEvent::DesktopAgentConfigured { settings: off }
+                ))
+                .is_err()
+        );
+        assert_eq!(store.desktop_agent_settings(&id).unwrap(), settings);
+        assert_eq!(
+            store.thread_summary(&id).unwrap().profile,
+            PermissionProfile::FullAccess.to_string()
+        );
+        let account_a = store.bind_active_account().unwrap();
+        store.activate_account("account-b").unwrap();
+        assert!(account_a.desktop_agent_settings(&id).is_err());
+        assert!(store.desktop_agent_settings(&id).is_err());
+        store.activate_account("account-a").unwrap();
+        assert_eq!(store.desktop_agent_settings(&id).unwrap(), settings);
+    }
+
+    #[test]
+    fn schema_three_upgrade_preserves_existing_threads_with_agent_off() {
+        let (_root, store) = routed_store();
+        store.activate_account("account-a").unwrap();
+        let id = SessionId::new();
+        create(&store, &id);
+        let original = store.thread_summary(&id).unwrap();
+        store
+            .lock()
+            .unwrap()
+            .execute_batch(
+                "DROP TABLE request_usage; ALTER TABLE threads DROP COLUMN desktop_agent_settings; PRAGMA user_version=3;",
+            )
+            .unwrap();
+        store.deactivate_account().unwrap();
+        store.activate_account("account-a").unwrap();
+        assert_eq!(store.thread_summary(&id).unwrap(), original);
+        assert!(!store.desktop_agent_settings(&id).unwrap().enabled);
+    }
+
+    #[test]
+    fn account_bound_read_paused_before_store_lock_cannot_disclose_the_next_account() {
+        let (_root, store) = routed_store();
+        store.activate_account("account-a").expect("activate A");
+        let thread_a = SessionId::new();
+        create(&store, &thread_a);
+        store
+            .rename(&thread_a, "account-a-private")
+            .expect("name A thread");
+        let account_a_store = store.bind_active_account().expect("bind A store");
+
+        let paused_before_lock = Arc::new(Barrier::new(2));
+        let resume = Arc::new(Barrier::new(2));
+        let reader_paused = paused_before_lock.clone();
+        let reader_resume = resume.clone();
+        let reader = std::thread::spawn(move || {
+            reader_paused.wait();
+            reader_resume.wait();
+            account_a_store.thread_catalog(None, true, None, 200)
+        });
+
+        paused_before_lock.wait();
+        store.activate_account("account-b").expect("activate B");
+        let thread_b = SessionId::new();
+        create(&store, &thread_b);
+        store
+            .rename(&thread_b, "account-b-private")
+            .expect("name B thread");
+        resume.wait();
+
+        let error = reader
+            .join()
+            .expect("reader thread")
+            .expect_err("the A binding must be stale");
+        assert!(
+            matches!(error, AxiomError::InvalidTransition(ref detail) if detail.contains("changed"))
+        );
+        let account_b_threads = store.list_threads(true).expect("B catalog");
+        assert_eq!(account_b_threads.len(), 1);
+        assert_eq!(
+            account_b_threads[0].title.as_deref(),
+            Some("account-b-private")
+        );
+    }
+
+    #[test]
+    fn account_bound_mutation_paused_before_store_lock_cannot_write_the_next_account() {
+        let (_root, store) = routed_store();
+        store.activate_account("account-a").expect("activate A");
+        let account_a_store = store.bind_active_account().expect("bind A store");
+
+        let paused_before_lock = Arc::new(Barrier::new(2));
+        let resume = Arc::new(Barrier::new(2));
+        let writer_paused = paused_before_lock.clone();
+        let writer_resume = resume.clone();
+        let writer = std::thread::spawn(move || {
+            writer_paused.wait();
+            writer_resume.wait();
+            account_a_store.create_collection("must-not-reach-account-b")
+        });
+
+        paused_before_lock.wait();
+        store.activate_account("account-b").expect("activate B");
+        resume.wait();
+
+        let error = writer
+            .join()
+            .expect("writer thread")
+            .expect_err("the A binding must be stale");
+        assert!(
+            matches!(error, AxiomError::InvalidTransition(ref detail) if detail.contains("changed"))
+        );
+        assert!(
+            store
+                .list_collections()
+                .expect("B collections")
+                .collections
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn account_binding_generation_rejects_a_reactivated_copy_of_the_same_account() {
+        let (_root, store) = routed_store();
+        store.activate_account("account-a").expect("activate A");
+        let original_activation = store.bind_active_account().expect("bind first A");
+
+        store.deactivate_account().expect("deactivate A");
+        store.activate_account("account-a").expect("reactivate A");
+
+        assert!(store.profile_preferences().is_ok());
+        assert!(matches!(
+            original_activation.profile_preferences(),
+            Err(AxiomError::InvalidTransition(detail)) if detail.contains("changed")
+        ));
     }
 
     fn begin_turn(
@@ -3484,12 +4482,16 @@ mod tests {
         let directory = tempdir().expect("temp dir");
         let fresh = directory.path().join("state.sqlite3");
         let store = SessionStore::open(&fresh).expect("fresh store");
+        assert!(
+            store.is_active(),
+            "explicit non-routed stores remain usable by tests and automation"
+        );
         let connection = store.lock().expect("lock");
         assert_eq!(
             connection
                 .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
                 .expect("version"),
-            1
+            SCHEMA_VERSION
         );
         assert_eq!(
             connection
@@ -3521,9 +4523,189 @@ mod tests {
         let future = directory.path().join("future.sqlite3");
         Connection::open(&future)
             .expect("future db")
-            .execute_batch("PRAGMA user_version=2;")
+            .pragma_update(None, "user_version", SCHEMA_VERSION + 1)
             .expect("future schema");
         assert!(SessionStore::open(&future).is_err());
+    }
+
+    fn usage_report(input_tokens: u64) -> axiom_acp_extension::ContextUsage {
+        axiom_acp_extension::ContextUsage {
+            input_tokens,
+            output_tokens: 1_000,
+            model_id: "original-model".into(),
+            reported_at: "2026-09-07T00:00:00Z".into(),
+            context_window_tokens: Some(100_000),
+            auto_compact_threshold_tokens: Some(85_000),
+        }
+    }
+
+    #[test]
+    fn provider_reports_persist_across_reload_without_auxiliary_usage_or_compaction_overwriting_them()
+     {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("state.sqlite3");
+        let store = SessionStore::open(&path).unwrap();
+        let id = SessionId::new();
+        let other = SessionId::new();
+        let turn = TurnId::new();
+        create(&store, &id);
+        create(&store, &other);
+        begin_turn(&store, &id, &turn, None);
+        let before = store.thread_snapshot(&id, None, 100).unwrap();
+        for (sequence, input) in [(4, 70_000), (5, 75_000)] {
+            store
+                .append(&envelope(
+                    &id,
+                    sequence,
+                    AppEvent::ContextUsageUpdated {
+                        usage: usage_report(input),
+                    },
+                ))
+                .unwrap();
+        }
+        let after = store.thread_snapshot(&id, None, 100).unwrap();
+        assert_eq!(
+            after.context_usage,
+            Some(usage_report(75_000)),
+            "last request, never a sum"
+        );
+        assert_eq!(
+            after.items, before.items,
+            "no report rows or altered transcript"
+        );
+        assert_eq!(after.thread.last_message_at, before.thread.last_message_at);
+        assert!(after.thread.revision > before.thread.revision);
+        store
+            .append(&envelope(
+                &id,
+                6,
+                AppEvent::UsageUpdated {
+                    input_tokens: 9,
+                    output_tokens: 8,
+                },
+            ))
+            .unwrap();
+        store
+            .append(&envelope(
+                &id,
+                7,
+                AppEvent::ContextCompacted {
+                    summary: "Compacted context".into(),
+                    messages_before: 2,
+                },
+            ))
+            .unwrap();
+        store
+            .append(&envelope(
+                &id,
+                8,
+                AppEvent::ModelChanged {
+                    model: "different-model".into(),
+                },
+            ))
+            .unwrap();
+        store
+            .append(&envelope(&id, 9, AppEvent::TurnCompleted { turn_id: turn }))
+            .unwrap();
+        store.rename(&id, "Renamed thread").unwrap();
+        drop(store);
+        let reopened = SessionStore::open(&path).unwrap();
+        assert_eq!(
+            reopened
+                .thread_snapshot(&id, None, 100)
+                .unwrap()
+                .context_usage,
+            Some(usage_report(75_000))
+        );
+        assert!(
+            reopened
+                .thread_snapshot(&other, None, 100)
+                .unwrap()
+                .context_usage
+                .is_none()
+        );
+        reopened.delete_sessions(&[id.clone()]).unwrap();
+        assert!(reopened.thread_snapshot(&id, None, 100).is_err());
+        assert!(reopened.thread_snapshot(&other, None, 100).is_ok());
+    }
+
+    #[test]
+    fn provider_report_is_account_scoped_even_when_the_same_thread_id_is_reused() {
+        let (_root, store) = routed_store();
+        let id = SessionId::new();
+        store.activate_account("account-a").unwrap();
+        create(&store, &id);
+        store
+            .append(&envelope(
+                &id,
+                2,
+                AppEvent::ContextUsageUpdated {
+                    usage: usage_report(75_000),
+                },
+            ))
+            .unwrap();
+        store.activate_account("account-b").unwrap();
+        create(&store, &id);
+        assert!(
+            store
+                .thread_snapshot(&id, None, 10)
+                .unwrap()
+                .context_usage
+                .is_none()
+        );
+        store.activate_account("account-a").unwrap();
+        assert_eq!(
+            store.thread_snapshot(&id, None, 10).unwrap().context_usage,
+            Some(usage_report(75_000))
+        );
+    }
+
+    #[test]
+    fn schema_v3_preserves_legacy_data_without_fabricating_usage_provenance() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("state.sqlite3");
+        let connection = Connection::open(&path).unwrap();
+        connection.execute_batch(SCHEMA_V1).unwrap();
+        connection.execute_batch(SCHEMA_V2).unwrap();
+        let id = SessionId::new();
+        let turn = TurnId::new();
+        let (encoding, cwd) = encode_path(Path::new("/tmp/axiom-test")).unwrap();
+        connection
+            .execute(
+                "INSERT INTO threads(id,cwd,cwd_encoding,origin,profile,created_at,updated_at)
+             VALUES (?1,?2,?3,'test','confirm','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')",
+                params![id.to_string(), cwd, encoding],
+            )
+            .unwrap();
+        connection.execute(
+            "INSERT INTO turns(thread_id,id,status,input_tokens,output_tokens,started_at,completed_at)
+             VALUES (?1,?2,'completed',75000,1000,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')",
+            params![id.to_string(), turn.to_string()],
+        ).unwrap();
+        drop(connection);
+        let store = SessionStore::open(&path).unwrap();
+        let snapshot = store.thread_snapshot(&id, None, 10).unwrap();
+        assert!(snapshot.context_usage.is_none());
+        assert_eq!(
+            (
+                snapshot.turns[0].input_tokens,
+                snapshot.turns[0].output_tokens
+            ),
+            (75_000, 1_000)
+        );
+        store
+            .append(&envelope(
+                &id,
+                2,
+                AppEvent::ContextUsageUpdated {
+                    usage: usage_report(80_000),
+                },
+            ))
+            .unwrap();
+        assert_eq!(
+            store.thread_snapshot(&id, None, 10).unwrap().context_usage,
+            Some(usage_report(80_000))
+        );
     }
 
     #[test]
@@ -3583,6 +4765,592 @@ mod tests {
         assert_eq!(snapshot.items[1].status, TimelineItemStatus::Completed);
         assert_eq!(snapshot.turns[0].status, TurnStatus::Completed);
         assert_eq!(snapshot.thread.lifecycle, ThreadLifecycle::Ready);
+    }
+
+    #[test]
+    fn steering_preserves_same_turn_chronology_after_restart() {
+        let directory = tempdir().expect("temp dir");
+        let path = directory.path().join("state.sqlite3");
+        let store = SessionStore::open(&path).expect("store");
+        let id = SessionId::new();
+        let turn = TurnId::new();
+        create(&store, &id);
+        begin_turn(&store, &id, &turn, Some("original-input"));
+        let before = store
+            .append(&envelope(
+                &id,
+                4,
+                AppEvent::TextDelta {
+                    turn_id: turn.clone(),
+                    text: "Before steering.".into(),
+                },
+            ))
+            .unwrap();
+        let input = AppEvent::SteeringApplied {
+            turn_id: turn.clone(),
+            client_item_id: "steer-input".into(),
+            text: "New direction".into(),
+        };
+        store.append(&envelope(&id, 5, input.clone())).unwrap();
+        let after = store
+            .append(&envelope(
+                &id,
+                6,
+                AppEvent::TextDelta {
+                    turn_id: turn.clone(),
+                    text: "After steering.".into(),
+                },
+            ))
+            .unwrap();
+        assert_ne!(before.timeline_item_id, after.timeline_item_id);
+        assert!(
+            store.append(&envelope(&id, 7, input)).is_err(),
+            "duplicate input IDs never create another message"
+        );
+        store
+            .append(&envelope(
+                &id,
+                8,
+                AppEvent::ResponseVerified {
+                    turn_id: turn.clone(),
+                },
+            ))
+            .unwrap();
+        store
+            .append(&envelope(
+                &id,
+                9,
+                AppEvent::TurnCompleted {
+                    turn_id: turn.clone(),
+                },
+            ))
+            .unwrap();
+        let snapshot = store.thread_snapshot(&id, None, 100).unwrap();
+        assert_eq!(snapshot.turns.len(), 1);
+        assert_eq!(snapshot.turns[0].status, TurnStatus::Completed);
+        assert_eq!(
+            snapshot
+                .items
+                .iter()
+                .map(|item| item.content.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "hello",
+                "Before steering.",
+                "New direction",
+                "After steering."
+            ]
+        );
+        assert!(
+            snapshot
+                .items
+                .iter()
+                .all(|item| item.turn_id.as_deref() == Some(turn.to_string().as_str()))
+        );
+        assert_eq!(
+            snapshot.items[2].client_item_id.as_deref(),
+            Some("steer-input")
+        );
+        assert_eq!(snapshot.items[2].metadata["steering"], true);
+        drop(store);
+        let reopened = SessionStore::open(&path).unwrap();
+        assert_eq!(snapshot, reopened.thread_snapshot(&id, None, 100).unwrap());
+        let replay = reopened.load(&id).unwrap();
+        assert_eq!(
+            replay
+                .iter()
+                .filter(|event| matches!(event.event, AppEvent::TurnStarted { .. }))
+                .count(),
+            1
+        );
+        assert_eq!(
+            replay
+                .iter()
+                .filter(|event| matches!(event.event, AppEvent::PromptAccepted { .. }))
+                .count(),
+            1
+        );
+        assert_eq!(
+            replay
+                .iter()
+                .filter(|event| matches!(event.event, AppEvent::SteeringApplied { .. }))
+                .count(),
+            1
+        );
+        let mut kernel = crate::app::Kernel::default();
+        kernel
+            .restore_from_events(&replay)
+            .expect("valid same-turn replay");
+    }
+
+    #[test]
+    fn tool_boundaries_preserve_message_segments_through_restart_and_replay() {
+        let directory = tempdir().expect("temp dir");
+        let path = directory.path().join("state.sqlite3");
+        let store = SessionStore::open(&path).expect("store");
+        let id = SessionId::new();
+        let turn = TurnId::new();
+        create(&store, &id);
+        begin_turn(&store, &id, &turn, None);
+        let mut sequence = 4;
+        let mut append = |event| {
+            sequence += 1;
+            store
+                .append(&envelope(&id, sequence, event))
+                .expect("append")
+        };
+        let intro = append(AppEvent::TextDelta {
+            turn_id: turn.clone(),
+            text: "Let me check 🌍: ".into(),
+        });
+        for (call, text) in [
+            ("search-1", "One result. "),
+            ("search-2", "The news is xyz."),
+        ] {
+            append(AppEvent::ToolProposed {
+                turn_id: turn.clone(),
+                call_id: call.into(),
+                name: "web_search".into(),
+                arguments: json!({"query":"current news"}),
+            });
+            append(AppEvent::ToolStarted {
+                call_id: call.into(),
+                name: "web_search".into(),
+            });
+            append(AppEvent::ToolCompleted {
+                call_id: call.into(),
+                success: true,
+            });
+            append(AppEvent::ReasoningDelta {
+                turn_id: turn.clone(),
+                text: "Check the sources.".into(),
+            });
+            let delta = append(AppEvent::TextDelta {
+                turn_id: turn.clone(),
+                text: text.into(),
+            });
+            assert_ne!(delta.timeline_item_id, intro.timeline_item_id);
+            let continuation = append(AppEvent::TextDelta {
+                turn_id: turn.clone(),
+                text: "More. ".into(),
+            });
+            assert_eq!(delta.timeline_item_id, continuation.timeline_item_id);
+        }
+        append(AppEvent::ResponseVerified {
+            turn_id: turn.clone(),
+        });
+        append(AppEvent::TurnCompleted { turn_id: turn });
+        let before = store.thread_snapshot(&id, None, 100).expect("snapshot");
+        drop(store);
+        let reopened = SessionStore::open(&path).expect("reopen");
+        let after = reopened.thread_snapshot(&id, None, 100).expect("snapshot");
+        assert_eq!(before.items, after.items);
+        let visible = after
+            .items
+            .iter()
+            .filter(|item| item.kind != TimelineItemKind::Reasoning)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            visible.iter().map(|item| item.kind).collect::<Vec<_>>(),
+            vec![
+                TimelineItemKind::UserMessage,
+                TimelineItemKind::AssistantMessage,
+                TimelineItemKind::ToolCall,
+                TimelineItemKind::AssistantMessage,
+                TimelineItemKind::ToolCall,
+                TimelineItemKind::AssistantMessage,
+            ]
+        );
+        assert_eq!(visible[1].content, "Let me check 🌍: ");
+        assert_eq!(visible[3].content, "One result. More. ");
+        assert_eq!(visible[5].content, "The news is xyz.More. ");
+        assert!(
+            after
+                .items
+                .iter()
+                .filter(|item| matches!(
+                    item.kind,
+                    TimelineItemKind::AssistantMessage | TimelineItemKind::Reasoning
+                ))
+                .all(|item| item.metadata["terminal_verified"] == true)
+        );
+        let replay = reopened.load(&id).expect("runtime projection");
+        let order = replay
+            .iter()
+            .filter_map(|event| match &event.event {
+                AppEvent::TextDelta { text, .. } => Some(text.as_str()),
+                AppEvent::ToolProposed { call_id, .. } => Some(call_id.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            order,
+            vec![
+                "Let me check 🌍: ",
+                "search-1",
+                "One result. More. ",
+                "search-2",
+                "The news is xyz.More. "
+            ]
+        );
+    }
+
+    #[test]
+    fn tool_first_response_does_not_fill_the_pre_tool_placeholder() {
+        let store = SessionStore::in_memory().expect("store");
+        let id = SessionId::new();
+        let turn = TurnId::new();
+        create(&store, &id);
+        begin_turn(&store, &id, &turn, None);
+        store
+            .append(&envelope(
+                &id,
+                4,
+                AppEvent::ToolProposed {
+                    turn_id: turn.clone(),
+                    call_id: "search".into(),
+                    name: "web_search".into(),
+                    arguments: json!({"query":"news"}),
+                },
+            ))
+            .expect("tool");
+        let delta = store
+            .append(&envelope(
+                &id,
+                5,
+                AppEvent::TextDelta {
+                    turn_id: turn.clone(),
+                    text: "Unverified partial".into(),
+                },
+            ))
+            .expect("delta");
+        store
+            .append(&envelope(&id, 6, AppEvent::TurnCancelled { turn_id: turn }))
+            .expect("cancel");
+        let snapshot = store.thread_snapshot(&id, None, 100).expect("snapshot");
+        assert_eq!(snapshot.items[1].content, "");
+        assert_eq!(snapshot.items[2].kind, TimelineItemKind::ToolCall);
+        assert_eq!(snapshot.items[3].content, "Unverified partial");
+        assert_eq!(
+            delta.timeline_item_id.as_deref(),
+            Some(snapshot.items[3].id.as_str())
+        );
+        assert_eq!(snapshot.items[3].status, TimelineItemStatus::Cancelled);
+        assert_ne!(snapshot.items[3].metadata["terminal_verified"], true);
+    }
+
+    #[test]
+    fn request_receipt_binds_initial_assistant_and_reasoning_through_restart() {
+        use axiom_inference::{InvocationState, RequestUsage};
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("state.sqlite3");
+        let store = SessionStore::open(&path).unwrap();
+        let id = SessionId::new();
+        let turn = TurnId::new();
+        create(&store, &id);
+        begin_turn(&store, &id, &turn, None);
+        let mut usage = RequestUsage {
+            request_id: "a".repeat(32),
+            turn_id: Some(turn.to_string()),
+            ..RequestUsage::default()
+        };
+        let mut sequence = 3;
+        let mut append = |event| {
+            sequence += 1;
+            store.append(&envelope(&id, sequence, event)).unwrap()
+        };
+        append(AppEvent::RequestUsageUpdated {
+            usage: usage.clone(),
+        });
+        append(AppEvent::ReasoningDelta {
+            turn_id: turn.clone(),
+            text: "Synthetic reasoning".into(),
+        });
+        append(AppEvent::TextDelta {
+            turn_id: turn.clone(),
+            text: "Synthetic reply".into(),
+        });
+        let before = store.thread_snapshot(&id, None, 100).unwrap();
+        for item in &before.items[1..] {
+            assert_eq!(item.metadata["request_id"], usage.request_id);
+            assert_ne!(item.metadata["terminal_verified"], true);
+        }
+        usage.state = InvocationState::Completed;
+        usage.response_verified = true;
+        usage.finish_reason = Some("length".into());
+        append(AppEvent::RequestUsageUpdated {
+            usage: usage.clone(),
+        });
+        append(AppEvent::ResponseVerified {
+            turn_id: turn.clone(),
+        });
+        append(AppEvent::TurnCompleted { turn_id: turn });
+        drop(store);
+        let reopened = SessionStore::open(&path).unwrap();
+        let after = reopened.thread_snapshot(&id, None, 100).unwrap();
+        assert_eq!(after.items.len(), 3);
+        for item in &after.items[1..] {
+            assert_eq!(item.metadata["request_id"], usage.request_id);
+            assert_eq!(item.metadata["terminal_verified"], true);
+            assert_eq!(item.metadata["finish_reason"], "length");
+            assert_eq!(item.status, TimelineItemStatus::Completed);
+        }
+    }
+
+    #[test]
+    fn later_verified_request_cannot_verify_an_earlier_partial_in_the_same_turn() {
+        use axiom_inference::{InvocationPurpose, InvocationState, RequestUsage};
+        let store = SessionStore::in_memory().unwrap();
+        let id = SessionId::new();
+        let turn = TurnId::new();
+        create(&store, &id);
+        begin_turn(&store, &id, &turn, None);
+        let mut sequence = 3;
+        let mut append = |event| {
+            sequence += 1;
+            store.append(&envelope(&id, sequence, event)).unwrap()
+        };
+        let mut first = RequestUsage {
+            request_id: "a".repeat(32),
+            turn_id: Some(turn.to_string()),
+            ..RequestUsage::default()
+        };
+        append(AppEvent::RequestUsageUpdated {
+            usage: first.clone(),
+        });
+        append(AppEvent::TextDelta {
+            turn_id: turn.clone(),
+            text: "Unverified partial".into(),
+        });
+        first.state = InvocationState::Cancelled;
+        append(AppEvent::RequestUsageUpdated {
+            usage: first.clone(),
+        });
+        let mut second = RequestUsage {
+            request_id: "b".repeat(32),
+            state: InvocationState::Running,
+            ..first.clone()
+        };
+        append(AppEvent::RequestUsageUpdated {
+            usage: second.clone(),
+        });
+        append(AppEvent::RequestUsageUpdated {
+            usage: RequestUsage {
+                request_id: "c".repeat(32),
+                purpose: InvocationPurpose::Compaction,
+                ..second.clone()
+            },
+        });
+        append(AppEvent::RequestUsageUpdated {
+            usage: RequestUsage {
+                request_id: "d".repeat(32),
+                turn_id: Some(TurnId::new().to_string()),
+                ..second.clone()
+            },
+        });
+        append(AppEvent::TextDelta {
+            turn_id: turn.clone(),
+            text: "Verified new response".into(),
+        });
+        append(AppEvent::ReasoningDelta {
+            turn_id: turn.clone(),
+            text: "Verified new reasoning".into(),
+        });
+        second.state = InvocationState::Completed;
+        second.response_verified = true;
+        append(AppEvent::RequestUsageUpdated {
+            usage: second.clone(),
+        });
+        append(AppEvent::ResponseVerified {
+            turn_id: turn.clone(),
+        });
+        append(AppEvent::TurnCompleted { turn_id: turn });
+        let snapshot = store.thread_snapshot(&id, None, 100).unwrap();
+        assert_eq!(snapshot.items.len(), 4);
+        assert_eq!(snapshot.items[1].content, "Unverified partial");
+        assert_eq!(snapshot.items[1].metadata["request_id"], first.request_id);
+        assert_ne!(snapshot.items[1].metadata["terminal_verified"], true);
+        for item in &snapshot.items[2..] {
+            assert_eq!(item.metadata["request_id"], second.request_id);
+            assert_eq!(item.metadata["terminal_verified"], true);
+        }
+    }
+
+    #[test]
+    fn verified_tool_only_request_binds_its_empty_assistant_placeholder() {
+        use axiom_inference::{InvocationState, RequestUsage};
+        let store = SessionStore::in_memory().unwrap();
+        let id = SessionId::new();
+        let turn = TurnId::new();
+        create(&store, &id);
+        begin_turn(&store, &id, &turn, None);
+        let usage = RequestUsage {
+            request_id: "a".repeat(32),
+            turn_id: Some(turn.to_string()),
+            ..RequestUsage::default()
+        };
+        store
+            .append(&envelope(
+                &id,
+                4,
+                AppEvent::RequestUsageUpdated {
+                    usage: usage.clone(),
+                },
+            ))
+            .unwrap();
+        store
+            .append(&envelope(
+                &id,
+                5,
+                AppEvent::ToolProposed {
+                    turn_id: turn,
+                    call_id: "search".into(),
+                    name: "web_search".into(),
+                    arguments: json!({"query":"synthetic"}),
+                },
+            ))
+            .unwrap();
+        store
+            .append(&envelope(
+                &id,
+                6,
+                AppEvent::RequestUsageUpdated {
+                    usage: RequestUsage {
+                        state: InvocationState::Completed,
+                        response_verified: true,
+                        ..usage.clone()
+                    },
+                },
+            ))
+            .unwrap();
+        let snapshot = store.thread_snapshot(&id, None, 100).unwrap();
+        assert_eq!(snapshot.items[1].content, "");
+        assert_eq!(snapshot.items[1].metadata["request_id"], usage.request_id);
+        assert_eq!(snapshot.items[1].metadata["terminal_verified"], true);
+    }
+
+    #[test]
+    fn receipt_binding_migration_requires_unambiguous_local_verification() {
+        use axiom_inference::{InvocationPurpose, InvocationState, RequestUsage};
+        for case in [
+            "verified",
+            "unverified",
+            "failed",
+            "auxiliary",
+            "other_turn",
+            "multiple_requests",
+            "cancelled_turn",
+            "already_bound",
+        ] {
+            let directory = tempdir().unwrap();
+            let path = directory.path().join("state.sqlite3");
+            let store = SessionStore::open(&path).unwrap();
+            let id = SessionId::new();
+            let turn = TurnId::new();
+            create(&store, &id);
+            begin_turn(&store, &id, &turn, None);
+            store
+                .append(&envelope(
+                    &id,
+                    4,
+                    AppEvent::TextDelta {
+                        turn_id: turn.clone(),
+                        text: "Historical reply".into(),
+                    },
+                ))
+                .unwrap();
+            store
+                .append(&envelope(
+                    &id,
+                    5,
+                    if case == "cancelled_turn" {
+                        AppEvent::TurnCancelled {
+                            turn_id: turn.clone(),
+                        }
+                    } else {
+                        AppEvent::TurnCompleted {
+                            turn_id: turn.clone(),
+                        }
+                    },
+                ))
+                .unwrap();
+            let usage = RequestUsage {
+                request_id: "a".repeat(32),
+                turn_id: Some(if case == "other_turn" {
+                    TurnId::new().to_string()
+                } else {
+                    turn.to_string()
+                }),
+                purpose: if case == "auxiliary" {
+                    InvocationPurpose::Title
+                } else {
+                    InvocationPurpose::Conversation
+                },
+                state: if case == "failed" {
+                    InvocationState::Failed
+                } else {
+                    InvocationState::Completed
+                },
+                response_verified: case != "unverified",
+                settled: true,
+                finish_reason: Some("stop".into()),
+                ..RequestUsage::default()
+            };
+            // Model the schema-5 defect: accounting exists but the initial
+            // assistant row has no binding, so it missed the receipt marker.
+            store.record_request_usage(&id, &usage).unwrap();
+            if case == "multiple_requests" {
+                store
+                    .record_request_usage(
+                        &id,
+                        &RequestUsage {
+                            request_id: "b".repeat(32),
+                            ..usage.clone()
+                        },
+                    )
+                    .unwrap();
+            }
+            if case == "already_bound" {
+                store.lock().unwrap().execute("UPDATE timeline_items SET metadata=json_object('request_id', ?1) WHERE kind='assistant_message'", ["b".repeat(32)]).unwrap();
+            }
+            let before = store.thread_snapshot(&id, None, 100).unwrap();
+            store
+                .lock()
+                .unwrap()
+                .pragma_update(None, "user_version", 5)
+                .unwrap();
+            drop(store);
+            let reopened = SessionStore::open(&path).unwrap();
+            let after = reopened.thread_snapshot(&id, None, 100).unwrap();
+            let repaired = case == "verified";
+            assert_eq!(
+                after.items[1].metadata["terminal_verified"] == true,
+                repaired,
+                "{case}"
+            );
+            assert_eq!(
+                after.thread.revision,
+                before.thread.revision + u64::from(repaired),
+                "{case}"
+            );
+            assert_eq!(after.items[1].content, before.items[1].content);
+            assert_eq!(after.items[1].updated_at, before.items[1].updated_at);
+            if repaired {
+                assert_eq!(after.items[1].metadata["request_id"], usage.request_id);
+                assert_eq!(after.items[1].metadata["finish_reason"], "stop");
+            } else {
+                assert_eq!(after.items, before.items, "{case}");
+            }
+            drop(reopened);
+            assert_eq!(
+                SessionStore::open(&path)
+                    .unwrap()
+                    .thread_snapshot(&id, None, 100)
+                    .unwrap(),
+                after,
+                "migration is idempotent: {case}"
+            );
+        }
     }
 
     #[test]
@@ -3717,11 +5485,182 @@ mod tests {
     }
 
     #[test]
+    fn message_order_ignores_operational_updates_and_paginates_empty_threads() {
+        let store = SessionStore::in_memory().expect("store");
+        let older = SessionId::new();
+        let newer = SessionId::new();
+        let empty = SessionId::new();
+        let empty_two = SessionId::new();
+        for id in [&older, &newer, &empty, &empty_two] {
+            create(&store, id);
+        }
+        let turn = TurnId::new();
+        let at = |id: &SessionId, time: &str, event| {
+            let mut message = envelope(id, 2, event);
+            message.occurred_at = time.parse().expect("timestamp");
+            store.append(&message).expect("persist")
+        };
+        at(
+            &older,
+            "2026-01-01T01:00:00Z",
+            AppEvent::PromptAccepted {
+                turn_id: turn.clone(),
+                text: "old".into(),
+            },
+        );
+        at(
+            &newer,
+            "2026-01-01T02:00:00Z",
+            AppEvent::PromptAccepted {
+                turn_id: TurnId::new(),
+                text: "new".into(),
+            },
+        );
+        store.rename(&older, "Renamed today").expect("rename");
+        let folder = store
+            .create_collection("Folder")
+            .expect("folder")
+            .collection_id
+            .expect("id");
+        store
+            .assign_thread_collection(&older, Some(&folder))
+            .expect("assign");
+        at(
+            &older,
+            "2026-01-02T00:00:00Z",
+            AppEvent::BackgroundTaskChanged {
+                task_id: "preflight".into(),
+                state: "completed".into(),
+            },
+        );
+        at(
+            &older,
+            "2026-01-02T00:00:01Z",
+            AppEvent::SessionResumed {
+                cwd: PathBuf::from("/tmp"),
+                origin: Origin::Test,
+                profile: PermissionProfile::Confirm,
+            },
+        );
+        at(
+            &older,
+            "2026-01-02T00:00:02Z",
+            AppEvent::TextDelta {
+                turn_id: turn.clone(),
+                text: String::new(),
+            },
+        );
+        assert_eq!(
+            store.list_threads(false).expect("threads")[0].id,
+            newer.to_string()
+        );
+        assert_eq!(
+            store
+                .thread_summary(&older)
+                .expect("summary")
+                .last_message_at
+                .as_deref(),
+            Some("2026-01-01T01:00:00.000Z")
+        );
+        let revision = at(
+            &older,
+            "2026-01-02T03:00:00Z",
+            AppEvent::TextDelta {
+                turn_id: turn,
+                text: "new reply".into(),
+            },
+        );
+        assert_eq!(
+            revision.last_message_at.as_deref(),
+            Some("2026-01-02T03:00:00.000Z")
+        );
+        assert_eq!(
+            store.list_threads(false).expect("threads")[0].id,
+            older.to_string()
+        );
+        let mut cursor = None;
+        let mut ids = Vec::new();
+        loop {
+            let page = store
+                .thread_catalog(None, false, cursor.as_deref(), 1)
+                .expect("page");
+            ids.extend(page.threads.into_iter().map(|thread| thread.id));
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        let mut empty_ids = vec![empty.to_string(), empty_two.to_string()];
+        empty_ids.sort();
+        assert_eq!(
+            ids,
+            [vec![older.to_string(), newer.to_string()], empty_ids].concat()
+        );
+    }
+
+    #[test]
+    fn schema_v2_backfills_message_activity_without_touching_conversations() {
+        let directory = tempdir().expect("temp");
+        let path = directory.path().join("state.sqlite3");
+        let connection = Connection::open(&path).expect("connection");
+        connection.execute_batch(SCHEMA_V1).expect("v1 schema");
+        let (encoding, cwd) = encode_path(Path::new("/tmp/axiom-test")).expect("path");
+        connection.execute(
+            "INSERT INTO threads(id,cwd,cwd_encoding,origin,profile,created_at,updated_at)
+             VALUES ('thread',?1,?2,'test','confirm','2026-01-01T00:00:00Z','2026-09-01T00:00:00Z')",
+            params![cwd, encoding],
+        ).expect("thread");
+        for (sequence, kind, text, time) in [
+            (
+                1,
+                "user_message",
+                "preserved message",
+                "2026-01-01T01:00:00Z",
+            ),
+            (2, "assistant_message", "", "2026-09-01T00:00:00Z"),
+            (3, "notice", "security check", "2026-09-01T00:00:00Z"),
+        ] {
+            connection.execute(
+                "INSERT INTO timeline_items(id,thread_id,sequence,kind,status,content,created_at,updated_at)
+                 VALUES (?1,'thread',?1,?2,'completed',?3,?4,?4)",
+                params![sequence, kind, text, time],
+            ).expect("item");
+        }
+        drop(connection);
+        let store = SessionStore::open(&path).expect("migrated store");
+        let threads = store.list_threads(false).expect("threads");
+        assert_eq!(threads.len(), 1);
+        assert_eq!(
+            threads[0].last_message_at.as_deref(),
+            Some("2026-01-01T01:00:00.000Z")
+        );
+        let connection = store.lock().expect("lock");
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT content FROM timeline_items WHERE id='1'",
+                    [],
+                    |row| row.get::<_, String>(0)
+                )
+                .expect("content"),
+            "preserved message"
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM timeline_items", [], |row| row
+                    .get::<_, i64>(0))
+                .expect("count"),
+            3
+        );
+    }
+
+    #[test]
     fn reopening_marks_nonterminal_turns_and_items_interrupted() {
         let directory = tempdir().expect("temp dir");
         let path = directory.path().join("state.sqlite3");
         let id = SessionId::new();
         let turn = TurnId::new();
+        let message_at;
         {
             let store = SessionStore::open(&path).expect("store");
             create(&store, &id);
@@ -3736,9 +5675,14 @@ mod tests {
                     },
                 ))
                 .expect("partial output");
+            message_at = store.thread_summary(&id).expect("summary").last_message_at;
         }
         let reopened = SessionStore::open(&path).expect("reopen");
         let snapshot = reopened.thread_snapshot(&id, None, 10).expect("snapshot");
+        assert_eq!(
+            snapshot.thread.last_message_at, message_at,
+            "recovery must not look like a new message"
+        );
         assert_eq!(snapshot.turns[0].status, TurnStatus::Interrupted);
         assert_eq!(snapshot.items[1].status, TimelineItemStatus::Interrupted);
         assert_eq!(snapshot.items[1].content, "partial");

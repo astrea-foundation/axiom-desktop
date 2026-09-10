@@ -66,7 +66,7 @@ function AssetIcon({ asset, className }: { asset: BrandAsset; className: string 
       alt=""
       aria-hidden="true"
       title={asset.name}
-      className={`${className} object-contain ${asset.monochrome ? "brightness-0 invert opacity-90" : ""}`}
+      className={`${className} object-contain ${asset.monochrome ? "brand-mono" : ""}`}
     />
   );
 }
@@ -74,7 +74,7 @@ function AssetIcon({ asset, className }: { asset: BrandAsset; className: string 
 function NearAiMark({ className }: { className: string }) {
   return (
     <svg viewBox="0 0 103 103" aria-hidden="true" className={className}>
-      <rect width="103" height="103" rx="14.292" fill="#fdfdfd" />
+      <rect width="103" height="103" rx="14.292" className="fill-[var(--surface-tile)]" />
       <path
         d="M75.217 21.364c-2.23 0-4.307 1.157-5.474 3.061L57.142 43.128a1.344 1.344 0 0 0 2.003 1.76l12.388-10.756a.501.501 0 0 1 .836.381V68.19a.504.504 0 0 1-.89.322L33.993 23.638a6.42 6.42 0 0 0-4.901-2.275h-1.31a6.419 6.419 0 0 0-6.419 6.419v47.431a6.419 6.419 0 0 0 11.893 3.357l12.601-18.703a1.344 1.344 0 0 0-2.003-1.76L31.466 68.863a.501.501 0 0 1-.836-.381V34.795a.504.504 0 0 1 .891-.322l37.48 44.884a6.42 6.42 0 0 0 4.901 2.275h1.31a6.424 6.424 0 0 0 6.424-6.419V27.787a6.419 6.419 0 0 0-6.419-6.419Z"
         fill="#0091fd"

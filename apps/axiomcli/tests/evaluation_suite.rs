@@ -58,6 +58,7 @@ impl InferenceProvider for ScriptedProvider {
 
 fn call(id: &str, name: &str, arguments: &Value) -> AssistantTurn {
     AssistantTurn {
+        reasoning: None,
         text: String::new(),
         tool_calls: vec![ToolCall {
             id: id.into(),
@@ -72,6 +73,7 @@ fn call(id: &str, name: &str, arguments: &Value) -> AssistantTurn {
 
 fn done(text: &str) -> AssistantTurn {
     AssistantTurn {
+        reasoning: None,
         text: text.into(),
         tool_calls: Vec::new(),
     }
@@ -157,6 +159,8 @@ async fn run_agent(
                 turn_id: TurnId::new(),
                 cwd: root.to_path_buf(),
                 permission_profile: profile,
+                web_enabled: true,
+                steering: None,
                 approval: None,
                 questions: None,
             },
@@ -481,6 +485,8 @@ async fn live_model_investigation_baseline_is_budgeted_and_non_mutating() {
                     turn_id: TurnId::new(),
                     cwd: root.path().to_path_buf(),
                     permission_profile: PermissionProfile::Observe,
+                    web_enabled: true,
+                    steering: None,
                     approval: None,
                     questions: None,
                 },

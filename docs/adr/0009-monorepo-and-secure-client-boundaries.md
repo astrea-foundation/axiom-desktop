@@ -7,8 +7,8 @@ Status: accepted
 ADR 0004 intentionally kept the early coding agent in one package until a
 boundary had multiple real consumers. AxiomCLI, a standalone local proxy, and
 the Electron desktop application now establish those consumers. They need the
-same Axiom inference contracts and, once implemented, the same attested and
-end-to-end encrypted client without sharing presentation or server concerns.
+same Axiom inference contracts and the same attested, end-to-end encrypted
+client without sharing presentation or server concerns.
 
 ## Decision
 
@@ -26,7 +26,6 @@ apps/axiom-proxy -> axiom-openai-compat -----+--> axiom-secure-client
                                              +------> axiom-inference
 
 apps/desktop --spawns--> axiomcli acp
-             --spawns--> axiom-proxy
 ```
 
 `axiom-inference` owns transport-independent request, response, model, tool,
@@ -44,14 +43,16 @@ streaming responses to and from `axiom-inference` contracts. It does not
 establish trust or perform encryption.
 
 `apps/axiom-proxy` is a separate Rust executable. It binds to loopback
-by default, authenticate local clients, expose the selected compatibility
-endpoints, and use `axiom-secure-client` for upstream inference. AxiomCLI will
+by default, authenticates local clients, exposes the selected compatibility
+endpoints, and uses `axiom-secure-client` for upstream inference. AxiomCLI will
 call the same secure client in-process and will not require the local proxy.
 
-The Electron main process supervises `axiomcli acp` for agent workflows and
-`axiom-proxy` for proxy workflows. ACP remains an agent protocol; proxy
-lifecycle control uses a separate small, versioned protocol. Sidecars reserve
-stdout for machine-readable control messages and send logs to stderr.
+The Electron main process supervises `axiomcli acp` for Desktop chat. The Proxy
+screen separately supervises `axiomcli desktop-proxy`, which hosts the same
+proxy library using an account-bound native session. Desktop chat does not use
+the loopback proxy. The standalone executable remains available to users of the
+OpenAI-compatible integration. ACP reserves stdout for
+machine-readable control messages and sends logs to stderr.
 
 Application configuration remains in each composition root. Shared crates take
 typed constructor arguments and do not read environment variables, choose

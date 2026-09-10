@@ -12,40 +12,48 @@ On Linux, shared configuration is normally
 `$XDG_CONFIG_HOME/axiom/config.toml`; CLI and desktop overrides live in
 `axiom/cli/config.toml` and `axiom/desktop/config.toml`. The equivalent
 platform-native roots are used on macOS and Windows. `axiomcli doctor` prints
-the exact roots, databases, and desktop chat directory.
+the exact roots, active account database, and desktop chat directory. An
+explicit absolute `XDG_CONFIG_HOME` or `XDG_DATA_HOME` overrides the native root
+on every platform; relative overrides are rejected.
 
 Local data uses one Axiom namespace with explicit ownership:
 
 ```text
 <local data>/axiom/
   shared/identity/client-id
-  shared/credentials/
   shared/trust-policy.json
-  cli/state.sqlite3
-  desktop/state.sqlite3
-  desktop/chat/
+  accounts/<opaque-account-id>/
+    cli/state.sqlite3
+    desktop/state.sqlite3
+    desktop/chat/
 ```
 
-The protected credential fallback and installation identity are shared so the
-desktop and CLI use the same account. Conversation databases are separate.
-Versioned databases are upgraded through ordered, transactional migrations.
-Unversioned pre-release layouts are not guessed at and must be reset explicitly.
+The installation identity is shared. The rotating native refresh token lives in
+the operating-system credential store rather than this tree, so Desktop and CLI
+can use the same signed-in account without placing a bearer credential on disk.
+Each account and frontend has its own conversation database. No account database
+is opened while signed out. Versioned databases are upgraded through ordered,
+transactional migrations; unversioned pre-release layouts are not guessed at.
 
-During pre-release development, reset exactly one frontend database with
+During pre-release development, remove an old installation-wide frontend
+database with
 `axiomcli reset-local-state --frontend cli --confirm` or
-`axiomcli reset-local-state --frontend desktop-chat --confirm`. The command
-removes only that profile's `state.sqlite3` and SQLite sidecars. It preserves
-configuration, shared identity, credentials, trust policy, the other frontend's
-database, and `desktop/chat/`; no reset happens implicitly.
+`axiomcli reset-local-state --frontend desktop-chat --confirm`. This command is
+only a clean-slate cleanup for the retired `cli/state.sqlite3` or
+`desktop/state.sqlite3` layout. It never scans, migrates, or deletes any
+`accounts/<opaque-account-id>/` data, configuration, installation identity,
+credential-store entry, trust policy, or the other legacy frontend database.
 
-`axiomcli acp --frontend desktop-chat` is a product profile: its cwd is the
-canonical `desktop/chat` directory, MCP servers are disabled, its embedded
-desktop system prompt cannot be replaced with `--system-prompt-file`, and its
-permission profile is exactly `web`. Desktop parses known shared configuration
-and applies its common fields, but ignores additive unknown keys and shared
-`permission_profile` and `mcp_servers` because those fields configure the CLI.
-A non-Web permission setting in `desktop/config.toml`, the environment, ACP
-mode, or extension settings is rejected.
+`axiomcli acp --frontend desktop-chat` is a product profile. After sign-in, its
+cwd is the active account's canonical `desktop/chat` directory. While signed
+out, thread and chat operations fail with an authentication-required error and
+no fallback database is opened. MCP servers are disabled, the embedded desktop
+system prompt cannot be replaced with `--system-prompt-file`, and the permission
+profile is exactly `web`. Desktop parses known shared configuration and applies
+its common fields, but ignores additive unknown keys and shared
+`permission_profile` and `mcp_servers` because those fields configure the CLI. A
+non-Web permission setting in `desktop/config.toml`, the environment, ACP mode,
+or extension settings is rejected.
 
 ## Trusted user file
 
@@ -53,6 +61,7 @@ mode, or extension settings is rejected.
 model = "deepseek-v4-flash"
 base_url = "https://api.axiom.stream"
 permission_profile = "confirm"
+web_search_provider = "axiom" # authenticated hosted Decodo search; or "searxng"
 searxng_url = "http://127.0.0.1:8888"
 max_context_bytes = 16777216
 max_context_tokens = 4194304
@@ -109,11 +118,14 @@ selection.
 `/compact [focus]` uses the current session
 model to summarize live history with an empty tool set, then installs that
 summary as successor context. It can be cancelled with Escape.
-`/login` offers browser sign-in or an existing Axiom API key. Browser sign-in
-completes through PKCE polling even when the loopback callback is blocked; the
-callback only accelerates completion. `/account` validates the current credential without revealing it, and
-`/logout` clears a persisted credential. Login state is application-wide and is
-never written to a conversation timeline.
+`/login` starts a native authorization in the system browser, where the user can
+choose passkey, Google, email/password, or Ethereum-wallet sign-in. It completes
+through PKCE polling even when the loopback callback is blocked; the callback
+only accelerates completion. `/account` validates the native session and shows
+bounded account/session metadata without revealing tokens. `/logout` attempts
+server-side revocation, clears the persisted refresh token, and closes the
+active account store. Login state is application-wide and is never written to a
+conversation timeline. Manual `axm_` API-key entry is not a native sign-in path.
 `/security` opens the latest in-memory attestation inspector. It shows hardware
 checks, endpoint and encryption-key bindings, workload measurements, parsed
 Compose services, and the exact quote-bound `app_compose` manifest. `R` performs
@@ -151,11 +163,12 @@ provider is ignored without hiding otherwise supported models; an entry that
 claims a registered provider with the wrong protocol tuple still fails closed.
 Phala offerings are chat-only for now: streaming is supported, but tool and
 parallel-tool capabilities are disabled until every tool field has a receipt-bound
-AAD contract. The outer `phala-aci-v2` contract accepts exactly two measured
-artifact subprofiles: `dstack-aci-draft-d567f6` for the currently deployed,
-pinned draft and `aci-v1-08d550` for the pinned standard ACI artifact. Selection
-uses the measured repository commit plus a structurally disjoint report shape;
-unknown commits and hybrid draft/standard documents fail closed.
+AAD contract. The outer `phala-aci-v2` contract accepts two structurally disjoint
+artifact formats: `dstack-aci-draft-d567f6` and `aci-v1-08d550`. Their historical
+suffixes are stable format identifiers, not gateway source pins. The reported
+repository and commit must match the exact TEE-measured workflow; compatible
+gateway updates do not require manual approval. Unknown and hybrid formats,
+unbound provenance, and invalid cryptographic evidence still fail closed.
 
 Limits are validated as follows:
 
@@ -217,18 +230,20 @@ The command appends atomically and accepts only `ask` or `deny`.
 |---|---|
 | `AXIOM_API_KEY` | optional Axiom bearer override for automation; takes precedence over persisted login and must never be put in TOML or argv |
 | `AXIOM_BASE_URL` | trusted Axiom relay override; defaults to `https://api.axiom.stream` |
-| `AXIOM_WEB_URL` | trusted browser-login website; defaults to `https://axiom.stream` |
+| `AXIOM_AUTH_URL` | trusted hosted account origin; defaults to `https://auth.axiom.stream` |
 | `AXIOM_MODEL` | model override |
 | `AXIOM_SEARXNG_URL` | SearXNG URL override |
+| `AXIOM_WEB_SEARCH_PROVIDER` | `axiom` (default hosted account search) or `searxng` |
 | `AXIOM_PERMISSION_PROFILE` | permission-profile override |
-| `AXIOMCLI_CREDENTIAL_STORE` | `keyring` or `file`; normally keyring with an owner-only file fallback |
+| `AXIOMCLI_CREDENTIAL_STORE` | optional explicit `keyring`; `file` and other values are rejected because native refresh tokens require an OS credential store |
+| `AXIOMCLI_THEME` | `dark` (default), `light`, or `terminal`; `/theme` changes the current session |
 | `AXIOMCLI_COLOR` | `truecolor`, `256`, `16`, or `none` |
 | `NO_COLOR` | disables color when present |
 | `AXIOMCLI_ASCII=1` | replaces decorative Unicode glyphs |
 | `AXIOMCLI_REDUCED_MOTION=1` | disables animation |
 
-`axiom-proxy` is configured separately because the future desktop app will
-supervise it as a sidecar:
+`axiom-proxy` is a separate local integration for OpenAI-compatible clients.
+Axiom Desktop supervises `axiomcli acp` and does not use the proxy for chat:
 
 | Variable | Meaning |
 |---|---|
@@ -267,25 +282,40 @@ confidently wrong answer rather than a degraded one:
 Text delivered as a content part array is accepted in both modes and joined with
 newlines, since the OpenAI SDKs emit that shape even for plain text.
 
-At startup, the AxiomCLI TUI validates a discovered credential with Axiom. A
-rejected or revoked persisted credential is removed and the TUI opens the login
-surface; an `AXIOM_API_KEY` override must instead be unset by the caller. A
-temporary network failure is reported but does not erase the credential.
+At startup, AxiomCLI validates a discovered native session with Axiom, rotating
+the refresh token when necessary. A rejected, expired, or rotation-ambiguous
+session is removed and the TUI opens the login surface; an `AXIOM_API_KEY`
+override must instead be unset by the caller. A temporary network failure is
+reported but does not erase an otherwise usable refresh token.
 After credential validation, the TUI establishes and locally verifies a real
 model-specific attested session without sending a prompt. The header animates
 while this preflight runs and fails visibly if verification does not succeed.
 Inference requests use only the bounded verified-material cache described above;
 startup preflight is never an authorization to outlive those bounds.
-Browser authorization listens on a random `127.0.0.1` port and
-expires after the server-defined short lifetime. The protected-file fallback is
-stored beneath the platform data directory with `0700` directory and `0600`
-file permissions on Unix. Prefer the system keyring on shared machines.
+Native authorization listens on a random `127.0.0.1` port and expires after the
+server-defined short lifetime. The system-browser page handles every
+method-specific credential. The OS credential store is mandatory for a native
+refresh token; failure to read or write it leaves Axiom signed out.
 
-With animation enabled, active task cards redraw while foreground/background
-work or a short completion transition is active. The blossom uses a weighted
-rest/bloom/hold/wilt cadence rather than a constant-rate spinner. The composer
-status marker is always static and changes color with current/last terminal
-state. Reduced-motion mode keeps task decoration static as well.
+With animation enabled, active tasks show a small orange pulse and a traveling
+signal on the task rail. Waiting indicators are static, and a verified successful
+completion resolves directly to a check. The composer status dot reflects the
+current/last terminal state. Reduced-motion mode keeps decoration static.
+
+Appearance is independent of color depth. `/theme dark|light|terminal` changes the
+current terminal session; set `AXIOMCLI_THEME` to choose the startup appearance.
+Dark and light use the desktop's neutral surfaces and orange brand mark. Terminal
+appearance inherits foreground/background colors, including for code blocks;
+no-color mode retains explicit labels and selection markers.
+
+The settings row beneath the input shows the model's display name, supported thinking
+level, agent permissions, and Web status. `Agent Ask` means tools require approval;
+`Agent Read only` and `Agent Full access` reflect the other workspace profiles.
+`/model`, `/thinking`, and `/permissions` change these settings. Web starts
+off, and `/web on` enables search and URL fetching for subsequent turns. Search
+queries and fetched URLs are shared with external services, not protected by
+provider E2EE. `/web off` withholds and rejects Web tools again. These are local
+terminal controls; the desktop retains its own appearance settings and Web toggle.
 
 Child development commands do not inherit the parent environment. Only the
 small key allowlist implemented by the process boundary can be set per command.
