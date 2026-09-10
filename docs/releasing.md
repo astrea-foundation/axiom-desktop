@@ -93,15 +93,12 @@ The companion API repository has `deploy/cdn/cdn.mjs` to provision the R2 bucket
 live at `/downloads/<version>/<filename>`. `/downloads/latest.json` is promoted
 only after all listed files have been uploaded and fetched with matching hashes.
 
-Then publish the website's release catalog, which the desktop uses for update
-checks. The CDN promotion alone does not change this reviewed feed:
-
-```sh
-node landing/scripts/import-release.mjs /path/to/installers/manifest.json
-npm --prefix landing run build
-node landing/scripts/check-worker.mjs
-node apps/auth/node_modules/wrangler/bin/wrangler.js deploy --config landing/wrangler.toml --profile axiom --env-file /dev/null
-```
+Then publish the website's release catalog from the `axiom` backend repository,
+which owns the website, account app, CDN uploader and release API. Follow its
+[CDN and catalog publication guide](https://github.com/astrea-foundation/axiom/blob/main/deploy/cdn/README.md#publish-installers).
+Pass the installer directory and generated manifest to that publisher; this
+native repository contains no website build or deployment tooling. CDN promotion
+alone does not change the website's reviewed feed.
 
 The website deploy updates `/downloads`, `/api/releases/latest`,
 `/api/releases`, and `/api/releases/<version>` atomically. Archived versions keep

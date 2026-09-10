@@ -11,11 +11,6 @@
     "build:desktop": "pnpm --filter axiom-desktop build",
     "desktop:install": "pnpm --filter axiom-desktop install:desktop",
     "desktop": "cargo build -p axiomcli && pnpm --filter axiom-desktop dev",
-    "desktop:staging": "cargo build -p axiomcli && pnpm --filter axiom-desktop dev:staging",
-    "auth": "pnpm --filter @axiom/auth dev",
-    "auth:review": "pnpm --filter @axiom/auth review",
-    "build:auth": "pnpm --filter @axiom/auth build",
-    "build:website": "npm --prefix landing run build",
-    "website": "node apps/auth/node_modules/wrangler/bin/wrangler.js dev --config landing/wrangler.toml --local --port 4177 --env-file /dev/null"
+    "desktop:staging": "cargo build -p axiomcli && pnpm --filter axiom-desktop dev:staging"
   }
 }

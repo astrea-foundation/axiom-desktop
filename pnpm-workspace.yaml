@@ -1,9 +1,7 @@
 packages:
   - "apps/desktop"
-  - "apps/auth"
   - "packages/*"
 allowBuilds:
   electron: true
   electron-winstaller: true
   esbuild: true
-  workerd: true

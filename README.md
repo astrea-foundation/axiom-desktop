@@ -1,8 +1,13 @@
 # AxiomAI
 
-This repository is the AxiomAI product monorepo. Rust applications live under
+This repository owns Axiom's native clients and installer builds. Rust applications live under
 `apps/`, reusable Rust contracts and infrastructure live under `crates/`, and
 the ACP client packages live under `packages/`.
+
+The marketing website, downloads and update API, hosted account app, and all
+web deployment tooling live exclusively in the companion
+[axiom backend repository](https://github.com/astrea-foundation/axiom).
+This checkout builds and tests independently of those websites.
 
 The implemented applications today are AxiomCLI—an early Rust coding agent with
 a terminal interface and Agent Client Protocol (ACP) control mode—and
@@ -24,6 +29,8 @@ crates/
   axiom-secure-client/  Provider-modular attestation and E2EE
 packages/
   axiom-acp-client/ Typed Node/Electron-main ACP client and state reducer
+  brand/           Native artwork, fonts, and compiled loopback callback page
+  desktop-releases/ Public release-contract validation for updates and packaging
   sidecar-protocol/ Reserved for generated/shared desktop control types
 ```
 

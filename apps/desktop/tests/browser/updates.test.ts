@@ -1,17 +1,17 @@
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
-import { mkdir, readFile } from 'node:fs/promises';
+import { mkdir } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { chromium, type Browser, type Page } from 'playwright';
 import { createServer, type ViteDevServer } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
-import { parseRelease } from '../../../../packages/desktop-releases/manifest.mjs';
+import { desktopReleaseFixture } from '../../../../fixtures/desktop-releases.mts';
 import type { PackageFormat, UpdateState } from '../../src/shared/updates';
 
 let browser: Browser, server: ViteDevServer, origin: string;
 const captures = process.env.AXIOM_UPDATE_CAPTURE_DIR;
-const release = parseRelease(JSON.parse(await readFile(new URL('../../../../landing/releases.json', import.meta.url), 'utf8')));
+const release = desktopReleaseFixture();
 before(async () => {
   server = await createServer({ configFile:false, root:fileURLToPath(new URL('../../src/renderer',import.meta.url)), plugins:[react(),tailwindcss()],
     server:{host:'127.0.0.1',port:0},logLevel:'error' });

@@ -1,9 +1,0 @@
-.vercel/
-node_modules/
-dist/
-.site/
-.wrangler/
-.DS_Store
-.env
-.env.*
-!.env.example

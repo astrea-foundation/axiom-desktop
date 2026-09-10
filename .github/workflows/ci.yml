@@ -41,6 +41,7 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - run: node packages/brand/scripts/build-callback.mjs --check
       - run: pnpm --filter axiom-desktop exec playwright install --with-deps chromium
       - run: pnpm --filter axiom-desktop test:browser
 
