@@ -1,0 +1,40 @@
+name = "axiom-auth"
+main = "worker.ts"
+compatibility_date = "2026-07-06"
+account_id = "e6b5ee9a1dc91f1eec4659442cd2dce9"
+workers_dev = false
+
+routes = [
+  { pattern = "auth.axiom.stream/*", zone_name = "axiom.stream" },
+]
+
+[vars]
+API_ORIGIN = "https://api.axiom.stream"
+AUTH_HOST = "auth.axiom.stream"
+ENVIRONMENT = "production"
+
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+run_worker_first = true
+html_handling = "none"
+not_found_handling = "none"
+
+[env.staging]
+name = "axiom-auth-staging"
+workers_dev = false
+routes = [
+  { pattern = "auth-staging.axiom.stream/*", zone_name = "axiom.stream" },
+]
+
+[env.staging.vars]
+API_ORIGIN = "https://api-staging.axiom.stream"
+AUTH_HOST = "auth-staging.axiom.stream"
+ENVIRONMENT = "staging"
+
+[env.staging.assets]
+directory = "./dist"
+binding = "ASSETS"
+run_worker_first = true
+html_handling = "none"
+not_found_handling = "none"

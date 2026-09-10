@@ -25,11 +25,13 @@ export function InteractionCard({ interaction }: { interaction: PendingInteracti
     ? interaction.payload as Record<string, unknown>
     : {};
   const options = Array.isArray(payload.options) ? payload.options as Array<Record<string, unknown>> : [];
+  const toolCall = payload.toolCall && typeof payload.toolCall === "object" ? payload.toolCall as Record<string, unknown> : {};
 
   if (interaction.kind === "permission") {
     return (
       <div className="rounded-xl border border-warning-border bg-warning-soft p-3 text-[12.5px]">
         <div className="mb-2 flex items-center gap-2 text-warning-strong"><ShieldAlert size={14} />Permission requested</div>
+        {typeof toolCall.title === "string" ? <p className="mb-3 max-h-60 overflow-y-auto whitespace-pre-wrap break-words text-[var(--color-text-primary)]">{toolCall.title}</p> : null}
         <div className="flex flex-wrap gap-2">
           {options.map((option) => {
             const id = typeof option.optionId === "string" ? option.optionId : "";
@@ -39,7 +41,7 @@ export function InteractionCard({ interaction }: { interaction: PendingInteracti
               </button>
             ) : null;
           })}
-          <button type="button" onClick={() => void window.axiomDesktop?.agent.resolvePermission(interaction.id, { outcome: "cancelled" })} className="rounded-lg px-3 py-1.5 text-[var(--color-text-tertiary)]">Deny</button>
+          {!options.some((option) => option.kind === "reject_once") ? <button type="button" onClick={() => void window.axiomDesktop?.agent.resolvePermission(interaction.id, { outcome: "cancelled" })} className="rounded-lg px-3 py-1.5 text-[var(--color-text-tertiary)]">Deny</button> : null}
         </div>
       </div>
     );

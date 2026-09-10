@@ -48,6 +48,7 @@ pub struct Config {
     pub base_url: String,
     pub permission_profile: PermissionProfile,
     pub searxng_url: String,
+    pub web_search_provider: String,
     pub max_agent_steps: Option<usize>,
     pub max_context_bytes: usize,
     pub max_context_tokens: usize,
@@ -82,6 +83,7 @@ struct ConfigLayer {
     base_url: Option<String>,
     permission_profile: Option<PermissionProfile>,
     searxng_url: Option<String>,
+    web_search_provider: Option<String>,
     max_agent_steps: Option<usize>,
     max_context_bytes: Option<usize>,
     max_context_tokens: Option<usize>,
@@ -106,6 +108,9 @@ impl ConfigLayer {
         }
         if let Some(value) = self.searxng_url {
             config.searxng_url = value;
+        }
+        if let Some(value) = self.web_search_provider {
+            config.web_search_provider = value;
         }
         if let Some(value) = self.max_agent_steps {
             config.max_agent_steps = Some(value);
@@ -146,7 +151,11 @@ impl ConfigLayer {
     }
 
     fn apply_project(self, config: &mut Config) -> Result<()> {
-        if self.base_url.is_some() || self.searxng_url.is_some() || self.mcp_servers.is_some() {
+        if self.base_url.is_some()
+            || self.searxng_url.is_some()
+            || self.web_search_provider.is_some()
+            || self.mcp_servers.is_some()
+        {
             return Err(AxiomError::Config(
                 "project config cannot set network endpoints or MCP server commands; use the trusted user config or environment"
                     .into(),
@@ -226,6 +235,7 @@ impl Default for Config {
             base_url: "https://api.axiom.stream".into(),
             permission_profile: PermissionProfile::Confirm,
             searxng_url: "http://127.0.0.1:8888".into(),
+            web_search_provider: "axiom".into(),
             max_agent_steps: None,
             // Provider model metadata owns the normal context/compaction
             // limit. These deliberately larger values are only local memory
@@ -370,6 +380,11 @@ impl Config {
             .map_err(|error| AxiomError::Config(format!("invalid base_url: {error}")))?;
         let searxng_url = reqwest::Url::parse(&self.searxng_url)
             .map_err(|error| AxiomError::Config(format!("invalid searxng_url: {error}")))?;
+        if !matches!(self.web_search_provider.as_str(), "axiom" | "searxng") {
+            return Err(AxiomError::Config(
+                "web_search_provider must be axiom or searxng".into(),
+            ));
+        }
         if !valid_endpoint(&base_url) || !valid_endpoint(&searxng_url) {
             return Err(AxiomError::Config(
                 "provider and SearXNG URLs must use http(s), include a host, and contain no embedded credentials"
@@ -502,6 +517,9 @@ fn apply_environment(config: &mut Config) -> Result<()> {
     if let Ok(value) = std::env::var("AXIOM_SEARXNG_URL") {
         config.searxng_url = value;
     }
+    if let Ok(value) = std::env::var("AXIOM_WEB_SEARCH_PROVIDER") {
+        config.web_search_provider = value;
+    }
     if let Ok(value) = std::env::var("AXIOM_PERMISSION_PROFILE") {
         config.permission_profile = PermissionProfile::from_str(&value)?;
     }
@@ -528,6 +546,7 @@ fn warn_about_unknown_config_fields(path: &Path, content: &str) -> Result<()> {
         "base_url",
         "permission_profile",
         "searxng_url",
+        "web_search_provider",
         "max_agent_steps",
         "max_context_bytes",
         "max_context_tokens",

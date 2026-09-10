@@ -146,6 +146,16 @@ pub enum PermissionProfile {
 }
 
 impl PermissionProfile {
+    #[must_use]
+    pub fn for_desktop_agent(settings: &axiom_acp_extension::DesktopAgentSettings) -> Self {
+        if !settings.enabled {
+            return Self::Web;
+        }
+        match settings.permission {
+            axiom_acp_extension::DesktopAgentPermission::ApproveCommands => Self::Confirm,
+            axiom_acp_extension::DesktopAgentPermission::FullAccess => Self::FullAccess,
+        }
+    }
     pub const ALL: [Self; 5] = [
         Self::None,
         Self::Web,
@@ -183,6 +193,9 @@ impl PermissionProfile {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ThinkingLevel {
+    ProviderDefault,
+    Enabled,
+    Disabled,
     Minimal,
     Low,
     #[default]
@@ -194,6 +207,9 @@ pub enum ThinkingLevel {
 impl fmt::Display for ThinkingLevel {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
+            Self::ProviderDefault => "provider_default",
+            Self::Enabled => "enabled",
+            Self::Disabled => "disabled",
             Self::Minimal => "minimal",
             Self::Low => "low",
             Self::Medium => "medium",
@@ -208,6 +224,9 @@ impl FromStr for ThinkingLevel {
 
     fn from_str(input: &str) -> Result<Self> {
         match input {
+            "provider_default" => Ok(Self::ProviderDefault),
+            "enabled" | "on" => Ok(Self::Enabled),
+            "disabled" | "off" => Ok(Self::Disabled),
             "minimal" => Ok(Self::Minimal),
             "low" => Ok(Self::Low),
             "medium" => Ok(Self::Medium),
@@ -296,6 +315,10 @@ pub enum AppCommand {
         session_id: SessionId,
         profile: PermissionProfile,
     },
+    ConfigureDesktopAgent {
+        session_id: SessionId,
+        settings: axiom_acp_extension::DesktopAgentSettings,
+    },
     ChangeModel {
         session_id: SessionId,
         model: String,
@@ -331,6 +354,7 @@ impl AppCommand {
             | Self::FinishTurn { session_id, .. }
             | Self::FailTurn { session_id, .. }
             | Self::ChangePermissionProfile { session_id, .. }
+            | Self::ConfigureDesktopAgent { session_id, .. }
             | Self::ChangeModel { session_id, .. }
             | Self::ChangeModelSettings { session_id, .. }
             | Self::ChangeThinkingLevel { session_id, .. }
@@ -353,6 +377,11 @@ pub struct CommandEnvelope {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum AppEvent {
+    SteeringApplied {
+        turn_id: TurnId,
+        client_item_id: String,
+        text: String,
+    },
     SessionCreated {
         cwd: PathBuf,
         origin: Origin,
@@ -381,6 +410,12 @@ pub enum AppEvent {
     UsageUpdated {
         input_tokens: u64,
         output_tokens: u64,
+    },
+    ContextUsageUpdated {
+        usage: axiom_acp_extension::ContextUsage,
+    },
+    RequestUsageUpdated {
+        usage: axiom_inference::RequestUsage,
     },
     ProgressUpdated {
         message: String,
@@ -468,6 +503,9 @@ pub enum AppEvent {
     },
     PermissionProfileChanged {
         profile: PermissionProfile,
+    },
+    DesktopAgentConfigured {
+        settings: axiom_acp_extension::DesktopAgentSettings,
     },
     ModelChanged {
         model: String,
@@ -743,6 +781,20 @@ impl Kernel {
                     message,
                 }]
             }
+            AppCommand::ConfigureDesktopAgent {
+                session_id,
+                settings,
+            } => {
+                let session = self.session_mut(&session_id)?;
+                if session.lifecycle != SessionLifecycle::Ready {
+                    return Err(AxiomError::InvalidTransition(
+                        "Agent settings may change only while the thread is idle".into(),
+                    ));
+                }
+                session.cwd = PathBuf::from(&settings.working_directory);
+                session.profile = PermissionProfile::for_desktop_agent(&settings);
+                vec![AppEvent::DesktopAgentConfigured { settings }]
+            }
             AppCommand::ChangePermissionProfile {
                 session_id,
                 profile,
@@ -862,6 +914,15 @@ impl Kernel {
     ) -> Result<EventEnvelope> {
         let session = self.session_mut(&session_id)?;
         match &event {
+            AppEvent::SteeringApplied { turn_id, .. } => {
+                if session.active_turn.as_ref() != Some(turn_id)
+                    || session.lifecycle != SessionLifecycle::Running
+                {
+                    return Err(AxiomError::InvalidTransition(
+                        "steering requires the active running turn".into(),
+                    ));
+                }
+            }
             AppEvent::PermissionRequired { request_id, .. } => {
                 if session.lifecycle != SessionLifecycle::Running {
                     return Err(AxiomError::InvalidTransition(
@@ -1088,6 +1149,12 @@ fn replay_event(state: &mut Option<SessionState>, id: &SessionId, event: &AppEve
                 }
                 session.pending_permission = None;
                 session.pending_question = None;
+            }
+        }
+        AppEvent::DesktopAgentConfigured { settings } => {
+            if let Some(session) = state.as_mut() {
+                session.cwd = PathBuf::from(&settings.working_directory);
+                session.profile = PermissionProfile::for_desktop_agent(settings);
             }
         }
         AppEvent::PermissionProfileChanged { profile } => {

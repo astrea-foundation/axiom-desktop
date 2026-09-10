@@ -1,0 +1,28 @@
+name: hosted-account
+on:
+  pull_request:
+    paths: ['apps/auth/**', 'packages/brand/**', 'packages/ui/**', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', '.github/workflows/auth.yml']
+  push:
+    paths: ['apps/auth/**', 'packages/brand/**', 'packages/ui/**', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', '.github/workflows/auth.yml']
+permissions:
+  contents: read
+jobs:
+  account-pages:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.22.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: node packages/brand/scripts/build-callback.mjs --check
+      - run: pnpm --filter @axiom/auth test
+      - run: pnpm --filter @axiom/auth build
+      - run: pnpm --filter @axiom/auth build:review
+      - run: pnpm --filter @axiom/auth exec playwright install --with-deps chromium
+      - run: pnpm --filter @axiom/auth test:browser
+      - run: pnpm --filter @axiom/auth exec wrangler deploy --env= --dry-run --env-file /dev/null

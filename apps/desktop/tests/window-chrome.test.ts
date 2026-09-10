@@ -1,10 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import {
-  platformWindowChrome,
-  WINDOW_CONTROLS_OVERLAY_HEIGHT,
-  windowControlsOverlay,
-} from "../src/main/window-chrome";
+import { platformWindowChrome } from "../src/main/window-chrome";
 import {
   hasNativeWindowControls,
   isLinux,
@@ -23,22 +19,12 @@ test("macOS chrome keeps native traffic lights over a hidden title bar", () => {
   assert.equal(chrome.titleBarOverlay, undefined);
 });
 
-test("Windows chrome uses native controls over the app surface", () => {
-  assert.deepEqual(platformWindowChrome("win32", "light"), {
-    titleBarStyle: "hidden",
-    titleBarOverlay: {
-      color: "#00000000",
-      symbolColor: "#101014",
-      height: WINDOW_CONTROLS_OVERLAY_HEIGHT,
-    },
-  });
+test("Windows chrome is frameless with controls in the canvas cutout", () => {
+  assert.deepEqual(platformWindowChrome("win32"), { frame: false });
 });
 
-test("Linux chrome uses native controls with theme-aware symbols", () => {
-  const chrome = platformWindowChrome("linux", "dark");
-  assert.equal(chrome.titleBarStyle, "hidden");
-  assert.deepEqual(chrome.titleBarOverlay, windowControlsOverlay("dark"));
-  assert.equal(windowControlsOverlay("dark").symbolColor, "#f4f4f6");
+test("Linux chrome is frameless with controls in the canvas cutout", () => {
+  assert.deepEqual(platformWindowChrome("linux"), { frame: false });
 });
 
 test("renderer window-chrome module is inert outside a browser window", () => {

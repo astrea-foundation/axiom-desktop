@@ -1,0 +1,10 @@
+# studies and working notes stay local; only the site itself is deployed
+_archive
+hero-pillow.html
+hero-ribbon.html
+OUTLINE.md
+scripts/
+.DS_Store
+node_modules/
+dist/
+.site/

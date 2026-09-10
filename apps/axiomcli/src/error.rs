@@ -17,6 +17,12 @@ pub enum AxiomError {
     OutsideWorkspace(PathBuf),
     #[error("provider error: {0}")]
     Provider(String),
+    #[error("{message}")]
+    SecureProvider {
+        kind: axiom_inference::ProviderFailureKind,
+        code: &'static str,
+        message: &'static str,
+    },
     #[error("tool error: {0}")]
     Tool(String),
     #[error("git error: {0}")]

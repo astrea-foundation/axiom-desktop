@@ -13,7 +13,7 @@ members = ["."]
 
 [dependencies]
 axiom-inference = { version = "0.1.0", path = "../crates/axiom-inference" }
-axiom-acp-extension = { version = "0.1.0", path = "../crates/axiom-acp-extension" }
+axiom-acp-extension = { version = "0.2.0", path = "../crates/axiom-acp-extension" }
 axiom-openai-compat = { version = "0.1.0", path = "../crates/axiom-openai-compat" }
 axiom-secure-client = { version = "0.1.0", path = "../crates/axiom-secure-client", features = ["fuzzing"] }
 libfuzzer-sys = "0.4.13"

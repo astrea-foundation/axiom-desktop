@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
-use crate::{AxiomError, Result};
+use crate::{AxiomError, Result, auth::AuthManager};
 
 const MAX_SEARCH_QUERY_BYTES: usize = 8 * 1024;
 const MAX_SEARCH_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
@@ -35,7 +35,123 @@ pub struct SearchReport {
 #[async_trait]
 pub trait SearchProvider: Send + Sync {
     fn provenance(&self) -> &str;
+    fn description(&self) -> &'static str {
+        "Search the web through the configured SearXNG service and return source URLs."
+    }
     async fn search(&self, query: &str, cancellation: CancellationToken) -> Result<SearchReport>;
+}
+
+/// Non-inference account service: only the explicit search query leaves the
+/// native tool. Provider credentials, history, and model-message construction
+/// never enter this path. No SearXNG/unauthenticated fallback on failure.
+#[derive(Clone, Debug)]
+pub struct HostedSearchClient {
+    auth: AuthManager,
+    endpoint: Url,
+    client: reqwest::Client,
+}
+
+impl HostedSearchClient {
+    pub fn new(auth: AuthManager) -> Result<Self> {
+        // Derive the destination from the credential audience, not an
+        // independently configurable URL that could receive another token.
+        let endpoint = auth
+            .account_api_origin()
+            .join("/api/v1/search")
+            .map_err(|_| AxiomError::Config("invalid account search origin".into()))?;
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(25))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|_| AxiomError::Config("could not initialize hosted search".into()))?;
+        Ok(Self {
+            auth,
+            endpoint,
+            client,
+        })
+    }
+}
+
+#[async_trait]
+impl SearchProvider for HostedSearchClient {
+    fn provenance(&self) -> &str {
+        self.endpoint.as_str()
+    }
+
+    fn description(&self) -> &'static str {
+        "Search the web using Axiom's hosted Decodo search. The search query is shared with Axiom and Decodo, not E2EE. Send only a concise search query, never conversation history. Free, limited to 60 searches per minute per account; do not immediately retry rate-limit errors."
+    }
+
+    async fn search(&self, query: &str, cancellation: CancellationToken) -> Result<SearchReport> {
+        let query = query.trim();
+        if query.is_empty() || query.len() > 2048 || query.chars().any(char::is_control) {
+            return Err(AxiomError::Tool(
+                "search query must contain 1 to 2048 UTF-8 bytes without control characters".into(),
+            ));
+        }
+        let lease = self
+            .auth
+            .access_token_for_account_operation(&cancellation)
+            .await?;
+        if !self.auth.account_access_is_current(&lease) {
+            return Err(AxiomError::Cancelled);
+        }
+        let response = tokio::select! {
+            biased;
+            () = cancellation.cancelled() => return Err(AxiomError::Cancelled),
+            response = self.client.post(self.endpoint.clone())
+                .bearer_auth(lease.expose_for_authorization())
+                .json(&serde_json::json!({ "query": query })).send() => {
+                    response.map_err(|_| AxiomError::Provider("Axiom web search is unavailable".into()))?
+                },
+        };
+        if response.status() == StatusCode::TOO_MANY_REQUESTS {
+            let retry_after = response
+                .headers()
+                .get(header::RETRY_AFTER)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(60)
+                .clamp(1, 60);
+            return Err(AxiomError::Tool(format!(
+                "Search limit reached (60 per minute per account). Retry after {retry_after} seconds."
+            )));
+        }
+        if matches!(
+            response.status(),
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
+        ) {
+            return Err(AxiomError::Tool(
+                "Sign in to Axiom again to use web search.".into(),
+            ));
+        }
+        if response.status() != StatusCode::OK {
+            return Err(AxiomError::Provider(
+                "Axiom web search is temporarily unavailable".into(),
+            ));
+        }
+        let bytes =
+            read_bounded_response(response, 1024 * 1024, &cancellation, "search response").await?;
+        let mut report: SearchReport = serde_json::from_slice(&bytes)
+            .map_err(|_| AxiomError::Protocol("invalid hosted search response".into()))?;
+        if !self.auth.account_access_is_current(&lease) || cancellation.is_cancelled() {
+            return Err(AxiomError::Cancelled);
+        }
+        report
+            .results
+            .retain(|result| is_safe_result_url(&result.url));
+        report.results.truncate(20);
+        for result in &mut report.results {
+            result.title = bounded_external_text(&result.title, 512);
+            result.snippet = bounded_external_text(&result.snippet, 4096);
+            result.source = bounded_external_text(&result.source, 128);
+        }
+        report.warnings.truncate(20);
+        for warning in &mut report.warnings {
+            *warning = bounded_external_text(warning, 512);
+        }
+        Ok(report)
+    }
 }
 
 #[derive(Clone, Debug)]

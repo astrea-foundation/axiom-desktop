@@ -3,25 +3,31 @@ import {
   BrainCog,
   Check,
   ChevronDown,
+  Globe2,
   Lock,
   Square,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { ClientSessionState } from "@axiom/axiom-acp-client";
 import type { ProviderModel, ReasoningEffort } from "../types";
-import { isMac } from "../lib/window-chrome";
+import { explicitReasoningEfforts, reconcileReasoningEffort } from "../reasoningSettings";
+import { ContextUsageIndicator } from "./ContextUsageIndicator";
 import { ModelBrandIcon } from "./ModelBrandIcon";
 import { ModelPicker } from "./ModelPicker";
 import { TeeVerificationBadge } from "./TeeVerificationBadge";
+import { AgentModeControl, type AgentControlOptions } from "./AgentModeControl";
 
 function reasoningEffortLabel(effort: ReasoningEffort): string {
+  if (effort === "enabled") return "On";
+  if (effort === "disabled") return "Off";
   if (effort === "xhigh") return "Extra high";
   return effort[0]?.toUpperCase() + effort.slice(1);
 }
 
-type OpenMenu = "model" | "thinking" | null;
+type OpenMenu = "model" | "thinking" | "agent" | null;
 
 interface ChatComposerProps {
+  agentControl?: AgentControlOptions;
   value: string;
   onChange: (value: string) => void;
   onSubmit: () => void;
@@ -37,11 +43,20 @@ interface ChatComposerProps {
   onSignIn?: () => void;
   reasoningEffort: ReasoningEffort;
   onReasoningEffortChange: (effort: ReasoningEffort) => void;
-  security?: ClientSessionState["security"];
-  onVerifySecurity?: () => void;
+  security?: ClientSessionState;
+  securityScope?: string;
+  securityRefreshDisabledReason?: string;
+  contextUsage?: ClientSessionState["contextUsage"];
+  requestUsage?: ClientSessionState["requestUsage"];
+  activeTurnId?: string | null;
+  onVerifySecurity?: () => void | Promise<unknown>;
+  webEnabled?: boolean;
+  webDisabled?: boolean;
+  onWebToggle?: () => void;
 }
 
 export function ChatComposer({
+  agentControl,
   value,
   onChange,
   onSubmit,
@@ -58,15 +73,24 @@ export function ChatComposer({
   reasoningEffort,
   onReasoningEffortChange,
   security,
+  securityScope,
+  securityRefreshDisabledReason,
+  contextUsage = null,
+  requestUsage = [],
+  activeTurnId,
   onVerifySecurity,
+  webEnabled = false,
+  webDisabled = false,
+  onWebToggle,
 }: ChatComposerProps) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const controlsRef = useRef<HTMLDivElement>(null);
   const [openMenu, setOpenMenu] = useState<OpenMenu>(null);
   const selectedModel = models.find((model) => model.id === selectedModelId) ?? models[0];
-  const supportedReasoningEfforts = selectedModel?.supportedReasoningEfforts ?? [];
+  const supportedReasoningEfforts = explicitReasoningEfforts(selectedModel?.supportedReasoningEfforts ?? []);
   const showThinkingSelector = supportedReasoningEfforts.length > 0;
-  const canSend = Boolean(value.trim()) && (Boolean(selectedModel) || requiresSignIn) && !isStreaming;
+  const selectedThinking = reconcileReasoningEffort(reasoningEffort, supportedReasoningEfforts);
+  const canSend = Boolean(value.trim()) && (Boolean(selectedModel) || requiresSignIn);
 
   useEffect(() => {
     const el = ref.current;
@@ -80,13 +104,18 @@ export function ChatComposer({
   }, [autoFocus]);
 
   useEffect(() => {
+    setOpenMenu(null);
+  }, [agentControl?.scope]);
+
+  useEffect(() => {
     if (models.length === 0) {
       setOpenMenu((current) => current === "model" ? null : current);
     }
   }, [models.length]);
 
   useEffect(() => {
-    if (!openMenu) return;
+    // Agent owns a top-layer modal, including dismissal and focus handling.
+    if (!openMenu || openMenu === "agent") return;
     const closeMenu = (event: MouseEvent) => {
       if (!controlsRef.current?.contains(event.target as Node)) setOpenMenu(null);
     };
@@ -113,9 +142,13 @@ export function ChatComposer({
           <Lock size={13} aria-hidden="true" className="mt-[5.5px] shrink-0 text-[var(--color-text-muted)]" />
           <textarea
             ref={ref}
+            data-chat-input
             value={value}
             onChange={(event) => onChange(event.target.value)}
             onKeyDown={(event) => {
+              // Enter can commit an IME candidate instead of submitting a message.
+              // Keep the legacy 229 check for confirmation after compositionend.
+              if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
               if (event.key === "Enter" && !event.shiftKey) {
                 event.preventDefault();
                 submit();
@@ -128,7 +161,7 @@ export function ChatComposer({
         </div>
 
         <div className="mt-2 flex items-center justify-between gap-2">
-          <div ref={controlsRef} className="flex min-w-0 items-center gap-1.5">
+          <div ref={controlsRef} className="flex min-w-0 flex-wrap items-center gap-1.5">
             <div className="relative shrink-0">
               <button
                 type="button"
@@ -184,7 +217,7 @@ export function ChatComposer({
                     className="text-[var(--color-cherry)]"
                   />
                   <span className="hidden sm:inline">
-                    {reasoningEffortLabel(reasoningEffort)}
+                    {reasoningEffortLabel(selectedThinking)}
                   </span>
                   <ChevronDown size={12} className="opacity-70" />
                 </button>
@@ -199,7 +232,7 @@ export function ChatComposer({
                         key={effort}
                         type="button"
                         role="menuitemradio"
-                        aria-checked={reasoningEffort === effort}
+                        aria-checked={selectedThinking === effort}
                         onClick={() => {
                           onReasoningEffortChange(effort);
                           setOpenMenu(null);
@@ -207,7 +240,7 @@ export function ChatComposer({
                         className="flex w-full items-center gap-2 rounded-[6px] px-2.5 py-2 text-left text-[12.5px] text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-surface-hover)] hover:text-[var(--color-text-primary)]"
                       >
                         <span className="flex h-4 w-4 shrink-0 items-center justify-center text-[var(--color-cherry)]">
-                          {reasoningEffort === effort ? <Check size={13} /> : null}
+                          {selectedThinking === effort ? <Check size={13} /> : null}
                         </span>
                         <span className="text-[var(--color-text-primary)]">
                           {reasoningEffortLabel(effort)}
@@ -218,13 +251,38 @@ export function ChatComposer({
                 ) : null}
               </div>
             ) : null}
+            <button
+              type="button"
+              data-web-toggle
+              aria-label="Web"
+              aria-pressed={webEnabled}
+              disabled={isStreaming || webDisabled || !onWebToggle}
+              onClick={() => { setOpenMenu(null); onWebToggle?.(); }}
+              title={isStreaming ? "Web access is fixed for the current response" : webEnabled ? "Web is on — click to turn off" : "Web is off — click to enable external searches"}
+              className={`flex h-7 shrink-0 items-center gap-1.5 rounded-[7px] px-2.5 text-[12px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${webEnabled ? "bg-[var(--color-cherry)] text-on-accent" : "text-[var(--color-text-tertiary)] hover:bg-[var(--wash-chip-hover)] hover:text-[var(--color-text-primary)]"}`}
+            >
+              <Globe2 size={13} aria-hidden="true" />
+              Web
+              {webEnabled ? <Check size={12} aria-hidden="true" /> : null}
+            </button>
+            {agentControl ? <AgentModeControl key={agentControl.scope} options={agentControl} open={openMenu === "agent"} onOpenChange={(open) => setOpenMenu(open ? "agent" : null)} /> : null}
           </div>
 
           <div className="flex shrink-0 items-center gap-2">
             {security !== undefined && onVerifySecurity ? (
-              <TeeVerificationBadge security={security} onVerify={onVerifySecurity} />
+              <TeeVerificationBadge key={JSON.stringify([securityScope, security.sessionId, selectedModelId])}
+                session={security} model={models.find((model) => model.id === selectedModelId)} modelId={selectedModelId}
+                webEnabled={webEnabled} disabledReason={securityRefreshDisabledReason} onVerify={onVerifySecurity} />
             ) : null}
-            <span className="ax-chip hidden sm:inline-flex" aria-hidden="true">{isMac ? "\u2318\u21b5" : "Ctrl\u21b5"}</span>
+            <ContextUsageIndicator
+              usage={contextUsage}
+              requestUsage={requestUsage}
+              activeTurnId={activeTurnId}
+              selectedModelId={selectedModelId}
+              reportedModelLabel={models.find((model) => model.id === contextUsage?.modelId)?.label}
+              contextWindowTokens={selectedModel?.contextWindowTokens}
+              autoCompactThresholdTokens={selectedModel?.autoCompactThresholdTokens}
+            />
             {isStreaming ? (
               <button
                 type="button"
@@ -234,17 +292,18 @@ export function ChatComposer({
               >
                 <Square size={12} fill="currentColor" strokeWidth={2.5} />
               </button>
-            ) : (
+            ) : null}
+            {!isStreaming || value.trim() ? (
               <button
                 type="button"
                 onClick={submit}
                 disabled={!canSend}
                 className="flex h-[34px] w-[34px] items-center justify-center rounded-full bg-[var(--color-cherry)] text-on-accent shadow-[0_1px_3px_var(--shade-button)] transition-[background-color,transform] hover:bg-[var(--color-cherry-bright)] active:scale-[0.94] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-[var(--color-cherry)] disabled:active:scale-100"
-                aria-label={requiresSignIn ? "Sign in to send" : "Send"}
+                aria-label={requiresSignIn ? "Sign in to send" : isStreaming ? "Queue message" : "Send"}
               >
                 <ArrowUp size={15} strokeWidth={2.5} />
               </button>
-            )}
+            ) : null}
           </div>
         </div>
       </div>

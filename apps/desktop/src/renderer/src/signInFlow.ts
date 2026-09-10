@@ -1,18 +1,18 @@
-import type { AccountStatus, BrowserLoginState } from "@axiom/axiom-acp-client";
+import type { AccountStatus, NativeLoginState } from "@axiom/axiom-acp-client";
 
 export type SignInState =
   | { kind: "closed" }
   | { kind: "starting" }
-  | { kind: "waiting"; login: BrowserLoginState }
+  | { kind: "waiting"; login: NativeLoginState }
   | { kind: "success" }
   | { kind: "error"; message: string };
 
 export type AccountPresentation =
-  | { kind: "starting"; title: "AxiomCLI is starting"; detail: "Your local agent is connecting…" }
-  | { kind: "signed-out"; title: "Connect your Axiom account"; detail: "Sign in securely in your browser to access models." }
-  | { kind: "invalid"; title: "Reconnect your Axiom account"; detail: string }
-  | { kind: "unavailable"; title: "Account status unavailable"; detail: string }
-  | { kind: "valid"; title: "Axiom account"; detail: "Connected securely" };
+  | { kind: "starting"; title: string; detail: string }
+  | { kind: "signed-out"; title: string; detail: string }
+  | { kind: "expired"; title: string; detail: string }
+  | { kind: "unavailable"; title: string; detail: string }
+  | { kind: "valid"; title: string; detail: string };
 
 export function accountPresentation(
   connected: boolean,
@@ -26,14 +26,20 @@ export function accountPresentation(
       detail: "Your local agent is connecting…",
     };
   }
-  if (account?.state === "valid") {
-    return { kind: "valid", title: "Axiom account", detail: "Connected securely" };
+  if (account?.state === "valid" && account.account) {
+    const title = account.account.displayName?.trim()
+      || account.account.verifiedEmail?.trim()
+      || "Axiom account";
+    const detail = account.account.displayName?.trim() && account.account.verifiedEmail?.trim()
+      ? account.account.verifiedEmail.trim()
+      : "Connected securely";
+    return { kind: "valid", title, detail };
   }
-  if (account?.state === "invalid") {
+  if (account?.state === "expired") {
     return {
-      kind: "invalid",
+      kind: "expired",
       title: "Reconnect your Axiom account",
-      detail: account.detail?.trim() || "Your saved sign-in is invalid or was revoked.",
+      detail: account.detail?.trim() || "Your saved session expired or was revoked.",
     };
   }
   if (account?.state === "unavailable") {
@@ -43,10 +49,17 @@ export function accountPresentation(
       detail: account.detail?.trim() || "Axiom could not be reached. Check your connection and try again.",
     };
   }
+  if (account?.state === "starting") {
+    return {
+      kind: "starting",
+      title: "Checking your Axiom account",
+      detail: account.detail?.trim() || "Your local agent is restoring its secure session…",
+    };
+  }
   return {
     kind: "signed-out",
-    title: "Connect your Axiom account",
-    detail: "Sign in securely in your browser to access models.",
+    title: "Sign in",
+    detail: "Continue in your browser.",
   };
 }
 

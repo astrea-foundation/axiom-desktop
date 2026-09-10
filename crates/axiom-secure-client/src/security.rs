@@ -34,8 +34,6 @@ pub struct TrustPolicy {
     pub require_live_tls_binding: bool,
     pub nvidia_anchor_sha256: Vec<String>,
     pub approved_workload_measurements: Vec<String>,
-    pub approved_phala_gateway_repositories: Vec<String>,
-    pub approved_phala_gateway_commits: Vec<String>,
     pub workload_enforcement: WorkloadEnforcement,
 }
 
@@ -55,10 +53,6 @@ impl Default for TrustPolicy {
                 "2df8907cf4d6c277b855d407ec178a649930a8e73f7294e8fce66e6ee27c5175".into(),
             ],
             approved_workload_measurements: Vec::new(),
-            approved_phala_gateway_repositories: vec![
-                "https://github.com/Dstack-TEE/private-ai-gateway".into(),
-            ],
-            approved_phala_gateway_commits: Vec::new(),
             workload_enforcement: WorkloadEnforcement::Observe,
         }
     }
@@ -79,6 +73,8 @@ struct SignedPolicyDocument {
     require_live_tls_binding: bool,
     nvidia_anchor_sha256: Vec<String>,
     approved_near_workload_measurements: Vec<String>,
+    // Retain legacy fields only to verify existing v1 document signatures.
+    // Phala source updates are governed by quote-bound provenance, not these lists.
     approved_phala_gateway_repositories: Vec<String>,
     approved_phala_gateway_commits: Vec<String>,
     workload_enforcement: WorkloadEnforcement,
@@ -171,8 +167,6 @@ impl TrustPolicy {
             require_live_tls_binding: document.require_live_tls_binding,
             nvidia_anchor_sha256: document.nvidia_anchor_sha256,
             approved_workload_measurements: document.approved_near_workload_measurements,
-            approved_phala_gateway_repositories: document.approved_phala_gateway_repositories,
-            approved_phala_gateway_commits: document.approved_phala_gateway_commits,
             workload_enforcement: document.workload_enforcement,
         })
     }

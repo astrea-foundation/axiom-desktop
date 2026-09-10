@@ -23,6 +23,9 @@ pub enum SecureErrorCode {
     InvalidResponse,
     Cancelled,
     Transient,
+    StreamTimeout,
+    ResponseTooLarge,
+    ProviderDisconnected,
 }
 
 impl SecureErrorCode {
@@ -47,6 +50,9 @@ impl SecureErrorCode {
             Self::InvalidResponse => "INVALID_RESPONSE",
             Self::Cancelled => "CANCELLED",
             Self::Transient => "TRANSIENT_FAILURE",
+            Self::StreamTimeout => "STREAM_TIMEOUT",
+            Self::ResponseTooLarge => "RESPONSE_TOO_LARGE",
+            Self::ProviderDisconnected => "PROVIDER_DISCONNECTED",
         }
     }
 }

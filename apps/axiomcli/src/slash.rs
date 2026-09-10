@@ -22,6 +22,8 @@ pub enum SlashCommand {
     Account,
     Security,
     Refresh,
+    Theme(crate::tui::Appearance),
+    Web(bool),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -87,7 +89,7 @@ pub const COMMANDS: &[SlashCommandSpec] = &[
     SlashCommandSpec {
         name: "logout",
         usage: "/logout",
-        description: "Remove the saved Axiom API key from this computer",
+        description: "Sign out and remove the saved Axiom session from this computer",
         aliases: &["signout"],
     },
     SlashCommandSpec {
@@ -113,6 +115,18 @@ pub const COMMANDS: &[SlashCommandSpec] = &[
         usage: "/help",
         description: "Show available slash commands",
         aliases: &["commands"],
+    },
+    SlashCommandSpec {
+        name: "theme",
+        usage: "/theme <dark|light|terminal>",
+        description: "Choose desktop colors or inherit your terminal appearance",
+        aliases: &[],
+    },
+    SlashCommandSpec {
+        name: "web",
+        usage: "/web <on|off>",
+        description: "Enable external search and URL fetching; queries are not E2EE",
+        aliases: &[],
     },
 ];
 
@@ -172,6 +186,14 @@ pub fn parse(input: &str) -> Option<Result<SlashCommand, SlashCommandError>> {
         Some("account") => no_arguments(arguments, SlashCommand::Account, COMMANDS[8].usage),
         Some("security") => no_arguments(arguments, SlashCommand::Security, COMMANDS[9].usage),
         Some("refresh") => no_arguments(arguments, SlashCommand::Refresh, COMMANDS[10].usage),
+        Some("theme") => crate::tui::Appearance::parse(arguments)
+            .map(SlashCommand::Theme)
+            .ok_or_else(|| SlashCommandError::new("/theme <dark|light|terminal>")),
+        Some("web") => match arguments {
+            "on" => Ok(SlashCommand::Web(true)),
+            "off" => Ok(SlashCommand::Web(false)),
+            _ => Err(SlashCommandError::new("/web <on|off>")),
+        },
         Some(_) => unreachable!("all command specs are handled"),
         None => Err(SlashCommandError::new(format!(
             "unknown command `/{name}`; use /help to list commands"
@@ -277,6 +299,18 @@ pub fn completions(input: &str) -> Vec<SlashCompletion> {
         return Vec::new();
     }
     let options: Vec<(&str, &'static str)> = match command {
+        "theme" => vec![
+            ("dark", "Charcoal surfaces and orange activity"),
+            ("light", "Light surfaces and ink controls"),
+            ("terminal", "Inherit terminal foreground and background"),
+        ],
+        "web" => vec![
+            (
+                "on",
+                "Share search queries and URLs with external services; not E2EE",
+            ),
+            ("off", "Disable external search and URL fetching"),
+        ],
         "thinking" => vec![
             ("minimal", "Use minimal reasoning effort"),
             ("low", "Use low reasoning effort"),

@@ -4,7 +4,7 @@ import type { PendingUserMessage } from "../types";
 import { MessageBubble } from "./MessageBubble";
 import { ToolCallCard } from "./ToolCallCard";
 import { InteractionCard } from "./InteractionCard";
-import { presentTimeline } from "./timelinePresentation";
+import { hasActiveResponse, presentTimeline } from "./timelinePresentation";
 
 function ActivityRow({ item }: { item: ClientTimelineItem }) {
   const error = item.kind === "error";
@@ -23,16 +23,16 @@ export function TimelineView({
   session: ClientSessionState;
   pendingUserMessage?: PendingUserMessage | null;
 }) {
-  const rows = presentTimeline(session.timeline).map((row) => {
+  const presentation = presentTimeline(session.timeline);
+  const rows = presentation.map((row) => {
     if (row.kind === "message") {
-      return <MessageBubble key={row.key} message={row.message} />;
+      return <div key={row.key} data-timeline-kind={row.message.role}><MessageBubble message={row.message} /></div>;
     }
     if (row.kind === "tool" && row.item.tool) {
-      return <ToolCallCard key={row.key} tool={row.item.tool} />;
+      return <div key={row.item.tool.callId} data-timeline-kind="tool"><ToolCallCard tool={row.item.tool} /></div>;
     }
-    return <ActivityRow key={row.key} item={row.item} />;
+    return <div key={row.key} data-timeline-kind="activity"><ActivityRow item={row.item} /></div>;
   });
-  const last = session.timeline.at(-1);
   const showPendingUser = Boolean(
     pendingUserMessage
       && pendingUserMessage.sessionId === session.sessionId
@@ -40,31 +40,30 @@ export function TimelineView({
   );
   if (showPendingUser && pendingUserMessage) {
     rows.push(
-      <MessageBubble
-        key={pendingUserMessage.id}
+      <div key={pendingUserMessage.id} data-timeline-kind="user"><MessageBubble
         message={{
           id: pendingUserMessage.id,
           role: "user",
           status: "pending",
           content: pendingUserMessage.text,
         }}
-      />,
+      /></div>,
     );
   }
   const lastAlreadyShowsGeneration = !showPendingUser
-    && (last?.kind === "assistant" || last?.kind === "reasoning");
+    && hasActiveResponse(presentation);
 
   return (
-    <>
+    <div className="chat-timeline">
       {rows}
       {session.running && !lastAlreadyShowsGeneration ? (
-        <MessageBubble
+        <div data-timeline-kind="assistant"><MessageBubble
           message={{ id: "active-generation", role: "assistant", status: "streaming", content: "" }}
-        />
+        /></div>
       ) : null}
       {session.interactions.map((interaction) => (
-        <InteractionCard key={interaction.id} interaction={interaction} />
+        <div key={interaction.id} data-timeline-kind="interaction"><InteractionCard interaction={interaction} /></div>
       ))}
-    </>
+    </div>
   );
 }

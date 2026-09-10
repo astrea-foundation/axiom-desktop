@@ -487,7 +487,23 @@ async fn actual_proxy_preserves_encryption_streaming_tools_errors_and_cancellati
     .await
     .unwrap();
     assert!(abrupt.contains("upstream_failed"));
-    assert!(abrupt.ends_with("data: [DONE]\n\n"));
+    assert!(!abrupt.contains("data: [DONE]"));
+    assert!(!abrupt.contains("\"finish_reason\":\"stop\""));
+
+    let invalid_receipt = post_json(
+        &client,
+        &proxy.base_url,
+        json!({"model":MODEL_ID,"messages":[{"role":"user","content":"bad stream receipt fixture"}],"stream":true}),
+    )
+    .await
+    .error_for_status()
+    .unwrap()
+    .text()
+    .await
+    .unwrap();
+    assert!(invalid_receipt.contains("\"error\""), "{invalid_receipt}");
+    assert!(!invalid_receipt.contains("data: [DONE]"));
+    assert!(!invalid_receipt.contains("\"finish_reason\":\"stop\""));
 
     let mut slow = post_json(
         &client,
@@ -621,6 +637,7 @@ async fn catalog(State(state): State<Arc<FixtureState>>) -> Json<Value> {
         "e2ee_protocol":"near-v2",
         "e2ee_encryption_version":2,
         "attestation_protocol":"signed-test-fixture-v1",
+        "relay_contract_version":2,
         "context_window_tokens":131_072,
         "max_output_tokens":8192,
         "supported_reasoning_efforts":["medium","high"]
@@ -896,7 +913,11 @@ fn stream_response(
         raw_body.push_str("\n\n");
     }
     raw_body.push_str("data: [DONE]\n\n");
-    let proof = sign_response_receipt(raw_body.as_bytes(), request_hash, run_id, UPSTREAM_MODEL);
+    let mut proof =
+        sign_response_receipt(raw_body.as_bytes(), request_hash, run_id, UPSTREAM_MODEL);
+    if joined.contains("bad stream receipt fixture") {
+        proof["signature"] = json!(format!("0x{}", "00".repeat(65)));
+    }
     frames.push(sse(
         "message.encrypted_completed",
         &json!({"run_id":run_id,"usage":usage,"finish_reason":finish_reason,"proof":proof}),

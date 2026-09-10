@@ -40,6 +40,7 @@ impl InferenceProvider for ScriptedProvider {
 
 fn call(id: &str, name: &str, arguments: &serde_json::Value) -> AssistantTurn {
     AssistantTurn {
+        reasoning: None,
         text: String::new(),
         tool_calls: vec![ToolCall {
             id: id.into(),
@@ -90,6 +91,7 @@ async fn deterministic_agent_edits_runs_tests_and_reports_completion() {
                 &json!({"program":"cargo", "args":["test"], "timeout_secs":60}),
             ),
             AssistantTurn {
+                reasoning: None,
                 text: "Implemented the fix and the real test command passes.".into(),
                 tool_calls: Vec::new(),
             },
@@ -110,6 +112,8 @@ async fn deterministic_agent_edits_runs_tests_and_reports_completion() {
                 turn_id: TurnId::new(),
                 cwd: root.path().to_path_buf(),
                 permission_profile: PermissionProfile::FullAccess,
+                web_enabled: true,
+                steering: None,
                 approval: None,
                 questions: None,
             },
@@ -191,6 +195,7 @@ async fn deterministic_agent_observes_failure_repairs_and_reruns() {
                 &json!({"program":"cargo", "args":["test"], "env":{"NO_COLOR":"1"}, "timeout_secs":60}),
             ),
             AssistantTurn {
+                reasoning: None,
                 text:
                     "The first test exposed the defect; the repair is applied and the rerun passes."
                         .into(),
@@ -212,6 +217,8 @@ async fn deterministic_agent_observes_failure_repairs_and_reruns() {
                 turn_id: TurnId::new(),
                 cwd: root.path().to_path_buf(),
                 permission_profile: PermissionProfile::FullAccess,
+                web_enabled: true,
+                steering: None,
                 approval: None,
                 questions: None,
             },
@@ -258,6 +265,7 @@ async fn adversarial_out_of_root_edit_is_rejected_without_side_effect() {
                 &json!({"path":target, "old":"protected", "new":"owned"}),
             ),
             AssistantTurn {
+                reasoning: None,
                 text: "The operation was blocked.".into(),
                 tool_calls: Vec::new(),
             },
@@ -277,6 +285,8 @@ async fn adversarial_out_of_root_edit_is_rejected_without_side_effect() {
                 turn_id: TurnId::new(),
                 cwd: root.path().to_path_buf(),
                 permission_profile: PermissionProfile::FullAccess,
+                web_enabled: true,
+                steering: None,
                 approval: None,
                 questions: None,
             },

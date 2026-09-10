@@ -12,6 +12,7 @@ async-trait = "0.1.89"
 axiom-inference.workspace = true
 axiom-acp-extension.workspace = true
 axiom-secure-client.workspace = true
+axiom-proxy = { path = "../axiom-proxy" }
 base64 = "0.22.1"
 chrono = { version = "0.4.42", features = ["serde"] }
 clap = { version = "4.5.50", features = ["derive", "env"] }
@@ -20,7 +21,8 @@ directories = "6.0.0"
 futures = "0.3.31"
 fs2 = "0.4.3"
 getrandom = "0.4.1"
-git2 = "0.21.0"
+# Desktop bundles must not depend on a build machine's Homebrew/system libgit2.
+git2 = { version = "0.21.0", features = ["vendored-libgit2"] }
 globset = "0.4.20"
 ignore = "0.4.33"
 keyring = "4.1.6"

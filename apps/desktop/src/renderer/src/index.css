@@ -1,26 +1,21 @@
-@import "@fontsource-variable/dm-sans";
-@import "@fontsource/dm-mono/400.css";
-@import "@fontsource/dm-mono/500.css";
+@import "@axiom/brand/fonts.css";
 @import "tailwindcss";
 
-@font-face {
-  font-family: "PP Cirka";
-  src: url("./brand/fonts/PPCirka-Light.otf") format("opentype");
-  font-weight: 300;
-  font-display: swap;
+/* A tool is an inline step in a response, not another full message. */
+.chat-timeline > [data-timeline-kind] + [data-timeline-kind] {
+  margin-top: 12px;
 }
-@font-face {
-  font-family: "PP Cirka";
-  src: url("./brand/fonts/PPCirka-Regular.otf") format("opentype");
-  font-weight: 400;
-  font-display: swap;
+.chat-timeline > [data-timeline-kind="tool"] + [data-timeline-kind="tool"] {
+  margin-top: 2px;
 }
-@font-face {
-  font-family: "PP Cirka";
-  src: url("./brand/fonts/PPCirka-Bold.otf") format("opentype");
-  font-weight: 700;
-  font-display: swap;
+.chat-timeline > [data-timeline-kind] + [data-timeline-kind="user"],
+.chat-timeline > [data-timeline-kind="user"] + [data-timeline-kind] {
+  margin-top: 28px;
 }
+
+
+
+
 
 @theme {
   --color-bg-base: #f2f2f4;
@@ -304,10 +299,12 @@ input {
   app-region: no-drag;
 }
 
-/* Keep header content clear of the native Windows/Linux controls overlay.
-   Electron supplies the exact platform width through this environment value. */
-.window-controls-inset {
-  padding-right: calc(env(titlebar-area-width, 138px) + 8px);
+/* Electron hit-tests the deepest painted node. Icons inside a frameless
+   control must therefore opt out of dragging too, not only their button. */
+.window-controls,
+.window-controls * {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
 }
 
 /* The frosted-glass canvas the whole app sits on. */
@@ -417,6 +414,70 @@ input {
     arc to var(--snw) calc(var(--snh) - var(--srf)) of var(--srf) ccw,
     vline to var(--srt),
     arc to calc(var(--snw) + var(--srt)) 0 of var(--srt) cw,
+    close
+  );
+}
+
+/* Windows/Linux mirror the macOS treatment on the opposite side: the window
+   controls live on the outer canvas and the stage bends around them. Keeping
+   this as a distinct path also leaves the animated macOS/sidebar notch alone. */
+.stage-frame[data-controls-cutout="true"] {
+  --rnw: 104px;
+  --rnh: 30px;
+  --rrt: 12px;
+  --rrf: 11px;
+  --srnw: 104px;
+  --srnh: 30px;
+  --srrt: 11px;
+  --srrf: 12px;
+}
+.stage-frame[data-controls-cutout="true"] .stage-ring {
+  clip-path: shape(
+    evenodd from var(--r) 0,
+    hline to calc(100% - var(--rnw) - var(--rrt)),
+    arc to calc(100% - var(--rnw)) var(--rrt) of var(--rrt) cw,
+    vline to calc(var(--rnh) - var(--rrf)),
+    arc to calc(100% - var(--rnw) + var(--rrf)) var(--rnh) of var(--rrf) ccw,
+    hline to calc(100% - var(--r)),
+    arc to 100% calc(var(--rnh) + var(--r)) of var(--r) cw,
+    vline to calc(100% - var(--r)),
+    arc to calc(100% - var(--r)) 100% of var(--r) cw,
+    hline to var(--r),
+    arc to 0 calc(100% - var(--r)) of var(--r) cw,
+    vline to var(--r),
+    arc to var(--r) 0 of var(--r) cw,
+    close,
+    move to var(--r) 1px,
+    hline to calc(100% - var(--srnw) - var(--srrt) - 1px),
+    arc to calc(100% - var(--srnw) - 1px) calc(var(--srrt) + 1px) of var(--srrt) cw,
+    vline to calc(var(--srnh) - var(--srrf) + 1px),
+    arc to calc(100% - var(--srnw) + var(--srrf) - 1px) calc(var(--srnh) + 1px) of var(--srrf) ccw,
+    hline to calc(100% - var(--r)),
+    arc to calc(100% - 1px) calc(var(--srnh) + var(--r)) of var(--sr) cw,
+    vline to calc(100% - var(--r)),
+    arc to calc(100% - var(--r)) calc(100% - 1px) of var(--sr) cw,
+    hline to var(--r),
+    arc to 1px calc(100% - var(--r)) of var(--sr) cw,
+    vline to var(--r),
+    arc to var(--r) 1px of var(--sr) cw,
+    close
+  );
+}
+.stage-frame[data-controls-cutout="true"] .stage-card {
+  clip-path: shape(
+    from var(--sr) 0,
+    hline to calc(100% - var(--srnw) - var(--srrt)),
+    arc to calc(100% - var(--srnw)) var(--srrt) of var(--srrt) cw,
+    vline to calc(var(--srnh) - var(--srrf)),
+    arc to calc(100% - var(--srnw) + var(--srrf)) var(--srnh) of var(--srrf) ccw,
+    hline to calc(100% - var(--sr)),
+    arc to 100% calc(var(--srnh) + var(--sr)) of var(--sr) cw,
+    vline to calc(100% - var(--sr)),
+    arc to calc(100% - var(--sr)) 100% of var(--sr) cw,
+    hline to var(--sr),
+    arc to 0 calc(100% - var(--sr)) of var(--sr) cw,
+    vline to var(--sr),
+    arc to var(--sr) 0 of var(--sr) cw,
     close
   );
 }
@@ -609,33 +670,52 @@ input {
 .ax-dot-working {
   animation: dot-working 2s ease-in-out infinite;
 }
-/* Thread status dots: viewed grey, unread brand, working breathes between. */
+/* The trailing slot stays empty for read threads; activity pulses in orange. */
 .thread-dot {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--dot-idle);
+  background: var(--color-brand);
   flex: 0 0 auto;
 }
-.thread-dot-unread {
-  background: var(--color-brand);
-}
-@keyframes thread-dot-working {
-  0%,
-  100% {
-    background: var(--dot-idle);
-  }
-  50% {
-    background: var(--color-brand);
-  }
-}
 .thread-dot-working {
-  animation: thread-dot-working 1.8s ease-in-out infinite;
+  animation: dot-working 1.8s ease-in-out infinite;
+}
+
+.overflow-title {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: clip;
+}
+.overflow-title-track {
+  display: block;
+  width: max-content;
+}
+.overflow-title-text {
+  display: inline-block;
+}
+.overflow-title[data-overflow="true"] {
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent);
+  mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent);
+}
+.overflow-title[data-overflow="true"] > .overflow-title-track {
+  padding-right: 24px;
+}
+@keyframes title-carousel {
+  0%, 5% { transform: translateX(0); }
+  95%, 100% { transform: translateX(var(--title-scroll-distance)); }
+}
+.title-scroll-trigger:is(:hover, :focus-visible) .overflow-title[data-overflow="true"] > .overflow-title-track,
+.overflow-title[data-overflow="true"]:hover > .overflow-title-track {
+  animation: title-carousel var(--title-scroll-duration) linear infinite alternate;
 }
 @media (prefers-reduced-motion: reduce) {
-  .thread-dot-working {
-    animation: none;
-    background: var(--color-brand);
+  .thread-dot-working,
+  .overflow-title-track {
+    animation: none !important;
   }
 }
 
@@ -683,6 +763,30 @@ input {
 }
 .unmask-in .unmask-inner {
   transform: translateY(0);
+}
+
+@keyframes account-screen-enter {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes account-screen-exit {
+  from { opacity: 1; transform: translateY(0); }
+  to { opacity: 0; transform: translateY(6px); }
+}
+.account-screen-motion {
+  animation: account-screen-enter 220ms var(--ease-out-expo) both;
+}
+.account-screen-motion[data-closing="true"] {
+  animation: account-screen-exit 180ms ease-in both;
+  pointer-events: none;
+}
+.account-menu-motion {
+  animation: account-screen-enter 160ms var(--ease-out-expo) both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .account-screen-motion,
+  .account-screen-motion[data-closing="true"],
+  .account-menu-motion { animation: none; }
 }
 
 @keyframes fade-in-up {
@@ -825,6 +929,28 @@ input {
 .markdown-prose p {
   margin: 0;
   white-space: pre-wrap;
+}
+.markdown-prose .katex {
+  font-size: 1.08em;
+  white-space: normal;
+  word-break: normal;
+}
+.markdown-prose .katex-display {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  padding: 0.35em 0;
+  margin: 0.85em 0;
+}
+.markdown-prose .katex-display > .katex {
+  white-space: nowrap;
+  width: max-content;
+  min-width: 100%;
+}
+.markdown-prose .katex-error {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .markdown-prose p + p,
 .markdown-prose p + ul,

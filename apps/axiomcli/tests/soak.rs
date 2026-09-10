@@ -63,6 +63,7 @@ impl InferenceProvider for LongStreamProvider {
                 .map_err(|_| axiomcli::AxiomError::Cancelled)?;
         }
         Ok(AssistantTurn {
+            reasoning: None,
             text,
             tool_calls: Vec::new(),
         })
@@ -108,6 +109,8 @@ async fn long_stream_and_many_transcript_entries_stay_within_recorded_budgets() 
                 turn_id: TurnId::new(),
                 cwd: workspace.path().to_path_buf(),
                 permission_profile: PermissionProfile::Observe,
+                web_enabled: true,
+                steering: None,
                 approval: None,
                 questions: None,
             },

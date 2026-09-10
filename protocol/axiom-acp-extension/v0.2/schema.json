@@ -4,6 +4,12 @@
   "description": "Schema root used to generate the checked-in language-neutral contract.",
   "type": "object",
   "properties": {
+    "configureDesktopAgentRequest": {
+      "$ref": "#/$defs/ConfigureDesktopAgentRequest"
+    },
+    "configureDesktopAgentResponse": {
+      "$ref": "#/$defs/ConfigureDesktopAgentResponse"
+    },
     "capabilities": {
       "$ref": "#/$defs/ExtensionCapabilities"
     },
@@ -24,6 +30,12 @@
     },
     "listThreadsResponse": {
       "$ref": "#/$defs/ListThreadsResponse"
+    },
+    "renameThreadRequest": {
+      "$ref": "#/$defs/RenameThreadRequest"
+    },
+    "renameThreadResponse": {
+      "$ref": "#/$defs/RenameThreadResponse"
     },
     "getThreadTimelineRequest": {
       "$ref": "#/$defs/GetThreadTimelineRequest"
@@ -91,20 +103,41 @@
     "accountStatusResponse": {
       "$ref": "#/$defs/AccountStatusResponse"
     },
-    "browserLoginStartRequest": {
-      "$ref": "#/$defs/BrowserLoginStartRequest"
+    "nativeLoginStartRequest": {
+      "$ref": "#/$defs/NativeLoginStartRequest"
     },
-    "browserLoginStartResponse": {
-      "$ref": "#/$defs/BrowserLoginStartResponse"
+    "nativeLoginStartResponse": {
+      "$ref": "#/$defs/NativeLoginStartResponse"
     },
-    "browserLoginCompleteRequest": {
-      "$ref": "#/$defs/BrowserLoginCompleteRequest"
+    "nativeLoginCompleteRequest": {
+      "$ref": "#/$defs/NativeLoginCompleteRequest"
     },
-    "useApiKeyRequest": {
-      "$ref": "#/$defs/UseApiKeyRequest"
+    "nativeLoginCancelRequest": {
+      "$ref": "#/$defs/NativeLoginCancelRequest"
     },
     "logoutRequest": {
       "$ref": "#/$defs/LogoutRequest"
+    },
+    "billingStatusRequest": {
+      "$ref": "#/$defs/BillingStatusRequest"
+    },
+    "billingStatusResponse": {
+      "$ref": "#/$defs/BillingStatusResponse"
+    },
+    "usageSummaryRequest": {
+      "$ref": "#/$defs/UsageSummaryRequest"
+    },
+    "usageSummaryResponse": {
+      "$ref": "#/$defs/UsageSummaryResponse"
+    },
+    "billingInvoiceCreateRequest": {
+      "$ref": "#/$defs/BillingInvoiceCreateRequest"
+    },
+    "billingInvoiceStatusRequest": {
+      "$ref": "#/$defs/BillingInvoiceStatusRequest"
+    },
+    "billingInvoiceResponse": {
+      "$ref": "#/$defs/BillingInvoiceResponse"
     },
     "verifySecurityRequest": {
       "$ref": "#/$defs/VerifySecurityRequest"
@@ -118,6 +151,12 @@
     "compactResponse": {
       "$ref": "#/$defs/CompactResponse"
     },
+    "steerTurnRequest": {
+      "$ref": "#/$defs/SteerTurnRequest"
+    },
+    "steerTurnResponse": {
+      "$ref": "#/$defs/SteerTurnResponse"
+    },
     "eventNotification": {
       "$ref": "#/$defs/EventNotification"
     },
@@ -130,6 +169,8 @@
     }
   },
   "required": [
+    "configureDesktopAgentRequest",
+    "configureDesktopAgentResponse",
     "capabilities",
     "desktopBootstrapRequest",
     "desktopBootstrapResponse",
@@ -137,6 +178,8 @@
     "deliveryMetadata",
     "listThreadsRequest",
     "listThreadsResponse",
+    "renameThreadRequest",
+    "renameThreadResponse",
     "getThreadTimelineRequest",
     "getThreadTimelineResponse",
     "deletePreviewRequest",
@@ -159,20 +202,204 @@
     "assignThreadCollectionResponse",
     "accountStatusRequest",
     "accountStatusResponse",
-    "browserLoginStartRequest",
-    "browserLoginStartResponse",
-    "browserLoginCompleteRequest",
-    "useApiKeyRequest",
+    "nativeLoginStartRequest",
+    "nativeLoginStartResponse",
+    "nativeLoginCompleteRequest",
+    "nativeLoginCancelRequest",
     "logoutRequest",
+    "billingStatusRequest",
+    "billingStatusResponse",
+    "usageSummaryRequest",
+    "usageSummaryResponse",
+    "billingInvoiceCreateRequest",
+    "billingInvoiceStatusRequest",
+    "billingInvoiceResponse",
     "verifySecurityRequest",
     "verifySecurityResponse",
     "compactRequest",
     "compactResponse",
+    "steerTurnRequest",
+    "steerTurnResponse",
     "eventNotification",
     "error",
     "metadata"
   ],
   "$defs": {
+    "ConfigureDesktopAgentRequest": {
+      "type": "object",
+      "properties": {
+        "threadId": {
+          "type": "string"
+        },
+        "expectedRevision": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "permission": {
+          "$ref": "#/$defs/DesktopAgentPermission"
+        },
+        "workingDirectory": {
+          "description": "None resets to the application-owned per-thread directory. A custom\ndirectory must be an absolute, existing directory on this machine.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "threadId",
+        "expectedRevision",
+        "enabled",
+        "permission"
+      ]
+    },
+    "DesktopAgentPermission": {
+      "type": "string",
+      "enum": [
+        "approve_commands",
+        "full_access"
+      ]
+    },
+    "ConfigureDesktopAgentResponse": {
+      "type": "object",
+      "properties": {
+        "thread": {
+          "$ref": "#/$defs/ThreadSummary"
+        },
+        "agent": {
+          "$ref": "#/$defs/DesktopAgentSettings"
+        }
+      },
+      "required": [
+        "thread",
+        "agent"
+      ]
+    },
+    "ThreadSummary": {
+      "type": "object",
+      "properties": {
+        "threadId": {
+          "type": "string"
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "origin": {
+          "type": "string"
+        },
+        "profile": {
+          "type": "string"
+        },
+        "selectedModel": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "thinkingLevel": {
+          "type": "string"
+        },
+        "lifecycle": {
+          "$ref": "#/$defs/ThreadLifecycle"
+        },
+        "archived": {
+          "type": "boolean"
+        },
+        "revision": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "lastTimelineSequence": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "createdAt": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "type": "string"
+        },
+        "lastMessageAt": {
+          "description": "Latest actual message activity, absent for message-free threads.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "threadId",
+        "cwd",
+        "origin",
+        "profile",
+        "thinkingLevel",
+        "lifecycle",
+        "archived",
+        "revision",
+        "lastTimelineSequence",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "ThreadLifecycle": {
+      "type": "string",
+      "enum": [
+        "ready",
+        "running",
+        "waiting_for_approval",
+        "waiting_for_answer",
+        "compacting",
+        "closed"
+      ]
+    },
+    "DesktopAgentSettings": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "permission": {
+          "$ref": "#/$defs/DesktopAgentPermission"
+        },
+        "workingDirectory": {
+          "type": "string"
+        },
+        "defaultWorkingDirectory": {
+          "type": "string"
+        },
+        "usesDefaultDirectory": {
+          "type": "boolean"
+        },
+        "revision": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "permission",
+        "workingDirectory",
+        "defaultWorkingDirectory",
+        "usesDefaultDirectory",
+        "revision"
+      ]
+    },
     "ExtensionCapabilities": {
       "type": "object",
       "properties": {
@@ -198,6 +425,13 @@
       "type": "object",
       "properties": {
         "desktopChat": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535,
+          "default": 0
+        },
+        "desktopAgent": {
           "type": "integer",
           "format": "uint16",
           "minimum": 0,
@@ -246,7 +480,35 @@
           "maximum": 65535,
           "default": 0
         },
+        "billing": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535,
+          "default": 0
+        },
+        "usage": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535,
+          "default": 0
+        },
         "securityEvidence": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535,
+          "default": 0
+        },
+        "webConsent": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535,
+          "default": 0
+        },
+        "steering": {
           "type": "integer",
           "format": "uint16",
           "minimum": 0,
@@ -280,11 +542,14 @@
           "type": "string"
         },
         "chatCwd": {
-          "description": "Canonical workspace used for every desktop chat thread.",
-          "type": "string"
+          "description": "Canonical parent of application-owned, per-thread desktop workspaces.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "permissionProfile": {
-          "description": "Effective, immutable permission profile for desktop chat.",
+          "description": "Default permission profile for a new desktop chat (Agent starts off).",
           "type": "string"
         },
         "newThreadSettings": {
@@ -294,7 +559,6 @@
       },
       "required": [
         "frontend",
-        "chatCwd",
         "permissionProfile",
         "newThreadSettings"
       ]
@@ -326,6 +590,20 @@
       "properties": {
         "clientItemId": {
           "type": "string"
+        },
+        "webEnabled": {
+          "description": "Explicit per-message desktop consent to external web tools. Never\ninherited from an earlier turn, saved thread, or permission profile.",
+          "type": "boolean",
+          "default": false
+        },
+        "agentRevision": {
+          "description": "Bind queued input to the exact locally approved Agent configuration.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
         }
       },
       "required": [
@@ -345,6 +623,13 @@
           "type": "integer",
           "format": "uint64",
           "minimum": 0
+        },
+        "lastMessageAt": {
+          "description": "Latest actual message activity; operational updates do not advance it.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "timelineItemId": {
           "type": [
@@ -414,82 +699,30 @@
         "threads"
       ]
     },
-    "ThreadSummary": {
+    "RenameThreadRequest": {
       "type": "object",
       "properties": {
         "threadId": {
           "type": "string"
         },
         "title": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "cwd": {
-          "type": "string"
-        },
-        "origin": {
-          "type": "string"
-        },
-        "profile": {
-          "type": "string"
-        },
-        "selectedModel": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "thinkingLevel": {
-          "type": "string"
-        },
-        "lifecycle": {
-          "$ref": "#/$defs/ThreadLifecycle"
-        },
-        "archived": {
-          "type": "boolean"
-        },
-        "revision": {
-          "type": "integer",
-          "format": "uint64",
-          "minimum": 0
-        },
-        "lastTimelineSequence": {
-          "type": "integer",
-          "format": "uint64",
-          "minimum": 0
-        },
-        "createdAt": {
-          "type": "string"
-        },
-        "updatedAt": {
           "type": "string"
         }
       },
       "required": [
         "threadId",
-        "cwd",
-        "origin",
-        "profile",
-        "thinkingLevel",
-        "lifecycle",
-        "archived",
-        "revision",
-        "lastTimelineSequence",
-        "createdAt",
-        "updatedAt"
+        "title"
       ]
     },
-    "ThreadLifecycle": {
-      "type": "string",
-      "enum": [
-        "ready",
-        "running",
-        "waiting_for_approval",
-        "waiting_for_answer",
-        "compacting",
-        "closed"
+    "RenameThreadResponse": {
+      "type": "object",
+      "properties": {
+        "thread": {
+          "$ref": "#/$defs/ThreadSummary"
+        }
+      },
+      "required": [
+        "thread"
       ]
     },
     "GetThreadTimelineRequest": {
@@ -525,6 +758,40 @@
         "thread": {
           "$ref": "#/$defs/ThreadSummary"
         },
+        "desktopAgent": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DesktopAgentSettings"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "activeTurnId": {
+          "description": "Active durable turn, including when a client missed its start event.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "contextUsage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ContextUsage"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "requestUsage": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RequestUsage"
+          },
+          "default": []
+        },
         "items": {
           "type": "array",
           "items": {
@@ -543,6 +810,201 @@
       "required": [
         "thread",
         "items"
+      ]
+    },
+    "ContextUsage": {
+      "description": "Last provider-reported conversation request, not a measurement of the next\nrequest or a cumulative billing total. Auxiliary title/compaction requests\nnever replace this report. Limits describe the model used by that request.",
+      "type": "object",
+      "properties": {
+        "inputTokens": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "outputTokens": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "modelId": {
+          "type": "string"
+        },
+        "reportedAt": {
+          "type": "string"
+        },
+        "contextWindowTokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "autoCompactThresholdTokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "inputTokens",
+        "outputTokens",
+        "modelId",
+        "reportedAt"
+      ]
+    },
+    "RequestUsage": {
+      "description": "Decimal strings remain exact in JavaScript, on disk, and over ACP.\nA settled charge does not imply an authenticated/complete model response.",
+      "type": "object",
+      "properties": {
+        "requestId": {
+          "type": "string"
+        },
+        "modelId": {
+          "type": "string"
+        },
+        "providerId": {
+          "type": "string"
+        },
+        "contextWindowTokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0,
+          "default": null
+        },
+        "autoCompactThresholdTokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0,
+          "default": null
+        },
+        "turnId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "purpose": {
+          "$ref": "#/$defs/InvocationPurpose",
+          "default": "conversation"
+        },
+        "state": {
+          "$ref": "#/$defs/InvocationState",
+          "default": "running"
+        },
+        "completeness": {
+          "$ref": "#/$defs/UsageCompleteness",
+          "default": "unknown"
+        },
+        "inputTokens": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "cachedInputTokens": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "outputTokens": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "reasoningTokens": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "costMicrousd": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "settled": {
+          "type": "boolean",
+          "default": false
+        },
+        "responseVerified": {
+          "type": "boolean",
+          "default": false
+        },
+        "startedAtMs": {
+          "type": "string",
+          "default": ""
+        },
+        "finishedAtMs": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "errorCode": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "finishReason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "requestId",
+        "modelId",
+        "providerId"
+      ]
+    },
+    "InvocationPurpose": {
+      "type": "string",
+      "enum": [
+        "conversation",
+        "title",
+        "compaction"
+      ]
+    },
+    "InvocationState": {
+      "type": "string",
+      "enum": [
+        "running",
+        "completed",
+        "failed",
+        "cancelled"
+      ]
+    },
+    "UsageCompleteness": {
+      "type": "string",
+      "enum": [
+        "unknown",
+        "live",
+        "final",
+        "partial"
       ]
     },
     "TimelineItem": {
@@ -1021,20 +1483,28 @@
           "format": "uint64",
           "minimum": 0
         },
-        "keyId": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "keyName": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
         "state": {
           "$ref": "#/$defs/AccountState"
+        },
+        "account": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AccountProfile"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "session": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NativeSession"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "detail": {
           "type": [
@@ -1051,27 +1521,100 @@
     "AccountState": {
       "type": "string",
       "enum": [
-        "missing",
+        "starting",
+        "signed_out",
         "valid",
-        "invalid",
+        "expired",
         "unavailable"
       ]
     },
-    "BrowserLoginStartRequest": {
-      "type": "object"
+    "AccountProfile": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "displayName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "avatarUrl": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "verifiedEmail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "linkedMethods": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LoginMethod"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "linkedMethods"
+      ]
     },
-    "BrowserLoginStartResponse": {
+    "LoginMethod": {
+      "type": "string",
+      "enum": [
+        "passkey",
+        "google",
+        "password",
+        "ethereum_wallet"
+      ]
+    },
+    "NativeSession": {
+      "type": "object",
+      "properties": {
+        "expiresAt": {
+          "type": "string"
+        },
+        "credentialStore": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "expiresAt",
+        "credentialStore"
+      ]
+    },
+    "NativeLoginStartRequest": {
+      "type": "object",
+      "properties": {
+        "methodHint": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LoginMethod"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "NativeLoginStartResponse": {
       "type": "object",
       "properties": {
         "login": {
-          "$ref": "#/$defs/BrowserLoginState"
+          "$ref": "#/$defs/NativeLoginState"
         }
       },
       "required": [
         "login"
       ]
     },
-    "BrowserLoginState": {
+    "NativeLoginState": {
       "type": "object",
       "properties": {
         "loginId": {
@@ -1085,16 +1628,20 @@
         },
         "browserOpened": {
           "type": "boolean"
+        },
+        "expiresAt": {
+          "type": "string"
         }
       },
       "required": [
         "loginId",
         "userCode",
         "authorizationUrl",
-        "browserOpened"
+        "browserOpened",
+        "expiresAt"
       ]
     },
-    "BrowserLoginCompleteRequest": {
+    "NativeLoginCompleteRequest": {
       "type": "object",
       "properties": {
         "loginId": {
@@ -1105,19 +1652,459 @@
         "loginId"
       ]
     },
-    "UseApiKeyRequest": {
+    "NativeLoginCancelRequest": {
       "type": "object",
       "properties": {
-        "apiKey": {
+        "loginId": {
           "type": "string"
         }
       },
       "required": [
-        "apiKey"
+        "loginId"
       ]
     },
     "LogoutRequest": {
       "type": "object"
+    },
+    "BillingStatusRequest": {
+      "type": "object"
+    },
+    "BillingStatusResponse": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "$ref": "#/$defs/BillingStatus"
+        }
+      },
+      "required": [
+        "status"
+      ]
+    },
+    "BillingStatus": {
+      "type": "object",
+      "properties": {
+        "revision": {
+          "description": "Monotonic within one agent runtime; clients ignore older projections.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "postedMicrousd": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "heldMicrousd": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "availableMicrousd": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "ledgerSequence": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "trialMicrousd": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "paidMicrousd": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "paymentReviewRequired": {
+          "type": "boolean",
+          "default": false
+        },
+        "currency": {
+          "type": "string"
+        },
+        "invoicesEnabled": {
+          "type": "boolean"
+        },
+        "invoiceMinUsdCents": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "invoiceMaxUsdCents": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "settlementAsset": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "paymentAccount": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PaymentAccount"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "zecUsdQuote": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ZecUsdQuote"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "revision",
+        "postedMicrousd",
+        "heldMicrousd",
+        "availableMicrousd",
+        "ledgerSequence",
+        "currency",
+        "invoicesEnabled",
+        "invoiceMinUsdCents",
+        "invoiceMaxUsdCents"
+      ]
+    },
+    "PaymentAccount": {
+      "description": "Payment-service values remain exact decimal strings across Rust/ACP/JS.\nNested fields retain the backend's `snake_case` HTTP contract.",
+      "type": "object",
+      "properties": {
+        "network": {
+          "type": "string"
+        },
+        "asset": {
+          "type": "string"
+        },
+        "conversion_status": {
+          "type": "string"
+        },
+        "valuation_enabled": {
+          "type": "boolean",
+          "default": false
+        },
+        "state": {
+          "type": "string"
+        },
+        "address": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "payment_uri": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "monitoring_status": {
+          "type": "string"
+        },
+        "required_confirmations": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "confirmed_zatoshis": {
+          "type": "string"
+        },
+        "confirming_zatoshis": {
+          "type": "string"
+        },
+        "review_required": {
+          "type": "boolean"
+        },
+        "deposits": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DepositReceipt"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "network",
+        "asset",
+        "conversion_status",
+        "state",
+        "monitoring_status",
+        "confirmed_zatoshis",
+        "confirming_zatoshis",
+        "review_required",
+        "deposits"
+      ]
+    },
+    "DepositReceipt": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "amount_zatoshis": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string"
+        },
+        "object_version": {
+          "type": "string"
+        },
+        "confirmations": {
+          "type": "string"
+        },
+        "required_confirmations": {
+          "type": "string"
+        },
+        "review_required": {
+          "type": "boolean"
+        },
+        "observed_at": {
+          "type": "string"
+        },
+        "valuation_status": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "credit_microusd": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "price_microusd_per_zec": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "price_source": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "priced_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "amount_zatoshis",
+        "state",
+        "object_version",
+        "confirmations",
+        "required_confirmations",
+        "review_required",
+        "observed_at"
+      ]
+    },
+    "ZecUsdQuote": {
+      "description": "Indicative live market price; deposit credit uses its confirmation-time rate.",
+      "type": "object",
+      "properties": {
+        "price_microusd_per_zec": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "as_of": {
+          "type": "string"
+        },
+        "expires_at": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "price_microusd_per_zec",
+        "source",
+        "as_of",
+        "expires_at"
+      ]
+    },
+    "UsageSummaryRequest": {
+      "type": "object"
+    },
+    "UsageSummaryResponse": {
+      "type": "object",
+      "properties": {
+        "summary": {
+          "$ref": "#/$defs/UsageSummary"
+        }
+      },
+      "required": [
+        "summary"
+      ]
+    },
+    "UsageSummary": {
+      "type": "object",
+      "properties": {
+        "period": {
+          "type": "string"
+        },
+        "totalCostMicrousd": {
+          "type": "string"
+        },
+        "models": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ModelSpend"
+          }
+        }
+      },
+      "required": [
+        "period",
+        "totalCostMicrousd",
+        "models"
+      ]
+    },
+    "ModelSpend": {
+      "type": "object",
+      "properties": {
+        "provider": {
+          "type": "string"
+        },
+        "modelId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "modelName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "costMicrousd": {
+          "description": "Exact USD millionths; never an IEEE-754 amount.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider",
+        "costMicrousd"
+      ]
+    },
+    "BillingInvoiceCreateRequest": {
+      "type": "object",
+      "properties": {
+        "amountUsdCents": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "clientRequestId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "amountUsdCents",
+        "clientRequestId"
+      ]
+    },
+    "BillingInvoiceStatusRequest": {
+      "type": "object",
+      "properties": {
+        "invoiceId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "invoiceId"
+      ]
+    },
+    "BillingInvoiceResponse": {
+      "type": "object",
+      "properties": {
+        "invoice": {
+          "$ref": "#/$defs/BillingInvoice"
+        }
+      },
+      "required": [
+        "invoice"
+      ]
+    },
+    "BillingInvoice": {
+      "type": "object",
+      "properties": {
+        "revision": {
+          "description": "Monotonic within one agent runtime; clients ignore older invoice state.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "id": {
+          "type": "string"
+        },
+        "amountUsdCents": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "state": {
+          "$ref": "#/$defs/InvoiceState"
+        },
+        "expiresAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "paidAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "payUrl": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "revision",
+        "id",
+        "amountUsdCents",
+        "state"
+      ]
+    },
+    "InvoiceState": {
+      "type": "string",
+      "enum": [
+        "creating",
+        "pending",
+        "paid",
+        "expired",
+        "failed",
+        "review"
+      ]
     },
     "VerifySecurityRequest": {
       "type": "object",
@@ -1336,6 +2323,57 @@
         "messagesBefore"
       ]
     },
+    "SteerTurnRequest": {
+      "type": "object",
+      "properties": {
+        "agentRevision": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "expectedTurnId": {
+          "type": "string"
+        },
+        "clientItemId": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "webEnabled": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "threadId",
+        "expectedTurnId",
+        "clientItemId",
+        "text",
+        "webEnabled"
+      ]
+    },
+    "SteerTurnResponse": {
+      "type": "object",
+      "properties": {
+        "turnId": {
+          "type": "string"
+        },
+        "clientItemId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "turnId",
+        "clientItemId"
+      ]
+    },
     "EventNotification": {
       "type": "object",
       "properties": {
@@ -1395,6 +2433,56 @@
         {
           "type": "object",
           "properties": {
+            "turnId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "active_turn_changed"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "usage": {
+              "$ref": "#/$defs/ContextUsage"
+            },
+            "kind": {
+              "type": "string",
+              "const": "context_usage_changed"
+            }
+          },
+          "required": [
+            "kind",
+            "usage"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "usage": {
+              "$ref": "#/$defs/RequestUsage"
+            },
+            "kind": {
+              "type": "string",
+              "const": "request_usage_changed"
+            }
+          },
+          "required": [
+            "kind",
+            "usage"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
             "status": {
               "$ref": "#/$defs/SecurityStatus"
             },
@@ -1422,6 +2510,38 @@
           "required": [
             "kind",
             "status"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "status": {
+              "$ref": "#/$defs/BillingStatus"
+            },
+            "kind": {
+              "type": "string",
+              "const": "billing_changed"
+            }
+          },
+          "required": [
+            "kind",
+            "status"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "invoice": {
+              "$ref": "#/$defs/BillingInvoice"
+            },
+            "kind": {
+              "type": "string",
+              "const": "invoice_changed"
+            }
+          },
+          "required": [
+            "kind",
+            "invoice"
           ]
         },
         {

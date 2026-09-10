@@ -119,6 +119,8 @@ pub struct ChatCompletionRequest {
     #[serde(default)]
     pub reasoning_effort: Option<String>,
     #[serde(default)]
+    pub thinking_mode: axiom_inference::ThinkingMode,
+    #[serde(default)]
     pub max_tokens: Option<u32>,
     #[serde(default)]
     pub max_completion_tokens: Option<u32>,
@@ -259,6 +261,8 @@ impl ChatCompletionRequest {
             .collect::<Result<Vec<_>>>()?;
         let request = InferenceRequest {
             model: self.model,
+            request_id: None,
+            thinking_mode: self.thinking_mode,
             messages: self
                 .messages
                 .into_iter()
@@ -903,7 +907,8 @@ pub fn stream_event(
             Some(finish_reason_name(&reason)),
             None,
         )),
-        ProviderEvent::SecurityState(_)
+        ProviderEvent::Accounting(_)
+        | ProviderEvent::SecurityState(_)
         | ProviderEvent::ResponseVerified
         | ProviderEvent::Status { .. }
         | ProviderEvent::Usage { .. } => None,
@@ -1259,6 +1264,7 @@ mod tests {
 
         let response = InferenceResponse {
             assistant: AssistantTurn {
+                reasoning: None,
                 text: String::new(),
                 tool_calls: vec![ToolCall {
                     id: "call-1".to_owned(),

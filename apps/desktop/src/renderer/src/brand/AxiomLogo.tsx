@@ -1,4 +1,4 @@
-import symbolUrl from "./axiom-symbol-logo-colored.svg";
+import symbolUrl from "@axiom/brand/assets/axiom-symbol-logo-colored.svg";
 
 interface LogoProps {
   className?: string;

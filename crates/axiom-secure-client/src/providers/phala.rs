@@ -2,8 +2,8 @@
 //!
 //! The cryptographic and attestation implementation is maintained in the
 //! in-tree `axiom-phala-core` fork. This adapter retains `AxiomCLI`'s bounded
-//! relay transport and exposes plaintext only after the provider receipt
-//! verifies.
+//! relay transport. Decrypted text streams provisionally; successful completion
+//! remains gated on the provider receipt and the exact complete transcript.
 
 use std::{
     sync::Arc,
@@ -186,30 +186,6 @@ impl SecureProvider for PhalaProvider {
                 "backend Phala keyset lease does not match local evidence",
             ));
         }
-        let workload = phala_workload_identity(&verified, policy);
-        if matches!(
-            policy.workload_enforcement,
-            crate::WorkloadEnforcement::Warn
-        ) && !workload.approved
-        {
-            tracing::warn!(
-                repository = workload.repository.as_deref().unwrap_or("missing"),
-                commit = workload.commit.as_deref().unwrap_or("missing"),
-                "Phala workload identity is outside the signed trust policy"
-            );
-        }
-        if matches!(
-            policy.workload_enforcement,
-            crate::WorkloadEnforcement::Enforce
-        ) && !workload.approved
-        {
-            return Err(SecureClientError::with_code(
-                axiom_inference::ProviderFailureKind::AttestationRejected,
-                crate::SecureErrorCode::WorkloadNotApproved,
-                "Phala workload identity is not approved by policy",
-                false,
-            ));
-        }
         let mut evidence = evidence_for(model, &verified, policy);
         evidence.attestation_generation = Some(binding.generation);
         evidence.hard_expires_at_unix_seconds = Some(binding.hard_expires_at_unix_seconds);
@@ -350,9 +326,15 @@ impl PhalaVerifiedSession {
         request
             .validate()
             .map_err(|_| invalid_request("inference request validation failed"))?;
+        let response_format = public_response_format(&request.response_format)?;
         if request.model != self.model.id {
             return Err(invalid_request(
                 "request model does not match verified session",
+            ));
+        }
+        if request.thinking_mode != axiom_inference::ThinkingMode::ProviderDefault {
+            return Err(invalid_request(
+                "explicit thinking mode is unsupported by this Phala model",
             ));
         }
         let reasoning_effort = provider_reasoning_effort(&self.model, request.reasoning_effort)?;
@@ -432,13 +414,6 @@ impl PhalaVerifiedSession {
         }
 
         let sampling = sampling_value(request);
-        let response_format = match &request.response_format {
-            ResponseFormat::Text => None,
-            other => Some(
-                serde_json::to_value(other)
-                    .map_err(|_| invalid_request("response format is invalid"))?,
-            ),
-        };
         let provider_wire_request = ProviderWireRequest {
             model: self.model.upstream_model.clone(),
             messages: provider_wire_messages,
@@ -464,6 +439,10 @@ impl PhalaVerifiedSession {
         }
 
         let relay_request = RelayChatRequest {
+            client_request_id: request.request_id.clone(),
+            thinking_mode: None,
+            provider_id: self.model.provider_id.clone(),
+            inference_encryption: INFERENCE_ENCRYPTION,
             model_id: self.model.id.clone(),
             encryption_version: self.model.e2ee_encryption_version,
             e2ee_protocol: self.model.e2ee_protocol.clone(),
@@ -518,6 +497,7 @@ fn decrypt_completion(
     }
     Ok(InferenceResponse {
         assistant: AssistantTurn {
+            reasoning: None,
             text,
             tool_calls: Vec::new(),
         },
@@ -526,12 +506,6 @@ fn decrypt_completion(
         usage: normalize_usage(&completion.usage)?,
         finish_reason: Some(finish_reason),
     })
-}
-
-#[derive(Debug)]
-enum BufferedDelta {
-    Text(String),
-    Reasoning(String),
 }
 
 async fn stream_verified(
@@ -548,7 +522,6 @@ async fn stream_verified(
     let mut decoder = SseDecoder::new(event_limit, stream_limit);
     let mut run_id = None;
     let mut next_sequence = None;
-    let mut buffered = Vec::new();
     let mut text = String::new();
     let mut reasoning = String::new();
     let mut usage = None;
@@ -557,8 +530,10 @@ async fn stream_verified(
     let mut message_completed = false;
     let mut run_completed = false;
 
+    let mut deadline = crate::relay::deadline::StreamDeadline::new();
     loop {
         let chunk = tokio::select! {
+            () = tokio::time::sleep_until(deadline.at()) => return Err(deadline.error()),
             () = cancellation.cancelled() => return Err(SecureClientError::cancelled()),
             chunk = bytes.next() => chunk,
         };
@@ -570,12 +545,23 @@ async fn stream_verified(
             )
         })?;
         for event in decoder.feed(&chunk)? {
+            deadline.observe(&event);
             if run_completed {
                 return Err(invalid_response(
                     "relay emitted data after terminal completion",
                 ));
             }
             match event {
+                RelayEvent::Finalizing(payload) => {
+                    require_run(run_id.as_deref(), &payload.run_id)?;
+                }
+                RelayEvent::Accounting(usage) => {
+                    require_run(run_id.as_deref(), &usage.request_id)?;
+                    if !usage.validate_counters() || usage.response_verified {
+                        return Err(invalid_response("invalid operational accounting"));
+                    }
+                    send(sink, ProviderEvent::Accounting(usage), cancellation).await?;
+                }
                 RelayEvent::RunCreated(payload) => {
                     if run_id.is_some() || payload.inference_encryption != INFERENCE_ENCRYPTION {
                         return Err(invalid_response("relay run creation contract is invalid"));
@@ -617,7 +603,7 @@ async fn stream_verified(
                         let value = String::from_utf8(value)
                             .map_err(|_| invalid_response("Phala plaintext is not UTF-8"))?;
                         append_bounded(&mut text, &value)?;
-                        buffered.push(BufferedDelta::Text(value));
+                        send(sink, ProviderEvent::TextDelta(value), cancellation).await?;
                     }
                     if let Some(value) = payload.encrypted_reasoning_delta {
                         let value = cipher
@@ -630,7 +616,7 @@ async fn stream_verified(
                         let value = String::from_utf8(value)
                             .map_err(|_| invalid_response("Phala reasoning is not UTF-8"))?;
                         append_bounded(&mut reasoning, &value)?;
-                        buffered.push(BufferedDelta::Reasoning(value));
+                        send(sink, ProviderEvent::ReasoningDelta(value), cancellation).await?;
                     }
                 }
                 RelayEvent::MessageCompleted(payload) => {
@@ -662,10 +648,8 @@ async fn stream_verified(
                 }
                 RelayEvent::Failed(payload) => {
                     require_run(run_id.as_deref(), &payload.run_id)?;
-                    let _ = (payload.error, payload.code);
-                    return Err(SecureClientError::new(
-                        axiom_inference::ProviderFailureKind::Transient,
-                        "remote encrypted inference failed",
+                    return Err(crate::relay::client::stream_failure(
+                        payload.code.as_deref(),
                     ));
                 }
             }
@@ -684,8 +668,8 @@ async fn stream_verified(
         .verify_stream_completion(proof)
         .map_err(|error| map_provider_error(&error))?;
 
-    // Phala output stays local and buffered until the terminal receipt binds
-    // the exact stream. Only verified deltas reach the agent journal.
+    // Previewed output is not successful/verified until the receipt binds the
+    // exact stream and exact pre-verified worker, and transport reaches EOF.
     send(
         sink,
         ProviderEvent::Status {
@@ -695,17 +679,6 @@ async fn stream_verified(
         cancellation,
     )
     .await?;
-    for delta in buffered {
-        send(
-            sink,
-            match delta {
-                BufferedDelta::Text(value) => ProviderEvent::TextDelta(value),
-                BufferedDelta::Reasoning(value) => ProviderEvent::ReasoningDelta(value),
-            },
-            cancellation,
-        )
-        .await?;
-    }
     let usage = usage.unwrap_or_default();
     send(
         sink,
@@ -731,6 +704,7 @@ async fn stream_verified(
     .await?;
     Ok(InferenceResponse {
         assistant: AssistantTurn {
+            reasoning: None,
             text,
             tool_calls: Vec::new(),
         },
@@ -758,7 +732,7 @@ fn evidence_for(
         .and_then(|state| state.get("worker_sessions"))
         .and_then(serde_json::Value::as_object)
         .map_or(0, serde_json::Map::len);
-    let workload = phala_workload_identity(verified, policy);
+    let workload = phala_workload_identity(verified);
     let mut claims = vec![
         EvidenceClaim {
             name: "workload_keyset_digest".into(),
@@ -820,11 +794,9 @@ fn evidence_for(
             .collect(),
         provider_claims: claims,
         workload_manifest: None,
-        workload_identity_allowlist_configured: !policy
-            .approved_phala_gateway_repositories
-            .is_empty()
-            && !policy.approved_phala_gateway_commits.is_empty(),
-        approved_workload_identity: workload.approved,
+        // Source is quote-bound provenance, not an Axiom code-approval claim.
+        workload_identity_allowlist_configured: false,
+        approved_workload_identity: false,
     }
 }
 
@@ -832,13 +804,9 @@ fn evidence_for(
 struct PhalaWorkloadIdentity {
     repository: Option<String>,
     commit: Option<String>,
-    approved: bool,
 }
 
-fn phala_workload_identity(
-    verified: &VerifiedModel,
-    policy: &TrustPolicy,
-) -> PhalaWorkloadIdentity {
+fn phala_workload_identity(verified: &VerifiedModel) -> PhalaWorkloadIdentity {
     let state = verified
         .provider_state
         .as_ref()
@@ -851,24 +819,7 @@ fn phala_workload_identity(
         .and_then(|value| value.get("source_commit"))
         .and_then(serde_json::Value::as_str)
         .map(str::to_ascii_lowercase);
-    let repository_approved = repository.as_ref().is_some_and(|measured| {
-        policy
-            .approved_phala_gateway_repositories
-            .iter()
-            .map(|approved| canonical_repository(approved))
-            .any(|approved| &approved == measured)
-    });
-    let commit_approved = commit.as_ref().is_some_and(|measured| {
-        policy
-            .approved_phala_gateway_commits
-            .iter()
-            .any(|approved| approved.eq_ignore_ascii_case(measured))
-    });
-    PhalaWorkloadIdentity {
-        repository,
-        commit,
-        approved: repository_approved && commit_approved,
-    }
+    PhalaWorkloadIdentity { repository, commit }
 }
 
 fn canonical_repository(repository: &str) -> String {
@@ -888,6 +839,16 @@ fn sampling_value(request: &InferenceRequest) -> Option<serde_json::Value> {
         values.insert("top_p".into(), serde_json::json!(value));
     }
     (!values.is_empty()).then_some(serde_json::Value::Object(values))
+}
+
+fn public_response_format(format: &ResponseFormat) -> Result<Option<serde_json::Value>> {
+    match format {
+        ResponseFormat::Text => Ok(None),
+        ResponseFormat::JsonObject => Ok(Some(serde_json::json!({"type": "json_object"}))),
+        ResponseFormat::JsonSchema { .. } => Err(invalid_request(
+            "JSON Schema response format is unavailable until its metadata is provider-E2EE",
+        )),
+    }
 }
 
 fn provider_reasoning_effort(
@@ -1062,6 +1023,26 @@ mod tests {
     }
 
     #[test]
+    fn json_schema_metadata_is_rejected_before_phala_provider_construction() {
+        let sentinel = "plaintext-schema-instruction-must-not-cross";
+        let format = ResponseFormat::JsonSchema {
+            name: sentinel.into(),
+            schema: serde_json::json!({"description": sentinel}),
+            strict: true,
+        };
+        let error = public_response_format(&format).expect_err("schema metadata must fail closed");
+        assert_eq!(
+            error.kind(),
+            axiom_inference::ProviderFailureKind::InvalidRequest
+        );
+        assert!(!error.safe_detail().contains(sentinel));
+        assert_eq!(
+            public_response_format(&ResponseFormat::JsonObject).unwrap(),
+            Some(serde_json::json!({"type": "json_object"}))
+        );
+    }
+
+    #[test]
     fn phala_usage_and_bounds_fail_closed() {
         assert!(
             normalize_usage(&RelayUsage {
@@ -1083,7 +1064,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cancelled_verified_flush_never_publishes_plaintext() {
+    async fn cancelled_provisional_send_never_publishes_more_text() {
         let (sink, mut output) = mpsc::channel(1);
         let cancellation = CancellationToken::new();
         cancellation.cancel();
@@ -1099,8 +1080,247 @@ mod tests {
         assert!(output.try_recv().is_err());
     }
 
+    // Transport regression fixture using the real ACI cipher and request AAD.
+    // Its synthetic attestation state is confined to this unit test; it never
+    // establishes a live provider session or bypasses a production verifier.
+    fn stream_cipher_fixture() -> (Box<dyn CipherSession>, serde_json::Value) {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let worker_id = "aa".repeat(32);
+        let verified = VerifiedModel {
+            model_public_key_hex: "34".repeat(32),
+            tls_fingerprint: None,
+            checks: Vec::new(),
+            expires_at_unix: Some(now + 300),
+            provider_state: Some(serde_json::json!({
+                "profile": "dstack-aci-draft-d567f6",
+                "model": "org/model",
+                "workload_id": null,
+                "keyset_digest": format!("sha256:{}", "12".repeat(32)),
+                "source_repository": "https://github.com/Dstack-TEE/private-ai-gateway",
+                "source_commit": "ab".repeat(20),
+                "gateway_public_key_hex": "34".repeat(32),
+                "receipt_public_keys": {},
+                "worker_sessions": {
+                    (worker_id.clone()): {
+                        "session_id": worker_id,
+                        "established_at": now - 1,
+                        "expires_at": now + 300,
+                        "record": {}
+                    }
+                }
+            })),
+        };
+        let mut cipher = PhalaCipher.new_session(&verified).unwrap();
+        let encrypted = cipher
+            .encrypt_field(b"test prompt", "messages.0.content")
+            .unwrap();
+        let context = cipher
+            .prepare_request_context(&ProviderWireRequest {
+                model: "org/model".into(),
+                messages: vec![ProviderWireMessage {
+                    role: "user".into(),
+                    content: Some(encrypted),
+                    assistant_null_content: false,
+                    has_extended_fields: false,
+                }],
+                max_tokens: 32,
+                stream: true,
+                sampling: None,
+                response_format: None,
+                reasoning_effort: None,
+                has_tools: false,
+            })
+            .unwrap();
+        (cipher, context)
+    }
+
+    fn encrypted_stream_fixture(
+        cipher: &dyn CipherSession,
+        context: &serde_json::Value,
+        field: &str,
+        plaintext: &[u8],
+    ) -> String {
+        use aes_gcm::{
+            Aes256Gcm, KeyInit as _, Nonce,
+            aead::{Aead as _, Payload},
+        };
+        use x25519_dalek::{PublicKey, StaticSecret};
+
+        let recipient = PublicKey::from(
+            <[u8; 32]>::try_from(hex::decode(cipher.client_public_key_hex()).unwrap()).unwrap(),
+        );
+        let ephemeral = StaticSecret::random_from_rng(rand_core::OsRng);
+        let public = PublicKey::from(&ephemeral);
+        let mut key = [0_u8; 32];
+        hkdf::Hkdf::<Sha256>::new(None, ephemeral.diffie_hellman(&recipient).as_bytes())
+            .expand(b"aci.e2ee.v2.x25519", &mut key)
+            .unwrap();
+        let aad = serde_json::json!({
+            "purpose": "aci.e2ee.response.v2",
+            "algo": "x25519-aes-256-gcm-hkdf-sha256",
+            "model": "org/model",
+            "id": "chat-1",
+            "field": field,
+            "nonce": context["nonce"],
+            "ts": context["timestamp"],
+        });
+        let canonical: std::collections::BTreeMap<_, _> = aad.as_object().unwrap().iter().collect();
+        let aad = serde_json::to_vec(&canonical).unwrap();
+        // Each field uses a fresh ephemeral key, so the fixed test nonce is safe.
+        let nonce = [7_u8; 12];
+        let encrypted = Aes256Gcm::new_from_slice(&key)
+            .unwrap()
+            .encrypt(
+                Nonce::from_slice(&nonce),
+                Payload {
+                    msg: plaintext,
+                    aad: &aad,
+                },
+            )
+            .unwrap();
+        hex::encode([public.as_bytes().as_slice(), &nonce, &encrypted].concat())
+    }
+
+    fn sse_fixture(name: &str, payload: &serde_json::Value) -> String {
+        format!("event: {name}\ndata: {payload}\n\n")
+    }
+
+    #[tokio::test]
+    async fn phala_streams_before_terminal_and_never_succeeds_without_valid_proof() {
+        for ending in [
+            "eof",
+            "missing-proof",
+            "invalid-proof",
+            "reordered",
+            "tampered",
+            "cancelled",
+        ] {
+            let (mut cipher, context) = stream_cipher_fixture();
+            let encrypted_content = encrypted_stream_fixture(
+                cipher.as_ref(),
+                &context,
+                "choices.0.delta.content",
+                b"partial answer",
+            );
+            let reasoning = encrypted_stream_fixture(
+                cipher.as_ref(),
+                &context,
+                "choices.0.delta.reasoning_content",
+                b"thinking",
+            );
+            let delta = serde_json::json!({
+                "run_id": "run-1", "sequence": 1, "response_id": "chat-1",
+                "encrypted_delta": encrypted_content,
+                "encrypted_reasoning_delta": reasoning,
+                "content_field": "choices.0.delta.content",
+                "reasoning_field": "choices.0.delta.reasoning_content"
+            });
+            let (wire_tx, wire_rx) = mpsc::channel::<String>(8);
+            let body = reqwest::Body::wrap_stream(futures_util::stream::unfold(
+                wire_rx,
+                |mut rx| async move {
+                    rx.recv()
+                        .await
+                        .map(|chunk| (Ok::<_, std::io::Error>(chunk), rx))
+                },
+            ));
+            let response = reqwest::Response::from(::http::Response::new(body));
+            let (sink, mut output) = mpsc::channel(8);
+            let cancellation = CancellationToken::new();
+            let stream_cancellation = cancellation.clone();
+            let task = tokio::spawn(async move {
+                stream_verified(
+                    response,
+                    cipher.as_mut(),
+                    &sink,
+                    &stream_cancellation,
+                    8192,
+                    65536,
+                )
+                .await
+            });
+            wire_tx
+                .send(sse_fixture(
+                    "run.created",
+                    &serde_json::json!({
+                        "run_id": "run-1", "inference_encryption": INFERENCE_ENCRYPTION
+                    }),
+                ))
+                .await
+                .unwrap();
+            wire_tx
+                .send(sse_fixture("message.encrypted_delta", &delta))
+                .await
+                .unwrap();
+            assert!(
+                matches!(
+                    tokio::time::timeout(std::time::Duration::from_secs(2), output.recv()).await.unwrap(),
+                    Some(ProviderEvent::TextDelta(text)) if text == "partial answer"
+                ),
+                "{ending}: text must arrive while the network stream is still open"
+            );
+            assert!(matches!(
+                tokio::time::timeout(std::time::Duration::from_secs(2), output.recv()).await.unwrap(),
+                Some(ProviderEvent::ReasoningDelta(text)) if text == "thinking"
+            ));
+            assert!(!task.is_finished());
+            assert!(output.try_recv().is_err());
+            match ending {
+                "missing-proof" | "invalid-proof" => {
+                    let proof = if ending == "invalid-proof" {
+                        serde_json::json!({})
+                    } else {
+                        serde_json::Value::Null
+                    };
+                    wire_tx.send(sse_fixture("message.encrypted_completed", &serde_json::json!({
+                        "run_id": "run-1", "finish_reason": "stop", "usage": {}, "proof": proof
+                    }))).await.unwrap();
+                    wire_tx
+                        .send(sse_fixture(
+                            "run.completed",
+                            &serde_json::json!({"run_id": "run-1"}),
+                        ))
+                        .await
+                        .unwrap();
+                }
+                "reordered" | "tampered" => {
+                    let mut next = delta;
+                    next["sequence"] = serde_json::json!(if ending == "reordered" { 3 } else { 2 });
+                    if ending == "tampered" {
+                        let mut wire =
+                            hex::decode(next["encrypted_delta"].as_str().unwrap()).unwrap();
+                        *wire.last_mut().unwrap() ^= 1;
+                        next["encrypted_delta"] = serde_json::json!(hex::encode(wire));
+                    }
+                    wire_tx
+                        .send(sse_fixture("message.encrypted_delta", &next))
+                        .await
+                        .unwrap();
+                }
+                "cancelled" => cancellation.cancel(),
+                _ => {}
+            }
+            drop(wire_tx);
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_secs(2), task)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .is_err(),
+                "{ending}"
+            );
+            assert!(
+                output.try_recv().is_err(),
+                "{ending}: no more text or successful terminal event"
+            );
+        }
+    }
+
     #[test]
-    fn workload_identity_requires_an_approved_repository_and_full_commit() {
+    fn workload_identity_exposes_source_without_release_approval() {
         let verified = VerifiedModel {
             model_public_key_hex: "12".repeat(32),
             tls_fingerprint: None,
@@ -1111,18 +1331,22 @@ mod tests {
             })),
             expires_at_unix: None,
         };
-        let mut policy = TrustPolicy {
-            approved_phala_gateway_commits: vec!["abcdabcdabcdabcdabcdabcdabcdabcdabcdabcd".into()],
-            ..TrustPolicy::default()
-        };
-        let identity = phala_workload_identity(&verified, &policy);
-        assert!(identity.approved);
+        let identity = phala_workload_identity(&verified);
+        assert_eq!(
+            identity.commit.as_deref(),
+            Some("abcdabcdabcdabcdabcdabcdabcdabcdabcdabcd")
+        );
         assert_eq!(
             identity.repository.as_deref(),
             Some("https://github.com/dstack-tee/private-ai-gateway")
         );
 
-        policy.approved_phala_gateway_commits = vec!["00".repeat(20)];
-        assert!(!phala_workload_identity(&verified, &policy).approved);
+        let policy = TrustPolicy {
+            workload_enforcement: crate::WorkloadEnforcement::Enforce,
+            ..TrustPolicy::default()
+        };
+        let evidence = evidence_for(&ModelInfo::default(), &verified, &policy);
+        assert!(!evidence.workload_identity_allowlist_configured);
+        assert!(!evidence.approved_workload_identity);
     }
 }

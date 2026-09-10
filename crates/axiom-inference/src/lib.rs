@@ -7,13 +7,15 @@
 use std::{collections::BTreeMap, fmt};
 
 use serde::{Deserialize, Serialize};
+mod accounting;
+pub use accounting::{InvocationPurpose, InvocationState, RequestUsage, UsageCompleteness};
 
 pub const MAX_MESSAGES: usize = 101;
 pub const MAX_TOOLS: usize = 128;
 pub const MAX_TOOL_CALLS: usize = 128;
 pub const MAX_TOOL_CALL_ID_CHARS: usize = 256;
 pub const MAX_FUNCTION_NAME_CHARS: usize = 64;
-pub const MAX_MESSAGE_TEXT_BYTES: usize = 262_000;
+pub const MAX_MESSAGE_TEXT_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_TOOL_DESCRIPTION_BYTES: usize = 16_384;
 pub const MAX_TOOL_PARAMETERS_BYTES: usize = 131_072;
 pub const MAX_TOOL_ARGUMENTS_BYTES: usize = 262_000;
@@ -149,14 +151,25 @@ pub enum ResponseFormat {
     },
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThinkingMode {
+    #[default]
+    ProviderDefault,
+    Enabled,
+    Disabled,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct InferenceRequest {
     pub model: String,
+    pub request_id: Option<String>,
     pub messages: Vec<ChatMessage>,
     pub tools: Vec<ToolDefinition>,
     pub tool_choice: ToolChoice,
     pub parallel_tool_calls: Option<bool>,
     pub reasoning_effort: ReasoningEffort,
+    pub thinking_mode: ThinkingMode,
     pub max_output_tokens: Option<u32>,
     pub sampling: SamplingParameters,
     pub response_format: ResponseFormat,
@@ -172,11 +185,13 @@ impl InferenceRequest {
     ) -> Self {
         Self {
             model: model.into(),
+            request_id: None,
             messages,
             tools,
             tool_choice: ToolChoice::Auto,
             parallel_tool_calls: None,
             reasoning_effort: ReasoningEffort::Medium,
+            thinking_mode: ThinkingMode::ProviderDefault,
             max_output_tokens: None,
             sampling: SamplingParameters::default(),
             response_format: ResponseFormat::Text,
@@ -243,13 +258,19 @@ impl InferenceRequest {
         if self.max_output_tokens == Some(0) {
             return Err(ValidationError::invalid("max_output_tokens"));
         }
-        for (field, value) in [
-            ("temperature", self.sampling.temperature),
-            ("top_p", self.sampling.top_p),
-        ] {
-            if value.is_some_and(|number| !number.is_finite()) {
-                return Err(ValidationError::invalid(field));
-            }
+        if self
+            .sampling
+            .temperature
+            .is_some_and(|number| !number.is_finite() || !(0.0..=2.0).contains(&number))
+        {
+            return Err(ValidationError::invalid("temperature"));
+        }
+        if self
+            .sampling
+            .top_p
+            .is_some_and(|number| !number.is_finite() || !(0.0..=1.0).contains(&number))
+        {
+            return Err(ValidationError::invalid("top_p"));
         }
         Ok(())
     }
@@ -502,6 +523,7 @@ fn merge_stable(
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProviderEvent {
+    Accounting(RequestUsage),
     SecurityState(ProviderSecurityState),
     /// The exact response associated with this provider call passed its
     /// terminal cryptographic verification. Secure adapters emit this only
@@ -512,6 +534,8 @@ pub enum ProviderEvent {
         connected: bool,
         detail: String,
     },
+    /// Incremental display material, provisional until terminal verification.
+    /// A delta alone does not establish successful completion or a verified receipt.
     TextDelta(String),
     ReasoningDelta(String),
     RefusalDelta(String),
@@ -535,6 +559,7 @@ pub enum ProviderSecurityState {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct AssistantTurn {
     pub text: String,
+    pub reasoning: Option<String>,
     pub tool_calls: Vec<ToolCall>,
 }
 
@@ -580,6 +605,10 @@ pub struct ModelInfo {
     pub output_price_microusd_per_million_tokens: Option<u64>,
     #[serde(default)]
     pub supported_reasoning_efforts: Vec<ReasoningEffort>,
+    #[serde(default)]
+    pub supported_thinking_modes: Vec<ThinkingMode>,
+    #[serde(default)]
+    pub reasoning_replay: bool,
     #[serde(default)]
     pub supports_tools: bool,
     #[serde(default)]
@@ -695,6 +724,31 @@ mod tests {
         let error = request.validate().unwrap_err();
         assert_eq!(error.kind, ValidationErrorKind::Size);
         assert!(!error.to_string().contains(secret));
+    }
+
+    #[test]
+    fn sampling_metadata_is_finite_and_bounded() {
+        let base = InferenceRequest::streaming(
+            "cherry",
+            vec![ChatMessage::text(ChatRole::User, "hello")],
+            Vec::new(),
+        );
+        for temperature in [-0.01, 2.01, f64::INFINITY, f64::NAN] {
+            let mut request = base.clone();
+            request.sampling.temperature = Some(temperature);
+            assert_eq!(request.validate().unwrap_err().field, "temperature");
+        }
+        for top_p in [-0.01, 1.01, f64::INFINITY, f64::NAN] {
+            let mut request = base.clone();
+            request.sampling.top_p = Some(top_p);
+            assert_eq!(request.validate().unwrap_err().field, "top_p");
+        }
+        for (temperature, top_p) in [(0.0, 0.0), (1.0, 0.9), (2.0, 1.0)] {
+            let mut request = base.clone();
+            request.sampling.temperature = Some(temperature);
+            request.sampling.top_p = Some(top_p);
+            request.validate().expect("bounded numeric sampling");
+        }
     }
 
     #[test]

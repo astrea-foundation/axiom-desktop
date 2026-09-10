@@ -1,11 +1,12 @@
 [package]
 name = "axiom-acp-extension"
-version = "0.1.0"
+version = "0.2.0"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+axiom-inference.workspace = true
 agent-client-protocol = "2.0.0"
 schemars = "1.0"
 serde = { version = "1.0.228", features = ["derive"] }

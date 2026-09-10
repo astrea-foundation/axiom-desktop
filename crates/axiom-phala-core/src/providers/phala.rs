@@ -52,12 +52,7 @@ const GATEWAY_COMMIT_ENV: &str = "PRIVATE_AI_GATEWAY_REPO_COMMIT";
 const NVIDIA_JWKS_URL: &str = "https://nras.attestation.nvidia.com/.well-known/jwks.json";
 const NVIDIA_NRAS_INTERMEDIATE_SHA256: &str =
     "2df8907cf4d6c277b855d407ec178a649930a8e73f7294e8fce66e6ee27c5175";
-const PHALA_ACI_STANDARD_REPOSITORY: &str =
-    "https://github.com/Phala-Network/private-ai-gateway-with-vllm-router-as-middleware";
-const PHALA_ACI_STANDARD_COMMIT: &str = "08d550817ee36eeadea01689b134e46791216b66";
-const PHALA_ACI_DRAFT_REPOSITORY: &str = "https://github.com/Dstack-TEE/private-ai-gateway";
-const PHALA_ACI_DRAFT_COMMIT: &str = "d567f6b4c4d93e33037ea202db04db86a8ad881c";
-const MAX_PROOF_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
+const MAX_PROOF_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 
 fn now_unix() -> u64 {
     SystemTime::now()
@@ -65,6 +60,7 @@ fn now_unix() -> u64 {
         .map_or(0, |duration| duration.as_secs())
 }
 
+// Historical suffixes identify wire formats, not approved gateway source revisions.
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 enum PhalaAciProfile {
     #[serde(rename = "aci-v1-08d550")]
@@ -363,6 +359,35 @@ fn canonical_repository_url(value: &str) -> &str {
     value.strip_suffix(".git").unwrap_or(value)
 }
 
+fn verify_gateway_source(
+    gateway_attestation: &Map<String, Value>,
+    source_repository: &str,
+    source_commit: &str,
+) -> Result<()> {
+    let provenance = gateway_attestation
+        .get("source_provenance")
+        .and_then(Value::as_object)
+        .ok_or_else(|| attestation("Phala gateway source provenance is missing"))?;
+    if canonical_repository_url(required_str(
+        provenance,
+        "repo_url",
+        "gateway source repository",
+    )?) != canonical_repository_url(source_repository)
+    {
+        return Err(attestation(
+            "Phala gateway source repository does not match the measured workflow",
+        ));
+    }
+    if required_str(provenance, "repo_commit", "gateway source commit")?.to_lowercase()
+        != source_commit
+    {
+        return Err(attestation(
+            "Phala gateway source commit does not match the measured workflow",
+        ));
+    }
+    Ok(())
+}
+
 fn parse_json_object(value: &Value, label: &str) -> Result<Map<String, Value>> {
     match value {
         Value::Object(object) => Ok(object.clone()),
@@ -478,8 +503,6 @@ fn canonical_worker_model(record: &Map<String, Value>) -> Option<&str> {
 }
 
 fn select_gateway_profile(
-    source_repository: &str,
-    source_commit: &str,
     report: &Map<String, Value>,
     gateway_attestation: &Map<String, Value>,
     keyset: &Map<String, Value>,
@@ -502,15 +525,11 @@ fn select_gateway_profile(
         && capabilities.get("serving").and_then(Value::as_str) == Some("aggregator")
         && keyset.contains_key("not_after")
         && keyset.contains_key("subject");
-    match (canonical_repository_url(source_repository), source_commit) {
-        (PHALA_ACI_STANDARD_REPOSITORY, PHALA_ACI_STANDARD_COMMIT) if standard_shape => {
-            Ok(PhalaAciProfile::AciV1_08d550)
-        }
-        (PHALA_ACI_DRAFT_REPOSITORY, PHALA_ACI_DRAFT_COMMIT) if draft_shape => {
-            Ok(PhalaAciProfile::DstackAciDraftD567f6)
-        }
+    match (standard_shape, draft_shape) {
+        (true, false) => Ok(PhalaAciProfile::AciV1_08d550),
+        (false, true) => Ok(PhalaAciProfile::DstackAciDraftD567f6),
         _ => Err(attestation(
-            "Phala gateway source and report shape do not match an active pinned profile",
+            "Phala gateway report has an unsupported or mixed ACI artifact shape",
         )),
     }
 }
@@ -1101,13 +1120,7 @@ impl Attestor for PhalaAttestor {
             .ok_or_else(|| attestation("Phala gateway TDX evidence is missing"))?;
         let app_compose = required_str(gateway_evidence, "app_compose", "gateway compose file")?;
         let (source_repository, source_commit) = measured_gateway_source(app_compose)?;
-        let profile = select_gateway_profile(
-            &source_repository,
-            &source_commit,
-            report,
-            gateway_attestation,
-            keyset_object,
-        )?;
+        let profile = select_gateway_profile(report, gateway_attestation, keyset_object)?;
 
         let (workload_id, keyset_expires, report_statement) = match profile {
             PhalaAciProfile::AciV1_08d550 => {
@@ -1229,27 +1242,7 @@ impl Attestor for PhalaAttestor {
                 "Phala gateway compose file is not measured by the quote",
             ));
         }
-        let provenance = gateway_attestation
-            .get("source_provenance")
-            .and_then(Value::as_object)
-            .ok_or_else(|| attestation("Phala gateway source provenance is missing"))?;
-        if canonical_repository_url(required_str(
-            provenance,
-            "repo_url",
-            "gateway source repository",
-        )?) != canonical_repository_url(&source_repository)
-        {
-            return Err(attestation(
-                "Phala gateway source repository does not match the measured workflow",
-            ));
-        }
-        if required_str(provenance, "repo_commit", "gateway source commit")?.to_lowercase()
-            != source_commit
-        {
-            return Err(attestation(
-                "Phala gateway source commit does not match the measured workflow",
-            ));
-        }
+        verify_gateway_source(gateway_attestation, &source_repository, &source_commit)?;
 
         let e2ee_entries = keyset_object
             .get("e2ee_public_keys")
@@ -1718,8 +1711,19 @@ fn exact_provider_body(request: &ProviderWireRequest, session_ids: &[String]) ->
         let values = sampling
             .as_object()
             .ok_or_else(|| provider("Phala sampling options are invalid"))?;
-        if values.contains_key("logit_bias") {
-            return Err(provider("Phala does not support logit_bias"));
+        if values.keys().any(|key| {
+            !matches!(
+                key.as_str(),
+                "temperature"
+                    | "top_p"
+                    | "top_k"
+                    | "min_p"
+                    | "frequency_penalty"
+                    | "presence_penalty"
+                    | "seed"
+            )
+        }) {
+            return Err(provider("Phala sampling options are invalid"));
         }
         for key in [
             "temperature",
@@ -1728,15 +1732,22 @@ fn exact_provider_body(request: &ProviderWireRequest, session_ids: &[String]) ->
             "min_p",
             "frequency_penalty",
             "presence_penalty",
-            "stop",
             "seed",
         ] {
             if let Some(value) = values.get(key) {
+                if !valid_sampling_number(key, value) {
+                    return Err(provider("Phala sampling options are invalid"));
+                }
                 append_json_member(&mut output, &mut first, key, value)?;
             }
         }
     }
     if let Some(response_format) = &request.response_format {
+        if !fixed_public_response_format(response_format) {
+            return Err(provider(
+                "Phala schema-bearing response formats require provider-E2EE metadata support",
+            ));
+        }
         append_json_member(&mut output, &mut first, "response_format", response_format)?;
     }
     if let Some(reasoning_effort) = &request.reasoning_effort {
@@ -1754,6 +1765,35 @@ fn exact_provider_body(request: &ProviderWireRequest, session_ids: &[String]) ->
     }
     output.push(b'}');
     Ok(output)
+}
+
+fn valid_sampling_number(name: &str, value: &Value) -> bool {
+    match name {
+        "temperature" => value
+            .as_f64()
+            .is_some_and(|number| number.is_finite() && (0.0..=2.0).contains(&number)),
+        "top_p" | "min_p" => value
+            .as_f64()
+            .is_some_and(|number| number.is_finite() && (0.0..=1.0).contains(&number)),
+        "top_k" => value.as_u64().is_some_and(|number| number <= 1_000_000),
+        "frequency_penalty" | "presence_penalty" => value
+            .as_f64()
+            .is_some_and(|number| number.is_finite() && (-2.0..=2.0).contains(&number)),
+        "seed" => value
+            .as_i64()
+            .is_some_and(|number| (i64::from(i32::MIN)..=i64::from(i32::MAX)).contains(&number)),
+        _ => false,
+    }
+}
+
+fn fixed_public_response_format(value: &Value) -> bool {
+    value.as_object().is_some_and(|object| {
+        object.len() == 1
+            && matches!(
+                object.get("type").and_then(Value::as_str),
+                Some("text" | "json_object")
+            )
+    })
 }
 
 fn exact_plaintext_provider_body(
@@ -2634,7 +2674,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_encrypted_stream_body_matches_python_utf8_and_float_contract() {
+    fn exact_encrypted_stream_body_matches_numeric_metadata_contract() {
         let request = ProviderWireRequest {
             model: "org/model".into(),
             messages: vec![
@@ -2659,14 +2699,10 @@ mod tests {
                 "top_k": 40,
                 "min_p": 0.05,
                 "frequency_penalty": -0.0,
-                "presence_penalty": 1.2e15,
-                "stop": ["café 😀"],
+                "presence_penalty": 2.0,
                 "seed": 7,
             })),
-            response_format: Some(serde_json::json!({
-                "type": "json_schema",
-                "json_schema": {"name": "résumé", "strict": true},
-            })),
+            response_format: Some(serde_json::json!({"type": "json_object"})),
             reasoning_effort: Some("xhigh".into()),
             has_tools: false,
         };
@@ -2678,14 +2714,13 @@ mod tests {
         assert_eq!(
             body,
             format!(
-                "{{\"model\":\"org/model\",\"messages\":[{{\"role\":\"user\",\"content\":\"{}\"}},{{\"role\":\"assistant\",\"content\":null}}],\"max_tokens\":8192,\"stream\":true,\"provider\":{{\"aci_verified\":true,\"aci_session_ids\":[\"{session_id}\"],\"zdr\":true}},\"stream_options\":{{\"include_usage\":true}},\"temperature\":1e-05,\"top_p\":0.9,\"top_k\":40,\"min_p\":0.05,\"frequency_penalty\":-0.0,\"presence_penalty\":1200000000000000.0,\"stop\":[\"café 😀\"],\"seed\":7,\"response_format\":{{\"type\":\"json_schema\",\"json_schema\":{{\"name\":\"résumé\",\"strict\":true}}}},\"reasoning_effort\":\"max\"}}",
+                "{{\"model\":\"org/model\",\"messages\":[{{\"role\":\"user\",\"content\":\"{}\"}},{{\"role\":\"assistant\",\"content\":null}}],\"max_tokens\":8192,\"stream\":true,\"provider\":{{\"aci_verified\":true,\"aci_session_ids\":[\"{session_id}\"],\"zdr\":true}},\"stream_options\":{{\"include_usage\":true}},\"temperature\":1e-05,\"top_p\":0.9,\"top_k\":40,\"min_p\":0.05,\"frequency_penalty\":-0.0,\"presence_penalty\":2.0,\"seed\":7,\"response_format\":{{\"type\":\"json_object\"}},\"reasoning_effort\":\"max\"}}",
                 "cd".repeat(60),
             )
         );
-        assert!(!body.contains("\\u00e9"));
         assert_eq!(
             sha256_digest(body.as_bytes()),
-            "sha256:9ab510397fc7d96809131a5ce3ca51182a19bfb73af65b38bf59c4577ea4ab1e"
+            "sha256:4e43b0d0637584af4b8c0b0a409b80ba61d55efd497039c726ef4a3d0b2b7848"
         );
 
         let plaintext = "service-observed café 😀";
@@ -2703,6 +2738,52 @@ mod tests {
         let cleartext_body = String::from_utf8(cleartext_body).unwrap();
         assert!(cleartext_body.contains("\"temperature\":1e-05"));
         assert!(!cleartext_body.contains(&"cd".repeat(60)));
+    }
+
+    #[test]
+    fn schema_and_non_numeric_sampling_metadata_fail_before_phala_wire_serialization() {
+        let base = ProviderWireRequest {
+            model: "org/model".into(),
+            messages: vec![crate::provider::ProviderWireMessage {
+                role: "user".into(),
+                content: Some("ab".repeat(60)),
+                assistant_null_content: false,
+                has_extended_fields: false,
+            }],
+            max_tokens: 128,
+            stream: true,
+            sampling: Some(serde_json::json!({"temperature": 1.0, "top_p": 0.9})),
+            response_format: Some(serde_json::json!({"type": "json_object"})),
+            reasoning_effort: Some("medium".into()),
+            has_tools: false,
+        };
+        assert!(exact_provider_body(&base, &["11".repeat(32)]).is_ok());
+
+        for response_format in [
+            serde_json::json!({
+                "type": "json_schema",
+                "json_schema": {"description": "plaintext instruction"},
+            }),
+            serde_json::json!({"type": "json_object", "description": "plaintext instruction"}),
+        ] {
+            let mut request = base.clone();
+            request.response_format = Some(response_format);
+            assert!(exact_provider_body(&request, &["11".repeat(32)]).is_err());
+        }
+
+        for sampling in [
+            serde_json::json!({"stop": ["plaintext instruction"]}),
+            serde_json::json!({"temperature": "1"}),
+            serde_json::json!({"temperature": 2.01}),
+            serde_json::json!({"top_p": -0.01}),
+            serde_json::json!({"presence_penalty": 2.01}),
+            serde_json::json!({"top_k": 1_000_001}),
+            serde_json::json!({"seed": 2_147_483_648_i64}),
+        ] {
+            let mut request = base.clone();
+            request.sampling = Some(sampling);
+            assert!(exact_provider_body(&request, &["11".repeat(32)]).is_err());
+        }
     }
 
     #[test]
@@ -2747,14 +2828,7 @@ mod tests {
             max_tokens: 8_192,
             stream: true,
             sampling: Some(serde_json::json!({"temperature": 0.25, "top_p": 0.9})),
-            response_format: Some(serde_json::json!({
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "unicode_vector",
-                    "description": "résumé 日本語 ✓",
-                    "schema": {"type": "object"},
-                },
-            })),
+            response_format: Some(serde_json::json!({"type": "json_object"})),
             reasoning_effort: Some("medium".into()),
             has_tools: false,
         };
@@ -2932,7 +3006,7 @@ mod tests {
     }
 
     #[test]
-    fn gateway_profiles_require_exact_source_and_disjoint_shape() {
+    fn gateway_profiles_require_disjoint_shape_without_source_pins() {
         let standard_report = serde_json::json!({
             "workload_id": "sha256:test",
             "service_capabilities": {"supported_e2ee_versions": ["2"]},
@@ -2941,8 +3015,6 @@ mod tests {
         let standard_keyset = serde_json::json!({"workload_identity": {}, "keyset_epoch": {}});
         assert_eq!(
             select_gateway_profile(
-                PHALA_ACI_STANDARD_REPOSITORY,
-                PHALA_ACI_STANDARD_COMMIT,
                 standard_report.as_object().unwrap(),
                 standard_attestation.as_object().unwrap(),
                 standard_keyset.as_object().unwrap(),
@@ -2958,8 +3030,6 @@ mod tests {
         let draft_keyset = serde_json::json!({"not_after": 1, "subject": "gateway"});
         assert_eq!(
             select_gateway_profile(
-                "https://github.com/Dstack-TEE/private-ai-gateway.git",
-                PHALA_ACI_DRAFT_COMMIT,
                 draft_report.as_object().unwrap(),
                 draft_attestation.as_object().unwrap(),
                 draft_keyset.as_object().unwrap(),
@@ -2969,11 +3039,9 @@ mod tests {
         );
         assert_eq!(
             canonical_repository_url("https://github.com/Dstack-TEE/private-ai-gateway.git/"),
-            PHALA_ACI_DRAFT_REPOSITORY
+            "https://github.com/Dstack-TEE/private-ai-gateway"
         );
         assert!(select_gateway_profile(
-            PHALA_ACI_STANDARD_REPOSITORY,
-            PHALA_ACI_STANDARD_COMMIT,
             standard_report.as_object().unwrap(),
             standard_attestation.as_object().unwrap(),
             &serde_json::json!({
@@ -2988,13 +3056,53 @@ mod tests {
         )
         .is_err());
         assert!(select_gateway_profile(
-            PHALA_ACI_DRAFT_REPOSITORY,
-            PHALA_ACI_DRAFT_COMMIT,
-            standard_report.as_object().unwrap(),
-            standard_attestation.as_object().unwrap(),
-            standard_keyset.as_object().unwrap(),
+            draft_report.as_object().unwrap(),
+            draft_attestation.as_object().unwrap(),
+            &Map::new(),
         )
         .is_err());
+    }
+
+    #[test]
+    fn source_updates_are_transparent_but_must_match_the_measured_workflow() {
+        let repository = "https://github.com/provider/updated-gateway";
+        let commit = "66".repeat(20);
+        let compose = serde_json::json!({
+            "docker_compose_file": format!(
+                "services:\n  gateway:\n    environment:\n      - {GATEWAY_REPOSITORY_ENV}={repository}\n      - {GATEWAY_COMMIT_ENV}={commit}"
+            ),
+        }).to_string();
+        let (measured_repository, measured_commit) = measured_gateway_source(&compose).unwrap();
+        let mut attestation = serde_json::json!({"source_provenance": {
+            "repo_url": format!("{repository}.git/"),
+            "repo_commit": commit,
+        }});
+        verify_gateway_source(
+            attestation.as_object().unwrap(),
+            &measured_repository,
+            &measured_commit,
+        )
+        .unwrap();
+        attestation["source_provenance"]["repo_commit"] = serde_json::json!("77".repeat(20));
+        assert!(verify_gateway_source(
+            attestation.as_object().unwrap(),
+            &measured_repository,
+            &measured_commit
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("source commit does not match"));
+        attestation["source_provenance"]["repo_commit"] = serde_json::json!(measured_commit);
+        attestation["source_provenance"]["repo_url"] =
+            serde_json::json!("https://github.com/provider/other");
+        assert!(verify_gateway_source(
+            attestation.as_object().unwrap(),
+            &measured_repository,
+            &measured_commit
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("source repository does not match"));
     }
 
     #[test]
@@ -3110,8 +3218,8 @@ mod tests {
             model: "z-ai/glm-5.2".into(),
             workload_id: Some(workload_id),
             keyset_digest,
-            source_repository: PHALA_ACI_STANDARD_REPOSITORY.into(),
-            source_commit: PHALA_ACI_STANDARD_COMMIT.into(),
+            source_repository: "https://github.com/provider/updated-gateway".into(),
+            source_commit: "66".repeat(20),
             gateway_public_key_hex: "33".repeat(32),
             receipt_public_keys: BTreeMap::from([(
                 "receipt-1".into(),
@@ -3267,7 +3375,7 @@ mod tests {
     }
 
     #[test]
-    fn deployed_draft_receipt_remains_an_exact_pinned_profile() {
+    fn draft_receipt_remains_an_exact_protocol_profile() {
         let signing_key = SigningKey::from_bytes(&[4_u8; 32]);
         let session_id = "66".repeat(32);
         let request_hash = format!("sha256:{}", "11".repeat(32));
@@ -3302,8 +3410,8 @@ mod tests {
             model: "z-ai/glm-5.2".into(),
             workload_id: None,
             keyset_digest: format!("sha256:{}", "22".repeat(32)),
-            source_repository: PHALA_ACI_DRAFT_REPOSITORY.into(),
-            source_commit: PHALA_ACI_DRAFT_COMMIT.into(),
+            source_repository: "https://github.com/provider/updated-gateway".into(),
+            source_commit: "66".repeat(20),
             gateway_public_key_hex: "33".repeat(32),
             receipt_public_keys: BTreeMap::from([(
                 "receipt-v1".into(),

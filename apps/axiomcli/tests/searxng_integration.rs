@@ -115,6 +115,7 @@ impl InferenceProvider for CitationProvider {
         *step += 1;
         if *step == 1 {
             return Ok(AssistantTurn {
+                reasoning: None,
                 text: String::new(),
                 tool_calls: vec![ToolCall {
                     id: "real-search".into(),
@@ -144,6 +145,7 @@ impl InferenceProvider for CitationProvider {
             .await
             .expect("event receiver");
         Ok(AssistantTurn {
+            reasoning: None,
             text,
             tool_calls: Vec::new(),
         })
@@ -188,6 +190,8 @@ async fn real_service_lifecycle_failure_modes_and_agent_citations() {
                 turn_id: TurnId::new(),
                 cwd: PathBuf::from(workspace.path()),
                 permission_profile: PermissionProfile::FullAccess,
+                web_enabled: true,
+                steering: None,
                 approval: None,
                 questions: None,
             },

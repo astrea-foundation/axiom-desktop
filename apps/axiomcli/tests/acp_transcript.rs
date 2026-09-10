@@ -124,15 +124,12 @@ impl AcpProcess {
             command.env("AXIOM_PERMISSION_PROFILE", "full_access");
         }
         if let Some(base_url) = runner.strip_prefix("unreachable-provider:") {
-            command
-                .env("AXIOM_BASE_URL", base_url)
-                .env("AXIOMCLI_CREDENTIAL_STORE", "file");
+            command.env("AXIOM_BASE_URL", base_url);
         }
         if let Some(base_url) = runner.strip_prefix("blocked-auth:") {
             command
                 .env("AXIOM_BASE_URL", base_url)
-                .env("AXIOM_API_KEY", "axm_0123456789abcdef")
-                .env("AXIOMCLI_CREDENTIAL_STORE", "file");
+                .env("AXIOM_API_KEY", "axm_0123456789abcdef");
         }
         let mut child = command.spawn().expect("spawn ACP");
         let stdin = child.stdin.take().expect("stdin");
@@ -188,7 +185,7 @@ impl AcpProcess {
         self.initialize_with_capabilities(json!({
             "_meta": {
                 "axiom": {
-                    "protocolVersion": "0.1",
+                    "protocolVersion": "0.2",
                     "features": {
                         "desktopChat": 1,
                         "threadCatalog": 1,
@@ -196,7 +193,9 @@ impl AcpProcess {
                         "modelCatalog": 1,
                         "profilePreferences": 1,
                         "collections": 1,
-                        "account": 1,
+                        "account": 2,
+                        "billing": 1,
+                        "usage": 1,
                         "securityEvidence": 1,
                         "compaction": 1,
                         "activity": 1
@@ -445,16 +444,30 @@ async fn axiom_extension_negotiates_and_exposes_typed_settings_security_and_comp
         "params":{"sessionId":session,"prompt":[{"type":"text","text":"desktop title notification"}]}
     }))
     .await;
-    let mut prompt_wire = String::new();
+    let mut saw_title_notification = false;
     loop {
         let value = acp.read().await;
-        prompt_wire.push_str(&value.to_string());
+        saw_title_notification |= value.to_string().contains("title_changed")
+            || value.to_string().contains("session_info_update");
         if value.get("id").and_then(Value::as_i64) == Some(11) {
             break;
         }
     }
+    if !saw_title_notification {
+        saw_title_notification = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let value = acp.read().await;
+                let wire = value.to_string();
+                if wire.contains("title_changed") || wire.contains("session_info_update") {
+                    break true;
+                }
+            }
+        })
+        .await
+        .expect("generated title notification timeout");
+    }
     assert!(
-        prompt_wire.contains("title_changed") || prompt_wire.contains("session_info_update"),
+        saw_title_notification,
         "generated titles must be published without polling"
     );
     acp.close().await;
@@ -509,7 +522,10 @@ async fn model_changes_reconcile_disjoint_reasoning_capabilities_atomically() {
     .await;
     let retained = acp.response(6).await;
     assert_eq!(retained["result"]["preferences"]["model"], "grok-code");
-    assert_eq!(retained["result"]["preferences"]["thinkingLevel"], "xhigh");
+    assert_eq!(
+        retained["result"]["preferences"]["thinkingLevel"],
+        "provider_default"
+    );
 
     acp.send(&json!({
         "jsonrpc":"2.0","id":7,"method":"session/set_config_option",
@@ -651,6 +667,8 @@ async fn new_acp_sessions_reconcile_stale_catalog_preferences_before_use() {
         .path()
         .join("data")
         .join("axiom")
+        .join("accounts")
+        .join("local-test-account")
         .join("cli")
         .join("state.sqlite3");
 
@@ -685,7 +703,10 @@ async fn new_acp_sessions_reconcile_stale_catalog_preferences_before_use() {
         corrected["result"]["preferences"]["model"],
         "deepseek-v4-flash"
     );
-    assert_eq!(corrected["result"]["preferences"]["thinkingLevel"], "high");
+    assert_eq!(
+        corrected["result"]["preferences"]["thinkingLevel"],
+        "provider_default"
+    );
     retired.close().await;
 
     {
@@ -742,7 +763,7 @@ async fn axiom_extension_negotiates_each_feature_independently() {
     acp.initialize_with_capabilities(json!({
         "_meta": {
             "axiom": {
-                "protocolVersion": "0.1",
+                "protocolVersion": "0.2",
                 "features": {
                     "desktopChat": 0,
                     "threadCatalog": 1,
@@ -773,6 +794,76 @@ async fn axiom_extension_negotiates_each_feature_independently() {
     let rejected = acp.response(3).await;
     assert_eq!(rejected["error"]["code"], -32601);
     assert_eq!(rejected["error"]["data"]["code"], "unsupported_feature");
+
+    acp.send(&json!({
+        "jsonrpc":"2.0","id":4,"method":"_axiom/billing/status","params":{}
+    }))
+    .await;
+    let rejected_billing = acp.response(4).await;
+    assert_eq!(rejected_billing["error"]["code"], -32601);
+    assert_eq!(
+        rejected_billing["error"]["data"]["code"],
+        "unsupported_feature"
+    );
+    acp.close().await;
+}
+
+#[tokio::test]
+async fn billing_extension_is_native_account_only_and_validates_requests_locally() {
+    let mut acp = AcpProcess::spawn("echo");
+    acp.initialize_extension().await;
+
+    acp.send(&json!({
+        "jsonrpc":"2.0","id":2,"method":"_axiom/billing/status","params":{}
+    }))
+    .await;
+    let signed_out = acp.response(2).await;
+    assert!(signed_out.get("error").is_some(), "{signed_out}");
+    assert!(!signed_out.to_string().contains("axm_"), "{signed_out}");
+
+    acp.send(&json!({
+        "jsonrpc":"2.0","id":3,"method":"_axiom/billing/invoice_create",
+        "params":{"amountUsdCents":0,"clientRequestId":"../bad"}
+    }))
+    .await;
+    let invalid_create = acp.response(3).await;
+    assert!(invalid_create.get("error").is_some(), "{invalid_create}");
+
+    acp.send(&json!({
+        "jsonrpc":"2.0","id":4,"method":"_axiom/billing/invoice_status",
+        "params":{"invoiceId":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}
+    }))
+    .await;
+    let invalid_id = acp.response(4).await;
+    assert!(invalid_id.get("error").is_some(), "{invalid_id}");
+
+    acp.send(&json!({
+        "jsonrpc":"2.0","id":5,"method":"_axiom/thread/list","params":{}
+    }))
+    .await;
+    assert!(acp.response(5).await.get("result").is_some());
+    acp.close().await;
+}
+
+#[tokio::test]
+async fn usage_extension_requires_negotiation_and_a_native_account() {
+    let mut acp = AcpProcess::spawn("echo");
+    acp.initialize().await;
+    acp.send(&json!({"jsonrpc":"2.0","id":2,"method":"_axiom/usage/summary","params":{}}))
+        .await;
+    assert_eq!(
+        acp.response(2).await["error"]["data"]["code"],
+        "unsupported_feature"
+    );
+    acp.close().await;
+
+    let mut acp = AcpProcess::spawn("echo");
+    acp.initialize_extension().await;
+    acp.send(&json!({"jsonrpc":"2.0","id":2,"method":"_axiom/usage/summary","params":{}}))
+        .await;
+    let response = acp.response(2).await;
+    assert!(response.get("error").is_some(), "{response}");
+    assert_ne!(response["error"]["data"]["code"], "unsupported_feature");
     acp.close().await;
 }
 
@@ -906,6 +997,8 @@ async fn resumed_acp_sessions_reconcile_retired_models_and_changed_reasoning_sup
         .path()
         .join("data")
         .join("axiom")
+        .join("accounts")
+        .join("local-test-account")
         .join("cli")
         .join("state.sqlite3");
     let (retired_id, changed_reasoning_id) = {
@@ -971,7 +1064,7 @@ async fn resumed_acp_sessions_reconcile_retired_models_and_changed_reasoning_sup
     );
     assert_eq!(
         thinking_for_resume(&retired.events, ThinkingLevel::Medium),
-        ThinkingLevel::High
+        ThinkingLevel::ProviderDefault
     );
     let changed_reasoning = store
         .load_recovering(&changed_reasoning_id)
@@ -1316,7 +1409,7 @@ async fn unsupported_structured_questions_close_cleanly_instead_of_sticking() {
     acp.initialize_with_capabilities(json!({
         "_meta": {
             "axiom": {
-                "protocolVersion": "0.1",
+                "protocolVersion": "0.2",
                 "features": {
                     "desktopChat": 0,
                     "threadCatalog": 0,

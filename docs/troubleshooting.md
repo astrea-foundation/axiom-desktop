@@ -7,11 +7,16 @@ configuration/session paths without printing credentials.
 ## Provider or model errors
 
 - Run `/account` in the TUI or `axiomcli doctor` to validate the current login.
-  If no credential is present, use `/login` and choose browser authorization or
-  paste an existing API key.
+  If no native session is present, use `/login` and complete passkey, Google,
+  email/password, or Ethereum-wallet sign-in in the system browser. Desktop's
+  sign-in buttons open the same hosted authorization with a method hint.
 - Run `axiomcli models` to test bounded model discovery.
 - Set `AXIOM_API_KEY` only as an automation override. It prevents `/login` from
-  replacing the credential until the environment variable is unset.
+  starting a native account session until the environment variable is unset;
+  Axiom Desktop deliberately removes it from the sidecar environment.
+- Native sessions require the operating-system credential store. A locked,
+  denied, or unavailable Keychain/Credential Manager leaves Axiom signed out;
+  there is no plaintext file fallback.
 - If browser approval succeeds but the loopback callback is blocked, leave the
   login window open. PKCE polling completes the authorization; the loopback
   callback only accelerates it.
@@ -22,8 +27,9 @@ configuration/session paths without printing credentials.
 - Attestation rejection, stale/mismatched nonces, model/key mismatches, TLS
   binding failures, and ciphertext authentication failures are security
   failures. AxiomCLI does not retry them through an insecure transport.
-- An insufficient-credit response includes a link to `axiom.stream` for a top
-  up and preserves the partial response already journaled before the failure.
+- An insufficient-credit response directs the user to create or inspect a
+  Shieldz Zcash invoice. It never grants the renderer payment authority or
+  weakens provider-E2EE verification.
 
 ## Local proxy fails
 
@@ -54,9 +60,16 @@ those caches read-only into the sandbox.
 
 ## Search fails
 
+The default `web_search_provider = "axiom"` uses the authenticated Axiom API,
+backed by Decodo. Sign in with a native account session; automation keys do not
+authorize free search. A 429 means the account used its 60 searches in the past
+60 seconds; wait for `Retry-After` instead of retrying immediately. A 502/503
+indicates an unavailable provider or hosted service. No fallback runs automatically.
+
+To explicitly use the retained alternative, set `web_search_provider = "searxng"`.
 Run `scripts/searxng-dev start` and then `scripts/searxng-dev query "test"` in a
 source checkout, or point `searxng_url` at a SearXNG service you operate or
-otherwise trust. A hosted Axiom service is not part of this repository.
+otherwise trust. The hosted search implementation lives in the Axiom backend repository.
 Individual upstream engines can throttle or time out. Empty results and engine
 warnings are returned honestly. `fetch_url` rejecting a loopback/private target
 is expected security behavior.
@@ -72,10 +85,12 @@ MCP logs into ACP stdout.
 ## Session recovery
 
 Use `axiomcli sessions list` and `axiomcli tui --resume SESSION_ID`. The saved
-workspace must still exist and must match any supplied `--cwd`. Interrupted
-tools are shown as unknown and are not replayed. Use `sessions export` before
-pruning or manually repairing data. Corrupt tails are reported and recovery
-stops before the damaged event rather than deleting evidence.
+workspace must still exist, belong to the active account, and match any supplied
+`--cwd`. Signing out closes the account store; signing into another account does
+not expose the prior account's sessions. Interrupted tools are shown as unknown
+and are not replayed. Use `sessions export` before pruning or manually repairing
+data. Corrupt tails are reported and recovery stops before the damaged event
+rather than deleting evidence.
 
 ## Terminal display
 

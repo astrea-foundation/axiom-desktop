@@ -1,4 +1,4 @@
-export type ReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh";
+export type ReasoningEffort = "provider_default" | "enabled" | "disabled" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
 export type ChatRole = "user" | "assistant";
 
@@ -16,6 +16,8 @@ export interface ProviderModel {
   supportedReasoningEfforts: ReasoningEffort[];
   inputPriceMicrousdPerMillionTokens: number | null;
   outputPriceMicrousdPerMillionTokens: number | null;
+  contextWindowTokens?: number;
+  autoCompactThresholdTokens?: number;
 }
 
 export interface Message {
@@ -26,6 +28,9 @@ export interface Message {
   reasoningContent?: string;
   reasoningDurationMs?: number;
   terminalVerified?: boolean;
+  finishReason?: string;
+  /** More text or tools follow in this turn; this is not its final bubble. */
+  continues?: boolean;
 }
 
 export interface PendingUserMessage {
@@ -41,6 +46,7 @@ export interface Thread {
   title: string;
   folderId: string | null;
   updatedAt: string;
+  lastMessageAt?: string | null;
   status: ThreadStatus;
   messages: Message[];
 }

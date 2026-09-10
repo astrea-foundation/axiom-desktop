@@ -1,12 +1,30 @@
-/* Generated from protocol/axiom-acp-extension/v0.1/schema.json. Do not edit. */
+/* Generated from protocol/axiom-acp-extension/v0.2/schema.json. Do not edit. */
 
+export type DesktopAgentPermission = "approve_commands" | "full_access";
 export type ThreadLifecycle =
   "ready" | "running" | "waiting_for_approval" | "waiting_for_answer" | "compacting" | "closed";
 export type TimelineItemKind = "user_message" | "assistant_message" | "reasoning" | "tool_call" | "plan" | "notice";
 export type TimelineItemStatus = "pending" | "in_progress" | "completed" | "cancelled" | "failed" | "interrupted";
-export type AccountState = "missing" | "valid" | "invalid" | "unavailable";
+export type AccountState = "starting" | "signed_out" | "valid" | "expired" | "unavailable";
+export type LoginMethod = "passkey" | "google" | "password" | "ethereum_wallet";
+export type InvoiceState = "creating" | "pending" | "paid" | "expired" | "failed" | "review";
 export type SecurityState = "unverified" | "verifying" | "unattested_development" | "verified" | "failed";
 export type ActivityEvent =
+  | {
+      turnId?: string | null;
+      kind: "active_turn_changed";
+      [k: string]: unknown;
+    }
+  | {
+      usage: ContextUsage;
+      kind: "context_usage_changed";
+      [k: string]: unknown;
+    }
+  | {
+      usage: RequestUsage;
+      kind: "request_usage_changed";
+      [k: string]: unknown;
+    }
   | {
       status: SecurityStatus;
       kind: "security_changed";
@@ -15,6 +33,16 @@ export type ActivityEvent =
   | {
       status: AccountStatus;
       kind: "account_changed";
+      [k: string]: unknown;
+    }
+  | {
+      status: BillingStatus;
+      kind: "billing_changed";
+      [k: string]: unknown;
+    }
+  | {
+      invoice: BillingInvoice;
+      kind: "invoice_changed";
       [k: string]: unknown;
     }
   | {
@@ -63,6 +91,8 @@ export type ExtensionErrorCode =
  * Schema root used to generate the checked-in language-neutral contract.
  */
 export interface ProtocolSchema {
+  configureDesktopAgentRequest: ConfigureDesktopAgentRequest;
+  configureDesktopAgentResponse: ConfigureDesktopAgentResponse;
   capabilities: ExtensionCapabilities;
   desktopBootstrapRequest: DesktopBootstrapRequest;
   desktopBootstrapResponse: DesktopBootstrapResponse;
@@ -70,6 +100,8 @@ export interface ProtocolSchema {
   deliveryMetadata: DeliveryMetadata;
   listThreadsRequest: ListThreadsRequest;
   listThreadsResponse: ListThreadsResponse;
+  renameThreadRequest: RenameThreadRequest;
+  renameThreadResponse: RenameThreadResponse;
   getThreadTimelineRequest: GetThreadTimelineRequest;
   getThreadTimelineResponse: GetThreadTimelineResponse;
   deletePreviewRequest: DeletePreviewRequest;
@@ -92,21 +124,74 @@ export interface ProtocolSchema {
   assignThreadCollectionResponse: AssignThreadCollectionResponse;
   accountStatusRequest: AccountStatusRequest;
   accountStatusResponse: AccountStatusResponse;
-  browserLoginStartRequest: BrowserLoginStartRequest;
-  browserLoginStartResponse: BrowserLoginStartResponse;
-  browserLoginCompleteRequest: BrowserLoginCompleteRequest;
-  useApiKeyRequest: UseApiKeyRequest;
+  nativeLoginStartRequest: NativeLoginStartRequest;
+  nativeLoginStartResponse: NativeLoginStartResponse;
+  nativeLoginCompleteRequest: NativeLoginCompleteRequest;
+  nativeLoginCancelRequest: NativeLoginCancelRequest;
   logoutRequest: LogoutRequest;
+  billingStatusRequest: BillingStatusRequest;
+  billingStatusResponse: BillingStatusResponse;
+  usageSummaryRequest: UsageSummaryRequest;
+  usageSummaryResponse: UsageSummaryResponse;
+  billingInvoiceCreateRequest: BillingInvoiceCreateRequest;
+  billingInvoiceStatusRequest: BillingInvoiceStatusRequest;
+  billingInvoiceResponse: BillingInvoiceResponse;
   verifySecurityRequest: VerifySecurityRequest;
   verifySecurityResponse: VerifySecurityResponse;
   compactRequest: CompactRequest;
   compactResponse: CompactResponse;
+  steerTurnRequest: SteerTurnRequest;
+  steerTurnResponse: SteerTurnResponse;
   eventNotification: EventNotification;
   error: ExtensionError;
   metadata: {
     [k: string]: unknown;
   };
   [k: string]: unknown;
+}
+export interface ConfigureDesktopAgentRequest {
+  threadId: string;
+  expectedRevision: number;
+  enabled: boolean;
+  permission: DesktopAgentPermission;
+  /**
+   * None resets to the application-owned per-thread directory. A custom
+   * directory must be an absolute, existing directory on this machine.
+   */
+  workingDirectory?: string | null;
+}
+export interface ConfigureDesktopAgentResponse {
+  thread: ThreadSummary;
+  agent: DesktopAgentSettings;
+  [k: string]: unknown;
+}
+export interface ThreadSummary {
+  threadId: string;
+  title?: string | null;
+  cwd: string;
+  origin: string;
+  profile: string;
+  selectedModel?: string | null;
+  thinkingLevel: string;
+  lifecycle: ThreadLifecycle;
+  archived: boolean;
+  revision: number;
+  lastTimelineSequence: number;
+  createdAt: string;
+  updatedAt: string;
+  /**
+   * Latest actual message activity, absent for message-free threads.
+   */
+  lastMessageAt?: string | null;
+  [k: string]: unknown;
+}
+export interface DesktopAgentSettings {
+  enabled: boolean;
+  permission: DesktopAgentPermission;
+  workingDirectory: string;
+  defaultWorkingDirectory: string;
+  usesDefaultDirectory: boolean;
+  revision: number;
 }
 export interface ExtensionCapabilities {
   protocolVersion: string;
@@ -116,13 +201,18 @@ export interface ExtensionCapabilities {
 }
 export interface FeatureVersions {
   desktopChat?: number;
+  desktopAgent?: number;
   threadCatalog?: number;
   timeline?: number;
   modelCatalog?: number;
   profilePreferences?: number;
   collections?: number;
   account?: number;
+  billing?: number;
+  usage?: number;
   securityEvidence?: number;
+  webConsent?: number;
+  steering?: number;
   compaction?: number;
   activity?: number;
   [k: string]: unknown;
@@ -136,11 +226,11 @@ export interface DesktopBootstrapResponse {
    */
   frontend: string;
   /**
-   * Canonical workspace used for every desktop chat thread.
+   * Canonical parent of application-owned, per-thread desktop workspaces.
    */
-  chatCwd: string;
+  chatCwd?: string | null;
   /**
-   * Effective, immutable permission profile for desktop chat.
+   * Default permission profile for a new desktop chat (Agent starts off).
    */
   permissionProfile: string;
   newThreadSettings: ProfilePreferences;
@@ -162,6 +252,15 @@ export interface ProfilePreferences {
  */
 export interface PromptMetadata {
   clientItemId: string;
+  /**
+   * Explicit per-message desktop consent to external web tools. Never
+   * inherited from an earlier turn, saved thread, or permission profile.
+   */
+  webEnabled?: boolean;
+  /**
+   * Bind queued input to the exact locally approved Agent configuration.
+   */
+  agentRevision?: number | null;
   [k: string]: unknown;
 }
 /**
@@ -172,6 +271,10 @@ export interface PromptMetadata {
 export interface DeliveryMetadata {
   threadRevision: number;
   lastTimelineSequence: number;
+  /**
+   * Latest actual message activity; operational updates do not advance it.
+   */
+  lastMessageAt?: string | null;
   timelineItemId?: string | null;
   clientItemId?: string | null;
   [k: string]: unknown;
@@ -191,20 +294,13 @@ export interface ListThreadsResponse {
   nextCursor?: string | null;
   [k: string]: unknown;
 }
-export interface ThreadSummary {
+export interface RenameThreadRequest {
   threadId: string;
-  title?: string | null;
-  cwd: string;
-  origin: string;
-  profile: string;
-  selectedModel?: string | null;
-  thinkingLevel: string;
-  lifecycle: ThreadLifecycle;
-  archived: boolean;
-  revision: number;
-  lastTimelineSequence: number;
-  createdAt: string;
-  updatedAt: string;
+  title: string;
+  [k: string]: unknown;
+}
+export interface RenameThreadResponse {
+  thread: ThreadSummary;
   [k: string]: unknown;
 }
 export interface GetThreadTimelineRequest {
@@ -215,8 +311,56 @@ export interface GetThreadTimelineRequest {
 }
 export interface GetThreadTimelineResponse {
   thread: ThreadSummary;
+  desktopAgent?: DesktopAgentSettings | null;
+  /**
+   * Active durable turn, including when a client missed its start event.
+   */
+  activeTurnId?: string | null;
+  contextUsage?: ContextUsage | null;
+  requestUsage?: RequestUsage[];
   items: TimelineItem[];
   nextCursor?: number | null;
+  [k: string]: unknown;
+}
+/**
+ * Last provider-reported conversation request, not a measurement of the next
+ * request or a cumulative billing total. Auxiliary title/compaction requests
+ * never replace this report. Limits describe the model used by that request.
+ */
+export interface ContextUsage {
+  inputTokens: number;
+  outputTokens: number;
+  modelId: string;
+  reportedAt: string;
+  contextWindowTokens?: number | null;
+  autoCompactThresholdTokens?: number | null;
+  [k: string]: unknown;
+}
+/**
+ * Decimal strings remain exact in JavaScript, on disk, and over ACP.
+ * A settled charge does not imply an authenticated/complete model response.
+ */
+export interface RequestUsage {
+  requestId: string;
+  modelId: string;
+  providerId: string;
+  contextWindowTokens?: number | null;
+  autoCompactThresholdTokens?: number | null;
+  turnId?: string | null;
+  purpose?: "conversation" | "title" | "compaction";
+  state?: "running" | "completed" | "failed" | "cancelled";
+  completeness?: "unknown" | "live" | "final" | "partial";
+  inputTokens?: string | null;
+  cachedInputTokens?: string | null;
+  outputTokens?: string | null;
+  reasoningTokens?: string | null;
+  costMicrousd?: string | null;
+  settled?: boolean;
+  responseVerified?: boolean;
+  startedAtMs?: string;
+  finishedAtMs?: string | null;
+  errorCode?: string | null;
+  finishReason?: string | null;
   [k: string]: unknown;
 }
 export interface TimelineItem {
@@ -362,35 +506,170 @@ export interface AccountStatus {
    * whose revision is not newer than the state they already applied.
    */
   revision: number;
-  keyId?: string | null;
-  keyName?: string | null;
   state: AccountState;
+  account?: AccountProfile | null;
+  session?: NativeSession | null;
   detail?: string | null;
   [k: string]: unknown;
 }
-export interface BrowserLoginStartRequest {
+export interface AccountProfile {
+  id: string;
+  displayName?: string | null;
+  avatarUrl?: string | null;
+  verifiedEmail?: string | null;
+  linkedMethods: LoginMethod[];
   [k: string]: unknown;
 }
-export interface BrowserLoginStartResponse {
-  login: BrowserLoginState;
+export interface NativeSession {
+  expiresAt: string;
+  credentialStore: string;
   [k: string]: unknown;
 }
-export interface BrowserLoginState {
+export interface NativeLoginStartRequest {
+  methodHint?: LoginMethod | null;
+  [k: string]: unknown;
+}
+export interface NativeLoginStartResponse {
+  login: NativeLoginState;
+  [k: string]: unknown;
+}
+export interface NativeLoginState {
   loginId: string;
   userCode: string;
   authorizationUrl: string;
   browserOpened: boolean;
+  expiresAt: string;
   [k: string]: unknown;
 }
-export interface BrowserLoginCompleteRequest {
+export interface NativeLoginCompleteRequest {
   loginId: string;
   [k: string]: unknown;
 }
-export interface UseApiKeyRequest {
-  apiKey: string;
+export interface NativeLoginCancelRequest {
+  loginId: string;
   [k: string]: unknown;
 }
 export interface LogoutRequest {
+  [k: string]: unknown;
+}
+export interface BillingStatusRequest {
+  [k: string]: unknown;
+}
+export interface BillingStatusResponse {
+  status: BillingStatus;
+  [k: string]: unknown;
+}
+export interface BillingStatus {
+  /**
+   * Monotonic within one agent runtime; clients ignore older projections.
+   */
+  revision: number;
+  postedMicrousd: number;
+  heldMicrousd: number;
+  availableMicrousd: number;
+  ledgerSequence: number;
+  trialMicrousd?: number | null;
+  paidMicrousd?: number | null;
+  paymentReviewRequired?: boolean;
+  currency: string;
+  invoicesEnabled: boolean;
+  invoiceMinUsdCents: number;
+  invoiceMaxUsdCents: number;
+  settlementAsset?: string | null;
+  paymentAccount?: PaymentAccount | null;
+  zecUsdQuote?: ZecUsdQuote | null;
+  [k: string]: unknown;
+}
+/**
+ * Payment-service values remain exact decimal strings across Rust/ACP/JS.
+ * Nested fields retain the backend's `snake_case` HTTP contract.
+ */
+export interface PaymentAccount {
+  network: string;
+  asset: string;
+  conversion_status: string;
+  valuation_enabled?: boolean;
+  state: string;
+  address?: string | null;
+  payment_uri?: string | null;
+  monitoring_status: string;
+  required_confirmations?: string | null;
+  confirmed_zatoshis: string;
+  confirming_zatoshis: string;
+  review_required: boolean;
+  deposits: DepositReceipt[];
+}
+export interface DepositReceipt {
+  id: string;
+  amount_zatoshis: string;
+  state: string;
+  object_version: string;
+  confirmations: string;
+  required_confirmations: string;
+  review_required: boolean;
+  observed_at: string;
+  valuation_status?: string | null;
+  credit_microusd?: string | null;
+  price_microusd_per_zec?: string | null;
+  price_source?: string | null;
+  priced_at?: string | null;
+}
+/**
+ * Indicative live market price; deposit credit uses its confirmation-time rate.
+ */
+export interface ZecUsdQuote {
+  price_microusd_per_zec: string;
+  source: string;
+  as_of: string;
+  expires_at: string;
+}
+export interface UsageSummaryRequest {
+  [k: string]: unknown;
+}
+export interface UsageSummaryResponse {
+  summary: UsageSummary;
+  [k: string]: unknown;
+}
+export interface UsageSummary {
+  period: string;
+  totalCostMicrousd: string;
+  models: ModelSpend[];
+  [k: string]: unknown;
+}
+export interface ModelSpend {
+  provider: string;
+  modelId?: string | null;
+  modelName?: string | null;
+  /**
+   * Exact USD millionths; never an IEEE-754 amount.
+   */
+  costMicrousd: string;
+  [k: string]: unknown;
+}
+export interface BillingInvoiceCreateRequest {
+  amountUsdCents: number;
+  clientRequestId: string;
+  [k: string]: unknown;
+}
+export interface BillingInvoiceStatusRequest {
+  invoiceId: string;
+  [k: string]: unknown;
+}
+export interface BillingInvoiceResponse {
+  invoice: BillingInvoice;
+  [k: string]: unknown;
+}
+export interface BillingInvoice {
+  /**
+   * Monotonic within one agent runtime; clients ignore older invoice state.
+   */
+  revision: number;
+  id: string;
+  amountUsdCents: number;
+  state: InvoiceState;
+  expiresAt?: string | null;
+  paidAt?: string | null;
+  payUrl?: string | null;
   [k: string]: unknown;
 }
 export interface VerifySecurityRequest {
@@ -445,6 +724,19 @@ export interface CompactRequest {
 }
 export interface CompactResponse {
   messagesBefore: number;
+  [k: string]: unknown;
+}
+export interface SteerTurnRequest {
+  agentRevision?: number | null;
+  threadId: string;
+  expectedTurnId: string;
+  clientItemId: string;
+  text: string;
+  webEnabled: boolean;
+}
+export interface SteerTurnResponse {
+  turnId: string;
+  clientItemId: string;
   [k: string]: unknown;
 }
 export interface EventNotification {

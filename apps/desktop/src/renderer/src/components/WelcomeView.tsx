@@ -4,8 +4,10 @@ import { GreetingHeadline } from "../brand/GreetingHeadline";
 import type { AccountPresentation } from "../signInFlow";
 import type { ProviderModel, ReasoningEffort } from "../types";
 import { ChatComposer } from "./ChatComposer";
+import type { AgentControlOptions } from "./AgentModeControl";
 
 interface WelcomeViewProps {
+  agentControl?: AgentControlOptions;
   draft: string;
   onDraftChange: (value: string) => void;
   onSubmit: () => void;
@@ -14,13 +16,18 @@ interface WelcomeViewProps {
   modelStatusLabel: string;
   onModelChange: (modelId: string) => void;
   account: AccountPresentation;
+  signInActive?: boolean;
   onSignIn: () => void;
   onRefreshAccount: () => void;
   reasoningEffort: ReasoningEffort;
   onReasoningEffortChange: (effort: ReasoningEffort) => void;
+  webEnabled: boolean;
+  webDisabled: boolean;
+  onWebToggle: () => void;
 }
 
 export function WelcomeView({
+  agentControl,
   draft,
   onDraftChange,
   onSubmit,
@@ -29,10 +36,14 @@ export function WelcomeView({
   modelStatusLabel,
   onModelChange,
   account,
+  signInActive = false,
   onSignIn,
   onRefreshAccount,
   reasoningEffort,
   onReasoningEffortChange,
+  webEnabled,
+  webDisabled,
+  onWebToggle,
 }: WelcomeViewProps) {
   return (
     <div className="relative flex h-full w-full items-center justify-center px-6">
@@ -58,7 +69,7 @@ export function WelcomeView({
       <div className="relative z-10 flex w-full max-w-[760px] flex-col items-center animate-fade-in">
         <AxiomMark className="mb-7 h-10 w-auto" />
         <GreetingHeadline />
-        {account.kind !== "valid" && account.kind !== "starting" ? (
+        {!signInActive && account.kind !== "valid" && account.kind !== "starting" ? (
           <div className="shadow-glass-card mb-3 flex w-full items-center gap-3 rounded-[14px] bg-[var(--surface-card)] px-4 py-3">
             <div
               className={[
@@ -80,12 +91,16 @@ export function WelcomeView({
               className="flex shrink-0 items-center gap-1.5 rounded-full bg-[var(--color-cherry)] px-3.5 py-1.5 text-[11.5px] font-medium text-on-accent shadow-[0_1px_3px_var(--shade-button)] transition-[background-color,transform] hover:bg-[var(--color-cherry-bright)] active:scale-[0.97]"
             >
               {account.kind === "unavailable" ? <RefreshCw size={12} /> : <LogIn size={12} />}
-              {account.kind === "unavailable" ? "Try again" : account.kind === "invalid" ? "Sign in again" : "Continue in browser"}
+              {account.kind === "unavailable" ? "Try again" : account.kind === "expired" ? "Sign in again" : "Sign in"}
             </button>
           </div>
         ) : null}
         <div className="w-full">
           <ChatComposer
+            agentControl={agentControl}
+            webEnabled={webEnabled}
+            webDisabled={webDisabled}
+            onWebToggle={onWebToggle}
             value={draft}
             onChange={onDraftChange}
             onSubmit={onSubmit}
@@ -94,7 +109,7 @@ export function WelcomeView({
             selectedModelId={selectedModelId}
             modelStatusLabel={modelStatusLabel}
             onModelChange={onModelChange}
-            requiresSignIn={account.kind === "signed-out" || account.kind === "invalid"}
+            requiresSignIn={account.kind === "signed-out" || account.kind === "expired"}
             onSignIn={onSignIn}
             reasoningEffort={reasoningEffort}
             onReasoningEffortChange={onReasoningEffortChange}
@@ -109,9 +124,9 @@ export function WelcomeView({
             <Cpu size={12} className="shrink-0 text-[var(--color-text-muted)]" />
             Attested enclave
           </span>
-          <span className="inline-flex items-center gap-1.5">
+          <span className="inline-flex items-center gap-1.5" title="Model traffic is end-to-end encrypted. Enabling Web shares search queries with external search services.">
             <EyeOff size={12} className="shrink-0 text-[var(--color-text-muted)]" />
-            0 bytes plaintext out
+            Model traffic encrypted
           </span>
         </div>
       </div>

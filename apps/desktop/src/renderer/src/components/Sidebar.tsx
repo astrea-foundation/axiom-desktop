@@ -14,16 +14,15 @@ import {
   ChevronDown,
   Folder,
   FolderPlus,
-  LogIn,
-  MoreHorizontal,
   PanelLeftClose,
   Plus,
   Search,
-  Settings,
   Shield,
-  Trash2,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { contextMenuTrigger, SidebarContextMenu, type SidebarMenuTarget } from "./SidebarContextMenu";
+import { AccountMenu, type AccountMenuProps } from "./AccountMenu";
+import { OverflowTitle } from "./OverflowTitle";
 import { isMac, MAC_TRAFFIC_LIGHT_INSET_CLASS, useFullScreen } from "../lib/window-chrome";
 import type { AccountPresentation } from "../signInFlow";
 import type { Folder as FolderType, Thread } from "../types";
@@ -40,13 +39,19 @@ interface SidebarProps {
   onSelectThread: (id: string) => void;
   onCreateFolder: () => void;
   onToggleFolder: (id: string) => void;
-  onRenameFolder: (id: string, name: string) => void;
+  onRenameFolder: (id: string) => void;
+  onRenameThread: (id: string) => void;
   onDeleteFolder: (id: string) => void;
   onDeleteThread: (id: string) => void;
   onMoveThread: (threadId: string, folderId: string | null) => void;
   account: AccountPresentation;
   onSignIn: () => void;
-  onOpenSettings: () => void;
+  onOpenSettings: AccountMenuProps["onOpenSettings"];
+  onOpenBalance: AccountMenuProps["onOpenBalance"];
+  onRefreshBalance: AccountMenuProps["onRefreshBalance"];
+  billing: AccountMenuProps["billing"];
+  accountId: string | null;
+  connected: boolean;
 }
 
 function ThreadRow({
@@ -54,19 +59,18 @@ function ThreadRow({
   active,
   nested,
   onSelect,
-  onDelete,
+  onOpenMenu,
 }: {
   thread: Thread;
   active: boolean;
   nested?: boolean;
   onSelect: () => void;
-  onDelete: () => void;
+  onOpenMenu: (target: SidebarMenuTarget) => void;
 }) {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: `thread:${thread.id}`,
     data: { type: "thread", threadId: thread.id },
   });
-  const [menuOpen, setMenuOpen] = useState(false);
 
   return (
     <div
@@ -83,49 +87,18 @@ function ThreadRow({
       <button
         type="button"
         onClick={onSelect}
-        className="flex h-full min-w-0 flex-1 items-center gap-2 rounded-[9px] pl-2 text-left"
+        className="title-scroll-trigger flex h-full min-w-0 flex-1 items-center gap-2 rounded-[9px] px-2 text-left"
         {...listeners}
         {...attributes}
+        data-thread-id={thread.id}
+        aria-label={`${thread.status === "working" ? "Replying" : thread.status === "unread" ? "Unread reply" : "Viewed"} ${thread.title}`}
+        {...contextMenuTrigger("thread", thread.id, onOpenMenu)}
       >
-        <i
-          className={[
-            "thread-dot",
-            thread.status === "unread" ? "thread-dot-unread" : "",
-            thread.status === "working" ? "thread-dot-working" : "",
-          ].join(" ")}
-          role="img"
-          aria-label={thread.status === "working" ? "Replying" : thread.status === "unread" ? "Unread reply" : "Viewed"}
-        />
-        <span className="min-w-0 flex-1 truncate">{thread.title}</span>
+        <OverflowTitle text={thread.title} className="flex-1" />
+        <span className="flex h-[6px] w-[6px] shrink-0" data-thread-indicator aria-hidden="true">
+          {thread.status !== "idle" ? <i className={`thread-dot${thread.status === "working" ? " thread-dot-working" : ""}`} /> : null}
+        </span>
       </button>
-      <div className="relative mr-1 shrink-0">
-        <button
-          type="button"
-          onClick={(event) => {
-            event.stopPropagation();
-            setMenuOpen((open) => !open);
-          }}
-          className="flex h-6 w-6 items-center justify-center rounded-md text-[var(--color-text-tertiary)] opacity-0 transition-opacity hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-secondary)] group-hover:opacity-100"
-          aria-label={`Open actions for ${thread.title}`}
-        >
-          <MoreHorizontal size={14} />
-        </button>
-        {menuOpen ? (
-          <div className="glass-panel shadow-glass-pop animate-pop-in absolute right-0 top-7 z-40 w-36 origin-top-right overflow-hidden rounded-[10px] p-1">
-            <button
-              type="button"
-              onClick={() => {
-                setMenuOpen(false);
-                onDelete();
-              }}
-              className="flex w-full items-center gap-2 rounded-[6px] px-2 py-1.5 text-left text-[12.5px] text-[var(--color-danger-strong)] transition-colors hover:bg-[var(--color-danger-soft)]"
-            >
-              <Trash2 size={13} />
-              <span>Delete thread</span>
-            </button>
-          </div>
-        ) : null}
-      </div>
     </div>
   );
 }
@@ -136,25 +109,19 @@ function FolderBlock({
   activeThreadId,
   onToggle,
   onSelectThread,
-  onDeleteThread,
-  onRename,
-  onDeleteFolder,
+  onOpenMenu,
 }: {
   folder: FolderType;
   threads: Thread[];
   activeThreadId: string | null;
   onToggle: () => void;
   onSelectThread: (id: string) => void;
-  onDeleteThread: (id: string) => void;
-  onRename: (name: string) => void;
-  onDeleteFolder: () => void;
+  onOpenMenu: (target: SidebarMenuTarget) => void;
 }) {
   const { setNodeRef, isOver } = useDroppable({
     id: `folder:${folder.id}`,
     data: { type: "folder", folderId: folder.id },
   });
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(folder.name);
 
   return (
     <div
@@ -168,51 +135,16 @@ function FolderBlock({
         <button
           type="button"
           onClick={onToggle}
-          className="flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[12.5px] text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--wash-hover)] hover:text-[var(--color-text-primary)]"
+          data-folder-id={folder.id}
+          {...contextMenuTrigger("folder", folder.id, onOpenMenu)}
+          className="title-scroll-trigger flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[12.5px] text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--wash-hover)] hover:text-[var(--color-text-primary)]"
         >
           <ChevronDown
             size={14}
             className={`shrink-0 transition-transform ${folder.collapsed ? "-rotate-90" : ""}`}
           />
           <Folder size={14} className="shrink-0 text-[var(--color-text-tertiary)]" />
-          {editing ? (
-            <input
-              autoFocus
-              value={draft}
-              onChange={(event) => setDraft(event.target.value)}
-              onClick={(event) => event.stopPropagation()}
-              onBlur={() => {
-                onRename(draft.trim() || folder.name);
-                setEditing(false);
-              }}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") {
-                  onRename(draft.trim() || folder.name);
-                  setEditing(false);
-                }
-              }}
-              className="min-w-0 flex-1 bg-transparent text-[12.5px] text-[var(--color-text-primary)] outline-none"
-            />
-          ) : (
-            <span
-              className="min-w-0 flex-1 truncate"
-              onDoubleClick={(event) => {
-                event.stopPropagation();
-                setDraft(folder.name);
-                setEditing(true);
-              }}
-            >
-              {folder.name}
-            </span>
-          )}
-        </button>
-        <button
-          type="button"
-          onClick={onDeleteFolder}
-          className="mr-1 flex h-6 w-6 items-center justify-center rounded-md text-[var(--color-text-tertiary)] opacity-0 transition-opacity hover:bg-[var(--color-danger-soft)] hover:text-[var(--color-danger)] group-hover:opacity-100"
-          aria-label={`Delete folder ${folder.name}`}
-        >
-          <Trash2 size={12} />
+          <OverflowTitle text={folder.name} className="flex-1" />
         </button>
       </div>
       {!folder.collapsed ? (
@@ -229,7 +161,7 @@ function FolderBlock({
                 nested
                 active={thread.id === activeThreadId}
                 onSelect={() => onSelectThread(thread.id)}
-                onDelete={() => onDeleteThread(thread.id)}
+                onOpenMenu={onOpenMenu}
               />
             ))
           )}
@@ -252,12 +184,18 @@ export function Sidebar({
   onCreateFolder,
   onToggleFolder,
   onRenameFolder,
+  onRenameThread,
   onDeleteFolder,
   onDeleteThread,
   onMoveThread,
   account,
   onSignIn,
   onOpenSettings,
+  onOpenBalance,
+  onRefreshBalance,
+  billing,
+  accountId,
+  connected,
 }: SidebarProps) {
   const [query, setQuery] = useState("");
   const [activeDragId, setActiveDragId] = useState<string | null>(null);
@@ -320,11 +258,17 @@ export function Sidebar({
         onCreateFolder={onCreateFolder}
         onToggleFolder={onToggleFolder}
         onRenameFolder={onRenameFolder}
+        onRenameThread={onRenameThread}
         onDeleteFolder={onDeleteFolder}
         onDeleteThread={onDeleteThread}
         account={account}
         onSignIn={onSignIn}
         onOpenSettings={onOpenSettings}
+        onOpenBalance={onOpenBalance}
+        onRefreshBalance={onRefreshBalance}
+        billing={billing}
+        accountId={accountId}
+        connected={connected}
       />
     </DndContext>
   );
@@ -347,11 +291,17 @@ function SidebarFrame({
   onCreateFolder,
   onToggleFolder,
   onRenameFolder,
+  onRenameThread,
   onDeleteFolder,
   onDeleteThread,
   account,
   onSignIn,
   onOpenSettings,
+  onOpenBalance,
+  onRefreshBalance,
+  billing,
+  accountId,
+  connected,
 }: {
   folders: FolderType[];
   filtered: Thread[];
@@ -368,12 +318,18 @@ function SidebarFrame({
   onSelectThread: (id: string) => void;
   onCreateFolder: () => void;
   onToggleFolder: (id: string) => void;
-  onRenameFolder: (id: string, name: string) => void;
+  onRenameFolder: (id: string) => void;
+  onRenameThread: (id: string) => void;
   onDeleteFolder: (id: string) => void;
   onDeleteThread: (id: string) => void;
   account: AccountPresentation;
   onSignIn: () => void;
-  onOpenSettings: () => void;
+  onOpenSettings: AccountMenuProps["onOpenSettings"];
+  onOpenBalance: AccountMenuProps["onOpenBalance"];
+  onRefreshBalance: AccountMenuProps["onRefreshBalance"];
+  billing: AccountMenuProps["billing"];
+  accountId: string | null;
+  connected: boolean;
 }) {
   const { setNodeRef: setLooseRef, isOver: looseOver } = useDroppable({
     id: "folder:loose",
@@ -381,44 +337,61 @@ function SidebarFrame({
   });
   const fullScreen = useFullScreen();
   const trafficLightInset = isMac && !fullScreen;
+  const [menu, setMenu] = useState<SidebarMenuTarget | null>(null);
+  const closeMenu = useCallback(() => setMenu(null), []);
+  // A menu must never outlive its row (search, deletion, collapse, or account switch).
+  useEffect(() => {
+    if (menu && (!menu.trigger.isConnected || menu.trigger.closest("[inert]"))) closeMenu();
+  });
+  useEffect(closeMenu, [account.kind, account.title, account.detail, query, closeMenu]);
 
   return (
     <>
       <aside className="relative flex h-full w-full shrink-0 flex-col bg-transparent">
-        {/* macOS reserves a top row beside the traffic lights; frameless
-            platforms have no lights, so the button floats on the first row
-            and the nav starts at the top. */}
-        <div
-          className={[
-            isMac
-              ? "drag-region flex h-10 shrink-0 items-center justify-end pr-2"
-              : "drag-region absolute right-2 top-1.5 z-10 flex",
-            trafficLightInset ? MAC_TRAFFIC_LIGHT_INSET_CLASS : isMac ? "pl-3" : "",
-          ].join(" ")}
-        >
-          <button
-            type="button"
-            onClick={onCollapse}
-            className="no-drag rounded-md p-1.5 text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-bg-surface-hover)] hover:text-[var(--color-text-secondary)]"
-            aria-label="Collapse sidebar"
+        {/* macOS reserves a dedicated chrome row beside the traffic lights. */}
+        {isMac ? (
+          <div
+            className={[
+              "drag-region flex h-10 shrink-0 items-center justify-end pr-2",
+              trafficLightInset ? MAC_TRAFFIC_LIGHT_INSET_CLASS : "pl-3",
+            ].join(" ")}
           >
-            <PanelLeftClose size={16} />
-          </button>
-        </div>
+            <button
+              type="button"
+              onClick={onCollapse}
+              className="no-drag rounded-md p-1.5 text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-bg-surface-hover)] hover:text-[var(--color-text-secondary)]"
+              aria-label="Collapse sidebar"
+            >
+              <PanelLeftClose size={16} />
+            </button>
+          </div>
+        ) : null}
 
         <nav className={`no-drag flex flex-col gap-2.5 px-3 pb-2 ${isMac ? "pt-1" : "pt-1.5"}`}>
           <div className="flex flex-col gap-0.5">
-          <button
-            type="button"
-            onClick={onNewChat}
-            aria-current={welcomeActive ? "page" : undefined}
-            className="flex h-8 w-full items-center gap-2 rounded-[9px] pl-0 text-[13px] text-[var(--color-text-secondary)] transition-[background-color,color,padding-left] duration-200 ease-[var(--ease-out-expo)] hover:bg-[var(--wash-hover)] hover:pl-2 hover:text-[var(--color-text-primary)]"
-          >
-            <span className="flex h-[15px] w-[15px] shrink-0 items-center justify-center rounded-full border border-current">
-              <Plus size={9} strokeWidth={2.6} />
-            </span>
-            <span>New thread</span>
-          </button>
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={onNewChat}
+              aria-current={welcomeActive ? "page" : undefined}
+              className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-[9px] pl-0 text-[13px] text-[var(--color-text-secondary)] transition-[background-color,color,padding-left] duration-200 ease-[var(--ease-out-expo)] hover:bg-[var(--wash-hover)] hover:pl-2 hover:text-[var(--color-text-primary)]"
+            >
+              <span className="flex h-[15px] w-[15px] shrink-0 items-center justify-center rounded-full border border-current">
+                <Plus size={9} strokeWidth={2.6} />
+              </span>
+              <span>New thread</span>
+            </button>
+            {!isMac ? (
+              <button
+                type="button"
+                onClick={onCollapse}
+                className="shrink-0 rounded-md p-1.5 text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-bg-surface-hover)] hover:text-[var(--color-text-secondary)]"
+                aria-label="Collapse sidebar"
+              >
+                <PanelLeftClose size={16} />
+              </button>
+            ) : null}
+          </div>
           <button
             type="button"
             onClick={onOpenProxy}
@@ -468,9 +441,7 @@ function SidebarFrame({
               activeThreadId={activeThreadId}
               onToggle={() => onToggleFolder(folder.id)}
               onSelectThread={onSelectThread}
-              onDeleteThread={onDeleteThread}
-              onRename={(name) => onRenameFolder(folder.id, name)}
-              onDeleteFolder={() => onDeleteFolder(folder.id)}
+              onOpenMenu={setMenu}
             />
           ))}
 
@@ -487,7 +458,7 @@ function SidebarFrame({
                 thread={thread}
                 active={thread.id === activeThreadId && !proxyActive}
                 onSelect={() => onSelectThread(thread.id)}
-                onDelete={() => onDeleteThread(thread.id)}
+                onOpenMenu={setMenu}
               />
             ))}
             {filtered.length === 0 && query ? (
@@ -499,33 +470,16 @@ function SidebarFrame({
         </div>
 
         <div className="no-drag px-2 py-2">
-          <div className="flex w-full items-center rounded-lg transition-colors hover:bg-[var(--wash-hover)]">
-            <button
-              type="button"
-              onClick={account.kind === "signed-out" || account.kind === "invalid" ? onSignIn : onOpenSettings}
-              className="flex min-w-0 flex-1 items-center gap-2.5 rounded-lg px-2 py-1.5 text-left"
-            >
-              <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--color-cherry)] text-[11px] font-semibold text-on-accent">
-                {account.kind === "valid" ? "AX" : <LogIn size={13} strokeWidth={2.3} />}
-              </div>
-              <div className="flex min-w-0 flex-1 flex-col items-start leading-tight">
-                <span className="max-w-full truncate text-[12.5px] text-[var(--color-text-primary)]">
-                  {account.title}
-                </span>
-                <span className="max-w-full truncate text-[11px] text-[var(--color-text-tertiary)]">{account.detail}</span>
-              </div>
-            </button>
-            <button
-              type="button"
-              onClick={onOpenSettings}
-              className="mr-1 rounded-md p-1.5 text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--wash-hover-strong)] hover:text-[var(--color-text-secondary)]"
-              aria-label="Open settings"
-            >
-              <Settings size={14} />
-            </button>
-          </div>
+          <AccountMenu account={account} accountId={accountId} connected={connected} billing={billing}
+            onSignIn={onSignIn} onOpenSettings={onOpenSettings} onOpenBalance={onOpenBalance} onRefreshBalance={onRefreshBalance} />
         </div>
       </aside>
+      {menu ? <SidebarContextMenu
+        target={menu}
+        onClose={closeMenu}
+        onRename={() => menu.kind === "thread" ? onRenameThread(menu.id) : onRenameFolder(menu.id)}
+        onDelete={() => menu.kind === "thread" ? onDeleteThread(menu.id) : onDeleteFolder(menu.id)}
+      /> : null}
 
       <DragOverlay>
         {draggingThread ? (

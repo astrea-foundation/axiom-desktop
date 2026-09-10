@@ -21,27 +21,162 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo check --workspace --all-targets --all-features
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-      - run: cargo install cargo-deny --locked
+      - name: Install pinned cargo-deny
+        shell: bash
+        run: cargo install cargo-deny --version "=$(tr -d '\r\n' < .cargo-deny-version)" --locked
       - run: cargo test --workspace --all-features
       - run: cargo test --target-dir target/acp-sdk-vendor --locked --manifest-path vendor/agent-client-protocol-2.0.0/Cargo.toml --test jsonrpc_deep_chain_stack
       - run: scripts/axiomcli-eval deterministic
       - run: cargo deny check
 
+  desktop-ui:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter axiom-desktop exec playwright install --with-deps chromium
+      - run: pnpm --filter axiom-desktop test:browser
+
   portability:
-    name: source portability (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    name: desktop portability (${{ matrix.name }})
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-latest]
+        include:
+          - name: macOS Intel
+            runner: macos-15-intel
+            electron_arch: x64
+            sidecar: target/release/axiomcli
+            binary_arch: x86_64
+          - name: macOS Apple Silicon
+            runner: macos-15
+            electron_arch: arm64
+            sidecar: target/release/axiomcli
+            binary_arch: arm64
+          - name: Windows x64
+            runner: windows-latest
+            electron_arch: x64
+            sidecar: target/release/axiomcli.exe
+            pe_machine: "0x8664"
+          - name: Windows ARM64
+            runner: windows-11-arm
+            electron_arch: arm64
+            sidecar: target/release/axiomcli.exe
+            pe_machine: "0xAA64"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.97.1
+          components: rustfmt
       - uses: Swatinem/rust-cache@v2
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # Formatting is enforced by the rust job. Keep native platform tests
+      # running even when that independent check fails.
       - run: cargo check --workspace --all-targets --all-features
+      - run: cargo test -p axiom-acp-extension -p axiomcli --all-features
       - run: cargo test --target-dir target/acp-sdk-vendor --locked --manifest-path vendor/agent-client-protocol-2.0.0/Cargo.toml --test jsonrpc_deep_chain_stack
+      - run: pnpm generate:protocol
+      - name: Generated ACP contract is committed
+        shell: bash
+        run: git diff --exit-code -- protocol/axiom-acp-extension packages/axiom-acp-client/src/generated
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: cargo build --release -p axiomcli
+      - name: Stage platform sidecar
+        shell: bash
+        run: |
+          test -f "${{ matrix.sidecar }}"
+      - run: pnpm build:desktop
+      - name: Build unpacked platform application
+        run: pnpm --filter axiom-desktop exec electron-builder --dir --${{ matrix.electron_arch }} --config.forceCodeSigning=false
+      - name: Verify staged macOS executables
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          app_paths=()
+          while IFS= read -r -d '' candidate; do
+            app_paths+=("$candidate")
+          done < <(find apps/desktop/dist -type d -name Axiom.app -prune -print0)
+          if (( ${#app_paths[@]} != 1 )); then
+            echo "expected exactly one unpacked Axiom.app; found ${#app_paths[@]}" >&2
+            exit 1
+          fi
+          app_path=${app_paths[0]}
+          plist="$app_path/Contents/Info.plist"
+          executable_name=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$plist")
+          app_executable="$app_path/Contents/MacOS/$executable_name"
+          sidecar="$app_path/Contents/Resources/bin/axiomcli"
+          test -x "$app_executable"
+          test -x "$sidecar"
+          test "$(lipo -archs "$app_executable")" = "${{ matrix.binary_arch }}"
+          test "$(lipo -archs "$sidecar")" = "${{ matrix.binary_arch }}"
+          cli_version=$(sed -n 's/^version = "\([^"]*\)"$/\1/p' apps/axiomcli/Cargo.toml)
+          test "$("$sidecar" --version)" = "axiomcli $cli_version"
+      - name: Verify staged Windows executables
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $apps = @(Get-ChildItem -LiteralPath "apps/desktop/dist" -Recurse -File -Filter "Axiom.exe")
+          if ($apps.Count -ne 1) {
+            throw "Expected exactly one unpacked Axiom.exe; found $($apps.Count)"
+          }
+          $app = $apps[0]
+          $sidecar = Join-Path $app.Directory.FullName "resources\bin\axiomcli.exe"
+          if (-not (Test-Path -LiteralPath $sidecar -PathType Leaf)) {
+            throw "Packaged AxiomCLI sidecar is missing: $sidecar"
+          }
+
+          function Get-PeMachine([string] $Path) {
+            $stream = [System.IO.File]::OpenRead($Path)
+            $reader = [System.IO.BinaryReader]::new($stream)
+            try {
+              if ($reader.ReadUInt16() -ne 0x5A4D) { throw "Not a PE executable: $Path" }
+              $stream.Position = 0x3C
+              $peOffset = $reader.ReadInt32()
+              if ($peOffset -lt 0 -or $peOffset + 6 -gt $stream.Length) {
+                throw "Invalid PE header offset: $Path"
+              }
+              $stream.Position = $peOffset
+              if ($reader.ReadUInt32() -ne 0x00004550) { throw "Invalid PE signature: $Path" }
+              return "0x{0:X4}" -f $reader.ReadUInt16()
+            } finally {
+              $reader.Dispose()
+              $stream.Dispose()
+            }
+          }
+
+          foreach ($binary in @($app.FullName, $sidecar)) {
+            $machine = Get-PeMachine $binary
+            if ($machine -ne "${{ matrix.pe_machine }}") {
+              throw "Expected $binary to be ${{ matrix.pe_machine }}; found $machine"
+            }
+          }
+
+          $manifest = Get-Content -LiteralPath "apps/axiomcli/Cargo.toml" -Raw
+          $versionMatch = [regex]::Match($manifest, '(?m)^version\s*=\s*"([^"]+)"\s*$')
+          if (-not $versionMatch.Success) { throw "AxiomCLI version is missing" }
+          $expectedVersion = "axiomcli $($versionMatch.Groups[1].Value)"
+          $sidecarVersion = (& $sidecar --version 2>&1 | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or $sidecarVersion -ne $expectedVersion) {
+            throw "Expected packaged sidecar version $expectedVersion; found $sidecarVersion"
+          }
 
   release-linux:
     runs-on: ubuntu-latest
@@ -52,7 +187,9 @@ jobs:
           toolchain: 1.97.1
       - uses: Swatinem/rust-cache@v2
       - run: sudo apt-get update && sudo apt-get install -y bubblewrap jq
-      - run: cargo install cargo-deny --locked
+      - name: Install pinned cargo-deny
+        shell: bash
+        run: cargo install cargo-deny --version "=$(tr -d '\r\n' < .cargo-deny-version)" --locked
       - run: scripts/package-release
         env:
           SOURCE_DATE_EPOCH: "1700000000"

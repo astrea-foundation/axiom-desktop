@@ -8,6 +8,8 @@ use crate::{
 #[derive(Debug)]
 pub(crate) enum RelayEvent {
     RunCreated(CreatedPayload),
+    Accounting(axiom_inference::RequestUsage),
+    Finalizing(RunPayload),
     Delta(DeltaPayload),
     MessageCompleted(CompletedPayload),
     RunCompleted(RunPayload),
@@ -23,6 +25,9 @@ pub(crate) struct SseDecoder {
     line: Vec<u8>,
     event_name: Option<String>,
     data: Vec<String>,
+    proof_run_id: Option<String>,
+    proof_parts: u64,
+    proof_body: String,
 }
 
 impl SseDecoder {
@@ -35,6 +40,9 @@ impl SseDecoder {
             line: Vec::new(),
             event_name: None,
             data: Vec::new(),
+            proof_run_id: None,
+            proof_parts: 0,
+            proof_body: String::new(),
         }
     }
 
@@ -42,16 +50,16 @@ impl SseDecoder {
         self.total_bytes = self
             .total_bytes
             .checked_add(bytes.len())
-            .ok_or_else(|| invalid("relay stream exceeds the configured limit"))?;
+            .ok_or_else(|| too_large())?;
         if self.total_bytes > self.stream_limit {
-            return Err(invalid("relay stream exceeds the configured limit"));
+            return Err(too_large());
         }
 
         let mut events = Vec::new();
         for &byte in bytes {
             self.line.push(byte);
             if self.event_bytes.saturating_add(self.line.len()) > self.event_limit {
-                return Err(invalid("relay SSE event exceeds the configured limit"));
+                return Err(too_large());
             }
             if byte == b'\n' {
                 let mut line = std::mem::take(&mut self.line);
@@ -71,6 +79,7 @@ impl SseDecoder {
             && self.event_name.is_none()
             && self.data.is_empty()
             && self.event_bytes == 0
+            && self.proof_parts == 0
         {
             Ok(())
         } else {
@@ -96,7 +105,60 @@ impl SseDecoder {
             let data = self.data.join("\n");
             self.data.clear();
             self.event_bytes = 0;
-            if let Some(event) = parse_event(&name, &data)? {
+            if name == "message.proof_chunk" {
+                #[derive(serde::Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct Part {
+                    run_id: String,
+                    index: u64,
+                    data: String,
+                }
+                let part: Part =
+                    serde_json::from_str(&data).map_err(|_| invalid("invalid receipt chunk"))?;
+                if part.run_id.is_empty()
+                    || part.run_id.len() > 256
+                    || part.index != self.proof_parts
+                    || part.data.is_empty()
+                    || part.data.len() > 256 * 1024
+                    || self.proof_body.len().saturating_add(part.data.len())
+                        > (32 * 1024 * 1024 / 3 + 1) * 4
+                    || self
+                        .proof_run_id
+                        .as_ref()
+                        .is_some_and(|id| id != &part.run_id)
+                {
+                    return Err(invalid("receipt chunk sequence or size is invalid"));
+                }
+                self.proof_run_id = Some(part.run_id);
+                self.proof_parts += 1;
+                self.proof_body.push_str(&part.data);
+            } else if let Some(mut event) = parse_event(&name, &data)? {
+                if let RelayEvent::MessageCompleted(payload) = &mut event {
+                    if let Some(proof) = payload
+                        .proof
+                        .as_mut()
+                        .and_then(serde_json::Value::as_object_mut)
+                    {
+                        let count = proof.remove("response_body_chunk_count");
+                        if self.proof_parts > 0 || count.is_some() {
+                            if count.and_then(|v| v.as_u64()) != Some(self.proof_parts)
+                                || self.proof_parts == 0
+                                || self.proof_run_id.as_deref() != Some(&payload.run_id)
+                                || proof.contains_key("response_body_base64")
+                            {
+                                return Err(invalid("incomplete or duplicated receipt chunks"));
+                            }
+                            proof.insert(
+                                "response_body_base64".into(),
+                                serde_json::Value::String(std::mem::take(&mut self.proof_body)),
+                            );
+                            self.proof_parts = 0;
+                            self.proof_run_id = None;
+                        }
+                    } else if self.proof_parts > 0 {
+                        return Err(invalid("receipt chunks have no terminal proof"));
+                    }
+                }
                 events.push(event);
             }
             return Ok(());
@@ -130,9 +192,11 @@ fn parse_event(name: &str, data: &str) -> Result<Option<RelayEvent>> {
     }
     match name {
         "run.created" => decode!(CreatedPayload, RunCreated),
+        "run.accounting" => decode!(axiom_inference::RequestUsage, Accounting),
         "message.encrypted_delta" => decode!(DeltaPayload, Delta),
         "message.encrypted_completed" => decode!(CompletedPayload, MessageCompleted),
         "run.completed" => decode!(RunPayload, RunCompleted),
+        "run.finalizing" => decode!(RunPayload, Finalizing),
         "run.cancelled" => decode!(CancelledPayload, Cancelled),
         "run.failed" => decode!(FailedPayload, Failed),
         // Additive event types are skipped. A server cannot use this to omit
@@ -140,6 +204,15 @@ fn parse_event(name: &str, data: &str) -> Result<Option<RelayEvent>> {
         // rejects an incomplete stream at EOF.
         _ => Ok(None),
     }
+}
+
+fn too_large() -> SecureClientError {
+    SecureClientError::with_code(
+        axiom_inference::ProviderFailureKind::InvalidResponse,
+        crate::SecureErrorCode::ResponseTooLarge,
+        "Response exceeded the allowed size.",
+        false,
+    )
 }
 
 fn invalid(detail: &'static str) -> SecureClientError {
@@ -152,6 +225,31 @@ fn invalid(detail: &'static str) -> SecureClientError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn receipt_chunks_are_reassembled_only_at_an_exact_terminal_count() {
+        let part = "event: message.proof_chunk\ndata: {\"run_id\":\"r1\",\"index\":0,\"data\":\"e30=\"}\n\n";
+        let end = "event: message.encrypted_completed\ndata: {\"run_id\":\"r1\",\"finish_reason\":\"stop\",\"usage\":{},\"proof\":{\"response_body_chunk_count\":1}}\n\n";
+        let mut decoder = SseDecoder::new(1024, 4096);
+        assert!(decoder.feed(part.as_bytes()).unwrap().is_empty());
+        let events = decoder.feed(end.as_bytes()).unwrap();
+        let RelayEvent::MessageCompleted(payload) = &events[0] else {
+            panic!("completion")
+        };
+        assert_eq!(
+            payload.proof.as_ref().unwrap()["response_body_base64"],
+            "e30="
+        );
+        decoder.finish().unwrap();
+        let mut duplicate = SseDecoder::new(1024, 4096);
+        duplicate.feed(part.as_bytes()).unwrap();
+        assert!(duplicate.feed(part.as_bytes()).is_err());
+        let mut truncated = SseDecoder::new(1024, 4096);
+        truncated.feed(part.as_bytes()).unwrap();
+        assert!(truncated.finish().is_err());
+        let mut missing = SseDecoder::new(1024, 4096);
+        assert!(missing.feed(end.as_bytes()).is_err());
+    }
 
     const STREAM: &str = concat!(
         ": heartbeat\r\n\r\n",

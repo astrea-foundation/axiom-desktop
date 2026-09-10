@@ -51,6 +51,14 @@ pub trait InferenceProvider: Send + Sync {
         cancellation: CancellationToken,
     ) -> Result<AssistantTurn>;
 
+    async fn request_accounting(
+        &self,
+        _ids: &[String],
+        _cancellation: CancellationToken,
+    ) -> Result<Vec<axiom_inference::RequestUsage>> {
+        Ok(Vec::new())
+    }
+
     async fn models(&self, _cancellation: CancellationToken) -> Result<Vec<ModelInfo>> {
         Err(AxiomError::Provider(
             "provider does not support model discovery".into(),
@@ -117,10 +125,17 @@ impl SecureAxiomProvider {
         Self::new(relay_base_url, api_key, timeout)
     }
 
-    fn client(&self) -> Result<Arc<SecureClient>> {
+    pub(crate) async fn client(
+        &self,
+        cancellation: &CancellationToken,
+    ) -> Result<Arc<SecureClient>> {
         let value = match &self.credential {
             ProviderCredential::Fixed(value) => value.expose_secret().to_owned(),
-            ProviderCredential::Managed(manager) => manager.credential()?,
+            ProviderCredential::Managed(manager) => manager
+                .access_token_for_secure_operation(cancellation)
+                .await?
+                .expose_for_authorization()
+                .to_owned(),
         };
         let fingerprint: [u8; 32] = Sha256::digest(value.as_bytes()).into();
         let mut cache = self
@@ -147,12 +162,16 @@ impl SecureAxiomProvider {
         &self,
         model_id: &str,
         cancellation: CancellationToken,
+        refresh_attestation: bool,
     ) -> Result<(
         Arc<SecureClient>,
         ModelInfo,
         Box<dyn axiom_secure_client::VerifiedSession>,
     )> {
-        let client = self.client()?;
+        // Authentication is resolved before discovery or attestation begins.
+        // No authorization retry exists after provider ciphertext might have
+        // been dispatched, so a lost response can never replay an inference.
+        let client = self.client(&cancellation).await?;
         let models = client
             .models(cancellation.clone())
             .await
@@ -167,6 +186,11 @@ impl SecureAxiomProvider {
             .trust_policy(cancellation.clone())
             .await
             .map_err(map_secure_error)?;
+        if refresh_attestation {
+            // An explicit verification must obtain a new local attestation,
+            // not merely return the reusable lease used by ordinary inference.
+            client.invalidate(model).await.map_err(map_secure_error)?;
+        }
         let session = client
             .establish(model, &trust_policy, cancellation)
             .await
@@ -192,7 +216,7 @@ impl InferenceProvider for SecureAxiomProvider {
         model: &str,
         cancellation: CancellationToken,
     ) -> Result<ProviderSecurityVerification> {
-        let (_, _, session) = self.establish_verified(model, cancellation).await?;
+        let (_, _, session) = self.establish_verified(model, cancellation, true).await?;
         Ok(ProviderSecurityVerification {
             state: ProviderSecurityState::Verified,
             evidence: Some(session.evidence().clone()),
@@ -205,96 +229,219 @@ impl InferenceProvider for SecureAxiomProvider {
         events: mpsc::Sender<ProviderEvent>,
         cancellation: CancellationToken,
     ) -> Result<AssistantTurn> {
-        send_provider_event(
-            &events,
-            ProviderEvent::SecurityState(ProviderSecurityState::Verifying),
-            &cancellation,
-        )
-        .await?;
-        send_provider_event(
-            &events,
-            ProviderEvent::Status {
-                connected: true,
-                detail: "Verifying model attestation and secure endpoint binding".to_owned(),
-            },
-            &cancellation,
-        )
-        .await?;
-        let (client, model, mut session) = match self
-            .establish_verified(&request.model, cancellation.clone())
+        use axiom_inference::{InvocationState, RequestUsage, UsageCompleteness};
+        let mut request = request;
+        let request_id = request
+            .request_id
+            .get_or_insert_with(|| uuid::Uuid::new_v4().simple().to_string())
+            .clone();
+        let mut accounting = RequestUsage {
+            request_id,
+            model_id: request.model.clone(),
+            started_at_ms: chrono::Utc::now().timestamp_millis().to_string(),
+            ..RequestUsage::default()
+        };
+        let output = events;
+        output
+            .send(ProviderEvent::Accounting(accounting.clone()))
             .await
-        {
-            Ok(session) => session,
-            Err(error) => return secure_stream_failure(&events, &cancellation, error).await,
-        };
-        send_provider_event(
-            &events,
-            ProviderEvent::SecurityState(ProviderSecurityState::Verified),
-            &cancellation,
-        )
-        .await?;
-        let retry_request = request.clone();
-        let retry_events = events.clone();
-        let response_result = async {
-            match session.stream(request, events, cancellation.clone()).await {
-                Ok(response) => Ok(response),
-                Err(error) if error.requires_reattest_and_reencrypt() => {
-                    client.invalidate(&model).await.map_err(map_secure_error)?;
-                    send_provider_event(
-                        &retry_events,
-                        ProviderEvent::SecurityState(ProviderSecurityState::Verifying),
-                        &cancellation,
-                    )
-                    .await?;
-                    send_provider_event(
-                        &retry_events,
-                        ProviderEvent::Status {
-                            connected: true,
-                            detail: "Provider key rotated; re-verifying and re-encrypting once"
-                                .to_owned(),
-                        },
-                        &cancellation,
-                    )
-                    .await?;
-                    let (_, _, mut refreshed) = self
-                        .establish_verified(&retry_request.model, cancellation.clone())
+            .map_err(|_| AxiomError::Cancelled)?;
+        let (events, mut incoming) = mpsc::channel(64);
+        let initial_accounting = accounting.clone();
+        let operation = async {
+            send_provider_event(
+                &events,
+                ProviderEvent::SecurityState(ProviderSecurityState::Verifying),
+                &cancellation,
+            )
+            .await?;
+            send_provider_event(
+                &events,
+                ProviderEvent::Status {
+                    connected: true,
+                    detail: "Verifying model attestation and secure endpoint binding".to_owned(),
+                },
+                &cancellation,
+            )
+            .await?;
+            let (client, model, mut session) = match self
+                .establish_verified(&request.model, cancellation.clone(), false)
+                .await
+            {
+                Ok(session) => session,
+                Err(error) => return secure_stream_failure(&events, &cancellation, error).await,
+            };
+            send_provider_event(
+                &events,
+                ProviderEvent::SecurityState(ProviderSecurityState::Verified),
+                &cancellation,
+            )
+            .await?;
+            let mut established_accounting = initial_accounting.clone();
+            established_accounting.provider_id = model.provider_id.clone();
+            established_accounting.context_window_tokens = Some(model.context_window_tokens);
+            established_accounting.auto_compact_threshold_tokens =
+                Some(model.auto_compact_threshold_tokens());
+            send_provider_event(
+                &events,
+                ProviderEvent::Accounting(established_accounting),
+                &cancellation,
+            )
+            .await?;
+            let retry_request = request.clone();
+            let retry_events = events.clone();
+            let response_result = async {
+                match session.stream(request, events, cancellation.clone()).await {
+                    Ok(response) => Ok(response),
+                    Err(error) if error.requires_reattest_and_reencrypt() => {
+                        client.invalidate(&model).await.map_err(map_secure_error)?;
+                        send_provider_event(
+                            &retry_events,
+                            ProviderEvent::SecurityState(ProviderSecurityState::Verifying),
+                            &cancellation,
+                        )
                         .await?;
-                    send_provider_event(
-                        &retry_events,
-                        ProviderEvent::SecurityState(ProviderSecurityState::Verified),
-                        &cancellation,
-                    )
-                    .await?;
-                    refreshed
-                        .stream(retry_request, retry_events.clone(), cancellation.clone())
-                        .await
-                        .map_err(map_secure_error)
+                        send_provider_event(
+                            &retry_events,
+                            ProviderEvent::Status {
+                                connected: true,
+                                detail: "Provider key rotated; re-verifying and re-encrypting once"
+                                    .to_owned(),
+                            },
+                            &cancellation,
+                        )
+                        .await?;
+                        let (_, _, mut refreshed) = self
+                            .establish_verified(&retry_request.model, cancellation.clone(), false)
+                            .await?;
+                        send_provider_event(
+                            &retry_events,
+                            ProviderEvent::SecurityState(ProviderSecurityState::Verified),
+                            &cancellation,
+                        )
+                        .await?;
+                        refreshed
+                            .stream(retry_request, retry_events.clone(), cancellation.clone())
+                            .await
+                            .map_err(map_secure_error)
+                    }
+                    Err(error) => Err(map_secure_error(error)),
                 }
-                Err(error) => Err(map_secure_error(error)),
             }
-        }
-        .await;
-        let response = match response_result {
-            Ok(response) => response,
-            Err(error) => {
-                return secure_stream_failure(&retry_events, &cancellation, error).await;
+            .await;
+            let response = match response_result {
+                Ok(response) => response,
+                Err(error) => {
+                    return secure_stream_failure(&retry_events, &cancellation, error).await;
+                }
+            };
+            send_provider_event(
+                &retry_events,
+                ProviderEvent::ResponseVerified,
+                &cancellation,
+            )
+            .await?;
+            let mut assistant = response.assistant;
+            assistant.reasoning = response.reasoning;
+            Ok(assistant)
+        };
+        tokio::pin!(operation);
+        let mut result = loop {
+            tokio::select! {
+                result = &mut operation => break result,
+                event = incoming.recv() => if let Some(event) = event {
+                    update_request_accounting(&mut accounting, &event)?;
+                    output.send(event).await.map_err(|_| AxiomError::Cancelled)?;
+                }
             }
         };
-        send_provider_event(
-            &retry_events,
-            ProviderEvent::ResponseVerified,
-            &cancellation,
-        )
-        .await?;
-        Ok(response.assistant)
+        while let Ok(event) = incoming.try_recv() {
+            update_request_accounting(&mut accounting, &event)?;
+            output
+                .send(event)
+                .await
+                .map_err(|_| AxiomError::Cancelled)?;
+        }
+        accounting.finished_at_ms = Some(chrono::Utc::now().timestamp_millis().to_string());
+        accounting.state = match &result {
+            Ok(_) => InvocationState::Completed,
+            Err(AxiomError::Cancelled) => InvocationState::Cancelled,
+            Err(_) => InvocationState::Failed,
+        };
+        if result.is_err() {
+            accounting.response_verified = false;
+            if accounting.completeness == UsageCompleteness::Live {
+                accounting.completeness = UsageCompleteness::Partial;
+            }
+            accounting.error_code = Some(match &result {
+                Err(AxiomError::SecureProvider { code, .. }) => (*code).to_owned(),
+                Err(AxiomError::Cancelled) => "CANCELLED".to_owned(),
+                _ => "PROVIDER_REQUEST_FAILED".to_owned(),
+            });
+        } else if !accounting.response_verified {
+            result = Err(AxiomError::Provider(
+                "Response receipt was not verified".into(),
+            ));
+            accounting.state = InvocationState::Failed;
+        }
+        output
+            .send(ProviderEvent::Accounting(accounting))
+            .await
+            .map_err(|_| AxiomError::Cancelled)?;
+        result
+    }
+
+    async fn request_accounting(
+        &self,
+        ids: &[String],
+        cancellation: CancellationToken,
+    ) -> Result<Vec<axiom_inference::RequestUsage>> {
+        self.client(&cancellation)
+            .await?
+            .request_accounting(ids, cancellation)
+            .await
+            .map_err(map_secure_error)
     }
 
     async fn models(&self, cancellation: CancellationToken) -> Result<Vec<ModelInfo>> {
-        self.client()?
+        self.client(&cancellation)
+            .await?
             .models(cancellation)
             .await
             .map_err(map_secure_error)
     }
+}
+
+fn update_request_accounting(
+    record: &mut axiom_inference::RequestUsage,
+    event: &ProviderEvent,
+) -> Result<()> {
+    match event {
+        ProviderEvent::Accounting(snapshot) => {
+            if snapshot.request_id != record.request_id
+                || snapshot.model_id != record.model_id
+                || !snapshot.validate_counters()
+            {
+                return Err(AxiomError::Provider(
+                    "Request accounting identity mismatch".into(),
+                ));
+            }
+            let verified = record.response_verified;
+            let context_window = record.context_window_tokens;
+            let compact_at = record.auto_compact_threshold_tokens;
+            *record = snapshot.clone();
+            record.response_verified = verified;
+            record.context_window_tokens = record.context_window_tokens.or(context_window);
+            record.auto_compact_threshold_tokens =
+                record.auto_compact_threshold_tokens.or(compact_at);
+        }
+        ProviderEvent::ResponseVerified => record.response_verified = true,
+        ProviderEvent::Finished(reason) => {
+            record.finish_reason = Some(format!("{reason:?}").to_lowercase())
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 async fn send_provider_event(
@@ -316,15 +463,24 @@ async fn secure_stream_failure<T>(
     if matches!(error, AxiomError::Cancelled) || cancellation.is_cancelled() {
         return Err(AxiomError::Cancelled);
     }
-    // Once attestation has begun, every non-cancellation terminal error must
-    // revoke the live green state. Use an independent delivery token because
-    // the failed request token is no longer authority for this state update.
-    let _ = send_provider_event(
-        events,
-        ProviderEvent::SecurityState(ProviderSecurityState::Failed),
-        &CancellationToken::new(),
-    )
-    .await;
+    // Attestation and completion integrity are separate. An execution failure
+    // does not retroactively reject previously verified TEE evidence.
+    if matches!(
+        &error,
+        AxiomError::SecureProvider {
+            kind: ProviderFailureKind::AttestationRejected
+                | ProviderFailureKind::AttestationUnavailable
+                | ProviderFailureKind::SessionEstablishment,
+            ..
+        }
+    ) {
+        let _ = send_provider_event(
+            events,
+            ProviderEvent::SecurityState(ProviderSecurityState::Failed),
+            &CancellationToken::new(),
+        )
+        .await;
+    }
     Err(error)
 }
 
@@ -336,7 +492,11 @@ fn map_secure_error(error: axiom_secure_client::SecureClientError) -> AxiomError
             "HTTP 402 Payment Required: insufficient credit; visit axiom.stream to top up"
                 .to_owned(),
         ),
-        kind => AxiomError::Provider(format!("{kind:?}: {}", error.safe_detail())),
+        kind => AxiomError::SecureProvider {
+            kind,
+            code: error.code().as_str(),
+            message: error.safe_detail(),
+        },
     }
 }
 
@@ -665,7 +825,11 @@ mod test_http_provider {
                     })
                 })
                 .collect::<Result<Vec<_>>>()?;
-            Ok(AssistantTurn { text, tool_calls })
+            Ok(AssistantTurn {
+                reasoning: None,
+                text,
+                tool_calls,
+            })
         }
 
         async fn models(&self, cancellation: CancellationToken) -> Result<Vec<ModelInfo>> {
@@ -1272,7 +1436,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn terminal_receipt_failure_revokes_a_previously_verified_state() {
+    async fn terminal_receipt_failure_does_not_revoke_preflight_attestation() {
         let (events, mut received) = mpsc::channel(8);
         events
             .send(ProviderEvent::SecurityState(
@@ -1299,10 +1463,9 @@ mod tests {
         }
         assert_eq!(
             observed,
-            vec![
-                ProviderEvent::SecurityState(ProviderSecurityState::Verified),
-                ProviderEvent::SecurityState(ProviderSecurityState::Failed),
-            ]
+            vec![ProviderEvent::SecurityState(
+                ProviderSecurityState::Verified
+            ),]
         );
         assert!(!observed.contains(&ProviderEvent::ResponseVerified));
     }

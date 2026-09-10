@@ -1,0 +1,94 @@
+{
+  "version": "0.1.1",
+  "signing": "unsigned",
+  "downloads": [
+    {
+      "name": "Axiom-0.1.1-linux-amd64.deb",
+      "platform": "linux",
+      "arch": "x64",
+      "bytes": 107917224,
+      "sha256": "27b1bde690809ae8137738ea5513a1f60d2ac7236e4544a8200e6edc5f6aeed4",
+      "url": "https://cdn.axiom.stream/downloads/0.1.1/Axiom-0.1.1-linux-amd64.deb"
+    },
+    {
+      "name": "Axiom-0.1.1-linux-x86_64.AppImage",
+      "platform": "linux",
+      "arch": "x64",
+      "bytes": 139611710,
+      "sha256": "739d52594c33d95617294e509c95e60498b30418bdd05d4ddfe0133fcc6b0dae",
+      "url": "https://cdn.axiom.stream/downloads/0.1.1/Axiom-0.1.1-linux-x86_64.AppImage"
+    },
+    {
+      "name": "Axiom-0.1.1-mac-arm64.dmg",
+      "platform": "mac",
+      "arch": "arm64",
+      "bytes": 130356449,
+      "sha256": "8bfead79e50ef155b11fb022977ad3a61ced9b2eed2d2d368cd04351f5c1fa58",
+      "url": "https://cdn.axiom.stream/downloads/0.1.1/Axiom-0.1.1-mac-arm64.dmg"
+    },
+    {
+      "name": "Axiom-0.1.1-mac-arm64.pkg",
+      "platform": "mac",
+      "arch": "arm64",
+      "bytes": 129410487,
+      "sha256": "a6543779a89bc44c069d39f2e07413828ecafb2e2d681b6cc078b699e3d52709",
+      "url": "https://cdn.axiom.stream/downloads/0.1.1/Axiom-0.1.1-mac-arm64.pkg"
+    },
+    {
+      "name": "Axiom-0.1.1-mac-arm64.zip",
+      "platform": "mac",
+      "arch": "arm64",
+      "bytes": 131521147,
+      "sha256": "7569876030a1e30af2c7fc6a5c65a9d6b7fd83252eb6cf3b6b2d6bf0ab38e571",
+      "url": "https://cdn.axiom.stream/downloads/0.1.1/Axiom-0.1.1-mac-arm64.zip"
+    },
+    {
+      "name": "Axiom-0.1.1-mac-x64.dmg",
+      "platform": "mac",
+      "arch": "x64",
+      "bytes": 137674144,
+      "sha256": "5a023f96997d605b29c1ff828dec2fa7bde1fccfb7f1a635528635e1f72bb5c0",
+      "url": "https://cdn.axiom.stream/downloads/0.1.1/Axiom-0.1.1-mac-x64.dmg"
+    },
+    {
+      "name": "Axiom-0.1.1-mac-x64.pkg",
+      "platform": "mac",
+      "arch": "x64",
+      "bytes": 136912294,
+      "sha256": "2c95248a015adfac8bace01a520534ad9a188cf5af3b1a5bb1d0d6843b880e37",
+      "url": "https://cdn.axiom.stream/downloads/0.1.1/Axiom-0.1.1-mac-x64.pkg"
+    },
+    {
+      "name": "Axiom-0.1.1-mac-x64.zip",
+      "platform": "mac",
+      "arch": "x64",
+      "bytes": 138899263,
+      "sha256": "6b63e212426ec05ad6f0a730b04041ab815f427cb2dae116316bc2100991e24e",
+      "url": "https://cdn.axiom.stream/downloads/0.1.1/Axiom-0.1.1-mac-x64.zip"
+    },
+    {
+      "name": "Axiom-0.1.1-win-arm64.exe",
+      "platform": "win",
+      "arch": "arm64",
+      "bytes": 113113132,
+      "sha256": "86a375b15cb8fa0cbce7561b66dfd6c992896b2510ccd81102c261a50d67ef03",
+      "url": "https://cdn.axiom.stream/downloads/0.1.1/Axiom-0.1.1-win-arm64.exe"
+    },
+    {
+      "name": "Axiom-0.1.1-win-x64.exe",
+      "platform": "win",
+      "arch": "x64",
+      "bytes": 118127022,
+      "sha256": "96ed66f195fae69126ce4d5e57b9ba577ce0b3f35045bf55c6fc3567542b35b8",
+      "url": "https://cdn.axiom.stream/downloads/0.1.1/Axiom-0.1.1-win-x64.exe"
+    },
+    {
+      "name": "axiom-desktop-0.1.1-x64.pkg.tar.xz",
+      "platform": "linux",
+      "arch": "x64",
+      "bytes": 97326676,
+      "sha256": "0c95613fab3ab05ab1065fbf91e9a98c666ea017fcb57e138a0beb535d114933",
+      "url": "https://cdn.axiom.stream/downloads/0.1.1/axiom-desktop-0.1.1-x64.pkg.tar.xz"
+    }
+  ]
+}

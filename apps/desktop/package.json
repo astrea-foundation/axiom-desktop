@@ -2,21 +2,30 @@
   "name": "axiom-desktop",
   "productName": "Axiom",
   "desktopName": "stream.axiom.desktop.desktop",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "description": "Axiom private desktop chat driven by AxiomCLI over ACP",
+  "homepage": "https://axiom.stream",
+  "author": {
+    "name": "Astrea Foundation",
+    "email": "support@axiom.stream"
+  },
+  "license": "Apache-2.0",
   "type": "module",
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "node ./scripts/ensure-electron.mjs && node ./scripts/run-electron.mjs vite dev",
+    "dev:staging": "node ./scripts/ensure-electron.mjs && node ./scripts/run-electron.mjs staging dev",
     "install:desktop": "node ./scripts/install-linux-desktop-entry.mjs",
     "build": "electron-vite build",
     "test": "tsx --test tests/*.test.ts",
+    "test:browser": "tsx --test tests/browser/*.test.ts",
     "preview": "node ./scripts/ensure-electron.mjs && node ./scripts/run-electron.mjs vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.json --composite false",
     "capture": "node ./scripts/ensure-electron.mjs && node ./scripts/run-electron.mjs vite build && node ./scripts/run-electron.mjs electron . --capture",
     "brand:assets": "python3 ./scripts/brand-assets.py",
-    "dist": "electron-vite build && electron-builder"
+    "dist": "electron-vite build && electron-builder",
+    "package:release": "node scripts/package-desktop.mjs"
   },
   "dependencies": {
     "@axiom/axiom-acp-client": "workspace:*",
@@ -24,11 +33,16 @@
     "@fontsource-variable/dm-sans": "^5.3.0",
     "@fontsource/dm-mono": "^5.3.0",
     "@lobehub/icons-static-svg": "^1.94.0",
+    "katex": "0.16.47",
     "lucide-react": "^0.564.0",
+    "qrcode.react": "4.2.0",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "react-markdown": "^10.1.0",
-    "remark-gfm": "^4.0.1"
+    "rehype-katex": "7.0.1",
+    "remark-gfm": "^4.0.1",
+    "remark-math": "6.0.0",
+    "@axiom/brand": "workspace:*"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.0",
@@ -37,7 +51,9 @@
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "~5.1.4",
     "electron": "^37.2.6",
+    "electron-builder": "^26.15.3",
     "electron-vite": "^5.0.0",
+    "playwright": "1.61.1",
     "tailwindcss": "^4.3.0",
     "tsx": "^4.20.6",
     "typescript": "~5.9.2",

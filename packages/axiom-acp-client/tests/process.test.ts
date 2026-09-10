@@ -5,12 +5,68 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
   AcpProcess,
+  DESKTOP_SIDECAR_INHERITED_ENV,
   ProtocolError,
+  createChildEnvironment,
   type IncomingRequest,
   type RpcNotification,
 } from "../src/index.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
+
+test("sidecar environment overrides endpoints and removes credentials case-insensitively", () => {
+  const environment = createChildEnvironment(
+    {
+      AXIOM_API_KEY: "axm_inherited",
+      axiom_api_key: "axm_mixed_case",
+      AXIOM_BASE_URL: "https://wrong.example",
+      KEEP: "yes",
+    },
+    { AXIOM_BASE_URL: "https://api.axiom.stream" },
+    ["AXIOM_API_KEY"],
+  );
+  assert.equal(environment.AXIOM_API_KEY, undefined);
+  assert.equal(environment.axiom_api_key, undefined);
+  assert.equal(environment.AXIOM_BASE_URL, "https://api.axiom.stream");
+  assert.equal(environment.KEEP, "yes");
+});
+
+test("Desktop sidecar allowlist excludes inherited application secrets", () => {
+  const environment = createChildEnvironment(
+    {
+      Path: "C:\\Windows\\System32",
+      HOME: "/home/ada",
+      DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/1000/bus",
+      AXIOM_API_KEY: "axm_secret",
+      axiom_auth_url: "https://attacker.example",
+      DATABASE_URL: "postgres://secret",
+      SHIELDZ_WALLET_SEED: "zcash-secret",
+      OPENAI_API_KEY: "provider-secret",
+    },
+    {
+      AXIOM_AUTH_URL: "https://auth.axiom.stream",
+      AXIOM_BASE_URL: "https://api.axiom.stream",
+    },
+    ["AXIOM_API_KEY"],
+    DESKTOP_SIDECAR_INHERITED_ENV,
+  );
+
+  assert.equal(environment.Path, "C:\\Windows\\System32");
+  assert.equal(environment.HOME, "/home/ada");
+  assert.equal(environment.DBUS_SESSION_BUS_ADDRESS, "unix:path=/run/user/1000/bus");
+  assert.equal(environment.AXIOM_AUTH_URL, "https://auth.axiom.stream");
+  assert.equal(environment.AXIOM_BASE_URL, "https://api.axiom.stream");
+  for (const name of [
+    "AXIOM_API_KEY",
+    "axiom_api_key",
+    "axiom_auth_url",
+    "DATABASE_URL",
+    "SHIELDZ_WALLET_SEED",
+    "OPENAI_API_KEY",
+  ]) {
+    assert.equal(environment[name], undefined, `${name} leaked into the sidecar`);
+  }
+});
 
 function processExists(pid: number): boolean {
   try {

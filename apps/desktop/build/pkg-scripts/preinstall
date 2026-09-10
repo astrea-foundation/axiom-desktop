@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+volume=${3:-/}
+link="$volume/usr/local/bin/axiomcli"
+target=/Applications/Axiom.app/Contents/Resources/bin/axiomcli
+if [ -e "$link" ] || [ -L "$link" ]; then
+  if [ ! -L "$link" ] || [ "$(readlink "$link")" != "$target" ]; then
+    echo "A different axiomcli already exists at $link. Remove or relocate that installation first." >&2
+    exit 1
+  fi
+fi

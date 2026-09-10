@@ -2,10 +2,13 @@
 
 Written for the developer merging this branch and for any coding agent working
 in `apps/desktop` afterwards. It explains what changed, why, what it leads to,
-and the rules the new code expects you to keep. Everything here is
-presentation-layer: **no ACP protocol, sidecar, state, or Rust code changed.**
+and the rules the new code expects you to keep. The original redesign was
+presentation-only; the current tree also includes the later native-account,
+account-scoped state, billing-extension, and cross-platform packaging work
+called out explicitly below.
 
-Base: `origin/main` at the time of branching. Scope: `apps/desktop/` only.
+Redesign base: `origin/main` at the time of branching. Original redesign scope:
+`apps/desktop/` only.
 
 ---
 
@@ -37,7 +40,7 @@ Headline outcomes:
 ```text
 pnpm install
 pnpm desktop                     # builds axiomcli, starts electron-vite dev
-pnpm --filter axiom-desktop test # 16 node:test cases
+pnpm --filter axiom-desktop test # 24 node:test cases
 pnpm --filter axiom-desktop typecheck
 pnpm --filter axiom-desktop capture   # ~/axiom-desktop-captures/{light,dark}-*.png
 ```
@@ -45,8 +48,9 @@ pnpm --filter axiom-desktop capture   # ~/axiom-desktop-captures/{light,dark}-*.
 - `AXIOMCLI_SIDECAR=/path/to/binary-or-script` overrides the sidecar in dev
   **and** in capture mode (packaged builds ignore it, as before).
 - `AXIOM_DESKTOP_PLATFORM_PREVIEW=win32 pnpm desktop` on a Mac renders the
-  Windows content insets and hides the macOS traffic lights. The BrowserWindow
-  itself is still macOS, so this mode cannot emulate Windows' native controls.
+  Windows/Linux controls and right-side cutout while hiding the macOS traffic
+  lights. The BrowserWindow itself is still macOS, but the visible chrome is
+  renderer-owned in this mode.
 - `electron-vite dev` hot-reloads the renderer only. Anything under
   `src/main` or `src/preload` needs the app restarted.
 - Capture shots: `conversation, welcome, models, signin, proxy, folder, markdown,
@@ -120,24 +124,25 @@ pnpm --filter axiom-desktop capture   # ~/axiom-desktop-captures/{light,dark}-*.
 ### 3.3 Window chrome per platform
 
 - `src/main/window-chrome.ts` (new, unit-tested): darwin uses
-  `{ titleBarStyle: "hiddenInset" }`; Windows and Linux use Electron's native
-  Window Controls Overlay over a hidden title bar. The overlay is transparent,
-  44 px tall, and its symbols track the resolved light/dark theme. Never add a
-  custom `trafficLightPosition` on macOS: it re-parents the buttons and they
-  render empty when the window is inactive (electron#27295).
+  `{ titleBarStyle: "hiddenInset" }`; Windows and Linux use `{ frame: false }`
+  with app-drawn controls in the outer canvas. Never add a custom
+  `trafficLightPosition` on macOS: it re-parents the buttons and they render
+  empty when the window is inactive (electron#27295).
 - Electron also draws the traffic lights fully transparent while the window
   is blurred (electron#44034). `TrafficLightGhost.tsx` paints three grey dots
   (centres x 20/40/60, top 12) only when `isMac && !active && !fullScreen`;
   the real buttons cover them exactly when AppKit redraws.
-- New IPC: `window:isFullScreen` / `window:fullscreen-changed`,
+- New IPC: minimize/maximize/close plus `window:isMaximized` /
+  `window:maximized-changed`, `window:isFullScreen` / `window:fullscreen-changed`,
   `window:isFocused` / `window:active-changed`, consumed only through
   `src/renderer/src/lib/window-chrome.ts` (`isMac`, `isWindows`, `isLinux`,
   `MAC_TRAFFIC_LIGHT_INSET_CLASS = "pl-[76px]"`,
   `useFullScreen()`, `useWindowActive()`; values are cached at module level so
   late-mounting components paint correctly on first render).
-- Windows/Linux header content uses `.window-controls-inset`, backed by
-  Electron's `env(titlebar-area-width)`, so app actions never sit underneath
-  the OS-owned minimize, maximize, and close hit targets.
+- Windows/Linux place `WindowControls` at the window level, outside the stage.
+  The stage gets `data-controls-cutout="true"` and mirrors the macOS notch on
+  the right (104 × 30 px); the header reserves 112 px so app actions never sit
+  underneath the minimize, maximize, and close hit targets.
 - The notch: when `isMac && !sidebarOpen && !fullScreen`, `.stage-frame` gets
   `data-notch="true"` and `--nt` transitions 0 → 1 in the same 300 ms as the
   sidebar slide. Geometry: card radius 22, tab 70 × 26 px, convex corner 12,
@@ -159,7 +164,7 @@ pnpm --filter axiom-desktop capture   # ~/axiom-desktop-captures/{light,dark}-*.
   The old pointer-drag resize handle and the sidebar wordmark are gone.
 - Header (44 px, absolute, drag region): open-sidebar button when collapsed,
   title, folder chip, a `···` "Thread actions" button (**placeholder, no
-  onClick yet**), with space reserved for the native controls overlay.
+  onClick yet**), with space reserved for the window-level controls cutout.
 - Content fades out under the title strip via `.title-fade`, a `mask-image`
   on the ChatView and ProxyView scrollers (transparent to 44 px, opaque at
   84 px). A painted scrim was tried first and produced a visible edge in dark
@@ -179,13 +184,26 @@ pnpm --filter axiom-desktop capture   # ~/axiom-desktop-captures/{light,dark}-*.
   (irregular eight-value radii, `blur(90px)`) on a fixed 2000 × 1400
   composition pinned to the view centre, so resizing reveals rather than
   moves them. Do not animate them.
-- Settings is a full-window page (`fixed inset-0`, Back pill, staggered glass
-  cards), not a modal.
+- Settings is a full-window page (`fixed inset-0`, Back pill), not a modal.
+  A rounded two-column surface contains a vertical category tablist on the
+  left and independently scrolling content on the right. Category metadata
+  lives in `SettingsPanel.tsx`; add a category and its panel in `SettingsSheet`.
+  Arrow keys / Home / End select categories. Inactive panels stay mounted but
+  hidden to preserve local drafts; the chat behind Settings is inert. Window
+  controls remain accessible. Account and Appearance are settings categories;
+  payment controls live separately in `BalanceScreen.tsx`. Both pages use the
+  shared `AccountScreen` shell with a short fade/slide on entry and exit,
+  disabled for reduced motion. Closing finishes before restoring chat focus.
+- The sidebar account row opens an upward-facing `AccountMenu`, with Settings
+  and Balance (including the current available inference credit). There is no
+  separate settings gear. The menu refreshes the balance once when opened;
+  recurring deposit polling runs only while the Balance screen is mounted.
 - Live account state replaces the placeholder identity in the sidebar footer.
   Signed-out, invalid, and unavailable states use the same semantic glass,
-  status, and action tokens as the rest of the shell. `SignInDialog` is a
-  modal-scale `.glass-panel-solid` rendered beside the stage frame so its
-  fixed scrim covers the whole window without being clipped by stage chrome.
+  status, and action tokens as the rest of the shell. Sign in opens the website
+  directly, where the user chooses their method. `SignInStatus` is an inline
+  card below the stage header with the matching code and reopen/cancel/retry
+  actions; there is no desktop sign-in modal.
 
 ### 3.5 Chat surfaces
 
@@ -303,9 +321,6 @@ overlay inset, and the `AxiomLogo` wordmark component.
 
 ## 6. Open items for the developer
 
-- **`electron-builder` is not a devDependency** (I did not touch the lockfile);
-  `pnpm dist` needs it installed and `cargo build --release -p axiomcli` first.
-  Signing/notarisation via the usual `CSC_*` / `APPLE_*` environment.
 - **Copyright line** is a placeholder (`© 2026 Astrea Foundation`, marked
   `TODO(brand)` in `src/main/index.ts` and duplicated in `electron-builder.yml`).
 - **Product name**: the code says `Axiom`; the wordmark reads `AxiomAI`.
@@ -321,22 +336,20 @@ overlay inset, and the `AxiomLogo` wordmark component.
 
 ## 7. Not in this branch (on purpose)
 
-- Live chat against `api.axiom.stream` still fails with the public client:
-  the deployed backend added catalog fields and moved to per-provider E2EE
-  (`near-v2` / `phala-aci-v2`, encryption_version 2) that this repo's client
-  predates. During design testing I relaxed `#[serde(deny_unknown_fields)]`
-  on `CatalogModel` and added a temporary relay-error log in
-  `crates/axiom-secure-client` — **both are excluded here**; the catalog change
-  is probably worth making properly on your side.
-- Keychain: each ad-hoc-signed rebuild of `axiomcli` invalidates the stored
-  token's ACL, so a dev build asks to sign in again (Settings → Sign in with
-  browser). Not a bug in this branch.
+- Interactive native account, provider, and target-machine validation is not
+  part of the headless design pass. The current client supports the registered
+  NEAR and Phala provider-E2EE protocols and must never fall back to plaintext.
+- Keychain: an ad-hoc-signed rebuild of `axiomcli` can invalidate the native
+  refresh token's ACL, so a development build may require native sign-in again
+  from Settings. This is expected for ad-hoc builds.
 - The mock sidecar used for design review (see §2).
 
 ## 8. How this was verified
 
-`pnpm typecheck` clean, the integrated desktop suite 16/16, and all 24 current
-states captured across both themes. The original redesign also received a
+Current headless verification is
+`pnpm --filter axiom-desktop typecheck` plus the 24/24 integrated Desktop tests.
+The original redesign captured 24 states across both themes and received a
 five-lens adversarial code review over the whole diff (CSS/Chromium support,
 React/TS, Electron main/preload, token completeness/contrast, behavioural
-regressions) whose confirmed findings were fixed before this hand-off.
+regressions). Visible capture and target-machine testing remain separate and
+must wait for an authorized manual test window.

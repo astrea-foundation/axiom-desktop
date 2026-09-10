@@ -8,13 +8,13 @@ test("account presentation distinguishes startup, sign-in, revocation, and outag
   assert.deepEqual(
     accountPresentation(true, true, {
       revision: 3,
-      state: "invalid",
-      detail: "This key was revoked.",
+      state: "expired",
+      detail: "This session was revoked.",
     }),
     {
-      kind: "invalid",
+      kind: "expired",
       title: "Reconnect your Axiom account",
-      detail: "This key was revoked.",
+      detail: "This session was revoked.",
     },
   );
   assert.equal(accountPresentation(true, true, {
@@ -23,16 +23,22 @@ test("account presentation distinguishes startup, sign-in, revocation, and outag
     detail: "Service is unreachable.",
   }).kind, "unavailable");
   assert.equal(accountPresentation(true, true, {
-    revision: 5,
-    state: "valid",
-    keyId: "key-id",
-  }).kind, "valid");
+      revision: 5,
+      state: "valid",
+      account: {
+        id: "account-id",
+        displayName: "Ada",
+        verifiedEmail: "ada@example.test",
+        linkedMethods: ["passkey", "google"],
+      },
+      session: { expiresAt: "2030-01-01T00:00:00Z", credentialStore: "system keyring" },
+    }).kind, "valid");
 });
 
 test("sign-in errors remove IPC wrapping while preserving useful detail", () => {
   assert.equal(
     signInErrorMessage(new Error(
-      "Error invoking remote method 'agent:browser-login-complete': AcpError: authorization expired",
+      "Error invoking remote method 'agent:native-login-complete': AcpError: authorization expired",
     )),
     "authorization expired",
   );

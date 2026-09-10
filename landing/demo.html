@@ -1,0 +1,1028 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AxiomAI desktop demo</title>
+<link rel="icon" type="image/svg+xml" href="assets/axiom-symbol-logo-colored.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  @font-face {
+    font-family: 'PP Cirka';
+    src: url('fonts/PPCirka-Regular.otf') format('opentype');
+    font-weight: 400; font-style: normal; font-display: swap;
+  }
+  html, body { margin:0; padding:0; background:transparent; font-family:'DM Sans',-apple-system,sans-serif; }
+</style>
+</head>
+<body>
+<!-- ================================================================
+     ▼▼▼  AXIOM DESKTOP — SELF-CONTAINED DEMO. COPY FROM HERE.  ▼▼▼
+     A non-interactive replica of the desktop app's light theme: the
+     gradient canvas, the transparent sidebar, the floating stage card,
+     the composer, the welcome greeting and the chat thread. It plays the
+     same three-turn conversation on a loop. Sizes itself to its parent
+     (CSS container queries). Respects prefers-reduced-motion and pauses
+     when scrolled out of view.
+     ================================================================ -->
+
+<div class="ax-home" data-ax-home>
+  <div class="ax-shell">
+
+    <!-- ============ sidebar (transparent, on the canvas) ============ -->
+    <aside class="ax-side">
+      <div class="ax-side-top">
+        <!-- the Axiom mark sits where macOS would draw the traffic lights -->
+        <img class="ax-brand" src="assets/axiom-ai-colored-logo.svg" alt="AxiomAI" draggable="false">
+        <span class="ax-ibtn" aria-hidden="true">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/><path d="m16 15-3-3 3-3"/></svg>
+        </span>
+      </div>
+
+      <nav class="ax-nav">
+        <div class="ax-nav-group">
+          <div class="ax-nav-row">
+            <span class="ax-plus-ring"><svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg></span>
+            <span>New thread</span>
+          </div>
+          <div class="ax-nav-row">
+            <span class="ax-nav-ico"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/></svg></span>
+            <span>Proxy</span>
+          </div>
+        </div>
+        <div class="ax-search-row">
+          <div class="ax-search">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/></svg>
+            <span class="ax-search-ph">Search threads</span>
+          </div>
+          <span class="ax-ibtn ax-ibtn-lg" aria-hidden="true">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 10v6"/><path d="M9 13h6"/><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>
+          </span>
+        </div>
+      </nav>
+
+      <div class="ax-threads">
+        <div class="ax-label">Threads</div>
+
+        <div class="ax-folder">
+          <div class="ax-folder-head">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+            <svg class="ax-folder-ico" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>
+            <span>Fundraise</span>
+          </div>
+          <div class="ax-folder-kids">
+            <div class="ax-trow ax-nested"><i class="ax-tdot"></i><span>Series B model</span></div>
+            <div class="ax-trow ax-nested"><i class="ax-tdot"></i><span>Runway scenarios</span></div>
+          </div>
+        </div>
+
+        <div class="ax-loose">
+          <div class="ax-trow" data-ax-thread-row><i class="ax-tdot"></i><span>Board memo</span></div>
+          <div class="ax-trow"><i class="ax-tdot"></i><span>Reading notes</span></div>
+        </div>
+      </div>
+
+      <div class="ax-account">
+        <div class="ax-account-row">
+          <span class="ax-avatar">AL</span>
+          <span class="ax-account-text">
+            <span class="ax-account-name">Ada Lindqvist</span>
+            <span class="ax-account-sub">Private account</span>
+          </span>
+          <svg class="ax-gear" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/></svg>
+        </div>
+      </div>
+    </aside>
+
+    <!-- ============ the stage: a floating translucent card ============ -->
+    <div class="ax-stage-frame">
+      <section class="ax-stage-card">
+
+        <header class="ax-title">
+          <img class="ax-title-brand" src="assets/axiom-ai-colored-logo.svg" alt="AxiomAI" draggable="false">
+          <span class="ax-title-text" data-ax-title>New thread</span>
+          <span class="ax-title-more" aria-hidden="true">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg>
+          </span>
+        </header>
+
+        <div class="ax-view" data-ax-view>
+
+          <!-- welcome blooms: soft white shapes on a fixed 2000×1400 composition -->
+          <div class="ax-blooms" aria-hidden="true">
+            <div class="ax-bloom-stage">
+              <div class="ax-blob" style="left:120px; top:250px; width:780px; height:640px; border-radius:62% 38% 55% 45% / 48% 57% 43% 52%; transform:rotate(-14deg)"></div>
+              <div class="ax-blob" style="left:1190px; top:130px; width:720px; height:560px; border-radius:41% 59% 47% 53% / 62% 36% 64% 38%; transform:rotate(23deg); opacity:.8"></div>
+              <div class="ax-blob" style="left:640px; top:830px; width:900px; height:620px; border-radius:56% 44% 63% 37% / 39% 55% 45% 61%; transform:rotate(8deg); opacity:.7"></div>
+            </div>
+          </div>
+
+          <!-- the thread -->
+          <div class="ax-scroller" data-ax-scroller>
+            <div class="ax-thread" data-ax-thread></div>
+          </div>
+
+          <!-- the dock: greeting + composer + trust strip. Centred on the
+               welcome screen, then it settles to the bottom of the card. -->
+          <div class="ax-dock" data-ax-dock>
+            <div class="ax-dock-inner">
+
+              <div class="ax-head" data-ax-head>
+                <img class="ax-mark" src="assets/axiom-symbol-logo-colored.svg" alt="" draggable="false">
+                <h1 class="ax-greet" data-ax-greet aria-label="A quiet place to think."><span class="unmask unmask-word" aria-hidden="true"><span class="unmask-inner" style="--ld:.08s">A&nbsp;</span></span><span class="unmask unmask-word" aria-hidden="true"><span class="unmask-inner" style="--ld:.15s">quiet&nbsp;</span></span><span class="unmask unmask-word" aria-hidden="true"><span class="unmask-inner" style="--ld:.22s">place&nbsp;</span></span><span class="unmask unmask-word" aria-hidden="true"><span class="unmask-inner" style="--ld:.29s">to&nbsp;</span></span><span class="unmask unmask-word" aria-hidden="true"><span class="unmask-inner" style="--ld:.36s">think.</span></span></h1>
+              </div>
+
+              <div class="ax-composer" data-ax-composer>
+                <div class="ax-c-row">
+                  <svg class="ax-c-lock" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                  <div class="ax-input">
+                    <span class="ax-ph" data-ax-ph>Ask anything</span>
+                    <span class="ax-typed" data-ax-typed></span><i class="ax-caret" data-ax-caret></i>
+                  </div>
+                </div>
+                <div class="ax-c-bar">
+                  <div class="ax-c-left">
+                    <span class="ax-cchip">
+                      <svg class="ax-brand-mono" width="14" height="14" viewBox="0 0 24 24" fill="currentColor" fill-rule="evenodd" aria-hidden="true"><path d="M12.105 2L9.927 4.953H.653L2.83 2h9.276zM23.254 19.048L21.078 22h-9.242l2.174-2.952h9.244zM24 2L9.264 22H0L14.736 2H24z"/></svg>
+                      <span>GLM 5.2</span>
+                      <svg class="ax-chev" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+                    </span>
+                    <span class="ax-cchip ax-cchip-reason">
+                      <svg class="ax-brain" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m10.852 14.772-.383.923"/><path d="m10.852 9.228-.383-.923"/><path d="m13.148 14.772.382.924"/><path d="m13.531 8.305-.383.923"/><path d="m14.772 10.852.923-.383"/><path d="m14.772 13.148.923.383"/><path d="M17.598 6.5A3 3 0 1 0 12 5a3 3 0 0 0-5.63-1.446 3 3 0 0 0-.368 1.571 4 4 0 0 0-2.525 5.771"/><path d="M17.998 5.125a4 4 0 0 1 2.525 5.771"/><path d="M19.505 10.294a4 4 0 0 1-1.5 7.706"/><path d="M4.032 17.483A4 4 0 0 0 11.464 20c.18-.311.892-.311 1.072 0a4 4 0 0 0 7.432-2.516"/><path d="M4.5 10.291A4 4 0 0 0 6 18"/><path d="M6.002 5.125a3 3 0 0 0 .4 1.375"/><path d="m9.228 10.852-.923-.383"/><path d="m9.228 13.148-.923.383"/><circle cx="12" cy="12" r="3"/></svg>
+                      <span class="ax-hide-sm">Medium</span>
+                      <svg class="ax-chev" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+                    </span>
+                  </div>
+                  <div class="ax-c-right">
+                    <span class="ax-tee">
+                      <span class="ax-tee-ico">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="#3f9b46" stroke="none" aria-hidden="true"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/></svg>
+                        <svg class="ax-tee-check" width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+                      </span>
+                      <span>TEE verified</span>
+                    </span>
+                    <span class="ax-kbd ax-hide-sm" aria-hidden="true">⌘↵</span>
+                    <div class="ax-send" data-ax-send>
+                      <svg class="ax-i-arrow" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg>
+                      <svg class="ax-i-stop" width="12" height="12" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/></svg>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="ax-trust" data-ax-trust>
+                <span>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg>
+                  Sealed on your machine
+                </span>
+                <span>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20v2"/><path d="M12 2v2"/><path d="M17 20v2"/><path d="M17 2v2"/><path d="M2 12h2"/><path d="M2 17h2"/><path d="M2 7h2"/><path d="M20 12h2"/><path d="M20 17h2"/><path d="M20 7h2"/><path d="M7 20v2"/><path d="M7 2v2"/><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="8" y="8" width="8" height="8" rx="1"/></svg>
+                  Attested enclave
+                </span>
+                <span>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49"/><path d="M14.084 14.158a3 3 0 0 1-4.242-4.242"/><path d="M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143"/><path d="m2 2 20 20"/></svg>
+                  0 bytes plaintext out
+                </span>
+              </div>
+
+            </div>
+          </div>
+        </div>
+
+      </section>
+    </div>
+  </div>
+</div>
+
+<style>
+/* ---------- scope + tokens (the desktop app's light theme) ---------- */
+.ax-home{
+  container-type: inline-size;
+  container-name: axhome;
+  width:100%;
+
+  --ink:#101014;
+  --ink-2:#56565f;
+  --ink-3:#84848e;
+  --ink-4:#a6a6af;
+  --brand:#ff7653;
+  --success:#3f9b46;
+
+  --surface-stage:rgba(255,255,255,.72);
+  --surface-bubble:rgba(255,255,255,.82);
+  --surface-glass:rgba(255,255,255,.72);
+  --surface-glass-focus:rgba(255,255,255,.8);
+  --wash-chip:rgba(16,16,20,.045);
+  --wash-row:rgba(16,16,20,.025);
+  --ring-hairline:rgba(16,16,20,.045);
+  --ring-accent:rgba(16,16,20,.3);
+  --ring-halo:rgba(16,16,20,.06);
+  --shade-xs:rgba(16,16,20,.03);
+  --shade-soft:rgba(16,16,20,.06);
+  --shade-button:rgba(16,16,20,.24);
+  --glass-inset:rgba(255,255,255,.85);
+  --glass-inset-strong:rgba(255,255,255,.9);
+  --dot-idle:#c9c9ce;
+  --ease-out-expo:cubic-bezier(.16,1,.3,1);
+
+  --ax-r:26px;
+  --ax-shell-h:740px;
+  --ax-greet:56px;
+  --ax-dock-shift:0px;
+
+  font-family:'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-optical-sizing:auto;
+  font-size:14px;
+  line-height:1.5;
+  color:var(--ink);
+  letter-spacing:-0.011em;
+  -webkit-font-smoothing:antialiased;
+  -moz-osx-font-smoothing:grayscale;
+}
+.ax-home *, .ax-home *::before, .ax-home *::after{ box-sizing:border-box; }
+.ax-home svg{ display:block; flex:0 0 auto; }
+
+/* the canvas: the app window's frosted gradient ground */
+.ax-shell{
+  display:flex; align-items:stretch;
+  height:var(--ax-shell-h);
+  padding:10px;
+  border-radius:var(--ax-r);
+  overflow:hidden;
+  background:
+    radial-gradient(1200px 700px at 12% -8%, #ffffff 0%, rgba(255,255,255,0) 62%),
+    radial-gradient(900px 620px at 88% 4%, #f4f3f6 0%, rgba(244,243,246,0) 60%),
+    radial-gradient(1100px 900px at 70% 92%, #edecef 0%, rgba(237,236,239,0) 65%),
+    linear-gradient(168deg, #f7f7f8 0%, #edecef 48%, #e8e7eb 100%);
+}
+
+/* ---------- sidebar ---------- */
+.ax-side{
+  display:none; flex:0 0 260px; flex-direction:column;
+  width:260px; min-height:0;
+  background:transparent;
+}
+.ax-side-top{
+  display:flex; align-items:center; justify-content:space-between;
+  height:40px; flex:0 0 auto;
+  padding:0 8px 0 14px;
+}
+.ax-brand{ height:18px; width:auto; display:block; }
+.ax-ibtn{
+  display:flex; align-items:center; justify-content:center;
+  width:28px; height:28px; border-radius:8px; color:var(--ink-3);
+}
+.ax-ibtn-lg{ width:32px; height:32px; border-radius:10px; }
+
+.ax-nav{ display:flex; flex-direction:column; gap:10px; padding:4px 12px 8px; flex:0 0 auto; }
+.ax-nav-group{ display:flex; flex-direction:column; gap:2px; }
+.ax-nav-row{
+  display:flex; align-items:center; gap:8px;
+  height:32px; width:100%; border-radius:9px;
+  font-size:13px; color:var(--ink-2);
+}
+.ax-plus-ring{
+  display:flex; align-items:center; justify-content:center; flex:0 0 auto;
+  width:15px; height:15px; border-radius:50%; border:1px solid currentColor;
+}
+.ax-nav-ico{ display:flex; align-items:center; justify-content:center; width:15px; height:15px; flex:0 0 auto; }
+.ax-search-row{ display:flex; align-items:center; gap:4px; }
+.ax-search{
+  display:flex; align-items:center; gap:8px; flex:1 1 auto; min-width:0;
+  padding:6px 10px; border-radius:8px;
+  border:1px solid rgba(16,16,20,.08); background:#f7f7f8;
+  color:var(--ink-3);
+}
+.ax-search-ph{ font-size:13px; line-height:1.5; color:var(--ink-4); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+
+.ax-threads{ flex:1 1 auto; min-height:0; overflow:hidden; padding:12px 12px 8px; }
+.ax-label{
+  padding:0 8px 8px;
+  font-size:10.5px; font-weight:600; letter-spacing:.13em; text-transform:uppercase;
+  line-height:1.5; color:var(--ink-3);
+}
+.ax-folder{ border-radius:10px; }
+.ax-folder-head{
+  display:flex; align-items:center; gap:8px;
+  padding:6px 8px; border-radius:10px;
+  font-size:12.5px; line-height:1.5; color:var(--ink-2);
+}
+.ax-folder-ico{ color:var(--ink-3); }
+.ax-folder-kids{ margin-left:12px; padding:0 0 4px 4px; }
+.ax-loose{ display:flex; flex-direction:column; gap:2px; border-radius:10px; }
+.ax-trow{
+  display:flex; align-items:center; gap:8px;
+  height:32px; width:100%; padding-left:8px; border-radius:9px;
+  font-size:13px; color:var(--ink-2);
+  transition:background-color .25s ease, color .25s ease, box-shadow .25s ease;
+}
+.ax-trow.ax-nested{ padding-left:16px; }
+.ax-trow > span{ min-width:0; flex:1 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.ax-trow.ax-on{
+  background:#ffffff; color:var(--ink);
+  box-shadow:0 0 0 1px rgba(16,16,20,.04), 0 1px 1px rgba(16,16,20,.02), inset 0 1px 0 rgba(255,255,255,.7);
+}
+.ax-tdot{ width:6px; height:6px; border-radius:50%; background:var(--dot-idle); flex:0 0 auto; display:block; }
+/* the active thread's dot breathes brand while a reply is being generated */
+.ax-tdot.ax-working{ animation:ax-dot-working 1.8s ease-in-out infinite; }
+@keyframes ax-dot-working{ 0%,100%{ background:var(--dot-idle); } 50%{ background:var(--brand); } }
+
+.ax-account{ padding:8px; flex:0 0 auto; }
+.ax-account-row{ display:flex; align-items:center; gap:10px; padding:6px 8px; border-radius:10px; }
+.ax-avatar{
+  display:flex; align-items:center; justify-content:center; flex:0 0 auto;
+  width:28px; height:28px; border-radius:50%;
+  background:var(--ink); color:#fff; font-size:11px; font-weight:600;
+}
+.ax-account-text{ display:flex; flex-direction:column; align-items:flex-start; flex:1 1 auto; min-width:0; line-height:1.25; }
+.ax-account-name{ font-size:12.5px; color:var(--ink); max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.ax-account-sub{ font-size:11px; color:var(--ink-3); }
+.ax-gear{ color:var(--ink-3); margin-right:4px; }
+
+/* ---------- the stage card ---------- */
+.ax-stage-frame{ position:relative; flex:1 1 auto; min-width:0; }
+.ax-stage-frame::before{
+  content:""; position:absolute; inset:0; border-radius:22px; pointer-events:none;
+  box-shadow:
+    inset 0 0 0 1px var(--ring-hairline),
+    0 1px 1px rgba(16,16,20,.03),
+    0 12px 26px -14px rgba(16,16,20,.12);
+}
+.ax-stage-card{
+  position:absolute; inset:1px;
+  display:flex; flex-direction:column;
+  border-radius:21px; overflow:hidden;
+  background:var(--surface-stage);
+  box-shadow:inset 0 1px 0 var(--glass-inset);
+}
+
+.ax-title{
+  position:absolute; left:0; right:0; top:0; z-index:30;
+  display:flex; align-items:center; gap:8px;
+  height:44px; padding:0 8px 0 16px;
+  font-size:13px; font-weight:500; letter-spacing:-0.025em; color:var(--ink);
+}
+.ax-title-brand{ display:none; height:16px; width:auto; margin-right:4px; }
+.ax-title-text{ min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; transition:opacity .22s ease; }
+.ax-title-text.ax-swap{ opacity:0; }
+.ax-title-more{
+  display:flex; align-items:center; justify-content:center; flex:0 0 auto;
+  width:23px; height:23px; border-radius:8px; color:var(--ink-3);
+  opacity:0; transition:opacity .35s ease .15s;
+}
+.ax-live .ax-title-more{ opacity:1; }
+
+.ax-view{
+  position:relative; flex:1 1 auto; min-height:0;
+  display:flex; flex-direction:column;
+  overflow:hidden;
+  transition:opacity .55s ease;
+}
+.ax-view.ax-out{ opacity:0; }
+
+/* welcome blooms */
+.ax-blooms{ position:absolute; inset:0; z-index:0; overflow:hidden; pointer-events:none; transition:opacity .7s ease; }
+.ax-scroller, .ax-dock{ z-index:1; }
+.ax-live .ax-blooms{ opacity:0; }
+.ax-bloom-stage{ position:absolute; left:50%; top:50%; width:2000px; height:1400px; transform:translate(-50%,-50%); }
+.ax-blob{ position:absolute; background:rgba(255,255,255,.92); filter:blur(90px); pointer-events:none; }
+
+/* the thread scroller: content dissolves under the title strip */
+.ax-scroller{
+  position:relative; flex:1 1 auto; min-height:0;
+  overflow-y:auto; overscroll-behavior:contain;
+  padding:0 24px;
+  -webkit-mask-image:linear-gradient(to bottom, transparent 44px, #000 84px);
+          mask-image:linear-gradient(to bottom, transparent 44px, #000 84px);
+}
+/* the app's scrollbar: a 6px thumb inset in a 10px gutter */
+.ax-scroller::-webkit-scrollbar{ width:10px; height:10px; }
+.ax-scroller::-webkit-scrollbar-track{ background:transparent; }
+.ax-scroller::-webkit-scrollbar-thumb{
+  background:rgba(16,16,20,.16); border-radius:8px;
+  border:2px solid transparent; background-clip:padding-box;
+}
+.ax-thread{
+  margin:0 auto; width:100%; max-width:760px;
+  display:flex; flex-direction:column; gap:28px;
+  padding:88px 0 60px;
+}
+
+/* ---------- the dock ---------- */
+.ax-dock{
+  position:relative; flex:0 0 auto; padding:8px 24px 20px;
+  transform:translateY(var(--ax-dock-shift));
+  transition:transform .75s var(--ease-out-expo);
+}
+.ax-dock.ax-snap{ transition:none; }
+.ax-live .ax-dock{ transform:none; }
+/* during a reset every transition is suspended, so the welcome state is
+   rebuilt and measured instantly while the view is faded out */
+.ax-snap-all .ax-dock, .ax-snap-all .ax-head, .ax-snap-all .ax-trust,
+.ax-snap-all .ax-blooms, .ax-snap-all .ax-title-more, .ax-snap-all .ax-trow,
+.ax-snap-all .unmask-inner{ transition:none !important; }
+.ax-dock-inner{ margin:0 auto; width:100%; max-width:760px; display:flex; flex-direction:column; align-items:center; }
+
+.ax-head{
+  display:flex; flex-direction:column; align-items:center;
+  width:100%; max-height:300px; overflow:hidden;
+  transition:max-height .7s var(--ease-out-expo), opacity .4s ease;
+}
+.ax-live .ax-head{ max-height:0; opacity:0; }
+.ax-mark{ height:40px; width:auto; margin-bottom:28px; display:block; }
+.ax-greet{
+  margin:0 0 36px; text-align:center;
+  font-family:'PP Cirka', 'Times New Roman', serif; font-weight:400;
+  font-size:var(--ax-greet); line-height:.98; letter-spacing:-0.045em;
+  color:var(--ink);
+}
+.unmask{ display:block; overflow:hidden; padding:.14em 0 .18em; margin:-.14em 0 -.18em; }
+.unmask-word{ display:inline-block; vertical-align:bottom; }
+.unmask-inner{
+  display:block;
+  transform:translateY(calc(100% + .6em));
+  transition:transform 1.05s var(--ease-out-expo);
+  transition-delay:var(--ld, 0s);
+}
+.unmask-in .unmask-inner{ transform:translateY(0); }
+
+/* ---------- the composer ---------- */
+.ax-composer{
+  position:relative; width:100%;
+  display:flex; flex-direction:column;
+  border-radius:22px; padding:12px 10px 8px 16px;
+  background:var(--surface-glass);
+  -webkit-backdrop-filter:blur(8px); backdrop-filter:blur(8px);
+  box-shadow:
+    0 0 0 1px var(--ring-hairline),
+    0 0 0 0 transparent,
+    0 2px 6px -2px var(--shade-soft),
+    inset 0 1px 0 var(--glass-inset-strong);
+  transition:box-shadow .3s var(--ease-out-expo), background-color .3s var(--ease-out-expo);
+}
+.ax-composer.ax-focus{
+  background:var(--surface-glass-focus);
+  box-shadow:
+    0 0 0 1px var(--ring-accent),
+    0 0 0 4px var(--ring-halo),
+    0 2px 6px -2px var(--shade-soft),
+    inset 0 1px 0 var(--glass-inset-strong);
+}
+.ax-c-row{ display:flex; align-items:flex-start; gap:12px; }
+.ax-c-lock{ margin-top:5.5px; color:var(--ink-4); }
+.ax-input{
+  flex:1 1 auto; min-width:0; position:relative;
+  display:block;
+  min-height:24px; font-size:14.5px; line-height:24px; color:var(--ink);
+}
+.ax-ph{ position:absolute; left:0; top:0; color:var(--ink-4); pointer-events:none; transition:opacity .2s ease; }
+/* Hide instantly so it never shows under the first typed characters. */
+.ax-ph.ax-off{ opacity:0; visibility:hidden; transition:none; }
+.ax-typed{ display:inline; white-space:pre-wrap; word-break:break-word; }
+/* the caret rides the end of the typed run, so it wraps with the text */
+.ax-caret{
+  display:inline-block; width:1.5px; height:17px; margin-left:1px; border-radius:1px;
+  vertical-align:-3px; background:var(--ink); opacity:0;
+}
+.ax-caret.ax-blink{ animation:ax-blink 1.05s steps(1) infinite; }
+@keyframes ax-blink{ 0%,49%{ opacity:1; } 50%,100%{ opacity:0; } }
+
+.ax-c-bar{ margin-top:8px; display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.ax-c-left{ display:flex; align-items:center; gap:6px; min-width:0; overflow:hidden; }
+.ax-cchip{
+  display:flex; align-items:center; gap:6px; flex:0 0 auto;
+  height:28px; padding:0 10px; border-radius:7px;
+  background:var(--wash-chip); color:var(--ink-2);
+  font-size:12px; font-weight:500; white-space:nowrap;
+}
+.ax-brand-mono{ color:#000; opacity:.8; }
+.ax-brain{ color:var(--ink); }
+.ax-chev{ opacity:.7; }
+.ax-c-right{ display:flex; align-items:center; gap:8px; flex:0 0 auto; }
+.ax-tee{
+  display:none; align-items:center; gap:6px; flex:0 0 auto;
+  height:28px; padding:0 10px 0 8px; border-radius:999px;
+  background:#ffffff; color:var(--ink-2);
+  font-size:11.5px; font-weight:500; letter-spacing:-0.01em; white-space:nowrap;
+  box-shadow:0 0 0 1px var(--ring-hairline), 0 1px 2px var(--shade-xs);
+}
+.ax-live .ax-tee{ display:inline-flex; animation:ax-fade .45s ease .25s both; }
+.ax-tee-ico{ position:relative; display:flex; align-items:center; justify-content:center; width:16px; height:16px; }
+.ax-tee-check{ position:absolute; }
+.ax-kbd{
+  display:inline-flex; align-items:center; flex:0 0 auto;
+  height:25px; padding:0 9px; border-radius:7px;
+  background:var(--wash-chip); color:var(--ink-2);
+  font-size:11.5px; font-weight:500; white-space:nowrap;
+}
+.ax-send{
+  display:flex; align-items:center; justify-content:center; flex:0 0 auto;
+  width:34px; height:34px; border-radius:50%;
+  background:var(--ink); color:#fff;
+  box-shadow:0 1px 3px var(--shade-button);
+  opacity:.4;
+  transition:transform .18s cubic-bezier(.2,.7,.3,1);   /* the app's disabled state snaps, as here */
+}
+.ax-send.ax-ready{ opacity:1; }
+.ax-send.ax-fire{ transform:scale(.94); }
+/* while a reply is generating the same circle is the Stop button */
+.ax-send .ax-i-stop{ display:none; }
+.ax-send.ax-stop{ opacity:1; }
+.ax-send.ax-stop .ax-i-arrow{ display:none; }
+.ax-send.ax-stop .ax-i-stop{ display:block; }
+
+/* trust strip under the welcome composer */
+.ax-trust{
+  margin-top:14px; max-height:60px; overflow:hidden;
+  display:flex; flex-wrap:wrap; align-items:center; justify-content:center; gap:18px;
+  font-size:11.5px; line-height:1.5; color:var(--ink-3);
+  transition:max-height .6s var(--ease-out-expo), opacity .35s ease, margin-top .6s var(--ease-out-expo);
+}
+.ax-live .ax-trust{ max-height:0; opacity:0; margin-top:0; }
+.ax-trust span{ display:inline-flex; align-items:center; gap:6px; white-space:nowrap; }
+.ax-trust svg{ color:var(--ink-4); }
+
+/* ---------- thread items ---------- */
+/* the app reserves a 25px hover-action row (4px below) under every
+   message; the seal line stands in that slot under user bubbles, and the
+   answer keeps the slot empty before the next timeline item */
+.ax-turn{ display:flex; flex-direction:column; min-width:0; animation:ax-up .35s ease-out both; }
+.ax-turn-user{ align-items:flex-end; gap:4px; }
+.ax-turn-ai{ align-items:flex-start; gap:28px; }
+@keyframes ax-up{ from{ opacity:0; transform:translateY(8px); } to{ opacity:1; transform:none; } }
+@keyframes ax-fade{ from{ opacity:0; } to{ opacity:1; } }
+
+.ax-bubble{
+  max-width:min(80%, 768px);
+  border-radius:19px 19px 8px 19px;
+  background:var(--surface-bubble);
+  padding:10px 16px;
+  font-size:15px; line-height:24px; color:var(--ink);
+  box-shadow:0 0 0 1px rgba(16,16,20,.04), 0 1px 1px rgba(16,16,20,.02), inset 0 1px 0 rgba(255,255,255,.7);
+  white-space:pre-wrap;
+}
+.ax-seal{
+  display:flex; align-items:center; gap:6px; max-width:100%; min-width:0; min-height:25px;
+  padding:0 4px;
+  font-size:11.5px; letter-spacing:-0.005em; color:var(--ink-4);
+  font-variant-numeric:tabular-nums;
+}
+.ax-seal svg{ color:var(--ink); }
+.ax-seal span{ min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
+.ax-answer{
+  align-self:flex-start; max-width:100%;
+  padding:4px 6px; margin-bottom:29px;
+  font-size:15px; line-height:28px; color:var(--ink);
+  white-space:pre-wrap;
+}
+.ax-gen{
+  display:flex; align-items:center; gap:8px;
+  padding:8px 6px; font-size:13px; line-height:28px; color:var(--ink-3);
+}
+.ax-gen-dots{ display:flex; align-items:center; gap:4px; }
+.ax-gen-dots i{ display:block; width:6px; height:6px; border-radius:50%; background:var(--ink-3); animation:ax-bob 1.2s ease-in-out infinite; }
+.ax-gen-dots i:nth-child(2){ animation-delay:.16s; }
+.ax-gen-dots i:nth-child(3){ animation-delay:.32s; }
+@keyframes ax-bob{ 0%,70%,100%{ transform:translateY(0); opacity:.4; } 35%{ transform:translateY(-5px); opacity:1; } }
+
+.ax-row{
+  display:flex; align-items:flex-start; gap:8px; width:100%;
+  border-radius:10px; padding:8px 12px;
+  background:var(--wash-row); color:var(--ink-3);
+  font-size:12.5px;
+  animation:ax-up .35s ease-out both;
+}
+.ax-row svg{ margin-top:2px; }
+.ax-row span{ min-width:0; }
+
+/* ================= CONTAINER BREAKPOINTS ================= */
+
+/* ≥ 860px — the full window: sidebar appears */
+@container axhome (min-width: 860px){
+  .ax-side{ display:flex; }
+}
+/* NOTE: a container query can never style its own container, so the
+   responsive tokens are set on .ax-shell (a descendant), not on .ax-home. */
+/* 860–1023px — a narrower window keeps the app's mid greeting size */
+@container axhome (max-width: 1023px){
+  .ax-shell{ --ax-greet:50px; }
+}
+/* < 860px — tablet / narrow embed: sidebar folds away, the mark moves to the title */
+@container axhome (max-width: 859px){
+  .ax-shell{ --ax-shell-h:640px; --ax-greet:42px; --ax-r:24px; }
+  .ax-title-brand{ display:block; }
+  .ax-title{ padding-left:12px; }
+}
+/* ≤ 640px — the site clips the iframe at 16px here; the shell must never
+   be rounder than its clip or paper shows in the corners */
+@container axhome (max-width: 640px){
+  .ax-shell{ --ax-r:16px; }
+}
+/* < 560px — compact / phone */
+@container axhome (max-width: 559px){
+  .ax-shell{ --ax-shell-h:580px; --ax-greet:34px; }
+  .ax-hide-sm{ display:none !important; }
+  .ax-scroller{ padding:0 14px; }
+  .ax-dock{ padding:8px 14px 14px; }
+  .ax-composer{ padding:10px 8px 8px 14px; }
+  .ax-bubble{ max-width:88%; }
+  .ax-answer{ font-size:14.5px; line-height:25px; }
+  .ax-trust{ gap:12px; font-size:11px; }
+  .ax-seal span{ white-space:normal; overflow:visible; }
+  .ax-mark{ height:34px; margin-bottom:20px; }
+  .ax-greet{ margin-bottom:26px; }
+}
+/* < 400px — very small phones */
+@container axhome (max-width: 399px){
+  .ax-shell{ --ax-shell-h:560px; --ax-greet:30px; }
+  .ax-trust span:nth-child(3){ display:none; }
+  .ax-bubble{ max-width:92%; }
+  .ax-cchip-reason{ display:none; }
+  .ax-tee{ padding:0 7px 0 6px; }
+  .ax-tee > span:last-child{ display:none; }
+}
+
+/* Motion off — the demo renders its final state and stays still */
+@media (prefers-reduced-motion: reduce){
+  .ax-home *{ animation:none !important; transition:none !important; }
+  .ax-home .unmask-inner{ transform:none; }
+}
+</style>
+
+<script>
+(function () {
+  'use strict';
+
+  var TURNS = [
+    {
+      user: 'Summarise the board memo I saved last night. Keep it on this device.',
+      cipher: 'a3f1 9c04 71bd e28a 5f36 c0d9',
+      size: '2.1 KB',
+      reply: 'Read locally. Three things the board will push on: the $4.2M gap, the hiring freeze, and the runway date. Your draft covers the first two — the runway date is missing, and it is the one they will open with.',
+      proof: 'Ran in attested enclave · nothing written in plaintext'
+    },
+    {
+      user: 'What do you actually know about me?',
+      cipher: 'e77b 04ab 61f2 7c38 d095 ae41',
+      size: '0.4 KB',
+      reply: 'Forty-eight memory items, sealed with a key that has never left this machine. I can read them, forget any one of them, or hand you the whole archive. There is no second copy anywhere.',
+      proof: 'Memory decrypted on device · 48 sealed envelopes'
+    },
+    {
+      user: 'Draft the runway paragraph. Under 60 words.',
+      cipher: 'b93f 2ea7 c05d 1844 6fe9 a2b7',
+      size: '0.9 KB',
+      reply: 'Runway is 14 months at current burn, 19 if the hiring freeze holds through Q1. We are not raising against the gap — we are raising against the plan that closes it. Model attached; assumptions unchanged since March.',
+      proof: 'Sealed reply · 0 bytes of plaintext left this device'
+    }
+  ];
+  var THREAD_TITLE = 'Board memo';
+  var NEW_TITLE = 'New thread';
+
+  var SVG = 'http://www.w3.org/2000/svg';
+  var HEX = '0123456789abcdef';
+  // ?fast plays the whole cycle at ~6x, for checking the loop by eye
+  var SPEED = /[?&]fast\b/.test(location.search) ? 0.16 : 1;
+
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms * SPEED); }); }
+  function randHex(groups) {
+    var out = [];
+    for (var g = 0; g < groups; g++) {
+      var s = '';
+      for (var i = 0; i < 4; i++) s += HEX[(Math.random() * 16) | 0];
+      out.push(s);
+    }
+    return out.join(' ');
+  }
+  function el(tag, cls, text) {
+    var n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text != null) n.textContent = text;
+    return n;
+  }
+  /* lucide-style glyph: 24-box, round stroke, sized by `size` */
+  function icon(nodes, size, sw) {
+    var s = document.createElementNS(SVG, 'svg');
+    s.setAttribute('width', size); s.setAttribute('height', size);
+    s.setAttribute('viewBox', '0 0 24 24');
+    s.setAttribute('fill', 'none');
+    s.setAttribute('stroke', 'currentColor');
+    s.setAttribute('stroke-width', sw || '2');
+    s.setAttribute('stroke-linecap', 'round');
+    s.setAttribute('stroke-linejoin', 'round');
+    nodes.forEach(function (nd) {
+      var n = document.createElementNS(SVG, nd[0]);
+      Object.keys(nd[1]).forEach(function (k) { n.setAttribute(k, nd[1][k]); });
+      s.appendChild(n);
+    });
+    return s;
+  }
+  var LOCK = [['rect', { width: '18', height: '11', x: '3', y: '11', rx: '2', ry: '2' }], ['path', { d: 'M7 11V7a5 5 0 0 1 10 0v4' }]];
+  var CIRCLE_CHECK = [['circle', { cx: '12', cy: '12', r: '10' }], ['path', { d: 'm9 12 2 2 4-4' }]];
+
+  function boot(root) {
+    var view = root.querySelector('[data-ax-view]');
+    var scroller = root.querySelector('[data-ax-scroller]');
+    var thread = root.querySelector('[data-ax-thread]');
+    var dock = root.querySelector('[data-ax-dock]');
+    var greet = root.querySelector('[data-ax-greet]');
+    var composer = root.querySelector('[data-ax-composer]');
+    var typed = root.querySelector('[data-ax-typed]');
+    var caret = root.querySelector('[data-ax-caret]');
+    var ph = root.querySelector('[data-ax-ph]');
+    var send = root.querySelector('[data-ax-send]');
+    var title = root.querySelector('[data-ax-title]');
+    var threadRow = root.querySelector('[data-ax-thread-row]');
+    if (!view || !scroller || !thread || !dock || !typed) return;
+
+    var state = { paused: false, dead: false, live: false };
+
+    // Pause while off-screen or on a hidden tab, so the demo costs
+    // nothing when nobody is looking at it. Both conditions must be
+    // satisfied to resume.
+    var seen = { inView: true, tabVisible: !document.hidden };
+    function syncPaused() { state.paused = !(seen.inView && seen.tabVisible); }
+    if ('IntersectionObserver' in window) {
+      new IntersectionObserver(function (entries) {
+        seen.inView = entries[0].isIntersecting;
+        syncPaused();
+      }, { threshold: 0 }).observe(root);
+    }
+    document.addEventListener('visibilitychange', function () {
+      seen.tabVisible = !document.hidden;
+      syncPaused();
+    });
+
+    function toBottom() { scroller.scrollTop = scroller.scrollHeight; }
+    async function gate() { while (state.paused && !state.dead) await sleep(220); }
+
+    /* The dock sits at the foot of the card in layout; on the welcome
+       screen it is lifted so the mark, greeting, composer and trust strip
+       read as one block centred in the card, exactly as the app centres
+       its welcome column. */
+    var dockInner = dock.querySelector('.ax-dock-inner');
+    function layoutDock() {
+      // centre the visible block (mark, greeting, composer, strip) on the
+      // card, ignoring the dock's own uneven padding; the var is applied
+      // with the transition suspended so a re-measure never slides
+      var dockTop = view.clientHeight - dock.offsetHeight;
+      var innerMid = dockTop + dockInner.offsetTop + dockInner.offsetHeight / 2;
+      var shift = Math.min(0, view.clientHeight / 2 - innerMid);
+      dock.classList.add('ax-snap');
+      root.style.setProperty('--ax-dock-shift', shift.toFixed(1) + 'px');
+      void dock.offsetHeight;
+      dock.classList.remove('ax-snap');
+    }
+    if ('ResizeObserver' in window) {
+      var ro = new ResizeObserver(function () { if (!state.live) layoutDock(); });
+      ro.observe(view); ro.observe(dock); ro.observe(dockInner);
+    }
+    var dot = threadRow ? threadRow.querySelector('.ax-tdot') : null;
+    function setWorking(on) { if (dot) dot.classList.toggle('ax-working', !!on); }
+    window.addEventListener('resize', function () { if (!state.live) layoutDock(); });
+
+    /* the greeting rises word by word once its face is ready */
+    function riseGreeting() {
+      if (!greet) return;
+      var go = function () {
+        requestAnimationFrame(function () {
+          requestAnimationFrame(function () { greet.classList.add('unmask-in'); });
+        });
+      };
+      if (document.fonts && document.fonts.load) {
+        Promise.all([document.fonts.load('400 1em "PP Cirka"'), document.fonts.ready])
+          .then(go, go);
+      } else go();
+    }
+
+    function setTitle(text) {
+      if (!title) return;
+      title.classList.add('ax-swap');
+      setTimeout(function () { title.textContent = text; title.classList.remove('ax-swap'); }, 230);
+    }
+
+    function goLive() {
+      if (state.live) return;
+      state.live = true;
+      root.classList.add('ax-live');
+      setTitle(THREAD_TITLE);
+      if (threadRow) threadRow.classList.add('ax-on');
+    }
+
+    function addUser(text) {
+      var turn = el('div', 'ax-turn ax-turn-user');
+      var b = el('div', 'ax-bubble', text);
+      turn.appendChild(b);
+      var seal = el('div', 'ax-seal');
+      seal.appendChild(icon(LOCK, 11));
+      var s = el('span', null, '');
+      seal.appendChild(s);
+      turn.appendChild(seal);
+      thread.appendChild(turn);
+      toBottom();
+      return s;
+    }
+    function addAITurn() {
+      var turn = el('div', 'ax-turn ax-turn-ai');
+      var gen = el('div', 'ax-gen');
+      var dots = el('span', 'ax-gen-dots');
+      dots.appendChild(el('i')); dots.appendChild(el('i')); dots.appendChild(el('i'));
+      gen.appendChild(dots);
+      gen.appendChild(el('span', null, 'Generating'));
+      turn.appendChild(gen);
+      thread.appendChild(turn);
+      toBottom();
+      return { turn: turn, gen: gen };
+    }
+    function startAnswer(ai) {
+      var a = el('div', 'ax-answer', '');
+      ai.turn.replaceChild(a, ai.gen);
+      toBottom();
+      return a;
+    }
+    function addProof(ai, text) {
+      var r = el('div', 'ax-row');
+      r.appendChild(icon(CIRCLE_CHECK, 14));
+      r.appendChild(el('span', null, text));
+      ai.turn.appendChild(r);
+      toBottom();
+      return r;
+    }
+
+    async function typeInto(node, text, base) {
+      ph.classList.add('ax-off');
+      caret.classList.add('ax-blink');
+      composer.classList.add('ax-focus');
+      for (var i = 0; i <= text.length; i++) {
+        if (state.dead) return;
+        await gate();
+        node.textContent = text.slice(0, i);
+        if (i > 0) send.classList.add('ax-ready');
+        var c = text.charAt(i - 1);
+        var d = base + Math.random() * base * 0.9;
+        if (c === ' ') d *= 0.55;
+        if (c === ',' || c === '.' || c === '—') d += 150;
+        await sleep(d);
+      }
+    }
+
+    async function streamInto(node, text, base) {
+      var words = text.split(' ');
+      var out = '';
+      for (var i = 0; i < words.length; i++) {
+        if (state.dead) return;
+        await gate();
+        out += (i ? ' ' : '') + words[i];
+        node.textContent = out;
+        toBottom();
+        var w = words[i];
+        var d = base + Math.random() * 34;
+        if (/[.,;—]$/.test(w)) d += 130;
+        await sleep(d);
+      }
+    }
+
+    async function scrambleTo(node, finalText, rounds) {
+      for (var r = 0; r < rounds; r++) {
+        if (state.dead) return;
+        await gate();
+        node.textContent = randHex(6);
+        await sleep(65);
+      }
+      node.textContent = finalText;
+    }
+
+    /* the textarea keeps focus after a send, as in the app: the ring and
+       the caret stay; only the text and the send state clear */
+    function clearComposer() {
+      typed.textContent = '';
+      ph.classList.remove('ax-off');
+      send.classList.remove('ax-ready');
+    }
+
+    function reset() {
+      // every transition is suspended while this runs: the view is faded
+      // out, so the welcome state is rebuilt and measured instantly
+      root.classList.add('ax-snap-all');
+      while (thread.firstChild) thread.removeChild(thread.firstChild);
+      state.live = false;
+      root.classList.remove('ax-live');
+      if (threadRow) threadRow.classList.remove('ax-on');
+      setWorking(false);
+      send.classList.remove('ax-stop');
+      if (title) title.textContent = NEW_TITLE;
+      if (greet) greet.classList.remove('unmask-in');
+      clearComposer();
+      scroller.scrollTop = 0;
+      void view.offsetHeight;           // the head and strip are back at full height
+      layoutDock();
+      void view.offsetHeight;
+      root.classList.remove('ax-snap-all');
+    }
+
+    // Static final state for reduced motion — no loop, no typing.
+    function renderStatic() {
+      goLive();
+      if (greet) greet.classList.add('unmask-in');
+      TURNS.forEach(function (t) {
+        addUser(t.user).textContent = 'Sealed · ' + t.size + ' · ' + t.cipher.slice(0, 9) + '…';
+        var ai = addAITurn();
+        startAnswer(ai).textContent = t.reply;
+        addProof(ai, t.proof);
+      });
+      toBottom();
+      // the faces arrive after the first layout, and the host may resize
+      // the frame later; keep the end of the thread in view either way
+      if (document.fonts && document.fonts.ready) document.fonts.ready.then(toBottom);
+      setTimeout(toBottom, 600);
+      if ('ResizeObserver' in window) new ResizeObserver(toBottom).observe(view);
+    }
+
+    async function loop() {
+      /* eslint no-constant-condition: 0 */
+      while (!state.dead) {
+        await gate();
+        await sleep(1400);
+
+        for (var i = 0; i < TURNS.length; i++) {
+          var t = TURNS[i];
+          if (state.dead) return;
+
+          // the welcome composer is focused, as in the app
+          composer.classList.add('ax-focus');
+          await typeInto(typed, t.user, 26);
+          await sleep(420);
+
+          // fire
+          send.classList.add('ax-fire');
+          setTimeout(function () { send.classList.remove('ax-fire'); }, 190);
+
+          goLive();
+          clearComposer();
+          send.classList.add('ax-stop');       // the circle becomes Stop while it works
+          setWorking(true);
+
+          var sealNode = addUser(t.user);
+          await scrambleTo(sealNode, 'Sealed · ' + t.size + ' · ' + t.cipher.slice(0, 9) + '…', 9);
+
+          await sleep(360);
+          var ai = addAITurn();
+          await sleep(950);
+
+          var answer = startAnswer(ai);
+          await streamInto(answer, t.reply, 46);
+
+          addProof(ai, t.proof);
+          send.classList.remove('ax-stop');
+          setWorking(false);
+          toBottom();
+
+          await sleep(i === TURNS.length - 1 ? 3400 : 2300);
+        }
+
+        // fade out and start over from the welcome screen; the title and
+        // the sidebar highlight sit outside the fading view, so they
+        // cross-fade now rather than snapping after it
+        view.classList.add('ax-out');
+        setTitle(NEW_TITLE);
+        if (threadRow) threadRow.classList.remove('ax-on');
+        await sleep(600);
+        reset();
+        await sleep(60);
+        view.classList.remove('ax-out');
+        riseGreeting();
+        await sleep(700);
+      }
+    }
+
+    // the welcome composer is autofocused in the app: ring on, caret blinking
+    composer.classList.add('ax-focus');
+    caret.classList.add('ax-blink');
+    layoutDock();
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(function () { if (!state.live) layoutDock(); });
+    setTimeout(function () { if (!state.live) layoutDock(); }, 400);
+
+    var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (reduce) { renderStatic(); }
+    else { riseGreeting(); loop(); }
+  }
+
+  function init() {
+    document.querySelectorAll('[data-ax-home]').forEach(boot);
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
+})();
+</script>
+
+<!-- ================================================================
+     ▲▲▲  AXIOM DESKTOP — COPY UP TO HERE.  ▲▲▲
+     ================================================================ -->
+</body>
+</html>

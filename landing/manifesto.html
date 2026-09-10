@@ -1,0 +1,919 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Manifesto — AxiomAI</title>
+<meta name="description" content="Liberty. Privacy. Sovereignty. The AxiomAI manifesto: why private AI needs private money, and why the path to sovereignty starts with privacy.">
+<link rel="icon" type="image/svg+xml" href="assets/axiom-symbol-logo-colored.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500&family=DM+Mono:wght@400&display=swap" rel="stylesheet">
+<style>
+  @font-face {
+    font-family: 'PP Cirka';
+    src: url('fonts/PPCirka-Light.otf') format('opentype');
+    font-weight: 300; font-style: normal; font-display: swap;
+  }
+  @font-face {
+    font-family: 'PP Cirka';
+    src: url('fonts/PPCirka-Regular.otf') format('opentype');
+    font-weight: 400; font-style: normal; font-display: swap;
+  }
+  @font-face {
+    font-family: 'PP Cirka';
+    src: url('fonts/PPCirka-Bold.otf') format('opentype');
+    font-weight: 700; font-style: normal; font-display: swap;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  :root {
+    --paper: #F2F4FA;
+    --ink: #1F1F1F;
+    --ink-deep: #111111;
+    --signal: #FF7653;
+  }
+  html { scroll-behavior: smooth; }
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: 'DM Sans', -apple-system, sans-serif;
+    overflow-x: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .grain {
+    position: fixed; inset: -60px; z-index: 20;
+    pointer-events: none;
+    opacity: 0.45;
+    mix-blend-mode: overlay;
+    background-size: 340px 340px;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3CfeComponentTransfer%3E%3CfeFuncA type='linear' slope='0' intercept='1'/%3E%3C/feComponentTransfer%3E%3C/filter%3E%3Crect width='240' height='240' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .grain { animation: grainShift 0.9s steps(3) infinite; }
+  }
+  @keyframes grainShift {
+    0% { transform: translate(0, 0); }
+    33% { transform: translate(-28px, 16px); }
+    66% { transform: translate(18px, -24px); }
+    100% { transform: translate(0, 0); }
+  }
+
+  /* the masthead bar, shared with the landing */
+  .nav {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 12;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 20px 34px;
+    pointer-events: none;
+  }
+  .nav > * { pointer-events: auto; }
+  /* a paper backdrop condenses behind the bar once the page starts moving */
+  .nav::before {
+    content: "";
+    position: absolute; inset: 0;
+    background: rgba(242, 244, 250, 0.86);
+    -webkit-backdrop-filter: blur(10px);
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid rgba(31, 31, 31, 0.08);
+    opacity: 0;
+    transition: opacity 0.45s ease;
+    pointer-events: none;
+    z-index: -1;
+  }
+  .nav.scrolled::before { opacity: 1; }
+  .logo { display: block; }
+  .logo img { height: 30px; width: auto; display: block; }
+  .nav-right { display: flex; align-items: center; gap: clamp(20px, 2.6vw, 38px); }
+  .nav-links { display: flex; align-items: center; gap: clamp(16px, 2.2vw, 30px); }
+  .nav-links a {
+    font-family: 'PP Cirka', 'Times New Roman', serif;
+    font-weight: 700;
+    font-size: 12.5px; letter-spacing: 0.12em; text-transform: uppercase;
+    color: rgba(31, 31, 31, 0.55);
+    text-decoration: none;
+    transition: color 0.25s ease;
+  }
+  .nav-links a:hover, .nav-links a[aria-current="page"] { color: #000; }
+  .cta {
+    position: relative;
+    overflow: hidden;
+    display: inline-block;
+    font-family: 'PP Cirka', serif;
+    font-weight: 700;
+    font-size: clamp(0.94rem, 1.11vw, 1.18rem);
+    letter-spacing: -0.04em;
+    color: #FFFFFF;
+    background: #000000;
+    text-decoration: none;
+    padding: clamp(11px, 0.85vw, 16px) clamp(15px, 1.22vw, 23px) clamp(9px, 0.7vw, 13px);
+    border-radius: 0;
+  }
+  .cta::before {
+    content: "";
+    position: absolute; inset: 0;
+    background: var(--signal);
+    transform: scaleY(0);
+    transform-origin: bottom;
+    transition: transform 0.5s cubic-bezier(0.76, 0, 0.24, 1);
+  }
+  .cta:hover::before { transform: scaleY(1); }
+  .cta:active { transform: scale(0.985); }
+  .cta .cta-label { position: relative; transition: color 0.3s ease 0.08s; }
+  .cta:hover .cta-label { color: var(--ink-deep); }
+  .cta.cta-nav {
+    font-size: 0.92rem;
+    letter-spacing: -0.03em;
+    padding: 9px 14px 7px;
+  }
+
+  /* line-by-line unmask, same construction as the landing */
+  .line {
+    display: block;
+    overflow: hidden;
+    padding: 0.14em 0 0.18em;
+    margin: -0.14em 0 -0.18em;
+  }
+  .line-inner {
+    display: block;
+    transform: translateY(calc(100% + 0.6em));
+    transition: transform 1.05s cubic-bezier(0.16, 1, 0.3, 1);
+    transition-delay: var(--ld, 0s);
+  }
+  .mast-in .mast .line-inner { transform: translateY(0); }
+  .rv.in .line-inner { transform: translateY(0); }
+  .rv.fade, .rv .fade {
+    opacity: 0; transform: translateY(24px);
+    transition: opacity 0.9s ease calc(var(--rd, 0s) + var(--fd, 0s)),
+                transform 0.9s ease calc(var(--rd, 0s) + var(--fd, 0s));
+  }
+  .rv.fade.in, .rv.in .fade { opacity: 1; transform: none; }
+  @media (prefers-reduced-motion: reduce) {
+    .line-inner { transform: none; transition: none; }
+    .rv.fade, .rv .fade { opacity: 1; transform: none; transition: none; }
+  }
+
+  /* ---- the masthead: three words, set like an inscription, in front of
+     a banner of the hero's cloth hanging from the top of the page ---- */
+  .mast-banner {
+    position: absolute;
+    top: 0; left: 50%;
+    transform: translateX(-50%);
+    height: 78vh;
+    aspect-ratio: 0.52 / 1;
+    pointer-events: none;
+    z-index: 1;
+  }
+  .mast {
+    position: relative; z-index: 2;
+    min-height: 82vh;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    text-align: center;
+    padding: 140px 1.2rem 40px;
+  }
+  /* the kicker is wider than the cloth behind it, so it is set in ink,
+     which reads on the blue and on the paper alike (as the title does) */
+  .mast-kicker {
+    font-family: 'DM Mono', monospace;
+    font-size: 11px; letter-spacing: 0.34em; text-transform: uppercase;
+    color: var(--ink);
+    margin-bottom: clamp(30px, 4.5vh, 58px);
+  }
+  .mast h1 {
+    font-family: 'PP Cirka', 'Times New Roman', serif;
+    font-weight: 400;
+    font-size: clamp(3.2rem, 10.5vw, 9.4rem);
+    line-height: 0.96;
+    letter-spacing: -0.05em;
+    color: #000;
+  }
+
+  /* ---- the text: one narrow column, book construction ---- */
+  .mf {
+    position: relative;
+    max-width: min(90vw, 35em);
+    margin: 0 auto;
+    padding: clamp(30px, 6vh, 80px) 0 clamp(90px, 12vh, 160px);
+    font-size: clamp(1.05rem, 1.25vw, 1.28rem);
+    line-height: 1.62;
+    letter-spacing: -0.01em;
+  }
+  .mf p { margin: 0 0 1.35em; }
+  .mf p:last-child { margin-bottom: 0; }
+  .mf em { font-style: italic; }
+
+  /* the opening is set larger, in the serif, as the lede */
+  .mf-lede {
+    font-family: 'PP Cirka', 'Times New Roman', serif;
+    font-size: clamp(1.4rem, 2.1vw, 2rem);
+    line-height: 1.32;
+    letter-spacing: -0.025em;
+    color: #000;
+    margin-bottom: 1.5em !important;
+  }
+
+  /* a pivotal sentence steps out of the column, held by space alone */
+  .mf-break {
+    margin: clamp(48px, 6.5vh, 84px) 0;
+  }
+  .mf-break p {
+    font-family: 'PP Cirka', 'Times New Roman', serif;
+    font-size: clamp(1.55rem, 2.7vw, 2.55rem);
+    line-height: 1.16;
+    letter-spacing: -0.035em;
+    color: #000;
+    margin: 0;
+  }
+
+  /* a short line held as an engraving: tiny capitals, wide tracked */
+  .mf-mark {
+    font-family: 'PP Cirka', 'Times New Roman', serif;
+    font-size: clamp(11px, 0.9vw, 14px);
+    letter-spacing: 0.34em; text-transform: uppercase;
+    color: #000;
+    text-align: center;
+    margin: clamp(40px, 5.5vh, 68px) 0 !important;
+  }
+
+  /* chapter heads: centred over the left-set column, as in a book */
+  .mf-ch {
+    text-align: center;
+    margin: clamp(80px, 12vh, 150px) 0 clamp(36px, 5vh, 60px);
+  }
+  .mf-latin {
+    font-family: 'PP Cirka', 'Times New Roman', serif;
+    font-size: clamp(10.5px, 0.85vw, 13.5px);
+    letter-spacing: 0.38em; text-transform: uppercase;
+    color: var(--signal);
+    margin-bottom: clamp(16px, 2vh, 26px) !important;
+  }
+  .mf-ch h2 {
+    font-family: 'PP Cirka', 'Times New Roman', serif;
+    font-weight: 400;
+    font-size: clamp(2.5rem, 5.2vw, 4.7rem);
+    line-height: 1;
+    letter-spacing: -0.045em;
+    color: #000;
+  }
+
+  /* ---- the close of the document ---- */
+  .mf-close {
+    text-align: center;
+    padding: 0 1.2rem clamp(120px, 16vh, 210px);
+  }
+  .mf-close-mark {
+    font-family: 'PP Cirka', 'Times New Roman', serif;
+    font-weight: 400;
+    font-size: clamp(1.7rem, 3.4vw, 3.2rem);
+    line-height: 1.15;
+    letter-spacing: -0.035em;
+    color: #000;
+    margin-bottom: clamp(38px, 5vh, 64px);
+  }
+  .mf-platforms {
+    margin-top: clamp(14px, 1.6vh, 22px);
+    font-family: 'DM Mono', monospace;
+    font-size: 9.5px; letter-spacing: 0.09em; text-transform: uppercase;
+    color: rgba(31, 31, 31, 0.48);
+  }
+
+  /* the footer, shared with the landing */
+  .foot {
+    position: relative; z-index: 5;
+    padding: clamp(26px, 3.2vw, 44px) clamp(18px, 3vw, 48px);
+  }
+  .foot-inner {
+    max-width: 1200px; margin: 0 auto;
+    display: flex; align-items: center; justify-content: space-between;
+    flex-wrap: wrap; gap: 18px 30px;
+  }
+  .foot-logo { height: 22px; width: auto; display: block; }
+  .foot-links { display: flex; gap: 26px; }
+  .foot-links a {
+    font-size: 13.5px; letter-spacing: -0.01em;
+    color: rgba(31, 31, 31, 0.65); text-decoration: none;
+  }
+  .foot-links a:hover { color: var(--ink-deep); }
+  .foot-note {
+    font-family: 'DM Mono', monospace;
+    font-size: 12px; letter-spacing: 0.06em;
+    color: rgba(31, 31, 31, 0.5);
+  }
+
+  @media (max-width: 640px) {
+    .nav { padding: 14px 20px; }
+    .logo img { height: 24px; }
+    .nav-home { display: none; }
+    .nav-links { gap: 14px; }
+    .nav-links a { font-size: 11px; }
+    .mast { min-height: 74vh; padding-top: 120px; }
+  }
+  @media (max-width: 520px) {
+    .cta-nav { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<div class="grain" aria-hidden="true"></div>
+
+<nav class="nav" aria-label="Primary">
+  <a class="logo" href="/" aria-label="AxiomAI">
+    <img src="assets/axiom-ai-colored-logo.svg" alt="AxiomAI">
+  </a>
+  <div class="nav-right">
+    <div class="nav-links">
+      <a class="nav-home" href="/">Home</a>
+      <a href="/manifesto" aria-current="page">Manifesto</a>
+
+      <a href="https://auth.axiom.stream/signin">Sign in</a>
+    </div>
+    <a class="cta cta-nav" href="/downloads"><span class="cta-label" data-dl-label>Download</span></a>
+  </div>
+</nav>
+
+<canvas class="mast-banner" id="mastBanner" aria-hidden="true"></canvas>
+
+<header class="mast">
+  <p class="mast-kicker"><span class="line"><span class="line-inner">AxiomAI &middot; Manifesto &middot; MMXXVI</span></span></p>
+  <h1>
+    <span class="line"><span class="line-inner" style="--ld:.08s">Liberty.</span></span>
+    <span class="line"><span class="line-inner" style="--ld:.22s">Privacy.</span></span>
+    <span class="line"><span class="line-inner" style="--ld:.36s">Sovereignty.</span></span>
+  </h1>
+</header>
+
+<article class="mf">
+
+  <p class="mf-lede rv fade">Thinking has always been free. You could sit alone and work through an idea without censorship, without asking permission, and without anyone storing a record of it.</p>
+
+  <p class="rv fade">AI changed how and where we think. What once happened inside your head now happens in a chat window that belongs to someone else. The question you are not ready to say aloud, the draft you would never send, the idea that still sounds strange even to you&mdash;type it in, and it passes through servers you do not control.</p>
+
+  <p class="rv fade">At AxiomAI, we do not believe thinking should carry that risk. It should be free, private, and yours to control.</p>
+
+  <aside class="mf-break rv">
+    <p><span class="line"><span class="line-inner">But AI is moving beyond</span></span><span class="line"><span class="line-inner" style="--ld:.1s">thought. It is beginning to act.</span></span></p>
+  </aside>
+
+  <p class="rv fade">The systems we use to write and reason will soon manage assets, purchase services, execute strategies, and negotiate with other machines. An agent will know what you want and be able to do something about it. When that happens, privacy can no longer end at the chat window. It must extend to the agent's memory, tools, money, and actions.</p>
+
+  <p class="mf-mark rv fade">That is the future we're building AxiomAI for.</p>
+
+  <header class="mf-ch rv">
+    <p class="mf-latin fade">I &middot; Libertas</p>
+    <h2><span class="line"><span class="line-inner" style="--ld:.08s">Liberty</span></span></h2>
+  </header>
+
+  <p class="rv fade">Liberty is the right to use your own mind freely, without having the boundaries of acceptable thought set by a company, platform, or jurisdiction you had no role in choosing.</p>
+
+  <p class="rv fade">Today, that freedom changes depending on which AI product you use. What you can ask, what gets retained, and who may eventually see it depends on the provider, the country you live in, and the fine print nobody reads. The tool may feel personal, but the terms of the relationship aren't.</p>
+
+  <p class="rv fade">As AI becomes agentic, liberty also means deciding how that intelligence may act for you. If you create an agent to write code or trade, you should be able to set its objectives, its tools, and the limits of its authority.</p>
+
+  <aside class="mf-break rv">
+    <p><span class="line"><span class="line-inner">An agent should not be free</span></span><span class="line"><span class="line-inner" style="--ld:.1s">from rules. It should be governed</span></span><span class="line"><span class="line-inner" style="--ld:.2s">by those you set for it.</span></span></p>
+  </aside>
+
+  <header class="mf-ch rv">
+    <p class="mf-latin fade">II &middot; Secretum</p>
+    <h2><span class="line"><span class="line-inner" style="--ld:.08s">Privacy</span></span></h2>
+  </header>
+
+  <p class="rv fade">Liberty is our foundational principle. Privacy is how we put it into practice.</p>
+
+  <p class="rv fade">Most AI companies handle privacy with a promise: trust us not to misuse your data. That promise must survive every employee, internal system, acquisition, subpoena, and breach. One failure anywhere in the chain can compromise the whole arrangement.</p>
+
+  <p class="rv fade">AxiomAI approaches privacy architecturally. Messages are encrypted before leaving the user's device and processed inside protected execution environments, preventing the surrounding infrastructure from reading them. The goal is to reduce how much trust privacy requires, because a promise is always weaker than system design.</p>
+
+  <p class="mf-mark rv fade">Private inference is only the beginning.</p>
+
+  <p class="rv fade">An agent can keep its reasoning confidential and still reveal its owner through its behavior. The assets it holds reveal its position. The markets it enters reveal its strategy. Its counterparties reveal its relationships. The timing of a transaction can disclose its intent.</p>
+
+  <aside class="mf-break rv">
+    <p><span class="line"><span class="line-inner">This is why private AI</span></span><span class="line"><span class="line-inner" style="--ld:.1s">needs private money.</span></span></p>
+  </aside>
+
+  <p class="rv fade">If an agent's reasoning is protected but every economic action is public, the intelligence behind it can be reconstructed by its footsteps.</p>
+
+  <p class="rv fade">Luckily, there is an existing ecosystem built for private money. Zcash gives agents a way to hold and move value without making every balance, payment, and relationship public by default. For AxiomAI, building with Zcash supports a larger idea: an agent should preserve its owner's privacy not only while thinking, but while doing useful work.</p>
+
+  <p class="rv fade">Privacy should not end once AIs take action. If anything, once AIs start moving your money, the standard of privacy should be even higher.</p>
+
+  <header class="mf-ch rv">
+    <p class="mf-latin fade">III &middot; Imperium</p>
+    <h2><span class="line"><span class="line-inner" style="--ld:.08s">Sovereignty</span></span></h2>
+  </header>
+
+  <p class="rv fade">Privacy asks who can read your information. Sovereignty asks who controls the system acting on your behalf.</p>
+
+  <p class="rv fade">An agent with authority to transact cannot be governed by vague instructions and retrospective assurances. Its owner needs to define what it may spend, which assets it may use, what markets it may enter, and when its authority begins and ends. Those limits must be enforceable without requiring the owner to watch every action.</p>
+
+  <p class="mf-mark rv fade">They must also be verifiable.</p>
+
+  <p class="rv fade">An agent should be able to keep its strategy private without becoming unaccountable to the person who authorized it. Its owner may not inspect every decision, but should still be able to establish that the agent stayed within its permissions.</p>
+
+  <p class="rv fade">This is where AxiomAI and Astrea meet. AxiomAI is where users create agents, give them tools, and define their authority. Astrea is the environment through which those agents act, with permissions checked and accepted activity recorded in a form that can be verified. Zcash provides private money and settlement. Ethereum provides access to programmable assets, markets, and liquidity.</p>
+
+  <p class="rv fade">Sovereignty will be built in stages: private conversations, then private memory and strategy, then private money and economic activity. Over time, more of the relationship between a user and an agent must move out of the provider's control and into the user's own.</p>
+
+  <aside class="mf-break rv">
+    <p><span class="line"><span class="line-inner">We are not there yet.</span></span><span class="line"><span class="line-inner" style="--ld:.1s">But the path to sovereignty</span></span><span class="line"><span class="line-inner" style="--ld:.2s">starts with privacy.</span></span></p>
+  </aside>
+
+  <p class="rv fade">AxiomAI is live today, private by default, and being built toward a future in which AI does more than think with you. It acts <em>for</em> you while remaining answerable <em>to</em> you.</p>
+
+</article>
+
+<section class="mf-close rv" aria-label="Close">
+  <p class="mf-close-mark"><span class="line"><span class="line-inner">AxiomAI. Liberty.</span></span><span class="line"><span class="line-inner" style="--ld:.1s">Privacy. Sovereignty.</span></span></p>
+  <span class="line"><span class="line-inner" style="--ld:.2s"><a class="cta" href="/downloads"><span class="cta-label" data-dl-label>Download the app</span></a></span></span>
+  <p class="mf-platforms fade" style="--fd:.35s">macOS&nbsp;&nbsp;&middot;&nbsp;&nbsp;Windows&nbsp;&nbsp;&middot;&nbsp;&nbsp;Linux</p>
+</section>
+
+<footer class="foot">
+  <div class="foot-inner">
+    <img src="assets/axiom-ai-colored-logo.svg" alt="AxiomAI" class="foot-logo">
+    <nav class="foot-links" aria-label="Footer">
+      <a href="/manifesto">Manifesto</a><a href="/privacy">Privacy</a><a href="/terms">Terms</a>
+    </nav>
+    <p class="foot-note">&copy; 2026 Astrea &middot; AxiomAI</p>
+  </div>
+</footer>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+/* the masthead banner: the hero's cloth, hung straight from the top of the
+   page with the swallowtail V at its foot. Same verlet weave, same composed
+   jacquard-and-fleece maps, gentler air. */
+import * as THREE from 'three';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+const PHYS = { viscosity: 0.36, stiffness: 1.0, iterations: 7, smoothing: 0.045 };
+const WIND = {
+  dir: new THREE.Vector3(-0.88, -0.42, 0.10).normalize(),
+  base: 1.15, gust: 1.0, flutter: 4.6, gravity: -0.35, endSway: 2.4,
+};
+const SUBSTEP = 1 / 120, MAX_SUBSTEPS = 3;
+
+class BannerSim {
+  constructor(length, width, segX, segY, initFn) {
+    this.length = length; this.width = width;
+    this.segX = segX; this.segY = segY;
+    this.cols = segX + 1; this.rows = segY + 1;
+    this.count = this.cols * this.rows;
+    this.positions = new Float32Array(this.count * 3);
+    this.prev = new Float32Array(this.count * 3);
+    let k = 0;
+    for (let y = 0; y < this.rows; y++) {
+      for (let x = 0; x < this.cols; x++) {
+        const p = initFn(x / this.segX, y / this.segY);
+        this.positions[k] = p[0]; this.positions[k + 1] = p[1]; this.positions[k + 2] = p[2];
+        k += 3;
+      }
+    }
+    this.prev.set(this.positions);
+    // pinned along the last two columns (u = 1): the top edge here
+    this.pins = [];
+    for (let y = 0; y < this.rows; y++) {
+      for (const x of [this.segX - 1, this.segX]) {
+        const i = y * this.cols + x;
+        this.pins.push(i, this.positions[i * 3], this.positions[i * 3 + 1], this.positions[i * 3 + 2]);
+      }
+    }
+    const a = [], b = [], mul = [];
+    const idx = (x, y) => y * this.cols + x;
+    for (let y = 0; y < this.rows; y++) {
+      for (let x = 0; x < this.cols; x++) {
+        if (x + 1 < this.cols) { a.push(idx(x, y)); b.push(idx(x + 1, y)); mul.push(1.0); }
+        if (y + 1 < this.rows) { a.push(idx(x, y)); b.push(idx(x, y + 1)); mul.push(1.0); }
+        if (x + 1 < this.cols && y + 1 < this.rows) {
+          a.push(idx(x, y)); b.push(idx(x + 1, y + 1)); mul.push(0.85);
+          a.push(idx(x + 1, y)); b.push(idx(x, y + 1)); mul.push(0.85);
+        }
+        if (x + 2 < this.cols) { a.push(idx(x, y)); b.push(idx(x + 2, y)); mul.push(0.35); }
+        if (y + 2 < this.rows) { a.push(idx(x, y)); b.push(idx(x, y + 2)); mul.push(0.35); }
+      }
+    }
+    this.cA = new Int32Array(a); this.cB = new Int32Array(b); this.cMul = new Float32Array(mul);
+    this.cRest = new Float32Array(a.length);
+    const p0 = this.positions;
+    for (let c = 0; c < a.length; c++) {
+      const ia = this.cA[c] * 3, ib = this.cB[c] * 3;
+      this.cRest[c] = Math.hypot(p0[ib] - p0[ia], p0[ib + 1] - p0[ia + 1], p0[ib + 2] - p0[ia + 2]);
+    }
+    this.neighbors = new Int32Array(this.count * 4).fill(-1);
+    for (let y = 0; y < this.rows; y++) {
+      for (let x = 0; x < this.cols; x++) {
+        const i = idx(x, y) * 4;
+        this.neighbors[i] = x > 0 ? idx(x - 1, y) : -1;
+        this.neighbors[i + 1] = x + 1 < this.cols ? idx(x + 1, y) : -1;
+        this.neighbors[i + 2] = y > 0 ? idx(x, y - 1) : -1;
+        this.neighbors[i + 3] = y + 1 < this.rows ? idx(x, y + 1) : -1;
+      }
+    }
+    this.accumulator = 0;
+    this.time = 0;
+  }
+
+  step(dt) {
+    this.accumulator += Math.min(dt, 0.05);
+    let steps = 0;
+    while (this.accumulator >= SUBSTEP && steps < MAX_SUBSTEPS) {
+      this.substep();
+      this.accumulator -= SUBSTEP;
+      steps++;
+    }
+    if (steps === MAX_SUBSTEPS) this.accumulator = 0;
+  }
+
+  substep() {
+    const p = this.positions, prev = this.prev, n = this.count;
+    const t = (this.time += SUBSTEP);
+    const dt2 = SUBSTEP * SUBSTEP;
+    const damp = Math.pow(1 - Math.min(PHYS.viscosity, 0.99), SUBSTEP * 60);
+    const wm = this.windMul === undefined ? 1 : this.windMul;
+    const gustF = (WIND.base + WIND.gust * (0.6 * Math.sin(t * 0.45) + 0.4 * Math.sin(t * 0.19 + 2.0))) * wm;
+    const d = WIND.dir;
+    for (let i = 0; i < n; i++) {
+      const col = i % this.cols;
+      const u = 1 - col / this.segX;               // 1 at the free foot
+      const amp = 0.55 + 0.45 * Math.pow(u, 0.9);
+      const wxp = p[i * 3], wyp = p[i * 3 + 1];
+      const s1 = wxp * 0.79 + wyp * 0.61;
+      const s2 = -wxp * 0.61 + wyp * 0.79;
+      const flut =
+        WIND.flutter * wm * amp * (Math.sin(s1 * 6.0 + t * 2.3 + s2 * 1.7) * 0.7 +
+                                   Math.sin(s1 * 1.9 + t * 0.9) * 0.45);
+      const row = (i / this.cols) | 0;
+      const endSway = WIND.endSway * wm * Math.pow(u, 2.6) * Math.sin(t * 0.65 + row * 0.1);
+      const ax = d.x * gustF * amp * 0.4 + endSway * 0.3;   // sway sideways, not down
+      const ay = d.y * gustF * amp * 0.4 + WIND.gravity * amp * 0.8;
+      const az = d.z * gustF * amp + flut;
+      for (let c = 0; c < 3; c++) {
+        const j = i * 3 + c;
+        const cur = p[j];
+        const vel = (cur - prev[j]) * damp;
+        prev[j] = cur;
+        p[j] = cur + vel + (c === 0 ? ax : c === 1 ? ay : az) * dt2;
+      }
+    }
+    if (PHYS.smoothing > 0) {
+      const k = PHYS.smoothing * 0.5, nb = this.neighbors;
+      for (let i = 0; i < n; i++) {
+        let axx = 0, ayy = 0, azz = 0, cnt = 0;
+        for (let j = 0; j < 4; j++) {
+          const ni = nb[i * 4 + j];
+          if (ni < 0) continue;
+          axx += p[ni * 3]; ayy += p[ni * 3 + 1]; azz += p[ni * 3 + 2]; cnt++;
+        }
+        if (!cnt) continue;
+        const inv = 1 / cnt;
+        p[i * 3] += (axx * inv - p[i * 3]) * k;
+        p[i * 3 + 1] += (ayy * inv - p[i * 3 + 1]) * k;
+        p[i * 3 + 2] += (azz * inv - p[i * 3 + 2]) * k;
+      }
+    }
+    const iters = PHYS.iterations, stiff = PHYS.stiffness;
+    const cA = this.cA, cB = this.cB, cRest = this.cRest, cMul = this.cMul, nc = cA.length;
+    for (let it = 0; it < iters; it++) {
+      for (let c = 0; c < nc; c++) {
+        const ia = cA[c] * 3, ib = cB[c] * 3;
+        const dx = p[ib] - p[ia], dy = p[ib + 1] - p[ia + 1], dz = p[ib + 2] - p[ia + 2];
+        const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        if (dist < 1e-9) continue;
+        const diff = ((dist - cRest[c]) / dist) * 0.5 * stiff * cMul[c];
+        const ox = dx * diff, oy = dy * diff, oz = dz * diff;
+        p[ia] += ox; p[ia + 1] += oy; p[ia + 2] += oz;
+        p[ib] -= ox; p[ib + 1] -= oy; p[ib + 2] -= oz;
+      }
+      this.applyPins();
+    }
+  }
+
+  applyPins() {
+    const p = this.positions, pins = this.pins;
+    const pw = this.pinWave;
+    if (pw) {
+      // the held edge breathes: each pinned vertex orbits its anchor slowly
+      const t = this.time;
+      for (let k = 0; k < pins.length; k += 4) {
+        const i = pins[k] * 3;
+        const ph = pins[k + 1] * 2.6 + pins[k + 2] * 1.3;
+        p[i] = pins[k + 1] + pw * 0.5 * Math.sin(t * 0.5 + ph);
+        p[i + 1] = pins[k + 2] + pw * 0.35 * Math.sin(t * 0.7 + ph * 1.4);
+        p[i + 2] = pins[k + 3] + pw * Math.sin(t * 0.85 + ph);
+      }
+      return;
+    }
+    for (let k = 0; k < pins.length; k += 4) {
+      const i = pins[k] * 3;
+      p[i] = pins[k + 1]; p[i + 1] = pins[k + 2]; p[i + 2] = pins[k + 3];
+    }
+  }
+
+  computeCavity(normals, out, gain = 6) {
+    const p = this.positions, nb = this.neighbors, n = this.count;
+    const invStep = 1 / Math.min(this.length / this.segX, this.width / this.segY);
+    if (!this._tmp || this._tmp.length < n) this._tmp = new Float32Array(n);
+    const tmp = this._tmp;
+    for (let i = 0; i < n; i++) {
+      let ax = 0, ay = 0, az = 0, cnt = 0;
+      for (let j = 0; j < 4; j++) {
+        const ni = nb[i * 4 + j];
+        if (ni < 0) continue;
+        ax += p[ni * 3]; ay += p[ni * 3 + 1]; az += p[ni * 3 + 2]; cnt++;
+      }
+      if (!cnt) { tmp[i] = 0; continue; }
+      const inv = 1 / cnt;
+      const lx = ax * inv - p[i * 3], ly = ay * inv - p[i * 3 + 1], lz = az * inv - p[i * 3 + 2];
+      const c = (lx * normals[i * 3] + ly * normals[i * 3 + 1] + lz * normals[i * 3 + 2]) * invStep;
+      tmp[i] = Math.min(1, Math.max(0, c * gain));
+    }
+    for (let i = 0; i < n; i++) {
+      let sum = 0, cnt = 0;
+      for (let j = 0; j < 4; j++) {
+        const ni = nb[i * 4 + j];
+        if (ni < 0) continue;
+        sum += tmp[ni]; cnt++;
+      }
+      out[i] = cnt ? tmp[i] * 0.5 + (sum / cnt) * 0.5 : tmp[i];
+    }
+  }
+}
+
+/* ---- the banner itself ---- */
+(function () {
+  const cv = document.getElementById('mastBanner');
+  if (!cv) return;
+  let renderer;
+  try {
+    renderer = new THREE.WebGLRenderer({ canvas: cv, antialias: true, alpha: true });
+  } catch (e) { cv.remove(); return; }
+  renderer.setClearColor(0x000000, 0);
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.toneMapping = THREE.NoToneMapping;
+  const scene = new THREE.Scene();
+  // the view: pin line just above the frame's top, the V tip landing at
+  // roughly 70% of the viewport (2.65 of the 2.95 world span of a 78vh frame)
+  const camera = new THREE.OrthographicCamera(-0.767, 0.767, -0.05, -3.0, 0.1, 12);
+  camera.position.z = 6;
+  const pm = new THREE.PMREMGenerator(renderer);
+  scene.environment = pm.fromScene(new RoomEnvironment(), 0.04).texture;
+  pm.dispose();
+  const rimA = new THREE.DirectionalLight(0x6FA0FF, 0.85);
+  rimA.position.set(-4, 2.5, -3);
+  const rimB = new THREE.DirectionalLight(0x3A7CFF, 0.65);
+  rimB.position.set(4.5, -1.5, -2.5);
+  const key = new THREE.DirectionalLight(0xffffff, 0.7);
+  key.position.set(1.5, 3, 4);
+  scene.add(rimA, rimB, key);
+
+  const B_LEN = 2.7, B_W = 1.02, BSX = 72, BSY = 26;
+  const NOTCH = 0.2;                    // V depth as a fraction of the drop
+  const R_EPS = 0.012;                  // softens the notch apex
+  const sim = new BannerSim(B_LEN, B_W, BSX, BSY, (u, v) => {
+    // the hero's swallowtail, at the foot only; the top edge stays straight
+    if (u === 0 && (v === 0 || v === 1)) {
+      u += 0.35 / BSX;
+      v = v === 0 ? 0.35 / BSY : 1 - 0.35 / BSY;
+    }
+    const dAbs = Math.sqrt((v - 0.5) * (v - 0.5) + R_EPS * R_EPS) - R_EPS;
+    const uMin = Math.max(0, NOTCH * (1 - 2 * dAbs));
+    u = uMin + (1 - uMin) * u;
+    return [
+      (v - 0.5) * B_W,
+      -B_LEN * (1 - u),
+      0.015 * Math.sin(u * 7.0) + 0.012 * Math.sin(v * 5.2),
+    ];
+  });
+  sim.windMul = 0.3;
+  sim.pinWave = 0.04;
+  const geo = new THREE.PlaneGeometry(1, 1, BSX, BSY);
+  geo.setAttribute('color',
+    new THREE.BufferAttribute(new Float32Array(sim.count * 3).fill(1), 3));
+  const cav = new Float32Array(sim.count);
+  const mat = new THREE.MeshPhysicalMaterial({
+    color: new THREE.Color('#3A7CFF'),
+    metalness: 0,
+    roughness: 1.0,
+    normalScale: new THREE.Vector2(0.9, 0.9),
+    sheen: 0.45,
+    sheenRoughness: 0.5,
+    sheenColor: new THREE.Color('#A9C4FF'),
+    envMapIntensity: 0.78,
+    vertexColors: true,
+    side: THREE.DoubleSide,
+  });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.frustumCulled = false;
+  scene.add(mesh);
+
+  /* the same weave as the hero: fleece selvage, flat parting line, jacquard
+     field, composed at this banner's own aspect */
+  const TILE_W = 3140, TILE_H = 3140, FLEECE_TILE = 1150;
+  const BORDER_WORLD = 0.095, GAP_WORLD = 0.012;
+  const PVW = Math.round(B_LEN * 1000), PVH = Math.round(B_W * 1000);
+  const imgs = {};
+  let readyCount = 0;
+  const tileAcross = (cx, img, w, h, tw, th) => {
+    for (let y = 0; y < h; y += th) {
+      for (let x = 0; x < w; x += tw) cx.drawImage(img, x, y, tw, th);
+    }
+  };
+  function composeMaps() {
+    if (readyCount < 6 || mat.map) return;
+    const zones = (cx, w, h, drawFleece, flatFill, drawField) => {
+      drawFleece();
+      const bu = Math.round(BORDER_WORLD / B_LEN * w), bv = Math.round(BORDER_WORLD / B_W * h);
+      cx.save(); cx.beginPath();
+      cx.rect(bu, bv, w - 2 * bu, h - 2 * bv); cx.clip();
+      flatFill(); cx.restore();
+      const fu = Math.round((BORDER_WORLD + GAP_WORLD) / B_LEN * w);
+      const fv = Math.round((BORDER_WORLD + GAP_WORLD) / B_W * h);
+      cx.save(); cx.beginPath();
+      cx.rect(fu, fv, w - 2 * fu, h - 2 * fv); cx.clip();
+      drawField(); cx.restore();
+    };
+    const build = (pw, ph, baseFill, fleeceDraw, fieldDraw) => {
+      const c = document.createElement('canvas');
+      c.width = pw; c.height = ph;
+      const cx = c.getContext('2d');
+      cx.scale(pw / PVW, ph / PVH);
+      cx.fillStyle = baseFill; cx.fillRect(0, 0, PVW, PVH);
+      zones(cx, PVW, PVH,
+        () => fleeceDraw(cx),
+        () => { cx.fillStyle = baseFill; cx.fillRect(0, 0, PVW, PVH); },
+        () => fieldDraw(cx));
+      return c;
+    };
+    const cc = build(2400, 907, '#3A7CFF',
+      (cx) => {
+        cx.globalAlpha = 0.15; cx.globalCompositeOperation = 'soft-light';
+        tileAcross(cx, imgs.flcPat, PVW, PVH, FLEECE_TILE, FLEECE_TILE);
+        cx.globalAlpha = 1; cx.globalCompositeOperation = 'source-over';
+      },
+      (cx) => {
+        cx.globalAlpha = 0.18; cx.globalCompositeOperation = 'soft-light';
+        cx.filter = 'contrast(1.15)';
+        tileAcross(cx, imgs.pat, PVW, PVH, TILE_W, TILE_H);
+        cx.filter = 'none';
+        cx.globalAlpha = 1; cx.globalCompositeOperation = 'source-over';
+      });
+    const tex = new THREE.CanvasTexture(cc);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 4;
+    mat.map = tex;
+    mat.color.set('#FFFFFF');
+    const ncc = build(1600, 605, 'rgb(128, 128, 255)',
+      (cx) => tileAcross(cx, imgs.flcNor, PVW, PVH, FLEECE_TILE, FLEECE_TILE),
+      (cx) => tileAcross(cx, imgs.nor, PVW, PVH, TILE_W, TILE_H));
+    const ntex = new THREE.CanvasTexture(ncc);
+    ntex.colorSpace = THREE.NoColorSpace;
+    ntex.anisotropy = 4;
+    mat.normalMap = ntex;
+    const rcc = build(1000, 378, 'rgb(185, 185, 185)',
+      (cx) => tileAcross(cx, imgs.flcRough, PVW, PVH, FLEECE_TILE, FLEECE_TILE),
+      (cx) => tileAcross(cx, imgs.rough, PVW, PVH, TILE_W, TILE_H));
+    const rtex = new THREE.CanvasTexture(rcc);
+    rtex.colorSpace = THREE.NoColorSpace;
+    rtex.anisotropy = 4;
+    mat.roughnessMap = rtex;
+    mat.needsUpdate = true;
+  }
+  const srcs = {
+    pat: 'assets/jacquard-pattern.jpg', nor: 'assets/jacquard-nor.webp', rough: 'assets/jacquard-rough.webp',
+    flcPat: 'assets/fleece-pattern.jpg', flcNor: 'assets/fleece-nor.webp', flcRough: 'assets/fleece-rough.webp',
+  };
+  for (const k of Object.keys(srcs)) {
+    const im = new Image();
+    im.onload = () => { readyCount++; composeMaps(); };
+    im.src = srcs[k];
+    imgs[k] = im;
+  }
+
+  function size() {
+    const w = cv.clientWidth || 300, h = cv.clientHeight || 580;
+    renderer.setSize(w, h, false);
+    const halfH = (camera.top - camera.bottom) / 2;   // 1.475
+    const a = (w / h) * halfH;
+    camera.left = -a; camera.right = a;
+    camera.updateProjectionMatrix();
+  }
+  size();
+  addEventListener('resize', size);
+
+  let syncTick = 0;
+  function sync() {
+    const pos = geo.attributes.position;
+    pos.array.set(sim.positions);
+    pos.needsUpdate = true;
+    if (syncTick++ % 2 === 0) {
+      geo.computeVertexNormals();
+      sim.computeCavity(geo.attributes.normal.array, cav, 6);
+      const col = geo.attributes.color;
+      for (let i = 0; i < sim.count; i++) {
+        const shade = 1 - 0.17 * cav[i];
+        col.array[i * 3] = shade;
+        col.array[i * 3 + 1] = shade;
+        col.array[i * 3 + 2] = shade;
+      }
+      col.needsUpdate = true;
+      geo.attributes.normal.needsUpdate = true;
+    }
+  }
+
+  for (let i = 0; i < 90; i++) sim.substep();
+  sync();
+  renderer.render(scene, camera);
+  document.documentElement.classList.add('banner-on');
+
+  if (reduced) {
+    for (let i = 0; i < 200; i++) sim.substep();
+    sync();
+    renderer.render(scene, camera);
+    return;
+  }
+
+  let visible = false, raf = 0, last = 0, sizedW = 0;
+  function loop(now) {
+    raf = visible ? requestAnimationFrame(loop) : 0;
+    if (now - last < 15) return;
+    const dt = Math.min((now - last) / 1000, 0.05);
+    last = now;
+    // a canvas measured while the pane was hidden reports a bogus size
+    const cw = cv.clientWidth;
+    if (cw && cw !== sizedW) { sizedW = cw; size(); }
+    sim.step(dt);
+    sync();
+    renderer.render(scene, camera);
+  }
+  new IntersectionObserver((en) => {
+    visible = en[0].isIntersecting;
+    if (visible && !raf) { last = performance.now(); raf = requestAnimationFrame(loop); }
+  }, { rootMargin: '120px' }).observe(cv);
+})();
+</script>
+
+<script>
+(function () {
+  var reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  /* the masthead rises once the faces are ready, as on the landing */
+  document.fonts.ready.then(function () {
+    requestAnimationFrame(function () { document.documentElement.classList.add('mast-in'); });
+  });
+
+  /* scroll reveals, same observer as the landing */
+  var els = document.querySelectorAll('.rv');
+  if (reduced || !('IntersectionObserver' in window)) {
+    els.forEach(function (el) { el.classList.add('in'); });
+  } else {
+    var io = new IntersectionObserver(function (ents) {
+      for (var i = 0; i < ents.length; i++) {
+        if (ents[i].isIntersecting) { ents[i].target.classList.add('in'); io.unobserve(ents[i].target); }
+      }
+    }, { threshold: 0.2, rootMargin: '0px 0px -8% 0px' });
+    els.forEach(function (el) { io.observe(el); });
+  }
+
+  /* the download buttons name the visitor's platform */
+  var s = (((navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || '') +
+           ' ' + navigator.userAgent).toLowerCase();
+  var os = null;
+  if (/iphone|ipad|android/.test(s)) os = null;
+  else if (s.indexOf('mac') !== -1) os = 'macOS';
+  else if (s.indexOf('win') !== -1) os = 'Windows';
+  else if (s.indexOf('linux') !== -1 || s.indexOf('x11') !== -1) os = 'Linux';
+  if (os) {
+    document.querySelectorAll('[data-dl-label]').forEach(function (el) {
+      el.textContent = 'Download for ' + os;
+      el.closest('a').href = '/downloads#' + ({macOS:'mac',Windows:'windows',Linux:'linux'})[os];
+    });
+  }
+
+  /* the masthead's paper backdrop condenses once the page starts moving */
+  var nav = document.querySelector('.nav');
+  var navOn = false;
+  function navChk() {
+    var sc = scrollY > 24;
+    if (sc !== navOn) { navOn = sc; nav.classList.toggle('scrolled', sc); }
+  }
+  addEventListener('scroll', navChk, { passive: true });
+  navChk();
+})();
+</script>
+
+</body>
+</html>

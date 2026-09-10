@@ -117,15 +117,15 @@ impl Default for SecureClientLimits {
             nvidia_jwks_bytes: 256 * 1024,
             intel_collateral_bytes: 2 * 1024 * 1024,
             relay_error_bytes: 4 * 1024,
-            // A NEAR completion receipt contains the provider's bounded two-megabyte
+            // A completion receipt contains the bounded 32 MiB provider
             // encrypted response again as base64. Leave room for that proof and its
             // surrounding JSON without relaxing the total stream bound.
             // Non-stream responses carry both the encrypted provider JSON fields
             // and a base64 copy of those same signed bytes.
-            relay_response_bytes: 6 * 1024 * 1024,
-            relay_sse_event_bytes: 4 * 1024 * 1024,
-            relay_stream_bytes: 16 * 1024 * 1024,
-            serialized_relay_request_bytes: 2 * 1024 * 1024,
+            relay_response_bytes: 96 * 1024 * 1024,
+            relay_sse_event_bytes: 48 * 1024 * 1024,
+            relay_stream_bytes: 128 * 1024 * 1024,
+            serialized_relay_request_bytes: 32 * 1024 * 1024,
         }
     }
 }
