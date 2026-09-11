@@ -9,6 +9,9 @@ web deployment tooling live exclusively in the companion
 [axiom backend repository](https://github.com/astrea-foundation/axiom).
 This checkout builds and tests independently of those websites.
 
+Ongoing work goes to `dev`; tested batches are promoted to `main` for release.
+See [the contribution workflow](CONTRIBUTING.md) before making changes.
+
 The implemented applications today are AxiomCLI—an early Rust coding agent with
 a terminal interface and Agent Client Protocol (ACP) control mode—and
 `axiom-proxy`, an authenticated loopback OpenAI-compatible sidecar. The
