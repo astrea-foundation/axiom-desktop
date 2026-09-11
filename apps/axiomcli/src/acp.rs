@@ -1874,6 +1874,15 @@ pub async fn serve_stdio(
     let usage_extension = extension_state.clone();
     let usage_client = billing.clone();
     let usage_work = account_work.clone();
+    let keys_list_extension = extension_state.clone();
+    let keys_list_client = billing.clone();
+    let keys_list_work = account_work.clone();
+    let keys_create_extension = extension_state.clone();
+    let keys_create_client = billing.clone();
+    let keys_create_work = account_work.clone();
+    let keys_revoke_extension = extension_state.clone();
+    let keys_revoke_client = billing.clone();
+    let keys_revoke_work = account_work.clone();
     let billing_create_extension = extension_state.clone();
     let billing_create_client = billing.clone();
     let billing_create_work = account_work.clone();
@@ -4877,6 +4886,79 @@ pub async fn serve_stdio(
                 }
                 .await;
                 responder.respond_with_result(task_result)
+                })?;
+                Ok(())
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+
+        .on_receive_request(
+            async move |_request: extension::ApiKeyListRequest, responder: Responder<extension::ApiKeyListResponse>, connection: ConnectionTo<Client>| {
+                if !extension_enabled(&keys_list_extension, ExtensionFeature::Account) {
+                    return responder.respond_with_error(extension_not_negotiated());
+                }
+                let client = keys_list_client.clone();
+                let cancellation = CancellationToken::new();
+                let guard = respond_or_return!(responder, keys_list_work.register(cancellation.clone()).map_err(agent_error));
+                let request_cancellation = responder.cancellation();
+                connection.spawn(async move {
+                    let _guard = guard;
+                    let operation = client.api_keys(&cancellation);
+                    tokio::pin!(operation);
+                    let result = tokio::select! {
+                        biased;
+                        result = &mut operation => result,
+                        () = request_cancellation.cancelled() => { cancellation.cancel(); operation.await }
+                    };
+                    responder.respond_with_result(result.map_err(agent_error))
+                })?;
+                Ok(())
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |request: extension::ApiKeyCreateRequest, responder: Responder<extension::ApiKeyCreatedResponse>, connection: ConnectionTo<Client>| {
+                if !extension_enabled(&keys_create_extension, ExtensionFeature::Account) {
+                    return responder.respond_with_error(extension_not_negotiated());
+                }
+                let client = keys_create_client.clone();
+                let cancellation = CancellationToken::new();
+                let guard = respond_or_return!(responder, keys_create_work.register(cancellation.clone()).map_err(agent_error));
+                let request_cancellation = responder.cancellation();
+                connection.spawn(async move {
+                    let _guard = guard;
+                    let operation = client.create_api_key(&request.name, &cancellation);
+                    tokio::pin!(operation);
+                    let result = tokio::select! {
+                        biased;
+                        result = &mut operation => result,
+                        () = request_cancellation.cancelled() => { cancellation.cancel(); operation.await }
+                    };
+                    responder.respond_with_result(result.map_err(agent_error))
+                })?;
+                Ok(())
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |request: extension::ApiKeyRevokeRequest, responder: Responder<extension::ApiKeyRevokeResponse>, connection: ConnectionTo<Client>| {
+                if !extension_enabled(&keys_revoke_extension, ExtensionFeature::Account) {
+                    return responder.respond_with_error(extension_not_negotiated());
+                }
+                let client = keys_revoke_client.clone();
+                let cancellation = CancellationToken::new();
+                let guard = respond_or_return!(responder, keys_revoke_work.register(cancellation.clone()).map_err(agent_error));
+                let request_cancellation = responder.cancellation();
+                connection.spawn(async move {
+                    let _guard = guard;
+                    let operation = client.revoke_api_key(&request.id, &cancellation);
+                    tokio::pin!(operation);
+                    let result = tokio::select! {
+                        biased;
+                        result = &mut operation => result,
+                        () = request_cancellation.cancelled() => { cancellation.cancel(); operation.await }
+                    };
+                    responder.respond_with_result(result.map_err(agent_error))
                 })?;
                 Ok(())
             },

@@ -4,6 +4,9 @@ import type {
   BillingInvoiceResponse,
   BillingStatusResponse,
   UsageSummaryResponse,
+  ApiKeyListResponse,
+  ApiKeyCreatedResponse,
+  ApiKeyRevokeResponse,
   ClientState,
   CollectionStateResponse,
   CompactResponse,
@@ -50,6 +53,9 @@ export interface AgentApi {
   accountStatus: () => Promise<AccountStatusResponse>;
   billingStatus: () => Promise<BillingStatusResponse>;
   usageSummary: (accountId: string) => Promise<UsageSummaryResponse>;
+  apiKeys: (accountId: string) => Promise<ApiKeyListResponse>;
+  createApiKey: (name: string, accountId: string) => Promise<ApiKeyCreatedResponse>;
+  revokeApiKey: (id: string, accountId: string) => Promise<ApiKeyRevokeResponse>;
   createBillingInvoice: (amountUsdCents: number, clientRequestId: string, accountId: string) => Promise<BillingInvoiceResponse>;
   billingInvoiceStatus: (invoiceId: string) => Promise<BillingInvoiceResponse>;
   openBillingPayment: (paymentUrl: string, accountId: string) => Promise<void>;
@@ -97,6 +103,9 @@ export const agentApi: AgentApi = {
   accountStatus: () => invoke("account-status"),
   billingStatus: () => invoke("billing-status"),
   usageSummary: (accountId) => invoke("usage-summary", accountId),
+  apiKeys: (accountId) => invoke("api-keys", accountId),
+  createApiKey: (name, accountId) => invoke("api-key-create", name, accountId),
+  revokeApiKey: (id, accountId) => invoke("api-key-revoke", id, accountId),
   createBillingInvoice: (amountUsdCents, clientRequestId, accountId) =>
     invoke("billing-invoice-create", amountUsdCents, clientRequestId, accountId),
   billingInvoiceStatus: (invoiceId) => invoke("billing-invoice-status", invoiceId),

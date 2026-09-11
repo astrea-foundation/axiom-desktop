@@ -240,6 +240,27 @@ function installAgentIpc(): void {
     return sidecar.setSettings(settings);
   });
   agentHandle("agent:account-status", () => sidecar.accountStatus());
+  agentHandle("agent:api-keys", async (_event, accountId: unknown) => {
+    const id = boundedString(accountId, "account ID", 128);
+    requirePaymentAccount(id, sidecar.state());
+    const result = await sidecar.apiKeys();
+    requirePaymentAccount(id, sidecar.state());
+    return result;
+  });
+  agentHandle("agent:api-key-create", async (_event, name: unknown, accountId: unknown) => {
+    const id = boundedString(accountId, "account ID", 128);
+    requirePaymentAccount(id, sidecar.state());
+    const result = await sidecar.createApiKey(boundedString(name, "API key name", 480));
+    requirePaymentAccount(id, sidecar.state());
+    return result;
+  });
+  agentHandle("agent:api-key-revoke", async (_event, keyId: unknown, accountId: unknown) => {
+    const id = boundedString(accountId, "account ID", 128);
+    requirePaymentAccount(id, sidecar.state());
+    const result = await sidecar.revokeApiKey(boundedString(keyId, "API key ID", 128));
+    requirePaymentAccount(id, sidecar.state());
+    return result;
+  });
   agentHandle("agent:billing-status", () => sidecar.billingStatus());
   agentHandle("agent:billing-invoice-create", (_event, amountUsdCents: unknown, clientRequestId: unknown, accountId: unknown) => {
     requirePaymentAccount(boundedString(accountId, "account ID", 128), sidecar.state());

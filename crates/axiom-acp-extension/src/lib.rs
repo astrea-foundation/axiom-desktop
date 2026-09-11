@@ -952,6 +952,84 @@ pub struct UsageSummaryResponse {
     pub summary: UsageSummary,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ApiKeyUsage {
+    #[serde(alias = "request_count")]
+    pub request_count: String,
+    #[serde(alias = "input_tokens")]
+    pub input_tokens: String,
+    #[serde(alias = "cached_input_tokens")]
+    pub cached_input_tokens: String,
+    #[serde(alias = "output_tokens")]
+    pub output_tokens: String,
+    #[serde(alias = "cost_microusd")]
+    pub cost_microusd: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ApiKeyRecord {
+    pub id: String,
+    pub name: String,
+    pub scopes: Vec<String>,
+    #[serde(alias = "created_at")]
+    pub created_at: String,
+    #[serde(alias = "last_used_at")]
+    pub last_used_at: Option<String>,
+    #[serde(alias = "expires_at")]
+    pub expires_at: Option<String>,
+    #[serde(alias = "revoked_at")]
+    pub revoked_at: Option<String>,
+    #[serde(alias = "usage_started_at")]
+    pub usage_started_at: String,
+    pub usage: ApiKeyUsage,
+}
+
+#[derive(
+    Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcRequest,
+)]
+#[request(method = "_axiom/account/api_keys", response = ApiKeyListResponse)]
+pub struct ApiKeyListRequest {}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcResponse)]
+#[serde(deny_unknown_fields)]
+pub struct ApiKeyListResponse {
+    pub keys: Vec<ApiKeyRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcRequest)]
+#[request(method = "_axiom/account/api_key_create", response = ApiKeyCreatedResponse)]
+#[serde(deny_unknown_fields)]
+pub struct ApiKeyCreateRequest {
+    pub name: String,
+}
+
+// A newly issued key is intentionally shown once, never included in account state or Debug output.
+#[derive(Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcResponse)]
+pub struct ApiKeyCreatedResponse {
+    pub key: ApiKeyRecord,
+    pub token: String,
+}
+
+impl std::fmt::Debug for ApiKeyCreatedResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ApiKeyCreatedResponse")
+            .field("key", &self.key)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcRequest)]
+#[request(method = "_axiom/account/api_key_revoke", response = ApiKeyRevokeResponse)]
+#[serde(deny_unknown_fields)]
+pub struct ApiKeyRevokeRequest {
+    pub id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcResponse)]
+pub struct ApiKeyRevokeResponse {}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcResponse)]
 #[serde(rename_all = "camelCase")]
 pub struct BillingStatusResponse {
@@ -1074,6 +1152,12 @@ pub struct ProtocolSchema {
     pub billing_status_response: BillingStatusResponse,
     pub usage_summary_request: UsageSummaryRequest,
     pub usage_summary_response: UsageSummaryResponse,
+    pub api_key_list_request: ApiKeyListRequest,
+    pub api_key_list_response: ApiKeyListResponse,
+    pub api_key_create_request: ApiKeyCreateRequest,
+    pub api_key_created_response: ApiKeyCreatedResponse,
+    pub api_key_revoke_request: ApiKeyRevokeRequest,
+    pub api_key_revoke_response: ApiKeyRevokeResponse,
     pub billing_invoice_create_request: BillingInvoiceCreateRequest,
     pub billing_invoice_status_request: BillingInvoiceStatusRequest,
     pub billing_invoice_response: BillingInvoiceResponse,

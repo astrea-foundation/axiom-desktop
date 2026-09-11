@@ -5,7 +5,7 @@ import { chromium, type Browser, type Page } from "playwright";
 import { createServer, type ViteDevServer } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
-import type { AccountStatus, BillingStatus, ClientSessionState, ClientTimelineItem, ContextUsage, ConfigureDesktopAgentRequest, DesktopAgentSettings } from "@axiom/axiom-acp-client";
+import type { ApiKeyRecord, AccountStatus, BillingStatus, ClientSessionState, ClientTimelineItem, ContextUsage, ConfigureDesktopAgentRequest, DesktopAgentSettings } from "@axiom/axiom-acp-client";
 
 // Real renderer/DOM focus tests, but no Electron window, OS input, account,
 // sidecar, or provider request. The bridge below operates only on fake threads.
@@ -190,6 +190,9 @@ async function openApp(platform = "linux", failDelete = false, thinkingLevels: s
       },
       cancel: async (id: string) => { calls.push({ method: "cancel", id }); state.sessions[id]!.running = false; emit(); },
       listThreads: async () => state.catalog,
+      apiKeys: async () => ({keys: []}),
+      createApiKey: async () => { throw new Error("API keys not configured in this fixture"); },
+      revokeApiKey: async () => ({}),
       accountStatus: async () => { calls.push({ method: "accountStatus" }); return { account: state.account }; },
       billingStatus: async () => { calls.push({ method: "billingStatus" }); if (failBalance) throw new Error("Balance test failure"); return { billing: state.billing }; },
       openAccountPortal: async () => { calls.push({ method: "accountPortal" }); },
@@ -1674,7 +1677,7 @@ for (const platform of ["linux", "win32", "darwin"]) {
       const usage = settings.getByRole("tab", { name: "Usage", exact: true });
       const updates = settings.getByRole("tab", { name: "Updates", exact: true });
       assert.equal(await settings.evaluate((element) => getComputedStyle(element).animationName), "account-screen-enter");
-      assert.equal(await settings.getByRole("tab").count(), 4);
+      assert.equal(await settings.getByRole("tab").count(), 5);
       assert.equal(await settings.getByRole("tabpanel").count(), 1);
       assert.equal(await appearance.getAttribute("aria-selected"), "true");
       assert.equal(await settings.getByText("Inference balance").count(), 0);
@@ -1693,6 +1696,9 @@ for (const platform of ["linux", "win32", "darwin"]) {
       await account.press("ArrowDown");
       assert.equal(await usage.getAttribute("aria-selected"), "true");
       await usage.press("ArrowDown");
+      const apiKeys = settings.getByRole("tab", {name: "API keys", exact: true});
+      assert.equal(await apiKeys.getAttribute("aria-selected"), "true");
+      await apiKeys.press("ArrowDown");
       assert.equal(await updates.getAttribute("aria-selected"), "true");
       await updates.press("ArrowDown");
       assert.equal(await appearance.getAttribute("aria-selected"), "true");
@@ -2242,4 +2248,83 @@ test("usage errors never become zero spend and old account requests cannot popul
     assert.equal(await page.locator("[data-usage-total]").count(), 0);
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
+});
+
+
+test("API keys show usage, reveal a new key once, and preserve revoked history", async () => {
+  const {page, errors} = await openApp();
+  try {
+    await page.evaluate(() => {
+      let keys: ApiKeyRecord[] = [];
+      const api = window.axiomDesktop!.agent;
+      api.apiKeys = async () => ({keys});
+      api.createApiKey = async (name, accountId) => {
+        if (accountId !== "test-account") throw new Error("Wrong account");
+        const key: ApiKeyRecord = {id: "key-1", name, scopes: ["inference"], createdAt: "2026-09-10T12:00:00Z", lastUsedAt: null, expiresAt: null, revokedAt: null, usageStartedAt: "2026-09-10T12:00:00Z",
+          usage: {requestCount: "123", inputTokens: "12345", cachedInputTokens: "1000", outputTokens: "4000", costMicrousd: "123456"}};
+        keys = [key];
+        return {key, token: "axm_desktop_fixture_1234567890"};
+      };
+      api.revokeApiKey = async id => {keys = keys.map(key => key.id === id ? {...key, revokedAt: "2026-09-10T13:00:00Z"} : key); return {};};
+    });
+    await openAccountScreen(page, "Settings");
+    await page.getByRole("tab", {name: "API keys", exact: true}).click();
+    const panel = page.getByRole("tabpanel", {name: "API keys", exact: true});
+    await panel.getByText("No API keys yet").waitFor();
+    await panel.getByRole("button", {name: "Create key", exact: true}).click();
+    await panel.getByLabel("Key name", {exact: true}).fill("Coding tools");
+    await panel.getByRole("form", {name: "Create API key"}).getByRole("button", {name: "Create key", exact: true}).click();
+    const secret = panel.getByRole("textbox", {name: "New API key", exact: true});
+    await secret.waitFor();
+    assert.equal(await secret.inputValue(), "axm_desktop_fixture_1234567890");
+    await page.context().grantPermissions(["clipboard-read", "clipboard-write"], {origin});
+    await panel.getByRole("button", {name: "Copy key", exact: true}).click();
+    await panel.getByRole("button", {name: "Copied", exact: true}).waitFor();
+    assert.equal(await page.evaluate(() => navigator.clipboard.readText()), "axm_desktop_fixture_1234567890");
+    await panel.getByRole("button", {name: "Done", exact: true}).click();
+    assert.equal(await secret.count(), 0);
+    const row = panel.getByRole("article", {name: "API key Coding tools"});
+    await row.getByText("$0.12", {exact: true}).waitFor();
+    await row.getByText("Usage details", {exact: true}).click();
+    await row.getByText("12,345", {exact: true}).waitFor();
+    for (const theme of ["light", "dark"]) {
+      await page.evaluate(theme => {document.documentElement.dataset.theme = theme;}, theme);
+      await panel.screenshot({path: `/tmp/axiom-api-keys-${theme}.png`, animations: "disabled"});
+    }
+    await row.getByRole("button", {name: "Revoke", exact: true}).click();
+    await page.getByRole("dialog").getByRole("button", {name: "Cancel", exact: true}).click();
+    await row.getByRole("button", {name: "Revoke", exact: true}).click();
+    await page.getByRole("dialog").getByRole("button", {name: "Revoke key", exact: true}).click();
+    await row.waitFor({state: "hidden"});
+    await panel.getByRole("button", {name: "Show revoked and expired keys"}).click();
+    await row.getByText("Revoked", {exact: true}).waitFor();
+    await row.getByText("$0.12", {exact: true}).waitFor();
+    await page.setViewportSize({width: 750, height: 790});
+    assert.equal(await panel.evaluate(element => element.scrollWidth > element.clientWidth), false);
+    await panel.screenshot({path: "/tmp/axiom-api-keys-small.png", animations: "disabled"});
+    await page.evaluate(() => (window as any).__deletionTest.setAccount("other-account"));
+    assert.equal(await secret.count(), 0);
+    assert.deepEqual(errors, []);
+  } finally {await page.close();}
+});
+
+test("API keys discard a creation response after account switching", async () => {
+  const {page, errors} = await openApp();
+  try {
+    await page.evaluate(() => {
+      window.axiomDesktop!.agent.createApiKey = () => new Promise(resolve => {(window as any).__finishKey = resolve;});
+    });
+    await openAccountScreen(page, "Settings");
+    await page.getByRole("tab", {name: "API keys", exact: true}).click();
+    const panel = page.getByRole("tabpanel", {name: "API keys", exact: true});
+    await panel.getByRole("button", {name: "Create key", exact: true}).click();
+    await panel.getByLabel("Key name", {exact: true}).fill("Old account");
+    await panel.getByRole("form", {name: "Create API key"}).getByRole("button", {name: "Create key", exact: true}).click();
+    await page.waitForFunction(() => typeof (window as any).__finishKey === "function");
+    await page.evaluate(() => (window as any).__deletionTest.setAccount("other-account"));
+    await page.evaluate(() => (window as any).__finishKey({key: {id: "old", name: "Old account"}, token: "axm_old_secret_do_not_show"}));
+    assert.equal(await page.getByRole("textbox", {name: "New API key", exact: true}).count(), 0);
+    assert.equal(await page.getByText("Old account", {exact: true}).count(), 0);
+    assert.deepEqual(errors, []);
+  } finally {await page.close();}
 });

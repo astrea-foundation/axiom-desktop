@@ -245,6 +245,107 @@ impl BillingClient {
         Ok(summary)
     }
 
+    pub async fn api_keys(
+        &self,
+        cancellation: &CancellationToken,
+    ) -> Result<axiom_acp_extension::ApiKeyListResponse> {
+        let lease = self
+            .auth
+            .access_token_for_account_operation(cancellation)
+            .await?;
+        let response = send_with_cancellation(
+            self.client
+                .get(self.endpoint("/api/v1/auth/api-keys"))
+                .query(&[("include_revoked", "true")])
+                .bearer_auth(lease.expose_for_authorization()),
+            cancellation,
+            "API keys",
+        )
+        .await?;
+        ensure_success(response.status(), "API keys")?;
+        let result = decode_bounded_json::<axiom_acp_extension::ApiKeyListResponse>(
+            response,
+            cancellation,
+            "API keys",
+        )
+        .await?;
+        for key in &result.keys {
+            validate_api_key_record(key)?;
+        }
+        self.ensure_account_current(&lease)?;
+        Ok(result)
+    }
+
+    pub async fn create_api_key(
+        &self,
+        name: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<axiom_acp_extension::ApiKeyCreatedResponse> {
+        validate_api_key_name(name)?;
+        let lease = self
+            .auth
+            .access_token_for_account_operation(cancellation)
+            .await?;
+        let response = send_with_cancellation(
+            self.client
+                .post(self.endpoint("/api/v1/auth/api-keys"))
+                .bearer_auth(lease.expose_for_authorization())
+                .json(&serde_json::json!({"name": name})),
+            cancellation,
+            "API key creation",
+        )
+        .await?;
+        if response.status() == StatusCode::FORBIDDEN {
+            return Err(AxiomError::Provider(
+                "Sign in again before creating an API key.".into(),
+            ));
+        }
+        ensure_success(response.status(), "API key creation")?;
+        let mut value =
+            decode_bounded_json::<serde_json::Value>(response, cancellation, "API key creation")
+                .await?;
+        let token = value
+            .as_object_mut()
+            .and_then(|object| object.remove("token"))
+            .and_then(|value| value.as_str().map(str::to_owned))
+            .filter(|token| {
+                token.starts_with("axm_")
+                    && (20..=512).contains(&token.len())
+                    && token
+                        .bytes()
+                        .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
+            })
+            .ok_or_else(|| AxiomError::Protocol("invalid API key creation response".into()))?;
+        let key = serde_json::from_value::<axiom_acp_extension::ApiKeyRecord>(value)
+            .map_err(|_| AxiomError::Protocol("invalid API key creation response".into()))?;
+        validate_api_key_record(&key)?;
+        self.ensure_account_current(&lease)?;
+        Ok(axiom_acp_extension::ApiKeyCreatedResponse { key, token })
+    }
+
+    pub async fn revoke_api_key(
+        &self,
+        id: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<axiom_acp_extension::ApiKeyRevokeResponse> {
+        validate_api_key_id(id)?;
+        let lease = self
+            .auth
+            .access_token_for_account_operation(cancellation)
+            .await?;
+        let response = send_with_cancellation(
+            self.client
+                .delete(self.endpoint(&format!("/api/v1/auth/api-keys/{id}")))
+                .bearer_auth(lease.expose_for_authorization()),
+            cancellation,
+            "API key revocation",
+        )
+        .await?;
+        ensure_success(response.status(), "API key revocation")?;
+        self.ensure_account_current(&lease)?;
+        Ok(axiom_acp_extension::ApiKeyRevokeResponse {})
+    }
+
     pub async fn create_invoice(
         &self,
         amount_usd_cents: u64,
@@ -337,6 +438,69 @@ impl BillingClient {
             ))
         }
     }
+}
+
+fn validate_api_key_id(id: &str) -> Result<()> {
+    if id.is_empty()
+        || id.len() > 128
+        || !id
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
+    {
+        return Err(AxiomError::Protocol("invalid API key ID".into()));
+    }
+    Ok(())
+}
+
+fn validate_api_key_name(name: &str) -> Result<()> {
+    if name.trim().is_empty() || name.chars().count() > 120 || name.chars().any(char::is_control) {
+        return Err(AxiomError::Protocol(
+            "API key names must contain 1–120 printable characters".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_api_key_record(key: &axiom_acp_extension::ApiKeyRecord) -> Result<()> {
+    validate_api_key_id(&key.id)?;
+    validate_api_key_name(&key.name)?;
+    let invalid = || AxiomError::Protocol("invalid API key usage response".into());
+    if key.scopes != ["inference"] {
+        return Err(invalid());
+    }
+    for date in [
+        Some(&key.created_at),
+        Some(&key.usage_started_at),
+        key.last_used_at.as_ref(),
+        key.expires_at.as_ref(),
+        key.revoked_at.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        DateTime::parse_from_rfc3339(date).map_err(|_| invalid())?;
+    }
+    let mut counts = Vec::new();
+    for value in [
+        &key.usage.request_count,
+        &key.usage.input_tokens,
+        &key.usage.cached_input_tokens,
+        &key.usage.output_tokens,
+        &key.usage.cost_microusd,
+    ] {
+        if value.is_empty()
+            || value.len() > 39
+            || !value.bytes().all(|c| c.is_ascii_digit())
+            || (value.len() > 1 && value.starts_with('0'))
+        {
+            return Err(invalid());
+        }
+        counts.push(value.parse::<u128>().map_err(|_| invalid())?);
+    }
+    if counts[2] > counts[1] {
+        return Err(invalid());
+    }
+    Ok(())
 }
 
 async fn decode_bounded_json<T: DeserializeOwned>(
@@ -689,6 +853,45 @@ pub fn validate_payment_url(value: &str) -> Result<Url> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn api_key_metadata_is_exact_and_creation_debug_redacts_the_token() {
+        let raw = serde_json::json!({
+            "id": "key-1", "name": "Coding tools", "scopes": ["inference"],
+            "created_at": "2026-09-10T12:00:00Z", "last_used_at": null,
+            "expires_at": null, "revoked_at": null, "usage_started_at": "2026-09-10T12:00:00Z",
+            "usage": {"request_count": "1", "input_tokens": "9007199254740993",
+                "cached_input_tokens": "100", "output_tokens": "12", "cost_microusd": "123456"}
+        });
+        let key: axiom_acp_extension::ApiKeyRecord = serde_json::from_value(raw.clone()).unwrap();
+        validate_api_key_record(&key).unwrap();
+        let projected = serde_json::to_value(&key).unwrap();
+        assert_eq!(projected["usage"]["inputTokens"], "9007199254740993");
+        assert_eq!(projected["usageStartedAt"], "2026-09-10T12:00:00Z");
+        let result = axiom_acp_extension::ApiKeyCreatedResponse {
+            key,
+            token: "axm_keep_out_of_debug_output".into(),
+        };
+        assert!(!format!("{result:?}").contains("axm_keep_out"));
+        for value in [
+            "-1",
+            "01",
+            "1.1",
+            "1e9",
+            "",
+            "340282366920938463463374607431768211456",
+        ] {
+            let mut bad = raw.clone();
+            bad["usage"]["cost_microusd"] = value.into();
+            assert!(validate_api_key_record(&serde_json::from_value(bad).unwrap()).is_err());
+        }
+        let mut bad = raw.clone();
+        bad["usage"]["cached_input_tokens"] = "99999999999999999".into();
+        assert!(validate_api_key_record(&serde_json::from_value(bad).unwrap()).is_err());
+        let mut bad = raw;
+        bad["scopes"] = serde_json::json!(["account"]);
+        assert!(validate_api_key_record(&serde_json::from_value(bad).unwrap()).is_err());
+    }
 
     #[test]
     fn usage_preserves_exact_costs_and_rejects_inconsistent_or_unbounded_data() {

@@ -2788,6 +2788,41 @@ mod tests {
         }], "warnings": []})).into_response()
     }
 
+    async fn api_key_control(request: axum::extract::Request) -> Response {
+        assert!(
+            request
+                .headers()
+                .get("authorization")
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("Bearer access-token-")
+        );
+        let method = request.method().clone();
+        if method == axum::http::Method::DELETE {
+            return AxumStatus::NO_CONTENT.into_response();
+        }
+        let key = json!({"id": "key-1", "name": "Coding tools", "scopes": ["inference"],
+            "created_at": "2026-09-10T12:00:00Z", "last_used_at": null, "expires_at": null,
+            "revoked_at": null, "usage_started_at": "2026-09-10T12:00:00Z",
+            "usage": {"request_count": "1", "input_tokens": "12345", "cached_input_tokens": "1000",
+                "output_tokens": "4000", "cost_microusd": "123456"}});
+        if method == axum::http::Method::GET {
+            return Json(json!({"keys": [key]})).into_response();
+        }
+        let body = axum::body::to_bytes(request.into_body(), 4096)
+            .await
+            .unwrap();
+        let input: Value = serde_json::from_slice(&body).unwrap();
+        if input["name"] == "Needs sign-in" {
+            return (AxumStatus::FORBIDDEN, "private response details").into_response();
+        }
+        assert_eq!(input, json!({"name": "Coding tools"}));
+        let mut created = key;
+        created["token"] = "axm_once_only_fixture_1234567890".into();
+        (AxumStatus::CREATED, Json(created)).into_response()
+    }
+
     async fn manager() -> (AuthManager, Arc<MockState>, Arc<MemoryStore>) {
         let state = Arc::new(MockState {
             challenge: Mutex::new(None),
@@ -2814,6 +2849,11 @@ mod tests {
             .route("/api/v1/auth/token/refresh", post(refresh))
             .route("/api/v1/auth/session", get(session).delete(revoke_session))
             .route("/api/v1/search", post(hosted_search))
+            .route(
+                "/api/v1/auth/api-keys",
+                get(api_key_control).post(api_key_control),
+            )
+            .route("/api/v1/auth/api-keys/{id}", delete(api_key_control))
             .with_state(state.clone());
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
         let base = format!("http://{}", listener.local_addr().expect("address"));
@@ -2854,6 +2894,42 @@ mod tests {
         );
         auth.launch_browser = false;
         (auth, state, store)
+    }
+
+    #[tokio::test]
+    async fn api_keys_use_native_auth_without_replacing_the_sign_in_credential() {
+        let (auth, state, store) = manager().await;
+        let login = auth.start_native_login(None).await.unwrap();
+        state.approved.store(true, Ordering::Release);
+        login.complete(CancellationToken::new()).await.unwrap();
+        let credential = store.load().unwrap();
+        let client = crate::billing::BillingClient::new(
+            auth.api_base_url.as_str(),
+            auth.clone(),
+            Duration::from_secs(2),
+        )
+        .unwrap();
+        let cancellation = CancellationToken::new();
+        let created = client
+            .create_api_key("Coding tools", &cancellation)
+            .await
+            .unwrap();
+        assert_eq!(created.token, "axm_once_only_fixture_1234567890");
+        let listed = client.api_keys(&cancellation).await.unwrap();
+        assert_eq!(listed.keys[0].usage.cost_microusd, "123456");
+        assert!(!serde_json::to_string(&listed).unwrap().contains("axm_"));
+        client
+            .revoke_api_key(&created.key.id, &cancellation)
+            .await
+            .unwrap();
+        let error = client
+            .create_api_key("Needs sign-in", &cancellation)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Sign in again"));
+        assert!(!error.contains("private response details"));
+        assert_eq!(store.load().unwrap(), credential);
     }
 
     #[tokio::test]
@@ -3236,12 +3312,16 @@ mod tests {
         let _ = caller.await;
 
         tokio::time::timeout(Duration::from_secs(1), async {
-            while store.saves.load(Ordering::Acquire) == 0 {
+            while !store
+                .load()
+                .expect("load")
+                .is_some_and(|token| token != refresh_token)
+            {
                 tokio::task::yield_now().await;
             }
         })
         .await
-        .expect("detached rotation reached the credential store");
+        .expect("detached rotation committed to the credential store");
         assert_eq!(state.refreshes.load(Ordering::Acquire), 1);
         assert_eq!(store.saves.load(Ordering::Acquire), 1);
         assert!(

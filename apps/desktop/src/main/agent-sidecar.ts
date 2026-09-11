@@ -279,6 +279,18 @@ export class AgentSidecar {
     });
   }
 
+  apiKeys() {
+    return this.requireClient().apiKeys().catch((error: unknown) => { throw actionableAcpError(error); });
+  }
+
+  createApiKey(name: string) {
+    return this.requireClient().createApiKey(name).catch((error: unknown) => { throw actionableAcpError(error); });
+  }
+
+  revokeApiKey(id: string) {
+    return this.requireClient().revokeApiKey(id).catch((error: unknown) => { throw actionableAcpError(error); });
+  }
+
   usageSummary() {
     return this.requireClient().usageSummary().catch((error: unknown) => {
       throw actionableAcpError(error);

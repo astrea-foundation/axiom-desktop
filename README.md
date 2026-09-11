@@ -367,3 +367,17 @@ baseline.
 Other coding agents are behavioral references only. AxiomCLI code and tests are
 written from its own contracts; reference code is not copied or mechanically
 ported. See the plan's clean-room policy and repository inventory.
+
+## API keys
+
+Desktop's Settings → API keys creates and revokes named automation keys and
+shows each key's spend, request count, and token usage. Creation may ask you to
+sign in again; copy the newly issued key before closing its one-time display.
+Revoked keys remain available in usage history. AxiomCLI and the standalone
+proxy accept these keys through `AXIOM_API_KEY`; the Desktop sign-in credential
+stays separate.
+
+This requires the companion backend's API key usage migration `0009` and its
+updated API. Deploy that backend before publishing a Desktop build with this
+screen. Historical requests were not attributed to keys; the UI shows when
+tracking began.

@@ -1108,3 +1108,33 @@ input {
     transition: none;
   }
 }
+
+/* API key controls follow the account cards, with details available on demand. */
+.desktop-api-keys .section-heading { align-items:flex-start; flex-wrap:wrap; }
+.desktop-api-keys .card-help { margin:8px 0 0; }
+.desktop-api-keys .key-actions { display:flex; align-items:center; flex-wrap:wrap; gap:8px; }
+.desktop-api-keys .key-refresh { display:grid; place-items:center; width:36px; height:36px; border:0; border-radius:9px; background:transparent; color:var(--muted); }
+.desktop-api-keys .key-refresh:hover { background:var(--surface-hover); }
+.desktop-api-keys .key-create-form,.desktop-api-keys .key-secret { display:grid; gap:15px; margin:18px 0; padding:20px; border:1px solid var(--line); border-radius:13px; background:var(--tile); }
+.desktop-api-keys .key-secret strong { font-size:14px; font-weight:500; }.desktop-api-keys .key-secret p { margin:0; color:var(--muted); font-size:12px; }
+.desktop-api-keys .key-secret input { font-family:var(--font-mono); font-size:11px; }
+.desktop-api-keys .key-empty { display:grid; justify-items:center; gap:9px; padding:33px 10px; text-align:center; color:var(--subtle); }
+.desktop-api-keys .key-empty h3 { margin:2px 0 0; color:var(--text); font-size:14px; font-weight:500; }.desktop-api-keys .key-empty p { margin:0; color:var(--muted); font-size:12px; }
+.desktop-api-keys .key-list { margin:18px 0; }.desktop-api-keys .key-row { padding:18px 0; border-top:1px solid var(--line); }
+.desktop-api-keys .key-summary { display:flex; align-items:center; gap:20px; }.desktop-api-keys .key-name { min-width:0; flex:1; }.desktop-api-keys .key-name strong { overflow-wrap:anywhere; }
+.desktop-api-keys .key-name,.desktop-api-keys .key-stat { display:flex; flex-direction:column; gap:5px; }.desktop-api-keys .key-name strong,.desktop-api-keys .key-stat strong { font-size:13px; font-weight:500; }.desktop-api-keys .key-name span,.desktop-api-keys .key-stat span { font-size:11px; color:var(--subtle); }.desktop-api-keys .key-stat { text-align:right; font-variant-numeric:tabular-nums; }
+.desktop-api-keys .key-details { margin-top:12px; color:var(--muted); font-size:11px; }.desktop-api-keys .key-details summary { cursor:pointer; width:fit-content; }.desktop-api-keys .key-details dl { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px 20px; padding:15px; background:var(--tile); border-radius:10px; }.desktop-api-keys .key-details dl div { display:flex; justify-content:space-between; gap:10px; }.desktop-api-keys .key-details dd { margin:0; color:var(--text); font-variant-numeric:tabular-nums; }.desktop-api-keys .key-details p { font-size:11px; line-height:1.7; }.desktop-api-keys .key-history { margin-bottom:10px; }
+@media(max-width:760px) { .desktop-api-keys { padding:23px; }.desktop-api-keys .key-summary { flex-wrap:wrap; gap:16px; }.desktop-api-keys .key-name { flex-basis:100%; }.desktop-api-keys .key-summary > .quiet-link { margin-left:auto; }.desktop-api-keys .key-details dl { grid-template-columns:1fr; }.desktop-api-keys .key-create-form,.desktop-api-keys .key-secret { padding:14px; } }
+
+.desktop-api-keys { --line:var(--color-border); --muted:var(--color-text-secondary); --subtle:var(--color-text-tertiary); --text:var(--color-text-primary); --tile:var(--wash-row); --surface-hover:var(--wash-hover); --font-mono:monospace; }
+.desktop-api-keys .section-heading { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:18px; }
+.desktop-api-keys .key-heading { font-size:13px; color:var(--color-text-secondary); }
+.desktop-api-keys .action-button,.desktop-api-keys .text-button { display:inline-flex; align-items:center; justify-content:center; gap:7px; border:1px solid var(--color-border); background:var(--surface-button-secondary); color:var(--color-text-secondary); padding:8px 12px; border-radius:8px; font-size:12.5px; }
+.desktop-api-keys .action-button:hover,.desktop-api-keys .text-button:hover { background:var(--surface-button-secondary-hover); }
+.desktop-api-keys button:disabled { opacity:.5; }
+.desktop-api-keys .quiet-link { font-size:12px; color:var(--color-text-secondary); text-decoration:underline; text-underline-offset:3px; }
+.desktop-api-keys .card-help { font-size:12px; line-height:1.7; color:var(--color-text-tertiary); }
+.desktop-api-keys .field { display:grid; gap:7px; font-size:12px; color:var(--color-text-secondary); }
+.desktop-api-keys .field input { min-width:0; width:100%; padding:10px 12px; border:1px solid var(--color-border); border-radius:8px; background:var(--surface-track); color:var(--color-text-primary); }
+.desktop-api-keys .center-loading { display:flex; align-items:center; gap:8px; padding:20px 0; color:var(--color-text-tertiary); font-size:12px; }
+.desktop-api-keys .key-notice { margin:12px 0; font-size:12px; line-height:1.7; color:var(--color-danger-strong); }

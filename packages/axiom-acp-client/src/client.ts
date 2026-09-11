@@ -5,6 +5,9 @@ import type {
   BillingInvoiceResponse,
   BillingStatusResponse,
   UsageSummaryResponse,
+  ApiKeyListResponse,
+  ApiKeyCreatedResponse,
+  ApiKeyRevokeResponse,
   CollectionStateResponse,
   CompactResponse,
   DeleteConfirmResponse,
@@ -523,6 +526,29 @@ export class AxiomAcpClient extends EventEmitter {
     const accountContext = this.state.accountContextToken();
     const result = await this.process.request<UsageSummaryResponse>("_axiom/usage/summary", {});
     this.assertAccountContext(accountContext);
+    return result;
+  }
+
+  async apiKeys(): Promise<ApiKeyListResponse> {
+    const context = this.state.accountContextToken();
+    const result = await this.process.request<ApiKeyListResponse>("_axiom/account/api_keys", {});
+    this.assertAccountContext(context);
+    return result;
+  }
+
+  async createApiKey(name: string): Promise<ApiKeyCreatedResponse> {
+    if (!name.trim() || [...name].length > 120 || /[\u0000-\u001f\u007f]/.test(name)) throw new ProtocolError("Invalid API key name");
+    const context = this.state.accountContextToken();
+    const result = await this.process.request<ApiKeyCreatedResponse>("_axiom/account/api_key_create", {name: name.normalize("NFC").trim()});
+    this.assertAccountContext(context);
+    return result;
+  }
+
+  async revokeApiKey(id: string): Promise<ApiKeyRevokeResponse> {
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(id)) throw new ProtocolError("Invalid API key ID");
+    const context = this.state.accountContextToken();
+    const result = await this.process.request<ApiKeyRevokeResponse>("_axiom/account/api_key_revoke", {id});
+    this.assertAccountContext(context);
     return result;
   }
 

@@ -130,6 +130,24 @@
     "usageSummaryResponse": {
       "$ref": "#/$defs/UsageSummaryResponse"
     },
+    "apiKeyListRequest": {
+      "$ref": "#/$defs/ApiKeyListRequest"
+    },
+    "apiKeyListResponse": {
+      "$ref": "#/$defs/ApiKeyListResponse"
+    },
+    "apiKeyCreateRequest": {
+      "$ref": "#/$defs/ApiKeyCreateRequest"
+    },
+    "apiKeyCreatedResponse": {
+      "$ref": "#/$defs/ApiKeyCreatedResponse"
+    },
+    "apiKeyRevokeRequest": {
+      "$ref": "#/$defs/ApiKeyRevokeRequest"
+    },
+    "apiKeyRevokeResponse": {
+      "$ref": "#/$defs/ApiKeyRevokeResponse"
+    },
     "billingInvoiceCreateRequest": {
       "$ref": "#/$defs/BillingInvoiceCreateRequest"
     },
@@ -211,6 +229,12 @@
     "billingStatusResponse",
     "usageSummaryRequest",
     "usageSummaryResponse",
+    "apiKeyListRequest",
+    "apiKeyListResponse",
+    "apiKeyCreateRequest",
+    "apiKeyCreatedResponse",
+    "apiKeyRevokeRequest",
+    "apiKeyRevokeResponse",
     "billingInvoiceCreateRequest",
     "billingInvoiceStatusRequest",
     "billingInvoiceResponse",
@@ -2009,6 +2033,147 @@
         "provider",
         "costMicrousd"
       ]
+    },
+    "ApiKeyListRequest": {
+      "type": "object"
+    },
+    "ApiKeyListResponse": {
+      "type": "object",
+      "properties": {
+        "keys": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ApiKeyRecord"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "keys"
+      ]
+    },
+    "ApiKeyRecord": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "scopes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "createdAt": {
+          "type": "string"
+        },
+        "lastUsedAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "expiresAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "revokedAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "usageStartedAt": {
+          "type": "string"
+        },
+        "usage": {
+          "$ref": "#/$defs/ApiKeyUsage"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "scopes",
+        "createdAt",
+        "usageStartedAt",
+        "usage"
+      ]
+    },
+    "ApiKeyUsage": {
+      "type": "object",
+      "properties": {
+        "requestCount": {
+          "type": "string"
+        },
+        "inputTokens": {
+          "type": "string"
+        },
+        "cachedInputTokens": {
+          "type": "string"
+        },
+        "outputTokens": {
+          "type": "string"
+        },
+        "costMicrousd": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "requestCount",
+        "inputTokens",
+        "cachedInputTokens",
+        "outputTokens",
+        "costMicrousd"
+      ]
+    },
+    "ApiKeyCreateRequest": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ]
+    },
+    "ApiKeyCreatedResponse": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "$ref": "#/$defs/ApiKeyRecord"
+        },
+        "token": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "token"
+      ]
+    },
+    "ApiKeyRevokeRequest": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id"
+      ]
+    },
+    "ApiKeyRevokeResponse": {
+      "type": "object"
     },
     "BillingInvoiceCreateRequest": {
       "type": "object",

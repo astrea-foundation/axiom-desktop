@@ -1144,3 +1144,33 @@ test("usage summary preserves exact values and rejects responses from the previo
     await assert.rejects(stale, /account changed/i);
   } finally { await client.close(); }
 });
+
+test("API key operations reject responses after the account changes and never update shared state", async () => {
+  const {client} = await fixture();
+  try {
+    const state = (client as unknown as {state: AxiomStateStore}).state;
+    let revision = 0;
+    const setAccount = (id: string) => state.setAccount({revision: ++revision, state: "valid", account: {id, linkedMethods: ["password"]}});
+    let complete: ((value: unknown) => void) | undefined;
+    const methods: string[] = [];
+    const original = client.process.request.bind(client.process);
+    client.process.request = <T>(method: string, params: unknown, timeoutMs?: number, signal?: AbortSignal): Promise<T> => {
+      if (method.startsWith("_axiom/account/api_key")) {
+        methods.push(method);
+        return new Promise<T>(resolve => {complete = resolve as (value: unknown) => void;});
+      }
+      return original<T>(method, params, timeoutMs, signal);
+    };
+    for (const operation of [() => client.apiKeys(), () => client.createApiKey("Coding tools"), () => client.revokeApiKey("key-1")]) {
+      setAccount("account-a");
+      const pending = operation();
+      setAccount("account-b");
+      complete!({keys: [], key: {id: "key-1"}, token: "axm_never_share_old_account_key"});
+      await assert.rejects(pending, /account changed/i);
+    }
+    assert.deepEqual(methods, ["_axiom/account/api_keys", "_axiom/account/api_key_create", "_axiom/account/api_key_revoke"]);
+    assert(!JSON.stringify(client.getState()).includes("axm_never_share"));
+    await assert.rejects(client.createApiKey("bad\nname"), /Invalid API key name/);
+    await assert.rejects(client.revokeApiKey("../another-key"), /Invalid API key ID/);
+  } finally {await client.close();}
+});

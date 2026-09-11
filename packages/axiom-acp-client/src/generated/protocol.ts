@@ -133,6 +133,12 @@ export interface ProtocolSchema {
   billingStatusResponse: BillingStatusResponse;
   usageSummaryRequest: UsageSummaryRequest;
   usageSummaryResponse: UsageSummaryResponse;
+  apiKeyListRequest: ApiKeyListRequest;
+  apiKeyListResponse: ApiKeyListResponse;
+  apiKeyCreateRequest: ApiKeyCreateRequest;
+  apiKeyCreatedResponse: ApiKeyCreatedResponse;
+  apiKeyRevokeRequest: ApiKeyRevokeRequest;
+  apiKeyRevokeResponse: ApiKeyRevokeResponse;
   billingInvoiceCreateRequest: BillingInvoiceCreateRequest;
   billingInvoiceStatusRequest: BillingInvoiceStatusRequest;
   billingInvoiceResponse: BillingInvoiceResponse;
@@ -644,6 +650,44 @@ export interface ModelSpend {
    * Exact USD millionths; never an IEEE-754 amount.
    */
   costMicrousd: string;
+  [k: string]: unknown;
+}
+export interface ApiKeyListRequest {
+  [k: string]: unknown;
+}
+export interface ApiKeyListResponse {
+  keys: ApiKeyRecord[];
+}
+export interface ApiKeyRecord {
+  id: string;
+  name: string;
+  scopes: string[];
+  createdAt: string;
+  lastUsedAt?: string | null;
+  expiresAt?: string | null;
+  revokedAt?: string | null;
+  usageStartedAt: string;
+  usage: ApiKeyUsage;
+}
+export interface ApiKeyUsage {
+  requestCount: string;
+  inputTokens: string;
+  cachedInputTokens: string;
+  outputTokens: string;
+  costMicrousd: string;
+}
+export interface ApiKeyCreateRequest {
+  name: string;
+}
+export interface ApiKeyCreatedResponse {
+  key: ApiKeyRecord;
+  token: string;
+  [k: string]: unknown;
+}
+export interface ApiKeyRevokeRequest {
+  id: string;
+}
+export interface ApiKeyRevokeResponse {
   [k: string]: unknown;
 }
 export interface BillingInvoiceCreateRequest {
