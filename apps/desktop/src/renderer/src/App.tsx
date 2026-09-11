@@ -395,6 +395,19 @@ export function App() {
     }
   }, [agentState.connected]);
 
+  const logout = useCallback(() => {
+    void (async () => {
+      try {
+        await window.axiomDesktop?.agent.logout();
+        setModels([]);
+        setModelCatalogError(null);
+        setUiError(null);
+      } catch (error) {
+        setUiError(error instanceof Error ? error.message : String(error));
+      }
+    })();
+  }, []);
+
   const refreshAfterAccountPortal = useRef(false);
   useEffect(() => {
     const refreshOnReturn = () => {
@@ -948,6 +961,7 @@ export function App() {
             })())}
             account={accountView}
             onSignIn={openSignIn}
+            onLogout={logout}
             connected={agentState.connected}
             accountId={billingAccountId}
             billing={agentState.billing}
@@ -1147,18 +1161,7 @@ export function App() {
               setUiError(error instanceof Error ? error.message : String(error));
             });
           }}
-          onLogout={() => {
-            void (async () => {
-              try {
-                await window.axiomDesktop?.agent.logout();
-                setModels([]);
-                setModelCatalogError(null);
-                setUiError(null);
-              } catch (error) {
-                setUiError(error instanceof Error ? error.message : String(error));
-              }
-            })();
-          }}
+          onLogout={logout}
         />
       ) : null}
       {accountScreen === "balance" ? (

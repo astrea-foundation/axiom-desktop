@@ -1764,6 +1764,21 @@ for (const platform of ["linux", "win32", "darwin"]) {
       await page.evaluate(() => (window as any).__deletionTest.failBalance(true));
       await trigger.click();
       await menu.getByRole("menuitem", { name: "Balance Unavailable", exact: true }).waitFor();
+      const logout = menu.getByRole("menuitem", { name: "Log out", exact: true });
+      if (platform === "linux") {
+        await logout.click();
+      } else {
+        await page.keyboard.press("End");
+        assert.equal(await logout.evaluate((element) => element === document.activeElement), true);
+        await page.keyboard.press("Enter");
+      }
+      await menu.waitFor({ state: "detached" });
+      await trigger.getByText("Sign in", { exact: true }).waitFor();
+      assert.equal(await trigger.evaluate((element) => element === document.activeElement), true);
+      assert.equal(await page.evaluate(() => (window as any).__deletionTest.calls.filter((call: any) => call.method === "logout").length), 1);
+      await trigger.click();
+      await menu.getByRole("menuitem", { name: "Sign in", exact: true }).waitFor();
+      assert.equal(await menu.getByRole("menuitem", { name: "Log out", exact: true }).count(), 0);
       assert.deepEqual(errors, []);
     } finally { await page.close(); }
   });

@@ -1,4 +1,4 @@
-import { ChevronUp, LogIn, Settings, WalletCards } from "lucide-react";
+import { ChevronUp, LogIn, LogOut, Settings, WalletCards } from "lucide-react";
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { BillingStatus } from "@axiom/axiom-acp-client";
@@ -13,11 +13,12 @@ export interface AccountMenuProps {
   connected: boolean;
   onRefreshBalance: () => Promise<void>;
   onSignIn: () => void;
+  onLogout: () => void;
   onOpenSettings: (trigger: HTMLElement) => void;
   onOpenBalance: (trigger: HTMLElement) => void;
 }
 
-export function AccountMenu({ account, accountId, billing, connected, onRefreshBalance, onSignIn, onOpenSettings, onOpenBalance }: AccountMenuProps) {
+export function AccountMenu({ account, accountId, billing, connected, onRefreshBalance, onSignIn, onLogout, onOpenSettings, onOpenBalance }: AccountMenuProps) {
   const avatar = accountAvatar(account.kind === "valid" ? account.title : null);
   const [open, setOpen] = useState(false);
   const [refresh, setRefresh] = useState<"loading" | "ready" | "failed">("ready");
@@ -100,6 +101,10 @@ export function AccountMenu({ account, accountId, billing, connected, onRefreshB
       <button type="button" role="menuitem" className={itemClass} onClick={() => { restore(); onOpenBalance(trigger.current!); }}>
         <WalletCards size={15} className="shrink-0" aria-hidden="true" /><span>Balance</span><span className="ml-auto text-[12px] tabular-nums text-[var(--color-text-tertiary)]">{balance}</span>
       </button>
+      {account.kind === "valid" ? <>
+        <div className="mx-2 my-1 h-px bg-[var(--color-border)]" />
+        <button type="button" role="menuitem" className={itemClass} onClick={() => { restore(); onLogout(); }}><LogOut size={15} aria-hidden="true" />Log out</button>
+      </> : null}
       {account.kind === "signed-out" || account.kind === "expired" ? <>
         <div className="mx-2 my-1 h-px bg-[var(--color-border)]" />
         <button type="button" role="menuitem" className={itemClass} onClick={() => { restore(); onSignIn(); }}><LogIn size={15} aria-hidden="true" />{account.kind === "expired" ? "Sign in again" : "Sign in"}</button>
