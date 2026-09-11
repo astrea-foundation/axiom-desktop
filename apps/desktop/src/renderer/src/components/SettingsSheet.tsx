@@ -7,6 +7,7 @@ import { SETTINGS_CATEGORIES, SettingsPanel, type SettingsCategory } from "./Set
 import { UsagePanel } from "./UsagePanel";
 import { UpdatesPanel } from "./UpdatesPanel";
 import type { DesktopUpdates } from "../useDesktopUpdates";
+import { accountAvatar } from "../lib/accountAvatar";
 
 const THEME_OPTIONS: Array<{ value: ThemePreference; label: string }> = [
   { value: "light", label: "Light" },
@@ -47,6 +48,7 @@ export function SettingsSheet({
   }, []);
   const theme = useTheme();
   const signedIn = account?.state === "valid";
+  const avatar = accountAvatar(account?.account?.displayName);
   const accountLabel = signedIn
     ? (account.account?.displayName || account.account?.verifiedEmail || "Connected Axiom account")
     : account?.state === "unavailable"
@@ -139,6 +141,8 @@ export function SettingsSheet({
           <SettingsPanel category="account" active={category} idPrefix={id}>
             <div className="rounded-[13px] border border-[var(--color-border)] bg-[var(--wash-row)] p-4">
             <div className="flex items-center justify-between gap-2">
+              {signedIn && <span className="mr-2 flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-[14px] font-medium"
+                style={{background: avatar.background, color: avatar.color}} aria-hidden="true">{avatar.initials}</span>}
               <div className="min-w-0">
                 <div className="break-words text-[13.5px] font-medium text-[var(--color-text-primary)]">{connected ? accountLabel : "AxiomCLI disconnected"}</div>
                 {signedIn && account?.account?.displayName && account.account.verifiedEmail ? <p className="mt-1 break-all text-[12px] text-[var(--color-text-secondary)]">{account.account.verifiedEmail}</p> : null}

@@ -4,6 +4,7 @@ import { createPortal } from "react-dom";
 import type { BillingStatus } from "@axiom/axiom-acp-client";
 import type { AccountPresentation } from "../signInFlow";
 import { usdFromMicrousd } from "../lib/currency";
+import { accountAvatar } from "../lib/accountAvatar";
 
 export interface AccountMenuProps {
   account: AccountPresentation;
@@ -17,6 +18,7 @@ export interface AccountMenuProps {
 }
 
 export function AccountMenu({ account, accountId, billing, connected, onRefreshBalance, onSignIn, onOpenSettings, onOpenBalance }: AccountMenuProps) {
+  const avatar = accountAvatar(account.kind === "valid" ? account.title : null);
   const [open, setOpen] = useState(false);
   const [refresh, setRefresh] = useState<"loading" | "ready" | "failed">("ready");
   const trigger = useRef<HTMLButtonElement>(null);
@@ -71,8 +73,9 @@ export function AccountMenu({ account, accountId, billing, connected, onRefreshB
       onClick={() => setOpen((value) => !value)}
       onKeyDown={(event) => { if (event.key === "ArrowUp" || event.key === "ArrowDown") { event.preventDefault(); setOpen(true); } }}
       className={`flex w-full min-w-0 items-center gap-2.5 rounded-[10px] px-2 py-2 text-left transition-colors hover:bg-[var(--wash-hover)] ${open ? "bg-[var(--wash-hover)]" : ""}`}>
-      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--color-cherry)] text-[11px] font-semibold text-on-accent">
-        {account.kind === "valid" ? "AX" : <LogIn size={13} strokeWidth={2.3} />}
+      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--color-cherry)] text-[11px] font-semibold text-on-accent"
+        style={account.kind === "valid" ? {background: avatar.background, color: avatar.color} : undefined} aria-hidden="true">
+        {account.kind === "valid" ? avatar.initials : <LogIn size={13} strokeWidth={2.3} />}
       </span>
       <span className="flex min-w-0 flex-1 flex-col items-start leading-tight">
         <span className="max-w-full truncate text-[12.5px] text-[var(--color-text-primary)]">{account.title}</span>

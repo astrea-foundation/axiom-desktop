@@ -395,6 +395,17 @@ export function App() {
     }
   }, [agentState.connected]);
 
+  const refreshAfterAccountPortal = useRef(false);
+  useEffect(() => {
+    const refreshOnReturn = () => {
+      if (!refreshAfterAccountPortal.current || !agentState.connected) return;
+      refreshAfterAccountPortal.current = false;
+      void refreshAccount();
+    };
+    window.addEventListener("focus", refreshOnReturn);
+    return () => window.removeEventListener("focus", refreshOnReturn);
+  }, [agentState.connected, refreshAccount]);
+
   const refreshBilling = useCallback(async () => {
     const api = window.axiomDesktop?.agent;
     if (!api || !agentState.connected || agentState.account?.state !== "valid") {
@@ -1130,7 +1141,9 @@ export function App() {
           }}
           onLogin={openSignIn}
           onManageAccount={() => {
+            refreshAfterAccountPortal.current = true;
             void window.axiomDesktop?.agent.openAccountPortal().catch((error: unknown) => {
+              refreshAfterAccountPortal.current = false;
               setUiError(error instanceof Error ? error.message : String(error));
             });
           }}

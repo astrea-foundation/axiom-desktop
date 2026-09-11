@@ -1685,6 +1685,10 @@ for (const platform of ["linux", "win32", "darwin"]) {
       assert.equal(await account.getAttribute("aria-selected"), "true");
       await settings.getByRole("button", { name: "Refresh account" }).click();
       await settings.getByRole("button", { name: "Manage account", exact: true }).click();
+      const beforeReturn = await page.evaluate(() => (window as any).__deletionTest.calls.filter((call: any) => call.method === "accountStatus").length);
+      await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+      await page.waitForFunction((before) => (window as any).__deletionTest.calls.filter((call: any) => call.method === "accountStatus").length === before + 1, beforeReturn);
+      assert.equal(await settings.getByText("TU", {exact: true}).count(), 1);
       await account.focus();
       await account.press("ArrowDown");
       assert.equal(await usage.getAttribute("aria-selected"), "true");
@@ -1733,6 +1737,7 @@ for (const platform of ["linux", "win32", "darwin"]) {
         ledgerSequence: 0, currency: "microUSD", invoicesEnabled: false, invoiceMinUsdCents: 500, invoiceMaxUsdCents: 100_000,
       }));
       const trigger = page.getByRole("button", { name: "Account menu", exact: true });
+      assert.equal(await trigger.getByText("TU", {exact: true}).count(), 1, "Avatar comes from the account username");
       assert.equal(await page.getByRole("button", { name: "Open settings" }).count(), 0, "no separate settings gear");
       await trigger.click();
       const menu = page.getByRole("menu", { name: "Account actions", exact: true });
