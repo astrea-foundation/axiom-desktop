@@ -67,7 +67,7 @@ export function AccountMenu({ account, accountId, billing, connected, onRefreshB
   }, [open, dismiss]);
 
   const balance = account.kind !== "valid" ? "Sign in" : !connected ? "Offline" : refresh === "failed" ? "Unavailable"
-    : billing ? usdFromMicrousd(billing.availableMicrousd) : refresh === "loading" ? "Loading…" : "Unavailable";
+    : billing ? usdFromMicrousd(billing.availableMicrousd, 2) : refresh === "loading" ? "Loading…" : "Unavailable";
   const itemClass = "flex w-full items-center gap-2.5 rounded-[7px] px-3 py-2.5 text-left text-[13px] text-[var(--color-text-secondary)] hover:bg-[var(--wash-hover)] focus:bg-[var(--wash-hover)] focus:text-[var(--color-text-primary)] focus:outline-none";
   return <>
     <button ref={trigger} type="button" aria-label="Account menu" aria-haspopup="menu" aria-expanded={open} aria-controls={open ? id : undefined}

@@ -1743,7 +1743,7 @@ for (const platform of ["linux", "win32", "darwin"]) {
       const menu = page.getByRole("menu", { name: "Account actions", exact: true });
       const bounds = await menu.boundingBox(), anchor = await trigger.boundingBox();
       assert.ok(bounds && anchor && bounds.y + bounds.height <= anchor.y);
-      assert.match(await menu.getByRole("menuitem", { name: /^Balance/ }).innerText(), /12\.345678/);
+      assert.match(await menu.getByRole("menuitem", { name: /^Balance/ }).innerText(), /\$12\.35$/);
       await page.getByRole("menuitem", { name: "Settings", exact: true }).press("ArrowDown");
       assert.equal(await page.evaluate(() => document.activeElement?.textContent?.startsWith("Balance")), true);
       await page.keyboard.press("Escape");
