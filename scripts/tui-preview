@@ -1,0 +1,156 @@
+#!/usr/bin/env python3
+"""Render the TUI preview frames as PNGs for visual review.
+
+    cargo test -p axiomcli --lib tui_preview_frames -- --ignored
+    scripts/tui-preview
+
+The Rust side writes one JSON buffer dump per scenario to target/tui-preview;
+this turns each into an image so colours and spacing can be judged the way a
+terminal would show them. Requires Pillow and a monospace TTF.
+"""
+
+import json
+import pathlib
+import sys
+
+from PIL import Image, ImageDraw, ImageFont
+
+FRAMES = pathlib.Path("target/tui-preview")
+FONT_CANDIDATES = [
+    ("/usr/share/fonts/TTF/JetBrainsMonoNerdFontMono-Regular.ttf",
+     "/usr/share/fonts/TTF/JetBrainsMonoNerdFontMono-Bold.ttf",
+     "/usr/share/fonts/TTF/JetBrainsMonoNerdFontMono-Italic.ttf",
+     "/usr/share/fonts/TTF/JetBrainsMonoNerdFontMono-BoldItalic.ttf"),
+    ("/usr/share/fonts/TTF/MesloLGLNerdFontMono-Regular.ttf",
+     "/usr/share/fonts/TTF/MesloLGLNerdFontMono-Bold.ttf",
+     "/usr/share/fonts/TTF/MesloLGLNerdFontMono-Italic.ttf",
+     "/usr/share/fonts/TTF/MesloLGLNerdFontMono-BoldItalic.ttf"),
+    ("/usr/share/fonts/TTF/DejaVuSansMono.ttf",
+     "/usr/share/fonts/TTF/DejaVuSansMono-Bold.ttf",
+     "/usr/share/fonts/TTF/DejaVuSansMono-Oblique.ttf",
+     "/usr/share/fonts/TTF/DejaVuSansMono-BoldOblique.ttf"),
+    ("/usr/share/fonts/liberation/LiberationMono-Regular.ttf",
+     "/usr/share/fonts/liberation/LiberationMono-Bold.ttf",
+     "/usr/share/fonts/liberation/LiberationMono-Italic.ttf",
+     "/usr/share/fonts/liberation/LiberationMono-BoldItalic.ttf"),
+]
+EMOJI_FONT = "/usr/share/fonts/noto/NotoColorEmoji.ttf"
+EMOJI_STRIKE = 109  # NotoColorEmoji ships a single bitmap size
+FONT_SIZE = 20
+PADDING = 14
+# Simulated host-terminal defaults; Color::Reset dumps as null and inherits
+# these values just as the real TUI inherits the user's terminal background.
+DEFAULT_FG = (244, 244, 246)
+DEFAULT_BG = (20, 20, 22)
+
+
+def load_fonts():
+    for regular, bold, italic, bold_italic in FONT_CANDIDATES:
+        try:
+            return (
+                ImageFont.truetype(regular, FONT_SIZE),
+                ImageFont.truetype(bold, FONT_SIZE),
+                ImageFont.truetype(italic, FONT_SIZE),
+                ImageFont.truetype(bold_italic, FONT_SIZE),
+            )
+        except OSError:
+            continue
+    sys.exit("no monospace font found; edit FONT_CANDIDATES")
+
+
+def render(frame_path, out_path, regular, bold, italic, bold_italic, emoji):
+    frame = json.loads(frame_path.read_text())
+    ascent, descent = regular.getmetrics()
+    cell_w = round(regular.getlength("M"))
+    cell_h = ascent + descent + 4
+    width, height = frame["width"], frame["height"]
+
+    image = Image.new(
+        "RGB",
+        (width * cell_w + PADDING * 2, height * cell_h + PADDING * 2),
+        DEFAULT_BG,
+    )
+    draw = ImageDraw.Draw(image)
+
+    for y, row in enumerate(frame["rows"]):
+        for x, cell in enumerate(row):
+            background = tuple(cell["b"]) if cell["b"] else DEFAULT_BG
+            if background != DEFAULT_BG:
+                draw.rectangle(
+                    [
+                        PADDING + x * cell_w,
+                        PADDING + y * cell_h,
+                        PADDING + (x + 1) * cell_w - 1,
+                        PADDING + (y + 1) * cell_h - 1,
+                    ],
+                    fill=background,
+                )
+
+    for y, row in enumerate(frame["rows"]):
+        for x, cell in enumerate(row):
+            symbol = cell["s"]
+            if not symbol.strip():
+                continue
+            left, top = PADDING + x * cell_w, PADDING + y * cell_h + 2
+            if emoji is not None and max(map(ord, symbol)) > 0x1F000:
+                glyph = Image.new("RGBA", (EMOJI_STRIKE, EMOJI_STRIKE), (0, 0, 0, 0))
+                ImageDraw.Draw(glyph).text(
+                    (0, 0), symbol, font=emoji, embedded_color=True
+                )
+                box = glyph.getbbox() or (0, 0, EMOJI_STRIKE, EMOJI_STRIKE)
+                glyph = glyph.crop(box).resize((cell_w * 2 - 2, cell_h - 4), Image.LANCZOS)
+                image.paste(glyph, (left, top), glyph)
+            else:
+                font = bold_italic if cell["d"] and cell["i"] else (
+                    bold if cell["d"] else (italic if cell["i"] else regular)
+                )
+                foreground = tuple(cell["f"]) if cell["f"] else DEFAULT_FG
+                draw.text(
+                    (left, top),
+                    symbol,
+                    font=font,
+                    fill=foreground,
+                )
+                if cell["u"]:
+                    draw.line(
+                        (left, top + cell_h - 4, left + cell_w, top + cell_h - 4),
+                        fill=foreground,
+                        width=1,
+                    )
+                if cell["x"]:
+                    draw.line(
+                        (left, top + cell_h // 2, left + cell_w, top + cell_h // 2),
+                        fill=foreground,
+                        width=1,
+                    )
+
+    image.save(out_path)
+    print(f"{out_path} {image.size[0]}x{image.size[1]}")
+
+
+def main():
+    if not FRAMES.is_dir():
+        sys.exit(
+            "no frames found; run: "
+            "cargo test -p axiomcli --lib tui_preview_frames -- --ignored"
+        )
+    regular, bold, italic, bold_italic = load_fonts()
+    try:
+        emoji = ImageFont.truetype(EMOJI_FONT, EMOJI_STRIKE)
+    except OSError:
+        emoji = None
+    names = sys.argv[1:] or sorted(path.stem for path in FRAMES.glob("*.json"))
+    for name in names:
+        render(
+            FRAMES / f"{name}.json",
+            FRAMES / f"{name}.png",
+            regular,
+            bold,
+            italic,
+            bold_italic,
+            emoji,
+        )
+
+
+if __name__ == "__main__":
+    main()
