@@ -227,7 +227,7 @@ The initial client bounds are no broader than the current backend:
 
 | Item | Limit |
 |---|---:|
-| messages | 101 |
+| messages | nonempty; no count cap |
 | tools | 128 |
 | tool calls per message/response | 128 |
 | tool-call ID | 256 characters |
@@ -242,6 +242,10 @@ The initial client bounds are no broader than the current backend:
 
 Limits are validated before expensive cryptography where possible and again on
 the serialized encrypted request.
+
+Conversation length is governed by the model's token budget and payload-size
+limits. The agent compacts context based on token usage; message count alone
+does not reject or truncate a conversation.
 
 Before relay, the native client reconstructs the exact compact provider HTTP
 JSON from ciphertext—not plaintext—and SHA-256 hashes its UTF-8 bytes. Field

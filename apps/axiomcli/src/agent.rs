@@ -4306,6 +4306,53 @@ mod engine_tests {
     }
 
     #[tokio::test]
+    async fn long_conversation_keeps_all_messages_within_the_token_budget() {
+        let provider = Arc::new(AutoCompactProvider {
+            requests: Mutex::new(Vec::new()),
+            usage: (10, 5),
+            context_window_tokens: 1_048_576,
+            max_output_tokens: 8192,
+        });
+        let engine = AgentEngine::new(provider.clone(), Arc::new(ToolRegistry::new()), "test", 3);
+        let session_id = SessionId::new();
+
+        for turn in 1..=128 {
+            let mut context = context();
+            context.session_id = session_id.clone();
+            let (tx, mut rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
+            engine
+                .run(
+                    context,
+                    format!("Short turn {turn}"),
+                    tx,
+                    CancellationToken::new(),
+                )
+                .await
+                .expect("long conversation turn");
+            assert!(
+                !drain(&mut rx)
+                    .iter()
+                    .any(|event| matches!(event, AppEvent::ContextCompacted { .. }))
+            );
+
+            let requests = provider.requests.lock().await;
+            assert_eq!(requests.len(), turn);
+            let request = requests.last().expect("inference request");
+            assert_eq!(request.messages.len(), 2 * turn);
+            assert_eq!(request.messages[1].content, "Short turn 1");
+            assert_eq!(
+                request.messages.last().unwrap().content,
+                format!("Short turn {turn}")
+            );
+            request
+                .validate()
+                .expect("short messages remain valid regardless of count");
+        }
+
+        assert_eq!(engine.histories.lock().await[&session_id].len(), 257);
+    }
+
+    #[tokio::test]
     async fn provider_usage_triggers_automatic_compaction_at_eighty_five_percent() {
         let provider = Arc::new(AutoCompactProvider {
             requests: Mutex::new(Vec::new()),

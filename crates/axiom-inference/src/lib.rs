@@ -10,7 +10,6 @@ use serde::{Deserialize, Serialize};
 mod accounting;
 pub use accounting::{InvocationPurpose, InvocationState, RequestUsage, UsageCompleteness};
 
-pub const MAX_MESSAGES: usize = 101;
 pub const MAX_TOOLS: usize = 128;
 pub const MAX_TOOL_CALLS: usize = 128;
 pub const MAX_TOOL_CALL_ID_CHARS: usize = 256;
@@ -206,7 +205,7 @@ impl InferenceRequest {
         {
             return Err(ValidationError::invalid("model"));
         }
-        if self.messages.is_empty() || self.messages.len() > MAX_MESSAGES {
+        if self.messages.is_empty() {
             return Err(ValidationError::count("messages"));
         }
         if self.tools.len() > MAX_TOOLS {
@@ -684,6 +683,15 @@ mod tests {
         assert_eq!(request.reasoning_effort, ReasoningEffort::Medium);
         assert_eq!(request.tool_choice, ToolChoice::Auto);
         assert_eq!(request.response_format, ResponseFormat::Text);
+    }
+
+    #[test]
+    fn requests_still_require_at_least_one_message() {
+        let request = InferenceRequest::streaming("cherry", Vec::new(), Vec::new());
+
+        let error = request.validate().unwrap_err();
+        assert_eq!(error.kind, ValidationErrorKind::Count);
+        assert_eq!(error.field, "messages");
     }
 
     #[test]
