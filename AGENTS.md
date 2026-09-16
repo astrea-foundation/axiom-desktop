@@ -24,3 +24,20 @@ Native branding and the compiled local loopback callback page remain in
 the public release API; update tests use native fixtures, never a neighboring
 website checkout. Installer files and their generated manifest are the handoff
 to the backend repository's CDN and website publisher.
+
+## Inference authentication policy
+
+Inference requires provider E2EE to a key bound to fresh, locally verified TEE
+evidence. Authenticate each response to the accepted worker and request. A
+separate signed inference receipt is not universally required when the E2EE
+exchange establishes those bindings. Preserve each registered protocol's actual
+authentication checks; current NEAR/Phala implementations still use their
+signatures/receipts. Streaming must authenticate ordering and completion before
+success. There is no plaintext, ordinary-TLS-only, or unverified-key fallback.
+
+For a Chutes non-streaming implementation, keep each fresh one-use client response
+public key confidential inside the request encrypted to the attested worker.
+Verify the response AEAD using that request's private response context. Publishing
+or reusing that response public key would remove the intended sender binding.
+The backend repository currently contains a standalone Chutes demo; this policy
+does not itself register a native production provider.

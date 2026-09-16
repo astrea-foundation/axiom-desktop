@@ -1,5 +1,15 @@
 # Privacy behavior
 
+Inference policy requires a freshly attested machine/key and an E2EE response
+authenticated to that worker and request. Separate signed inference receipts are
+protocol-specific, not a universal requirement. The current NEAR and Phala native
+implementations use signatures/receipts for that authentication and retain those
+checks. The backend repository's standalone Chutes demo instead keeps a one-use
+response public key confidential inside the attested-worker-encrypted request
+and verifies the response AEAD locally. Chutes is not yet registered in the native
+production client. Stream ordering and completion must be authenticated under
+any future protocol before successful completion.
+
 AxiomCLI's default build performs provider attestation and end-to-end
 encryption directly in-process through `axiom-secure-client`; it does not route
 inference through the local proxy. It reuses only bounded, locally verified
