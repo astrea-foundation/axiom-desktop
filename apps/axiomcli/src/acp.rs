@@ -433,14 +433,17 @@ fn extension_security_evidence(
     status: crate::app::SecurityStatus,
     evidence: axiom_secure_client::SecurityEvidence,
 ) -> crate::Result<ExtensionSecurityEvidence> {
-    let attestation_generation = evidence
-        .attestation_generation
-        .filter(|generation| *generation > 0)
-        .ok_or_else(|| {
-            crate::AxiomError::Protocol(
-                "verified provider evidence is missing its attestation generation".into(),
-            )
-        })?;
+    // Tinfoil authenticates its router directly and has no relay lease generation.
+    // Keep the generation requirement for protocols whose relay leases use it.
+    let direct_tinfoil = evidence.provider_id == "tinfoil"
+        && evidence.attestation_protocol == "tinfoil-snp-sigstore-v1"
+        && evidence.e2ee_protocol == "tinfoil-ehbp-v1";
+    let attestation_generation = evidence.attestation_generation;
+    if attestation_generation == Some(0) || (attestation_generation.is_none() && !direct_tinfoil) {
+        return Err(crate::AxiomError::Protocol(
+            "verified provider evidence is missing its attestation generation".into(),
+        ));
+    }
     let hard_expires_at_unix_seconds = evidence
         .hard_expires_at_unix_seconds
         .filter(|expiry| *expiry > 0)
@@ -6870,6 +6873,48 @@ mod tests {
         assert!(
             extension_security_evidence(crate::app::SecurityStatus::Verified, evidence).is_err()
         );
+    }
+
+    #[test]
+    fn tinfoil_security_report_does_not_require_a_relay_lease_generation() {
+        let evidence = axiom_secure_client::SecurityEvidence {
+            state: axiom_secure_client::SecurityState::Verified,
+            provider_id: "tinfoil".into(),
+            model_id: "tinfoil-gpt-oss-120b".into(),
+            attestation_protocol: "tinfoil-snp-sigstore-v1".into(),
+            e2ee_protocol: "tinfoil-ehbp-v1".into(),
+            e2ee_encryption_version: 1,
+            trust_policy_version: "test-policy".into(),
+            verified_at_unix_seconds: 1,
+            attestation_generation: None,
+            hard_expires_at_unix_seconds: Some(241),
+            model_key_fingerprint: "00".repeat(32),
+            tls_spki_fingerprint: None,
+            checks: Vec::new(),
+            provider_claims: Vec::new(),
+            workload_manifest: None,
+            workload_identity_allowlist_configured: false,
+            approved_workload_identity: false,
+        };
+        let projected =
+            extension_security_evidence(crate::app::SecurityStatus::Verified, evidence.clone())
+                .expect("Tinfoil evidence has no relay lease");
+        assert_eq!(projected.attestation_generation, None);
+        assert_eq!(projected.hard_expires_at_unix_seconds, 241);
+        for index in 0..5 {
+            let mut invalid = evidence.clone();
+            match index {
+                0 => invalid.provider_id = "near".into(),
+                1 => invalid.attestation_protocol = "other".into(),
+                2 => invalid.e2ee_protocol = "other".into(),
+                3 => invalid.attestation_generation = Some(0),
+                _ => invalid.hard_expires_at_unix_seconds = None,
+            }
+            assert!(
+                extension_security_evidence(crate::app::SecurityStatus::Verified, invalid,)
+                    .is_err()
+            );
+        }
     }
 
     #[test]

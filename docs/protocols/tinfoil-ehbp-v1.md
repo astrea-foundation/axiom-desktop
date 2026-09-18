@@ -8,6 +8,8 @@ The pinned `tinfoil` Rust SDK (commit `91e8aef8fbc34129b68de8667ece5bd9ef7b7110`
 
 Verified public material is cached for at most 240 seconds, bounded by the trust policy's expiry. Request private contexts are fresh and never reused. Failed exchanges invalidate cached material for the next attempt, without automatically replaying a possibly billable inference. The pinned SDK supports SNP; unsupported attestation formats fail closed.
 
+Public ACP evidence omits `attestationGeneration` for this protocol because Tinfoil does not use a relay lease generation. The native and renderer projections still require expiry and the registered Tinfoil protocol identity; protocols that use relay leases continue to require a positive generation.
+
 The measured router verifies its workers transitively. Evidence describes this accurately: this client verifies the router, not independent quotes for every individual GPU. The source release, repository and verifier ground truth remain inspectable without manual approval of each provider release.
 
 The native adapter constructs complete messages and tool schemas locally. A random private cache secret partitions provider prompt caching per native client and remains inside the encrypted body. Axiom account tokens are only relay credentials. Provider credentials exist only at the Axiom backend.
@@ -61,6 +63,8 @@ cargo run -p axiom-secure-client --example tinfoil_relay_smoke
 For an isolated local relay, build with `--features test-fixture`, set `AXIOM_TINFOIL_ALLOW_LOCAL_RELAY=1`, and use `http://127.0.0.1:<port>`. This opt-in permits loopback transport to the test backend; it does **not** bypass Tinfoil attestation or EHBP. Production configuration requires HTTPS.
 
 Regression tests cover reordered/tampered/replayed/truncated frames, wrong response contexts, missing authenticated terminal markers, incomplete tools, malformed usage, hostile catalog entries and byte-fragmented UTF-8/SSE. Desktop proof tests distinguish router verification from independent GPU verification.
+
+The [Desktop and TUI test report](../testing/tinfoil-ui-2026-09-18/README.md) records live UI coverage, screenshots, usage and unresolved integration/UX findings.
 
 The lockfile also updates Rustls to 0.23.45, fixing [RUSTSEC-2026-0285](https://rustsec.org/advisories/RUSTSEC-2026-0285.html). The dependency audit requires the two pinned Tinfoil Git sources and otherwise retains the repository's source/license policy.
 

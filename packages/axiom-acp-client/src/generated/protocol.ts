@@ -734,7 +734,10 @@ export interface SecurityEvidence {
   e2eeEncryptionVersion: number;
   trustPolicyVersion: string;
   verifiedAtUnixSeconds: number;
-  attestationGeneration: number;
+  /**
+   * Relay lease generation, when the provider protocol uses relay leases.
+   */
+  attestationGeneration?: number | null;
   hardExpiresAtUnixSeconds: number;
   modelKeyFingerprint: string;
   tlsSpkiFingerprint?: string | null;

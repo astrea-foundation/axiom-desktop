@@ -2336,7 +2336,11 @@
           "minimum": 0
         },
         "attestationGeneration": {
-          "type": "integer",
+          "description": "Relay lease generation, when the provider protocol uses relay leases.",
+          "type": [
+            "integer",
+            "null"
+          ],
           "format": "uint64",
           "minimum": 0
         },
@@ -2388,7 +2392,6 @@
         "e2eeEncryptionVersion",
         "trustPolicyVersion",
         "verifiedAtUnixSeconds",
-        "attestationGeneration",
         "hardExpiresAtUnixSeconds",
         "modelKeyFingerprint",
         "checks",

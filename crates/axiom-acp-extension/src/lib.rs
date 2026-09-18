@@ -348,7 +348,9 @@ pub struct SecurityEvidence {
     pub e2ee_encryption_version: u16,
     pub trust_policy_version: String,
     pub verified_at_unix_seconds: u64,
-    pub attestation_generation: u64,
+    /// Relay lease generation, when the provider protocol uses relay leases.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attestation_generation: Option<u64>,
     pub hard_expires_at_unix_seconds: u64,
     pub model_key_fingerprint: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -148,7 +148,7 @@ export function PrivacyProofDialog({ session, model, modelId, state, now, webEna
               <Fact label="Attestation" mono>{evidence.attestationProtocol}</Fact>
               <Fact label="Encryption" mono>{evidence.e2eeProtocol} · v{evidence.e2eeEncryptionVersion}</Fact>
               <Fact label="Trust policy" mono>{evidence.trustPolicyVersion}</Fact>
-              <Fact label="Generation" mono>{evidence.attestationGeneration}</Fact>
+              {evidence.attestationGeneration != null ? <Fact label="Generation" mono>{evidence.attestationGeneration}</Fact> : null}
               <Fact label="Checked">{new Date(evidence.verifiedAtUnixSeconds * 1000).toLocaleString()}</Fact>
               <Fact label="Expires">{new Date(evidence.hardExpiresAtUnixSeconds * 1000).toLocaleString()}</Fact>
               <Fact label="Key fingerprint" mono>{evidence.modelKeyFingerprint}</Fact>
