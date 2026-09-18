@@ -332,7 +332,7 @@ pub(crate) fn stream_failure(code: Option<&str>) -> SecureClientError {
     )
 }
 
-fn error_for_status_body(status: StatusCode, body: &[u8]) -> SecureClientError {
+pub(crate) fn error_for_status_body(status: StatusCode, body: &[u8]) -> SecureClientError {
     let public = serde_json::from_slice::<PublicErrorEnvelope>(body).ok();
     let code = public
         .as_ref()

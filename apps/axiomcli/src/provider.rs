@@ -380,7 +380,7 @@ impl InferenceProvider for SecureAxiomProvider {
             });
         } else if !accounting.response_verified {
             result = Err(AxiomError::Provider(
-                "Response receipt was not verified".into(),
+                "Response authentication was not verified".into(),
             ));
             accounting.state = InvocationState::Failed;
         }

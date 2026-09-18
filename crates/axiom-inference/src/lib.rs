@@ -388,7 +388,7 @@ fn validate_call_id(value: &str) -> Result<(), ValidationError> {
     }
 }
 
-fn validate_tool_calls(calls: &[ToolCall]) -> Result<(), ValidationError> {
+pub fn validate_tool_calls(calls: &[ToolCall]) -> Result<(), ValidationError> {
     if calls.len() > MAX_TOOL_CALLS {
         return Err(ValidationError::count("tool_calls"));
     }

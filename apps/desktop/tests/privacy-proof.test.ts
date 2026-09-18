@@ -27,6 +27,19 @@ test("a hardware group cannot pass with a missing GPU check", () => {
   assert.equal(proofGroups(report)[0]!.passed, false);
 });
 
+test("Tinfoil proof names the router and cannot claim independent GPU verification", () => {
+  const report = securityEvidence();
+  report.attestationProtocol = "tinfoil-snp-sigstore-v1";
+  report.checks = ["AMD SEV-SNP router attestation", "Measured router matches Sigstore build provenance", "Live TLS identity and attested HPKE key"]
+    .map((name) => ({ name, detail: "verified", passed: true }));
+  const groups = proofGroups(report);
+  assert.equal(groups.length, 3);
+  assert.ok(groups.every((group) => group.passed));
+  assert.match(groups[0]!.explanation, /router verifies its model workers/);
+  report.checks.pop();
+  assert.equal(proofGroups(report)[2]!.passed, false);
+});
+
 test("TEE checks and Phala's required-receipt policy cannot verify an incomplete reply", () => {
   const current = session();
   current.securityEvidence!.checks.push({ name: "Signed receipt", detail: "required", passed: true });
