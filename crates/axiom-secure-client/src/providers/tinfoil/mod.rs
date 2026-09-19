@@ -5,7 +5,7 @@ mod tests;
 
 use std::{
     sync::Arc,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use async_trait::async_trait;
@@ -48,6 +48,37 @@ pub(crate) struct TinfoilProvider {
 struct Material {
     key: String,
     evidence: SecurityEvidence,
+}
+
+// Operational timings only. In particular, never log decrypted chunks or keys.
+struct ExchangeTiming<'a> {
+    model: &'a str,
+    request: &'a str,
+    started: Instant,
+    headers_ms: Option<u128>,
+    first_delta_ms: Option<u128>,
+    last_chunk: Option<Instant>,
+    max_idle_ms: u128,
+    complete: bool,
+}
+
+impl Drop for ExchangeTiming<'_> {
+    fn drop(&mut self) {
+        let total_ms = self.started.elapsed().as_millis();
+        let max_idle_ms = self
+            .max_idle_ms
+            .max(self.last_chunk.map_or(0, |last| last.elapsed().as_millis()));
+        tracing::info!(
+            model = self.model,
+            request = self.request,
+            headers_ms = self.headers_ms,
+            first_authenticated_delta_ms = self.first_delta_ms,
+            max_body_idle_ms = max_idle_ms,
+            total_ms,
+            complete = self.complete,
+            "Tinfoil native exchange timing"
+        );
+    }
 }
 
 impl TinfoilProvider {
@@ -134,6 +165,7 @@ impl SecureProvider for TinfoilProvider {
         // Only this locally verified result can populate a production session.
         // No provider API key is needed for public attestation verification.
         let mut verifier = ::tinfoil::SecureClient::new(HOST, REPOSITORY, "");
+        let verification_started = Instant::now();
         let ground = tokio::select! {
             () = cancellation.cancelled() => return Err(SecureClientError::cancelled()),
             result = tokio::time::timeout(self.config.attestation_timeout, verifier.verify()) => {
@@ -203,6 +235,11 @@ impl SecureProvider for TinfoilProvider {
             approved_workload_identity: false,
         };
         let material = Material { key, evidence };
+        tracing::info!(
+            model = model.id,
+            elapsed_ms = verification_started.elapsed().as_millis(),
+            "Tinfoil attestation verified"
+        );
         self.cache
             .insert(
                 model.clone(),
@@ -324,6 +361,16 @@ impl Session {
             http,
         )
         .map_err(|_| SecureClientError::attestation("invalid attested Tinfoil key"))?;
+        let mut timing = ExchangeTiming {
+            model: &self.model.id,
+            request: &request_id,
+            started: Instant::now(),
+            headers_ms: None,
+            first_delta_ms: None,
+            last_chunk: None,
+            max_idle_ms: 0,
+            complete: false,
+        };
         let response = tokio::select! {
             () = cancellation.cancelled() => return Err(SecureClientError::cancelled()),
             result = tokio::time::timeout(Duration::from_secs(300), encrypted.execute(wire)) => {
@@ -331,6 +378,7 @@ impl Session {
                     .map_err(|_| invalid("Tinfoil encrypted exchange failed"))?
             },
         };
+        timing.headers_ms = Some(timing.started.elapsed().as_millis());
         if response.status() != reqwest::StatusCode::OK {
             let status = response.status();
             let body = bounded_body(response, self.config.limits.relay_error_bytes)
@@ -365,6 +413,9 @@ impl Session {
             };
             let chunk = chunk
                 .map_err(|_| invalid("Tinfoil response authentication or transport failed"))?;
+            if let Some(last) = timing.last_chunk.replace(Instant::now()) {
+                timing.max_idle_ms = timing.max_idle_ms.max(last.elapsed().as_millis());
+            }
             received = received.saturating_add(chunk.len());
             let limit = if stream {
                 self.config.limits.relay_stream_bytes
@@ -376,6 +427,17 @@ impl Session {
             }
             if stream {
                 for event in parser.push(&chunk)? {
+                    if timing.first_delta_ms.is_none()
+                        && matches!(
+                            event,
+                            ProviderEvent::TextDelta(_)
+                                | ProviderEvent::ReasoningDelta(_)
+                                | ProviderEvent::RefusalDelta(_)
+                                | ProviderEvent::ToolCallDelta(_)
+                        )
+                    {
+                        timing.first_delta_ms = Some(timing.started.elapsed().as_millis());
+                    }
                     send(sink.as_ref(), event, &cancellation).await?;
                 }
             } else {
@@ -440,6 +502,7 @@ impl Session {
             )
             .await?;
         }
+        timing.complete = true;
         Ok(output)
     }
 }
@@ -491,14 +554,19 @@ fn request_body(model: &ModelInfo, request: &InferenceRequest, stream: bool) -> 
         {
             return Err(invalid_request("unsupported reasoning effort"));
         }
-        if model.upstream_model == "glm-5-3" {
+        if matches!(model.upstream_model.as_str(), "glm-5-3" | "kimi-k3") {
             let effort = match request.reasoning_effort {
                 ReasoningEffort::Low => "low",
                 ReasoningEffort::Medium => "high",
                 ReasoningEffort::High => "max",
                 _ => return Err(invalid_request("unsupported reasoning effort")),
             };
-            body["chat_template_kwargs"] = json!({"reasoning_effort": effort});
+            // Axiom's three effort levels map to the provider's low/high/max.
+            if model.upstream_model == "glm-5-3" {
+                body["chat_template_kwargs"] = json!({"reasoning_effort": effort});
+            } else {
+                body["reasoning_effort"] = json!(effort);
+            }
         } else {
             body["reasoning_effort"] = json!(request.reasoning_effort.as_str());
         }

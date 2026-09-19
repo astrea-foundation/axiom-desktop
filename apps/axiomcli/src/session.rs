@@ -1097,6 +1097,9 @@ impl SessionStore {
             local.output_tokens = snapshot.output_tokens.clone();
             local.reasoning_tokens = snapshot.reasoning_tokens.clone();
             local.cost_microusd = snapshot.cost_microusd.clone();
+            if snapshot.error_code.as_deref() == Some("CANCELLED_USAGE_WAIVED") {
+                local.error_code.clone_from(&snapshot.error_code);
+            }
             local.completeness = snapshot.completeness;
             local.settled = snapshot.settled;
             if local.finished_at_ms.is_none() {
@@ -1117,13 +1120,13 @@ impl SessionStore {
     }
 
     pub fn append(&self, envelope: &EventEnvelope) -> Result<ThreadRevision> {
-        self.append_batch(std::slice::from_ref(envelope), None, None)
+        self.append_batch(std::slice::from_ref(envelope), None, None, None)
             .map(|(revision, _)| revision)
     }
 
     /// Atomically translate a runtime command's events into durable records.
     pub fn append_all(&self, envelopes: &[EventEnvelope]) -> Result<ThreadRevision> {
-        self.append_batch(envelopes, None, None)
+        self.append_batch(envelopes, None, None, None)
             .map(|(revision, _)| revision)
     }
 
@@ -1137,7 +1140,7 @@ impl SessionStore {
         thinking: ThinkingLevel,
     ) -> Result<(ThreadRevision, ProfilePreferences)> {
         let (revision, preferences) =
-            self.append_batch(envelopes, None, Some((model, thinking)))?;
+            self.append_batch(envelopes, None, Some((model, thinking)), None)?;
         Ok((
             revision,
             preferences.expect("a requested profile update always returns its row"),
@@ -1151,7 +1154,17 @@ impl SessionStore {
         envelopes: &[EventEnvelope],
         client_item_id: Option<&str>,
     ) -> Result<ThreadRevision> {
-        self.append_batch(envelopes, client_item_id, None)
+        self.append_batch(envelopes, client_item_id, None, None)
+            .map(|(revision, _)| revision)
+    }
+
+    pub fn append_prompt_revision(
+        &self,
+        envelopes: &[EventEnvelope],
+        client_item_id: Option<&str>,
+        revision: Option<&axiom_acp_extension::PromptRevision>,
+    ) -> Result<ThreadRevision> {
+        self.append_batch(envelopes, client_item_id, None, revision)
             .map(|(revision, _)| revision)
     }
 
@@ -1160,6 +1173,7 @@ impl SessionStore {
         envelopes: &[EventEnvelope],
         client_item_id: Option<&str>,
         preferences: Option<(&str, ThinkingLevel)>,
+        replacement: Option<&axiom_acp_extension::PromptRevision>,
     ) -> Result<(ThreadRevision, Option<ProfilePreferences>)> {
         let first = envelopes
             .first()
@@ -1193,6 +1207,22 @@ impl SessionStore {
         );
         let mut connection = self.lock()?;
         let transaction = connection.transaction().map_err(storage_error)?;
+        if let Some(replacement) = replacement {
+            if !envelopes
+                .iter()
+                .any(|event| matches!(event.event, AppEvent::PromptAccepted { .. }))
+            {
+                return Err(AxiomError::InvalidTransition(
+                    "A revision must include its replacement prompt.".into(),
+                ));
+            }
+            truncate_for_revision(
+                &transaction,
+                &first.session_id,
+                &replacement.user_item_id,
+                replacement.expected_revision,
+            )?;
+        }
         let mut client_item_id = client_item_id.as_deref();
         for envelope in envelopes {
             persist_event(&transaction, envelope, client_item_id)?;
@@ -2427,6 +2457,56 @@ fn insert_notice(
     .map(|(id, _)| id)
 }
 
+fn truncate_for_revision(
+    transaction: &Transaction<'_>,
+    id: &SessionId,
+    item_id: &str,
+    expected_revision: u64,
+) -> Result<()> {
+    let revision = query_thread_revision(transaction, id)?;
+    if revision.revision != expected_revision {
+        return Err(AxiomError::InvalidTransition(
+            "The conversation changed. Reload it before editing or regenerating.".into(),
+        ));
+    }
+    let running: bool = transaction
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM turns WHERE thread_id=?1 AND status='running')",
+            [id.to_string()],
+            |row| row.get(0),
+        )
+        .map_err(storage_error)?;
+    if running {
+        return Err(AxiomError::InvalidTransition(
+            "Stop the current reply before editing or regenerating.".into(),
+        ));
+    }
+    let sequence: Option<i64> = transaction.query_row(
+            "SELECT i.sequence FROM timeline_items i JOIN turns t ON t.thread_id=i.thread_id AND t.user_item_id=i.id
+             WHERE i.thread_id=?1 AND i.id=?2 AND i.kind='user_message'",
+            params![id.to_string(), item_id], |row| row.get(0)).optional().map_err(storage_error)?;
+    let sequence = sequence.ok_or_else(|| {
+        AxiomError::InvalidTransition("Choose the message that started this turn.".into())
+    })?;
+    transaction
+        .execute(
+            "DELETE FROM turns WHERE thread_id=?1 AND user_item_id IN
+             (SELECT id FROM timeline_items WHERE thread_id=?1 AND sequence>=?2)",
+            params![id.to_string(), sequence],
+        )
+        .map_err(storage_error)?;
+    transaction
+        .execute(
+            "DELETE FROM timeline_items WHERE thread_id=?1 AND sequence>=?2",
+            params![id.to_string(), sequence],
+        )
+        .map_err(storage_error)?;
+    transaction.execute(
+            "UPDATE threads SET revision=revision+1,last_reported_usage=NULL,updated_at=?2 WHERE id=?1",
+            params![id.to_string(), Utc::now().to_rfc3339()]).map_err(storage_error)?;
+    Ok(())
+}
+
 fn finish_turn(
     transaction: &Transaction<'_>,
     thread_id: &str,
@@ -2446,6 +2526,34 @@ fn finish_turn(
         return Err(AxiomError::Storage(format!(
             "turn {turn_id} is not running in thread {thread_id}"
         )));
+    }
+    if matches!(
+        status,
+        TurnStatus::Cancelled | TurnStatus::Failed | TurnStatus::Interrupted
+    ) {
+        // A cancelled ACP future can be dropped before its provider emits final
+        // accounting. End execution atomically with the turn; billing remains
+        // independently recoverable and must never promote response verification.
+        let (state, code) = if status == TurnStatus::Cancelled {
+            ("cancelled", "CANCELLED")
+        } else {
+            ("failed", "CLIENT_INTERRUPTED")
+        };
+        transaction
+            .execute(
+                "UPDATE request_usage SET record=json_set(record,
+                '$.state', ?3, '$.errorCode', ?4, '$.finishedAtMs', ?5)
+             WHERE thread_id=?1 AND json_extract(record,'$.turnId')=?2
+               AND json_extract(record,'$.state')='running'",
+                params![
+                    thread_id,
+                    turn_id,
+                    state,
+                    code,
+                    Utc::now().timestamp_millis().to_string()
+                ],
+            )
+            .map_err(storage_error)?;
     }
     let item_status = match status {
         TurnStatus::Running => TimelineItemStatus::InProgress,
@@ -2831,6 +2939,50 @@ impl SessionStore {
             "UPDATE threads SET title=?2, revision=revision+1, updated_at=?3 WHERE id=?1",
             title,
         )
+    }
+
+    /// Revise a locally stored conversation. Usage records are immutable history
+    /// of paid requests and survive removal of their displayed messages.
+    #[cfg(test)]
+    fn truncate_before_user_message(
+        &self,
+        id: &SessionId,
+        item_id: &str,
+        expected_revision: u64,
+    ) -> Result<()> {
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction().map_err(storage_error)?;
+        truncate_for_revision(&transaction, id, item_id, expected_revision)?;
+        transaction.commit().map_err(storage_error)
+    }
+
+    pub fn history_before_user_message(
+        &self,
+        id: &SessionId,
+        revision: &axiom_acp_extension::PromptRevision,
+    ) -> Result<Vec<EventEnvelope>> {
+        if self.thread_summary(id)?.revision != revision.expected_revision {
+            return Err(AxiomError::InvalidTransition(
+                "The conversation changed. Reload it before editing or regenerating.".into(),
+            ));
+        }
+        let turn: Option<String> = self
+            .lock()?
+            .query_row(
+                "SELECT id FROM turns WHERE thread_id=?1 AND user_item_id=?2",
+                params![id.to_string(), revision.user_item_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(storage_error)?;
+        let turn = turn.ok_or_else(|| {
+            AxiomError::InvalidTransition("Choose the message that started this turn.".into())
+        })?;
+        let mut events = self.load(id)?;
+        let boundary = events.iter().position(|event| matches!(&event.event, AppEvent::PromptAccepted { turn_id, .. } if turn_id.to_string() == turn))
+            .ok_or_else(|| AxiomError::Storage("The original prompt is unavailable.".into()))?;
+        events.truncate(boundary);
+        Ok(events)
     }
 
     pub fn set_title_if_absent(&self, id: &SessionId, title: &str) -> Result<bool> {
@@ -4263,6 +4415,171 @@ mod tests {
             store.thread_snapshot(&id, None, 100).unwrap().request_usage,
             recovered
         );
+    }
+
+    #[test]
+    fn message_revision_is_idle_account_scoped_and_preserves_request_accounting() {
+        let (_root, store) = routed_store();
+        store.activate_account("a").unwrap();
+        let id = SessionId::new();
+        let first = TurnId::new();
+        let second = TurnId::new();
+        create(&store, &id);
+        begin_turn(&store, &id, &first, None);
+        store
+            .append(&envelope(
+                &id,
+                4,
+                AppEvent::TurnCompleted {
+                    turn_id: first.clone(),
+                },
+            ))
+            .unwrap();
+        begin_turn(&store, &id, &second, None);
+        let snapshot = store.thread_snapshot(&id, None, 100).unwrap();
+        let item = snapshot
+            .items
+            .iter()
+            .rev()
+            .find(|item| item.kind == TimelineItemKind::UserMessage)
+            .unwrap()
+            .id
+            .clone();
+        let revision = store.thread_summary(&id).unwrap().revision;
+        assert!(
+            store
+                .truncate_before_user_message(&id, &item, revision)
+                .is_err(),
+            "active turns cannot be revised"
+        );
+        store
+            .append(&envelope(
+                &id,
+                6,
+                AppEvent::TurnCancelled {
+                    turn_id: second.clone(),
+                },
+            ))
+            .unwrap();
+        let usage = axiom_inference::RequestUsage {
+            request_id: "c".repeat(32),
+            model_id: "m".into(),
+            provider_id: "tinfoil".into(),
+            turn_id: Some(second.to_string()),
+            ..Default::default()
+        };
+        store.record_request_usage(&id, &usage).unwrap();
+        let revision = store.thread_summary(&id).unwrap().revision;
+        assert!(
+            store
+                .truncate_before_user_message(&id, &item, revision - 1)
+                .is_err()
+        );
+        assert!(
+            store
+                .truncate_before_user_message(&id, "foreign-message", revision)
+                .is_err()
+        );
+        let before = store.thread_snapshot(&id, None, 100).unwrap();
+        let invalid_replacement = [
+            envelope(
+                &id,
+                7,
+                AppEvent::PromptAccepted {
+                    turn_id: first.clone(),
+                    text: "replacement".into(),
+                },
+            ),
+            envelope(&id, 8, AppEvent::TurnStarted { turn_id: first }),
+        ];
+        assert!(
+            store
+                .append_prompt_revision(
+                    &invalid_replacement,
+                    None,
+                    Some(&axiom_acp_extension::PromptRevision {
+                        user_item_id: item.clone(),
+                        expected_revision: revision,
+                    })
+                )
+                .is_err(),
+            "a replacement using an existing turn ID must roll back both truncation and insertion"
+        );
+        assert_eq!(store.thread_snapshot(&id, None, 100).unwrap(), before);
+        store
+            .truncate_before_user_message(&id, &item, revision)
+            .unwrap();
+        let after = store.thread_snapshot(&id, None, 100).unwrap();
+        assert_eq!(after.items.len(), 2);
+        assert_eq!(after.request_usage, vec![usage]);
+        let events = store.load(&id).unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event.event, AppEvent::PromptAccepted { .. }))
+                .count(),
+            1
+        );
+        assert!(
+            store
+                .truncate_before_user_message(&id, &item, revision)
+                .is_err(),
+            "cannot replay an edit"
+        );
+        store.activate_account("b").unwrap();
+        create(&store, &id);
+        assert!(
+            store
+                .truncate_before_user_message(
+                    &id,
+                    &item,
+                    store.thread_summary(&id).unwrap().revision
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn cancelling_a_live_turn_preserves_pending_usage_for_recovery_without_restart() {
+        use axiom_inference::{InvocationState, RequestUsage, UsageCompleteness};
+        let (_root, store) = routed_store();
+        store.activate_account("account-a").unwrap();
+        let id = SessionId::new();
+        let turn = TurnId::new();
+        create(&store, &id);
+        begin_turn(&store, &id, &turn, None);
+        let running = RequestUsage {
+            request_id: "b".repeat(32),
+            model_id: "m".into(),
+            provider_id: "tinfoil".into(),
+            state: InvocationState::Running,
+            turn_id: Some(turn.to_string()),
+            started_at_ms: "1000".into(),
+            ..RequestUsage::default()
+        };
+        store.record_request_usage(&id, &running).unwrap();
+        store
+            .append(&envelope(&id, 4, AppEvent::TurnCancelled { turn_id: turn }))
+            .unwrap();
+        let usage = store.thread_snapshot(&id, None, 100).unwrap().request_usage;
+        assert_eq!(usage[0].state, InvocationState::Cancelled);
+        assert!(!usage[0].settled && !usage[0].response_verified);
+        assert!(usage[0].finished_at_ms.is_some());
+        let remote = RequestUsage {
+            state: InvocationState::Completed,
+            settled: true,
+            completeness: UsageCompleteness::Final,
+            input_tokens: Some("10".into()),
+            output_tokens: Some("20".into()),
+            cost_microusd: Some("30".into()),
+            ..running
+        };
+        store.reconcile_request_usage(&id, &[remote]).unwrap();
+        let usage = store.thread_snapshot(&id, None, 100).unwrap().request_usage;
+        assert_eq!(usage[0].state, InvocationState::Cancelled);
+        assert!(usage[0].settled);
+        assert!(!usage[0].response_verified);
+        assert_eq!(usage[0].cost_microusd.as_deref(), Some("30"));
     }
 
     #[test]

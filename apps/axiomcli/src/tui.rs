@@ -982,7 +982,10 @@ impl TuiState {
             } => {
                 self.pending_attention
                     .insert(format!("permission:{request_id}"), explanation.clone());
-                self.status = format!("Permission required: {explanation}");
+                self.status = format!(
+                    "Permission required: {}",
+                    explanation.split_whitespace().collect::<Vec<_>>().join(" ")
+                );
                 self.status_tone = StatusTone::Waiting;
                 self.wait_active_task(format!("Waiting for permission · {explanation}"));
             }
@@ -1135,19 +1138,6 @@ impl TuiState {
                     format!("question:{}", request.request_id),
                     format!("{} question(s)", request.questions.len()),
                 );
-                self.push_entry(
-                    EntryKind::System,
-                    format!(
-                        "QUESTIONS\n{}",
-                        request
-                            .questions
-                            .iter()
-                            .map(|question| sanitize_terminal_text(&question.prompt))
-                            .collect::<Vec<_>>()
-                            .join("\n")
-                    ),
-                    false,
-                );
                 self.wait_active_task("Waiting for your answer".into());
                 self.status_tone = StatusTone::Waiting;
             }
@@ -1232,6 +1222,18 @@ impl TuiState {
             }
             AppEvent::TurnCancelled { turn_id } => {
                 self.running = false;
+                if self.security == "VERIFYING" {
+                    self.reset_security();
+                }
+                let cancelled_turn = turn_id.to_string();
+                for usage in self.request_usage.values_mut().filter(|usage| {
+                    usage.turn_id.as_deref() == Some(cancelled_turn.as_str())
+                        && usage.state == axiom_inference::InvocationState::Running
+                }) {
+                    usage.state = axiom_inference::InvocationState::Cancelled;
+                    usage.error_code = Some("CANCELLED".into());
+                    usage.finished_at_ms = Some(chrono::Utc::now().timestamp_millis().to_string());
+                }
                 self.status = "Cancelled".into();
                 self.status_tone = StatusTone::Cancelled;
                 self.clear_foreground_attention();
@@ -1507,6 +1509,7 @@ impl TuiState {
                             }
                             ToolPhase::Completed => (self.glyph("✓", "+"), theme.muted),
                             ToolPhase::Failed => (self.glyph("✕", "x"), theme.error),
+                            ToolPhase::Cancelled => (self.glyph("■", "-"), theme.warning),
                         };
                         self.push_task_body(
                             &mut lines,
@@ -2462,6 +2465,11 @@ fn account_status_text(account: &AccountStatus) -> String {
 }
 
 enum UiMessage {
+    AccountingRecovered {
+        session_id: SessionId,
+        account_generation: u64,
+        result: Result<Vec<axiom_inference::RequestUsage>>,
+    },
     SteeringDone {
         session_id: SessionId,
         text: String,
@@ -3101,6 +3109,10 @@ pub async fn run(
     let mut pending_questions: Option<PendingQuestions> = None;
     let mut animation_ticks = tokio::time::interval(ANIMATION_TICK);
     animation_ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut accounting_ticks = tokio::time::interval(Duration::from_secs(5));
+    accounting_ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut accounting_busy = false;
+    let mut accounting_attempts: BTreeMap<String, u16> = BTreeMap::new();
     let mut shutdown_signal = Box::pin(wait_for_shutdown_signal());
     let mut account_transition_error = None;
 
@@ -3131,6 +3143,27 @@ pub async fn run(
     'ui: loop {
         terminal.draw(|frame| render(frame, &state))?;
         tokio::select! {
+            _ = accounting_ticks.tick(), if !accounting_busy && store.as_ref().is_some_and(SessionStore::is_active) => {
+                accounting_attempts.retain(|id, _| state.request_usage.get(id).is_some_and(|r| !r.settled));
+                let ids: Vec<_> = state.request_usage.values().filter(|r|
+                    !r.settled && r.state != axiom_inference::InvocationState::Running
+                    && accounting_attempts.get(&r.request_id).copied().unwrap_or(0) < 240)
+                    .take(100).map(|r| r.request_id.clone()).collect();
+                if !ids.is_empty() {
+                    for id in &ids { *accounting_attempts.entry(id.clone()).or_default() += 1; }
+                    accounting_busy = true;
+                    let task_runner = Arc::clone(&runner);
+                    let tx = ui_tx.clone();
+                    let owner = session_id.clone();
+                    let account_generation = auth.generation();
+                    tokio::spawn(async move {
+                        let result = tokio::time::timeout(Duration::from_secs(5),
+                            task_runner.recover_accounting(&ids, CancellationToken::new())).await
+                            .unwrap_or(Err(AxiomError::Cancelled));
+                        let _ = tx.send(UiMessage::AccountingRecovered { session_id: owner, account_generation, result }).await;
+                    });
+                }
+            }
             () = &mut shutdown_signal => {
                 if let Some(token) = &cancellation {
                     token.cancel();
@@ -4346,6 +4379,18 @@ pub async fn run(
             message = ui_rx.recv() => {
                 let Some(message) = message else { break };
                 match message {
+                    UiMessage::AccountingRecovered { session_id: owner, account_generation, result } => {
+                        accounting_busy = false;
+                        if owner == session_id && account_generation == auth.generation()
+                            && let Ok(records) = result
+                            && let Some(store) = store.as_ref().filter(|s| s.is_active())
+                        {
+                            store.reconcile_request_usage(&owner, &records)?;
+                            for usage in store.thread_snapshot(&owner, None, 1)?.request_usage {
+                                state.apply(&AppEvent::RequestUsageUpdated { usage });
+                            }
+                        }
+                    }
                     UiMessage::SteeringDone { session_id: owner, text, applied } => {
                         if owner == session_id && !applied {
                             let draft = state.input.take_text();
@@ -4404,7 +4449,7 @@ pub async fn run(
                                     "Security verification returned no final verdict".into();
                                 state.status_tone = StatusTone::Error;
                             }
-                            Err(AxiomError::Cancelled) => {}
+                            Err(AxiomError::Cancelled) => { state.reset_security(); }
                             Err(error) => {
                                 state.security_evidence = None;
                                 state.apply(&AppEvent::SecurityStatusChanged {
@@ -5312,12 +5357,29 @@ fn render_status(frame: &mut Frame<'_>, state: &TuiState, theme: Theme, area: Re
             } else {
                 ""
             };
+            let counts = if records
+                .iter()
+                .all(|r| r.input_tokens.is_none() && r.output_tokens.is_none())
+            {
+                "usage unavailable".into()
+            } else {
+                format!("{qualifier}{input} in / {output} out")
+            };
+            let waived = records
+                .iter()
+                .any(|r| r.error_code.as_deref() == Some("CANCELLED_USAGE_WAIVED"));
             format!(
-                "{status_text} · Turn: {} requests, {qualifier}{input} in / {output} out, ${}.{:06}{}",
+                "{status_text} · Turn: {} requests, {counts}, ${}.{:06}{}",
                 records.len(),
                 cost / 1_000_000,
                 cost % 1_000_000,
-                if pending { " pending" } else { "" }
+                if pending {
+                    " pending"
+                } else if waived {
+                    " · charge waived"
+                } else {
+                    ""
+                }
             )
         } else {
             status_text
@@ -8430,7 +8492,11 @@ mod tests {
         assert!(rendered.contains("Esc stop"));
         assert!(!rendered.contains("Enter send/toggle"));
 
+        state.apply(&AppEvent::SecurityStatusChanged {
+            state: crate::app::SecurityStatus::Verifying,
+        });
         state.apply(&AppEvent::TurnCancelled { turn_id });
+        assert_ne!(state.security, "VERIFYING");
         assert_eq!(state.status, "Cancelled");
         assert!(state.pending_attention.is_empty());
     }

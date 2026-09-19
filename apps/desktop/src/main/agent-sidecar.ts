@@ -231,8 +231,8 @@ export class AgentSidecar {
 
   configureDesktopAgent(request: ConfigureDesktopAgentRequest) { return this.requireClient().configureDesktopAgent(request); }
 
-  prompt(sessionId: string, text: string, clientItemId: string, webEnabled = false, agentRevision = 0) {
-    return this.requireClient().prompt(sessionId, text, clientItemId, webEnabled, agentRevision);
+  prompt(sessionId: string, text: string, clientItemId: string, webEnabled = false, agentRevision = 0, revision?: { userItemId: string; expectedRevision: number }) {
+    return this.requireClient().prompt(sessionId, text, clientItemId, webEnabled, agentRevision, revision);
   }
 
   steer(request: SteerTurnRequest) { return this.requireClient().steer(request); }

@@ -71,6 +71,15 @@ async fn main() -> anyhow::Result<()> {
     let models = client.models(CancellationToken::new()).await?;
     let policy = TrustPolicy::production()?;
     let selected = env::var("AXIOM_TINFOIL_MODEL").ok();
+    let effort = match env::var("AXIOM_TINFOIL_REASONING_EFFORT")
+        .as_deref()
+        .unwrap_or("low")
+    {
+        "low" => ReasoningEffort::Low,
+        "medium" => ReasoningEffort::Medium,
+        "high" => ReasoningEffort::High,
+        _ => anyhow::bail!("canary effort must be low, medium or high"),
+    };
     let rounds = env::var("AXIOM_TINFOIL_SMOKE_ROUNDS")
         .ok()
         .map_or(Ok(1), |n| n.parse::<u32>())?;
@@ -100,7 +109,7 @@ async fn main() -> anyhow::Result<()> {
                 let code = format!("CANARY-{}", 914 + round);
                 messages.push(ChatMessage::text(ChatRole::User, format!("Call lookup_code with key {key}, then reply with only its returned code.")));
                 let mut request = InferenceRequest::streaming(&model.id, messages.clone(), vec![tool.clone()]);
-                request.reasoning_effort = ReasoningEffort::Low;
+                request.reasoning_effort = effort;
                 request.max_output_tokens = Some(2048);
                 request.tool_choice = ToolChoice::Named { name: "lookup_code".into() };
                 request.stream = round % 2 == 1;
@@ -122,7 +131,7 @@ async fn main() -> anyhow::Result<()> {
                 result.tool_call_id = Some(call.id.clone());
                 messages.push(result);
                 let mut request = InferenceRequest::streaming(&model.id, messages.clone(), vec![tool.clone()]);
-                request.reasoning_effort = ReasoningEffort::Low;
+                request.reasoning_effort = effort;
                 request.max_output_tokens = Some(2048);
                 request.tool_choice = ToolChoice::None;
                 let answer = streamed(session.as_mut(), request).await?;
@@ -138,7 +147,7 @@ async fn main() -> anyhow::Result<()> {
                     vec![ChatMessage::text(ChatRole::User, "Call lookup_code twice now, once for alpha and once for beta. Return both function calls in this turn; do not answer in text.")], vec![tool]);
                 request.tool_choice = ToolChoice::Required;
                 request.parallel_tool_calls = Some(true);
-                request.reasoning_effort = ReasoningEffort::Low;
+                request.reasoning_effort = effort;
                 request.max_output_tokens = Some(2048);
                 let output = streamed(session.as_mut(), request).await?;
                 let mut keys = output.assistant.tool_calls.iter().map(|call| {
@@ -150,7 +159,7 @@ async fn main() -> anyhow::Result<()> {
                 totals[0] += output.usage.input_tokens;
                 totals[1] += output.usage.output_tokens;
             }
-            println!("{}", json!({"model":model.id,"status":"passed","rounds":rounds,"parallel_tools":model.supports_parallel_tools,"input_tokens":totals[0],"output_tokens":totals[1],"context_window":model.context_window_tokens,"auto_compact_at":model.auto_compact_threshold_tokens(),"protocol":session.evidence().e2ee_protocol}));
+            println!("{}", json!({"model":model.id,"status":"passed","reasoning_effort":effort.as_str(),"rounds":rounds,"parallel_tools":model.supports_parallel_tools,"input_tokens":totals[0],"output_tokens":totals[1],"context_window":model.context_window_tokens,"auto_compact_at":model.auto_compact_threshold_tokens(),"protocol":session.evidence().e2ee_protocol}));
             Ok(())
         }.await;
         if let Err(error) = result {

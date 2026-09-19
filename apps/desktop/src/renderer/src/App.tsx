@@ -719,6 +719,28 @@ export function App() {
     return () => { delete window.__axiomDemo; };
   }, [folders, loadThread, showProxy, showWelcome, threads]);
 
+  const reviseMessage = async (userItemId: string, text: string) => {
+    const api = window.axiomDesktop?.agent;
+    if (!api?.revisePrompt || !activeThreadId || !activeSession || activeSession.running) {
+      const error = new Error("Restart Axiom and wait for the current reply before editing.");
+      setUiError(error.message); throw error;
+    }
+    if (messageQueue.current!.list(activeThreadId, billingAccountId).length) {
+      const error = new Error("Send or remove queued messages before editing this conversation.");
+      setUiError(error.message); throw error;
+    }
+    const owner = billingAccountId;
+    const threadId = activeThreadId;
+    setUiError(null);
+    try {
+      await api.revisePrompt(threadId, text, userItemId, activeSession.threadRevision, webAccess.enabled, activeSession.desktopAgent?.revision ?? 0);
+    } catch (error) {
+      const current = await api.getState();
+      if (current.account?.account?.id === owner && activeThreadIdRef.current === threadId) setUiError(error instanceof Error ? error.message : String(error));
+      throw error;
+    }
+  };
+
   const submitDraft = async () => {
     const text = draft.trim();
     const api = window.axiomDesktop?.agent;
@@ -1033,6 +1055,7 @@ export function App() {
             <PreparingThreadView id={threadPreparation.id} text={threadPreparation.text} />
           ) : surface === "thread" && activeSession ? (
             <ChatView
+              onRevise={!activeSession?.running && agentState.account?.state === "valid" ? reviseMessage : undefined}
               agentControl={agentControl}
               queue={<MessageQueue messages={messageQueue.current.list(activeThreadId, billingAccountId).filter((message) => message.id !== pendingUserMessage?.id || message.status !== "sending")}
                 paused={!!activeThreadId && messageQueue.current.isPaused(activeThreadId)}

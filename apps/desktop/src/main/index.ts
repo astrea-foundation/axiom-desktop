@@ -169,6 +169,13 @@ function installAgentIpc(): void {
       agentRevision(revision),
     );
   });
+  agentHandle("agent:prompt-revise", (_event, sessionId: unknown, text: unknown, userItemId: unknown, expectedRevision: unknown, webEnabled: unknown, revision: unknown) => {
+    if (typeof webEnabled !== "boolean") throw new Error("webEnabled must be a boolean");
+    return sidecar.prompt(boundedString(sessionId, "thread ID", 128), boundedString(text, "prompt", 4 * 1024 * 1024),
+      crypto.randomUUID(), webEnabled, agentRevision(revision), {
+        userItemId: boundedString(userItemId, "user message ID", 512), expectedRevision: agentRevision(expectedRevision),
+      });
+  });
   agentHandle("agent:cancel", (_event, sessionId: unknown) =>
     sidecar.cancel(boundedString(sessionId, "session ID", 128)),
   );

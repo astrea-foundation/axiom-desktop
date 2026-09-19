@@ -2,7 +2,7 @@
 
 All four configured Tinfoil models completed real, encrypted requests in both applications. Desktop and TUI could complete filesystem tasks, retain conversation context across model switches, and display settled token counts and costs. TUI manual compaction preserved the important facts. Both applications rendered streamed text and stopped without marking the partial answer verified.
 
-One integration defect was fixed during this test: Desktop rejected valid Tinfoil proof reports because the ACP contract required a relay lease generation that Tinfoil does not use. The remaining findings below are open. In particular, simultaneous Desktop/TUI use and cancellation accounting need attention before release.
+One integration defect was fixed during this initial test: Desktop rejected valid Tinfoil proof reports because the ACP contract required a relay lease generation that Tinfoil does not use. The findings below preserve that initial baseline. **The remaining issues have since been addressed; see the [fixes and live retest](FIXES.md) for current behavior, evidence and verification limits.**
 
 The UI run dispatched **31 provider requests**, including tool continuations, titles, compaction and two responses stopped by the client. All 31 settled at the backend, totaling **$0.100773**. This is the Axiom test ledger's metered cost, not an independently reconciled Tinfoil invoice. Earlier API canaries are excluded. [Per-request operational metadata](usage.json) records native verification separately from backend completion.
 

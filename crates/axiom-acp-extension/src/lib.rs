@@ -81,6 +81,7 @@ pub struct FeatureVersions {
     pub security_evidence: u16,
     pub web_consent: u16,
     pub steering: u16,
+    pub message_revision: u16,
     pub compaction: u16,
     pub activity: u16,
 }
@@ -102,6 +103,7 @@ impl FeatureVersions {
             security_evidence: 1,
             web_consent: 1,
             steering: 1,
+            message_revision: 1,
             compaction: 1,
             activity: 1,
         }
@@ -142,6 +144,17 @@ pub struct PromptMetadata {
     /// Bind queued input to the exact locally approved Agent configuration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_revision: Option<u64>,
+    /// Replace local history starting at this user message before the normal
+    /// native E2EE turn. Never interpreted by the hosted backend.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<PromptRevision>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PromptRevision {
+    pub user_item_id: String,
+    pub expected_revision: u64,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]

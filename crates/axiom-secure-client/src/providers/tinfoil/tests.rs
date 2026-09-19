@@ -275,3 +275,31 @@ fn authenticated_completion_still_must_honor_tool_choice() {
     };
     assert!(validate_requested_tools(&request, &output).is_err());
 }
+
+#[test]
+fn kimi_and_glm_map_all_three_reasoning_levels_without_sending_unsupported_medium() {
+    for name in ["kimi-k3", "glm-5-3"] {
+        let mut model = model();
+        model.id = format!("tinfoil-{name}");
+        model.upstream_model = name.into();
+        for (effort, expected) in [
+            (ReasoningEffort::Low, "low"),
+            (ReasoningEffort::Medium, "high"),
+            (ReasoningEffort::High, "max"),
+        ] {
+            let mut request = InferenceRequest::streaming(
+                &model.id,
+                vec![ChatMessage::text(ChatRole::User, "test")],
+                vec![],
+            );
+            request.reasoning_effort = effort;
+            let body = request_body(&model, &request, true).unwrap();
+            let actual = if name == "kimi-k3" {
+                &body["reasoning_effort"]
+            } else {
+                &body["chat_template_kwargs"]["reasoning_effort"]
+            };
+            assert_eq!(actual, expected);
+        }
+    }
+}

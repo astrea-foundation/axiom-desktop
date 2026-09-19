@@ -123,7 +123,7 @@ pub enum EditIntent {
     Create {
         path: PathBuf,
         content: String,
-        #[serde(default)]
+        #[serde(default, rename = "file_permissions", alias = "mode")]
         mode: Option<u32>,
     },
     Update {
