@@ -307,6 +307,10 @@ impl<'a> RelayClient<'a> {
 pub(crate) fn stream_failure(code: Option<&str>) -> SecureClientError {
     use crate::SecureErrorCode;
     let (code, detail) = match code {
+        Some("ATTESTATION_KEY_CHANGED") => (
+            SecureErrorCode::AttestationKeyChanged,
+            "The worker changed before inference. Verify a new session.",
+        ),
         Some("response_too_large") => (
             SecureErrorCode::ResponseTooLarge,
             "The model response exceeded the response size budget.",
@@ -359,6 +363,18 @@ pub(crate) fn error_for_status_body(status: StatusCode, body: &[u8]) -> SecureCl
                 true,
             )
         }
+        Some("PROVIDER_TDX_OUT_OF_DATE") => SecureClientError::attestation(
+            "The provider's Intel TDX environment is OutOfDate and requires security updates.",
+        ),
+        Some(
+            "PROVIDER_TDX_REJECTED"
+            | "PROVIDER_GPU_ATTESTATION_REJECTED"
+            | "PROVIDER_TLS_BINDING_REJECTED"
+            | "ATTESTATION_REJECTED"
+            | "PROVIDER_ATTESTATION_REJECTED",
+        ) => SecureClientError::attestation(
+            "The provider's security evidence failed verification. See verification diagnostics.",
+        ),
         Some("WORKLOAD_NOT_APPROVED") => SecureClientError::with_code(
             axiom_inference::ProviderFailureKind::AttestationRejected,
             crate::SecureErrorCode::WorkloadNotApproved,
@@ -418,5 +434,22 @@ mod tests {
         assert!(error.retryable());
         assert!(error.requires_reattest_and_reencrypt());
         assert!(!error.safe_detail().contains("secret"));
+    }
+
+    #[test]
+    fn stream_rotation_is_reestablished_but_ambiguous_inference_is_not_replayed() {
+        assert!(stream_failure(Some("ATTESTATION_KEY_CHANGED")).requires_reattest_and_reencrypt());
+        for code in [
+            "provider_timeout",
+            "provider_disconnected",
+            "RECEIPT_UNAVAILABLE",
+        ] {
+            assert!(!stream_failure(Some(code)).requires_reattest_and_reencrypt());
+        }
+        let receipt = error_for_status_body(
+            StatusCode::BAD_GATEWAY,
+            br#"{"detail":{"code":"RECEIPT_UNAVAILABLE"}}"#,
+        );
+        assert!(!receipt.requires_reattest_and_reencrypt());
     }
 }

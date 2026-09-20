@@ -41,7 +41,8 @@ export function proofGroups(evidence: SecurityEvidence) {
     }));
   }
   const phala = evidence.attestationProtocol === "phala-aci-tdx-v1";
-  if (!phala && evidence.attestationProtocol !== "near-tdx-nvidia-v1") return [];
+  const nearSession = evidence.attestationProtocol === "near-tdx-nvidia-v2";
+  if (!phala && !nearSession && evidence.attestationProtocol !== "near-tdx-nvidia-v1") return [];
   return [
     {
       title: "Hardware evidence", explanation: phala
@@ -51,7 +52,7 @@ export function proofGroups(evidence: SecurityEvidence) {
     },
     {
       title: "Encryption key", explanation: "The encryption key is bound to the verified environment before model messages are sent.",
-      names: phala ? ["Encrypted channel"] : ["Model encryption key", "Model identity", "Live TLS endpoint"],
+      names: phala ? ["Encrypted channel"] : ["Model encryption key", "Model identity", nearSession ? "Attested worker TLS key" : "Live TLS endpoint"],
     },
     {
       title: "Freshness", explanation: "A fresh challenge prevents replayed evidence. The report is usable only until its expiry.",

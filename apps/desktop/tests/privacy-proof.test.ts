@@ -27,6 +27,16 @@ test("a hardware group cannot pass with a missing GPU check", () => {
   assert.equal(proofGroups(report)[0]!.passed, false);
 });
 
+test("NEAR worker sessions display the locally attested TLS key", () => {
+  const report = securityEvidence();
+  report.attestationProtocol = "near-tdx-nvidia-v2";
+  report.checks = report.checks.map((check) => check.name === "Live TLS endpoint"
+    ? { ...check, name: "Attested worker TLS key", detail: "quote-bound" } : check);
+  assert.equal(proofGroups(report).length, 3);
+  assert.ok(proofGroups(report).every((group) => group.passed));
+  assert.ok(!proofGroups(report).flatMap((group) => group.names).includes("Live TLS endpoint"));
+});
+
 test("Tinfoil proof names the router and cannot claim independent GPU verification", () => {
   const report = securityEvidence();
   report.attestationProtocol = "tinfoil-snp-sigstore-v1";

@@ -442,9 +442,9 @@ mod tests {
             base_url: "https://127.0.0.1/v1".into(),
             provider: "near".into(),
             provider_label: "NEAR".into(),
-            e2ee_protocol: "near-v2".into(),
+            e2ee_protocol: "near-v3".into(),
             e2ee_encryption_version: 2,
-            attestation_protocol: "near-tdx-nvidia-v1".into(),
+            attestation_protocol: "near-tdx-nvidia-v2".into(),
             context_window_tokens: 1_000_000,
             max_output_tokens: 8_192,
             input_price_microusd_per_million_tokens: Some(440_000),
@@ -480,7 +480,7 @@ mod tests {
         assert!(validate_models(vec![wire(legacy)], &config, &providers).is_err());
 
         let mut invalid = model("invalid");
-        invalid.e2ee_protocol = "near-v3".into();
+        invalid.e2ee_protocol = "near-v2".into();
         assert!(validate_models(vec![wire(invalid)], &config, &providers).is_err());
 
         let mut invalid = model("invalid");
@@ -516,7 +516,7 @@ mod tests {
         assert!(validate_models(vec![wire(unknown)], &config, &providers).is_err());
 
         let mut mismatched_near = model("bad-near");
-        mismatched_near.e2ee_protocol = "near-v3".into();
+        mismatched_near.e2ee_protocol = "near-v2".into();
         assert!(validate_models(vec![wire(mismatched_near)], &config, &providers).is_err());
     }
 
@@ -581,16 +581,16 @@ mod tests {
                 retire_after_unix_seconds: None,
             },
             CatalogE2eeContract {
-                e2ee_protocol: "near-v2".into(),
+                e2ee_protocol: "near-v3".into(),
                 e2ee_encryption_version: 2,
-                attestation_protocol: "near-tdx-nvidia-v1".into(),
+                attestation_protocol: "near-tdx-nvidia-v2".into(),
                 preferred: false,
                 retire_after_unix_seconds: None,
             },
         ];
         let supported = validate_models(vec![wire(advertised)], &config, &providers).unwrap();
         assert_eq!(supported.len(), 1);
-        assert_eq!(supported[0].e2ee_protocol, "near-v2");
+        assert_eq!(supported[0].e2ee_protocol, "near-v3");
         assert_eq!(supported[0].e2ee_encryption_version, 2);
 
         let mut retired = model("retired");
@@ -606,9 +606,9 @@ mod tests {
                 retire_after_unix_seconds: None,
             },
             CatalogE2eeContract {
-                e2ee_protocol: "near-v2".into(),
+                e2ee_protocol: "near-v3".into(),
                 e2ee_encryption_version: 2,
-                attestation_protocol: "near-tdx-nvidia-v1".into(),
+                attestation_protocol: "near-tdx-nvidia-v2".into(),
                 preferred: false,
                 retire_after_unix_seconds: Some(1),
             },

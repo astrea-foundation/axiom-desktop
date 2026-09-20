@@ -1,5 +1,7 @@
 # NEAR provider E2EE v2 protocol
 
+> Historical protocol. Current NEAR integrations use [near-v3](near-v3.md).
+
 Status: implementation contract for AxiomAI secure inference
 
 Protocol identifier: `near-v2`
