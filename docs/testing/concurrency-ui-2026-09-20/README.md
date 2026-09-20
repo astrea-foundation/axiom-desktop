@@ -4,6 +4,8 @@
 
 This is an exploratory test report, not an implementation of the fixes. No deployment or release was performed.
 
+The follow-up [root-cause investigation](ROOT-CAUSES.md) validates the causes with local controlled checks, explains why existing tests passed, and defines the required fix boundaries.
+
 ## Environment and coverage
 
 - Native `dev`: `244d51f734a66e5a34090bc4b8534fc2e965c628`; backend inference code from `b85d06c0932be2944690912b9463a0b522724dc4`. The backend checkout advanced to `bff88add9782d26a2bce467015537130b0ddf951` during the setup period; that commit retired the browser chat app and made no changes under `backend/src/`.
