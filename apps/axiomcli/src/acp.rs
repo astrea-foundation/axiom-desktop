@@ -377,6 +377,7 @@ fn delivery_meta(
                 thread_revision: revision.revision,
                 last_timeline_sequence: revision.last_timeline_sequence,
                 last_message_at: revision.last_message_at.clone(),
+                last_user_message_at: revision.last_user_message_at.clone(),
                 timeline_item_id,
                 client_item_id,
             })
@@ -559,6 +560,7 @@ fn extension_thread_summary(summary: crate::session::ThreadSummary) -> extension
         created_at: summary.created_at,
         updated_at: summary.updated_at,
         last_message_at: summary.last_message_at,
+        last_user_message_at: summary.last_user_message_at,
     }
 }
 
@@ -3516,7 +3518,7 @@ pub async fn serve_stdio(
                     let (events_tx, mut events_rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
                     let display_cwd = cwd.clone();
                     let mut terminalized = false;
-                    let task_result: agent_client_protocol::Result<_> = async {
+                    let mut task_result: agent_client_protocol::Result<_> = async {
                         let run = task_runner.run(
                             crate::agent::TurnContext {
                                 session_id: internal_id.clone(),
@@ -3662,6 +3664,20 @@ pub async fn serve_stdio(
                         Ok(stop_reason)
                     }
                     .await;
+
+                    if matches!(task_result, Ok(protocol::StopReason::Cancelled))
+                        && let Some(store) = &task_store
+                    {
+                        // Stop drops the runner future promptly to close upstream.
+                        // Rebuild its context from the committed journal before
+                        // releasing this thread; the dropped future may not have
+                        // saved the accepted prompt or its interrupted response.
+                        task_result = async {
+                            let history = store.load(&internal_id).map_err(agent_error)?;
+                            task_runner.restore_session(&internal_id, &history).await.map_err(agent_error)?;
+                            Ok(protocol::StopReason::Cancelled)
+                        }.await;
+                    }
 
                     if let Err(error) = &task_result
                         && !terminalized

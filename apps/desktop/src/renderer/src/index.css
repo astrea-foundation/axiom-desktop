@@ -1025,7 +1025,7 @@ input {
 }
 .markdown-prose ul,
 .markdown-prose ol {
-  padding-left: 1.5em;
+  padding-inline-start: 1.5em;
   margin: 0.4em 0;
 }
 .markdown-prose ul {

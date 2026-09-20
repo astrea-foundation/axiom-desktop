@@ -134,7 +134,7 @@ export function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const fullScreen = useFullScreen();
   useTheme();
-  const [draft, setDraft] = useAccountDraft(agentState.account?.state === "valid" ? agentState.account.account?.id ?? null : null);
+  const [draft, setDraft, writeDraft] = useAccountDraft(agentState.account?.state === "valid" ? agentState.account.account?.id ?? null : null, surface === "thread" ? activeThreadId : null);
   const [modelId, setModelId] = useState("");
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("provider_default");
   const [accountScreen, setAccountScreen] = useState<"settings" | "balance" | null>(null);
@@ -146,10 +146,11 @@ export function App() {
   const [newAgentDraft, setNewAgentDraft] = useState<{ scope: string; selection: AgentSelection } | null>(null);
   const [agentSettingsBusy, setAgentSettingsBusy] = useState(false);
   const messageQueue = useRef<MessageQueueController | null>(null);
-  const submittingDraft = useRef<string | null>(null);
+  const submittingDraft = useRef(new Map<string, string>());
+  const navigationRevision = useRef(0);
   const [threadPreparation, setThreadPreparation] = useState<{ id: string; text: string; accountId: string | null; runtimeId: string | null } | null>(null);
   const cancelThreadPreparation = useCallback(() => {
-    submittingDraft.current = null;
+    navigationRevision.current += 1;
     setThreadPreparation(null);
   }, []);
   if (!messageQueue.current) messageQueue.current = new MessageQueueController(browserConsentStorage(), () => setQueueRevision((value) => value + 1), setUiError);
@@ -255,6 +256,7 @@ export function App() {
           cwd: session.cwd,
           updatedAt: session.lastMessageAt ?? "",
           lastMessageAt: session.lastMessageAt ?? null,
+          lastUserMessageAt: session.lastUserMessageAt ?? null,
           archived: false,
           revision: session.threadRevision,
           lifecycle: session.running ? "running" as const : "ready" as const,
@@ -278,6 +280,7 @@ export function App() {
         folderId: collectionAssignments[summary.threadId] ?? null,
         updatedAt: lastMessageAt ? relativeTime(lastMessageAt) : "No messages yet",
         lastMessageAt,
+        lastUserMessageAt: newestMessageAt(summary.lastUserMessageAt, session?.lastUserMessageAt),
         status: (working ? "working" : unread ? "unread" : "idle") as Thread["status"],
         messages: [],
       };
@@ -585,11 +588,10 @@ export function App() {
       && threadPreparation.accountId === billingAccountId && threadPreparation.runtimeId === agentState.runtimeInstanceId)) return;
     cancelThreadPreparation();
     setSurface("welcome");
-    if (threadPreparation.accountId !== billingAccountId) setDraft("");
     setUiError("The account or connection changed. Nothing was sent.");
   }, [threadPreparation, billingAccountId, agentState.connected, agentState.account?.state, agentState.runtimeInstanceId, cancelThreadPreparation, setDraft]);
 
-  useEffect(() => () => { submittingDraft.current = null; }, []);
+  useEffect(() => () => { submittingDraft.current.clear(); }, []);
 
   const ensureThreadLoaded = useCallback(async (id: string, retry = false) => {
     const api = window.axiomDesktop?.agent;
@@ -613,7 +615,6 @@ export function App() {
     activeThreadIdRef.current = id;
     setActiveThreadId(id);
     setSurface("thread");
-    setDraft("");
     setUiError(null);
     setThreadLoadError(null);
     await ensureThreadLoaded(id, true);
@@ -656,7 +657,6 @@ export function App() {
     activeThreadIdRef.current = null;
     setSurface("welcome");
     setActiveThreadId(null);
-    setDraft("");
     setThreadLoadError(null);
     setUiError(null);
     setModelId(preferredModelId.current);
@@ -744,7 +744,9 @@ export function App() {
   const submitDraft = async () => {
     const text = draft.trim();
     const api = window.axiomDesktop?.agent;
-    if (!text || !api || !agentState.connected || submittingDraft.current || agentSettingsBusy) return;
+    const viewRevision = navigationRevision.current;
+    const scope = `${billingAccountId}:${agentState.runtimeInstanceId}:${viewRevision}:${activeThreadId ?? "new"}`;
+    if (!text || !api || !agentState.connected || [...submittingDraft.current.values()].includes(scope) || agentSettingsBusy) return;
     if (requiresSignIn) {
       openSignIn();
       return;
@@ -759,14 +761,22 @@ export function App() {
     }
     const webEnabled = webAccess.enabled;
     const creatingThread = surface !== "thread" || !activeThreadId;
-    const submissionId = crypto.randomUUID();
-    submittingDraft.current = submissionId;
+    let submissionId: string;
+    try {
+      messageQueue.current!.sync(agentState, api);
+      submissionId = messageQueue.current!.reserve(creatingThread ? null : activeThreadId, text, webEnabled);
+    } catch (error) {
+      setUiError(desktopErrorMessage(error, "Your message could not be saved. Your draft was kept."));
+      return;
+    }
+    submittingDraft.current.set(submissionId, scope);
+    setDraft(""); // The outbox now owns the message, before any asynchronous setup.
+    const stillSelected = () => navigationRevision.current === viewRevision;
     preferredModelId.current = selectedModel.id;
     preferredReasoningEffort.current = effectiveReasoningEffort;
     setUiError(null);
     if (creatingThread) {
-      // Render locally before the first IPC round trip. Keep the draft and
-      // Agent choices until setup and durable queueing have both succeeded.
+      // Navigation can dismiss this view without cancelling the durable submission.
       setThreadPreparation({ id: submissionId, text, accountId: billingAccountId, runtimeId: agentState.runtimeInstanceId });
       activeThreadIdRef.current = null;
       setActiveThreadId(null);
@@ -774,9 +784,9 @@ export function App() {
       setSurface("thread");
     }
     const currentSubmissionState = async () => {
-      if (submittingDraft.current !== submissionId) return null;
+      if (!submittingDraft.current.has(submissionId)) return null;
       const current = await api.getState();
-      if (submittingDraft.current !== submissionId) return null;
+      if (!submittingDraft.current.has(submissionId)) return null;
       if (!current.connected || current.account?.state !== "valid" || current.account.account?.id !== billingAccountId
         || current.runtimeInstanceId !== agentState.runtimeInstanceId) {
         throw new Error("The account or connection changed. Nothing was sent.");
@@ -789,6 +799,7 @@ export function App() {
         const created = await api.newChat();
         if (!await currentSubmissionState()) return;
         sessionId = created.sessionId;
+        messageQueue.current!.bindPreparation(submissionId, sessionId);
         await api.setSettings({ threadId: sessionId, model: selectedModel.id, thinkingLevel: effectiveReasoningEffort });
         if (!await currentSubmissionState()) return;
         if (newAgentSelection.enabled || newAgentSelection.permission !== "approve_commands" || newAgentSelection.workingDirectory) {
@@ -807,29 +818,38 @@ export function App() {
       }
       const current = await currentSubmissionState();
       if (!current) return;
-      if (creatingThread) webAccess.adoptThread(sessionId);
+      if (creatingThread) webAccess.adoptThread(sessionId, webEnabled, stillSelected());
       messageQueue.current!.sync(current, api);
-      const messageId = messageQueue.current!.enqueue(sessionId, text, webEnabled);
-      if (creatingThread) {
+      messageQueue.current!.ready(submissionId, sessionId);
+      const messageId = submissionId;
+      if (creatingThread && stillSelected()) {
         activeThreadIdRef.current = sessionId;
         setActiveThreadId(sessionId);
         setPendingUserMessage({ id: messageId, sessionId, text });
         setNewAgentDraft(null);
         setThreadPreparation(null);
       }
-      setDraft((current) => current.trim() === text ? "" : current);
-      setUiError(null);
+      if (stillSelected()) setUiError(null);
     } catch (error) {
       // A late completion must never reopen a thread, restore an old draft, or
       // overwrite the error belonging to a newer submission/account.
-      if (submittingDraft.current !== submissionId) return;
+      if (!submittingDraft.current.has(submissionId)) return;
+      messageQueue.current!.failPreparation(submissionId, desktopErrorMessage(error, "Thread setup failed. Your message is saved for review."));
+      if (!stillSelected()) return;
+      const current = await api.getState().catch(() => null);
+      if (current?.account?.account?.id !== billingAccountId || current?.runtimeInstanceId !== agentState.runtimeInstanceId) return;
+      try {
+        if (writeDraft(creatingThread ? null : activeThreadId, (previous) => previous ? `${previous}\n\n${text}` : text, true)) {
+          messageQueue.current!.remove(submissionId);
+        }
+      } catch { /* Keep the durable outbox entry available for review. */ }
       if (creatingThread) {
         setThreadPreparation(null);
         setSurface("welcome");
       }
       setUiError(error instanceof Error ? error.message : String(error));
     } finally {
-      if (submittingDraft.current === submissionId) submittingDraft.current = null;
+      submittingDraft.current.delete(submissionId);
     }
   };
 
@@ -1102,6 +1122,20 @@ export function App() {
             </div>
           ) : (
             <WelcomeView
+              savedMessages={<MessageQueue messages={messageQueue.current.preparations(billingAccountId)} paused canSteer={agentState.connected && !draft.trim()}
+                onSendNow={(id) => {
+                  const item = messageQueue.current!.preparations(billingAccountId).find((item) => item.id === id);
+                  if (!item || item.status !== "queued" || draft.trim()) return;
+                  const threadId = item.threadId.startsWith("pending:") ? null : item.threadId;
+                  try {
+                    if (!writeDraft(threadId, (previous) => previous ? `${previous}\n\n${item.text}` : item.text, true)) return;
+                  } catch {
+                    setUiError("The draft could not be saved. Your message is still in the queue.");
+                    return;
+                  }
+                  messageQueue.current!.remove(id);
+                  if (threadId) void loadThread(threadId);
+                }} onRemove={(id) => messageQueue.current?.remove(id)} />}
               agentControl={agentControl}
               webEnabled={webAccess.enabled}
               webDisabled={!billingAccountId || !agentState.connected}

@@ -97,6 +97,7 @@ test("late completions never mutate a different account or restart; transcript I
 test("queue deletion is scoped and write failures prevent dispatch", () => {
   const f = fixture();
   const first = f.queue.enqueue("thread", "delete me", false);
+  f.state.sessions.other = structuredClone(f.state.sessions.thread!); f.sync();
   f.queue.enqueue("other", "keep me", false);
   f.queue.remove(first); assert.equal(f.queue.list("thread").length, 0);
   assert.equal(f.queue.list("other").length, 1);
@@ -151,4 +152,35 @@ test("a message sent while Stop is still draining runs after cleanup and keeps o
   assert.deepEqual(f.calls.map((call) => call.id), [running, fresh]);
   await f.finish(fresh);
   assert.deepEqual(f.queue.list("thread").map((item) => item.id), [old]);
+});
+
+
+test("first messages are durable before thread creation and never replay interrupted setup", async () => {
+  const f = fixture(false);
+  const id = f.queue.reserve(null, "first message", true);
+  assert.equal(f.calls.length, 0);
+  assert.equal(f.queue.preparations("account")[0]?.text, "first message");
+  assert.equal(f.queue.preparations("other-account").length, 0);
+  const restored = new MessageQueue(f.storage, () => {}, () => {});
+  restored.sync(f.state, f.api);
+  const saved = restored.preparations("account")[0]!;
+  assert.equal(saved.id, id); assert.equal(saved.status, "queued");
+  restored.sendNow(id);
+  assert.equal(f.calls.length, 0, "review is required before interrupted setup can send");
+  f.queue.bindPreparation(id, "thread");
+  f.queue.ready(id, "thread");
+  assert.equal(f.calls[0]?.id, id);
+  assert.equal(f.queue.preparations("account").length, 0);
+  await f.finish(id);
+});
+
+test("setup failure remains reviewable; storage failure prevents the ready transition", () => {
+  const f = fixture(false);
+  const id = f.queue.reserve(null, "keep all text", false);
+  f.queue.bindPreparation(id, "thread");
+  f.storage.setItem = () => { throw new Error("full"); };
+  assert.throws(() => f.queue.ready(id, "thread"), /full/);
+  assert.equal(f.calls.length, 0);
+  f.queue.failPreparation(id, "Setup failed");
+  assert.equal(f.queue.preparations("account")[0]?.status, "queued");
 });

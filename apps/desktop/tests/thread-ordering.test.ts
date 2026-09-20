@@ -7,7 +7,7 @@ const old = "2026-01-01T00:00:00.000Z";
 const recent = "2026-01-02T00:00:00.000Z";
 const latest = "2026-01-03T00:00:00.000Z";
 const thread = (id: string, lastMessageAt: string | null, folderId: string | null = null): Thread => ({
-  id, title: id, folderId, lastMessageAt, updatedAt: latest, status: "idle", messages: [],
+  id, title: id, folderId, lastMessageAt, lastUserMessageAt: lastMessageAt, updatedAt: latest, status: "idle", messages: [],
 });
 const folder = (id: string): Folder => ({ id, name: id, collapsed: true });
 
@@ -44,4 +44,17 @@ test("live message metadata wins over an older catalog; missing dates never beco
   assert.equal(newestMessageAt(old, recent), recent);
   assert.equal(newestMessageAt(recent, old), recent);
   assert.equal(newestMessageAt(null, undefined, "bad-date"), null);
+});
+
+
+test("interleaved streams preserve order; a new user submission moves the thread", () => {
+  const threads = [thread("first", old, "a"), thread("second", recent, "b")];
+  const folders = [folder("a"), folder("b")];
+  for (let index = 0; index < 20; index++) {
+    threads[index % 2]!.lastMessageAt = new Date(Date.parse(latest) + index).toISOString();
+    assert.deepEqual([...threads].sort(compareThreadMessages).map((t) => t.id), ["second", "first"]);
+    assert.deepEqual(orderFoldersByMessages(folders, threads).map((f) => f.id), ["b", "a"]);
+  }
+  threads[0]!.lastUserMessageAt = latest;
+  assert.deepEqual([...threads].sort(compareThreadMessages).map((t) => t.id), ["first", "second"]);
 });

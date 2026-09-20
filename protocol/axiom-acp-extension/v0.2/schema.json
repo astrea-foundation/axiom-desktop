@@ -363,6 +363,13 @@
             "string",
             "null"
           ]
+        },
+        "lastUserMessageAt": {
+          "description": "Latest user submission. Streaming output does not advance sidebar order.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
@@ -686,6 +693,13 @@
         },
         "lastMessageAt": {
           "description": "Latest actual message activity; operational updates do not advance it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lastUserMessageAt": {
+          "description": "Latest user submission. Streaming output does not advance sidebar order.",
           "type": [
             "string",
             "null"

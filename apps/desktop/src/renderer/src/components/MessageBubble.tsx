@@ -73,7 +73,7 @@ export function MessageBubble({ message, onRevise, revisionText }: {
   return (
     <div className="group flex min-w-0 w-full max-w-full flex-col gap-1 animate-fade-in-up">
       {reasoning ? (
-        <div className="min-w-0 self-start text-[13px] leading-6 text-[var(--color-text-secondary)]">
+        <div className="w-full min-w-0 self-start text-[13px] leading-6 text-[var(--color-text-secondary)]">
           <button
             type="button"
             onClick={() => setReasoningOpen((open) => !open)}
@@ -94,7 +94,7 @@ export function MessageBubble({ message, onRevise, revisionText }: {
         </div>
       ) : null}
       {message.content || isStreaming || terminalFailure ? (
-      <div className="min-w-0 max-w-full self-start px-1.5 py-1 text-[15px] leading-7 text-[var(--color-text-primary)]">
+      <div className="w-full min-w-0 max-w-full self-start px-1.5 py-1 text-[15px] leading-7 text-[var(--color-text-primary)]">
         <div className="min-w-0 max-w-full">
           {message.content ? <ChatMarkdown text={message.content} /> : null}
           {isStreaming && !message.content && !message.continues ? (

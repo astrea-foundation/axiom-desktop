@@ -8,6 +8,7 @@ export interface QueuedMessage {
   webEnabled: boolean;
   agentRevision: number;
   status: "queued" | "sending" | "steering";
+  preparing?: boolean;
   error?: string;
 }
 export interface QueueApi {
@@ -36,7 +37,10 @@ export class MessageQueue {
 
   list(threadId: string | null, accountId = this.account): QueuedMessage[] {
     if (accountId !== this.account) return [];
-    return this.items.filter((item) => item.threadId === threadId).map((item) => ({ ...item }));
+    return this.items.filter((item) => !item.preparing && item.threadId === threadId).map((item) => ({ ...item }));
+  }
+  preparations(accountId: string | null): QueuedMessage[] {
+    return accountId === this.account ? this.items.filter((item) => item.preparing).map((item) => ({ ...item })) : [];
   }
   isPaused(threadId: string): boolean { return this.paused.has(threadId); }
   dispose(): void {
@@ -73,6 +77,7 @@ export class MessageQueue {
               || !Number.isSafeInteger(value.agentRevision ?? 0) || (value.agentRevision ?? 0) < 0) throw new Error("invalid queue");
             this.items.push({ id: value.id, threadId: value.threadId, text: value.text, webEnabled: value.webEnabled,
               agentRevision: value.agentRevision ?? 0,
+              preparing: value.preparing === true,
               status: "queued", error: "Restored after reconnect. Review and send when ready." });
             this.paused.add(value.threadId);
           }
@@ -87,18 +92,46 @@ export class MessageQueue {
   }
 
   enqueue(threadId: string, text: string, webEnabled: boolean): string {
+    const id = this.reserve(threadId, text, webEnabled);
+    this.ready(id, threadId);
+    return id;
+  }
+  reserve(threadId: string | null, text: string, webEnabled: boolean): string {
     if (!this.account || !this.api || !this.state?.connected) throw new Error("Connect to Axiom before sending.");
     if (this.items.length >= MAX_MESSAGES) throw new Error("The message queue is full. Send or remove a queued message first.");
     if (!text.trim() || new TextEncoder().encode(text).length > MAX_BYTES) throw new Error("Queued messages must contain text and be no larger than 64 KB.");
-    const item: QueuedMessage = { id: crypto.randomUUID(), threadId, text, webEnabled,
-      agentRevision: this.state.sessions[threadId]?.desktopAgent?.revision ?? 0, status: "queued" };
+    const id = crypto.randomUUID();
+    const item: QueuedMessage = { id, threadId: threadId ?? `pending:${id}`, text, webEnabled,
+      agentRevision: threadId ? this.state.sessions[threadId]?.desktopAgent?.revision ?? 0 : 0,
+      preparing: true, status: "sending" };
     this.items.push(item);
     try { this.persist(); } catch { this.items.pop(); throw new Error("The message could not be saved to the queue. Your draft was kept."); }
+    this.changed();
+    return item.id;
+  }
+  bindPreparation(id: string, threadId: string): void {
+    const item = this.items.find((item) => item.id === id && item.preparing);
+    if (!item) throw new Error("The account or connection changed. Your message remains saved for review.");
+    item.threadId = threadId;
+    this.persist(); this.changed();
+  }
+  failPreparation(id: string, error: string): void {
+    const item = this.items.find((item) => item.id === id && item.preparing);
+    if (!item) return;
+    item.status = "queued"; item.error = error;
+    this.save(); this.changed();
+  }
+  ready(id: string, threadId: string): void {
+    const item = this.items.find((item) => item.id === id && item.preparing);
+    if (!item || !this.state?.sessions[threadId]) throw new Error("The thread is not ready. Your message is saved for review.");
+    const previous = { ...item };
+    Object.assign(item, { threadId, preparing: false, status: "queued", agentRevision: this.state.sessions[threadId]?.desktopAgent?.revision ?? 0 });
+    delete item.error;
+    try { this.persist(); } catch (error) { Object.assign(item, previous); throw error; }
     // New intent survives Stop's asynchronous cleanup. It does not release
     // earlier held messages, and this permission never survives reconnect.
     if (this.paused.has(threadId)) this.freshSends.add(item.id);
     this.changed(); this.pump();
-    return item.id;
   }
   remove(id: string): void {
     const item = this.items.find((item) => item.id === id);
@@ -120,7 +153,7 @@ export class MessageQueue {
   }
   sendNow(id: string): void {
     const item = this.items.find((item) => item.id === id);
-    if (!item || item.status !== "queued") return;
+    if (!item || item.preparing || item.status !== "queued") return;
     const session = this.state?.sessions[item.threadId];
     if (!session || !this.state?.connected || !this.account) return;
     const steering = session.running;
@@ -132,6 +165,7 @@ export class MessageQueue {
     if (!this.account || !this.api || !this.state?.connected) return;
     const seen = new Set<string>();
     for (const item of this.items) {
+      if (item.preparing) continue;
       if (this.paused.has(item.threadId) && !this.freshSends.has(item.id)) continue;
       if (seen.has(item.threadId)) continue;
       seen.add(item.threadId);

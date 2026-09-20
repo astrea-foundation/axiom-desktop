@@ -208,6 +208,9 @@ pub struct DeliveryMetadata {
     /// Latest actual message activity; operational updates do not advance it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_message_at: Option<String>,
+    /// Latest user submission. Streaming output does not advance sidebar order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_user_message_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeline_item_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -273,6 +276,9 @@ pub struct ThreadSummary {
     /// Latest actual message activity, absent for message-free threads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_message_at: Option<String>,
+    /// Latest user submission. Streaming output does not advance sidebar order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_user_message_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]

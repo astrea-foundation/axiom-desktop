@@ -29,7 +29,7 @@ use crate::{
     paths::{AxiomPaths, FrontendKind},
 };
 
-const SCHEMA_VERSION: i64 = 6;
+const SCHEMA_VERSION: i64 = 7;
 // Clean-slate account-scoped storage contract (`AXA2`). Installation-scoped
 // pre-release databases use a different application ID and are never opened.
 const APPLICATION_ID: i64 = 0x4158_4132;
@@ -180,6 +180,8 @@ pub struct ThreadRevision {
     pub revision: u64,
     pub last_timeline_sequence: u64,
     pub last_message_at: Option<String>,
+    #[serde(default)]
+    pub last_user_message_at: Option<String>,
     /// Exact durable message segment changed by this append, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeline_item_id: Option<String>,
@@ -201,6 +203,8 @@ pub struct ThreadSummary {
     pub created_at: String,
     pub updated_at: String,
     pub last_message_at: Option<String>,
+    #[serde(default)]
+    pub last_user_message_at: Option<String>,
 }
 
 /// Compact thread projection used by the terminal session picker.
@@ -819,7 +823,23 @@ const SCHEMA_MIGRATIONS: &[SchemaMigration] = &[
         to: 6,
         sql: SCHEMA_V6,
     },
+    SchemaMigration {
+        from: 6,
+        to: 7,
+        sql: SCHEMA_V7,
+    },
 ];
+
+// Sidebar order follows user submissions, independently of streaming activity.
+const SCHEMA_V7: &str = r"
+ALTER TABLE threads ADD COLUMN last_user_message_at TEXT;
+UPDATE threads SET last_user_message_at=(
+  SELECT strftime('%Y-%m-%dT%H:%M:%fZ', MAX(created_at)) FROM timeline_items
+  WHERE thread_id=threads.id AND kind='user_message' AND length(content)>0
+);
+CREATE INDEX idx_threads_submissions ON threads(archived, COALESCE(last_user_message_at,'') DESC, id);
+PRAGMA user_version=7;
+";
 
 // Schema 5 left the initial assistant placeholder without a request binding.
 // Repair only completed, single-request turns with a recorded LOCAL receipt
@@ -1238,6 +1258,14 @@ impl SessionStore {
                 transaction.execute(
                     "UPDATE threads SET last_message_at=MAX(COALESCE(last_message_at,''), ?2) WHERE id=?1",
                     params![thread_id, message_at],
+                ).map_err(storage_error)?;
+            }
+            if matches!(&envelope.event,
+                AppEvent::PromptAccepted { text, .. } | AppEvent::SteeringApplied { text, .. } if !text.is_empty())
+            {
+                transaction.execute(
+                    "UPDATE threads SET last_user_message_at=MAX(COALESCE(last_user_message_at,''), ?2) WHERE id=?1",
+                    params![thread_id, envelope.occurred_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)],
                 ).map_err(storage_error)?;
             }
             if matches!(envelope.event, AppEvent::PromptAccepted { .. }) {
@@ -2062,13 +2090,14 @@ fn ensure_thread(transaction: &Transaction<'_>, id: &SessionId) -> Result<()> {
 fn query_thread_revision(connection: &Connection, id: &SessionId) -> Result<ThreadRevision> {
     connection
         .query_row(
-            "SELECT revision, next_timeline_sequence, last_message_at FROM threads WHERE id=?1",
+            "SELECT revision, next_timeline_sequence, last_message_at, last_user_message_at FROM threads WHERE id=?1",
             [id.to_string()],
             |row| {
                 Ok(ThreadRevision {
                     revision: checked_u64_sql(row.get::<_, i64>(0)?)?,
                     last_timeline_sequence: checked_u64_sql(row.get::<_, i64>(1)?)?,
                     last_message_at: row.get(2)?,
+                    last_user_message_at: row.get(3)?,
                     timeline_item_id: None,
                 })
             },
@@ -2687,6 +2716,7 @@ struct StoredThread {
     created_at: String,
     updated_at: String,
     last_message_at: Option<String>,
+    last_user_message_at: Option<String>,
 }
 
 impl StoredThread {
@@ -2707,6 +2737,7 @@ impl StoredThread {
             created_at: row.get(12)?,
             updated_at: row.get(13)?,
             last_message_at: row.get(14)?,
+            last_user_message_at: row.get(15)?,
         })
     }
 
@@ -2731,12 +2762,13 @@ impl StoredThread {
             created_at: self.created_at,
             updated_at: self.updated_at,
             last_message_at: self.last_message_at,
+            last_user_message_at: self.last_user_message_at,
         })
     }
 }
 
 const THREAD_COLUMNS: &str = "id, title, cwd, cwd_encoding, origin, profile, selected_model, thinking_level, lifecycle, \
-     archived, revision, next_timeline_sequence, created_at, updated_at, last_message_at";
+     archived, revision, next_timeline_sequence, created_at, updated_at, last_message_at, last_user_message_at";
 
 fn query_thread_summary(connection: &Connection, id: &SessionId) -> Result<ThreadSummary> {
     let sql = format!("SELECT {THREAD_COLUMNS} FROM threads WHERE id=?1");
@@ -2778,8 +2810,8 @@ impl SessionStore {
              WHERE (archived=0 OR ?1=1)
                AND (?2 IS NULL OR instr(lower(COALESCE(title,'')), lower(?2))>0
                                 OR instr(lower(id), lower(?2))>0)
-               AND (?3 IS NULL OR COALESCE(last_message_at,'') < ?3 OR (COALESCE(last_message_at,'') = ?3 AND id > ?4))
-             ORDER BY COALESCE(last_message_at,'') DESC, id ASC LIMIT ?5"
+               AND (?3 IS NULL OR COALESCE(last_user_message_at,'') < ?3 OR (COALESCE(last_user_message_at,'') = ?3 AND id > ?4))
+             ORDER BY COALESCE(last_user_message_at,'') DESC, id ASC LIMIT ?5"
         );
         let mut statement = connection.prepare(&sql).map_err(storage_error)?;
         let stored = statement
@@ -2809,7 +2841,7 @@ impl SessionStore {
                 .last()
                 .map(|thread| {
                     encode_thread_cursor(
-                        thread.last_message_at.as_deref().unwrap_or(""),
+                        thread.last_user_message_at.as_deref().unwrap_or(""),
                         &thread.id,
                     )
                 })
@@ -2827,7 +2859,7 @@ impl SessionStore {
         let connection = self.lock()?;
         let sql = format!(
             "SELECT {THREAD_COLUMNS} FROM threads
-             WHERE archived=0 OR ?1=1 ORDER BY COALESCE(last_message_at,'') DESC, id LIMIT 1000"
+             WHERE archived=0 OR ?1=1 ORDER BY COALESCE(last_user_message_at,'') DESC, id LIMIT 1000"
         );
         let mut statement = connection.prepare(&sql).map_err(storage_error)?;
         let stored = statement
@@ -4658,7 +4690,7 @@ mod tests {
             .lock()
             .unwrap()
             .execute_batch(
-                "DROP TABLE request_usage; ALTER TABLE threads DROP COLUMN desktop_agent_settings; PRAGMA user_version=3;",
+                "DROP INDEX idx_threads_submissions; ALTER TABLE threads DROP COLUMN last_user_message_at; DROP TABLE request_usage; ALTER TABLE threads DROP COLUMN desktop_agent_settings; PRAGMA user_version=3;",
             )
             .unwrap();
         store.deactivate_account().unwrap();
@@ -5634,7 +5666,7 @@ mod tests {
             store
                 .lock()
                 .unwrap()
-                .pragma_update(None, "user_version", 5)
+                .execute_batch("DROP INDEX idx_threads_submissions; ALTER TABLE threads DROP COLUMN last_user_message_at; PRAGMA user_version=5;")
                 .unwrap();
             drop(store);
             let reopened = SessionStore::open(&path).unwrap();
@@ -5893,8 +5925,21 @@ mod tests {
         );
         assert_eq!(
             store.list_threads(false).expect("threads")[0].id,
-            older.to_string()
+            newer.to_string()
         );
+        assert_eq!(
+            revision.last_user_message_at.as_deref(),
+            Some("2026-01-01T01:00:00.000Z")
+        );
+        at(
+            &older,
+            "2026-01-03T01:00:00Z",
+            AppEvent::PromptAccepted {
+                turn_id: TurnId::new(),
+                text: "follow up".into(),
+            },
+        );
+        assert_eq!(store.list_threads(false).unwrap()[0].id, older.to_string());
         let mut cursor = None;
         let mut ids = Vec::new();
         loop {

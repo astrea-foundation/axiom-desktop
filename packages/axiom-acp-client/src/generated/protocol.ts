@@ -189,6 +189,10 @@ export interface ThreadSummary {
    * Latest actual message activity, absent for message-free threads.
    */
   lastMessageAt?: string | null;
+  /**
+   * Latest user submission. Streaming output does not advance sidebar order.
+   */
+  lastUserMessageAt?: string | null;
   [k: string]: unknown;
 }
 export interface DesktopAgentSettings {
@@ -291,6 +295,10 @@ export interface DeliveryMetadata {
    * Latest actual message activity; operational updates do not advance it.
    */
   lastMessageAt?: string | null;
+  /**
+   * Latest user submission. Streaming output does not advance sidebar order.
+   */
+  lastUserMessageAt?: string | null;
   timelineItemId?: string | null;
   clientItemId?: string | null;
   [k: string]: unknown;

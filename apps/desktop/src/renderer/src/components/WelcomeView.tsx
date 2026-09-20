@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { Cpu, EyeOff, LogIn, RefreshCw, ShieldAlert, ShieldCheck } from "lucide-react";
 import { AxiomMark } from "../brand/AxiomLogo";
 import { GreetingHeadline } from "../brand/GreetingHeadline";
@@ -7,6 +8,7 @@ import { ChatComposer } from "./ChatComposer";
 import type { AgentControlOptions } from "./AgentModeControl";
 
 interface WelcomeViewProps {
+  savedMessages?: ReactNode;
   agentControl?: AgentControlOptions;
   draft: string;
   onDraftChange: (value: string) => void;
@@ -27,6 +29,7 @@ interface WelcomeViewProps {
 }
 
 export function WelcomeView({
+  savedMessages,
   agentControl,
   draft,
   onDraftChange,
@@ -96,7 +99,8 @@ export function WelcomeView({
           </div>
         ) : null}
         <div className="w-full">
-          <ChatComposer
+          <div className="w-full">{savedMessages}</div>
+        <ChatComposer
             agentControl={agentControl}
             webEnabled={webEnabled}
             webDisabled={webDisabled}

@@ -78,6 +78,7 @@ export interface ClientSessionState {
   threadRevision: number;
   lastTimelineSequence: number;
   lastMessageAt?: string | null;
+  lastUserMessageAt?: string | null;
 }
 
 export interface ClientState {
@@ -119,6 +120,7 @@ function emptySession(sessionId: string, cwd = ""): ClientSessionState {
     threadRevision: 0,
     lastTimelineSequence: 0,
     lastMessageAt: null,
+    lastUserMessageAt: null,
   };
 }
 
@@ -543,6 +545,7 @@ export class AxiomStateStore extends EventEmitter {
       session.threadRevision = Math.max(session.threadRevision, metadata.threadRevision);
       session.lastTimelineSequence = Math.max(session.lastTimelineSequence, metadata.lastTimelineSequence);
       if (metadata.lastMessageAt !== undefined) session.lastMessageAt = metadata.lastMessageAt;
+      if (metadata.lastUserMessageAt !== undefined) session.lastUserMessageAt = metadata.lastUserMessageAt;
     }
 
     const type = String(update.sessionUpdate ?? "");
@@ -671,6 +674,7 @@ export class AxiomStateStore extends EventEmitter {
     session.threadRevision = thread.revision;
     session.lastTimelineSequence = thread.lastTimelineSequence;
     session.lastMessageAt = thread.lastMessageAt ?? null;
+    session.lastUserMessageAt = thread.lastUserMessageAt ?? null;
     return session;
   }
 

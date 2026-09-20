@@ -64,11 +64,13 @@ async function openApp(platform = "linux", failDelete = false, thinkingLevels: s
       interactions: [], running: false, activeTurnId: null as string | null, needsResync: false,
       threadRevision: 1, lastTimelineSequence: 0,
       lastMessageAt: null as string | null,
+      lastUserMessageAt: null as string | null,
     });
     const summary = (id: string) => ({
       threadId: id, title: session(id).title, cwd: "", updatedAt: new Date().toISOString(),
       archived: false, revision: 1, lifecycle: "ready",
       lastMessageAt: null as string | null,
+      lastUserMessageAt: null as string | null,
     });
     const state = {
       connected: true, runtimeInstanceId: "test-runtime", lastSequence: 0,
@@ -274,7 +276,7 @@ async function openApp(platform = "linux", failDelete = false, thinkingLevels: s
           emit();
         },
         setOrdering: (threads: { id: string; lastMessageAt: string | null; folder: string | null }[]) => {
-          state.catalog = threads.map((thread) => ({ ...summary(thread.id), title: thread.id, lastMessageAt: thread.lastMessageAt }));
+          state.catalog = threads.map((thread) => ({ ...summary(thread.id), title: thread.id, lastMessageAt: thread.lastMessageAt, lastUserMessageAt: thread.lastMessageAt }));
           state.collections.collections = ["Empty", "Older", "Newer"].map((name) => ({
             id: name, name, collapsed: false, threadIds: threads.filter((thread) => thread.folder === name).map((thread) => thread.id),
           }));
@@ -282,6 +284,10 @@ async function openApp(platform = "linux", failDelete = false, thinkingLevels: s
         },
         bumpLiveMessage: (id: string, time: string) => {
           state.sessions[id] = { ...session(id), title: id, lastMessageAt: time };
+          emit();
+        },
+        bumpUserMessage: (id: string, time: string) => {
+          state.sessions[id] = { ...session(id), title: id, lastMessageAt: time, lastUserMessageAt: time };
           emit();
         },
         refreshMetadata: () => {
@@ -413,7 +419,7 @@ for (const platform of ["linux", "win32", "darwin"]) {
 }
 
 for (const stage of ["new", "settings", "agent"]) {
-  test(`failed ${stage} setup restores the draft and requested Agent mode without sending`, async () => {
+  test(`failed ${stage} setup restores the durable draft and requested Agent mode without sending`, async () => {
     const { page, errors } = await openApp();
     try {
       await enableDraftAgent(page);
@@ -438,7 +444,7 @@ for (const stage of ["new", "settings", "agent"]) {
 }
 
 for (const destination of ["new", "existing", "account", "runtime"]) {
-  test(`leaving thread preparation for ${destination} cancels the send and ignores late creation`, async () => {
+  test(`leaving thread preparation for ${destination} preserves the message without stealing focus`, async () => {
     const { page, errors } = await openApp();
     try {
       await page.evaluate(() => (window as any).__deletionTest.holdSetup("new"));
@@ -456,8 +462,17 @@ for (const destination of ["new", "existing", "account", "runtime"]) {
       await page.waitForFunction(() => document.querySelector('[data-thread-id="new-thread"]'));
       assert.equal(await page.getByRole("status", { name: "Sending message" }).count(), 0);
       assert.equal(await page.locator("textarea[data-chat-input]").inputValue(), "A different draft");
-      assert.equal((await calls(page)).some((call) => call.method === "prompt"), false);
-      assert.equal(await page.evaluate(() => (window as any).__deletionTest.settingsCalls.length), 0);
+      if (destination === "new" || destination === "existing") {
+        await page.waitForFunction(() => (window as any).__deletionTest.calls.some((call: any) => call.method === "prompt"));
+        assert.equal((await calls(page)).filter((call) => call.method === "prompt").length, 1);
+        assert.equal(await page.locator("textarea[data-chat-input]").inputValue(), "A different draft");
+      } else {
+        assert.equal((await calls(page)).some((call) => call.method === "prompt"), false);
+        assert.equal(await page.evaluate(() => (window as any).__deletionTest.settingsCalls.length), 0);
+        const saved = await page.evaluate(() => JSON.parse(localStorage.getItem("axiom.message-queue.v1:test-account")!));
+        assert.equal(saved[0].text, "Private pending message");
+        assert.equal(saved[0].preparing, true);
+      }
       assert.deepEqual(errors, []);
     } finally { await page.close(); }
   });
@@ -2049,7 +2064,7 @@ test("deposit progress keeps ZEC primary and changes estimated USD to credited U
   } finally { await page.close(); }
 });
 
-test("sidebar orders folders and their threads by messages, and reorders immediately on live output", async () => {
+test("sidebar order stays stable during live output and advances on user submissions", async () => {
   const { page, errors } = await openApp();
   try {
     await page.evaluate(() => (window as any).__deletionTest.setOrdering([
@@ -2072,6 +2087,8 @@ test("sidebar orders folders and their threads by messages, and reorders immedia
     await page.evaluate(() => (window as any).__deletionTest.refreshMetadata());
     assert.deepEqual(await order(), initial);
     await page.evaluate(() => (window as any).__deletionTest.bumpLiveMessage("older-1", "2026-01-04T00:00:00Z"));
+    assert.deepEqual(await order(), initial, "streamed output must not reorder rows or folders");
+    await page.evaluate(() => (window as any).__deletionTest.bumpUserMessage("older-1", "2026-01-04T00:00:00Z"));
     await page.waitForFunction(() => document.querySelector('button[data-folder-id]')?.getAttribute("data-folder-id") === "Older");
     const updated = await order();
     assert.deepEqual(updated.folders, ["Older", "Newer", "Empty"]);
@@ -2173,7 +2190,7 @@ test("proxy view follows native state and sends start, restart, stop and clipboa
   } finally { await page.close(); }
 });
 
-test("a draft written while signed out follows first sign-in without restoring an old account draft", async () => {
+test("an anonymous draft follows sign-in and each account recovers only its own draft", async () => {
   const { page, errors } = await openApp();
   try {
     const input = page.locator("textarea[data-chat-input]");
@@ -2186,7 +2203,7 @@ test("a draft written while signed out follows first sign-in without restoring a
     await page.getByRole("button", { name: "Test model", exact: true }).waitFor();
     assert.equal(await input.inputValue(), "New draft written while signed out");
     await page.evaluate(() => (window as any).__deletionTest.setAccount("test-account"));
-    await page.waitForFunction(() => (document.querySelector("textarea[data-chat-input]") as HTMLTextAreaElement)?.value === "");
+    await page.waitForFunction(() => (document.querySelector("textarea[data-chat-input]") as HTMLTextAreaElement)?.value === "Old account secret");
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
 });
@@ -2348,4 +2365,105 @@ test("API keys discard a creation response after account switching", async () =>
     assert.equal(await page.getByText("Old account", {exact: true}).count(), 0);
     assert.deepEqual(errors, []);
   } finally {await page.close();}
+});
+
+
+test("drafts survive reselecting, switching threads, reloading, and account changes", async () => {
+  const { page, errors } = await openApp();
+  try {
+    const input = page.locator("textarea[data-chat-input]");
+    const existing = page.locator('[data-thread-id="old-thread"]');
+    await input.fill("New conversation draft");
+    await existing.click();
+    assert.equal(await input.inputValue(), "");
+    await input.fill("Existing conversation draft");
+    await existing.click();
+    assert.equal(await input.inputValue(), "Existing conversation draft");
+    await page.getByRole("button", { name: "New thread", exact: true }).click();
+    assert.equal(await input.inputValue(), "New conversation draft");
+    await page.reload();
+    await input.waitFor();
+    await page.waitForFunction(() => (document.querySelector("textarea[data-chat-input]") as HTMLTextAreaElement)?.value === "New conversation draft");
+    await existing.click();
+    assert.equal(await input.inputValue(), "Existing conversation draft");
+    await page.evaluate(() => (window as any).__deletionTest.setAccount("account-b"));
+    await page.waitForFunction(() => (document.querySelector("textarea[data-chat-input]") as HTMLTextAreaElement)?.value === "");
+    await input.fill("Account B draft");
+    await page.evaluate(() => (window as any).__deletionTest.setAccount("test-account"));
+    await page.waitForFunction(() => (document.querySelector("textarea[data-chat-input]") as HTMLTextAreaElement)?.value === "Existing conversation draft");
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("interrupted first-message setup survives reload without automatic dispatch", async () => {
+  const { page, errors } = await openApp();
+  try {
+    await page.evaluate(() => (window as any).__deletionTest.holdSetup("new"));
+    await page.locator("textarea[data-chat-input]").fill("Durable first message");
+    await page.locator("textarea[data-chat-input]").press("Enter");
+    await page.getByRole("status", { name: "Sending message" }).waitFor();
+    await page.reload();
+    const queue = page.getByRole("region", { name: "Message queue" });
+    await queue.waitFor();
+    assert.match(await queue.innerText(), /Durable first message/);
+    assert.equal((await calls(page)).some((call) => call.method === "prompt"), false);
+    await queue.getByRole("button", { name: "Review draft" }).click();
+    assert.equal(await page.locator("textarea[data-chat-input]").inputValue(), "Durable first message");
+    await page.locator("textarea[data-chat-input]").press("Enter");
+    await page.waitForFunction(() => (window as any).__deletionTest.calls.some((call: any) => call.method === "prompt"));
+    assert.equal((await calls(page)).filter((call) => call.method === "prompt").length, 1);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+for (const width of [1320, 640]) {
+  test(`code-only responses and large ordered-list markers fit at ${width}px`, async () => {
+    const { page, errors } = await openApp();
+    try {
+      await page.setViewportSize({ width, height: 800 });
+      await page.locator('[data-thread-id="old-thread"]').click();
+      const text = "```typescript\nconst answer = 42;\n" + "// wide code ".repeat(80) + "\n```";
+      await page.evaluate((text) => (window as any).__deletionTest.setTimeline([{ id: "code", kind: "assistant", text, status: "completed" }]), text);
+      const code = page.locator(".markdown-prose pre");
+      await code.waitFor();
+      const dimensions = await code.evaluate((el) => ({ width: el.getBoundingClientRect().width, scroll: el.scrollWidth, viewport: el.clientWidth }));
+      assert.ok(dimensions.width > 180, JSON.stringify(dimensions));
+      assert.ok(dimensions.scroll > dimensions.viewport, "wide code scrolls inside its code block");
+      const list = "999. First item\n1000. Second item\n1001. Third item";
+      await page.evaluate((text) => (window as any).__deletionTest.setTimeline([{ id: "list", kind: "assistant", text, status: "completed" }]), list);
+      const geometry = await page.locator(".markdown-prose ol").evaluate((el) => {
+        const style = getComputedStyle(el);
+        const canvas = document.createElement("canvas");
+        const ctx = canvas.getContext("2d")!; ctx.font = style.font;
+        return { padding: parseFloat(style.paddingInlineStart), marker: ctx.measureText("1001. ").width,
+          documentWidth: document.documentElement.scrollWidth, viewport: innerWidth };
+      });
+      assert.ok(geometry.padding >= geometry.marker, JSON.stringify(geometry));
+      assert.ok(geometry.documentWidth <= geometry.viewport);
+      assert.deepEqual(errors, []);
+    } finally { await page.close(); }
+  });
+}
+
+
+test("two pending first messages continue independently while a third draft stays selected", async () => {
+  const { page, errors } = await openApp();
+  try {
+    await page.evaluate(() => (window as any).__deletionTest.holdSetup("new"));
+    for (const text of ["First parallel message", "Second parallel message"]) {
+      await page.locator("textarea[data-chat-input]").fill(text);
+      await page.locator("textarea[data-chat-input]").press("Enter");
+      await page.getByRole("status", { name: "Sending message" }).waitFor();
+      await page.getByRole("button", { name: "New thread", exact: true }).click();
+    }
+    await page.locator('[data-thread-id="old-thread"]').click();
+    await page.locator("textarea[data-chat-input]").fill("Third independent draft");
+    await page.evaluate(() => (window as any).__deletionTest.releaseSetup("new"));
+    await page.waitForFunction(() => (window as any).__deletionTest.calls.filter((call: any) => call.method === "prompt").length === 2);
+    const prompts = (await calls(page)).filter((call) => call.method === "prompt");
+    assert.deepEqual(prompts.map((call) => call.text).sort(), ["First parallel message", "Second parallel message"]);
+    assert.equal(new Set(prompts.map((call) => call.id)).size, 2);
+    assert.equal(await page.locator("textarea[data-chat-input]").inputValue(), "Third independent draft");
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
 });

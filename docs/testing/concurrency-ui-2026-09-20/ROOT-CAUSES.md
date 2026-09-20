@@ -1,5 +1,7 @@
 # Root-cause investigation — 2026-09-20
 
+Implementation and retest results are now recorded in [FIXES.md](FIXES.md). The investigation below describes the original behavior.
+
 All seven findings have identifiable causes in Axiom. Follow-up checks reproduced the compaction loss, connection blocking, draft deletion and layout defects locally without sending additional inference requests. Three existing tests explicitly require behaviors that produced the failures: cancelling submission on ordinary navigation, retaining a disconnected relay producer, and reordering the sidebar on live output.
 
 The deeper problem is inconsistent ownership and lifecycle rules. The selected screen owns an in-progress submission; an attested worker session owns a single busy connection; incoming chunks own sidebar ranking; a summary replaces history after that history has already been truncated. These rules work in isolated happy paths but conflict during navigation, cancellation and long conversations.

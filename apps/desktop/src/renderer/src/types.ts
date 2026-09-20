@@ -47,6 +47,7 @@ export interface Thread {
   folderId: string | null;
   updatedAt: string;
   lastMessageAt?: string | null;
+  lastUserMessageAt?: string | null;
   status: ThreadStatus;
   messages: Message[];
 }
