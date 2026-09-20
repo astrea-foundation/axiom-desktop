@@ -121,7 +121,7 @@ test("expiry, missing evidence, and provisional replies stay explicit without an
     await page.getByText("No report available for this model.").waitFor();
     assert.equal(await page.getByRole("button", { name: "Copy verification report" }).isDisabled(), true);
     await page.evaluate(() => { (window as any).__privacyTest.update({ running: true }); (window as any).__privacyTest.setWeb(true); });
-    assert.match(await dialog(page).innerText(), /Latest reply receipt\s+Pending/);
+    assert.match(await dialog(page).innerText(), /Latest reply verification\s+Pending/);
     assert.match(await dialog(page).innerText(), /not end-to-end encrypted/);
     assert.equal(await page.getByRole("button", { name: "Refresh", exact: true }).isDisabled(), true);
     await capture(page, "missing-pending-web");
@@ -313,7 +313,7 @@ test("Phala separates gateway, workers, and receipt policy, with safe clipboard 
     assert.match(await dialog(page).innerText(), /Worker GPU/);
     await page.locator("summary").filter({ hasText: "Technical details" }).click();
     assert.match(await dialog(page).innerText(), /Receipt policy\s+Required for each reply/);
-    assert.match(await dialog(page).innerText(), /Latest reply receipt\s+No reply yet/);
+    assert.match(await dialog(page).innerText(), /Latest reply verification\s+No reply yet/);
     assert.match(await dialog(page).innerText(), /preverified worker sessions/);
     await capture(page, "phala-details");
     await page.evaluate(() => Object.defineProperty(navigator.clipboard, "writeText", { configurable: true, value: async () => { throw new Error("Clipboard denied"); } }));

@@ -1084,7 +1084,7 @@ impl Tool for ApplyPatch {
                                     "operation": {"const": "create"},
                                     "path": {"type": "string"},
                                     "content": {"type": "string"},
-                                    "mode": {"type": ["integer", "null"], "minimum": 0, "maximum": 511}
+                                    "file_permissions": {"type": ["integer", "null"], "minimum": 0, "maximum": 511, "description": "Optional Unix permission bits as a decimal integer (420 means 0644). Omit for the default. Use operation to select create/update/delete."}
                                 }
                             },
                             {
@@ -2061,7 +2061,7 @@ impl Tool for AskUserQuestions {
         "ask_user_questions"
     }
     fn access(&self) -> ToolAccess {
-        ToolAccess::Read
+        ToolAccess::Interaction
     }
     fn description(&self) -> &'static str {
         "Ask up to three concise structured questions and wait for validated user answers."

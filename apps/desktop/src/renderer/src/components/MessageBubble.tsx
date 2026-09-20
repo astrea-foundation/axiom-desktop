@@ -9,8 +9,23 @@ function thoughtLabel(durationMs?: number): string {
   return `Thought for ${seconds} ${seconds === 1 ? "second" : "seconds"}`;
 }
 
-export function MessageBubble({ message }: { message: Message }) {
+export function MessageBubble({ message, onRevise, revisionText }: {
+  message: Message; onRevise?: (text: string) => Promise<void>; revisionText?: string;
+}) {
   const [copied, setCopied] = useState(false);
+  const [revisionMode, setRevisionMode] = useState<"edit" | "regenerate" | null>(null);
+  const [revisionDraft, setRevisionDraft] = useState("");
+  const [revising, setRevising] = useState(false);
+  const revisionControls = revisionMode ? <div data-preserve-follow className="my-2 rounded-lg border border-[var(--color-border)] p-3 text-[12px]">
+    {revisionMode === "edit" ? <textarea aria-label="Edited message" value={revisionDraft} onChange={(event) => setRevisionDraft(event.target.value)}
+      className="mb-2 min-h-24 w-full rounded bg-[var(--color-bg-surface)] p-2 text-[14px]" /> : null}
+    <p>This replaces the reply and all later messages. Files already changed stay as they are.</p>
+    <div className="mt-2 flex gap-3"><button type="button" disabled={!onRevise || revising || !(revisionMode === "edit" ? revisionDraft : revisionText)?.trim()}
+      onClick={() => { setRevising(true); void onRevise?.(revisionMode === "edit" ? revisionDraft : revisionText!)
+        .then(() => setRevisionMode(null)).catch(() => {}).finally(() => setRevising(false)); }}
+      className="rounded bg-[var(--color-cherry)] px-3 py-1.5 text-on-accent disabled:opacity-40">{revisionMode === "edit" ? "Save and send" : "Regenerate from here"}</button>
+    <button type="button" disabled={revising} onClick={() => setRevisionMode(null)}>Cancel</button></div>
+  </div> : null;
   const [reasoningOpen, setReasoningOpen] = useState(false);
   const isStreaming = message.status === "streaming" || message.status === "pending";
   // Stopping a reply is not a presentation error: keep its text and allow
@@ -42,12 +57,14 @@ export function MessageBubble({ message }: { message: Message }) {
               type="button"
               className="rounded-md p-1.5 text-[var(--color-text-tertiary)] transition-colors disabled:cursor-not-allowed disabled:opacity-35"
               aria-label="Edit message"
-              disabled
-              title="Message editing is temporarily unavailable."
+              disabled={!onRevise || revising}
+              onClick={() => { setRevisionDraft(message.content); setRevisionMode("edit"); }}
+              title="Edit and resend from this message"
             >
               <Pencil size={13} />
             </button>
           </div>}
+          {revisionControls}
         </div>
       </div>
     );
@@ -119,8 +136,9 @@ export function MessageBubble({ message }: { message: Message }) {
             </button>
             <button
               type="button"
-              disabled
-              title="Regeneration is temporarily unavailable."
+              disabled={!onRevise || isStreaming || revising}
+              onClick={() => setRevisionMode("regenerate")}
+              title="Regenerate from this message"
               className="rounded-md p-1.5 text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-bg-surface-hover)] hover:text-[var(--color-text-secondary)] disabled:opacity-45"
               aria-label="Regenerate"
             >
@@ -134,6 +152,7 @@ export function MessageBubble({ message }: { message: Message }) {
             </span>
           ) : null}
       </div> : null}
+      {revisionControls}
     </div>
   );
 }

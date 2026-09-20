@@ -634,7 +634,7 @@ async fn catalog(State(state): State<Arc<FixtureState>>) -> Json<Value> {
         "base_url":state.provider_base_url,
         "provider":"axiom-test-fixture",
         "provider_label":"Axiom Test Fixture",
-        "e2ee_protocol":"near-v2",
+        "e2ee_protocol":"near-v3",
         "e2ee_encryption_version":2,
         "attestation_protocol":"signed-test-fixture-v1",
         "relay_contract_version":2,

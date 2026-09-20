@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ClientTimelineItem } from "@axiom/axiom-acp-client";
-import { presentTimeline } from "../src/renderer/src/components/timelinePresentation";
+import { messageRevisionSources, presentTimeline } from "../src/renderer/src/components/timelinePresentation";
 
 function item(
   kind: ClientTimelineItem["kind"],
@@ -12,6 +12,26 @@ function item(
 ): ClientTimelineItem {
   return { id, turnId, kind, text, status };
 }
+
+test("regeneration after steering starts from the original turn prompt", () => {
+  const original = item("user", "prompt", "turn-1", "Original prompt");
+  const next = item("user", "next", "turn-2", "Next prompt");
+  const sources = messageRevisionSources([
+    original,
+    item("assistant", "partial", "turn-1", "Before steering"),
+    { ...item("user", "steer", "turn-1", "Steering"), raw: { metadata: { steering: true } } },
+    item("assistant", "final", "turn-1", "After steering"),
+    next,
+    item("assistant", "next-reply", "turn-2", "Next reply"),
+    item("assistant", "orphan", "unknown-turn", "No original prompt"),
+  ]);
+  assert.equal(sources.get("prompt"), original);
+  assert.equal(sources.get("partial"), original);
+  assert.equal(sources.get("final"), original);
+  assert.equal(sources.get("next-reply"), next);
+  assert.equal(sources.has("steer"), false);
+  assert.equal(sources.has("orphan"), false);
+});
 
 test("authoritative assistant-before-reasoning records render as one response", () => {
   const rows = presentTimeline([
@@ -114,4 +134,14 @@ test("provider failures and ordinary content mentioning verification remain visi
     item("activity", "warning", "", "Verifying model attestation"),
   ];
   assert.deepEqual(presentTimeline(timeline).map((row) => row.key), timeline.map((row) => row.id));
+});
+
+
+test("permission cards own pending decisions; redundant approval notices stay out of the transcript", () => {
+  const timeline: ClientTimelineItem[] = [
+    { ...item("activity", "pending-permission", "", "Allow read file?", "pending"), raw: { kind: "notice", metadata: { code: "permission" } } },
+    { ...item("activity", "allowed-permission", "", "Allow read file?", "completed"), raw: { kind: "notice", metadata: { code: "permission", allowed: true } } },
+    { ...item("error", "denied-permission", "", "You denied this action", "failed"), raw: { kind: "notice", metadata: { code: "permission", allowed: false } } },
+  ];
+  assert.deepEqual(presentTimeline(timeline).map((row) => row.key), ["denied-permission"]);
 });

@@ -192,6 +192,10 @@ Parser fuzzing and corpus-handling instructions are in
 
 ## Provider configuration
 
+Tinfoil integration is documented in [the EHBP protocol guide](docs/protocols/tinfoil-ehbp-v1.md),
+including locally verified attestation, streaming tools, billing checks and live canary commands.
+Its backend configuration remains opt-in.
+
 Production AxiomCLI talks directly to Axiom's relay. It discovers the selected
 model, verifies current TEE evidence locally, binds the attested model key to
 the live provider TLS endpoint, and encrypts inference end to end in-process.

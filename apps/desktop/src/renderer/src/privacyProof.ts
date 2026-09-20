@@ -30,8 +30,19 @@ export function verificationAge(at: number, now: number): string {
 }
 
 export function proofGroups(evidence: SecurityEvidence) {
+  if (evidence.attestationProtocol === "tinfoil-snp-sigstore-v1") {
+    return [
+      { title: "Hardware evidence", explanation: "This device verified the router’s AMD SEV-SNP evidence. The measured router verifies its model workers.", names: ["AMD SEV-SNP router attestation"] },
+      { title: "Source provenance", explanation: "The router’s measured software matches its verified Sigstore build provenance.", names: ["Measured router matches Sigstore build provenance"] },
+      { title: "Encryption key and freshness", explanation: "A fresh connection binds the live router identity and encryption key to the verified environment. The report expires after its bounded lease.", names: ["Live TLS identity and attested HPKE key"] },
+    ].map((group) => ({ ...group,
+      checks: evidence.checks.filter((check) => group.names.includes(check.name)),
+      passed: group.names.every((name) => evidence.checks.some((check) => check.name === name && check.passed)),
+    }));
+  }
   const phala = evidence.attestationProtocol === "phala-aci-tdx-v1";
-  if (!phala && evidence.attestationProtocol !== "near-tdx-nvidia-v1") return [];
+  const nearSession = evidence.attestationProtocol === "near-tdx-nvidia-v2";
+  if (!phala && !nearSession && evidence.attestationProtocol !== "near-tdx-nvidia-v1") return [];
   return [
     {
       title: "Hardware evidence", explanation: phala
@@ -41,7 +52,7 @@ export function proofGroups(evidence: SecurityEvidence) {
     },
     {
       title: "Encryption key", explanation: "The encryption key is bound to the verified environment before model messages are sent.",
-      names: phala ? ["Encrypted channel"] : ["Model encryption key", "Model identity", "Live TLS endpoint"],
+      names: phala ? ["Encrypted channel"] : ["Model encryption key", "Model identity", nearSession ? "Attested worker TLS key" : "Live TLS endpoint"],
     },
     {
       title: "Freshness", explanation: "A fresh challenge prevents replayed evidence. The report is usable only until its expiry.",
@@ -53,17 +64,17 @@ export function proofGroups(evidence: SecurityEvidence) {
   }));
 }
 
-/** Receipt state comes exclusively from the durable reply, never the TEE report. */
+/** Response authentication comes from the durable reply, never the TEE report alone. */
 export function replyProof(session: ClientSessionState): { label: string; verified: boolean; detail: string } {
-  if (session.running) return { label: "Pending", verified: false, detail: "The reply stays provisional until its complete response and final receipts verify." };
+  if (session.running) return { label: "Pending", verified: false, detail: "The reply stays provisional until its complete response is authenticated." };
   const last = [...session.timeline].reverse().find((item) => item.kind === "assistant");
-  if (!last) return { label: "No reply yet", verified: false, detail: "Each reply needs its own final receipt. A TEE check alone does not verify a reply." };
+  if (!last) return { label: "No reply yet", verified: false, detail: "Each reply must be authenticated to its request and verified environment. A TEE check alone does not verify a reply." };
   const parts = last.turnId ? session.timeline.filter((item) => item.turnId === last.turnId && ["assistant", "reasoning"].includes(item.kind)) : [last];
   const verified = parts.every((item) => item.terminalVerified === true && item.status === "completed");
   return {
     label: verified ? "Verified" : last.status === "failed" ? "Failed" : "Incomplete",
     verified,
-    detail: verified ? "The native client verified the complete reply’s final receipts, including the accepted worker and response binding."
-      : "No verified completion is recorded for this reply. Its text is not proof of a successful receipt check.",
+    detail: verified ? "The native client authenticated the complete reply to its request and verified environment using the provider’s encrypted protocol."
+      : "No verified completion is recorded for this reply. Its text alone does not prove successful authentication.",
   };
 }

@@ -539,6 +539,13 @@
           "maximum": 65535,
           "default": 0
         },
+        "messageRevision": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535,
+          "default": 0
+        },
         "compaction": {
           "type": "integer",
           "format": "uint16",
@@ -628,10 +635,39 @@
           ],
           "format": "uint64",
           "minimum": 0
+        },
+        "revision": {
+          "description": "Replace local history starting at this user message before the normal\nnative E2EE turn. Never interpreted by the hosted backend.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PromptRevision"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
         "clientItemId"
+      ]
+    },
+    "PromptRevision": {
+      "type": "object",
+      "properties": {
+        "userItemId": {
+          "type": "string"
+        },
+        "expectedRevision": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "userItemId",
+        "expectedRevision"
       ]
     },
     "DeliveryMetadata": {
@@ -2336,7 +2372,11 @@
           "minimum": 0
         },
         "attestationGeneration": {
-          "type": "integer",
+          "description": "Relay lease generation, when the provider protocol uses relay leases.",
+          "type": [
+            "integer",
+            "null"
+          ],
           "format": "uint64",
           "minimum": 0
         },
@@ -2388,7 +2428,6 @@
         "e2eeEncryptionVersion",
         "trustPolicyVersion",
         "verifiedAtUnixSeconds",
-        "attestationGeneration",
         "hardExpiresAtUnixSeconds",
         "modelKeyFingerprint",
         "checks",

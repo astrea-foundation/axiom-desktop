@@ -84,9 +84,13 @@ impl ProviderRegistry {
                 Arc::clone(&credential),
             )) as Arc<dyn SecureProvider>;
             let phala = Arc::new(crate::providers::phala::PhalaProvider::new(
+                config.clone(),
+                Arc::clone(&credential),
+            )) as Arc<dyn SecureProvider>;
+            let tinfoil = Arc::new(crate::providers::tinfoil::TinfoilProvider::new(
                 config, credential,
             )) as Arc<dyn SecureProvider>;
-            Self::new([near, phala])
+            Self::new([near, phala, tinfoil])
         }
         #[cfg(feature = "test-fixture")]
         {
@@ -98,7 +102,11 @@ impl ProviderRegistry {
                 config.clone(),
                 Arc::clone(&credential),
             )) as Arc<dyn SecureProvider>;
-            let mut providers = vec![near, phala];
+            let tinfoil = Arc::new(crate::providers::tinfoil::TinfoilProvider::new(
+                config.clone(),
+                Arc::clone(&credential),
+            )) as Arc<dyn SecureProvider>;
+            let mut providers = vec![near, phala, tinfoil];
             if config.uses_test_fixture() {
                 providers.push(Arc::new(crate::providers::fixture::FixtureProvider::new(
                     config, credential,

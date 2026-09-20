@@ -1062,7 +1062,7 @@ impl AuthManager {
             .expect("static API path is valid")
     }
 
-    fn generation(&self) -> u64 {
+    pub(crate) fn generation(&self) -> u64 {
         self.shared
             .state
             .read()
@@ -1370,10 +1370,7 @@ impl AuthManager {
                 .send()
                 .await;
             self.adopt_external_credential(persisted)?;
-            return Err(AxiomError::InvalidTransition(
-                "the native account changed in another Axiom process; refresh account status"
-                    .into(),
-            ));
+            return Err(account_changed());
         }
         let refresh = bundle.refresh_token.expose_secret().to_owned();
         let persistence = self
@@ -1512,13 +1509,14 @@ impl AuthManager {
         };
         let local_refresh = self.refresh_token_value();
         let changed_externally = persisted != local_refresh;
-        if changed_externally {
+        let previous_account = self.active_account_id();
+        // A peer normally changes the credential by rotating the same account's
+        // session. Keep its identity until the server authenticates the new
+        // bundle; changing the identity generation here invalidates live work.
+        if changed_externally && (previous_account.is_none() || persisted.is_none()) {
             self.adopt_external_credential(persisted.clone())?;
             if !allow_external_change {
-                return Err(AxiomError::InvalidTransition(
-                    "the native account changed in another Axiom process; refresh account status"
-                        .into(),
-                ));
+                return Err(account_changed());
             }
         }
         let refresh = persisted.ok_or_else(authentication_required)?;
@@ -1587,8 +1585,19 @@ impl AuthManager {
                 "session refresh omitted rotated tokens".into(),
             ));
         };
+        let switched_account = changed_externally
+            && previous_account.is_some()
+            && previous_account.as_deref() != Some(bundle.account.id.as_str());
+        if switched_account {
+            // Preserve the peer's newly rotated credential, but never give it
+            // to work registered against the previous account's local store.
+            self.adopt_external_credential(Some(refresh.clone()))?;
+        }
         self.commit_bundle_under_credential_lock(bundle, false, Some(&refresh), &credential_lock)
             .await?;
+        if switched_account && !allow_external_change {
+            return Err(account_changed());
+        }
         let state = self
             .shared
             .state
@@ -1637,10 +1646,7 @@ impl AuthManager {
                 });
             }
             if state.external_change_pending && !allow_external_change {
-                return Err(AxiomError::InvalidTransition(
-                    "the native account changed in another Axiom process; refresh account status"
-                        .into(),
-                ));
+                return Err(account_changed());
             }
             if let Some(token) = &state.access_token
                 && token.expires_at > minimum_expiry(minimum_remaining)
@@ -1667,10 +1673,7 @@ impl AuthManager {
                 .read()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             if state.external_change_pending && !allow_external_change {
-                return Err(AxiomError::InvalidTransition(
-                    "the native account changed in another Axiom process; refresh account status"
-                        .into(),
-                ));
+                return Err(account_changed());
             }
             if let Some(token) = &state.access_token
                 && token.expires_at > minimum_expiry(minimum_remaining)
@@ -2319,8 +2322,20 @@ fn parse_service_url(value: &str, label: &str) -> Result<Url> {
     Ok(url)
 }
 
+fn account_changed() -> AxiomError {
+    AxiomError::SecureProvider {
+        kind: axiom_inference::ProviderFailureKind::LocalAuthentication,
+        code: "ACCOUNT_CHANGED",
+        message: "the native account changed in another Axiom process; refresh account status",
+    }
+}
+
 fn authentication_required() -> AxiomError {
-    AxiomError::Provider("authentication required; sign in to your Axiom account".into())
+    AxiomError::SecureProvider {
+        kind: axiom_inference::ProviderFailureKind::LocalAuthentication,
+        code: "AUTHENTICATION_REQUIRED",
+        message: "authentication required; sign in to your Axiom account",
+    }
 }
 
 #[cfg(unix)]
@@ -3182,6 +3197,83 @@ mod tests {
             store.load().expect("load").as_deref(),
             Some("refresh-token-with-enough-entropy-00000002")
         );
+    }
+
+    #[tokio::test]
+    async fn peer_rotation_preserves_account_identity_and_live_operation_leases() {
+        let (first, server, store) = manager().await;
+        let initial = "initial-refresh-token-with-enough-entropy";
+        store.save(initial).unwrap();
+        first.shared.state.write().unwrap().refresh_token = Some(initial.to_owned().into());
+        let second = peer_manager(&first, &store, initial);
+        let ValidationStatus::Valid(status) = first.validate().await else {
+            panic!("first account")
+        };
+        assert!(matches!(
+            second.validate().await,
+            ValidationStatus::Valid(_)
+        ));
+        first.shared.state.write().unwrap().access_token = None;
+        let generation = first.generation();
+        let first_cancel = CancellationToken::new();
+        let second_cancel = CancellationToken::new();
+        let (one, two) = tokio::join!(
+            first.access_token_for_secure_operation(&first_cancel),
+            first.access_token_for_secure_operation(&second_cancel),
+        );
+        assert!(one.is_ok() && two.is_ok());
+        assert_eq!(server.refreshes.load(Ordering::Acquire), 3);
+        assert_eq!(first.generation(), generation);
+        assert!(first.account_status_is_current(&status));
+        assert_eq!(server.revocations.load(Ordering::Acquire), 0);
+        second.shared.state.write().unwrap().access_token = None;
+        assert!(matches!(
+            second.validate().await,
+            ValidationStatus::Valid(_)
+        ));
+        first.shared.state.write().unwrap().access_token = None;
+        assert!(matches!(first.validate().await, ValidationStatus::Valid(_)));
+        assert_eq!(
+            first.generation(),
+            generation,
+            "account refresh also preserves identity"
+        );
+        assert!(first.account_status_is_current(&status));
+    }
+
+    #[tokio::test]
+    async fn peer_account_switch_preserves_credential_but_blocks_existing_work() {
+        let (auth, server, store) = manager().await;
+        let initial = "initial-refresh-token-with-enough-entropy";
+        store.save(initial).unwrap();
+        auth.shared.state.write().unwrap().refresh_token = Some(initial.to_owned().into());
+        assert!(matches!(auth.validate().await, ValidationStatus::Valid(_)));
+        {
+            let mut state = auth.shared.state.write().unwrap();
+            state.account.as_mut().unwrap().id = "previous-account".into();
+            state.access_token = None;
+        }
+        let generation = auth.generation();
+        store
+            .save("peer-login-refresh-token-with-enough-entropy")
+            .unwrap();
+        let error = auth
+            .access_token_for_secure_operation(&CancellationToken::new())
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("account changed"));
+        assert!(auth.generation() > generation);
+        assert_eq!(server.revocations.load(Ordering::Acquire), 0);
+        assert_eq!(
+            store.load().unwrap().as_deref(),
+            Some("refresh-token-with-enough-entropy-00000002")
+        );
+        assert!(
+            auth.access_token_for_secure_operation(&CancellationToken::new())
+                .await
+                .is_err()
+        );
+        assert!(matches!(auth.validate().await, ValidationStatus::Valid(_)));
     }
 
     #[tokio::test]

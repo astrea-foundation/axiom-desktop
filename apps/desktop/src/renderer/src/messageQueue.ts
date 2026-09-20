@@ -29,6 +29,7 @@ export class MessageQueue {
   private api: QueueApi | null = null;
   private items: QueuedMessage[] = [];
   private paused = new Set<string>();
+  private freshSends = new Set<string>();
   private operations = new Map<string, { threadId: string; steering: boolean }>();
 
   constructor(private storage: ConsentStorage | null, private changed: () => void, private reportError: (message: string) => void) {}
@@ -58,7 +59,7 @@ export class MessageQueue {
     if (account !== this.account || runtime !== this.runtime) {
       this.generation++;
       this.account = account; this.runtime = runtime;
-      this.operations.clear(); this.items = []; this.paused.clear();
+      this.operations.clear(); this.items = []; this.paused.clear(); this.freshSends.clear();
       if (account) {
         try {
           const raw = this.storage?.getItem(key(account));
@@ -93,7 +94,11 @@ export class MessageQueue {
       agentRevision: this.state.sessions[threadId]?.desktopAgent?.revision ?? 0, status: "queued" };
     this.items.push(item);
     try { this.persist(); } catch { this.items.pop(); throw new Error("The message could not be saved to the queue. Your draft was kept."); }
-    this.changed(); this.pump(); return item.id;
+    // New intent survives Stop's asynchronous cleanup. It does not release
+    // earlier held messages, and this permission never survives reconnect.
+    if (this.paused.has(threadId)) this.freshSends.add(item.id);
+    this.changed(); this.pump();
+    return item.id;
   }
   remove(id: string): void {
     const item = this.items.find((item) => item.id === id);
@@ -101,13 +106,16 @@ export class MessageQueue {
     const previous = this.items;
     this.items = this.items.filter((item) => item.id !== id);
     if (!this.save()) this.items = previous;
+    else this.freshSends.delete(id);
     this.changed();
   }
   forget(threadId: string): void {
+    for (const item of this.items) if (item.threadId === threadId) this.freshSends.delete(item.id);
     this.items = this.items.filter((item) => item.threadId !== threadId);
     this.paused.delete(threadId); this.save(); this.changed();
   }
   pause(threadId: string): void {
+    for (const item of this.items) if (item.threadId === threadId) this.freshSends.delete(item.id);
     this.paused.add(threadId); this.changed();
   }
   sendNow(id: string): void {
@@ -118,17 +126,17 @@ export class MessageQueue {
     const steering = session.running;
     if (steering && (!session.activeTurnId || [...this.operations.values()].some((op) => op.threadId === item.threadId && op.steering))) return;
     if (!steering && [...this.operations.values()].some((op) => op.threadId === item.threadId)) return;
-    this.paused.delete(item.threadId);
     void this.dispatch(item, steering ? session.activeTurnId! : null);
   }
   private pump(): void {
     if (!this.account || !this.api || !this.state?.connected) return;
     const seen = new Set<string>();
     for (const item of this.items) {
+      if (this.paused.has(item.threadId) && !this.freshSends.has(item.id)) continue;
       if (seen.has(item.threadId)) continue;
       seen.add(item.threadId);
       const session = this.state.sessions[item.threadId];
-      if (item.status === "queued" && session && !session.running && !this.paused.has(item.threadId)
+      if (item.status === "queued" && session && !session.running
         && ![...this.operations.values()].some((op) => op.threadId === item.threadId)) void this.dispatch(item, null);
     }
   }
@@ -140,6 +148,7 @@ export class MessageQueue {
       this.paused.add(item.threadId); this.save(); this.changed(); return;
     }
     const generation = this.generation;
+    this.freshSends.delete(item.id);
     item.status = turnId ? "steering" : "sending"; delete item.error;
     if (!this.save()) { item.status = "queued"; this.paused.add(item.threadId); this.changed(); return; }
     this.operations.set(item.id, { threadId: item.threadId, steering: turnId !== null });

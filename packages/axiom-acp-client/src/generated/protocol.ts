@@ -219,6 +219,7 @@ export interface FeatureVersions {
   securityEvidence?: number;
   webConsent?: number;
   steering?: number;
+  messageRevision?: number;
   compaction?: number;
   activity?: number;
   [k: string]: unknown;
@@ -267,7 +268,16 @@ export interface PromptMetadata {
    * Bind queued input to the exact locally approved Agent configuration.
    */
   agentRevision?: number | null;
+  /**
+   * Replace local history starting at this user message before the normal
+   * native E2EE turn. Never interpreted by the hosted backend.
+   */
+  revision?: PromptRevision | null;
   [k: string]: unknown;
+}
+export interface PromptRevision {
+  userItemId: string;
+  expectedRevision: number;
 }
 /**
  * Durable identity attached beneath `_meta.axiom` on standard ACP
@@ -734,7 +744,10 @@ export interface SecurityEvidence {
   e2eeEncryptionVersion: number;
   trustPolicyVersion: string;
   verifiedAtUnixSeconds: number;
-  attestationGeneration: number;
+  /**
+   * Relay lease generation, when the provider protocol uses relay leases.
+   */
+  attestationGeneration?: number | null;
   hardExpiresAtUnixSeconds: number;
   modelKeyFingerprint: string;
   tlsSpkiFingerprint?: string | null;

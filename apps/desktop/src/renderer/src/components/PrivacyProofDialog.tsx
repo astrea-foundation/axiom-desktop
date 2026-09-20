@@ -135,7 +135,7 @@ export function PrivacyProofDialog({ session, model, modelId, state, now, webEna
           </Disclosure>)}
         </div> : <p className="mb-3 mt-4 rounded-[11px] bg-[var(--wash-row)] px-3 py-3 text-[12px] text-[var(--color-text-tertiary)]">{state === "verifying" ? "The report will appear when verification finishes." : "No report available for this model."}</p>}
         <div className="-mx-3 mt-1">
-          <Disclosure title="Latest reply receipt" value={reply.label} verified={reply.verified}><p>{reply.detail}</p></Disclosure>
+          <Disclosure title="Latest reply verification" value={reply.label} verified={reply.verified}><p>{reply.detail}</p></Disclosure>
         </div>
         {evidence ? <details className="group/technical mt-3 border-t border-[var(--color-border)] pt-3">
           <summary className="flex cursor-pointer list-none items-center gap-2 rounded-lg py-1.5 text-[12px] text-[var(--color-text-secondary)] [&::-webkit-details-marker]:hidden">
@@ -148,7 +148,7 @@ export function PrivacyProofDialog({ session, model, modelId, state, now, webEna
               <Fact label="Attestation" mono>{evidence.attestationProtocol}</Fact>
               <Fact label="Encryption" mono>{evidence.e2eeProtocol} · v{evidence.e2eeEncryptionVersion}</Fact>
               <Fact label="Trust policy" mono>{evidence.trustPolicyVersion}</Fact>
-              <Fact label="Generation" mono>{evidence.attestationGeneration}</Fact>
+              {evidence.attestationGeneration != null ? <Fact label="Generation" mono>{evidence.attestationGeneration}</Fact> : null}
               <Fact label="Checked">{new Date(evidence.verifiedAtUnixSeconds * 1000).toLocaleString()}</Fact>
               <Fact label="Expires">{new Date(evidence.hardExpiresAtUnixSeconds * 1000).toLocaleString()}</Fact>
               <Fact label="Key fingerprint" mono>{evidence.modelKeyFingerprint}</Fact>

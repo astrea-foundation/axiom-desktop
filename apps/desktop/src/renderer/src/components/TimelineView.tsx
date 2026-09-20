@@ -4,7 +4,7 @@ import type { PendingUserMessage } from "../types";
 import { MessageBubble } from "./MessageBubble";
 import { ToolCallCard } from "./ToolCallCard";
 import { InteractionCard } from "./InteractionCard";
-import { hasActiveResponse, presentTimeline } from "./timelinePresentation";
+import { hasActiveResponse, messageRevisionSources, presentTimeline } from "./timelinePresentation";
 
 function ActivityRow({ item }: { item: ClientTimelineItem }) {
   const error = item.kind === "error";
@@ -19,14 +19,19 @@ function ActivityRow({ item }: { item: ClientTimelineItem }) {
 export function TimelineView({
   session,
   pendingUserMessage,
+  onRevise,
 }: {
   session: ClientSessionState;
   pendingUserMessage?: PendingUserMessage | null;
+  onRevise?: (userItemId: string, text: string) => Promise<void>;
 }) {
   const presentation = presentTimeline(session.timeline);
+  const sources = messageRevisionSources(session.timeline);
   const rows = presentation.map((row) => {
     if (row.kind === "message") {
-      return <div key={row.key} data-timeline-kind={row.message.role}><MessageBubble message={row.message} /></div>;
+      const source = sources.get(row.message.id);
+      return <div key={row.key} data-timeline-kind={row.message.role}><MessageBubble message={row.message}
+        revisionText={source?.text} onRevise={source && onRevise ? (text) => onRevise(source.id, text) : undefined} /></div>;
     }
     if (row.kind === "tool" && row.item.tool) {
       return <div key={row.item.tool.callId} data-timeline-kind="tool"><ToolCallCard tool={row.item.tool} /></div>;
@@ -62,7 +67,7 @@ export function TimelineView({
         /></div>
       ) : null}
       {session.interactions.map((interaction) => (
-        <div key={interaction.id} data-timeline-kind="interaction"><InteractionCard interaction={interaction} /></div>
+        <div key={interaction.id} data-timeline-kind="interaction" data-preserve-follow><InteractionCard interaction={interaction} /></div>
       ))}
     </div>
   );

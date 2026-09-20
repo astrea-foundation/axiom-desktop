@@ -1174,3 +1174,30 @@ test("API key operations reject responses after the account changes and never up
     await assert.rejects(client.revokeApiKey("../another-key"), /Invalid API key ID/);
   } finally {await client.close();}
 });
+
+
+test("native message revision replaces local history, rejects stale edits, and survives reload", async () => {
+  let { client, workspace } = await fixture();
+  try {
+    const created = await client.newSession(workspace);
+    await client.prompt(created.sessionId, "first original", "revision-first");
+    await client.prompt(created.sessionId, "later original", "revision-later");
+    const prior = client.getState().sessions[created.sessionId]!;
+    const user = prior.timeline.find((item) => item.kind === "user")!;
+    await client.prompt(created.sessionId, "replacement", "revision-replacement", false, 0,
+      { userItemId: user.id, expectedRevision: prior.threadRevision });
+    const revised = client.getState().sessions[created.sessionId]!;
+    assert.deepEqual(revised.timeline.filter((item) => item.kind === "user").map((item) => item.text), ["replacement"]);
+    assert.ok(revised.timeline.some((item) => item.kind === "assistant" && item.text.includes("replacement")));
+    await assert.rejects(client.prompt(created.sessionId, "stale", "revision-stale", false, 0,
+      { userItemId: user.id, expectedRevision: prior.threadRevision }), /conversation changed/i);
+    await client.close();
+    client = new AxiomAcpClient({ command: binary, args: ["acp"], env: {
+      AXIOMCLI_TEST_RUNNER: "echo", XDG_CONFIG_HOME: resolve(dirname(workspace), "config"),
+      XDG_DATA_HOME: resolve(dirname(workspace), "data"),
+    } });
+    await client.initialize();
+    await client.loadSession(created.sessionId, workspace);
+    assert.deepEqual(client.getState().sessions[created.sessionId]!.timeline.filter((item) => item.kind === "user").map((item) => item.text), ["replacement"]);
+  } finally { await client.close(); }
+});

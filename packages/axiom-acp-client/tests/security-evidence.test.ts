@@ -99,6 +99,21 @@ test("invalid reports never become renderer evidence", () => {
   assert.equal(publicSecurityEvidence({ status: { state: "failed" }, evidence: valid.evidence }, "test-model"), null);
 });
 
+test("Tinfoil reports omit relay lease generations without weakening evidence checks", () => {
+  const valid = result();
+  Object.assign(valid.evidence!, {
+    providerId: "tinfoil", attestationProtocol: "tinfoil-snp-sigstore-v1",
+    e2eeProtocol: "tinfoil-ehbp-v1",
+  });
+  delete valid.evidence!.attestationGeneration;
+  assert.equal(publicSecurityEvidence(valid, "test-model")!.attestationGeneration, undefined);
+  for (const change of [
+    { providerId: "near" }, { attestationProtocol: "other" }, { e2eeProtocol: "other" },
+    { attestationGeneration: 0 }, { hardExpiresAtUnixSeconds: undefined },
+    { modelKeyFingerprint: "invalid" },
+  ]) assert.throws(() => publicSecurityEvidence({ ...valid, evidence: { ...valid.evidence!, ...change } } as VerifySecurityResponse, "test-model"));
+});
+
 test("workload manifests accept up to 1 MiB of UTF-8 including the truncation marker", () => {
   const valid = result();
   const limit = 1024 * 1024;

@@ -60,6 +60,7 @@ const EXTENSION_CAPABILITIES = {
     securityEvidence: 1,
     webConsent: 1,
     steering: 1,
+    messageRevision: 1,
     compaction: 1,
     activity: 1,
   },
@@ -141,6 +142,7 @@ export class AxiomAcpClient extends EventEmitter {
   private fullResync: Promise<void> | null = null;
   private fullResyncRequired = false;
   private initialized = false;
+  private supportsMessageRevision = false;
   private desktopBootstrap: DesktopBootstrapResponse | null = null;
   private closing = false;
   private accountingTimer: ReturnType<typeof setTimeout> | null = null;
@@ -159,20 +161,30 @@ export class AxiomAcpClient extends EventEmitter {
   private scheduleAccountingRecovery(state: ClientState): void {
     if (this.closing || this.accountingTimer || !state.connected) return;
     const context = this.state.accountContextToken();
-    const pending = Object.values(state.sessions).filter((session) =>
-      session.requestUsage?.some((request) => !request.settled && request.state !== "running")
-      && (this.accountingRecoveryAttempts.get(context + ":" + session.sessionId) ?? 0) < 20);
+    const requestKey = (id: string) => context + ":" + id;
+    const unresolved = new Set(Object.values(state.sessions).flatMap((session) =>
+      session.requestUsage?.filter((request) => !request.settled).map((request) => requestKey(request.requestId)) ?? []));
+    for (const key of this.accountingRecoveryAttempts.keys()) {
+      if (!unresolved.has(key)) this.accountingRecoveryAttempts.delete(key);
+    }
+    const pending = Object.values(state.sessions).map((session) => ({
+      threadId: session.sessionId,
+      requests: session.requestUsage?.filter((request) => !request.settled && request.state !== "running"
+        && (this.accountingRecoveryAttempts.get(requestKey(request.requestId)) ?? 0) < 80) ?? [],
+    })).filter((session) => session.requests.length);
     if (!pending.length) return;
     this.accountingTimer = setTimeout(() => {
       this.accountingTimer = null;
       if (this.closing) return;
       if (this.state.accountContextToken() !== context) { this.scheduleAccountingRecovery(this.state.snapshot()); return; }
       for (const session of pending) {
-        const key = context + ":" + session.sessionId;
-        this.accountingRecoveryAttempts.set(key, (this.accountingRecoveryAttempts.get(key) ?? 0) + 1);
+        for (const request of session.requests) {
+          const key = requestKey(request.requestId);
+          this.accountingRecoveryAttempts.set(key, (this.accountingRecoveryAttempts.get(key) ?? 0) + 1);
+        }
         // Metadata-only reconciliation. Never retry the inference POST, steal
         // focus, show a modal or promote a lost receipt to verified.
-        this.runBackground(this.refreshThread(session.sessionId).catch(() => undefined)
+        this.runBackground(this.refreshThread(session.threadId).catch(() => undefined)
           .finally(() => this.scheduleAccountingRecovery(this.state.snapshot())));
       }
     }, 15_000);
@@ -198,6 +210,7 @@ export class AxiomAcpClient extends EventEmitter {
       features?: Record<string, number>;
     } | undefined;
     validateDesktopExtension(meta);
+    this.supportsMessageRevision = (meta?.features?.messageRevision ?? 0) >= 1;
     this.initialized = true;
     this.state.setConnected(true);
     return result;
@@ -294,7 +307,12 @@ export class AxiomAcpClient extends EventEmitter {
     return { ...result, sessionId: threadId };
   }
 
-  async prompt(threadId: string, text: string, clientItemId: string, webEnabled = false, agentRevision = this.state.snapshot().sessions[threadId]?.desktopAgent?.revision ?? 0): Promise<PromptResult> {
+  async prompt(threadId: string, text: string, clientItemId: string, webEnabled = false, agentRevision = this.state.snapshot().sessions[threadId]?.desktopAgent?.revision ?? 0, revision?: { userItemId: string; expectedRevision: number }): Promise<PromptResult> {
+    if (revision && (!this.supportsMessageRevision || !revision.userItemId || revision.userItemId.length > 512
+      || !Number.isSafeInteger(revision.expectedRevision) || revision.expectedRevision < 0)) {
+      throw new ProtocolError("Restart Axiom before editing or regenerating messages.");
+    }
+    if (revision && this.state.snapshot().sessions[threadId]?.running) throw new ProtocolError("Stop the current reply first.");
     if (typeof webEnabled !== "boolean") throw new ProtocolError("webEnabled must be a boolean");
     if (!Number.isSafeInteger(agentRevision) || agentRevision < 0) throw new ProtocolError("invalid Agent settings revision");
     if (!text.trim()) throw new ProtocolError("prompt cannot be empty");
@@ -309,12 +327,15 @@ export class AxiomAcpClient extends EventEmitter {
         {
           sessionId: threadId,
           prompt: [{ type: "text", text }],
-          _meta: { axiom: { clientItemId, webEnabled, agentRevision } },
+          _meta: { axiom: { clientItemId, webEnabled, agentRevision, ...(revision ? { revision } : {}) } },
         },
         0,
       );
       this.assertAccountContext(accountContext);
       return result;
+    } catch (error) {
+      if (revision && error instanceof AcpError && typeof error.data === "string") throw new ProtocolError(error.data);
+      throw error;
     } finally {
       if (this.state.accountContextToken() === accountContext) {
         this.state.setRunning(threadId, false);
@@ -615,7 +636,9 @@ export class AxiomAcpClient extends EventEmitter {
         return { status: result.status, evidence };
       } catch (error) {
         if (current()) this.state.setSecurityVerification(threadId, {
-          pending: false, error: "Couldn’t refresh the verification report. Try again.",
+          pending: false, error: error instanceof AcpError && error.code === -32001
+            ? "Refresh your Axiom account or sign in again before verifying this connection."
+            : "Couldn’t refresh the verification report. Try again.",
         });
         throw error;
       } finally {

@@ -126,7 +126,8 @@ export function ContextUsageIndicator(props: ContextUsageIndicatorProps) {
               {sum("reasoningTokens") > 0n ? <div>{tokens.format(sum("reasoningTokens"))} reasoning output (included above)</div> : null}
               <div>{money(cost)} {pending ? "reported · settlement pending" : "settled"}</div>
               {elapsed != null ? <div>{Math.round(elapsed / 1000)} seconds elapsed</div> : null}
-              {unknown ? <div>Some request usage is not available yet.</div> : null}
+              {unknown ? <div>Some token counts are unavailable.</div> : null}
+              {turn.some((request) => request.errorCode === "CANCELLED_USAGE_WAIVED") ? <div>Cancelled requests without final usage weren’t charged.</div> : null}
               {overhead.filter((item) => item.records.length).map((item) => <div key={item.purpose}>{item.purpose === "title" ? "Titles" : "Compaction"} · {money(item.cost)}{item.pending ? " reported · pending" : " settled"} (thread overhead)</div>)}
             </div> : null}
           </div>

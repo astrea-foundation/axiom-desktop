@@ -11,10 +11,15 @@ export function publicSecurityEvidence(result: VerifySecurityResponse, modelId: 
   const text = (value: unknown, max = 512): value is string => typeof value === "string" && value.length > 0 && value.length <= max;
   const positive = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) > 0;
   const fingerprint = (value: unknown) => typeof value === "string" && /^[a-f0-9]{64}$/i.test(value);
+  const directTinfoil = evidence?.providerId === "tinfoil"
+    && evidence.attestationProtocol === "tinfoil-snp-sigstore-v1"
+    && evidence.e2eeProtocol === "tinfoil-ehbp-v1";
+  const validGeneration = evidence?.attestationGeneration == null
+    ? directTinfoil : positive(evidence.attestationGeneration);
   if (!evidence || evidence.status.state !== "verified" || evidence.modelId !== modelId
     || !text(evidence.providerId) || !text(evidence.modelId)
     || !text(evidence.attestationProtocol) || !text(evidence.e2eeProtocol) || !text(evidence.trustPolicyVersion)
-    || !positive(evidence.attestationGeneration) || !positive(evidence.e2eeEncryptionVersion)
+    || !validGeneration || !positive(evidence.e2eeEncryptionVersion)
     || !positive(evidence.verifiedAtUnixSeconds) || !positive(evidence.hardExpiresAtUnixSeconds)
     || evidence.hardExpiresAtUnixSeconds <= evidence.verifiedAtUnixSeconds
     || evidence.verifiedAtUnixSeconds > Math.floor(Date.now() / 1000) + 60

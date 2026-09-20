@@ -43,6 +43,7 @@ export interface AgentApi {
   // Deliberately distinct from the legacy prompt API: a hot-reloaded renderer
   // must never send through a preload/main process that ignores Web consent.
   promptWithWebConsent: (sessionId: string, text: string, clientItemId: string, webEnabled: boolean, agentRevision?: number) => Promise<PromptResult>;
+  revisePrompt: (sessionId: string, text: string, userItemId: string, expectedRevision: number, webEnabled: boolean, agentRevision: number) => Promise<PromptResult>;
   steer: (request: SteerTurnRequest) => Promise<SteerTurnResponse>;
   cancel: (sessionId: string) => Promise<void>;
   setConfig: (sessionId: string, configId: string, value: string) => Promise<void>;
@@ -93,6 +94,7 @@ export const agentApi: AgentApi = {
   chooseWorkingDirectory: (current) => invoke("working-directory-choose", current),
   loadChat: (sessionId) => invoke("chat-load", sessionId),
   promptWithWebConsent: (sessionId, text, clientItemId, webEnabled, agentRevision = 0) => invoke("prompt-with-agent-context", sessionId, text, clientItemId, webEnabled, agentRevision),
+  revisePrompt: (sessionId, text, userItemId, expectedRevision, webEnabled, agentRevision) => invoke("prompt-revise", sessionId, text, userItemId, expectedRevision, webEnabled, agentRevision),
   steer: (request) => invoke("steer", request),
   cancel: (sessionId) => invoke("cancel", sessionId),
   setConfig: (sessionId, configId, value) => invoke("set-config", sessionId, configId, value),

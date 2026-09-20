@@ -56,11 +56,12 @@ pub(super) enum ToolPhase {
     Running,
     Completed,
     Failed,
+    Cancelled,
 }
 
 impl ToolPhase {
     pub(super) const fn is_terminal(self) -> bool {
-        matches!(self, Self::Completed | Self::Failed)
+        matches!(self, Self::Completed | Self::Failed | Self::Cancelled)
     }
 }
 
@@ -91,7 +92,7 @@ impl ToolView {
     }
 
     pub(super) fn timeline_label(&self, cwd: &Path) -> String {
-        describe_tool(
+        let label = describe_tool(
             &self.name,
             &self.arguments,
             match self.phase {
@@ -99,9 +100,15 @@ impl ToolView {
                 ToolPhase::Running => ToolDisplayPhase::Running,
                 ToolPhase::Completed => ToolDisplayPhase::Completed,
                 ToolPhase::Failed => ToolDisplayPhase::Failed,
+                ToolPhase::Cancelled => ToolDisplayPhase::Proposed,
             },
             Some(cwd),
-        )
+        );
+        if self.phase == ToolPhase::Cancelled {
+            format!("Stopped · {label}")
+        } else {
+            label
+        }
     }
 }
 
@@ -156,6 +163,13 @@ impl TaskRunView {
 
     pub(super) fn finish(&mut self, phase: TaskPhase, error: Option<String>) {
         self.phase = phase;
+        if phase == TaskPhase::Cancelled {
+            for tool in &mut self.tools {
+                if !tool.phase.is_terminal() {
+                    tool.phase = ToolPhase::Cancelled;
+                }
+            }
+        }
         self.error = error;
         self.error_detail = None;
         self.finished_at = Some(Instant::now());

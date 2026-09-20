@@ -118,3 +118,37 @@ test("queued prompts and steering cannot silently inherit newly granted Agent pe
     assert.equal(f.queue.isPaused("thread"), true);
   }
 });
+
+
+test("a fresh send after Stop runs without releasing older paused messages", async () => {
+  const f = fixture();
+  const held = f.queue.enqueue("thread", "older queued work", false);
+  f.queue.pause("thread");
+  f.state.sessions.thread!.running = false; f.sync();
+  const fresh = f.queue.enqueue("thread", "fresh user instruction", false);
+  assert.deepEqual(f.calls.map((call) => call.id), [fresh]);
+  await f.finish(fresh);
+  assert.deepEqual(f.calls.map((call) => call.id), [fresh]);
+  assert.equal(f.queue.isPaused("thread"), true);
+  assert.deepEqual(f.queue.list("thread").map((item) => item.id), [held]);
+  f.queue.sendNow(held);
+  await f.finish(held);
+  assert.deepEqual(f.calls.map((call) => call.id), [fresh, held]);
+});
+
+
+test("a message sent while Stop is still draining runs after cleanup and keeps old work paused", async () => {
+  const f = fixture(false);
+  const running = f.queue.enqueue("thread", "long request", false);
+  f.echo(running);
+  const old = f.queue.enqueue("thread", "old queued work", false);
+  f.queue.pause("thread");
+  const fresh = f.queue.enqueue("thread", "new intent after Stop", false);
+  assert.equal(f.calls.length, 1);
+  f.state.sessions.thread!.running = false;
+  f.pending.get(running)!.resolve({ stopReason: "cancelled" });
+  await settle();
+  assert.deepEqual(f.calls.map((call) => call.id), [running, fresh]);
+  await f.finish(fresh);
+  assert.deepEqual(f.queue.list("thread").map((item) => item.id), [old]);
+});

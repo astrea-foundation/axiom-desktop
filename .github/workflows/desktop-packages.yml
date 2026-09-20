@@ -1,8 +1,6 @@
 name: desktop installers
 
 on:
-  push:
-    branches: ['codex/desktop-packaging-*']
   workflow_dispatch:
     inputs:
       unsigned:
@@ -10,7 +8,7 @@ on:
         type: boolean
         default: true
       platform:
-        description: Platforms to package (Windows-only supports installer iteration)
+        description: Release platforms to package
         type: choice
         default: all
         options: [all, windows]
@@ -19,8 +17,23 @@ permissions:
   contents: read
 
 jobs:
+  release-ref:
+    name: Validate release tag
+    if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Require a promoted release revision and matching product version
+        shell: bash
+        run: |
+          git merge-base --is-ancestor HEAD origin/main
+          node apps/desktop/scripts/set-release-version.mjs "${GITHUB_REF_NAME#v}" --check-only
+
   package:
     name: package (${{ matrix.platform }} ${{ matrix.arch }})
+    needs: release-ref
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     strategy:
@@ -71,7 +84,7 @@ jobs:
       - name: Package desktop and CLI
         shell: bash
         env:
-          UNSIGNED: ${{ github.event_name == 'push' || inputs.unsigned }}
+          UNSIGNED: ${{ inputs.unsigned }}
           CSC_LINK: ${{ runner.os == 'macOS' && secrets.MACOS_CERTIFICATE_BASE64 || secrets.WINDOWS_CERTIFICATE_BASE64 }}
           CSC_KEY_PASSWORD: ${{ runner.os == 'macOS' && secrets.MACOS_CERTIFICATE_PASSWORD || secrets.WINDOWS_CERTIFICATE_PASSWORD }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -187,7 +200,7 @@ jobs:
       - name: Generate download metadata
         shell: bash
         env:
-          UNSIGNED: ${{ github.event_name == 'push' || inputs.unsigned }}
+          UNSIGNED: ${{ inputs.unsigned }}
         run: |
           version=$(node -p "require('./apps/desktop/package.json').version")
           signing=signed

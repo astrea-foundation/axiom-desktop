@@ -78,7 +78,7 @@ async function openApp(platform = "linux", failDelete = false, thinkingLevels: s
       preferences: null, account: { revision: 1, state: "valid", account: { id: "test-account", displayName: "Test User", verifiedEmail: "test@example.invalid", linkedMethods: ["password"] } } as AccountStatus,
       billing: null as BillingStatus | null, invoice: null, diagnostic: "", error: null,
     };
-    const calls: { method: string; id?: string; text?: string; webEnabled?: boolean }[] = [];
+    const calls: { method: string; id?: string; text?: string; webEnabled?: boolean; userItemId?: string; expectedRevision?: number }[] = [];
     let failRename = false;
     let failAgent = false;
     let failBalance = false;
@@ -181,6 +181,10 @@ async function openApp(platform = "linux", failDelete = false, thinkingLevels: s
         await waitForSetup("prompt");
         state.sessions[id]!.timeline.push({ id: clientItemId, clientItemId, kind: "user", text, status: "completed" });
         emit();
+        return { stopReason: "end_turn" };
+      },
+      revisePrompt: async (id: string, text: string, userItemId: string, expectedRevision: number, webEnabled: boolean) => {
+        calls.push({ method: "revise", id, text, userItemId, expectedRevision, webEnabled });
         return { stopReason: "end_turn" };
       },
       steer: async (request: { threadId: string; clientItemId: string; text: string; expectedTurnId: string; webEnabled: boolean }) => {
@@ -1993,12 +1997,13 @@ test("deposit progress keeps ZEC primary and changes estimated USD to credited U
     await page.clock.install();
     const showDeposit = async (confirmations: string, credited = false) => page.evaluate(({ confirmations, credited }) => {
       const address = `u1${"a".repeat(180)}`;
+      const quoteTime = Date.now();
       (window as any).__deletionTest.setBilling({
         revision: Number(confirmations), postedMicrousd: credited ? 100001 : 0, heldMicrousd: 0,
         availableMicrousd: credited ? 100001 : 0, trialMicrousd: 0, paidMicrousd: credited ? 100001 : 0,
         ledgerSequence: 0, currency: "microUSD", invoicesEnabled: false, invoiceMinUsdCents: 500, invoiceMaxUsdCents: 100_000,
         zecUsdQuote: { source: "coinbase", price_microusd_per_zec: "123456789",
-          as_of: new Date().toISOString(), expires_at: new Date(Date.now() + 60_000).toISOString() },
+          as_of: new Date(quoteTime).toISOString(), expires_at: new Date(quoteTime + 60_000).toISOString() },
         paymentAccount: { network: "mainnet", asset: "ZEC", conversion_status: "none", state: "ready", valuation_enabled: true,
           address, payment_uri: `zcash:${address}`, monitoring_status: "ready", required_confirmations: "10",
           confirmed_zatoshis: credited ? "80000" : "0", confirming_zatoshis: credited ? "0" : "80000", review_required: false,
@@ -2092,7 +2097,7 @@ test("new-chat drafts clear on account switch and sign-out", async () => {
   } finally { await page.close(); }
 });
 
-test("unsupported Edit and Regenerate actions are explicitly disabled", async () => {
+test("Edit and Regenerate confirm native revisions and disable while a reply is running", async () => {
   const { page, errors } = await openApp();
   try {
     await page.getByRole("button", { name: "Viewed Existing thread", exact: true }).click();
@@ -2100,11 +2105,27 @@ test("unsupported Edit and Regenerate actions are explicitly disabled", async ()
       { id: "user", kind: "user", text: "Original message", status: "completed" },
       { id: "assistant", kind: "assistant", text: "Original response", status: "completed" },
     ]));
-    for (const label of ["Edit message", "Regenerate"]) {
-      const button = page.getByRole("button", { name: label, exact: true });
-      assert.equal(await button.isDisabled(), true);
-      assert.match(await button.getAttribute("title") ?? "", /temporarily unavailable/);
-    }
+    await page.getByRole("button", { name: "Edit message", exact: true }).click();
+    await page.getByRole("textbox", { name: "Edited message" }).fill("Changed message");
+    assert.match(await page.locator("body").innerText(), /Files already changed stay as they are/);
+    assert.equal(await page.evaluate(() => (window as any).__deletionTest.calls.filter((call: any) => call.method === "revise").length), 0);
+    await page.getByRole("button", { name: "Save and send", exact: true }).click();
+    await page.getByRole("textbox", { name: "Edited message" }).waitFor({ state: "hidden" });
+    await page.getByRole("button", { name: "Regenerate", exact: true }).click();
+    await page.getByRole("button", { name: "Regenerate from here", exact: true }).click();
+    await page.getByRole("button", { name: "Regenerate from here", exact: true }).waitFor({ state: "hidden" });
+    const calls = await page.evaluate(() => (window as any).__deletionTest.calls.filter((call: any) => call.method === "revise"));
+    assert.deepEqual(calls.map(({ id, text, userItemId, expectedRevision }: any) => ({ id, text, userItemId, expectedRevision })), [
+      { id: "old-thread", text: "Changed message", userItemId: "user", expectedRevision: 1 },
+      { id: "old-thread", text: "Original message", userItemId: "user", expectedRevision: 1 },
+    ]);
+    await page.evaluate(() => (window as any).__deletionTest.setTimeline([
+      { id: "user", kind: "user", text: "Original message", status: "completed" },
+      { id: "assistant", kind: "assistant", text: "Original response", status: "completed" },
+    ], true));
+    await page.waitForFunction(() => (document.querySelector('button[aria-label="Edit message"]') as HTMLButtonElement)?.disabled);
+    assert.equal(await page.getByRole("button", { name: "Edit message", exact: true }).isDisabled(), true);
+    assert.equal(await page.getByRole("button", { name: "Regenerate", exact: true }).evaluateAll((buttons) => buttons.every((button) => (button as HTMLButtonElement).disabled)), true);
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
 });

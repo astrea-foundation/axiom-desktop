@@ -433,14 +433,17 @@ fn extension_security_evidence(
     status: crate::app::SecurityStatus,
     evidence: axiom_secure_client::SecurityEvidence,
 ) -> crate::Result<ExtensionSecurityEvidence> {
-    let attestation_generation = evidence
-        .attestation_generation
-        .filter(|generation| *generation > 0)
-        .ok_or_else(|| {
-            crate::AxiomError::Protocol(
-                "verified provider evidence is missing its attestation generation".into(),
-            )
-        })?;
+    // Tinfoil authenticates its router directly and has no relay lease generation.
+    // Keep the generation requirement for protocols whose relay leases use it.
+    let direct_tinfoil = evidence.provider_id == "tinfoil"
+        && evidence.attestation_protocol == "tinfoil-snp-sigstore-v1"
+        && evidence.e2ee_protocol == "tinfoil-ehbp-v1";
+    let attestation_generation = evidence.attestation_generation;
+    if attestation_generation == Some(0) || (attestation_generation.is_none() && !direct_tinfoil) {
+        return Err(crate::AxiomError::Protocol(
+            "verified provider evidence is missing its attestation generation".into(),
+        ));
+    }
     let hard_expires_at_unix_seconds = evidence
         .hard_expires_at_unix_seconds
         .filter(|expiry| *expiry > 0)
@@ -2542,13 +2545,15 @@ pub async fn serve_stdio(
                 );
                 let web_enabled = prompt_web_enabled(frontend, prompt_metadata.as_ref());
                 let agent_revision = prompt_metadata.as_ref().and_then(|metadata| metadata.agent_revision).unwrap_or(0);
+                let message_revision = prompt_metadata.as_ref().and_then(|metadata| metadata.revision.clone());
                 let client_item_id = prompt_metadata.map(|metadata| metadata.client_item_id);
                 let prompt = match prompt_text(&request.prompt) {
                     Ok(prompt) => prompt,
                     Err(message) => return responder.respond_with_internal_error(message),
                 };
                 let session_id = request.session_id.clone();
-                let command = match slash::parse(&prompt) {
+                // Edited user text is data, including a leading slash.
+                let command = match if message_revision.is_some() { None } else { slash::parse(&prompt) } {
                     Some(Ok(command)) => Some(command),
                     Some(Err(error)) => {
                         send_text(&connection, &session_id, format!("Command error: {error}"))?;
@@ -3340,6 +3345,23 @@ pub async fn serve_stdio(
                 }
                 let turn_id = turn_id.expect("non-slash prompt reserves a turn ID");
 
+                let revision_history = if let Some(revision) = &message_revision {
+                    let prepared = (|| {
+                        if work.cancellation.is_cancelled() || request_cancellation.is_cancelled() {
+                            return Err(crate::AxiomError::Cancelled);
+                        }
+                        let store = prompt_store.as_ref().ok_or_else(|| crate::AxiomError::Storage("durable thread storage is unavailable".into()))?;
+                        store.history_before_user_message(&internal_id, revision)
+                    })();
+                    match prepared {
+                        Ok(history) => Some(history),
+                        Err(error) => {
+                            release_session_work(&prompt_sessions, &internal_id, &work).await;
+                            return responder.respond_with_error(agent_error(error));
+                        }
+                    }
+                } else { None };
+
                 let submitted = match prompt_runtime
                     .dispatch(AppCommand::SubmitPrompt {
                         session_id: internal_id.clone(),
@@ -3365,11 +3387,15 @@ pub async fn serve_stdio(
                 let preparation: agent_client_protocol::Result<_> = async {
                     let submitted_revision = if let Some(store) = &prompt_store {
                         let revision = store
-                            .append_all_with_client_item_id(
+                            .append_prompt_revision(
                                 &submitted,
                                 client_item_id.as_deref(),
+                                message_revision.as_ref(),
                             )
                             .map_err(agent_error)?;
+                        if let Some(history) = &revision_history {
+                            runner.restore_session(&internal_id, history).await.map_err(agent_error)?;
+                        }
                         let preferences = extension_preferences(
                             store
                                 .set_profile_preferences(&session_model, session_thinking)
@@ -5287,7 +5313,7 @@ pub async fn serve_stdio(
                 }
                 .await;
                 if let Err(error) = &task_result {
-                    let verification_status = if work.cancellation.is_cancelled() {
+                    let verification_status = if work.cancellation.is_cancelled() || error.code == (-32001).into() {
                         crate::app::SecurityStatus::Unverified
                     } else {
                         crate::app::SecurityStatus::Failed
@@ -6529,6 +6555,15 @@ fn send_text(
 fn agent_error(error: crate::AxiomError) -> agent_client_protocol::Error {
     match error {
         crate::AxiomError::Cancelled => agent_client_protocol::Error::request_cancelled(),
+        crate::AxiomError::SecureProvider {
+            kind:
+                axiom_inference::ProviderFailureKind::LocalAuthentication
+                | axiom_inference::ProviderFailureKind::Authentication,
+            ..
+        } => agent_client_protocol::Error::new(
+            -32001,
+            "Refresh your Axiom account or sign in again before verifying this connection.",
+        ),
         error => agent_client_protocol::util::internal_error(error),
     }
 }
@@ -6870,6 +6905,48 @@ mod tests {
         assert!(
             extension_security_evidence(crate::app::SecurityStatus::Verified, evidence).is_err()
         );
+    }
+
+    #[test]
+    fn tinfoil_security_report_does_not_require_a_relay_lease_generation() {
+        let evidence = axiom_secure_client::SecurityEvidence {
+            state: axiom_secure_client::SecurityState::Verified,
+            provider_id: "tinfoil".into(),
+            model_id: "tinfoil-gpt-oss-120b".into(),
+            attestation_protocol: "tinfoil-snp-sigstore-v1".into(),
+            e2ee_protocol: "tinfoil-ehbp-v1".into(),
+            e2ee_encryption_version: 1,
+            trust_policy_version: "test-policy".into(),
+            verified_at_unix_seconds: 1,
+            attestation_generation: None,
+            hard_expires_at_unix_seconds: Some(241),
+            model_key_fingerprint: "00".repeat(32),
+            tls_spki_fingerprint: None,
+            checks: Vec::new(),
+            provider_claims: Vec::new(),
+            workload_manifest: None,
+            workload_identity_allowlist_configured: false,
+            approved_workload_identity: false,
+        };
+        let projected =
+            extension_security_evidence(crate::app::SecurityStatus::Verified, evidence.clone())
+                .expect("Tinfoil evidence has no relay lease");
+        assert_eq!(projected.attestation_generation, None);
+        assert_eq!(projected.hard_expires_at_unix_seconds, 241);
+        for index in 0..5 {
+            let mut invalid = evidence.clone();
+            match index {
+                0 => invalid.provider_id = "near".into(),
+                1 => invalid.attestation_protocol = "other".into(),
+                2 => invalid.e2ee_protocol = "other".into(),
+                3 => invalid.attestation_generation = Some(0),
+                _ => invalid.hard_expires_at_unix_seconds = None,
+            }
+            assert!(
+                extension_security_evidence(crate::app::SecurityStatus::Verified, invalid,)
+                    .is_err()
+            );
+        }
     }
 
     #[test]

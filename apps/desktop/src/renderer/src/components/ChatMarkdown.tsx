@@ -6,6 +6,7 @@ import rehypeKatex from "rehype-katex";
 // Keep component identities stable: chat interaction/streaming can rerender
 // Markdown between pointer-down and click, and must not replace the link DOM.
 const markdownComponents: Components = {
+  table: ({ children }) => <div className="markdown-table-scroll"><table>{children}</table></div>,
   // Electron blocks in-app navigation. New-window links go through main's
   // HTTP(S)-only handler and open in the default browser.
   a: ({ href, title, children }) => (

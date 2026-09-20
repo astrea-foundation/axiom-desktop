@@ -5,18 +5,31 @@ Desktop packages for macOS Intel, macOS Apple Silicon, Windows x64, and Windows
 ARM64. A pushed release tag must be a stable `vMAJOR.MINOR.PATCH` with no
 prerelease or build suffix, and the version after `v` must match
 `apps/axiomcli/Cargo.toml`. This keeps the product version valid for macOS bundle
-and Windows executable metadata. The workflow validates the contract before the
+and Windows executable metadata. The tag must point to a commit already promoted
+to `main`. The workflow validates this ancestry and version contract before the
 budgeted live evaluation and before any packaging job. Desktop's source manifest
 is synchronized with AxiomCLI by the packaging script before invoking
 electron-builder.
 
 ## Desktop and terminal CLI installers
 
+Branch pushes and pull requests run checks and tests without producing release
+archives or packaged Desktop applications. Release packaging and upload happen
+only in the release workflows.
+
 The `desktop installers` workflow (`desktop-packages.yml`) builds Linux x64,
-macOS Intel/Apple Silicon, and Windows x64/ARM64. Run it manually with the
-explicit `unsigned` option for early-access releases without Apple or Windows
-credentials. The `codex/desktop-packaging-*` build branches always build unsigned
-artifacts. This does not change the signed defaults in electron-builder.yml.
+macOS Intel/Apple Silicon, and Windows x64/ARM64. Run it manually against a stable
+release tag already promoted to `main`; a branch dispatch skips packaging. For
+example, after promoting and tagging version `0.1.0`:
+
+```sh
+gh workflow run desktop-packages.yml --ref v0.1.0 -f unsigned=true -f platform=all
+```
+
+Use the explicit `unsigned` option for early-access releases without Apple or
+Windows credentials. This does not change the signed defaults in
+electron-builder.yml. The former `codex/desktop-packaging-*` push trigger has been
+removed.
 
 Every desktop package includes the complete matching AxiomCLI binary. The
 packaging script checks its architecture and version before packaging.
