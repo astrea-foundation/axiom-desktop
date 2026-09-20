@@ -53,14 +53,19 @@ continues on `dev`. Avoid direct commits or pushes to `main`.
 
 ## Releases
 
-CI already checks branch pushes and pull requests. Pushing `dev` does not publish
-installers. Preview builds may use `dev`; publish releases from the tested
-revision promoted to `main`, with release tags pointing to that revision.
+CI checks pushes to `dev` and `main`, and pull requests targeting either branch.
+It runs tests and portability checks without packaging release archives or
+Desktop applications. Feature branches use PR checks rather than duplicate push
+runs; superseded runs are cancelled.
 
-The desktop installer workflow supports manual builds from a selected branch;
-it also retains the existing `codex/desktop-packaging-*` preview trigger. The
-signed release workflow runs on `v*` tags. Building an artifact does not update
-the public download catalog; publishing remains an explicit release step.
+GitHub Actions generates release artifacts only from stable `vMAJOR.MINOR.PATCH`
+tags whose commits have been promoted to `main` and whose version matches the
+product. The signed release workflow runs when the tag is pushed. The desktop
+installer workflow can be run manually against that tag, including the explicit
+unsigned option for early-access releases; branch dispatches skip packaging.
+See [the release procedure](docs/releasing.md) for the command. Building an
+artifact does not update the public download catalog; publishing remains an
+explicit release step.
 
 Use the checks and packaging commands documented in [README.md](README.md).
 If a change spans `axiom` and `axiomai`, promote compatible batches in both and

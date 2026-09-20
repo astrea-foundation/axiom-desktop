@@ -19,9 +19,13 @@ jobs:
       AXIOM_LIVE_MODEL: ${{ secrets.AXIOM_EVAL_MODEL }}
     steps:
       - uses: actions/checkout@v4
-      - name: Verify the tag matches the product version
+        with:
+          fetch-depth: 0
+      - name: Require a promoted release revision and matching product version
         shell: bash
-        run: node apps/desktop/scripts/set-release-version.mjs "${GITHUB_REF_NAME#v}" --check-only
+        run: |
+          git merge-base --is-ancestor HEAD origin/main
+          node apps/desktop/scripts/set-release-version.mjs "${GITHUB_REF_NAME#v}" --check-only
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.97.1
