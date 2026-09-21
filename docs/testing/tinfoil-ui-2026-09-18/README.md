@@ -61,7 +61,7 @@ Relevant files: [ACP projection](../../../apps/axiomcli/src/acp.rs), [extension 
 
 **Measured example:** Request `18991035c8304c3db29f5b974efead1c` settled with 1,254 input / 3,895 output tokens and cost $0.012906. The next short reply settled normally while the stopped request remained locally pending. Restarting Desktop converted the orphan record to `CLIENT_INTERRUPTED`; reopening the thread then recovered its exact counts and cost, with `responseVerified: false` preserved.
 
-**Investigation:** [ACP timeline recovery](../../../apps/axiomcli/src/acp.rs), `GetThreadTimelineRequest`, excludes unsettled records whose state is still `Running`. The ACP cancellation path can finish the turn without receiving a terminal request-accounting update, leaving the record outside that recovery filter. Persist cancellation before ending the turn and reconcile accounting independently of whether the response completed successfully.
+**Investigation:** [ACP timeline recovery](../../../apps/axiomcli/src/acp/threads.rs), `GetThreadTimelineRequest`, excludes unsettled records whose state is still `Running`. The ACP cancellation path can finish the turn without receiving a terminal request-accounting update, leaving the record outside that recovery filter. Persist cancellation before ending the turn and reconcile accounting independently of whether the response completed successfully.
 
 TUI's stopped response recorded `cancelled` immediately, but its displayed cost remained pending while idle. Its existing recovery path runs when resuming a session; that restart/resume path was not exercised for TUI in this run. [Stopped TUI output with pending usage](evidence/tui-cancelled-mid-text.png).
 
@@ -95,7 +95,9 @@ TUI's stopped response recorded `cancelled` immediately, but its displayed cost 
 
 **Evidence:** Title request `f8644e404aef4d75a7326ba37fb019d3` used 201 input / 128 output tokens, ended with `length`, and cost $0.003364. The main answer cost $0.017412. There was no visible title-failure notice.
 
-**Investigation:** [generate_title](../../../apps/axiomcli/src/agent.rs) sets a 128-token output budget and `ThinkingMode::ProviderDefault`, despite its comment about avoiding thinking tokens for labels. Exhausting the tiny budget on reasoning is a likely explanation; this provider accounting did not supply a separate reasoning-token counter. Use a supported title strategy with enough visible-output budget and a deterministic local fallback when normalization gets empty text.
+**Investigation at this test revision:** The runner’s former `generate_title` method set a 128-token output budget and `ThinkingMode::ProviderDefault`, despite its comment about avoiding thinking tokens for labels. Exhausting the tiny budget on reasoning is a likely explanation; this provider accounting did not supply a separate reasoning-token counter. Use a supported title strategy with enough visible-output budget and a deterministic local fallback when normalization gets empty text.
+
+Current titles use the synchronous [local helper](../../../apps/axiomcli/src/session_title.rs) and no provider request.
 
 [Completed Kimi reply with unchanged title](evidence/desktop-kimi-response.png).
 

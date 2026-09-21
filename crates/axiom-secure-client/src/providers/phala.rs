@@ -561,7 +561,12 @@ async fn stream_verified(
                     if !usage.validate_counters() || usage.response_verified {
                         return Err(invalid_response("invalid operational accounting"));
                     }
-                    send(sink, ProviderEvent::Accounting(usage), cancellation).await?;
+                    send(
+                        sink,
+                        ProviderEvent::Accounting(Box::new(usage)),
+                        cancellation,
+                    )
+                    .await?;
                 }
                 RelayEvent::RunCreated(payload) => {
                     if run_id.is_some() || payload.inference_encryption != INFERENCE_ENCRYPTION {

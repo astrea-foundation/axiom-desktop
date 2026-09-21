@@ -984,19 +984,23 @@ impl SessionStore {
             if local.settled || !snapshot.settled {
                 continue;
             }
-            local.provider_id = snapshot.provider_id.clone();
-            local.input_tokens = snapshot.input_tokens.clone();
-            local.cached_input_tokens = snapshot.cached_input_tokens.clone();
-            local.output_tokens = snapshot.output_tokens.clone();
-            local.reasoning_tokens = snapshot.reasoning_tokens.clone();
-            local.cost_microusd = snapshot.cost_microusd.clone();
+            local.provider_id.clone_from(&snapshot.provider_id);
+            local.input_tokens.clone_from(&snapshot.input_tokens);
+            local
+                .cached_input_tokens
+                .clone_from(&snapshot.cached_input_tokens);
+            local.output_tokens.clone_from(&snapshot.output_tokens);
+            local
+                .reasoning_tokens
+                .clone_from(&snapshot.reasoning_tokens);
+            local.cost_microusd.clone_from(&snapshot.cost_microusd);
             if snapshot.error_code.as_deref() == Some("CANCELLED_USAGE_WAIVED") {
                 local.error_code.clone_from(&snapshot.error_code);
             }
             local.completeness = snapshot.completeness;
             local.settled = snapshot.settled;
             if local.finished_at_ms.is_none() {
-                local.finished_at_ms = snapshot.finished_at_ms.clone();
+                local.finished_at_ms.clone_from(&snapshot.finished_at_ms);
             }
             // Recovery cannot recover a lost receipt or upgrade verification.
             tx.execute(
@@ -4833,7 +4837,7 @@ mod tests {
                 .context_usage
                 .is_none()
         );
-        reopened.delete_sessions(&[id.clone()]).unwrap();
+        reopened.delete_sessions(std::slice::from_ref(&id)).unwrap();
         assert!(reopened.thread_snapshot(&id, None, 100).is_err());
         assert!(reopened.thread_snapshot(&other, None, 100).is_ok());
     }

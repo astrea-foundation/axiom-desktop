@@ -96,11 +96,10 @@ impl ToolView {
             &self.name,
             &self.arguments,
             match self.phase {
-                ToolPhase::Proposed => ToolDisplayPhase::Proposed,
+                ToolPhase::Proposed | ToolPhase::Cancelled => ToolDisplayPhase::Proposed,
                 ToolPhase::Running => ToolDisplayPhase::Running,
                 ToolPhase::Completed => ToolDisplayPhase::Completed,
                 ToolPhase::Failed => ToolDisplayPhase::Failed,
-                ToolPhase::Cancelled => ToolDisplayPhase::Proposed,
             },
             Some(cwd),
         );

@@ -522,7 +522,7 @@ fn merge_stable(
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProviderEvent {
-    Accounting(RequestUsage),
+    Accounting(Box<RequestUsage>),
     SecurityState(ProviderSecurityState),
     /// The exact response associated with this provider call passed its
     /// terminal cryptographic verification. Secure adapters emit this only
@@ -572,6 +572,10 @@ pub struct InferenceResponse {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "Provider capabilities are independent catalog flags, not mutually exclusive states"
+)]
 pub struct ModelInfo {
     pub id: String,
     #[serde(default)]

@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
+    fmt::Write as _,
     future::Future,
     path::PathBuf,
     sync::Arc,
@@ -99,7 +100,7 @@ fn thinking_level(effort: axiom_inference::ReasoningEffort) -> ThinkingLevel {
     }
 }
 
-/// Explicit controls for this offering. ProviderDefault is only a compatibility
+/// Explicit controls for this offering. `ProviderDefault` is only a compatibility
 /// sentinel for models without controls, never a selectable preference.
 pub fn supported_thinking_levels(model: &axiom_inference::ModelInfo) -> Vec<ThinkingLevel> {
     if !model.supported_thinking_modes.is_empty() {
@@ -157,25 +158,6 @@ pub fn reconcile_model_settings(
 /// now. Provider offerings and their reasoning capabilities are operational
 /// data, so a preference saved before a catalog change must never leave a new
 /// session pointing at a retired model or an unsupported reasoning level.
-pub fn reconcile_resumed_session_settings(
-    models: Vec<axiom_inference::ModelInfo>,
-    preferred_model: Option<&str>,
-    configured_default_model: &str,
-    preferred_thinking: ThinkingLevel,
-) -> Result<ModelSettings> {
-    let selected = reconcile_new_session_settings(
-        models.clone(),
-        preferred_model,
-        configured_default_model,
-        preferred_thinking,
-    )?;
-    let model = models
-        .iter()
-        .find(|model| model.id == selected.model)
-        .ok_or_else(|| AxiomError::Config("model unavailable".into()))?;
-    Ok(reconcile_model_settings(model, preferred_thinking))
-}
-
 pub fn reconcile_new_session_settings(
     mut models: Vec<axiom_inference::ModelInfo>,
     preferred_model: Option<&str>,
@@ -228,6 +210,7 @@ impl std::fmt::Debug for TurnContext {
             .field("cwd", &self.cwd)
             .field("permission_profile", &self.permission_profile)
             .field("web_enabled", &self.web_enabled)
+            .field("has_steering", &self.steering.is_some())
             .field("has_approval_handler", &self.approval.is_some())
             .field("has_question_handler", &self.questions.is_some())
             .finish()
@@ -1743,11 +1726,8 @@ impl TurnRunner for AgentEngine {
                 AppEvent::TurnCompleted { turn_id } => {
                     active_turns.remove(&turn_id.to_string());
                 }
-                AppEvent::TurnCancelled { turn_id } => {
-                    active_turns.remove(&turn_id.to_string());
-                    messages.push(interrupted_turn_context());
-                }
-                AppEvent::ErrorRaised {
+                AppEvent::TurnCancelled { turn_id }
+                | AppEvent::ErrorRaised {
                     turn_id: Some(turn_id),
                     ..
                 } => {
@@ -2918,7 +2898,7 @@ async fn forward_provider_event(
     let event = match event {
         ProviderEvent::Accounting(mut usage) => {
             usage.turn_id = Some(turn_id.to_string());
-            AppEvent::RequestUsageUpdated { usage }
+            AppEvent::RequestUsageUpdated { usage: *usage }
         }
         ProviderEvent::SecurityState(state) => AppEvent::SecurityStatusChanged {
             state: match state {
@@ -2966,7 +2946,7 @@ async fn forward_compaction_provider_event(
     let event = match event {
         ProviderEvent::Accounting(mut usage) => {
             usage.purpose = axiom_inference::InvocationPurpose::Compaction;
-            Some(AppEvent::RequestUsageUpdated { usage })
+            Some(AppEvent::RequestUsageUpdated { usage: *usage })
         }
         ProviderEvent::SecurityState(state) => Some(AppEvent::SecurityStatusChanged {
             state: match state {
@@ -3059,10 +3039,11 @@ fn system_prompt(
             )
         },
     );
-    prompt.push_str(&format!(
+    let _ = write!(
+        prompt,
         "\n\nConversation start date and time: {} UTC. This timestamp is fixed for this thread, not a live clock. Use it as the conversation's initial date reference for relative dates and time-sensitive searches, rather than assuming the current year from your training data.",
         settings.started_at.format("%Y-%m-%d %H:%M:%S"),
-    ));
+    );
     prompt
 }
 
@@ -4137,7 +4118,7 @@ mod engine_tests {
         fn name(&self) -> &str {
             self.name
         }
-        fn description(&self) -> &str {
+        fn description(&self) -> &'static str {
             "Test-only external web operation"
         }
         fn parameters(&self) -> Value {
@@ -4238,7 +4219,7 @@ mod engine_tests {
                 request.messages[0]
                     .content
                     .contains("Web access for this message: OFF")
-                    == !web_enabled
+                    != web_enabled
             }));
             drop(requests);
             let next = TurnContext {

@@ -26,9 +26,14 @@ impl<'a> RelayClient<'a> {
         request_ids: &[String],
         cancellation: &CancellationToken,
     ) -> Result<Vec<axiom_inference::RequestUsage>> {
+        #[derive(Deserialize)]
+        struct Accounting {
+            requests: Vec<axiom_inference::RequestUsage>,
+        }
         if request_ids.is_empty() {
             return Ok(Vec::new());
         }
+
         if request_ids.len() > 100
             || request_ids.iter().any(|id| {
                 id.len() != 32
@@ -57,10 +62,7 @@ impl<'a> RelayClient<'a> {
         if response.status() != StatusCode::OK {
             return Err(self.error_for_response(response).await);
         }
-        #[derive(Deserialize)]
-        struct Accounting {
-            requests: Vec<axiom_inference::RequestUsage>,
-        }
+
         let bytes = bounded_body(response, 256 * 1024).await?;
         let data: Accounting = serde_json::from_slice(&bytes)
             .map_err(|_| SecureClientError::catalog("invalid accounting response"))?;

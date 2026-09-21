@@ -1,5 +1,5 @@
 ---
-source: apps/axiomcli/src/tui.rs
+source: apps/axiomcli/src/tui/tests.rs
 expression: "render_symbols(80, 20, &state)"
 ---
   Axiom / /work/axiomcli                                        ○ NOT VERIFIED
