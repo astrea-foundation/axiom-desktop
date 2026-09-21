@@ -341,12 +341,21 @@ fn run_tui_at(
             }
         } else if runner == "gift" {
             thread::sleep(Duration::from_millis(500));
-            writer.write_all(b"/redeem\r").expect("open private gift entry");
+            writer
+                .write_all(b"/redeem\r")
+                .expect("open private gift entry");
             writer.flush().unwrap();
             wait_for_output(&output_rx, &mut output, b"hidden", "masked gift entry");
-            writer.write_all(b"\x1b[200~AXG-ABCD-EFGH-IJKL-MNOP-QRST-UVWX-YZ23-4567\x1b[201~").unwrap();
+            writer
+                .write_all(b"\x1b[200~AXG-ABCD-EFGH-IJKL-MNOP-QRST-UVWX-YZ23-4567\x1b[201~")
+                .unwrap();
             writer.flush().unwrap();
-            wait_for_output(&output_rx, &mut output, b"********", "masked pasted gift code");
+            wait_for_output(
+                &output_rx,
+                &mut output,
+                b"********",
+                "masked pasted gift code",
+            );
             writer.write_all(b"\x1b").unwrap();
             writer.flush().unwrap();
             thread::sleep(Duration::from_millis(100));
@@ -941,5 +950,9 @@ fn gift_entry_never_echoes_or_persists_the_code_as_chat() {
     assert!(success);
     assert!(!output.contains("AXG-ABCD"));
     let data = std::fs::read(test_account_database(directory.path())).unwrap();
-    assert!(!data.windows(b"AXG-ABCD".len()).any(|bytes| bytes == b"AXG-ABCD"));
+    assert!(
+        !data
+            .windows(b"AXG-ABCD".len())
+            .any(|bytes| bytes == b"AXG-ABCD")
+    );
 }

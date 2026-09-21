@@ -3890,5 +3890,4 @@ mod tests {
         assert!(validate_account(&account).is_err());
     }
     include!("auth/gift_code_tests.rs");
-
 }

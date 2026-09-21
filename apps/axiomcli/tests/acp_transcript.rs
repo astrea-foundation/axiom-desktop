@@ -750,13 +750,20 @@ async fn gift_redemption_requires_billing_three_and_an_interactive_account() {
         let mut acp = AcpProcess::spawn("echo");
         acp.initialize_with_capabilities(json!({"_meta": {"axiom": {
             "protocolVersion": "0.2", "features": {"billing": version}
-        }}})).await;
-        acp.send(&json!({"jsonrpc":"2.0", "id":2, "method":"_axiom/billing/redeem_gift_code",
-            "params":{"code":"AXG-AAAA-AAAA-AAAA-AAAA-AAAA-AAAA-AAAA-AAAA"}})).await;
+        }}}))
+        .await;
+        acp.send(
+            &json!({"jsonrpc":"2.0", "id":2, "method":"_axiom/billing/redeem_gift_code",
+            "params":{"code":"AXG-AAAA-AAAA-AAAA-AAAA-AAAA-AAAA-AAAA-AAAA"}}),
+        )
+        .await;
         let response = acp.response(2).await;
         assert!(response.get("error").is_some());
-        if version == 2 { assert_eq!(response["error"]["code"], -32601); }
-        else { assert_ne!(response["error"]["code"], -32601); }
+        if version == 2 {
+            assert_eq!(response["error"]["code"], -32601);
+        } else {
+            assert_ne!(response["error"]["code"], -32601);
+        }
         assert!(!response.to_string().contains("AXG-AAAA"));
         acp.close().await;
     }

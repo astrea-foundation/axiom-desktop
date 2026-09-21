@@ -162,7 +162,11 @@ pub(super) fn account_status_text(account: &AccountStatus) -> String {
 }
 
 pub(super) enum UiMessage {
-    BillingFinished { generation: u64, account_generation: u64, result: Result<BillingUpdate> },
+    BillingFinished {
+        generation: u64,
+        account_generation: u64,
+        result: Result<BillingUpdate>,
+    },
     AccountingRecovered {
         session_id: SessionId,
         account_generation: u64,
