@@ -25,8 +25,6 @@ pub const MAX_WORKLOAD_MANIFEST_BYTES: usize = 1024 * 1024;
 pub const MAX_IDENTIFIER_BYTES: usize = 512;
 pub const MAX_COLLECTION_NAME_BYTES: usize = 256;
 pub const MAX_TIMELINE_PAGE_SIZE: u32 = 500;
-pub const MAX_INVOICE_USD_CENTS: u64 = 10_000_000;
-pub const MAX_CLIENT_REQUEST_ID_BYTES: usize = 128;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -98,7 +96,7 @@ impl FeatureVersions {
             profile_preferences: 1,
             collections: 1,
             account: 2,
-            billing: 1,
+            billing: 2,
             usage: 1,
             security_evidence: 1,
             web_consent: 1,
@@ -515,21 +513,13 @@ pub struct BillingStatus {
     /// Monotonic within one agent runtime; clients ignore older projections.
     pub revision: u64,
     pub posted_microusd: i64,
-    pub held_microusd: u64,
     pub available_microusd: i64,
     pub ledger_sequence: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub trial_microusd: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub paid_microusd: Option<i64>,
+    pub trial_microusd: u64,
+    pub paid_microusd: i64,
     #[serde(default)]
     pub payment_review_required: bool,
     pub currency: String,
-    pub invoices_enabled: bool,
-    pub invoice_min_usd_cents: u64,
-    pub invoice_max_usd_cents: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub settlement_asset: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payment_account: Option<PaymentAccount>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -590,33 +580,6 @@ pub struct DepositReceipt {
     pub priced_at: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum InvoiceState {
-    Creating,
-    Pending,
-    Paid,
-    Expired,
-    Failed,
-    Review,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct BillingInvoice {
-    /// Monotonic within one agent runtime; clients ignore older invoice state.
-    pub revision: u64,
-    pub id: String,
-    pub amount_usd_cents: u64,
-    pub state: InvoiceState,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub expires_at: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub paid_at: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pay_url: Option<String>,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ActivityEvent {
@@ -638,9 +601,6 @@ pub enum ActivityEvent {
     },
     BillingChanged {
         status: BillingStatus,
-    },
-    InvoiceChanged {
-        invoice: BillingInvoice,
     },
     BackgroundTask {
         task_id: String,
@@ -1058,27 +1018,6 @@ pub struct BillingStatusResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcRequest)]
-#[request(method = "_axiom/billing/invoice_create", response = BillingInvoiceResponse)]
-#[serde(rename_all = "camelCase")]
-pub struct BillingInvoiceCreateRequest {
-    pub amount_usd_cents: u64,
-    pub client_request_id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcRequest)]
-#[request(method = "_axiom/billing/invoice_status", response = BillingInvoiceResponse)]
-#[serde(rename_all = "camelCase")]
-pub struct BillingInvoiceStatusRequest {
-    pub invoice_id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcResponse)]
-#[serde(rename_all = "camelCase")]
-pub struct BillingInvoiceResponse {
-    pub invoice: BillingInvoice,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcRequest)]
 #[request(method = "_axiom/security/verify", response = VerifySecurityResponse)]
 #[serde(rename_all = "camelCase")]
 pub struct VerifySecurityRequest {
@@ -1179,9 +1118,6 @@ pub struct ProtocolSchema {
     pub api_key_created_response: ApiKeyCreatedResponse,
     pub api_key_revoke_request: ApiKeyRevokeRequest,
     pub api_key_revoke_response: ApiKeyRevokeResponse,
-    pub billing_invoice_create_request: BillingInvoiceCreateRequest,
-    pub billing_invoice_status_request: BillingInvoiceStatusRequest,
-    pub billing_invoice_response: BillingInvoiceResponse,
     pub verify_security_request: VerifySecurityRequest,
     pub verify_security_response: VerifySecurityResponse,
     pub compact_request: CompactRequest,
@@ -1244,7 +1180,6 @@ mod tests {
             "SetProfilePreferencesRequest",
             "CreateCollectionRequest",
             "NativeLoginStartRequest",
-            "BillingInvoiceCreateRequest",
             "VerifySecurityRequest",
             "CompactRequest",
             "EventNotification",

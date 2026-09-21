@@ -1,5 +1,7 @@
 # Tinfoil Desktop and TUI test — 2026-09-18
 
+Historical validation of the dated revision. Current storage and billing use [ADR 0014](../../adr/0014-clean-storage-and-deposit-billing.md).
+
 All four configured Tinfoil models completed real, encrypted requests in both applications. Desktop and TUI could complete filesystem tasks, retain conversation context across model switches, and display settled token counts and costs. TUI manual compaction preserved the important facts. Both applications rendered streamed text and stopped without marking the partial answer verified.
 
 One integration defect was fixed during this initial test: Desktop rejected valid Tinfoil proof reports because the ACP contract required a relay lease generation that Tinfoil does not use. The findings below preserve that initial baseline. **The remaining issues have since been addressed; see the [fixes and live retest](FIXES.md) for current behavior, evidence and verification limits.**

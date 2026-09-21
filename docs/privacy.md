@@ -58,11 +58,10 @@ shows a newly created automation key once for copying; it is not the native
 session token and must not be retained in account snapshots or diagnostics.
 
 Account billing and payment-provider credentials remain backend-owned. Desktop
-receives bounded credit/deposit metadata and, for the legacy invoice provider,
-a pending payment URL. It never receives wallet custody or grants the model
+receives bounded credit/deposit metadata and an indicative current ZEC/USD quote. It never receives wallet custody or grants the model
 transaction authority. Currency valuation is distinct from a currency conversion.
 
 [Session commands](cli.md#saved-sessions-and-plans) support explicit export and
 archiving; TUI/ACP provide confirmed deletion. Uninstall preserves local account
 data and credential-store entries. See [configuration](configuration.md#paths-and-local-state)
-for paths and the limited legacy-reset command.
+for paths and the account-scoped reset command.

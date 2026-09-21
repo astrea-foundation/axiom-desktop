@@ -58,7 +58,7 @@ are never an instruction to send conversation plaintext through a hosted endpoin
 | Collections | `collection/list`, `collection/create`, `collection/rename`, `collection/set_collapsed`, `collection/move`, `collection/delete`, `collection/assign` |
 | Native account | `account/status`, `account/native_login_start`, `account/native_login_complete`, `account/native_login_cancel`, `account/logout` |
 | Automation-key management | `account/api_keys`, `account/api_key_create`, `account/api_key_revoke` |
-| Billing | `billing/status`, `billing/invoice_create`, `billing/invoice_status` |
+| Billing | `billing/status` |
 | Usage | `usage/summary` |
 | Evidence/compaction/steering | `security/verify`, `compaction/start`, `turn/steer` |
 
@@ -122,10 +122,11 @@ method credentials never appear in ACP/renderer state. API-key **creation** is a
 explicit exception for a newly issued automation token shown once; account
 snapshots and Debug output omit it. It is not a native-login credential.
 
-`billing@1` carries account-ledger status and optional persistent mainnet deposit
-metadata. Legacy invoice methods use integer USD cents and bounded payment URLs;
-credit totals use microUSD. Calls require the current native account and reject
-stale account/revision results. `usage@1` carries posted spend by model.
+`billing@2` carries account-ledger status with required trial/paid buckets,
+nullable mainnet deposit metadata and a current ZEC/USD quote. Credit uses integer
+microUSD; deposit/quote amounts use exact decimal strings. Calls require a current
+native account and reject stale account/revision results. Invoice methods and
+checkout capabilities are removed. `usage@1` carries posted spend by model.
 
 Security projections require the registered provider identity, accepted key
 fingerprints and hard expiry. NEAR/Phala require positive lease generation;

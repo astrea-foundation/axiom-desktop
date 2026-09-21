@@ -9,16 +9,12 @@ use std::time::Duration;
 use chrono::DateTime;
 use futures::StreamExt as _;
 use reqwest::{Client, RequestBuilder, Response, StatusCode, Url};
+use serde::Deserialize;
 use serde::de::DeserializeOwned;
-use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
 use crate::{AxiomError, Result, auth::AuthManager};
 
-pub const MAX_INVOICE_USD_CENTS: u64 = 10_000_000;
-pub const MAX_CLIENT_REQUEST_ID_BYTES: usize = 128;
-pub const MAX_INVOICE_ID_BYTES: usize = 128;
-pub const MAX_PAYMENT_URL_BYTES: usize = 4_096;
 const MAX_BILLING_RESPONSE_BYTES: usize = 64 * 1024;
 // ACP's generated TypeScript contract represents integer fields as IEEE-754
 // numbers. Reject projections that could lose precision at that boundary.
@@ -28,52 +24,16 @@ const MAX_ACP_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 #[serde(deny_unknown_fields)]
 pub struct BillingStatus {
     pub posted_microusd: i64,
-    pub held_microusd: u64,
     pub available_microusd: i64,
     pub ledger_sequence: u64,
-    #[serde(default)]
-    pub trial_microusd: Option<u64>,
-    #[serde(default)]
-    pub paid_microusd: Option<i64>,
-    #[serde(default)]
+    pub trial_microusd: u64,
+    pub paid_microusd: i64,
     pub payment_review_required: bool,
     pub currency: String,
-    pub invoices_enabled: bool,
-    pub invoice_min_usd_cents: u64,
-    pub invoice_max_usd_cents: u64,
-    pub settlement_asset: Option<String>,
     #[serde(default)]
     pub payment_account: Option<axiom_acp_extension::PaymentAccount>,
     #[serde(default)]
     pub zec_usd_quote: Option<axiom_acp_extension::ZecUsdQuote>,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum InvoiceState {
-    Creating,
-    Pending,
-    Paid,
-    Expired,
-    Failed,
-    Review,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct Invoice {
-    pub id: String,
-    pub amount_usd_cents: u64,
-    pub state: InvoiceState,
-    pub expires_at: Option<String>,
-    pub paid_at: Option<String>,
-    pub pay_url: Option<String>,
-}
-
-#[derive(Serialize)]
-struct InvoiceCreateRequest<'a> {
-    amount_usd_cents: u64,
-    client_request_id: &'a str,
 }
 
 #[derive(Deserialize)]
@@ -179,7 +139,6 @@ impl BillingClient {
         let response = send_with_cancellation(
             self.client
                 .get(self.endpoint("/api/v1/billing/status"))
-                .query(&[("include_zec_usd_quote", "true")])
                 .bearer_auth(lease.expose_for_authorization()),
             cancellation,
             "billing status",
@@ -344,82 +303,6 @@ impl BillingClient {
         ensure_success(response.status(), "API key revocation")?;
         self.ensure_account_current(&lease)?;
         Ok(axiom_acp_extension::ApiKeyRevokeResponse {})
-    }
-
-    pub async fn create_invoice(
-        &self,
-        amount_usd_cents: u64,
-        client_request_id: &str,
-        cancellation: &CancellationToken,
-    ) -> Result<Invoice> {
-        validate_invoice_amount(amount_usd_cents)?;
-        validate_client_request_id(client_request_id)?;
-        let lease = self
-            .auth
-            .access_token_for_account_operation(cancellation)
-            .await?;
-        if cancellation.is_cancelled() {
-            return Err(AxiomError::Cancelled);
-        }
-        // The client request ID makes a retry after cancellation or a lost
-        // response idempotent at the backend.
-        let response = send_with_cancellation(
-            self.client
-                .post(self.endpoint("/api/v1/billing/invoices"))
-                .bearer_auth(lease.expose_for_authorization())
-                .json(&InvoiceCreateRequest {
-                    amount_usd_cents,
-                    client_request_id,
-                }),
-            cancellation,
-            "invoice creation",
-        )
-        .await?;
-        ensure_success(response.status(), "invoice creation")?;
-        let invoice = decode_bounded_json::<Invoice>(response, cancellation, "invoice").await?;
-        validate_invoice(&invoice)?;
-        if invoice.amount_usd_cents != amount_usd_cents {
-            return Err(AxiomError::Protocol(
-                "Axiom returned an invoice for a different amount".into(),
-            ));
-        }
-        self.ensure_account_current(&lease)?;
-        Ok(invoice)
-    }
-
-    pub async fn invoice_status(
-        &self,
-        invoice_id: &str,
-        cancellation: &CancellationToken,
-    ) -> Result<Invoice> {
-        validate_invoice_id(invoice_id)?;
-        let lease = self
-            .auth
-            .access_token_for_account_operation(cancellation)
-            .await?;
-        let mut endpoint = self.endpoint("/api/v1/billing/invoices/");
-        endpoint
-            .path_segments_mut()
-            .expect("validated HTTP API origin supports path segments")
-            .push(invoice_id);
-        let response = send_with_cancellation(
-            self.client
-                .get(endpoint)
-                .bearer_auth(lease.expose_for_authorization()),
-            cancellation,
-            "invoice status",
-        )
-        .await?;
-        ensure_success(response.status(), "invoice status")?;
-        let invoice = decode_bounded_json::<Invoice>(response, cancellation, "invoice").await?;
-        validate_invoice(&invoice)?;
-        if invoice.id != invoice_id {
-            return Err(AxiomError::Protocol(
-                "Axiom returned a different invoice identity".into(),
-            ));
-        }
-        self.ensure_account_current(&lease)?;
-        Ok(invoice)
     }
 
     fn endpoint(&self, path: &str) -> Url {
@@ -589,44 +472,29 @@ fn parse_api_origin(value: &str) -> Result<Url> {
 }
 
 fn validate_billing_status(status: &BillingStatus) -> Result<()> {
-    match (status.trial_microusd, status.paid_microusd) {
-        (Some(trial), Some(paid))
-            if trial <= MAX_ACP_SAFE_INTEGER
-                && paid.unsigned_abs() <= MAX_ACP_SAFE_INTEGER
-                && trial <= status.posted_microusd.max(0) as u64
-                && (trial as i64).checked_add(paid) == Some(status.posted_microusd) => {}
-        (None, None) => {} // Older backends do not report the split.
-        _ => {
-            return Err(AxiomError::Protocol(
-                "Axiom returned inconsistent credit buckets".into(),
-            ));
-        }
+    if status.trial_microusd > MAX_ACP_SAFE_INTEGER
+        || status.paid_microusd.unsigned_abs() > MAX_ACP_SAFE_INTEGER
+        || status.trial_microusd > status.posted_microusd.max(0).unsigned_abs()
+        || i128::from(status.trial_microusd) + i128::from(status.paid_microusd)
+            != i128::from(status.posted_microusd)
+    {
+        return Err(AxiomError::Protocol(
+            "Axiom returned inconsistent credit buckets".into(),
+        ));
     }
     if let Some(payment) = &status.payment_account {
         validate_payment_account(payment)?;
-        if status.invoices_enabled || status.settlement_asset.is_some() {
-            return Err(AxiomError::Protocol(
-                "mainnet deposits cannot claim USDC settlement".into(),
-            ));
-        }
     }
     if status.posted_microusd.unsigned_abs() > MAX_ACP_SAFE_INTEGER
-        || status.held_microusd > MAX_ACP_SAFE_INTEGER
         || status.available_microusd.unsigned_abs() > MAX_ACP_SAFE_INTEGER
         || status.ledger_sequence > MAX_ACP_SAFE_INTEGER
         || status.currency != "microUSD"
-        || status.invoice_min_usd_cents == 0
-        || status.invoice_max_usd_cents < status.invoice_min_usd_cents
-        || status.invoice_max_usd_cents > MAX_INVOICE_USD_CENTS
-        || status.held_microusd > status.posted_microusd.max(0) as u64
         || status.available_microusd
             != if status.payment_review_required {
                 0
             } else {
-                status.posted_microusd - status.held_microusd as i64
+                status.posted_microusd
             }
-        || (status.invoices_enabled && status.settlement_asset.as_deref() != Some("USDC"))
-        || (!status.invoices_enabled && status.settlement_asset.is_some())
     {
         return Err(AxiomError::Protocol(
             "Axiom returned inconsistent billing status".into(),
@@ -755,99 +623,6 @@ fn validate_payment_account(payment: &axiom_acp_extension::PaymentAccount) -> Re
             "invalid mainnet deposit account".into(),
         ))
     }
-}
-
-fn validate_invoice_amount(amount_usd_cents: u64) -> Result<()> {
-    if !(1..=MAX_INVOICE_USD_CENTS).contains(&amount_usd_cents) {
-        return Err(AxiomError::InvalidTransition(
-            "invoice amount is outside the supported USD-cent range".into(),
-        ));
-    }
-    Ok(())
-}
-
-fn validate_client_request_id(value: &str) -> Result<()> {
-    if value.is_empty()
-        || value.len() > MAX_CLIENT_REQUEST_ID_BYTES
-        || !value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || b"_.:-".contains(&byte))
-    {
-        return Err(AxiomError::InvalidTransition(
-            "invoice client request ID is invalid".into(),
-        ));
-    }
-    Ok(())
-}
-
-fn validate_invoice_id(value: &str) -> Result<()> {
-    if value.len() != 32
-        || !value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-    {
-        return Err(AxiomError::InvalidTransition(
-            "invoice ID is invalid".into(),
-        ));
-    }
-    Ok(())
-}
-
-fn validate_invoice(invoice: &Invoice) -> Result<()> {
-    validate_invoice_id(&invoice.id)?;
-    validate_invoice_amount(invoice.amount_usd_cents)?;
-    for timestamp in [&invoice.expires_at, &invoice.paid_at]
-        .into_iter()
-        .flatten()
-    {
-        DateTime::parse_from_rfc3339(timestamp).map_err(|_| {
-            AxiomError::Protocol("Axiom returned an invalid invoice timestamp".into())
-        })?;
-    }
-    if invoice.state == InvoiceState::Paid && invoice.paid_at.is_none() {
-        return Err(AxiomError::Protocol(
-            "a paid invoice omitted its payment timestamp".into(),
-        ));
-    }
-    if let Some(pay_url) = &invoice.pay_url {
-        validate_payment_url(pay_url)?;
-        if !matches!(
-            invoice.state,
-            InvoiceState::Creating | InvoiceState::Pending
-        ) {
-            return Err(AxiomError::Protocol(
-                "a terminal invoice unexpectedly retained a payment URL".into(),
-            ));
-        }
-    }
-    if invoice.state == InvoiceState::Pending && invoice.pay_url.is_none() {
-        return Err(AxiomError::Protocol(
-            "a pending invoice omitted its payment URL".into(),
-        ));
-    }
-    Ok(())
-}
-
-pub fn validate_payment_url(value: &str) -> Result<Url> {
-    if value.is_empty() || value.len() > MAX_PAYMENT_URL_BYTES {
-        return Err(AxiomError::Protocol(
-            "Axiom returned an invalid invoice payment URL".into(),
-        ));
-    }
-    let url = Url::parse(value).map_err(|_| {
-        AxiomError::Protocol("Axiom returned an invalid invoice payment URL".into())
-    })?;
-    if url.scheme() != "https"
-        || url.host_str().is_none()
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.fragment().is_some()
-    {
-        return Err(AxiomError::Protocol(
-            "Axiom returned an untrusted invoice payment URL".into(),
-        ));
-    }
-    Ok(url)
 }
 
 #[cfg(test)]
@@ -992,17 +767,12 @@ mod tests {
     fn backend_billing_shapes_are_validated_fail_closed() {
         let valid = BillingStatus {
             posted_microusd: 25_000_000,
-            held_microusd: 2_000_000,
-            available_microusd: 23_000_000,
+            available_microusd: 25_000_000,
             ledger_sequence: 4,
-            trial_microusd: Some(1_000_000),
-            paid_microusd: Some(24_000_000),
+            trial_microusd: 1_000_000,
+            paid_microusd: 24_000_000,
             payment_review_required: false,
             currency: "microUSD".into(),
-            invoices_enabled: true,
-            invoice_min_usd_cents: 500,
-            invoice_max_usd_cents: 100_000,
-            settlement_asset: Some("USDC".into()),
             payment_account: None,
             zec_usd_quote: None,
         };
@@ -1010,17 +780,16 @@ mod tests {
         let negative = BillingStatus {
             posted_microusd: -230_534,
             available_microusd: -230_534,
-            held_microusd: 0,
-            trial_microusd: Some(0),
-            paid_microusd: Some(-230_534),
+            trial_microusd: 0,
+            paid_microusd: -230_534,
             ..valid.clone()
         };
         let decoded: BillingStatus = serde_json::from_str(
             r#"{
-            "posted_microusd":-230534,"available_microusd":-230534,"held_microusd":0,
+            "posted_microusd":-230534,"available_microusd":-230534,
             "trial_microusd":0,"paid_microusd":-230534,"ledger_sequence":4,
-            "currency":"microUSD","invoices_enabled":true,"invoice_min_usd_cents":500,
-            "invoice_max_usd_cents":100000,"settlement_asset":"USDC"
+            "currency":"microUSD","payment_review_required":false,
+            "payment_account":null,"zec_usd_quote":null
         }"#,
         )
         .unwrap();
@@ -1035,8 +804,8 @@ mod tests {
         );
         assert!(
             validate_billing_status(&BillingStatus {
-                trial_microusd: Some(1),
-                paid_microusd: Some(-230_535),
+                trial_microusd: 1,
+                paid_microusd: -230_535,
                 ..negative
             })
             .is_err()
@@ -1058,25 +827,11 @@ mod tests {
         );
         assert!(
             validate_billing_status(&BillingStatus {
-                paid_microusd: Some(25_000_000),
+                paid_microusd: 25_000_000,
                 ..valid.clone()
             })
             .is_err()
         );
-        assert!(
-            validate_billing_status(&BillingStatus {
-                paid_microusd: None,
-                ..valid.clone()
-            })
-            .is_err()
-        );
-        for unsupported in [Some("ZEC".into()), Some("USDT".into()), None] {
-            let rejected = BillingStatus {
-                settlement_asset: unsupported,
-                ..valid.clone()
-            };
-            assert!(validate_billing_status(&rejected).is_err());
-        }
         let mut inconsistent = valid;
         inconsistent.available_microusd += 1;
         assert!(validate_billing_status(&inconsistent).is_err());
@@ -1131,36 +886,5 @@ mod tests {
             ..quote
         };
         assert!(!valid_current_quote(&malformed, now));
-    }
-
-    #[test]
-    fn invoice_ids_requests_and_payment_urls_are_bounded() {
-        assert!(validate_invoice_id(&"a".repeat(32)).is_ok());
-        assert!(validate_invoice_id(&"A".repeat(32)).is_err());
-        assert!(validate_invoice_id("../other-account").is_err());
-        assert!(validate_client_request_id("desktop:request-1").is_ok());
-        assert!(validate_client_request_id("bad/request").is_err());
-        assert!(validate_payment_url("https://shieldz.cash/pay/invoice?checkout=opaque").is_ok());
-        for unsafe_url in [
-            "http://shieldz.cash/pay/invoice",
-            "https://user@shieldz.cash/pay/invoice",
-            "https://shieldz.cash/pay/invoice#fragment",
-            "file:///tmp/invoice",
-        ] {
-            assert!(validate_payment_url(unsafe_url).is_err());
-        }
-    }
-
-    #[test]
-    fn terminal_invoice_cannot_retain_checkout_capability() {
-        let paid = Invoice {
-            id: "a".repeat(32),
-            amount_usd_cents: 2_500,
-            state: InvoiceState::Paid,
-            expires_at: Some("2026-09-04T01:00:00Z".into()),
-            paid_at: Some("2026-09-04T00:30:00Z".into()),
-            pay_url: Some("https://shieldz.cash/pay/invoice".into()),
-        };
-        assert!(validate_invoice(&paid).is_err());
     }
 }

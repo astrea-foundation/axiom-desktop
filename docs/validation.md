@@ -1,22 +1,22 @@
 # Documentation validation and outstanding acceptance
 
 The 2026-09-21 consolidation reviewed the native implementation at `fa9c4ab`
-(the `dev` baseline), manifests, generated contracts, tests and workflow definitions.
-It corrects source claims; it does not establish the current state of production,
-published installers or unrecorded manual work. Concurrent changes on other
-branches are outside this baseline.
+(the then-current `dev` baseline), manifests, generated contracts, tests and workflow definitions.
+The clean-baseline refactor updates the storage and billing findings below and
+records its additional checks separately. These source checks do not establish
+the current state of production, published installers or unrecorded manual work.
 
 ## Source checks
 
 | Topic corrected | Source used |
 |---|---|
 | Components and independent hosted/native ownership | [workspace](../Cargo.toml), [package scripts](../package.json), [architecture](architecture.md) |
-| Configuration precedence, bounds, storage paths and legacy reset | [config.rs](../apps/axiomcli/src/config.rs), [paths.rs](../apps/axiomcli/src/paths.rs), [session.rs](../apps/axiomcli/src/session.rs) |
-| Schema 7 and supported transactional upgrades | [schema/migrations](../apps/axiomcli/src/session.rs), [versioning](versioning.md) |
+| Configuration precedence, bounds, storage paths and explicit account reset | [config.rs](../apps/axiomcli/src/config.rs), [paths.rs](../apps/axiomcli/src/paths.rs), [session.rs](../apps/axiomcli/src/session.rs) |
+| Fresh schema 1/application ID `0x41584133` and rejection of obsolete stores | [schema/migrations](../apps/axiomcli/src/session.rs), [versioning](versioning.md) |
 | Local titles, edit/regenerate, staged compaction and stable user-submission ordering | [agent.rs](../apps/axiomcli/src/agent.rs), [ACP](../apps/axiomcli/src/acp.rs), [concurrency regressions](testing/concurrency-ui-2026-09-20/FIXES.md) |
 | Desktop Agent on all packaged OS targets; Linux-only Bubblewrap isolation | [workspace.rs](../apps/axiomcli/src/workspace.rs), [policy.rs](../apps/axiomcli/src/policy.rs), [Desktop](desktop.md) |
 | ACP 0.2 features, API-key creation and Tinfoil generation exception | [extension DTOs](../crates/axiom-acp-extension/src/lib.rs), [contract](acp-compatibility.md) |
-| Native payment mode, mainnet ZEC, valuation and optional legacy invoices | [billing.rs](../apps/axiomcli/src/billing.rs), [account UI](../apps/desktop/src/renderer/src/App.tsx) |
+| Mainnet ZEC deposits, valuation and `billing@2` | [billing.rs](../apps/axiomcli/src/billing.rs), [account UI](../apps/desktop/src/renderer/src/App.tsx) |
 | NEAR/Phala/Tinfoil authentication and truthful evidence | [provider drivers](../crates/axiom-secure-client/src/providers), [security](threat-model.md) |
 | Main-only CI, separate manual/signed packaging and publication handoff | [workflows](../.github/workflows), [packager](../apps/desktop/scripts/package-desktop.mjs), [releasing](releasing.md) |
 
@@ -30,7 +30,7 @@ reused as current acceptance claims.
 
 On 2026-09-21: all 393 local Markdown links/heading anchors resolved; the six
 bundled guides contained 48 source-revision links with valid repository targets;
-and all 32 originally unchecked account-plan items remained in the archive.
+and the account-plan release gates were carried forward.
 `cargo fmt --all -- --check`, shell syntax and `git diff --check` passed.
 The existing `release_archive_is_reproducible_signed_installable_and_cleanly_uninstalled`
 regression passed against the updated packaging script. Application behavior was
@@ -39,18 +39,19 @@ payment, production deployment or interactive OS acceptance was performed.
 
 ## Carry-forward work
 
-The original account plan's [phase checklists](archive/account-auth-billing-clean-slate-plan.md#13-implementation-phases-and-dependency-gates)
-and redesign's [open items](archive/desktop-redesign.md#6-open-items-for-the-developer)
-are preserved. Their disposition is:
+The superseded account/invoice plans have been removed. Their remaining release
+work is carried forward below and in [ADR 0014](adr/0014-clean-storage-and-deposit-billing.md).
+The redesign's [open items](archive/desktop-redesign.md#6-open-items-for-the-developer)
+remain separate.
 
 | Area | Current disposition / evidence still needed |
 |---|---|
 | Original branch freeze and schema baseline | Historical setup, not a standing development stage. Record actual release revisions using CONTRIBUTING and current platform migrations. |
 | Hosted staging, four auth methods and recovery/rollback | Requires deployment records and browser checks for the chosen release; source/tests alone cannot close it. |
-| Billing edge cases | Revalidate paid/duplicate/under/over/mismatched/late/reconciled payments and partial-inference settlement for the backend's selected provider. The old Shieldz-only checklist does not describe every current payment mode. |
+| Billing edge cases | Exercise persistent address provisioning, duplicate and out-of-order signed events, namespace isolation, valuation, reorg review and partial-inference settlement with Axiom Payments and the selected inference provider. |
 | macOS/Windows interactive acceptance | Record vault, system-browser, passkey/Hello, signing, installer/uninstaller, account switching, refresh/logout, billing and authenticated inference outcomes per target. |
 | Artifact evidence | Record OS/browser/architecture, commit, artifact hashes and signing identity with acceptance results. A successful headless package is insufficient. |
-| Initial destructive production cutover | Retired proposal, not an executable runbook. Its disposable-account/schema-reset assumptions must not be reused. Current platform operations own migrations, backups, secret changes, smoke tests and rollback. |
+| Initial destructive production cutover | Retired proposal, not an executable runbook. The newly authorized September reset is defined in ADR 0014 and the platform reset runbook. Platform operations own database/namespace replacement, secret changes, smoke tests and recovery. |
 | Rollback and retirement | Preserve evidence of a staging rollback drill, secret/key revocation and retention decisions for any still-active retirement work; do not infer completion from the old checklist. |
 | Old hosted source removal | Native ownership is now enforced by the repository layout; hosted code belongs to `axiom-platform`. This does not prove an old production route or secret was retired. |
 | Branding/design hand-off | The legal-line `TODO(brand)` remains in [main](../apps/desktop/src/main/index.ts); product-name/artwork decisions and optional layered icon/tray adoption need explicit design decisions. Current packaging uses `icon.icns`. |
@@ -61,3 +62,15 @@ Use [release acceptance](releasing.md#interactive-acceptance) for a new release
 and [platform operations](https://github.com/astrea-foundation/axiom-platform/blob/dev/docs/operations/deployment.md)
 for backend rollout. Close an item with dated evidence rather than changing an
 old proposal to imply that the check happened.
+
+## Clean-baseline verification
+
+The September reset removes retired invoice APIs/UI and old migration chains.
+Local validation: 503 platform tests, all native workspace Rust tests, explicit
+reset/plan CLI tests, TypeScript checks/tests, Desktop and auth builds, receiver
+unit/integration tests, local reset and Compose validation. All 127 Desktop browser
+regressions and the updated release-archive regression pass. The development PRs
+record the paired revisions. Strict native Clippy remains blocked by
+pre-existing warnings (including `axiom-inference` enum size and boolean-count
+lints); ordinary Clippy completes. Live inference, funded deposits, OS-specific
+acceptance and production cutover were not exercised by this source cleanup.

@@ -91,8 +91,7 @@ from the backend. The Axiom Payments path uses persistent **mainnet ZEC** addres
 exact integer receipt amounts, and optional backend-reported USD valuation.
 The client validates the valuation fields and does not perform a currency swap
 or hold payment-provider credentials. Testnet data is rejected in this path.
-Legacy Shieldz invoice operations remain available for a backend explicitly
-configured to use that provider. See [billing.rs](../apps/axiomcli/src/billing.rs)
+The native and backend billing contracts must be released together. See [billing.rs](../apps/axiomcli/src/billing.rs)
 and the [Desktop guide](desktop.md#account-credit-and-usage).
 
 Hosted website code, payment reconciliation and deployment tooling belong to

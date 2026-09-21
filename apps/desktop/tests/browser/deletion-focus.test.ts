@@ -13,6 +13,21 @@ let browser: Browser;
 let server: ViteDevServer;
 let origin: string;
 
+function depositBilling(postedMicrousd: number, revision = 1): BillingStatus {
+  const address = `u1${"a".repeat(180)}`;
+  return {
+    revision, postedMicrousd, availableMicrousd: postedMicrousd,
+    trialMicrousd: 0, paidMicrousd: postedMicrousd, ledgerSequence: revision,
+    currency: "microUSD", paymentReviewRequired: false, zecUsdQuote: null,
+    paymentAccount: {
+      network: "mainnet", asset: "ZEC", conversion_status: "none",
+      state: "ready", valuation_enabled: true, address, payment_uri: `zcash:${address}`,
+      monitoring_status: "ready", required_confirmations: "10",
+      confirmed_zatoshis: "0", confirming_zatoshis: "0", review_required: false, deposits: [],
+    },
+  };
+}
+
 before(async () => {
   server = await createServer({
     configFile: false,
@@ -78,7 +93,7 @@ async function openApp(platform = "linux", failDelete = false, thinkingLevels: s
       catalog: [summary("old-thread")],
       collections: { revision: 1, collections: [{ id: "folder", name: "Test folder", collapsed: false, threadIds: [] }] },
       preferences: null, account: { revision: 1, state: "valid", account: { id: "test-account", displayName: "Test User", verifiedEmail: "test@example.invalid", linkedMethods: ["password"] } } as AccountStatus,
-      billing: null as BillingStatus | null, invoice: null, diagnostic: "", error: null,
+      billing: null as BillingStatus | null, diagnostic: "", error: null,
     };
     const calls: { method: string; id?: string; text?: string; webEnabled?: boolean; userItemId?: string; expectedRevision?: number }[] = [];
     let failRename = false;
@@ -1757,10 +1772,7 @@ for (const platform of ["linux", "win32", "darwin"]) {
   test(`account menu opens upwards, shows live balance, and dismisses safely (${platform})`, async () => {
     const { page, errors } = await openApp(platform);
     try {
-      await page.evaluate(() => (window as any).__deletionTest.setBilling({
-        revision: 1, availableMicrousd: 12_345_678, postedMicrousd: 12_345_678, heldMicrousd: 0,
-        ledgerSequence: 0, currency: "microUSD", invoicesEnabled: false, invoiceMinUsdCents: 500, invoiceMaxUsdCents: 100_000,
-      }));
+      await page.evaluate((billing) => (window as any).__deletionTest.setBilling(billing), depositBilling(12_345_678));
       const trigger = page.getByRole("button", { name: "Account menu", exact: true });
       assert.equal(await trigger.getByText("TU", {exact: true}).count(), 1, "Avatar comes from the account username");
       assert.equal(await page.getByRole("button", { name: "Open settings" }).count(), 0, "no separate settings gear");
@@ -1812,15 +1824,17 @@ for (const platform of ["linux", "win32", "darwin"]) {
 test("balance is a separate screen and payments stay hidden after sign-out", async () => {
   const { page, errors } = await openApp();
   try {
-    await page.evaluate(() => (window as any).__deletionTest.setBilling({
-      revision: 1, postedMicrousd: 25_000_000, heldMicrousd: 0, availableMicrousd: 25_000_000,
-      ledgerSequence: 0, currency: "microUSD", invoicesEnabled: true, invoiceMinUsdCents: 500, invoiceMaxUsdCents: 100_000,
-    }));
+    const billing = depositBilling(25_000_000);
+    await page.evaluate((billing) => (window as any).__deletionTest.setBilling(billing), billing);
     await openAccountScreen(page, "Balance");
     assert.equal(await page.getByRole("region", { name: "Settings", exact: true }).count(), 0);
-    await page.getByLabel("Top up with Zcash", { exact: true }).fill("12.34");
+    const address = page.getByLabel("Mainnet deposit address", { exact: true });
+    assert.equal(await address.innerText(), billing.paymentAccount!.address);
+    assert.equal(await page.getByRole("button", { name: "Copy address", exact: true }).isEnabled(), true);
+    const refreshes = await page.evaluate(() => (window as any).__deletionTest.calls.filter((call: any) => call.method === "billingStatus").length);
     await page.getByRole("button", { name: "Refresh balance" }).click();
-    assert.equal(await page.getByRole("button", { name: "Top up", exact: true }).isEnabled(), true);
+    await page.waitForFunction((previous) => (window as any).__deletionTest.calls.filter((call: any) => call.method === "billingStatus").length > previous, refreshes);
+    assert.equal(await address.innerText(), billing.paymentAccount!.address);
     await page.getByRole("button", { name: "Back", exact: true }).click();
     await openAccountScreen(page, "Settings");
     await page.getByRole("tab", { name: "Account", exact: true }).click();
@@ -1829,7 +1843,8 @@ test("balance is a separate screen and payments stay hidden after sign-out", asy
     await page.getByRole("button", { name: "Back", exact: true }).click();
     await openAccountScreen(page, "Balance");
     await page.getByText("Sign in to view your balance and payment options.").waitFor();
-    assert.equal(await page.getByRole("button", { name: "Top up", exact: true }).count(), 0);
+    assert.equal(await page.getByRole("region", { name: "Zcash deposits", exact: true }).count(), 0);
+    assert.equal(await address.count(), 0);
     await page.getByRole("button", { name: "Sign in", exact: true }).click();
     await page.getByRole("region", { name: "Browser sign-in", exact: true }).waitFor();
     assert.equal(await page.getByRole("dialog").count(), 0);
@@ -1839,25 +1854,18 @@ test("balance is a separate screen and payments stay hidden after sign-out", asy
   } finally { await page.close(); }
 });
 
-test("balance shows debt and top-up action without displaying a reservation", async () => {
+test("balance shows debt and a reusable deposit address without displaying a reservation", async () => {
   const { page, errors } = await openApp();
   try {
-    await page.evaluate(() => (window as any).__deletionTest.setBilling({
-      revision: 1, postedMicrousd: -230_534, heldMicrousd: 0, availableMicrousd: -230_534,
-      trialMicrousd: 0, paidMicrousd: -230_534, ledgerSequence: 1, currency: "microUSD",
-      invoicesEnabled: true, invoiceMinUsdCents: 500, invoiceMaxUsdCents: 100_000,
-    }));
+    await page.evaluate((billing) => (window as any).__deletionTest.setBilling(billing), depositBilling(-230_534));
     await openAccountScreen(page, "Balance");
     const panel = page.getByRole("region", { name: "Balance and payments", exact: true });
     await panel.getByText("-$0.23", { exact: true }).waitFor();
     await panel.getByText("Top up to send another message.", { exact: true }).waitFor();
-    assert.equal(await page.getByRole("button", { name: "Top up", exact: true }).isEnabled(), true);
+    await page.getByLabel("Mainnet deposit address", { exact: true }).waitFor();
+    assert.equal(await page.getByRole("button", { name: "Copy address", exact: true }).isEnabled(), true);
     assert.doesNotMatch(await panel.innerText(), /temporarily held|reserved/i);
-    await page.evaluate(() => (window as any).__deletionTest.setBilling({
-      revision: 2, postedMicrousd: 100_000, heldMicrousd: 0, availableMicrousd: 100_000,
-      trialMicrousd: 0, paidMicrousd: 100_000, ledgerSequence: 2, currency: "microUSD",
-      invoicesEnabled: true, invoiceMinUsdCents: 500, invoiceMaxUsdCents: 100_000,
-    }));
+    await page.evaluate((billing) => (window as any).__deletionTest.setBilling(billing), depositBilling(100_000, 2));
     await panel.getByText("$0.10", { exact: true }).first().waitFor();
     assert.equal(await panel.getByText("Top up to send another message.", { exact: true }).count(), 0);
     assert.deepEqual(errors, []);
@@ -1941,9 +1949,9 @@ test("balance deposit controls fit the reference window, respect reduced motion,
     await page.evaluate(() => {
       const address = `u1${"a".repeat(180)}`;
       (window as any).__deletionTest.setBilling({
-        revision: 1, postedMicrousd: 2_893_999, heldMicrousd: 0, availableMicrousd: 2_893_999,
+        revision: 1, postedMicrousd: 2_893_999, availableMicrousd: 2_893_999,
         trialMicrousd: 999_676, paidMicrousd: 1_894_323,
-        ledgerSequence: 0, currency: "microUSD", invoicesEnabled: false, invoiceMinUsdCents: 500, invoiceMaxUsdCents: 100_000,
+        ledgerSequence: 0, currency: "microUSD",
         zecUsdQuote: { source: "coinbase", price_microusd_per_zec: "123456789",
           as_of: new Date().toISOString(), expires_at: new Date(Date.now() + 60_000).toISOString() },
         paymentAccount: { network: "mainnet", asset: "ZEC", conversion_status: "none", state: "ready", valuation_enabled: true,
@@ -2014,9 +2022,9 @@ test("deposit progress keeps ZEC primary and changes estimated USD to credited U
       const address = `u1${"a".repeat(180)}`;
       const quoteTime = Date.now();
       (window as any).__deletionTest.setBilling({
-        revision: Number(confirmations), postedMicrousd: credited ? 100001 : 0, heldMicrousd: 0,
+        revision: Number(confirmations), postedMicrousd: credited ? 100001 : 0,
         availableMicrousd: credited ? 100001 : 0, trialMicrousd: 0, paidMicrousd: credited ? 100001 : 0,
-        ledgerSequence: 0, currency: "microUSD", invoicesEnabled: false, invoiceMinUsdCents: 500, invoiceMaxUsdCents: 100_000,
+        ledgerSequence: 0, currency: "microUSD",
         zecUsdQuote: { source: "coinbase", price_microusd_per_zec: "123456789",
           as_of: new Date(quoteTime).toISOString(), expires_at: new Date(quoteTime + 60_000).toISOString() },
         paymentAccount: { network: "mainnet", asset: "ZEC", conversion_status: "none", state: "ready", valuation_enabled: true,

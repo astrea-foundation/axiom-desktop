@@ -17,11 +17,6 @@ import { Sidebar } from "./components/Sidebar";
 import { TrafficLightGhost } from "./components/TrafficLightGhost";
 import { WelcomeView } from "./components/WelcomeView";
 import { WindowControls } from "./components/WindowControls";
-import {
-  BillingInvoiceRequestTracker,
-  browserInvoiceRequestStorage,
-} from "./billingInvoiceRequest";
-import { BillingCheckoutFlow, monitorBillingInvoice } from "./billingCheckout";
 import { ThreadLoadTracker } from "./threadLoading";
 import { compareThreadMessages, newestMessageAt, orderFoldersByMessages } from "./threadOrdering";
 import { setThemePreference, useTheme } from "./lib/theme";
@@ -71,7 +66,6 @@ const EMPTY_AGENT_STATE: ClientState = {
   preferences: null,
   account: null,
   billing: null,
-  invoice: null,
   diagnostic: "",
   error: null,
 };
@@ -183,18 +177,6 @@ export function App() {
   const signInPending = useRef(false);
   const activeLoginId = useRef<string | null>(null);
   const signInCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const billingInvoiceRequests = useRef<BillingInvoiceRequestTracker | null>(null);
-  const billingCheckout = useRef<BillingCheckoutFlow | null>(null);
-  const billingMonitor = useRef<ReturnType<typeof monitorBillingInvoice> | null>(null);
-  const [billingMonitorRevision, setBillingMonitorRevision] = useState(0);
-  if (billingInvoiceRequests.current === null) {
-    billingInvoiceRequests.current = new BillingInvoiceRequestTracker(
-      () => crypto.randomUUID(),
-      browserInvoiceRequestStorage(),
-    );
-    billingCheckout.current = new BillingCheckoutFlow(billingInvoiceRequests.current);
-  }
-
   const billingAccountId = agentState.account?.state === "valid"
     ? agentState.account.account?.id ?? null
     : null;
@@ -207,31 +189,6 @@ export function App() {
     messageQueue.current!.sync(agentState, window.axiomDesktop?.agent ?? null);
   }, [agentState, queueRevision]);
   useEffect(() => () => messageQueue.current?.dispose(), []);
-  useEffect(() => {
-    const definitiveAccount = agentState.account?.state === "valid"
-      ? billingAccountId
-      : agentState.account?.state === "signed_out" || agentState.account?.state === "expired"
-        ? null
-        : undefined;
-    billingInvoiceRequests.current?.reconcileAccount(definitiveAccount);
-  }, [agentState.account?.state, billingAccountId]);
-
-  useEffect(() => {
-    const api = window.axiomDesktop?.agent;
-    const invoice = agentState.invoice;
-    if (!api || !agentState.connected || !billingAccountId || !invoice) return;
-    const monitor = monitorBillingInvoice(invoice, api);
-    billingMonitor.current = monitor;
-    const refreshOnReturn = () => { void monitor.refresh(); };
-    window.addEventListener("focus", refreshOnReturn);
-    return () => {
-      void monitor.stop();
-      if (billingMonitor.current === monitor) billingMonitor.current = null;
-      window.removeEventListener("focus", refreshOnReturn);
-    };
-  }, [agentState.connected, agentState.runtimeInstanceId, billingAccountId,
-    agentState.invoice?.id, agentState.invoice?.state, billingMonitorRevision]);
-
   const unsortedFolders = useMemo(() => agentState.collections.collections.map((collection) => ({
     id: collection.id,
     name: collection.name,
@@ -428,29 +385,6 @@ export function App() {
       throw new Error("Sign in to load billing");
     }
     await api.billingStatus();
-  }, [agentState.account?.state, agentState.connected]);
-
-  const topUpBalance = useCallback(async (amountUsdCents: number) => {
-    const api = window.axiomDesktop?.agent;
-    if (!api || !agentState.connected || !billingAccountId) {
-      throw new Error("Sign in to top up your balance");
-    }
-    const checkout = billingCheckout.current;
-    if (!checkout) throw new Error("Checkout is unavailable");
-    await billingMonitor.current?.stop();
-    try {
-      await checkout.topUp(billingAccountId, amountUsdCents, api);
-    } finally {
-      setBillingMonitorRevision((revision) => revision + 1);
-    }
-  }, [agentState.connected, billingAccountId]);
-
-  const refreshBillingInvoice = useCallback(async (invoiceId: string) => {
-    const api = window.axiomDesktop?.agent;
-    if (!api || !agentState.connected || agentState.account?.state !== "valid") {
-      throw new Error("Sign in to refresh an invoice");
-    }
-    await api.billingInvoiceStatus(invoiceId);
   }, [agentState.account?.state, agentState.connected]);
 
   const cancelNativeSignIn = useCallback(() => {
@@ -1232,10 +1166,7 @@ export function App() {
           connected={agentState.connected}
           account={agentState.account}
           billing={agentState.billing}
-          invoice={agentState.invoice}
           onRefreshBilling={refreshBilling}
-          onTopUp={topUpBalance}
-          onRefreshInvoice={refreshBillingInvoice}
           onLogin={openSignIn}
         />
       ) : null}

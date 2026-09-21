@@ -51,7 +51,7 @@ async function open(theme = 'light', overrides: Partial<UpdateState> = {}) {
         isFocused:async () => true,onActiveChange:() => () => {},
         agent: {
           getState: async () => ({ connected:false, runtimeInstanceId:null, sessions:{},activeSessionId:null,
-            catalog:[],collections:{revision:0,collections:[]},preferences:null,account:null,billing:null,invoice:null,diagnostic:'',error:null }),
+            catalog:[],collections:{revision:0,collections:[]},preferences:null,account:null,billing:null,diagnostic:'',error:null }),
           onState:() => () => {},
         },
         updates: {

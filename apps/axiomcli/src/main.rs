@@ -106,8 +106,10 @@ enum Command {
     Doctor,
     /// List models exposed by the configured secure Axiom service.
     Models,
-    /// Delete one pre-release frontend state database after explicit confirmation.
+    /// Delete one account/frontend state database. Stop Desktop and CLI first.
     ResetLocalState {
+        #[arg(long)]
+        account: String,
         #[arg(long, value_enum)]
         frontend: FrontendKind,
         /// Confirm permanent deletion of this frontend's local threads and collections.
@@ -243,6 +245,22 @@ async fn main() -> anyhow::Result<()> {
     paths
         .prepare()
         .context("failed to prepare Axiom platform paths")?;
+    if let Some(Command::ResetLocalState {
+        account,
+        frontend,
+        confirm,
+    }) = &cli.command
+    {
+        anyhow::ensure!(*confirm, "refusing to delete local state without --confirm");
+        let removed = paths
+            .reset_account_frontend_state(account, *frontend)
+            .context("failed to reset account local state")?;
+        println!(
+            "removed {} local state file(s) for account {account}, frontend {frontend}",
+            removed.len()
+        );
+        return Ok(());
+    }
     let config =
         Config::load_for(frontend, &paths).context("failed to load AxiomCLI configuration")?;
     let auth = {
@@ -300,20 +318,8 @@ async fn main() -> anyhow::Result<()> {
             }
             Ok(())
         }
-        Command::ResetLocalState { frontend, confirm } => {
-            anyhow::ensure!(confirm, "refusing to delete local state without --confirm");
-            let removed = paths
-                .reset_legacy_frontend_state(frontend)
-                .context("failed to reset frontend local state")?;
-            if removed.is_empty() {
-                println!("{frontend} local state is already empty");
-            } else {
-                println!(
-                    "removed {} {frontend} local state file(s); shared identity, credentials, trust policy, configuration, and chat workspace were preserved",
-                    removed.len()
-                );
-            }
-            Ok(())
+        Command::ResetLocalState { .. } => {
+            unreachable!("local reset handled before authentication")
         }
         Command::Sessions { action } => manage_sessions(action, &account_store),
         Command::Plans { cwd, action } => manage_plans(&resolve_cwd(cwd)?, action),

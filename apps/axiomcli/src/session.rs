@@ -29,10 +29,10 @@ use crate::{
     paths::{AxiomPaths, FrontendKind},
 };
 
-const SCHEMA_VERSION: i64 = 7;
-// Clean-slate account-scoped storage contract (`AXA2`). Installation-scoped
+const SCHEMA_VERSION: i64 = 1;
+// Clean-slate account-scoped storage contract (`AXA3`). Installation-scoped
 // pre-release databases use a different application ID and are never opened.
-const APPLICATION_ID: i64 = 0x4158_4132;
+const APPLICATION_ID: i64 = 0x4158_4133;
 const MAX_TIMELINE_PAGE: usize = 1_000;
 const MAX_THREAD_CATALOG_PAGE: usize = 200;
 const MAX_THREAD_QUERY_BYTES: usize = 512;
@@ -667,7 +667,7 @@ impl SessionStore {
                 ));
             }
         }
-        migrate_schema(&mut connection, version)?;
+        initialize_schema(&mut connection, version)?;
         let application_id: i64 = connection
             .query_row("PRAGMA application_id", [], |row| row.get(0))
             .map_err(storage_error)?;
@@ -676,7 +676,7 @@ impl SessionStore {
                 "local state schema v1 does not belong to this Axiom storage contract; reset the development database".into(),
             ));
         }
-        validate_schema_v1(&connection)?;
+        validate_schema(&connection)?;
         connection
             .execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
             .map_err(storage_error)?;
@@ -786,159 +786,18 @@ fn authentication_required() -> AxiomError {
     )
 }
 
-struct SchemaMigration {
-    from: i64,
-    to: i64,
-    sql: &'static str,
-}
-
-const SCHEMA_MIGRATIONS: &[SchemaMigration] = &[
-    SchemaMigration {
-        from: 0,
-        to: 1,
-        sql: SCHEMA_V1,
-    },
-    SchemaMigration {
-        from: 1,
-        to: 2,
-        sql: SCHEMA_V2,
-    },
-    SchemaMigration {
-        from: 2,
-        to: 3,
-        sql: SCHEMA_V3,
-    },
-    SchemaMigration {
-        from: 3,
-        to: 4,
-        sql: SCHEMA_V4,
-    },
-    SchemaMigration {
-        from: 4,
-        to: 5,
-        sql: SCHEMA_V5,
-    },
-    SchemaMigration {
-        from: 5,
-        to: 6,
-        sql: SCHEMA_V6,
-    },
-    SchemaMigration {
-        from: 6,
-        to: 7,
-        sql: SCHEMA_V7,
-    },
-];
-
-// Sidebar order follows user submissions, independently of streaming activity.
-const SCHEMA_V7: &str = r"
-ALTER TABLE threads ADD COLUMN last_user_message_at TEXT;
-UPDATE threads SET last_user_message_at=(
-  SELECT strftime('%Y-%m-%dT%H:%M:%fZ', MAX(created_at)) FROM timeline_items
-  WHERE thread_id=threads.id AND kind='user_message' AND length(content)>0
-);
-CREATE INDEX idx_threads_submissions ON threads(archived, COALESCE(last_user_message_at,'') DESC, id);
-PRAGMA user_version=7;
-";
-
-// Schema 5 left the initial assistant placeholder without a request binding.
-// Repair only completed, single-request turns with a recorded LOCAL receipt
-// verification. Billing settlement, attestation, and ambiguous turns cannot
-// supply this evidence. Message content and timestamps remain untouched.
-const SCHEMA_V6: &str = r"
-CREATE TEMP TABLE receipt_binding_repairs AS
-SELECT item.id, item.thread_id, usage.request_id,
-       json_extract(usage.record, '$.finishReason') AS finish_reason
-FROM timeline_items AS item
-JOIN turns AS turn ON turn.thread_id=item.thread_id AND turn.id=item.turn_id
-  AND turn.assistant_item_id=item.id
-JOIN request_usage AS usage ON usage.thread_id=item.thread_id
-  AND json_extract(usage.record, '$.turnId')=item.turn_id
-WHERE item.kind='assistant_message' AND item.status='completed'
-  AND turn.status='completed' AND length(item.content)>0
-  AND json_extract(item.metadata, '$.request_id') IS NULL
-  AND COALESCE(json_extract(item.metadata, '$.terminal_verified'), 0)=0
-  AND json_extract(usage.record, '$.purpose')='conversation'
-  AND json_extract(usage.record, '$.state')='completed'
-  AND json_type(usage.record, '$.responseVerified')='true'
-  AND (SELECT COUNT(*) FROM request_usage AS other
-       WHERE other.thread_id=item.thread_id
-         AND json_extract(other.record, '$.turnId')=item.turn_id
-         AND json_extract(other.record, '$.purpose')='conversation')=1;
-UPDATE timeline_items SET metadata=json_set(metadata,
-  '$.request_id', (SELECT request_id FROM receipt_binding_repairs WHERE id=timeline_items.id),
-  '$.terminal_verified', json('true'),
-  '$.finish_reason', (SELECT finish_reason FROM receipt_binding_repairs WHERE id=timeline_items.id))
-WHERE id IN (SELECT id FROM receipt_binding_repairs);
-UPDATE threads SET revision=revision+1
-WHERE id IN (SELECT thread_id FROM receipt_binding_repairs);
-DROP TABLE receipt_binding_repairs;
-PRAGMA user_version=6;
-";
-
-const SCHEMA_V5: &str = r"
-CREATE TABLE request_usage (
-  request_id TEXT PRIMARY KEY,
-  thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
-  record TEXT NOT NULL
-);
-CREATE INDEX request_usage_thread ON request_usage(thread_id);
-PRAGMA user_version=5;
-";
-
-const SCHEMA_V4: &str =
-    "ALTER TABLE threads ADD COLUMN desktop_agent_settings TEXT; PRAGMA user_version=4;";
-
-// Historical turn totals may have been overwritten by auxiliary compaction
-// requests and lack model/limit provenance. Do not invent a report from them.
-const SCHEMA_V3: &str = r"
-ALTER TABLE threads ADD COLUMN last_reported_usage TEXT;
-PRAGMA user_version=3;
-";
-
-// Backfill from actual conversation content, never thread metadata or notices.
-// Thereafter only nonempty user/assistant message events advance this clock.
-const SCHEMA_V2: &str = r"
-ALTER TABLE threads ADD COLUMN last_message_at TEXT;
-UPDATE threads SET last_message_at=(
-  SELECT strftime('%Y-%m-%dT%H:%M:%fZ', MAX(updated_at)) FROM timeline_items
-  WHERE thread_id=threads.id AND kind IN ('user_message','assistant_message','reasoning')
-    AND length(content)>0
-);
-CREATE INDEX idx_threads_messages ON threads(archived, COALESCE(last_message_at,'') DESC, id);
-PRAGMA user_version=2;
-";
-
-fn migrate_schema(connection: &mut Connection, mut version: i64) -> Result<()> {
-    while version < SCHEMA_VERSION {
-        let migration = SCHEMA_MIGRATIONS
-            .iter()
-            .find(|migration| migration.from == version)
-            .ok_or_else(|| {
-                AxiomError::Storage(format!(
-                    "no local state migration is available from schema {version}"
-                ))
-            })?;
+fn initialize_schema(connection: &mut Connection, version: i64) -> Result<()> {
+    if version == 0 {
         let transaction = connection.transaction().map_err(storage_error)?;
         transaction
-            .execute_batch(migration.sql)
+            .execute_batch(SCHEMA_BASELINE)
             .map_err(storage_error)?;
-        let migrated_version: i64 = transaction
-            .query_row("PRAGMA user_version", [], |row| row.get(0))
-            .map_err(storage_error)?;
-        if migrated_version != migration.to {
-            return Err(AxiomError::Storage(format!(
-                "local state migration from {} did not select schema {}",
-                migration.from, migration.to
-            )));
-        }
         transaction.commit().map_err(storage_error)?;
-        version = migration.to;
     }
     Ok(())
 }
 
-const SCHEMA_V1: &str = r"
+const SCHEMA_BASELINE: &str = r"
 CREATE TABLE threads(
   id TEXT PRIMARY KEY,
   title TEXT,
@@ -952,10 +811,16 @@ CREATE TABLE threads(
   archived INTEGER NOT NULL DEFAULT 0 CHECK(archived IN (0,1)),
   revision INTEGER NOT NULL DEFAULT 0 CHECK(revision >= 0),
   next_timeline_sequence INTEGER NOT NULL DEFAULT 0 CHECK(next_timeline_sequence >= 0),
+  last_message_at TEXT,
+  last_user_message_at TEXT,
+  last_reported_usage TEXT,
+  desktop_agent_settings TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
 CREATE INDEX idx_threads_activity ON threads(archived, updated_at DESC, id);
+CREATE INDEX idx_threads_messages ON threads(archived, COALESCE(last_message_at,'') DESC, id);
+CREATE INDEX idx_threads_submissions ON threads(archived, COALESCE(last_user_message_at,'') DESC, id);
 
 CREATE TABLE turns(
   thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
@@ -1024,11 +889,18 @@ CREATE TABLE collection_state(
 );
 INSERT INTO collection_state(id, revision) VALUES(1, 0);
 
-PRAGMA application_id=1096302898;
+CREATE TABLE request_usage (
+  request_id TEXT PRIMARY KEY,
+  thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+  record TEXT NOT NULL
+);
+CREATE INDEX request_usage_thread ON request_usage(thread_id);
+
+PRAGMA application_id=1096302899;
 PRAGMA user_version=1;
 ";
 
-fn validate_schema_v1(connection: &Connection) -> Result<()> {
+fn validate_schema(connection: &Connection) -> Result<()> {
     for table in [
         "threads",
         "turns",
@@ -1037,6 +909,7 @@ fn validate_schema_v1(connection: &Connection) -> Result<()> {
         "thread_collections",
         "profile_preferences",
         "collection_state",
+        "request_usage",
     ] {
         let exists: bool = connection
             .query_row(
@@ -4680,26 +4553,6 @@ mod tests {
     }
 
     #[test]
-    fn schema_three_upgrade_preserves_existing_threads_with_agent_off() {
-        let (_root, store) = routed_store();
-        store.activate_account("account-a").unwrap();
-        let id = SessionId::new();
-        create(&store, &id);
-        let original = store.thread_summary(&id).unwrap();
-        store
-            .lock()
-            .unwrap()
-            .execute_batch(
-                "DROP INDEX idx_threads_submissions; ALTER TABLE threads DROP COLUMN last_user_message_at; DROP TABLE request_usage; ALTER TABLE threads DROP COLUMN desktop_agent_settings; PRAGMA user_version=3;",
-            )
-            .unwrap();
-        store.deactivate_account().unwrap();
-        store.activate_account("account-a").unwrap();
-        assert_eq!(store.thread_summary(&id).unwrap(), original);
-        assert!(!store.desktop_agent_settings(&id).unwrap().enabled);
-    }
-
-    #[test]
     fn account_bound_read_paused_before_store_lock_cannot_disclose_the_next_account() {
         let (_root, store) = routed_store();
         store.activate_account("account-a").expect("activate A");
@@ -4827,7 +4680,7 @@ mod tests {
     }
 
     #[test]
-    fn fresh_and_current_databases_use_the_ordered_schema_migrations() {
+    fn fresh_and_current_databases_use_the_clean_baseline() {
         let directory = tempdir().expect("temp dir");
         let fresh = directory.path().join("state.sqlite3");
         let store = SessionStore::open(&fresh).expect("fresh store");
@@ -4868,6 +4721,13 @@ mod tests {
             .execute_batch("CREATE TABLE events(payload TEXT); PRAGMA user_version=0;")
             .expect("old schema");
         assert!(SessionStore::open(&old).is_err());
+
+        // Even schema v1 from the old application contract must be reset.
+        let retired = directory.path().join("retired.sqlite3");
+        Connection::open(&retired).unwrap().execute_batch(
+            "CREATE TABLE threads(id TEXT); PRAGMA application_id=1096302898; PRAGMA user_version=1;"
+        ).unwrap();
+        assert!(SessionStore::open(&retired).is_err());
 
         let future = directory.path().join("future.sqlite3");
         Connection::open(&future)
@@ -5006,54 +4866,6 @@ mod tests {
         assert_eq!(
             store.thread_snapshot(&id, None, 10).unwrap().context_usage,
             Some(usage_report(75_000))
-        );
-    }
-
-    #[test]
-    fn schema_v3_preserves_legacy_data_without_fabricating_usage_provenance() {
-        let directory = tempdir().unwrap();
-        let path = directory.path().join("state.sqlite3");
-        let connection = Connection::open(&path).unwrap();
-        connection.execute_batch(SCHEMA_V1).unwrap();
-        connection.execute_batch(SCHEMA_V2).unwrap();
-        let id = SessionId::new();
-        let turn = TurnId::new();
-        let (encoding, cwd) = encode_path(Path::new("/tmp/axiom-test")).unwrap();
-        connection
-            .execute(
-                "INSERT INTO threads(id,cwd,cwd_encoding,origin,profile,created_at,updated_at)
-             VALUES (?1,?2,?3,'test','confirm','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')",
-                params![id.to_string(), cwd, encoding],
-            )
-            .unwrap();
-        connection.execute(
-            "INSERT INTO turns(thread_id,id,status,input_tokens,output_tokens,started_at,completed_at)
-             VALUES (?1,?2,'completed',75000,1000,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')",
-            params![id.to_string(), turn.to_string()],
-        ).unwrap();
-        drop(connection);
-        let store = SessionStore::open(&path).unwrap();
-        let snapshot = store.thread_snapshot(&id, None, 10).unwrap();
-        assert!(snapshot.context_usage.is_none());
-        assert_eq!(
-            (
-                snapshot.turns[0].input_tokens,
-                snapshot.turns[0].output_tokens
-            ),
-            (75_000, 1_000)
-        );
-        store
-            .append(&envelope(
-                &id,
-                2,
-                AppEvent::ContextUsageUpdated {
-                    usage: usage_report(80_000),
-                },
-            ))
-            .unwrap();
-        assert_eq!(
-            store.thread_snapshot(&id, None, 10).unwrap().context_usage,
-            Some(usage_report(80_000))
         );
     }
 
@@ -5579,130 +5391,6 @@ mod tests {
     }
 
     #[test]
-    fn receipt_binding_migration_requires_unambiguous_local_verification() {
-        use axiom_inference::{InvocationPurpose, InvocationState, RequestUsage};
-        for case in [
-            "verified",
-            "unverified",
-            "failed",
-            "auxiliary",
-            "other_turn",
-            "multiple_requests",
-            "cancelled_turn",
-            "already_bound",
-        ] {
-            let directory = tempdir().unwrap();
-            let path = directory.path().join("state.sqlite3");
-            let store = SessionStore::open(&path).unwrap();
-            let id = SessionId::new();
-            let turn = TurnId::new();
-            create(&store, &id);
-            begin_turn(&store, &id, &turn, None);
-            store
-                .append(&envelope(
-                    &id,
-                    4,
-                    AppEvent::TextDelta {
-                        turn_id: turn.clone(),
-                        text: "Historical reply".into(),
-                    },
-                ))
-                .unwrap();
-            store
-                .append(&envelope(
-                    &id,
-                    5,
-                    if case == "cancelled_turn" {
-                        AppEvent::TurnCancelled {
-                            turn_id: turn.clone(),
-                        }
-                    } else {
-                        AppEvent::TurnCompleted {
-                            turn_id: turn.clone(),
-                        }
-                    },
-                ))
-                .unwrap();
-            let usage = RequestUsage {
-                request_id: "a".repeat(32),
-                turn_id: Some(if case == "other_turn" {
-                    TurnId::new().to_string()
-                } else {
-                    turn.to_string()
-                }),
-                purpose: if case == "auxiliary" {
-                    InvocationPurpose::Title
-                } else {
-                    InvocationPurpose::Conversation
-                },
-                state: if case == "failed" {
-                    InvocationState::Failed
-                } else {
-                    InvocationState::Completed
-                },
-                response_verified: case != "unverified",
-                settled: true,
-                finish_reason: Some("stop".into()),
-                ..RequestUsage::default()
-            };
-            // Model the schema-5 defect: accounting exists but the initial
-            // assistant row has no binding, so it missed the receipt marker.
-            store.record_request_usage(&id, &usage).unwrap();
-            if case == "multiple_requests" {
-                store
-                    .record_request_usage(
-                        &id,
-                        &RequestUsage {
-                            request_id: "b".repeat(32),
-                            ..usage.clone()
-                        },
-                    )
-                    .unwrap();
-            }
-            if case == "already_bound" {
-                store.lock().unwrap().execute("UPDATE timeline_items SET metadata=json_object('request_id', ?1) WHERE kind='assistant_message'", ["b".repeat(32)]).unwrap();
-            }
-            let before = store.thread_snapshot(&id, None, 100).unwrap();
-            store
-                .lock()
-                .unwrap()
-                .execute_batch("DROP INDEX idx_threads_submissions; ALTER TABLE threads DROP COLUMN last_user_message_at; PRAGMA user_version=5;")
-                .unwrap();
-            drop(store);
-            let reopened = SessionStore::open(&path).unwrap();
-            let after = reopened.thread_snapshot(&id, None, 100).unwrap();
-            let repaired = case == "verified";
-            assert_eq!(
-                after.items[1].metadata["terminal_verified"] == true,
-                repaired,
-                "{case}"
-            );
-            assert_eq!(
-                after.thread.revision,
-                before.thread.revision + u64::from(repaired),
-                "{case}"
-            );
-            assert_eq!(after.items[1].content, before.items[1].content);
-            assert_eq!(after.items[1].updated_at, before.items[1].updated_at);
-            if repaired {
-                assert_eq!(after.items[1].metadata["request_id"], usage.request_id);
-                assert_eq!(after.items[1].metadata["finish_reason"], "stop");
-            } else {
-                assert_eq!(after.items, before.items, "{case}");
-            }
-            drop(reopened);
-            assert_eq!(
-                SessionStore::open(&path)
-                    .unwrap()
-                    .thread_snapshot(&id, None, 100)
-                    .unwrap(),
-                after,
-                "migration is idempotent: {case}"
-            );
-        }
-    }
-
-    #[test]
     fn terminal_response_verification_survives_authoritative_restart() {
         let directory = tempdir().expect("temp dir");
         let path = directory.path().join("state.sqlite3");
@@ -5957,62 +5645,6 @@ mod tests {
         assert_eq!(
             ids,
             [vec![older.to_string(), newer.to_string()], empty_ids].concat()
-        );
-    }
-
-    #[test]
-    fn schema_v2_backfills_message_activity_without_touching_conversations() {
-        let directory = tempdir().expect("temp");
-        let path = directory.path().join("state.sqlite3");
-        let connection = Connection::open(&path).expect("connection");
-        connection.execute_batch(SCHEMA_V1).expect("v1 schema");
-        let (encoding, cwd) = encode_path(Path::new("/tmp/axiom-test")).expect("path");
-        connection.execute(
-            "INSERT INTO threads(id,cwd,cwd_encoding,origin,profile,created_at,updated_at)
-             VALUES ('thread',?1,?2,'test','confirm','2026-01-01T00:00:00Z','2026-09-01T00:00:00Z')",
-            params![cwd, encoding],
-        ).expect("thread");
-        for (sequence, kind, text, time) in [
-            (
-                1,
-                "user_message",
-                "preserved message",
-                "2026-01-01T01:00:00Z",
-            ),
-            (2, "assistant_message", "", "2026-09-01T00:00:00Z"),
-            (3, "notice", "security check", "2026-09-01T00:00:00Z"),
-        ] {
-            connection.execute(
-                "INSERT INTO timeline_items(id,thread_id,sequence,kind,status,content,created_at,updated_at)
-                 VALUES (?1,'thread',?1,?2,'completed',?3,?4,?4)",
-                params![sequence, kind, text, time],
-            ).expect("item");
-        }
-        drop(connection);
-        let store = SessionStore::open(&path).expect("migrated store");
-        let threads = store.list_threads(false).expect("threads");
-        assert_eq!(threads.len(), 1);
-        assert_eq!(
-            threads[0].last_message_at.as_deref(),
-            Some("2026-01-01T01:00:00.000Z")
-        );
-        let connection = store.lock().expect("lock");
-        assert_eq!(
-            connection
-                .query_row(
-                    "SELECT content FROM timeline_items WHERE id='1'",
-                    [],
-                    |row| row.get::<_, String>(0)
-                )
-                .expect("content"),
-            "preserved message"
-        );
-        assert_eq!(
-            connection
-                .query_row("SELECT COUNT(*) FROM timeline_items", [], |row| row
-                    .get::<_, i64>(0))
-                .expect("count"),
-            3
         );
     }
 

@@ -103,13 +103,13 @@ See [security](threat-model.md).
 
 ## Account credit and usage
 
-The default Axiom Payments UI shows a persistent mainnet ZEC address and bounded
+The Axiom Payments UI shows a persistent mainnet ZEC address and bounded
 deposit receipts from the authenticated backend. Integer zatoshi amounts and
 versions remain exact strings/BigInt. Optional USD credit uses the backend's
 reported confirmation-time valuation; a live quote is indicative, not a promise
 of final credit. No ZEC-to-USDC conversion or native wallet custody is claimed.
-Testnet or inconsistent valuation responses are rejected. The legacy Shieldz
-invoice UI is available only when selected by backend status.
+Testnet or inconsistent valuation responses are rejected. Only mainnet deposits
+are supported; invoice checkout is removed.
 
 Settings → Usage shows posted account-ledger inference charges, including other
 clients/devices. Top-ups, pending holds and unbilled estimates are excluded.

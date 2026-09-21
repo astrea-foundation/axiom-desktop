@@ -1,0 +1,73 @@
+# Native maintenance implementation plan
+
+Status: in progress. Baseline: `0eec7cd` on `refactor/clean-baseline`.
+
+This work completes the cleanup identified by the source audit. It extends the
+existing native cleanup branch and its pull request to `dev`; the earlier invoice
+removal and fresh-storage baseline remain intact. It does not promote `main` or
+deploy a service.
+
+## Intended changes
+
+1. **Remove unused product scaffolding.** Delete the unimplemented TUI Crypto
+   permissions tab, its commands/help wording and its dedicated tests. Remove
+   the dormant aggregate token counter and its event bookkeeping while retaining
+   request accounting and displayed usage. Remove the three unused duplicate
+   Desktop fonts, unreferenced CSS selectors/animations and the reserved empty
+   sidecar-protocol directory. Update current documentation and references.
+2. **Make titles a local operation.** Replace the asynchronous runner title API
+   with one synchronous, bounded title helper. Persist an initial title as part
+   of frontend prompt admission, keeping account binding and set-if-absent
+   semantics. Remove background title tasks, cancellation/accounting plumbing
+   and title-result messages. Retain compatibility values required to read
+   existing accounting contracts.
+3. **Use signed NVIDIA policy in both providers.** Pass the verified policy's
+   accepted intermediate fingerprints into the Phala verifier. Reject absent,
+   malformed or unapproved anchors; allow signed overlap during rotation.
+   Preserve certificate signatures/validity, nonce binding, TDX, measured source,
+   worker identity and receipt checks. No gateway repository/commit allowlist or
+   manual approval of provider source updates is introduced.
+4. **Test the production NEAR report verifier.** Eliminate the duplicate
+   report-binding helper and its blanket dead-code suppression. Run the existing
+   cross-language report vectors through the verifier used during attestation,
+   with explicit rejection of malformed lengths and mismatched bindings.
+5. **Separate ACP responsibilities.** Introduce a shared typed server context and
+   feature-specific handlers for sessions/prompts, accounts/billing, catalog and
+   preferences, collections, and security/compaction. Keep stdio setup and typed
+   handler registration readable. Preserve request ordering, responder failures,
+   cancellation, account transitions, persistence and extension negotiation.
+6. **Separate TUI responsibilities.** Move state/reduction, rendering/screens and
+   event-loop concerns into focused modules. Remove obsolete state instead of
+   relocating it. Keep the existing public TUI API, terminal cleanup, approval,
+   steering, resume and account-isolation behavior.
+7. **Separate Desktop controllers.** Extract account/login, model catalog and
+   conversation/submission lifecycle from `App.tsx` into cohesive hooks or
+   controllers. Leave application layout/composition in `App`. Preserve stable
+   queue IDs, account/runtime generations, draft ownership, settings revisions,
+   selection and edit/regenerate behavior.
+
+## Validation
+
+- Run relevant Rust unit and integration suites after behavior changes. Add
+  meaningful trust-policy rotation/rejection coverage and retain production
+  report-vector coverage.
+- Run workspace formatting, checks and strict Clippy; run the full workspace
+  tests and the pinned ACP SDK stack regression after the controller splits.
+- Run deterministic evaluations, ACP transcripts and TUI PTY tests to cover
+  protocol ordering, approvals, cancellation, recovery and frontend parity.
+- Regenerate/check the ACP contract; run TypeScript checks, client/Desktop tests,
+  browser regressions, callback asset verification and the Desktop build.
+- Check moved documentation links and confirm removed artifacts have no remaining
+  active references. Record actual results and unresolved failures here.
+
+## Completion record
+
+- [ ] Unused UI, counters, assets and placeholder directory removed.
+- [ ] Titles use shared synchronous generation and account-bound persistence.
+- [ ] Phala uses verified signed NVIDIA anchor policy with rejection/rotation tests.
+- [ ] NEAR report vectors exercise the production verifier.
+- [ ] ACP registration delegates to feature handlers using typed context.
+- [ ] TUI state, screens and runtime are separated.
+- [ ] Desktop account, model and conversation lifecycle are separated from layout.
+- [ ] Integration checks pass and current guides reflect the final implementation.
+- [ ] Commits are pushed and the existing `dev` pull request describes the full change.

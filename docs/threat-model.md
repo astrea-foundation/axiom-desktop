@@ -32,7 +32,7 @@ cannot authorize an unsupported protocol or unverified public key.
 | Phala | `phala-aci-v2`, encryption `2`, `phala-aci-tdx-v1` | Nonce-bound gateway TDX/keyset, measured workflow, preverified eligible worker sessions and exact receipt-cited worker/request |
 | Tinfoil | `tinfoil-ehbp-v1`, encryption `1`, `tinfoil-snp-sigstore-v1` | Pinned verifier checks SNP router/build/TLS/HPKE binding; request-bound encrypted response and authenticated completion |
 
-Chutes is not registered in this native client. NEAR's retired v2 contract is
+NEAR's retired v2 contract is
 not a supported fallback. Provider-specific wire details live in
 [NEAR v3](protocols/near-v3.md), [Tinfoil EHBP](protocols/tinfoil-ehbp-v1.md), and
 the [Phala verifier provenance](../crates/axiom-phala-core/ORIGIN.md).
@@ -160,7 +160,7 @@ selection, expire after 60 seconds and are one-use/process-local. IPC framing is
 bounded to 4 MiB; retained sidecar stderr is capped at 64 KiB. Sequence gaps require
 snapshot replacement, not assumed success.
 
-Account credit/deposit/invoice operations require a native account session,
+Account credit/deposit operations require a native account session,
 validate bounded amounts and identities, and discard results after an account
 change. They do not grant wallet or model transaction authority. See
 [architecture](architecture.md#account-credit-and-integrations).

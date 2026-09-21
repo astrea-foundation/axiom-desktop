@@ -53,11 +53,12 @@ conversation databases. Refresh tokens live only in the OS credential store.
 No account database opens while signed out. Schema migrations are described in
 [versioning](versioning.md).
 
-`axiomcli reset-local-state --frontend cli --confirm` (or frontend
-`desktop-chat`) removes only the retired installation-wide frontend database.
-It does not delete account-scoped databases, configuration, identity, credentials,
-trust policy or another frontend's legacy database. It is not a general account
-history-deletion command.
+`axiomcli reset-local-state --account ACCOUNT_ID --frontend cli --confirm`
+(or `--frontend desktop-chat`) removes the selected account/frontend database and
+SQLite sidecars. Stop Desktop and CLI first. The command runs before authentication
+and schema loading, so it can remove obsolete state. Other accounts/frontends,
+configuration, identity, vault credentials, trust policy and workspace files are
+separate. See [ADR 0014](adr/0014-clean-storage-and-deposit-billing.md).
 
 ## Trusted user configuration
 

@@ -2,7 +2,6 @@ import { EventEmitter } from "node:events";
 import type {
   AccountStatus,
   ActivityEvent,
-  BillingInvoice,
   BillingStatus,
   CollectionState,
   ContextUsage,
@@ -91,7 +90,6 @@ export interface ClientState {
   preferences: ProfilePreferences | null;
   account: AccountStatus | null;
   billing: BillingStatus | null;
-  invoice: BillingInvoice | null;
   diagnostic: string;
   error: string | null;
 }
@@ -259,19 +257,6 @@ function settingsFromThread(thread: ThreadSummary): ThreadSettings {
   };
 }
 
-function invoiceStateCanAdvance(
-  previous: BillingInvoice["state"],
-  next: BillingInvoice["state"],
-): boolean {
-  if (previous === next) return true;
-  if (next === "paid") return true;
-  if (previous === "creating") return true;
-  if (previous === "pending") return next !== "creating";
-  // Review, expiry, and failure do not regain a checkout capability. A late
-  // verified payment may still advance any of them to paid.
-  return false;
-}
-
 export class AxiomStateStore extends EventEmitter {
   private accountContextGeneration = 0;
   private securityContexts = new WeakMap<ClientSessionState, object>();
@@ -287,7 +272,6 @@ export class AxiomStateStore extends EventEmitter {
     preferences: null,
     account: null,
     billing: null,
-    invoice: null,
     diagnostic: "",
     error: null,
   };
@@ -362,7 +346,6 @@ export class AxiomStateStore extends EventEmitter {
       this.value.collections = { revision: 0, collections: [] };
       this.value.preferences = null;
       this.value.billing = null;
-      this.value.invoice = null;
       this.value.error = null;
       this.accountContextGeneration += 1;
     }
@@ -384,17 +367,6 @@ export class AxiomStateStore extends EventEmitter {
     if (this.value.billing && status.revision <= this.value.billing.revision) return;
     if (this.value.billing && status.ledgerSequence < this.value.billing.ledgerSequence) return;
     this.value.billing = status;
-    this.changed();
-  }
-
-  setInvoice(invoice: BillingInvoice): void {
-    if (this.value.invoice && invoice.revision <= this.value.invoice.revision) return;
-    if (
-      this.value.invoice
-      && invoice.id === this.value.invoice.id
-      && !invoiceStateCanAdvance(this.value.invoice.state, invoice.state)
-    ) return;
-    this.value.invoice = invoice;
     this.changed();
   }
 
@@ -640,7 +612,6 @@ export class AxiomStateStore extends EventEmitter {
       this.value.collections = { revision: 0, collections: [] };
       this.value.preferences = null;
       this.value.billing = null;
-      this.value.invoice = null;
       this.value.error = null;
       this.accountContextGeneration += 1;
     } else if (sequenceGap) {
@@ -704,19 +675,6 @@ export class AxiomStateStore extends EventEmitter {
         )
       ) {
         this.value.billing = event.status;
-      }
-    } else if (event.kind === "invoice_changed") {
-      if (
-        !this.value.invoice
-        || (
-          event.invoice.revision > this.value.invoice.revision
-          && (
-            event.invoice.id !== this.value.invoice.id
-            || invoiceStateCanAdvance(this.value.invoice.state, event.invoice.state)
-          )
-        )
-      ) {
-        this.value.invoice = event.invoice;
       }
     }
     else if (event.kind === "security_changed" && sessionId) {

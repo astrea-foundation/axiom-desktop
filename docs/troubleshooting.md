@@ -25,7 +25,7 @@ failures from ambiguous or security failures.
 
 For insufficient credit, inspect the native account's billing status. Current
 Axiom payment mode uses a mainnet ZEC deposit address and indicative valuation;
-legacy Shieldz invoices are available only when advertised by the backend.
+invoice checkout is no longer supported.
 See [Desktop credit and usage](desktop.md). Payment state never substitutes for
 local response verification.
 
@@ -91,7 +91,7 @@ Export with `sessions export` while the database can still be read. Unknown,
 malformed or newer schemas are rejected; there is no general `sessions prune`
 command or automatic destructive repair. Preserve the database for investigation.
 [Versioning](versioning.md#local-database) describes supported migrations and the
-narrow legacy reset path.
+account-scoped explicit reset path.
 
 ## Terminal display
 

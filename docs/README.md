@@ -20,6 +20,7 @@ that a particular installer is published or that a live deployment has passed ac
 
 | Guide | Owns |
 |---|---|
+| [Clean baseline and reset](adr/0014-clean-storage-and-deposit-billing.md) | Native/backend reset, deposit-only billing and release gates |
 | [Architecture](architecture.md) | Components, account/storage ownership and backend boundary |
 | [ACP contract](acp-compatibility.md) | Standard ACP, negotiated features, recovery and DTO generation |
 | [Security and trust operations](threat-model.md) | Trust boundaries, provider verification and signed-policy handling |
@@ -36,6 +37,9 @@ promotion rules. Hosted API, auth, payments and deployment guidance belongs to
 [axiom-platform documentation](https://github.com/astrea-foundation/axiom-platform/blob/dev/docs/README.md).
 
 ## Decisions and historical evidence
+
+The active [native maintenance plan](native-maintenance-plan.md) tracks removal
+of unused code, provider policy alignment and controller refactoring.
 
 - [Architecture decisions](adr/README.md) explain the rationale and identify superseded details.
 - [Historical plans and audits](archive/README.md) retain dated evidence and original unfinished tasks.

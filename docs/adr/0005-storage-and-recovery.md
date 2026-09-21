@@ -2,7 +2,7 @@
 
 > The materialized-state and no-replay decisions remain accepted. The schema-1
 > description below is historical: [current versioning](../versioning.md) documents
-> schema 7, transactional migrations and rejection of incompatible databases.
+> the fresh baseline and rejection of incompatible databases.
 
 Status: accepted for v1.
 

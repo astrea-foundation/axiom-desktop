@@ -52,9 +52,9 @@ collection metadata; renderer folder labels do not influence filesystem paths.
 Electron and ACP never receive access or refresh tokens. Extension 0.2 replaces
 the old browser/API-key account requests with native login
 start/complete/cancel, raises the account feature to version 2, and adds
-`billing@1` for bounded credit status and Shieldz invoice creation/status. A
-pending invoice URL may cross the typed boundary; wallet custody and transaction
-authority never do.
+`billing@2` for bounded credit and mainnet deposit status. The former invoice
+methods are superseded by [ADR 0014](0014-clean-storage-and-deposit-billing.md).
+Wallet custody and transaction authority never cross the extension.
 
 ## Bounds and failure behavior
 

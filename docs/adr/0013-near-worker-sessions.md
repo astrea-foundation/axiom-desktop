@@ -41,7 +41,7 @@ Connection rotation before dispatch triggers the existing one-time re-attestatio
 flow. After potentially dispatched inference, errors remain incomplete; no automatic
 generation replay is introduced.
 
-The backend requires migration 0013. Native/backend releases must be coordinated;
+The backend includes worker-session support in its `platform_20260921` baseline. Native/backend releases must be coordinated;
 old NEAR protocol offers are rejected by the new driver. Provider hardware-policy
 rejections and unavailable endpoints remain real failures, with specific diagnostics.
 

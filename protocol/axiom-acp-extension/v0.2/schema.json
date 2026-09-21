@@ -148,15 +148,6 @@
     "apiKeyRevokeResponse": {
       "$ref": "#/$defs/ApiKeyRevokeResponse"
     },
-    "billingInvoiceCreateRequest": {
-      "$ref": "#/$defs/BillingInvoiceCreateRequest"
-    },
-    "billingInvoiceStatusRequest": {
-      "$ref": "#/$defs/BillingInvoiceStatusRequest"
-    },
-    "billingInvoiceResponse": {
-      "$ref": "#/$defs/BillingInvoiceResponse"
-    },
     "verifySecurityRequest": {
       "$ref": "#/$defs/VerifySecurityRequest"
     },
@@ -235,9 +226,6 @@
     "apiKeyCreatedResponse",
     "apiKeyRevokeRequest",
     "apiKeyRevokeResponse",
-    "billingInvoiceCreateRequest",
-    "billingInvoiceStatusRequest",
-    "billingInvoiceResponse",
     "verifySecurityRequest",
     "verifySecurityResponse",
     "compactRequest",
@@ -1767,11 +1755,6 @@
           "type": "integer",
           "format": "int64"
         },
-        "heldMicrousd": {
-          "type": "integer",
-          "format": "uint64",
-          "minimum": 0
-        },
         "availableMicrousd": {
           "type": "integer",
           "format": "int64"
@@ -1782,18 +1765,12 @@
           "minimum": 0
         },
         "trialMicrousd": {
-          "type": [
-            "integer",
-            "null"
-          ],
+          "type": "integer",
           "format": "uint64",
           "minimum": 0
         },
         "paidMicrousd": {
-          "type": [
-            "integer",
-            "null"
-          ],
+          "type": "integer",
           "format": "int64"
         },
         "paymentReviewRequired": {
@@ -1802,25 +1779,6 @@
         },
         "currency": {
           "type": "string"
-        },
-        "invoicesEnabled": {
-          "type": "boolean"
-        },
-        "invoiceMinUsdCents": {
-          "type": "integer",
-          "format": "uint64",
-          "minimum": 0
-        },
-        "invoiceMaxUsdCents": {
-          "type": "integer",
-          "format": "uint64",
-          "minimum": 0
-        },
-        "settlementAsset": {
-          "type": [
-            "string",
-            "null"
-          ]
         },
         "paymentAccount": {
           "anyOf": [
@@ -1846,13 +1804,11 @@
       "required": [
         "revision",
         "postedMicrousd",
-        "heldMicrousd",
         "availableMicrousd",
         "ledgerSequence",
-        "currency",
-        "invoicesEnabled",
-        "invoiceMinUsdCents",
-        "invoiceMaxUsdCents"
+        "trialMicrousd",
+        "paidMicrousd",
+        "currency"
       ]
     },
     "PaymentAccount": {
@@ -2224,102 +2180,6 @@
     },
     "ApiKeyRevokeResponse": {
       "type": "object"
-    },
-    "BillingInvoiceCreateRequest": {
-      "type": "object",
-      "properties": {
-        "amountUsdCents": {
-          "type": "integer",
-          "format": "uint64",
-          "minimum": 0
-        },
-        "clientRequestId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "amountUsdCents",
-        "clientRequestId"
-      ]
-    },
-    "BillingInvoiceStatusRequest": {
-      "type": "object",
-      "properties": {
-        "invoiceId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "invoiceId"
-      ]
-    },
-    "BillingInvoiceResponse": {
-      "type": "object",
-      "properties": {
-        "invoice": {
-          "$ref": "#/$defs/BillingInvoice"
-        }
-      },
-      "required": [
-        "invoice"
-      ]
-    },
-    "BillingInvoice": {
-      "type": "object",
-      "properties": {
-        "revision": {
-          "description": "Monotonic within one agent runtime; clients ignore older invoice state.",
-          "type": "integer",
-          "format": "uint64",
-          "minimum": 0
-        },
-        "id": {
-          "type": "string"
-        },
-        "amountUsdCents": {
-          "type": "integer",
-          "format": "uint64",
-          "minimum": 0
-        },
-        "state": {
-          "$ref": "#/$defs/InvoiceState"
-        },
-        "expiresAt": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "paidAt": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "payUrl": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
-      "required": [
-        "revision",
-        "id",
-        "amountUsdCents",
-        "state"
-      ]
-    },
-    "InvoiceState": {
-      "type": "string",
-      "enum": [
-        "creating",
-        "pending",
-        "paid",
-        "expired",
-        "failed",
-        "review"
-      ]
     },
     "VerifySecurityRequest": {
       "type": "object",
@@ -2744,22 +2604,6 @@
           "required": [
             "kind",
             "status"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "invoice": {
-              "$ref": "#/$defs/BillingInvoice"
-            },
-            "kind": {
-              "type": "string",
-              "const": "invoice_changed"
-            }
-          },
-          "required": [
-            "kind",
-            "invoice"
           ]
         },
         {

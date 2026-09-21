@@ -8,32 +8,22 @@ stable `vMAJOR.MINOR.PATCH`, match AxiomCLI's manifest and point to a promoted
 
 ## Local database
 
-The current SQLite schema is **7**, defined in
-[session.rs](../apps/axiomcli/src/session.rs). Each authenticated account and
-frontend has a separate database. Runtime event envelopes are translated into
-materialized records; they are not the on-disk format.
+The current SQLite baseline is schema **1**, application ID **`0x41584133`**,
+defined in [session.rs](../apps/axiomcli/src/session.rs). Each authenticated account
+and frontend has a separate database. It contains threads, turns, timeline items,
+collections, preferences, both activity clocks, Agent settings and request usage.
+Runtime event envelopes are translated into materialized records.
 
-| Schema | Change |
-|---|---|
-| 1 | Threads, turns, timeline items, profile preferences, collections and assignments |
-| 2 | Last message activity timestamp |
-| 3 | Last provider-reported conversation usage |
-| 4 | Per-thread Desktop Agent settings |
-| 5 | Request-level usage/accounting records |
-| 6 | Narrow repair of missing assistant request bindings using existing local receipt verification |
-| 7 | Last user submission timestamp for stable sidebar ordering |
+Pre-baseline application IDs and unsupported versions fail closed. Historical
+receipt repairs and activity backfills have been removed; local response
+verification remains required before content can be marked verified. Future
+schema changes must add transactional forward migrations from this baseline.
 
-New databases migrate from empty state to the current version. Each recognized
-migration runs transactionally. Schema 6 repairs only completed, unambiguous
-single-request turns with recorded local response verification; billing or
-attestation metadata alone cannot retroactively verify an answer.
-
-Unknown, malformed, newer or unsupported pre-release databases fail closed.
-There is no automatic migration from the old installation-wide pre-release
-store. `reset-local-state --confirm` handles only the legacy reset path; it is
-not a general account-data repair command. Preserve/export account data before
-investigation. See [configuration paths](configuration.md#paths-and-local-state)
-and [recovery](troubleshooting.md#session-recovery).
+For the authorized development reset, stop all processes using the account and run
+`axiomcli reset-local-state --account ACCOUNT_ID --frontend desktop-chat --confirm`
+(or `--frontend cli`). It deletes only the selected database and SQLite sidecars.
+See [ADR 0014](adr/0014-clean-storage-and-deposit-billing.md) for the coordinated
+native/backend reset and required release gates.
 
 On restart, incomplete turns become interrupted and tools are never replayed.
 Downgrading to a binary that does not recognize a newer schema is unsupported;

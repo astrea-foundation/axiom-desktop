@@ -69,7 +69,6 @@ export class AgentSidecar {
     preferences: null,
     account: null,
     billing: null,
-    invoice: null,
     diagnostic: "",
     error: null,
   };
@@ -293,18 +292,6 @@ export class AgentSidecar {
 
   usageSummary() {
     return this.requireClient().usageSummary().catch((error: unknown) => {
-      throw actionableAcpError(error);
-    });
-  }
-
-  createBillingInvoice(amountUsdCents: number, clientRequestId: string) {
-    return this.requireClient().createBillingInvoice(amountUsdCents, clientRequestId).catch((error: unknown) => {
-      throw actionableAcpError(error);
-    });
-  }
-
-  billingInvoiceStatus(invoiceId: string) {
-    return this.requireClient().billingInvoiceStatus(invoiceId).catch((error: unknown) => {
       throw actionableAcpError(error);
     });
   }

@@ -7,7 +7,6 @@ export type TimelineItemKind = "user_message" | "assistant_message" | "reasoning
 export type TimelineItemStatus = "pending" | "in_progress" | "completed" | "cancelled" | "failed" | "interrupted";
 export type AccountState = "starting" | "signed_out" | "valid" | "expired" | "unavailable";
 export type LoginMethod = "passkey" | "google" | "password" | "ethereum_wallet";
-export type InvoiceState = "creating" | "pending" | "paid" | "expired" | "failed" | "review";
 export type SecurityState = "unverified" | "verifying" | "unattested_development" | "verified" | "failed";
 export type ActivityEvent =
   | {
@@ -38,11 +37,6 @@ export type ActivityEvent =
   | {
       status: BillingStatus;
       kind: "billing_changed";
-      [k: string]: unknown;
-    }
-  | {
-      invoice: BillingInvoice;
-      kind: "invoice_changed";
       [k: string]: unknown;
     }
   | {
@@ -139,9 +133,6 @@ export interface ProtocolSchema {
   apiKeyCreatedResponse: ApiKeyCreatedResponse;
   apiKeyRevokeRequest: ApiKeyRevokeRequest;
   apiKeyRevokeResponse: ApiKeyRevokeResponse;
-  billingInvoiceCreateRequest: BillingInvoiceCreateRequest;
-  billingInvoiceStatusRequest: BillingInvoiceStatusRequest;
-  billingInvoiceResponse: BillingInvoiceResponse;
   verifySecurityRequest: VerifySecurityRequest;
   verifySecurityResponse: VerifySecurityResponse;
   compactRequest: CompactRequest;
@@ -589,17 +580,12 @@ export interface BillingStatus {
    */
   revision: number;
   postedMicrousd: number;
-  heldMicrousd: number;
   availableMicrousd: number;
   ledgerSequence: number;
-  trialMicrousd?: number | null;
-  paidMicrousd?: number | null;
+  trialMicrousd: number;
+  paidMicrousd: number;
   paymentReviewRequired?: boolean;
   currency: string;
-  invoicesEnabled: boolean;
-  invoiceMinUsdCents: number;
-  invoiceMaxUsdCents: number;
-  settlementAsset?: string | null;
   paymentAccount?: PaymentAccount | null;
   zecUsdQuote?: ZecUsdQuote | null;
   [k: string]: unknown;
@@ -706,32 +692,6 @@ export interface ApiKeyRevokeRequest {
   id: string;
 }
 export interface ApiKeyRevokeResponse {
-  [k: string]: unknown;
-}
-export interface BillingInvoiceCreateRequest {
-  amountUsdCents: number;
-  clientRequestId: string;
-  [k: string]: unknown;
-}
-export interface BillingInvoiceStatusRequest {
-  invoiceId: string;
-  [k: string]: unknown;
-}
-export interface BillingInvoiceResponse {
-  invoice: BillingInvoice;
-  [k: string]: unknown;
-}
-export interface BillingInvoice {
-  /**
-   * Monotonic within one agent runtime; clients ignore older invoice state.
-   */
-  revision: number;
-  id: string;
-  amountUsdCents: number;
-  state: InvoiceState;
-  expiresAt?: string | null;
-  paidAt?: string | null;
-  payUrl?: string | null;
   [k: string]: unknown;
 }
 export interface VerifySecurityRequest {

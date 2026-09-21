@@ -164,16 +164,19 @@ impl AxiomPaths {
         Ok(directory)
     }
 
-    /// Explicitly delete the pre-account development database. This never
-    /// scans, imports, renames, or guesses ownership of legacy state.
-    pub fn reset_legacy_frontend_state(&self, frontend: FrontendKind) -> Result<Vec<PathBuf>> {
-        let directory = self.data_root.join(match frontend {
-            FrontendKind::Cli => "cli",
-            FrontendKind::DesktopChat => "desktop",
-        });
+    /// Explicitly reset exactly one account/frontend database while the app is stopped.
+    pub fn reset_account_frontend_state(
+        &self,
+        account_id: &str,
+        frontend: FrontendKind,
+    ) -> Result<Vec<PathBuf>> {
+        let directory = self.account_frontend_data_dir(account_id, frontend)?;
         if !directory.exists() {
             return Ok(Vec::new());
         }
+        ensure_directory(&self.data_root)?;
+        ensure_directory(&self.data_root.join("accounts"))?;
+        ensure_directory(&self.account_data_dir(account_id)?)?;
         ensure_directory(&directory)?;
         let database = directory.join("state.sqlite3");
         let mut removed = Vec::new();
@@ -422,21 +425,25 @@ mod tests {
         let root = tempfile::tempdir().expect("temp dir");
         let paths = AxiomPaths::from_roots(root.path().join("config"), root.path().join("data"));
         paths.prepare().expect("prepare");
-        let cli = paths.data_root().join("cli/state.sqlite3");
-        let desktop = paths.data_root().join("desktop/state.sqlite3");
+        let cli = paths
+            .account_state_database("account-a", FrontendKind::Cli)
+            .unwrap();
+        let desktop = paths
+            .account_state_database("account-a", FrontendKind::DesktopChat)
+            .unwrap();
         fs::create_dir_all(cli.parent().expect("CLI parent")).expect("CLI directory");
         fs::create_dir_all(desktop.parent().expect("desktop parent")).expect("desktop directory");
         fs::write(&cli, "cli").expect("CLI state");
         fs::write(cli.with_file_name("state.sqlite3-wal"), "wal").expect("CLI WAL");
         fs::write(&desktop, "desktop").expect("desktop state");
-        paths.prepare_account("account-a").expect("prepare account");
+        paths.prepare_account("account-b").expect("prepare account");
         let account_state = paths
-            .account_state_database("account-a", FrontendKind::Cli)
+            .account_state_database("account-b", FrontendKind::Cli)
             .expect("account state");
         fs::write(&account_state, "account").expect("account state file");
 
         let removed = paths
-            .reset_legacy_frontend_state(FrontendKind::Cli)
+            .reset_account_frontend_state("account-a", FrontendKind::Cli)
             .expect("reset CLI state");
         assert_eq!(removed.len(), 2);
         assert!(!cli.exists());
