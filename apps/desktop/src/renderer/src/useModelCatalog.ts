@@ -63,6 +63,7 @@ function providerModels(response: ListModelsResponse): ProviderModel[] {
       outputPriceMicrousdPerMillionTokens: outputPrice,
       contextWindowTokens: model.contextWindowTokens,
       supportsImages: model.supportsImages,
+      fileMimeTypes: model.fileMimeTypes,
       autoCompactThresholdTokens: model.autoCompactThresholdTokens,
     };
   });
@@ -77,9 +78,10 @@ export function useModelCatalog(agentState: ClientState, navigation: ReturnType<
   const [modelCatalogRefresh, setModelCatalogRefresh] = useState(0);
   const [desktopReady, setDesktopReady] = useState(false);
   const settingsGeneration = useRef(0);
+  const catalogScope = useRef("");
   const preferredModelId = useRef("");
   const preferredReasoningEffort = useRef<ReasoningEffort>("provider_default");
-  const selectedModel = models.find((model) => model.id === modelId) ?? models[0];
+  const selectedModel = models.find((model) => model.id === modelId) ?? (modelId ? undefined : models[0]);
   const effectiveReasoningEffort = reconcileReasoningEffort(reasoningEffort, selectedModel?.supportedReasoningEfforts ?? []);
 
   useEffect(() => {
@@ -107,7 +109,7 @@ export function useModelCatalog(agentState: ClientState, navigation: ReturnType<
       try {
         const bootstrap = await api.desktopBootstrap();
         if (cancelled) return;
-        const rememberedModel = bootstrap.newThreadSettings.model ?? "";
+        const rememberedModel = bootstrap.newThreadSettings.model === "auto" ? "" : bootstrap.newThreadSettings.model ?? "";
         const rememberedThinking = bootstrap.newThreadSettings.thinkingLevel;
         const nextThinking = isReasoningEffort(rememberedThinking) ? rememberedThinking : "provider_default";
         setModelId(rememberedModel);
@@ -132,19 +134,19 @@ export function useModelCatalog(agentState: ClientState, navigation: ReturnType<
       return;
     }
     let cancelled = false;
-    setModels([]);
+    const scope = `${agentState.runtimeInstanceId}:${agentState.account.account?.id}`;
+    if (catalogScope.current !== scope) setModels([]);
+    catalogScope.current = scope;
     setModelCatalogError(null);
     void api.listModels().then((response) => {
       if (cancelled) return;
       const available = providerModels(response);
       if (available.length === 0) throw new Error("this account has no available models");
       const rememberedModel = preferredModelId.current;
-      const nextModel = available.some((model) => model.id === rememberedModel)
-        ? rememberedModel
-        : available[0]!.id;
+      const nextModel = rememberedModel || available[0]!.id;
       setModels(available);
       if (!activeThreadIdRef.current) {
-        const thinking = reconcileReasoningEffort(preferredReasoningEffort.current, available.find((model) => model.id === nextModel)!.supportedReasoningEfforts);
+        const thinking = reconcileReasoningEffort(preferredReasoningEffort.current, available.find((model) => model.id === nextModel)?.supportedReasoningEfforts ?? []);
         setModelId(nextModel);
         setReasoningEffort(thinking);
         preferredModelId.current = nextModel;
@@ -152,6 +154,7 @@ export function useModelCatalog(agentState: ClientState, navigation: ReturnType<
       }
     }).catch((error: unknown) => {
       if (cancelled) return;
+      setModels([]);
       const detail = desktopErrorMessage(error, "AxiomCLI could not load the model catalog.");
       setModelCatalogError(`Could not load models. Check your connection or refresh your account in Settings. ${detail}`);
     });
@@ -164,6 +167,14 @@ export function useModelCatalog(agentState: ClientState, navigation: ReturnType<
     desktopReady,
     modelCatalogRefresh,
   ]);
+
+  useEffect(() => {
+    if (!agentState.connected || agentState.account?.state !== "valid") return;
+    const refresh = () => setModelCatalogRefresh((value) => value + 1);
+    const timer = window.setInterval(refresh, 5 * 60 * 1000);
+    window.addEventListener("focus", refresh);
+    return () => { window.clearInterval(timer); window.removeEventListener("focus", refresh); };
+  }, [agentState.connected, agentState.account?.state]);
 
   useEffect(() => {
     if (!activeSession?.settings) return;
@@ -209,7 +220,7 @@ export function useModelCatalog(agentState: ClientState, navigation: ReturnType<
     });
   };
 
-  const modelStatusLabel = !agentState.connected || !desktopReady
+  const modelStatusLabel = models.length && modelId && !selectedModel ? "Model unavailable" : !agentState.connected || !desktopReady
     ? "Starting…"
     : modelCatalogError
       ? "Models unavailable"

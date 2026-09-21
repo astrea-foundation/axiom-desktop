@@ -86,3 +86,12 @@ providers retain their existing contracts. This change does not deploy anything.
 
 NEAR source confirms [Ed25519 receipts](https://github.com/nearai/inference-proxy/blob/85ff2c493f84c835e175be74a319a8ab583a7fd3/src/routes/signature.rs)
 and documents [worker-local signature records](https://docs.near.ai/cloud/verification/chat).
+
+## Direct image inputs
+
+For discovered image-capable models, text and original inline image data URLs
+are serialized as an OpenAI content array and then encrypted together inside
+NEAR's ordinary content field. The attested enclave decrypts and restores the
+array. Request/response signatures still cover the exact encrypted transcript.
+No file bytes are exposed to the Axiom relay. General document uploads are not
+advertised for NEAR, and unsupported attachments fail before inference.

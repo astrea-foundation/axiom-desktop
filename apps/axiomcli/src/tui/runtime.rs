@@ -516,12 +516,21 @@ pub(super) async fn restore_tui_session(
     let models = runner
         .available_model_details(CancellationToken::new())
         .await?;
-    let reconciled_settings = crate::agent::reconcile_new_session_settings(
-        models.clone(),
-        Some(&resumed_model),
-        &state.model,
-        resumed_thinking,
-    )?;
+    let model_available = models.iter().any(|model| model.id == resumed_model);
+    let reconciled_settings = if model_available {
+        crate::agent::reconcile_new_session_settings(
+            models.clone(),
+            Some(&resumed_model),
+            &state.model,
+            resumed_thinking,
+        )?
+    } else {
+        ModelSettings {
+            model: resumed_model.clone(),
+            thinking: resumed_thinking,
+            supports_reasoning: false,
+        }
+    };
     state.model_details = models
         .into_iter()
         .map(|model| (model.id.clone(), model))
@@ -529,9 +538,11 @@ pub(super) async fn restore_tui_session(
     let resumed_profile = permission_for_resume(&loaded.events, state.profile);
     runtime.restore(&loaded.events).await?;
     runner.restore_session(session_id, &loaded.events).await?;
-    runner
-        .set_model_settings(session_id, &reconciled_settings)
-        .await?;
+    if model_available {
+        runner
+            .set_model_settings(session_id, &reconciled_settings)
+            .await?;
+    }
     state.profile = PermissionProfile::from_str(&summary.profile).unwrap_or(state.profile);
     for envelope in &loaded.events {
         state.apply(&envelope.event);
@@ -1695,8 +1706,7 @@ pub async fn run(
                                             }
                                             Ok(SlashCommand::Model) => {
                                                 state.open_model_picker();
-                                                if !state.model_catalog_loaded
-                                                    && !state.model_catalog_loading
+                                                if !state.model_catalog_loading
                                                 {
                                                     state.model_catalog_loading = true;
                                                     state.status =

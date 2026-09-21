@@ -296,26 +296,19 @@ test("dialog stays on screen and contains keyboard focus at narrow sizes", async
   } finally { await page.close(); }
 });
 
-test("Phala separates gateway, workers, and receipt policy, with safe clipboard failure", async () => {
+test("NEAR shows hardware and incomplete reply status, with safe clipboard failure", async () => {
   const { page, errors } = await open();
   try {
-    const report = { ...securityEvidence(), providerId: "phala", attestationProtocol: "phala-aci-tdx-v1", e2eeProtocol: "phala-aci-v2",
-      workloadManifest: null, tlsSpkiFingerprint: null,
-      checks: [["Gateway TDX", "UpToDate"], ["Worker TEE", "verified locally"], ["Worker GPU", "verified locally"],
-        ["Encrypted channel", "nonce-bound"], ["Signed receipt", "required"]].map(([name, detail]) => ({ name: name!, detail: detail!, passed: true })),
-      providerClaims: [{ name: "preverified_worker_sessions", value: "2" }, { name: "provider_statement", value: "A provider assertion is not a local verification result." }],
-    };
+    const report = { ...securityEvidence(), attestationProtocol: "near-tdx-nvidia-v2", e2eeProtocol: "near-v3" };
     await page.evaluate((evidence) => (window as any).__privacyTest.update({ securityEvidence: evidence }), report);
     await proofButton(page).click();
-    assert.match(await dialog(page).innerText(), /phala/);
+    assert.match(await dialog(page).innerText(), /NEAR/);
     await page.locator("summary").filter({ hasText: "Hardware evidence" }).click();
-    assert.match(await dialog(page).innerText(), /Gateway TDX/);
-    assert.match(await dialog(page).innerText(), /Worker GPU/);
+    assert.match(await dialog(page).innerText(), /Intel TDX/);
+    assert.match(await dialog(page).innerText(), /NVIDIA GPU/);
     await page.locator("summary").filter({ hasText: "Technical details" }).click();
-    assert.match(await dialog(page).innerText(), /Receipt policy\s+Required for each reply/);
     assert.match(await dialog(page).innerText(), /Latest reply verification\s+No reply yet/);
-    assert.match(await dialog(page).innerText(), /preverified worker sessions/);
-    await capture(page, "phala-details");
+    await capture(page, "near-details");
     await page.evaluate(() => Object.defineProperty(navigator.clipboard, "writeText", { configurable: true, value: async () => { throw new Error("Clipboard denied"); } }));
     await page.getByRole("button", { name: "Copy verification report", exact: true }).click();
     await page.getByRole("alert").waitFor();

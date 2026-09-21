@@ -167,3 +167,7 @@ Desktop service-origin pairing and development overrides are described in
 [development](development.md#setup). Child tool processes receive
 a sanitized environment, not the application's credentials; per-command additions
 are limited by native policy.
+
+The default model setting is `auto`: resolve a current offering from the validated
+provider catalog when creating a session. Configure an explicit model ID to select
+a particular offering. No default provider model name is compiled into the client.

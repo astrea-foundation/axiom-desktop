@@ -29,28 +29,17 @@ cannot authorize an unsupported protocol or unverified public key.
 | Provider | Registered contract | Authentication boundary |
 |---|---|---|
 | NEAR | `near-v3`, encryption `2`, `near-tdx-nvidia-v2` | Fresh challenged direct-worker evidence, locally verified Intel/NVIDIA and key/manifest bindings; Ed25519 receipt for exact request/response/model |
-| Phala | `phala-aci-v2`, encryption `2`, `phala-aci-tdx-v1` | Nonce-bound gateway TDX/keyset, measured workflow, preverified eligible worker sessions and exact receipt-cited worker/request |
 | Tinfoil | `tinfoil-ehbp-v1`, encryption `1`, `tinfoil-snp-sigstore-v1` | Pinned verifier checks SNP router/build/TLS/HPKE binding; request-bound encrypted response and authenticated completion |
 
 NEAR's retired v2 contract is
 not a supported fallback. Provider-specific wire details live in
-[NEAR v3](protocols/near-v3.md), [Tinfoil EHBP](protocols/tinfoil-ehbp-v1.md), and
-the [Phala verifier provenance](../crates/axiom-phala-core/ORIGIN.md).
+[NEAR v3](protocols/near-v3.md) and [Tinfoil EHBP](protocols/tinfoil-ehbp-v1.md).
 
 NEAR v3's client verifies an **attested worker TLS key**. The backend pins its
 own live worker connection; the native client does not claim to have observed
 that socket. Tinfoil verifies the measured router and its worker-verification
 chain, not independent local quotes for every GPU. Neither claim is independent
 proof of arbitrary model weights/source code beyond the accepted protocol.
-
-Phala requires `aci_verified: true`, `zdr: true`, eligible content-addressed
-worker sessions and all applicable receipt checks. Its two supported artifact
-shapes, `aci-v1-08d550` and `dstack-aci-draft-d567f6`, are selected by disjoint
-structure. Their suffixes are format names, not source pins. Reported source
-must match the exact TEE-measured workflow and remain inspectable. There is no
-repository/commit allowlist or manual approval requirement for compatible gateway
-updates. Phala currently disables tool/parallel-tool capability pending a complete
-supported encrypted tool-field contract.
 
 ## Freshness, streaming and failure
 
@@ -62,13 +51,13 @@ or TLS-only inference mode is available.
 
 A protocol-authenticated delta may be displayed as provisional. Success requires
 authenticated order and completion to the request and preverified environment.
-NEAR/Phala use terminal signatures/receipts; Tinfoil requires authenticated frames,
+NEAR use terminal signatures/receipts; Tinfoil requires authenticated frames,
 valid terminal application fields, an encrypted `[DONE]` and matching final
 accounting. Independent AEAD chunks plus an unsigned end marker are insufficient.
 Missing, reordered, truncated or mismatched responses fail closed. Accounting
 alone never proves response authenticity.
 
-NEAR/Phala public evidence includes a positive relay attestation generation and
+NEAR public evidence includes a positive relay attestation generation and
 hard expiry. Tinfoil omits the generation because it has no relay lease generation;
 its registered protocol, verified identity and expiry remain required. UI evidence
 must describe the checks actually made.
@@ -87,23 +76,21 @@ workload-policy fields. CLI/Desktop share an atomic rollback journal. A transpor
 outage may use the still-valid last-known-good policy; bad signatures, rollback,
 equivocation and expiry fail closed.
 
-Both NEAR and Phala use the verified policy’s NVIDIA intermediate fingerprints.
-Phala passes that accepted set into its worker verifier; an empty, malformed or
-unlisted anchor is rejected, and signed overlap permits certificate rotation.
+NEAR uses the verified policy's NVIDIA intermediate fingerprints. Empty,
+malformed or unlisted anchors are rejected; signed overlap permits rotation.
 Certificate validity/signatures, verdict nonce, TDX and protocol-specific response
 authentication remain required.
 
 The bundled NEAR workload policy is observational. UI must distinguish observation
 from approved workload identity. Legacy Phala fields remain in the signed v1
-format for compatibility; they are not gateway-source approval controls.
+format for compatibility; they are inert signature-format fields and cannot register a provider.
 
 For a policy update:
 
 1. Increase the sequence and set a bounded validity window with rollout overlap.
 2. Preserve mandatory vendor/freshness/key checks. Overlap old/new NVIDIA anchors
    during certificate rotation; an unauthenticated JWKS change cannot add trust.
-3. Check NEAR workload rules against its registered contract and keep Phala's
-   exact measured-workflow provenance semantics.
+3. Check workload rules against the registered provider contracts.
 4. Sign using the controlled offline/HSM-backed release signer. Copy the same
    envelope to the native/backend repositories and run signature/rollback/tamper tests.
 5. Publish through the backend release process, then release compatible clients;
@@ -120,9 +107,10 @@ Canary each selected provider/model with discovery, fresh local attestation,
 an encrypted completion and authenticated stream termination. Check the specific
 worker/lease binding where applicable; Tinfoil has no relay lease generation.
 Monitor policy expiry/rollback failures, unsupported catalog entries, repeated
-pre-send key changes, rejected NVIDIA anchors, receipt timeout and Phala
-quote/workflow mismatches. The default catalog cache permits up to 24 hours of
-stale metadata, but never bypasses attestation or endpoint validation. See
+pre-send key changes, rejected NVIDIA anchors and receipt timeout. The default
+native catalog cache permits at most 30 minutes of stale metadata after transient
+transport failures. Authentication/schema failures and withdrawals cannot use that
+fallback. Catalog freshness never bypasses attestation or endpoint validation. See
 [secure-client configuration](../crates/axiom-secure-client/src/config.rs).
 
 ## Local tools and processes

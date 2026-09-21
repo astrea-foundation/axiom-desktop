@@ -3,7 +3,7 @@ use aes_gcm::{
     Aes256Gcm, Nonce,
     aead::{Aead as _, KeyInit as _},
 };
-use axiom_inference::{ChatMessage, ChatRole, FinishReason};
+use axiom_inference::{ChatMessage, ChatRole, FinishReason, ReasoningEffort};
 use tinfoil_ehbp::{SessionRecoveryToken, compute_nonce, derive_response_keys};
 
 fn model() -> ModelInfo {
@@ -11,7 +11,8 @@ fn model() -> ModelInfo {
         "upstream_model":"gpt-oss-120b","provider_base_url":BASE_URL,
         "e2ee_protocol":PROTOCOL,"e2ee_encryption_version":1,"attestation_protocol":ATTESTATION,
         "context_window_tokens":131_072,"max_output_tokens":8192,
-        "supported_reasoning_efforts":["low","medium","high"]}))
+        "supports_tools":true, "supported_reasoning_efforts":["low","medium","high"],
+        "reasoning_parameters":{"low":{"reasoning_effort":"low"},"medium":{"reasoning_effort":"medium"},"high":{"reasoning_effort":"high"}}}))
     .unwrap()
 }
 #[allow(clippy::needless_pass_by_value)] // Fixture callers use temporary json! values.
@@ -236,10 +237,12 @@ fn catalog_cannot_redirect_attestation_or_expand_compiled_contract() {
     );
     let valid = model();
     provider.supports(&valid).unwrap();
+    let mut discovered = valid.clone();
+    discovered.id = "tinfoil-new-model".into();
+    discovered.upstream_model = "new-model.2".into();
+    provider.supports(&discovered).unwrap();
     for field in [
-        "id",
         "provider_id",
-        "upstream_model",
         "provider_base_url",
         "e2ee_protocol",
         "attestation_protocol",
@@ -277,8 +280,8 @@ fn authenticated_completion_still_must_honor_tool_choice() {
 }
 
 #[test]
-fn kimi_and_glm_map_all_three_reasoning_levels_without_sending_unsupported_medium() {
-    for name in ["kimi-k3", "glm-5-3"] {
+fn discovered_reasoning_controls_map_levels_without_model_names() {
+    for name in ["future-top-level", "future-template"] {
         let mut model = model();
         model.id = format!("tinfoil-{name}");
         model.upstream_model = name.into();
@@ -292,9 +295,17 @@ fn kimi_and_glm_map_all_three_reasoning_levels_without_sending_unsupported_mediu
                 vec![ChatMessage::text(ChatRole::User, "test")],
                 vec![],
             );
+            model.reasoning_parameters.insert(
+                effort.as_str().into(),
+                if name == "future-top-level" {
+                    json!({"reasoning_effort":expected})
+                } else {
+                    json!({"chat_template_kwargs":{"reasoning_effort":expected}})
+                },
+            );
             request.reasoning_effort = effort;
             let body = request_body(&model, &request, true).unwrap();
-            let actual = if name == "kimi-k3" {
+            let actual = if name == "future-top-level" {
                 &body["reasoning_effort"]
             } else {
                 &body["chat_template_kwargs"]["reasoning_effort"]
@@ -307,7 +318,8 @@ fn kimi_and_glm_map_all_three_reasoning_levels_without_sending_unsupported_mediu
 #[test]
 fn image_parts_are_supported_only_inside_the_encrypted_body_of_a_vision_model() {
     let mut vision = model();
-    vision.upstream_model = "kimi-k3".into();
+    vision.upstream_model = "future-vision-model".into();
+    vision.supports_images = true;
     let image = axiom_inference::ImageContent {
         mime_type: "image/png".into(),
         data: "iVBORw0KGgpmaXh0dXJl".into(),
@@ -326,4 +338,84 @@ fn image_parts_are_supported_only_inside_the_encrypted_body_of_a_vision_model() 
         "proxy omission leaves the upstream default intact"
     );
     assert!(request_body(&model(), &request, true).is_err());
+}
+
+#[test]
+fn direct_files_stay_content_parts_and_capability_checks_fail_closed() {
+    use base64::Engine as _;
+    let mut catalog_model = model();
+    catalog_model.file_mime_types = vec!["application/pdf".into()];
+    let file = axiom_inference::FileContent {
+        name: "private-report.pdf".into(),
+        mime_type: "application/pdf".into(),
+        data: base64::engine::general_purpose::STANDARD.encode(b"%PDF-1.7 private file bytes"),
+    };
+    let mut message = ChatMessage::text(ChatRole::User, "Summarize");
+    message.files.push(file.clone());
+    let request = InferenceRequest::streaming(&catalog_model.id, vec![message], vec![]);
+    let body = request_body(&catalog_model, &request, true).unwrap();
+    assert_eq!(
+        body["messages"][0]["content"][1],
+        json!({"type":"file","file":{"filename":file.name,"file_data":file.data_url()}})
+    );
+    assert!(body["messages"][0].get("files").is_none());
+    assert!(
+        !body["messages"][0]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains(&file.data)
+    );
+    catalog_model.file_mime_types.clear();
+    assert!(request_body(&catalog_model, &request, true).is_err());
+}
+
+#[test]
+fn new_catalog_models_use_the_same_verified_protocol_and_reject_injected_controls() {
+    let provider = TinfoilProvider::new(
+        SecureClientConfig::new("https://relay.example").unwrap(),
+        Arc::new(ApiCredential::new("test")),
+    );
+    let mut discovered = model();
+    discovered.upstream_model = "future-model".into();
+    discovered.id = "tinfoil-future-model".into();
+    provider.supports(&discovered).unwrap();
+    discovered.reasoning_parameters.insert(
+        "medium".into(),
+        json!({"messages":[{"content":"injected"}]}),
+    );
+    assert!(provider.supports(&discovered).is_err());
+}
+
+#[test]
+fn discovered_controls_honor_selected_effort_and_explicit_thinking_disable() {
+    let mut model = model();
+    model.upstream_model = "new-generation.2".into();
+    model.id = "tinfoil-new-generation-2".into();
+    model
+        .thinking_parameters
+        .insert("enabled".into(), json!({"reasoning_effort":"medium"}));
+    model
+        .thinking_parameters
+        .insert("disabled".into(), json!({"reasoning_effort":"none"}));
+    let mut request = InferenceRequest::streaming(
+        &model.id,
+        vec![ChatMessage::text(ChatRole::User, "hello")],
+        vec![],
+    );
+    request.reasoning_effort = ReasoningEffort::High;
+    request.thinking_mode = ThinkingMode::Enabled;
+    assert_eq!(
+        request_body(&model, &request, true).unwrap()["reasoning_effort"],
+        "high"
+    );
+    request.thinking_mode = ThinkingMode::Disabled;
+    assert_eq!(
+        request_body(&model, &request, true).unwrap()["reasoning_effort"],
+        "none"
+    );
+    model
+        .reasoning_parameters
+        .insert("high".into(), json!({"messages":[]}));
+    request.thinking_mode = ThinkingMode::Enabled;
+    assert!(request_body(&model, &request, true).is_err());
 }

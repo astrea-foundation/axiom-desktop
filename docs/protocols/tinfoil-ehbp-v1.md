@@ -1,6 +1,6 @@
 # Tinfoil EHBP v1
 
-The compiled provider `tinfoil` accepts only `tinfoil-ehbp-v1`, encryption version 1, attestation profile `tinfoil-snp-sigstore-v1`, and its curated model IDs at `https://inference.tinfoil.sh/v1`. No plaintext or TLS-only inference path is registered.
+The compiled provider `tinfoil` accepts only `tinfoil-ehbp-v1`, encryption version 1, attestation profile `tinfoil-snp-sigstore-v1`, and dynamically discovered model identities at `https://inference.tinfoil.sh/v1`. No plaintext or TLS-only inference path is registered.
 
 ## Verification and request authentication
 
@@ -35,7 +35,16 @@ The adapter checks requested tool controls against the completed result. Undefin
 
 ## Models and limits
 
-Initial models are GPT-OSS 120B, GLM-5.3, Kimi K3 and Llama 3.3 70B. All support tools and streaming. GPT-OSS advertises sequential tools only; GLM/Kimi/Llama also passed parallel-call canaries. Gemma 4 is excluded after intermittent empty answers during tool roundtrips.
+Chat models and their tools, images, reasoning and file capabilities come from the
+[refreshed catalog](../provider-catalogs.md), with no fixed model allowlist. The
+native driver still pins the protocol and router endpoint. A new model can appear
+without a native release only if its advertised contract is already supported.
+
+Original images use inline `image_url` parts; files use
+`{"type":"file","file":{"filename":"…","file_data":"data:<mime>;base64,…"}}`.
+Both are inside the EHBP-encrypted body, including original filenames. The router
+processes documents through attested services. Axiom performs no extraction or
+conversion. Audio, video, remote URLs and realtime WebSocket traffic are excluded.
 
 The backend publishes current API context windows and token prices. The former Axiom-only 8,192-token cap is removed. An explicit upstream output
 limit is preserved when advertised; otherwise the joint context window is the
@@ -47,11 +56,13 @@ compaction budgets remain bounded by the catalog. See
 
 The native client enforces existing request, stream, event and response bounds. Initial response wait is at most 300 seconds, stream idle timeout 120 seconds and total response deadline 900 seconds. Cancellation drops the subscriber and aborts upstream generation. Exact final metering already received can settle; otherwise the backend waives the charge, preserves unknown token counts and releases the billing hold. Both clients reconcile this metadata while idle without upgrading cancelled output to verified. Provider rate limits are account/model specific; no production numeric entitlement has been established by these canaries.
 
-GPT-OSS supports low/medium/high reasoning. GLM and Kimi translate Axiom
-low/medium/high to provider low/high/max; Llama has no reasoning selector. GLM
-sends this control in `chat_template_kwargs`, Kimi at the top level. The adapter
-and its request/response checks live in
-[the Tinfoil driver](../../crates/axiom-secure-client/src/providers/tinfoil/mod.rs).
+Reasoning controls are bounded maps derived from provider metadata. The client
+accepts only known effort levels, thinking booleans and the protocol's specific
+`chat_template_kwargs` keys. Explicit thinking-disable suppresses effort controls;
+otherwise a selected effort overrides the enable-mode default. Model-specific
+prompt fragments, destinations or arbitrary parameter templates are forbidden.
+The [driver](../../crates/axiom-secure-client/src/providers/tinfoil/mod.rs) validates
+those controls before serialization.
 Conversation titles, edit/regenerate and usage presentation are shared native
 behavior documented in [Desktop](../desktop.md), not separate Tinfoil flows.
 

@@ -50,7 +50,7 @@ test("Tinfoil proof names the router and cannot claim independent GPU verificati
   assert.equal(proofGroups(report)[2]!.passed, false);
 });
 
-test("TEE checks and Phala's required-receipt policy cannot verify an incomplete reply", () => {
+test("TEE checks and NEAR's required-receipt policy cannot verify an incomplete reply", () => {
   const current = session();
   current.securityEvidence!.checks.push({ name: "Signed receipt", detail: "required", passed: true });
   assert.equal(replyProof(current).label, "No reply yet");

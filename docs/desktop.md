@@ -77,7 +77,7 @@ tools; unstarted tool calls are explicitly skipped. Model and Web authority
 remain those of the active turn. Steering remains bounded to 64 KiB; larger
 messages and attachments wait for a new turn without dropping any content.
 
-Prompt text and extracted file text together may use up to **4 MiB of UTF-8**.
+Prompt text may use up to **4 MiB of UTF-8**; direct file bounds are listed below.
 The model's context capacity and the configured native context budget still apply.
 Queues hold at most 32 messages and 64 MiB of payloads, scoped to the account.
 Large payloads commit to local IndexedDB before the draft is cleared; localStorage
@@ -89,25 +89,30 @@ after Stop can start normally when no older queued message needs review.
 
 ## Images and files
 
-Use Attach, paste an image, or drop files onto the composer. Supported inputs are
-PNG/JPEG/WebP/GIF images, UTF-8 text/code, and PDFs. PDFs are read by a bundled local
-worker and contribute extracted text, not page images or layout. Scanned PDFs need
-an OCR text export or attached page images. Office files need a PDF/text export.
-Nothing is uploaded for file extraction.
+Use Attach, paste an image, or drop files onto the composer. Image and file icons
+in the model picker show the selected model's current capabilities; hover or use
+the accessible label for their meaning. See [catalog discovery](provider-catalogs.md)
+for refreshes and unavailable models.
 
-A message can include 8 files, up to 5 MiB per image and 16 MiB of text plus encoded
-image payloads in total. Desktop bounds image dimensions to 40 million pixels;
-PDF input is bounded to 20 MiB and 500 pages, with extraction limited to one minute.
-These are local resource ceilings, not provider limits. Oversize/unsupported input
-is rejected explicitly rather than truncated.
+Images are original PNG/JPEG/WebP/GIF bytes. File-capable Tinfoil models accept
+text/code, Markdown, CSV, HTML, JSON, XML, PDF and Office Open XML files
+(DOCX/PPTX/XLSX). NEAR supports images where advertised, but currently advertises
+no general document uploads. Axiom reads original bytes without extraction,
+OCR, conversion or rasterization. Document processing belongs to the attested
+provider. Unsupported files remain visible in the draft and block sending until
+you remove them or select a model that supports them.
 
-Image input currently requires **Tinfoil Kimi K3**. Its image parts travel inside
-the same attested, authenticated encrypted body as text. Current NEAR/Phala adapters
-reject images because their registered encryption formats do not support them.
-Text/code and extracted PDF text work with text models. Saved messages show file
-names; click to inspect the original local inputs. Attachments stay in account-local
-history and survive edits and regeneration. Compaction sends image inputs to the
-vision model, never base64 masquerading as text, and retains a textual successor summary.
+A message can contain eight attachments, up to 5 MiB per image, 10 MiB per file,
+and 16 MiB of text plus base64-encoded attachment payloads. Text remains bounded
+to 4 MiB. Model context and native budgets still apply; inputs are never silently
+truncated. Audio/video and remote URLs are unsupported.
+
+Original bytes and filenames reach the provider inside its authenticated E2EE
+request. Attachments remain in account-local history, survive edit/regeneration,
+and appear by filename in the transcript. Compaction sends original image/file
+parts to a capable model and retains a textual successor summary; it never
+inserts encoded file bytes as message text. Older extracted-text attachments are
+readable in saved history but cannot be submitted as new uploads.
 
 ## Edit, regenerate and compaction
 

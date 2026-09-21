@@ -64,7 +64,7 @@ const EXTENSION_CAPABILITIES = {
     webConsent: 1,
     steering: 1,
     messageRevision: 1,
-    attachments: 1,
+    attachments: 2,
     compaction: 1,
     activity: 1,
   },
@@ -219,7 +219,7 @@ export class AxiomAcpClient extends EventEmitter {
     } | undefined;
     validateDesktopExtension(meta);
     this.supportsMessageRevision = (meta?.features?.messageRevision ?? 0) >= 1;
-    this.supportsAttachments = (meta?.features?.attachments ?? 0) >= 1;
+    this.supportsAttachments = (meta?.features?.attachments ?? 0) >= 2;
     this.initialized = true;
     this.state.setConnected(true);
     return result;

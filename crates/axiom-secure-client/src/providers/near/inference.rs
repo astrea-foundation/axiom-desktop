@@ -166,13 +166,11 @@ fn build_request(
         .validate()
         .map_err(|_| invalid_request("inference request validation failed"))?;
     let response_format = public_response_format(&request.response_format)?;
-    if request
-        .messages
-        .iter()
-        .any(|message| !message.images.is_empty())
-    {
+    if request.messages.iter().any(|message| {
+        (!model.supports_images && !message.images.is_empty()) || !message.files.is_empty()
+    }) {
         return Err(invalid_request(
-            "NEAR's registered encrypted protocol does not support image input",
+            "this NEAR model does not support the attached file format",
         ));
     }
     if request.model != model.id {
@@ -181,10 +179,9 @@ fn build_request(
         ));
     }
     if request.thinking_mode != axiom_inference::ThinkingMode::ProviderDefault
-        && (!model
+        && !model
             .supported_thinking_modes
             .contains(&request.thinking_mode)
-            || model.upstream_model != "deepseek-ai/DeepSeek-V4-Flash")
     {
         return Err(invalid_request(
             "thinking mode is not supported by the model",
@@ -653,8 +650,17 @@ fn encrypt_message(
         message.role,
         ChatRole::System | ChatRole::Developer | ChatRole::User | ChatRole::Tool
     );
-    let encrypted_content = (required_content || !message.content.is_empty())
-        .then(|| encrypt(model_key, message.content.as_bytes()))
+    // The upstream proxy decrypts and restores JSON content arrays. Inline
+    // image bytes and text are encrypted together, never placed in relay JSON.
+    let content = if message.images.is_empty() {
+        message.content.clone()
+    } else {
+        let mut parts = vec![serde_json::json!({"type": "text", "text": message.content})];
+        parts.extend(message.images.iter().map(|image| serde_json::json!({"type": "image_url", "image_url": {"url": image.data_url()}})));
+        serde_json::to_string(&parts).map_err(|_| invalid_request("invalid image content"))?
+    };
+    let encrypted_content = (required_content || !content.is_empty())
+        .then(|| encrypt(model_key, content.as_bytes()))
         .transpose()?;
     let encrypted_tool_calls = (!message.tool_calls.is_empty())
         .then(|| {
@@ -1799,6 +1805,35 @@ mod tests {
     }
 
     #[test]
+    fn image_parts_are_encrypted_together_and_decrypt_to_the_upstream_array() {
+        let worker = crypto::ClientIdentity::generate();
+        let key = crypto::Ed25519PublicKey::from_hex(&worker.public_key_hex()).unwrap();
+        let mut message = ChatMessage::text(ChatRole::User, "private image question");
+        let image = axiom_inference::ImageContent {
+            mime_type: "image/png".into(),
+            data: "iVBORw0KGgpmaXh0dXJl".into(),
+        };
+        message.images.push(image.clone());
+        let encrypted = encrypt_message(key, &message).unwrap();
+        let wire = serde_json::to_string(&encrypted).unwrap();
+        assert!(!wire.contains("private image question"));
+        assert!(!wire.contains(&image.data));
+        assert!(!wire.contains("image_url"));
+        let plaintext = worker
+            .decrypt_hex(encrypted.encrypted_content.as_ref().unwrap().as_str())
+            .unwrap();
+        let content: serde_json::Value = serde_json::from_slice(&plaintext).unwrap();
+        assert_eq!(content[0]["text"], message.content);
+        assert_eq!(content[1]["image_url"]["url"], image.data_url());
+        let other_worker = crypto::ClientIdentity::generate();
+        assert!(
+            other_worker
+                .decrypt_hex(encrypted.encrypted_content.as_ref().unwrap().as_str())
+                .is_err()
+        );
+    }
+
+    #[test]
     fn signed_stream_optional_tool_calls_accepts_null_but_not_wrong_types() {
         let identity = crypto::ClientIdentity::generate();
         for delta in [
@@ -2160,6 +2195,7 @@ mod tests {
         let messages = [
             ChatMessage {
                 images: Vec::new(),
+                files: Vec::new(),
                 role: ChatRole::Assistant,
                 content: String::new(),
                 reasoning_content: None,
@@ -2177,6 +2213,7 @@ mod tests {
             },
             ChatMessage {
                 images: Vec::new(),
+                files: Vec::new(),
                 role: ChatRole::Tool,
                 content: "SECRET_RESULT".to_owned(),
                 reasoning_content: None,

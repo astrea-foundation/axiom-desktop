@@ -1,3 +1,4 @@
+import { acceptsAttachment } from "./attachments";
 import type { ClientState } from "@axiom/axiom-acp-client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DEFAULT_AGENT_SELECTION, type AgentControlOptions, type AgentSelection } from "./components/AgentModeControl";
@@ -284,8 +285,8 @@ export function useConversations(agentState: ClientState, navigation: ReturnType
       return;
     }
     const files = attachmentDraft.attachments;
-    if (files.some((file) => file.kind === "image") && !selectedModel.supportsImages) {
-      setUiError("Choose a model with image support before sending."); return;
+    if (files.some((file) => !acceptsAttachment(selectedModel, file))) {
+      setUiError("Choose a model that supports these files before sending."); return;
     }
     if (files.length && !api.promptWithAttachments) { setUiError("Restart Axiom to enable attachments. Your draft was kept."); return; }
     const webEnabled = webAccess.enabled;

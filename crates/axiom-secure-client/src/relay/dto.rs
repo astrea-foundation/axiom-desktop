@@ -2,12 +2,10 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::{Result, SecureClientError};
 
-pub(crate) const MAX_CIPHERTEXT_HEX_CHARS: usize =
-    2 * axiom_inference::MAX_MESSAGE_TEXT_BYTES + 1024;
-// NEAR envelopes are currently at least 144 characters; Phala ACI v2
-// envelopes have a 120-character minimum. Provider implementations perform
-// their exact protocol validation after this transport-level bound.
-const MIN_CIPHERTEXT_HEX_CHARS: usize = 120;
+pub(crate) const MAX_CIPHERTEXT_HEX_CHARS: usize = 40 * 1024 * 1024 + 1024;
+// Version-2 NEAR envelopes contain a 32-byte ephemeral key, 24-byte
+// nonce and 16-byte authentication tag before any plaintext content.
+const MIN_CIPHERTEXT_HEX_CHARS: usize = 144;
 
 #[derive(Clone, PartialEq, Eq, Serialize)]
 #[serde(transparent)]
@@ -332,7 +330,7 @@ mod tests {
     fn relay_response_metadata_is_additive_but_encrypted_tool_calls_stay_exact() {
         let completion: RelayCompletion = serde_json::from_value(serde_json::json!({
             "id": "response-1",
-            "encrypted_content": "a".repeat(120),
+            "encrypted_content": "a".repeat(144),
             "finish_reason": "stop",
             "usage": {
                 "prompt_tokens": 4,
@@ -347,8 +345,8 @@ mod tests {
             "id": "call-1",
             "type": "function",
             "function": {
-                "encrypted_name": "a".repeat(120),
-                "encrypted_arguments": "b".repeat(120)
+                "encrypted_name": "a".repeat(144),
+                "encrypted_arguments": "b".repeat(144)
             },
             "future_execution_semantics": true
         }));

@@ -56,11 +56,15 @@ are named in `x-axiom-ignored-parameters` and the metadata-only
 Strict mode rejects unsupported parameters and names them in the same header.
 Both modes reject `n > 1` and unsupported content parts. Text parts are joined
 with newlines. Inline `image_url` data URLs for PNG/JPEG/WebP/GIF are accepted
-(up to 5 MiB per image, 8 images per message); remote image URLs are rejected.
-Images currently require Tinfoil Kimi K3 and are serialized inside its authenticated
-E2EE body. Other providers/models reject them explicitly. Image `detail` is an
+(up to 5 MiB per image, eight total attachments per message); remote URLs are rejected.
+Inline `file` parts with `filename` and `file_data` data URLs are accepted up to
+10 MiB per file, subject to the selected model's file MIME capabilities and the
+16 MiB combined text/encoded-attachment bound. Only user messages may carry
+images or files. File IDs, remote downloads and local extraction are unsupported.
+Images require an image-capable NEAR or Tinfoil model from the refreshed catalog
+and use its authenticated E2EE format. Unsupported capabilities fail before sending. Image `detail` is an
 unsupported parameter (reported/ignored in lenient mode, rejected in strict mode).
-Requests are bounded to 32 MiB of serialized JSON, matching the native relay body
+Requests are bounded to 64 MiB of serialized JSON, matching the native relay body
 bound; each message's text is bounded to 4 MiB. These are local resource limits.
 For Tinfoil, an omitted output limit stays omitted, allowing upstream defaults;
 an explicit limit is checked against the catalog ceiling. Model tool/streaming capability checks

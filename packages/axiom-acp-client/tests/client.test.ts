@@ -1072,7 +1072,7 @@ test("timeline and collections survive a sidecar restart", async () => {
   try {
     await second.initialize();
     const restoredBootstrap = await second.bootstrapDesktop();
-    assert.equal(restoredBootstrap.newThreadSettings.thinkingLevel, "provider_default");
+    assert.equal(restoredBootstrap.newThreadSettings.thinkingLevel, "xhigh");
     await second.initializeDesktopState();
     assert.ok(second.getState().collections.collections.some((collection) =>
       collection.id === collectionId && collection.name === "Renamed research" && collection.threadIds.includes(sessionId),
@@ -1206,7 +1206,7 @@ test("real ACP attachment submission, inspection, reload, and text revision reta
   let { client, workspace } = await fixture();
   try {
     const { sessionId } = await client.newSession(workspace);
-    const attachments = [{ kind: "text" as const, name: "notes.txt", text: "private local attachment\n".repeat(4000) }];
+    const attachments = [{ kind: "file" as const, name: "notes.txt", file: { name: "notes.txt", mimeType: "text/plain", data: Buffer.from("private local attachment\n".repeat(4000)).toString("base64") } }];
     await client.prompt(sessionId, "", "attached-client-id", false, 0, undefined, attachments);
     let session = client.getState().sessions[sessionId]!;
     let user = session.timeline.find((item) => item.clientItemId === "attached-client-id")!;

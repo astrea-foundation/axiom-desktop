@@ -328,13 +328,19 @@ pub(super) async fn set_session_config_option(
         .collect::<Vec<_>>();
     models.sort();
     models.dedup();
-    let Some(previous_model) = details.iter().find(|candidate| candidate.id == model)
-    else {
-        return Err(agent_client_protocol::util::internal_error(
-            "current model is not in the provider catalog",
-        ));
-    };
-    let previous_settings = reconcile_model_settings(previous_model, thinking);
+    let previous_model = details.iter().find(|candidate| candidate.id == model);
+    let previous_settings = previous_model.map_or_else(
+        || crate::agent::ModelSettings {
+            model: model.clone(),
+            thinking,
+            supports_reasoning: false,
+        },
+        |model| reconcile_model_settings(model, thinking),
+    );
+    let previous_history = if previous_model.is_none() {
+        Some(ctx_store.as_ref().ok_or_else(|| agent_client_protocol::util::internal_error("unavailable model requires saved history"))?
+            .load(&internal_id).map_err(agent_error)?)
+    } else { None };
     let (settings, supported_thinking, events) = match request.config_id.0.as_ref() {
         MODEL_CONFIG_ID => {
             let Some(selected_model) =
@@ -368,9 +374,7 @@ pub(super) async fn set_session_config_option(
             {
                 Ok(events) => events,
                 Err(error) => {
-                    if let Err(rollback_error) = ctx_runner
-                        .set_model_settings(&internal_id, &previous_settings)
-                        .await
+                    if let Err(rollback_error) = restore_model_selection(ctx_runner.as_ref(), &internal_id, &previous_settings, previous_history.as_deref()).await
                     {
                         tracing::warn!(
                             %rollback_error,
@@ -480,9 +484,7 @@ pub(super) async fn set_session_config_option(
         match persistence {
             Ok((_, stored)) => Some(extension_preferences(stored)),
             Err(error) => {
-                if let Err(rollback_error) = ctx_runner
-                    .set_model_settings(&internal_id, &previous_settings)
-                    .await
+                if let Err(rollback_error) = restore_model_selection(ctx_runner.as_ref(), &internal_id, &previous_settings, previous_history.as_deref()).await
                 {
                     tracing::error!(
                         %rollback_error,
@@ -571,4 +573,17 @@ pub(super) async fn set_session_config_option(
         return Err(error);
     }
     Ok(())
+}
+
+async fn restore_model_selection(
+    runner: &dyn crate::agent::TurnRunner,
+    session: &crate::app::SessionId,
+    previous: &crate::agent::ModelSettings,
+    history: Option<&[crate::app::EventEnvelope]>,
+) -> crate::Result<()> {
+    if let Some(history) = history {
+        runner.restore_session(session, history).await
+    } else {
+        runner.set_model_settings(session, previous).await
+    }
 }

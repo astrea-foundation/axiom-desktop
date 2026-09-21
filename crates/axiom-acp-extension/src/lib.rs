@@ -103,7 +103,7 @@ impl FeatureVersions {
             web_consent: 1,
             steering: 1,
             message_revision: 1,
-            attachments: 1,
+            attachments: 2,
             compaction: 1,
             activity: 1,
         }
@@ -398,6 +398,8 @@ pub struct ModelInfo {
     pub max_output_tokens: u32,
     #[serde(default)]
     pub supports_images: bool,
+    #[serde(default)]
+    pub file_mime_types: Vec<String>,
     pub auto_compact_threshold_tokens: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_price_microusd_per_million_tokens: Option<u64>,

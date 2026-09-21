@@ -1512,7 +1512,7 @@ impl ExtensionState {
             return;
         };
         let mut mask = 0;
-        if features.attachments >= 1 {
+        if features.attachments >= 2 {
             mask |= ExtensionFeature::Attachments as u64;
         }
         if features.steering >= 1 {
@@ -1748,18 +1748,9 @@ fn prompt_input(
                 });
                 continue;
             }
-            protocol::ContentBlock::Resource(resource) => {
-                if let protocol::EmbeddedResourceResource::TextResourceContents(content) =
-                    &resource.resource
-                {
-                    attachments.push(axiom_inference::PromptAttachment::Text {
-                        name: content.uri.clone(),
-                        text: content.text.clone(),
-                    });
-                    continue;
-                }
+            protocol::ContentBlock::Resource(_) => {
                 return Err(
-                    "Binary resources must be converted locally to text or image content before sending",
+                    "Use direct file attachments; embedded resource extraction is unsupported",
                 );
             }
             _ => return Err("ACP prompt contains a content type AxiomCLI did not advertise"),
@@ -2591,16 +2582,16 @@ mod tests {
             profile: PermissionProfile::Web,
             model: "near/model-a".into(),
             thinking: crate::app::ThinkingLevel::High,
-            models: vec!["near/model-a".into(), "phala/model-b".into()],
+            models: vec!["near/model-a".into(), "tinfoil/model-b".into()],
             has_prompt: false,
             security: crate::app::SecurityStatus::Verified,
         };
 
         apply_session_model_settings(
             &mut session,
-            "phala/model-b",
+            "tinfoil/model-b",
             crate::app::ThinkingLevel::Medium,
-            &["near/model-a".into(), "phala/model-b".into()],
+            &["near/model-a".into(), "tinfoil/model-b".into()],
             true,
         );
         assert_eq!(session.security, crate::app::SecurityStatus::Unverified);
@@ -2608,9 +2599,9 @@ mod tests {
         session.security = crate::app::SecurityStatus::Verified;
         apply_session_model_settings(
             &mut session,
-            "phala/model-b",
+            "tinfoil/model-b",
             crate::app::ThinkingLevel::Medium,
-            &["near/model-a".into(), "phala/model-b".into()],
+            &["near/model-a".into(), "tinfoil/model-b".into()],
             false,
         );
         assert_eq!(session.security, crate::app::SecurityStatus::Verified);

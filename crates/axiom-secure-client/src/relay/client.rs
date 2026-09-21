@@ -2,8 +2,6 @@ use reqwest::{Response, StatusCode, header};
 use serde::{Deserialize, de::DeserializeOwned};
 use tokio_util::sync::CancellationToken;
 
-use axiom_inference::ModelInfo;
-
 use crate::{
     ApiCredential, Result, SecureClientConfig, SecureClientError,
     catalog::{error_for_status, relay_endpoint},
@@ -114,35 +112,6 @@ impl<'a> RelayClient<'a> {
         cancellation: &CancellationToken,
     ) -> Result<Response> {
         self.send(request, cancellation).await
-    }
-
-    pub(crate) async fn provider_e2ee_key<T: DeserializeOwned>(
-        &self,
-        model: &ModelInfo,
-        observed_key_fingerprint: Option<&str>,
-        observed_keyset_digest: Option<&str>,
-        cancellation: &CancellationToken,
-    ) -> Result<T> {
-        let encryption_version = model.e2ee_encryption_version.to_string();
-        let mut query = vec![
-            ("model_id", model.id.as_str()),
-            ("e2ee_protocol", model.e2ee_protocol.as_str()),
-            ("encryption_version", encryption_version.as_str()),
-            ("attestation_protocol", model.attestation_protocol.as_str()),
-        ];
-        if let Some(fingerprint) = observed_key_fingerprint {
-            query.push(("observed_key_fingerprint", fingerprint));
-        }
-        if let Some(digest) = observed_keyset_digest {
-            query.push(("observed_keyset_digest", digest));
-        }
-        self.get_json(
-            "/api/v1/provider/e2ee-key",
-            &query,
-            self.config.limits.attestation_report_bytes,
-            cancellation,
-        )
-        .await
     }
 
     pub(crate) async fn provider_attestation_report<T: DeserializeOwned>(

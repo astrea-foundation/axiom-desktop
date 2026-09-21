@@ -465,6 +465,10 @@ impl TurnRunner for EchoTurnRunner {
                 _ => id,
             }
             .into(),
+            file_mime_types: axiom_inference::FILE_MIME_TYPES
+                .iter()
+                .map(|s| (*s).into())
+                .collect(),
             provider_id: "axiom".into(),
             provider_label: "Axiom".into(),
             upstream_model: id.into(),
@@ -1135,7 +1139,7 @@ impl AgentEngine {
         match self.provider.models(cancellation).await {
             Ok(models) => models
                 .into_iter()
-                .find(|model| model.id == settings.model)
+                .find(|model| settings.model == "auto" || model.id == settings.model)
                 .ok_or_else(|| {
                     AxiomError::Provider(format!(
                         "selected model `{}` is no longer in the live provider catalog",
@@ -1258,7 +1262,8 @@ impl AgentEngine {
         };
         let parts = compaction_inputs(&conversation[..recent_start], budget / 2)?;
         let mut summary = String::new();
-        for (index, (transcript, images)) in parts.iter().enumerate() {
+        for (index, part) in parts.iter().enumerate() {
+            let transcript = &part.transcript;
             if cancellation.is_cancelled() {
                 return Err(AxiomError::Cancelled);
             }
@@ -1283,7 +1288,8 @@ impl AgentEngine {
                 Vec::new(),
                 settings.thinking,
             );
-            request.messages[1].images.clone_from(images);
+            request.messages[1].images.clone_from(&part.images);
+            request.messages[1].files.clone_from(&part.files);
             // Recalculate generation space after adding the actual image inputs.
             request = inference_request_for_model(
                 model,
@@ -1715,6 +1721,7 @@ impl TurnRunner for AgentEngine {
                     } else {
                         messages.push(ChatMessage {
                             images: Vec::new(),
+                            files: Vec::new(),
                             role: ChatRole::Assistant,
                             content: String::new(),
                             reasoning_content: None,
@@ -1729,6 +1736,7 @@ impl TurnRunner for AgentEngine {
                     call_id, content, ..
                 } => messages.push(ChatMessage {
                     images: Vec::new(),
+                    files: Vec::new(),
                     role: ChatRole::Tool,
                     content: untrusted_tool_result(
                         tool_names
@@ -1844,6 +1852,19 @@ impl TurnRunner for AgentEngine {
         let model = self
             .model_info(&settings, cancellation.child_token())
             .await?;
+        if settings.model == "auto" {
+            settings.model.clone_from(&model.id);
+            self.settings
+                .lock()
+                .await
+                .insert(context.session_id.clone(), settings.clone());
+            events
+                .send(AppEvent::ModelChanged {
+                    model: model.id.clone(),
+                })
+                .await
+                .map_err(|_| AxiomError::Cancelled)?;
+        }
         let effective = reconcile_model_settings(&model, settings.thinking).thinking;
         if effective != settings.thinking {
             settings.thinking = effective;
@@ -1907,6 +1928,14 @@ impl TurnRunner for AgentEngine {
                 || messages.iter().any(|message| !message.images.is_empty()))
         {
             return Err(AxiomError::Provider("This conversation contains images. Choose a model that supports encrypted image input.".into()));
+        }
+        if messages
+            .iter()
+            .chain(std::iter::once(&user_message))
+            .flat_map(|message| &message.files)
+            .any(|file| !model.file_mime_types.contains(&file.mime_type))
+        {
+            return Err(AxiomError::Provider("This conversation contains files that this model cannot accept. Choose a model with the required upload support.".into()));
         }
         let prompt_tokens = estimated_context_tokens(std::slice::from_ref(&user_message));
         let previous_context_tokens = self
@@ -2081,6 +2110,7 @@ impl TurnRunner for AgentEngine {
 
             messages.push(ChatMessage {
                 images: Vec::new(),
+                files: Vec::new(),
                 role: ChatRole::Assistant,
                 content: assistant.text.clone(),
                 reasoning_content: assistant.reasoning.clone(),
@@ -2461,6 +2491,7 @@ impl TurnRunner for AgentEngine {
                 }
                 messages.push(ChatMessage {
                     images: Vec::new(),
+                    files: Vec::new(),
                     role: ChatRole::Tool,
                     content: untrusted_tool_result(&call.function.name, &tool_result.content),
                     reasoning_content: None,
@@ -2682,41 +2713,53 @@ fn compaction_transcripts(messages: &[ChatMessage], max_bytes: usize) -> Result<
     Ok(parts)
 }
 
-/// Preserve images as native image inputs; base64 must never become prose.
-fn compaction_inputs(
-    messages: &[ChatMessage],
-    max_bytes: usize,
-) -> Result<Vec<(String, Vec<axiom_inference::ImageContent>)>> {
+/// Preserve attachments as native inputs; base64 must never become prose.
+struct CompactionInput {
+    transcript: String,
+    images: Vec<axiom_inference::ImageContent>,
+    files: Vec<axiom_inference::FileContent>,
+}
+
+fn compaction_inputs(messages: &[ChatMessage], max_bytes: usize) -> Result<Vec<CompactionInput>> {
+    let text_part = |transcript| CompactionInput {
+        transcript,
+        images: Vec::new(),
+        files: Vec::new(),
+    };
     let mut result = Vec::new();
     let mut start = 0;
     for (index, message) in messages.iter().enumerate() {
-        if message.images.is_empty() {
+        if message.images.is_empty() && message.files.is_empty() {
             continue;
         }
         if start < index {
             result.extend(
                 compaction_transcripts(&messages[start..index], max_bytes)?
                     .into_iter()
-                    .map(|text| (text, Vec::new())),
+                    .map(text_part),
             );
         }
         let mut text_message = message.clone();
         let images = std::mem::take(&mut text_message.images);
+        let files = std::mem::take(&mut text_message.files);
         let mut parts = compaction_transcripts(&[text_message], max_bytes)?.into_iter();
         if let Some(first) = parts.next() {
-            result.push((
-                format!("The images attached to this fragment belong to this message.\n{first}"),
+            result.push(CompactionInput {
+                transcript: format!(
+                    "The files attached to this fragment belong to this message.\n{first}"
+                ),
                 images,
-            ));
+                files,
+            });
         }
-        result.extend(parts.map(|text| (text, Vec::new())));
+        result.extend(parts.map(text_part));
         start = index + 1;
     }
     if start < messages.len() || result.is_empty() {
         result.extend(
             compaction_transcripts(&messages[start..], max_bytes)?
                 .into_iter()
-                .map(|text| (text, Vec::new())),
+                .map(text_part),
         );
     }
     Ok(result)
@@ -2729,7 +2772,7 @@ fn recent_compaction_start(messages: &[ChatMessage], max_bytes: usize) -> Result
         && index > 0
         && messages[index..]
             .iter()
-            .all(|message| message.images.is_empty())
+            .all(|message| message.images.is_empty() && message.files.is_empty())
         && serialized_message_bytes(&messages[index..])? <= max_bytes
     {
         return Ok(index);
@@ -2758,6 +2801,13 @@ fn enforce_context_budget(
     let bytes = messages.iter().fold(0_usize, |total, message| {
         total
             .saturating_add(message.content.len())
+            .saturating_add(
+                message
+                    .files
+                    .iter()
+                    .map(|file| file.data.len())
+                    .sum::<usize>(),
+            )
             .saturating_add(message.reasoning_content.as_ref().map_or(0, String::len))
             .saturating_add(
                 message
@@ -2805,6 +2855,7 @@ fn estimated_context_tokens(messages: &[ChatMessage]) -> u64 {
             // Image tokenization is model-specific. Reserve a conservative
             // allowance without incorrectly counting base64 as prompt text.
             .saturating_add(message.images.len() as u64 * 8192)
+            .saturating_add(message.files.len() as u64 * 8192)
             .saturating_add(reasoning)
             .saturating_add(tool_calls)
     })
@@ -2846,6 +2897,7 @@ where
 fn tool_error_message(call_id: String, name: &str, message: &str) -> ChatMessage {
     ChatMessage {
         images: Vec::new(),
+        files: Vec::new(),
         role: ChatRole::Tool,
         content: untrusted_tool_result(name, &format!("REPAIRABLE TOOL ERROR: {message}")),
         reasoning_content: None,
@@ -3173,10 +3225,24 @@ mod engine_tests {
         let mut message = ChatMessage::text(ChatRole::User, "look at this");
         message.images.push(image.clone());
         let parts = compaction_inputs(&[message.clone()], 4096).unwrap();
-        assert_eq!(parts[0].1, vec![image.clone()]);
-        assert!(!parts[0].0.contains(&image.data));
+        assert_eq!(parts[0].images, vec![image.clone()]);
+        assert!(!parts[0].transcript.contains(&image.data));
         assert!(enforce_context_budget(&[message.clone()], 10, 100_000).is_err());
         assert!(enforce_context_budget(&[message], 1000, 100).is_err());
+    }
+
+    #[test]
+    fn compaction_preserves_files_without_injecting_encoded_bytes_into_text() {
+        let file = axiom_inference::FileContent {
+            name: "notes.txt".into(),
+            mime_type: "text/plain".into(),
+            data: "aGVsbG8=".into(),
+        };
+        let mut message = ChatMessage::text(ChatRole::User, "summarize");
+        message.files.push(file.clone());
+        let parts = compaction_inputs(&[message], 4096).unwrap();
+        assert_eq!(parts[0].files, vec![file.clone()]);
+        assert!(!parts[0].transcript.contains(&file.data));
     }
 
     #[test]

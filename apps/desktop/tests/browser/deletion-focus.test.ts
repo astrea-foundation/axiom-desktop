@@ -117,6 +117,7 @@ async function openApp(platform = "linux", failDelete = false, thinkingLevels: s
         id: "test-model", label: "Test model", shortLabel: "Test model", providerId: "test",
         providerLabel: "Test provider", upstreamModel: "test-model", thinkingLevels,
         contextWindowTokens: 100_000, autoCompactThresholdTokens: 85_000, supportsImages,
+        fileMimeTypes: ["text/plain", "application/pdf"],
       }] }),
       loadChat: async (id: string) => {
         calls.push({ method: "load", id });
@@ -2232,9 +2233,9 @@ test("usage shows model shares in both themes, exact small charges, and an hones
     await page.evaluate(() => {
       (window as any).axiomDesktop.agent.usageSummary = async () => ({ summary: {
         period: "all_time", totalCostMicrousd: "48650000", models: [
-          { provider: "phala", modelId: "qwen3", modelName: "Qwen3", costMicrousd: "24500000" },
+          { provider: "tinfoil", modelId: "qwen3", modelName: "Qwen3", costMicrousd: "24500000" },
           { provider: "near", modelId: "gpt-oss-120b", modelName: "GPT-OSS 120B", costMicrousd: "15800000" },
-          { provider: "phala", modelId: "deepseek", modelName: "DeepSeek V3.2", costMicrousd: "8350000" },
+          { provider: "tinfoil", modelId: "deepseek", modelName: "DeepSeek V3.2", costMicrousd: "8350000" },
         ],
       } });
     });
@@ -2244,7 +2245,7 @@ test("usage shows model shares in both themes, exact small charges, and an hones
     assert.equal(await page.locator("[data-usage-total]").innerText(), "$48.65");
     const chart = page.getByRole("img", { name: /Spending by model/ });
     assert.equal(await chart.locator("path").count(), 3);
-    await page.getByRole("button", { name: /Qwen3, phala/ }).focus();
+    await page.getByRole("button", { name: /Qwen3, tinfoil/ }).focus();
     assert.equal(await chart.locator('path[opacity="0.35"]').count(), 2);
     await page.getByRole("tab", { name: "Usage", exact: true }).focus();
     for (const theme of ["light", "dark"] as const) {
@@ -2487,7 +2488,7 @@ test("two pending first messages continue independently while a third draft stay
 });
 
 
-test("large file text is sent intact through the attachment-aware bridge and survives transcript display", async () => {
+test("direct file bytes are sent intact through the attachment-aware bridge and survive transcript display", async () => {
   const { page, errors } = await openApp();
   try {
     const content = "local private content\n".repeat(10_000);
@@ -2496,7 +2497,7 @@ test("large file text is sent intact through the attachment-aware bridge and sur
     await page.getByRole("button", { name: "Send", exact: true }).click();
     await page.waitForFunction(() => (window as any).__deletionTest.calls.some((call: any) => call.method === "attachments"));
     const call = (await calls(page)).find((call) => call.method === "attachments")!;
-    assert.deepEqual(JSON.parse(call.text!), { text: "", attachments: [{ kind: "text", name: "notes.txt", text: content }] });
+    assert.deepEqual(JSON.parse(call.text!), { text: "", attachments: [{ kind: "file", name: "notes.txt", file: { name: "notes.txt", mimeType: "text/plain", data: Buffer.from(content).toString("base64") } }] });
     await page.getByRole("region", { name: "Chat messages", exact: true }).getByText("notes.txt", { exact: true }).waitFor();
     assert.equal(await page.getByRole("button", { name: "Remove notes.txt" }).count(), 0);
     assert.deepEqual(errors, []);
@@ -2513,7 +2514,7 @@ for (const vision of [false, true]) {
       const send = page.getByRole("button", { name: "Send", exact: true });
       if (!vision) {
         assert.ok(await send.isDisabled());
-        await page.getByText("Choose a model with image support to send these images.").waitFor();
+        await page.getByText("Choose a model that supports these files, or remove the unsupported attachments.").waitFor();
       } else {
         await send.click();
         await page.waitForFunction(() => (window as any).__deletionTest.calls.some((call: any) => call.method === "attachments"));
@@ -2536,7 +2537,7 @@ function textPdf(text: string): Buffer {
   return Buffer.from(pdf);
 }
 
-test("PDF text extraction uses the local bundled worker and unsupported documents keep the draft", async () => {
+test("PDF bytes upload directly and unsupported documents keep the draft", async () => {
   const { page, errors } = await openApp("linux", false, [], "medium", false, false);
   try {
     await page.locator('input[type="file"]').setInputFiles({ name: "notes.pdf", mimeType: "application/pdf", buffer: textPdf("Local PDF fact") });
@@ -2544,10 +2545,11 @@ test("PDF text extraction uses the local bundled worker and unsupported document
     await page.getByRole("button", { name: "Send", exact: true }).click();
     await page.waitForFunction(() => (window as any).__deletionTest.calls.some((call: any) => call.method === "attachments"));
     const call = (await calls(page)).find((call) => call.method === "attachments")!;
-    assert.match(JSON.parse(call.text!).attachments[0].text, /Local PDF fact/);
+    assert.equal(JSON.parse(call.text!).attachments[0].file.data, textPdf("Local PDF fact").toString("base64"));
     await page.locator("textarea[data-chat-input]").fill("Keep this draft");
     await page.locator('input[type="file"]').setInputFiles({ name: "binary.docx", mimeType: "application/octet-stream", buffer: Buffer.from("binary") });
-    await page.getByRole("alert").filter({ hasText: "Export Office documents" }).waitFor();
+    await page.getByRole("alert").filter({ hasText: "Choose a model that supports these files" }).waitFor();
+    assert.ok(await page.getByRole("button", { name: "Send", exact: true }).isDisabled());
     assert.equal(await page.locator("textarea[data-chat-input]").inputValue(), "Keep this draft");
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
@@ -2597,6 +2599,40 @@ test("gift redemption is masked, updates balance, retries safely and clears on a
     assert.equal(await page.getByText("$25.00 added to your account.", {exact: true}).count(), 0);
     // Account navigation may dismiss Balance; whichever screen remains cannot retain the code.
     assert.equal(await page.locator('input[name="gift-code"]').evaluateAll(inputs => inputs.some(input => (input as HTMLInputElement).value.length > 0)), false);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+
+test("catalog refresh withdraws saved models and shows Tinfoil upload icons", async () => {
+  const { page, errors } = await openApp();
+  try {
+    await page.evaluate(() => {
+      (window as any).axiomDesktop.agent.listModels = async () => ({models: [{
+        id: "tinfoil-new-vision", label: "New vision", shortLabel: "New vision",
+        providerId: "tinfoil", providerLabel: "Tinfoil", upstreamModel: "new-vision",
+        thinkingLevels: [], contextWindowTokens: 32768, autoCompactThresholdTokens: 27853,
+        supportsImages: true, fileMimeTypes: ["text/plain", "application/pdf"],
+        inputPriceMicrousdPerMillionTokens: 500000, outputPriceMicrousdPerMillionTokens: 2000000,
+      }]});
+      window.dispatchEvent(new Event("focus"));
+    });
+    const unavailable = page.getByRole("button", { name: "Model unavailable", exact: true });
+    await unavailable.waitFor();
+    await page.locator("textarea[data-chat-input]").fill("Keep this model choice explicit");
+    assert.ok(await page.getByRole("button", { name: "Send", exact: true }).isDisabled());
+    await unavailable.click();
+    const picker = page.getByRole("dialog", {name: "Choose a model"});
+    await picker.getByRole("tab", { name: /Tinfoil/ }).waitFor();
+    assert.equal(await picker.getByRole("img", {name:"Image uploads"}).count(), 1);
+    assert.equal(await picker.getByRole("img", {name:"File uploads"}).count(), 1);
+    const logo = picker.locator('img[title="Tinfoil"]');
+    assert.ok(await logo.evaluate((node: HTMLImageElement) => node.complete && node.naturalWidth > 0));
+    assert.doesNotMatch(await picker.innerText(), / · Images|File uploads/);
+    await page.evaluate(() => document.getAnimations().forEach(animation => animation.finish()));
+    await page.screenshot({path:"/tmp/axiom-provider-picker.png"});
+    await picker.getByRole("button", {name:/New vision/}).click();
+    assert.ok(await page.getByRole("button", { name: "Send", exact: true }).isEnabled());
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
 });

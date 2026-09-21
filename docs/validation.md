@@ -17,7 +17,7 @@ the current state of production, published installers or unrecorded manual work.
 | Desktop Agent on all packaged OS targets; Linux-only Bubblewrap isolation | [workspace.rs](../apps/axiomcli/src/workspace.rs), [policy.rs](../apps/axiomcli/src/policy.rs), [Desktop](desktop.md) |
 | ACP 0.2 features, API-key creation and Tinfoil generation exception | [extension DTOs](../crates/axiom-acp-extension/src/lib.rs), [contract](acp-compatibility.md) |
 | Mainnet ZEC deposits, gift redemption and `billing@3` | [billing.rs](../apps/axiomcli/src/billing.rs), [TUI credit](../apps/axiomcli/src/tui/billing.rs), [Desktop gift form](../apps/desktop/src/renderer/src/components/GiftCodePanel.tsx) |
-| NEAR/Phala/Tinfoil authentication and truthful evidence | [provider drivers](../crates/axiom-secure-client/src/providers), [security](threat-model.md) |
+| NEAR/Tinfoil authentication and truthful evidence | [provider drivers](../crates/axiom-secure-client/src/providers), [security](threat-model.md) |
 | Main-only CI, separate manual/signed packaging and publication handoff | [workflows](../.github/workflows), [packager](../apps/desktop/scripts/package-desktop.mjs), [releasing](releasing.md) |
 
 Local Markdown links and heading anchors are checked during this consolidation,
@@ -79,8 +79,8 @@ acceptance and production cutover were not exercised by this source cleanup.
 ## Native maintenance verification
 
 The [maintenance plan](native-maintenance-plan.md) removes dormant UI/counters,
-unused assets and asynchronous title plumbing; connects Phala to the verified
-signed NVIDIA anchor policy; tests NEAR report binding through the production
+unused assets and asynchronous title plumbing; historically connected the now-retired
+Phala verifier to signed NVIDIA policy; tests NEAR report binding through the production
 verifier; and separates ACP, TUI and Desktop controller responsibilities.
 
 Workspace strict Clippy now passes with `--all-targets --all-features -- -D warnings`.
@@ -114,3 +114,35 @@ tests pass through the unchanged public `SessionStore` API. The
 [coordinated plan](https://github.com/astrea-foundation/axiom-platform/blob/dev/docs/architecture/persistence-refactor-plan.md)
 records backend and receiver validation. This pass did not repeat UI/browser or
 live-provider acceptance and did not reset an existing user's database.
+
+## Provider catalog and upload verification
+
+On 2026-09-21, the [catalog and direct upload change](provider-catalogs.md) passed
+the full Rust workspace suite (510 tests, six opt-in/manual tests ignored), strict
+workspace Clippy, formatting, TypeScript checks, all 261 JavaScript/TypeScript
+tests, generated ACP contract consistency and the Desktop production build.
+The picker was visually checked with the Tinfoil logo and image/file icons.
+
+The final browser run passed 129 checks with four existing billing tests excluded.
+All four failures reproduce on unchanged `dev` revision `aa38e4e` with its own
+installed dependencies:
+
+- `balance is a separate screen and payments stay hidden after sign-out`:
+  duplicate deposit-address elements during transitions.
+- `balance deposit controls fit the reference window, respect reduced motion, and match both themes`:
+  the empty deposit screen overflows the reference window.
+- `deposit progress keeps ZEC primary and changes estimated USD to credited USD`:
+  duplicate deposit summaries during transitions.
+- `gift redemption is masked, updates balance, retries safely and clears on account switch`:
+  the old masked field retains its value during the account transition.
+
+These failures remain open; the complete browser suite is not green. Reproduce
+them with `pnpm exec tsx --test --test-name-pattern='balance is a separate|balance deposit controls|deposit progress keeps|gift redemption is masked' tests/browser/deletion-focus.test.ts`
+from `apps/desktop`. The same expression passed to `--test-skip-pattern` with
+`tests/browser/*.test.ts` selects the other 129 checks.
+
+The platform's paired [catalog validation](https://github.com/astrea-foundation/axiom-platform/blob/dev/docs/architecture/provider-catalogs.md#validation-2026-09-21)
+records discovery and backend tests. Live paid image/document inference,
+deployment and interactive OS acceptance were not performed. Provider attestation
+and authenticated completion must still succeed in release canaries; a public
+catalog listing alone does not establish that an offering works end to end.

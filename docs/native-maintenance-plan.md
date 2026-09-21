@@ -1,5 +1,8 @@
 # Native maintenance implementation plan
 
+> September 21, 2026: Phala is removed. Completed Phala work below is historical;
+> the remaining open maintenance tasks are unchanged. See [provider catalogs](provider-catalogs.md).
+
 Status: complete. Initial baseline: `0eec7cd` on `refactor/clean-baseline`.
 Final branch: `refactor/native-maintenance`, targeting `dev`.
 

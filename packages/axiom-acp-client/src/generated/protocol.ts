@@ -13,6 +13,11 @@ export type PromptAttachment =
       name: string;
       image: ImageContent;
       kind: "image";
+    }
+  | {
+      name: string;
+      file: FileContent;
+      kind: "file";
     };
 export type TimelineItemKind = "user_message" | "assistant_message" | "reasoning" | "tool_call" | "plan" | "notice";
 export type TimelineItemStatus = "pending" | "in_progress" | "completed" | "cancelled" | "failed" | "interrupted";
@@ -298,6 +303,14 @@ export interface ImageContent {
    */
   data: string;
 }
+/**
+ * Original file bytes. Extraction belongs to the attested provider, not Axiom.
+ */
+export interface FileContent {
+  name: string;
+  mimeType: string;
+  data: string;
+}
 export interface GetAttachmentsRequest {
   threadId: string;
   userItemId: string;
@@ -463,6 +476,7 @@ export interface ModelInfo {
   contextWindowTokens: number;
   maxOutputTokens: number;
   supportsImages?: boolean;
+  fileMimeTypes?: string[];
   autoCompactThresholdTokens: number;
   inputPriceMicrousdPerMillionTokens?: number | null;
   outputPriceMicrousdPerMillionTokens?: number | null;

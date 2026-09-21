@@ -1710,9 +1710,13 @@ fn attachments_survive_reopen_and_revision_and_are_deleted_with_their_message() 
     let id = SessionId::new();
     let turn = TurnId::new();
     create(&store, &id);
-    let files = vec![axiom_inference::PromptAttachment::Text {
+    let files = vec![axiom_inference::PromptAttachment::File {
         name: "notes.txt".into(),
-        text: "local file contents".into(),
+        file: axiom_inference::FileContent {
+            name: "notes.txt".into(),
+            mime_type: "text/plain".into(),
+            data: "bG9jYWwgZmlsZSBjb250ZW50cw==".into(),
+        },
     }];
     store
         .append_prompt_revision(

@@ -634,11 +634,11 @@ fn resumed_tui_sessions_reconcile_retired_models_and_changed_reasoning_support()
         .expect("load retired-model correction");
     assert_eq!(
         model_for_resume(&retired.events, "fallback"),
-        "deepseek-v4-flash"
+        "retired-model"
     );
     assert_eq!(
         thinking_for_resume(&retired.events, ThinkingLevel::Medium),
-        ThinkingLevel::ProviderDefault
+        ThinkingLevel::High
     );
     let changed_reasoning = store
         .load_recovering(&changed_reasoning_id)
@@ -683,8 +683,8 @@ fn a_new_tui_session_reconciles_preferences_against_the_current_catalog() {
     {
         let store = SessionStore::open(&database).expect("read corrected preference");
         let preferences = store.profile_preferences().expect("profile preferences");
-        assert_eq!(preferences.model.as_deref(), Some("deepseek-v4-flash"));
-        assert_eq!(preferences.thinking_level, ThinkingLevel::ProviderDefault);
+        assert_eq!(preferences.model.as_deref(), Some("alternate-model"));
+        assert_eq!(preferences.thinking_level, ThinkingLevel::High);
         store
             .set_profile_preferences("medium-only", ThinkingLevel::ExtraHigh)
             .expect("changed reasoning preference");

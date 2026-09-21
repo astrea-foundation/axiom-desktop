@@ -1,5 +1,9 @@
 # ADR 0014: Fresh account storage and deposit-only billing
 
+> September 21, 2026: Phala is retired. Current providers and dynamic discovery
+> are documented in [provider catalogs](../provider-catalogs.md); Phala details
+> below describe the historical decision only.
+
 Status: accepted for the September 2026 development reset. Supersedes the old
 clean-slate plans and the invoice billing portion of ADR 0011.
 

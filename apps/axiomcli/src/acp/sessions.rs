@@ -27,7 +27,7 @@ pub(super) fn initialize(
         .prompt_capabilities(
             protocol::PromptCapabilities::new()
                 .image(true)
-                .embedded_context(true),
+                .embedded_context(false),
         )
         .meta(extension_meta(ExtensionCapabilities::agent(
             ctx_extension_state.runtime_instance_id.clone(),
@@ -462,13 +462,22 @@ pub(super) async fn load_session(
             )
             .await?
             .map_err(agent_error)?;
-            let settings = crate::agent::reconcile_new_session_settings(
-                model_details.clone(),
-                Some(&restored_model),
-                &ctx_default_model,
-                restored_thinking,
-            )
-            .map_err(agent_error)?;
+            let model_available = model_details.iter().any(|model| model.id == restored_model);
+            let settings = if model_available {
+                crate::agent::reconcile_new_session_settings(
+                    model_details.clone(),
+                    Some(&restored_model),
+                    &ctx_default_model,
+                    restored_thinking,
+                )
+                .map_err(agent_error)?
+            } else {
+                crate::agent::ModelSettings {
+                    model: restored_model.clone(),
+                    thinking: restored_thinking,
+                    supports_reasoning: false,
+                }
+            };
             let session_model = settings.model.clone();
             let session_thinking = settings.thinking;
             let models = model_details
@@ -479,11 +488,7 @@ pub(super) async fn load_session(
                 .iter()
                 .find(|model| model.id == session_model)
                 .map(supported_thinking_levels)
-                .ok_or_else(|| {
-                    agent_client_protocol::util::internal_error(
-                        "selected model disappeared from the provider catalog",
-                    )
-                })?;
+                .unwrap_or_default();
             await_session_future(
                 &request_cancellation,
                 &work,
@@ -491,13 +496,15 @@ pub(super) async fn load_session(
             )
             .await?
             .map_err(agent_error)?;
-            await_session_future(
-                &request_cancellation,
-                &work,
-                ctx_runner.set_model_settings(&internal_id, &settings),
-            )
-            .await?
-            .map_err(agent_error)?;
+            if model_available {
+                await_session_future(
+                    &request_cancellation,
+                    &work,
+                    ctx_runner.set_model_settings(&internal_id, &settings),
+                )
+                .await?
+                .map_err(agent_error)?;
+            }
             // Completing the runner settings is the load commit point.
             // Cancellation before it leaves no registered ACP session;
             // after it, finish restoring Runtime/storage/session state so

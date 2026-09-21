@@ -14,7 +14,6 @@ integration for clients that speak OpenAI-compatible HTTP.
 | `apps/axiom-proxy` | Standalone authenticated loopback server and library used by `axiomcli desktop-proxy` |
 | `crates/axiom-inference` | Transport-independent model, request, tool, usage and event types |
 | `crates/axiom-secure-client` | Catalog, registered providers, local attestation and authenticated E2EE |
-| `crates/axiom-phala-core` | Owned Phala verifier/cipher fork; see its [provenance](../crates/axiom-phala-core/ORIGIN.md) |
 | `crates/axiom-openai-compat` | Pure OpenAI wire translation |
 | `crates/axiom-acp-extension` | Authoritative first-party Rust DTOs and schema |
 | `packages/axiom-acp-client` | Node-side process framing, negotiation, state reduction and recovery |
@@ -91,7 +90,8 @@ Local conversation databases are not encrypted at rest by AxiomCLI.
 
 ## Inference and operational metadata
 
-The compiled registry supports NEAR v3, Phala ACI v2 and Tinfoil EHBP v1.
+The compiled registry supports NEAR v3 and Tinfoil EHBP v1.
+Models and capabilities refresh through [provider discovery](provider-catalogs.md).
 The catalog cannot expand that registry or substitute an unauthenticated key.
 The native client verifies each protocol's complete trust chain and authenticates
 completion before persisting a successful verified outcome. See

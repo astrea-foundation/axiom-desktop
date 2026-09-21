@@ -73,8 +73,8 @@ struct SignedPolicyDocument {
     require_live_tls_binding: bool,
     nvidia_anchor_sha256: Vec<String>,
     approved_near_workload_measurements: Vec<String>,
-    // Retain legacy fields only to verify existing v1 document signatures.
-    // Phala source updates are governed by quote-bound provenance, not these lists.
+    // Preserve the original signed-v1 field order when verifying deployed policy
+    // signatures. These historical claims do not register or enable a provider.
     approved_phala_gateway_repositories: Vec<String>,
     approved_phala_gateway_commits: Vec<String>,
     workload_enforcement: WorkloadEnforcement,

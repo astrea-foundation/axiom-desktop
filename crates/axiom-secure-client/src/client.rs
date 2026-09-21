@@ -83,6 +83,10 @@ impl SecureClient {
             &cancellation,
         )
         .await;
+        self.accept_catalog(result).await
+    }
+
+    async fn accept_catalog(&self, result: Result<Vec<ModelInfo>>) -> Result<Vec<ModelInfo>> {
         match result {
             Ok(models) => {
                 *self.catalog_cache.write().await = Some(CachedCatalog {
@@ -92,6 +96,11 @@ impl SecureClient {
                 Ok(models)
             }
             Err(error) => {
+                if error.kind() != axiom_inference::ProviderFailureKind::Transient {
+                    // Do not resurrect withdrawn or rejected metadata on a later outage.
+                    *self.catalog_cache.write().await = None;
+                    return Err(error);
+                }
                 let cache = self.catalog_cache.read().await;
                 if let Some(cached) = cache.as_ref()
                     && cached.fetched_at.elapsed() <= self.config.catalog_max_stale
@@ -359,6 +368,49 @@ impl std::fmt::Debug for SecureClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn rejected_or_withdrawn_catalogs_cannot_return_after_a_later_outage() {
+        let client = SecureClient::new(
+            SecureClientConfig::new("https://relay.example").unwrap(),
+            ApiCredential::new("test"),
+        )
+        .unwrap();
+        let transient = || {
+            crate::SecureClientError::new(axiom_inference::ProviderFailureKind::Transient, "outage")
+        };
+        assert!(client.accept_catalog(Err(transient())).await.is_err());
+        let model = ModelInfo {
+            id: "new-offering".into(),
+            ..ModelInfo::default()
+        };
+        client
+            .accept_catalog(Ok(vec![model.clone()]))
+            .await
+            .unwrap();
+        assert_eq!(
+            client.accept_catalog(Err(transient())).await.unwrap()[0].id,
+            model.id
+        );
+        assert!(
+            client
+                .accept_catalog(Err(crate::SecureClientError::catalog("no usable models")))
+                .await
+                .is_err()
+        );
+        assert!(client.accept_catalog(Err(transient())).await.is_err());
+        client.accept_catalog(Ok(vec![model])).await.unwrap();
+        client
+            .catalog_cache
+            .write()
+            .await
+            .as_mut()
+            .unwrap()
+            .fetched_at = Instant::now()
+            .checked_sub(std::time::Duration::from_secs(1801))
+            .unwrap();
+        assert!(client.accept_catalog(Err(transient())).await.is_err());
+    }
 
     #[test]
     fn client_rejects_empty_credentials_and_redacts_nonempty_ones() {

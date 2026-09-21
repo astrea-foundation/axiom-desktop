@@ -597,7 +597,7 @@ pub(super) fn query_prompt_attachments(
     ).map_err(storage_error)?;
     if let Some(payload) = payload {
         let attachments: Vec<axiom_inference::PromptAttachment> = serde_json::from_str(&payload)?;
-        axiom_inference::validate_prompt(&text, &attachments)
+        axiom_inference::validate_stored_prompt(&text, &attachments)
             .map_err(|error| AxiomError::Storage(error.to_string()))?;
         Ok(attachments)
     } else if serde_json::from_str::<Value>(&metadata)?
