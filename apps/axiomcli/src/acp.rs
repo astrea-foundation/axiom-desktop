@@ -1520,7 +1520,7 @@ impl ExtensionState {
         if features.thread_catalog >= 1 {
             mask |= ExtensionFeature::ThreadCatalog as u64;
         }
-        if features.timeline >= 1 {
+        if features.timeline >= 2 {
             mask |= ExtensionFeature::Timeline as u64;
         }
         if features.model_catalog >= 1 {
@@ -2201,6 +2201,18 @@ fn agent_error(error: crate::AxiomError) -> agent_client_protocol::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn independently_paged_accounting_requires_timeline_version_two() {
+        let state = ExtensionState::new();
+        let mut features = FeatureVersions::all();
+        features.timeline = 1;
+        state.negotiate(Some(features));
+        assert!(!state.feature_enabled(ExtensionFeature::Timeline));
+        features.timeline = 2;
+        state.negotiate(Some(features));
+        assert!(state.feature_enabled(ExtensionFeature::Timeline));
+    }
 
     #[test]
     fn context_usage_activity_carries_only_replacement_token_metadata() {

@@ -102,6 +102,10 @@ test("extension negotiation accepts additive families and optional features only
     protocolVersion: "1.0",
     features: required,
   }));
+  assert.throws(() => validateDesktopExtension({
+    protocolVersion: "0.2",
+    features: { ...required, timeline: 1 },
+  }));
   const { timeline: _, ...missingTimeline } = required;
   assert.throws(() => validateDesktopExtension({
     protocolVersion: "0.2",
@@ -1197,7 +1201,7 @@ test("real ACP attachment submission, inspection, reload, and text revision reta
   } finally { await client.close(); }
 });
 
-test("timeline assembly independently drains accounting pages and rejects repeated cursors", async () => {
+test("timeline assembly independently drains accounting pages and rejects repeated cursors", async (t) => {
   const first = timelinePage();
   const a = { requestId: "a".repeat(32), modelId: "model", providerId: "near" };
   const b = { ...a, requestId: "b".repeat(32) };
@@ -1205,6 +1209,7 @@ test("timeline assembly independently drains accounting pages and rejects repeat
   first.nextRequestUsageCursor = a.requestId;
   const second = { ...first, items: [], requestUsage: [b], nextRequestUsageCursor: undefined };
   const client = new AxiomAcpClient({ command: binary, args: ["acp"] });
+  t.after(() => client.close());
   const internal = client as unknown as {
     process: { request: (method: string, params: Record<string, unknown>) => Promise<GetThreadTimelineResponse> };
     state: AxiomStateStore;
