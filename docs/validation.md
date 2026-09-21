@@ -2,9 +2,9 @@
 
 The 2026-09-21 consolidation reviewed the native implementation at `fa9c4ab`
 (the then-current `dev` baseline), manifests, generated contracts, tests and workflow definitions.
-It corrects source claims; it does not establish the current state of production,
-published installers or unrecorded manual work. Concurrent changes on other
-branches are outside this baseline.
+The clean-baseline refactor updates the storage and billing findings below and
+records its additional checks separately. These source checks do not establish
+the current state of production, published installers or unrecorded manual work.
 
 ## Source checks
 
@@ -48,7 +48,7 @@ remain separate.
 |---|---|
 | Original branch freeze and schema baseline | Historical setup, not a standing development stage. Record actual release revisions using CONTRIBUTING and current platform migrations. |
 | Hosted staging, four auth methods and recovery/rollback | Requires deployment records and browser checks for the chosen release; source/tests alone cannot close it. |
-| Billing edge cases | Revalidate paid/duplicate/under/over/mismatched/late/reconciled payments and partial-inference settlement for the backend's selected provider. Exercise persistent address provisioning, signed event replay, valuation and reorg review for Axiom Payments. |
+| Billing edge cases | Exercise persistent address provisioning, duplicate and out-of-order signed events, namespace isolation, valuation, reorg review and partial-inference settlement with Axiom Payments and the selected inference provider. |
 | macOS/Windows interactive acceptance | Record vault, system-browser, passkey/Hello, signing, installer/uninstaller, account switching, refresh/logout, billing and authenticated inference outcomes per target. |
 | Artifact evidence | Record OS/browser/architecture, commit, artifact hashes and signing identity with acceptance results. A successful headless package is insufficient. |
 | Initial destructive production cutover | Retired proposal, not an executable runbook. The newly authorized September reset is defined in ADR 0014 and the platform reset runbook. Platform operations own database/namespace replacement, secret changes, smoke tests and recovery. |
@@ -68,8 +68,9 @@ old proposal to imply that the check happened.
 The September reset removes retired invoice APIs/UI and old migration chains.
 Local validation: 503 platform tests, all native workspace Rust tests, explicit
 reset/plan CLI tests, TypeScript checks/tests, Desktop and auth builds, receiver
-unit/integration tests and Compose validation. Browser regression checks are
-recorded with the development PRs. Strict native Clippy remains blocked by
+unit/integration tests, local reset and Compose validation. All 127 Desktop browser
+regressions and the updated release-archive regression pass. The development PRs
+record the paired revisions. Strict native Clippy remains blocked by
 pre-existing warnings (including `axiom-inference` enum size and boolean-count
 lints); ordinary Clippy completes. Live inference, funded deposits, OS-specific
 acceptance and production cutover were not exercised by this source cleanup.
