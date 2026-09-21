@@ -8,7 +8,12 @@ use std::{collections::BTreeMap, fmt};
 
 use serde::{Deserialize, Serialize};
 mod accounting;
+mod attachments;
 pub use accounting::{InvocationPurpose, InvocationState, RequestUsage, UsageCompleteness};
+pub use attachments::{
+    ImageContent, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS, MAX_IMAGE_BYTES, PromptAttachment,
+    user_message, validate_prompt,
+};
 
 pub const MAX_TOOLS: usize = 128;
 pub const MAX_TOOL_CALLS: usize = 128;
@@ -34,6 +39,8 @@ pub struct ChatMessage {
     pub role: ChatRole,
     #[serde(default)]
     pub content: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<ImageContent>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -52,6 +59,7 @@ impl ChatMessage {
         Self {
             role,
             content: content.into(),
+            images: Vec::new(),
             reasoning_content: None,
             name: None,
             refusal: None,
@@ -212,6 +220,14 @@ impl InferenceRequest {
             return Err(ValidationError::count("tools"));
         }
         for message in &self.messages {
+            if !message.images.is_empty()
+                && (message.role != ChatRole::User || message.images.len() > MAX_ATTACHMENTS)
+            {
+                return Err(ValidationError::invalid("message.images"));
+            }
+            for image in &message.images {
+                image.validate()?;
+            }
             validate_bytes("message.content", &message.content, MAX_MESSAGE_TEXT_BYTES)?;
             validate_optional_bytes(
                 "message.reasoning_content",
@@ -618,6 +634,8 @@ pub struct ModelInfo {
     pub supports_parallel_tools: bool,
     #[serde(default)]
     pub supports_streaming: bool,
+    #[serde(default)]
+    pub supports_images: bool,
 }
 
 pub const AUTO_COMPACT_CONTEXT_PERCENT: u32 = 85;

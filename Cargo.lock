@@ -509,6 +509,7 @@ dependencies = [
 name = "axiom-inference"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "proptest",
  "schemars 1.2.2",
  "serde",

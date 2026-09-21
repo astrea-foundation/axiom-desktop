@@ -1,4 +1,5 @@
-import { useCallback, useRef, useState, type SetStateAction } from "react";
+import { useCallback, useEffect, useRef, useState, type SetStateAction } from "react";
+import { localPayloads } from "./localPayloads";
 import { browserConsentStorage } from "./webConsent";
 
 const key = (account: string | null, thread: string | null) =>
@@ -9,6 +10,8 @@ const key = (account: string | null, thread: string | null) =>
 export function useAccountDraft(accountId: string | null, threadId: string | null = null) {
   const storage = browserConsentStorage();
   const drafts = useRef(new Map<string, string>());
+  const versions = useRef(new Map<string, number>());
+  const pendingSaves = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const previousAccount = useRef(accountId);
   const currentAccount = useRef(accountId);
   currentAccount.current = accountId;
@@ -29,11 +32,24 @@ export function useAccountDraft(accountId: string | null, threadId: string | nul
       drafts.current.set(key(accountId, null), anonymous);
       try { storage?.setItem(key(accountId, null), anonymous); } catch { /* retained in memory */ }
     }
+    clearTimeout(pendingSaves.current.get(key(null, null)));
+    pendingSaves.current.delete(key(null, null));
+    void localPayloads.remove("anonymous", key(null, null)).catch(() => undefined);
     drafts.current.set(key(null, null), "");
     try { storage?.setItem(key(null, null), ""); } catch { /* retained in memory */ }
   }
   previousAccount.current = accountId;
   const draft = read(accountId, threadId);
+  useEffect(() => {
+    const scope = key(accountId, threadId);
+    const version = versions.current.get(scope) ?? 0;
+    let active = true;
+    void localPayloads.get(accountId ?? "anonymous", scope).then((saved) => {
+      if (!active || !saved || (versions.current.get(scope) ?? 0) !== version) return;
+      drafts.current.set(scope, saved.text); changed((value) => value + 1);
+    }).catch(() => undefined);
+    return () => { active = false; };
+  }, [accountId, threadId]);
   const writeDraft = useCallback((thread: string | null, next: SetStateAction<string>, requireDurable = false) => {
     if (currentAccount.current !== accountId) return false;
     const scope = key(accountId, thread);
@@ -49,10 +65,29 @@ export function useAccountDraft(accountId: string | null, threadId: string | nul
     // Keep text in memory even if disk storage is unavailable. Submission has
     // its own mandatory durable outbox write before it can clear this draft.
     drafts.current.set(scope, text);
+    versions.current.set(scope, (versions.current.get(scope) ?? 0) + 1);
+    clearTimeout(pendingSaves.current.get(scope));
+    pendingSaves.current.set(scope, setTimeout(() => {
+      pendingSaves.current.delete(scope);
+      void localPayloads.put(accountId ?? "anonymous", scope, { text, attachments: [] }).catch(() => undefined);
+    }, text ? 250 : 0));
     try { storage?.setItem(scope, text); } catch { /* retained in memory */ }
     changed((value) => value + 1);
     return true;
   }, [accountId, storage]);
   const setDraft = useCallback((next: SetStateAction<string>) => writeDraft(threadId, next), [threadId, writeDraft]);
-  return [draft, setDraft, writeDraft] as const;
+  const writeDraftDurable = useCallback(async (thread: string | null, text: string) => {
+    if (currentAccount.current !== accountId) return false;
+    const scope = key(accountId, thread);
+    clearTimeout(pendingSaves.current.get(scope));
+    pendingSaves.current.delete(scope);
+    await localPayloads.put(accountId ?? "anonymous", scope, { text, attachments: [] });
+    if (currentAccount.current !== accountId) return false;
+    drafts.current.set(scope, text);
+    versions.current.set(scope, (versions.current.get(scope) ?? 0) + 1);
+    try { storage?.setItem(scope, text); } catch { /* IndexedDB committed. */ }
+    changed((value) => value + 1);
+    return true;
+  }, [accountId, storage]);
+  return [draft, setDraft, writeDraft, writeDraftDurable] as const;
 }

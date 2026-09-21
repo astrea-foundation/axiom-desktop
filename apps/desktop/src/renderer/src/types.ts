@@ -17,6 +17,7 @@ export interface ProviderModel {
   inputPriceMicrousdPerMillionTokens: number | null;
   outputPriceMicrousdPerMillionTokens: number | null;
   contextWindowTokens?: number;
+  supportsImages?: boolean;
   autoCompactThresholdTokens?: number;
 }
 

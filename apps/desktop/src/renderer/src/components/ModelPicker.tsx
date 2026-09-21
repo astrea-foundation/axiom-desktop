@@ -187,7 +187,7 @@ export function ModelPicker({ models, selectedModelId, onSelect }: ModelPickerPr
                 </span>
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-[12.5px] font-medium text-[var(--color-text-primary)]">
-                    {model.label}
+                    {model.label}{model.supportsImages ? " · Images" : ""}
                   </span>
                   <span className="mt-0.5 block truncate font-mono text-[10px] text-[var(--color-text-muted)]">
                     {model.model}

@@ -1887,7 +1887,7 @@ pub async fn run(
                                     let turn_id = runtime.turn_id();
                                     let should_generate_title = !state.has_prompt
                                         && store.as_ref().is_some_and(SessionStore::is_active);
-                                    let submitted = runtime.dispatch(AppCommand::SubmitPrompt {
+                                    let submitted = runtime.dispatch(AppCommand::SubmitPrompt {attachments: Vec::new(),
                                         session_id: session_id.clone(),
                                         turn_id: turn_id.clone(),
                                         text: prompt.clone(),
@@ -1913,7 +1913,7 @@ pub async fn run(
                                     active_steering = Some(steering.clone());
                                     let task_runner = runner.clone();
                                     let task_tx = ui_tx.clone();
-                                    let context = TurnContext {
+                                    let context = TurnContext {attachments: Vec::new(),
                                         session_id: session_id.clone(),
                                         turn_id: turn_id.clone(),
                                         cwd: cwd.clone(),

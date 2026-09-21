@@ -153,6 +153,14 @@ pub async fn serve_stdio(
         GetThreadTimelineResponse
     );
     let builder = request_handler!(
+        sync_ref,
+        builder,
+        context,
+        threads::get_attachments,
+        extension::GetAttachmentsRequest,
+        extension::GetAttachmentsResponse
+    );
+    let builder = request_handler!(
         async,
         builder,
         context,

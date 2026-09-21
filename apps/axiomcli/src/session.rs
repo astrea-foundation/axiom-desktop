@@ -29,7 +29,7 @@ use crate::{
     paths::{AxiomPaths, FrontendKind},
 };
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 // Clean-slate account-scoped storage contract (`AXA3`). Installation-scoped
 // pre-release databases use a different application ID and are never opened.
 const APPLICATION_ID: i64 = 0x4158_4133;
@@ -794,6 +794,11 @@ fn initialize_schema(connection: &mut Connection, version: i64) -> Result<()> {
             .map_err(storage_error)?;
         transaction.commit().map_err(storage_error)?;
     }
+    if version < 2 {
+        let transaction = connection.transaction().map_err(storage_error)?;
+        transaction.execute_batch("CREATE TABLE prompt_attachments (user_item_id TEXT PRIMARY KEY REFERENCES timeline_items(id) ON DELETE CASCADE, payload TEXT NOT NULL); PRAGMA user_version=2;").map_err(storage_error)?;
+        transaction.commit().map_err(storage_error)?;
+    }
     Ok(())
 }
 
@@ -905,6 +910,7 @@ fn validate_schema(connection: &Connection) -> Result<()> {
         "threads",
         "turns",
         "timeline_items",
+        "prompt_attachments",
         "collections",
         "thread_collections",
         "profile_preferences",
@@ -1123,7 +1129,9 @@ impl SessionStore {
         let mut client_item_id = client_item_id.as_deref();
         for envelope in envelopes {
             persist_event(&transaction, envelope, client_item_id)?;
-            if matches!(&envelope.event,
+            let has_attachments = matches!(&envelope.event, AppEvent::PromptAccepted { attachments, .. } if !attachments.is_empty());
+            if has_attachments
+                || matches!(&envelope.event,
                 AppEvent::PromptAccepted { text, .. }
                 | AppEvent::SteeringApplied { text, .. }
                 | AppEvent::TextDelta { text, .. }
@@ -1137,7 +1145,8 @@ impl SessionStore {
                     params![thread_id, message_at],
                 ).map_err(storage_error)?;
             }
-            if matches!(&envelope.event,
+            if has_attachments
+                || matches!(&envelope.event,
                 AppEvent::PromptAccepted { text, .. } | AppEvent::SteeringApplied { text, .. } if !text.is_empty())
             {
                 transaction.execute(
@@ -1278,7 +1287,11 @@ fn persist_event(
                 },
             )?;
         }
-        AppEvent::PromptAccepted { turn_id, text } => {
+        AppEvent::PromptAccepted {
+            turn_id,
+            text,
+            attachments,
+        } => {
             let turn_id = turn_id.to_string();
             let user_content = redact_text(text);
             let (user_item_id, _) = insert_timeline_item(
@@ -1291,10 +1304,24 @@ fn persist_event(
                     client_item_id,
                     external_id: None,
                     content: &user_content,
-                    metadata: json!({}),
+                    metadata: if attachments.is_empty() {
+                        json!({})
+                    } else {
+                        json!({"attachments": attachments.iter().map(axiom_inference::PromptAttachment::summary).collect::<Vec<_>>()})
+                    },
                     now: &now,
                 },
             )?;
+            if !attachments.is_empty() {
+                axiom_inference::validate_prompt(text, attachments)
+                    .map_err(|error| AxiomError::Storage(error.to_string()))?;
+                transaction
+                    .execute(
+                        "INSERT INTO prompt_attachments(user_item_id,payload) VALUES (?1,?2)",
+                        params![user_item_id, serde_json::to_string(attachments)?],
+                    )
+                    .map_err(storage_error)?;
+            }
             let (assistant_item_id, _) = insert_timeline_item(
                 transaction,
                 &thread_id,
@@ -2865,6 +2892,14 @@ impl SessionStore {
         transaction.commit().map_err(storage_error)
     }
 
+    pub fn prompt_attachments(
+        &self,
+        id: &SessionId,
+        item_id: &str,
+    ) -> Result<Vec<axiom_inference::PromptAttachment>> {
+        query_prompt_attachments(&*self.lock()?, id, item_id)
+    }
+
     pub fn history_before_user_message(
         &self,
         id: &SessionId,
@@ -3574,9 +3609,20 @@ impl SessionStore {
                 "thread {id} exceeds the {MAX_TIMELINE_ITEMS_PER_LOAD}-item runtime restore limit"
             ));
         }
+        let mut attachments = HashMap::new();
+        for item in &items {
+            if item.kind == TimelineItemKind::UserMessage
+                && item.metadata.get("attachments").is_some()
+            {
+                attachments.insert(
+                    item.id.clone(),
+                    query_prompt_attachments(&connection, id, &item.id)?,
+                );
+            }
+        }
         drop(statement);
         drop(connection);
-        let events = project_runtime_events(id, &thread, &turns, &items)?;
+        let events = project_runtime_events(id, &thread, &turns, &items, &attachments)?;
         Ok(LoadOutcome { events, warnings })
     }
 
@@ -3678,11 +3724,38 @@ impl SessionStore {
     }
 }
 
+fn query_prompt_attachments(
+    connection: &Connection,
+    id: &SessionId,
+    item_id: &str,
+) -> Result<Vec<axiom_inference::PromptAttachment>> {
+    let (payload, metadata, text): (Option<String>, String, String) = connection.query_row(
+        "SELECT p.payload,i.metadata,i.content FROM timeline_items i LEFT JOIN prompt_attachments p ON p.user_item_id=i.id WHERE i.thread_id=?1 AND (i.id=?2 OR i.client_item_id=?2) AND i.kind='user_message'",
+        params![id.to_string(), item_id], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?)),
+    ).map_err(storage_error)?;
+    if let Some(payload) = payload {
+        let attachments: Vec<axiom_inference::PromptAttachment> = serde_json::from_str(&payload)?;
+        axiom_inference::validate_prompt(&text, &attachments)
+            .map_err(|error| AxiomError::Storage(error.to_string()))?;
+        Ok(attachments)
+    } else if serde_json::from_str::<Value>(&metadata)?
+        .get("attachments")
+        .is_some()
+    {
+        Err(AxiomError::Storage(
+            "Stored attachment contents are missing; the message cannot be replayed.".into(),
+        ))
+    } else {
+        Ok(Vec::new())
+    }
+}
+
 fn project_runtime_events(
     id: &SessionId,
     thread: &ThreadSummary,
     turns: &[TurnRecord],
     items: &[TimelineItem],
+    attachments: &HashMap<String, Vec<axiom_inference::PromptAttachment>>,
 ) -> Result<Vec<EventEnvelope>> {
     let origin = origin_from_name(&thread.origin)?;
     let profile = PermissionProfile::from_str(&thread.profile).map_err(|_| {
@@ -3751,6 +3824,7 @@ fn project_runtime_events(
             projection.push(
                 parse_time(&item.created_at),
                 AppEvent::PromptAccepted {
+                    attachments: attachments.get(&item.id).cloned().unwrap_or_default(),
                     turn_id: parsed_turn.clone(),
                     text: item.content.clone(),
                 },
@@ -4327,6 +4401,92 @@ mod tests {
     }
 
     #[test]
+    fn attachments_survive_reopen_and_revision_and_are_deleted_with_their_message() {
+        let (_root, store) = routed_store();
+        store.activate_account("a").unwrap();
+        let id = SessionId::new();
+        let turn = TurnId::new();
+        create(&store, &id);
+        let files = vec![axiom_inference::PromptAttachment::Text {
+            name: "notes.txt".into(),
+            text: "local file contents".into(),
+        }];
+        store
+            .append_prompt_revision(
+                &[envelope(
+                    &id,
+                    2,
+                    AppEvent::PromptAccepted {
+                        turn_id: turn.clone(),
+                        text: String::new(),
+                        attachments: files.clone(),
+                    },
+                )],
+                Some("client-id"),
+                None,
+            )
+            .unwrap();
+        store
+            .append(&envelope(&id, 3, AppEvent::TurnCompleted { turn_id: turn }))
+            .unwrap();
+        let snapshot = store.thread_snapshot(&id, None, 100).unwrap();
+        let user = snapshot
+            .items
+            .iter()
+            .find(|item| item.kind == TimelineItemKind::UserMessage)
+            .unwrap();
+        assert!(snapshot.thread.last_user_message_at.is_some());
+        assert!(
+            !serde_json::to_string(&snapshot.items)
+                .unwrap()
+                .contains("local file contents")
+        );
+        assert_eq!(store.prompt_attachments(&id, "client-id").unwrap(), files);
+        store.activate_account("b").unwrap();
+        assert!(store.prompt_attachments(&id, &user.id).is_err());
+        store.activate_account("a").unwrap();
+        assert!(store.load(&id).unwrap().iter().any(|event| matches!(&event.event, AppEvent::PromptAccepted { attachments, .. } if attachments == &files)));
+        let revision = axiom_acp_extension::PromptRevision {
+            user_item_id: user.id.clone(),
+            expected_revision: store.thread_summary(&id).unwrap().revision,
+        };
+        let retained = store.prompt_attachments(&id, &user.id).unwrap();
+        let new_turn = TurnId::new();
+        store
+            .append_prompt_revision(
+                &[envelope(
+                    &id,
+                    4,
+                    AppEvent::PromptAccepted {
+                        turn_id: new_turn.clone(),
+                        text: "edited".into(),
+                        attachments: retained,
+                    },
+                )],
+                Some("edited-id"),
+                Some(&revision),
+            )
+            .unwrap();
+        assert!(store.prompt_attachments(&id, &user.id).is_err());
+        assert_eq!(store.prompt_attachments(&id, "edited-id").unwrap(), files);
+        store
+            .append(&envelope(
+                &id,
+                5,
+                AppEvent::TurnCompleted { turn_id: new_turn },
+            ))
+            .unwrap();
+        let count: i64 = store
+            .lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM prompt_attachments", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(count, 1, "revision cascades away the replaced payload");
+    }
+
+    #[test]
     fn message_revision_is_idle_account_scoped_and_preserves_request_accounting() {
         let (_root, store) = routed_store();
         store.activate_account("a").unwrap();
@@ -4395,6 +4555,7 @@ mod tests {
                 &id,
                 7,
                 AppEvent::PromptAccepted {
+                    attachments: Vec::new(),
                     turn_id: first.clone(),
                     text: "replacement".into(),
                 },
@@ -4666,6 +4827,7 @@ mod tests {
                         id,
                         2,
                         AppEvent::PromptAccepted {
+                            attachments: Vec::new(),
                             turn_id: turn.clone(),
                             text: "hello".into(),
                         },
@@ -4681,6 +4843,25 @@ mod tests {
                 client_item_id,
             )
             .expect("begin turn")
+    }
+
+    #[test]
+    fn version_one_store_upgrades_without_replacing_existing_history() {
+        let root = tempdir().unwrap();
+        let path = root.path().join("state.sqlite3");
+        let connection = Connection::open(&path).unwrap();
+        connection.execute_batch(SCHEMA_BASELINE).unwrap();
+        drop(connection);
+        let store = SessionStore::open(&path).unwrap();
+        let id = SessionId::new();
+        create(&store, &id);
+        let connection = store.lock().unwrap();
+        let version: i64 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 2);
+        drop(connection);
+        assert!(!store.load(&id).unwrap().is_empty());
     }
 
     #[test]
@@ -5545,6 +5726,7 @@ mod tests {
             &older,
             "2026-01-01T01:00:00Z",
             AppEvent::PromptAccepted {
+                attachments: Vec::new(),
                 turn_id: turn.clone(),
                 text: "old".into(),
             },
@@ -5553,6 +5735,7 @@ mod tests {
             &newer,
             "2026-01-01T02:00:00Z",
             AppEvent::PromptAccepted {
+                attachments: Vec::new(),
                 turn_id: TurnId::new(),
                 text: "new".into(),
             },
@@ -5627,6 +5810,7 @@ mod tests {
             &older,
             "2026-01-03T01:00:00Z",
             AppEvent::PromptAccepted {
+                attachments: Vec::new(),
                 turn_id: TurnId::new(),
                 text: "follow up".into(),
             },

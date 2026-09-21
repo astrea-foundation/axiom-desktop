@@ -356,3 +356,37 @@ pub(super) async fn delete_confirm(
     }
     Ok(())
 }
+
+/// Full inputs are fetched on demand, never broadcast with every state update.
+pub(super) fn get_attachments(
+    context: &ServerContext,
+    request: &extension::GetAttachmentsRequest,
+    responder: Responder<extension::GetAttachmentsResponse>,
+    _connection: &ConnectionTo<Client>,
+) -> agent_client_protocol::Result<()> {
+    if !extension_enabled(&context.extension_state, ExtensionFeature::Attachments) {
+        return responder.respond_with_error(extension_not_negotiated());
+    }
+    let Some(store) = &context.store else {
+        return responder.respond_with_internal_error("durable thread storage is unavailable");
+    };
+    let account_store = respond_or_return!(
+        responder,
+        context
+            .account_work
+            .register_store(store)
+            .map_err(agent_error)
+    );
+    let thread_id = respond_or_return!(
+        responder,
+        SessionId::from_str(&request.thread_id)
+            .map_err(|_| agent_client_protocol::util::internal_error("invalid thread ID"))
+    );
+    let attachments = respond_or_return!(
+        responder,
+        account_store
+            .read(|store| store.prompt_attachments(&thread_id, &request.user_item_id))
+            .map_err(agent_error)
+    );
+    account_store.publish(|| responder.respond(extension::GetAttachmentsResponse { attachments }))
+}

@@ -59,7 +59,7 @@ Wallet custody and transaction authority never cross the extension.
 ## Bounds and failure behavior
 
 - ACP is newline-delimited JSON-RPC on stdout; diagnostics use stderr.
-- The first-party process client rejects frames larger than 4 MiB and keeps at
+- The first-party process client rejects frames larger than 64 MiB (raised from 4 MiB for local attachments) and keeps at
   most 64 KiB of stderr diagnostics.
 - Extension identifiers, queries, native-login handles, evidence, manifests,
   selections, and compaction focus have explicit bounds.

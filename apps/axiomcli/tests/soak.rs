@@ -105,6 +105,7 @@ async fn long_stream_and_many_transcript_entries_stay_within_recorded_budgets() 
     engine
         .run(
             TurnContext {
+                attachments: Vec::new(),
                 session_id: SessionId::new(),
                 turn_id: TurnId::new(),
                 cwd: workspace.path().to_path_buf(),
@@ -143,6 +144,7 @@ async fn long_stream_and_many_transcript_entries_stay_within_recorded_budgets() 
     let turn_id = TurnId::new();
     let submitted = runtime
         .dispatch(AppCommand::SubmitPrompt {
+            attachments: Vec::new(),
             session_id: session_id.clone(),
             turn_id: turn_id.clone(),
             text: "stream a long response".into(),

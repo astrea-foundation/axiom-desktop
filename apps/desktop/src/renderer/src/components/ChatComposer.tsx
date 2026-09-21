@@ -5,6 +5,7 @@ import {
   ChevronDown,
   Globe2,
   Lock,
+  Paperclip,
   Square,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -15,6 +16,7 @@ import { ContextUsageIndicator } from "./ContextUsageIndicator";
 import { ModelBrandIcon } from "./ModelBrandIcon";
 import { ModelPicker } from "./ModelPicker";
 import { TeeVerificationBadge } from "./TeeVerificationBadge";
+import { DraftAttachments, type AttachmentControl } from "./Attachments";
 import { AgentModeControl, type AgentControlOptions } from "./AgentModeControl";
 
 function reasoningEffortLabel(effort: ReasoningEffort): string {
@@ -27,6 +29,7 @@ function reasoningEffortLabel(effort: ReasoningEffort): string {
 type OpenMenu = "model" | "thinking" | "agent" | null;
 
 interface ChatComposerProps {
+  attachments?: AttachmentControl;
   agentControl?: AgentControlOptions;
   value: string;
   onChange: (value: string) => void;
@@ -56,6 +59,7 @@ interface ChatComposerProps {
 }
 
 export function ChatComposer({
+  attachments,
   agentControl,
   value,
   onChange,
@@ -83,6 +87,7 @@ export function ChatComposer({
   webDisabled = false,
   onWebToggle,
 }: ChatComposerProps) {
+  const fileInput = useRef<HTMLInputElement>(null);
   const ref = useRef<HTMLTextAreaElement>(null);
   const controlsRef = useRef<HTMLDivElement>(null);
   const [openMenu, setOpenMenu] = useState<OpenMenu>(null);
@@ -90,7 +95,8 @@ export function ChatComposer({
   const supportedReasoningEfforts = explicitReasoningEfforts(selectedModel?.supportedReasoningEfforts ?? []);
   const showThinkingSelector = supportedReasoningEfforts.length > 0;
   const selectedThinking = reconcileReasoningEffort(reasoningEffort, supportedReasoningEfforts);
-  const canSend = Boolean(value.trim()) && (Boolean(selectedModel) || requiresSignIn);
+  const imageMismatch = attachments?.items.some((file) => file.kind === "image") && !selectedModel?.supportsImages;
+  const canSend = (Boolean(value.trim()) || Boolean(attachments?.items.length)) && !attachments?.busy && !imageMismatch && (Boolean(selectedModel) || requiresSignIn);
 
   useEffect(() => {
     const el = ref.current;
@@ -136,8 +142,13 @@ export function ChatComposer({
   };
 
   return (
-    <div className="group relative w-full">
+    <div className="group relative w-full" onDragOver={(event) => { if (attachments && event.dataTransfer.types.includes("Files")) event.preventDefault(); }} onDrop={(event) => {
+      if (attachments && event.dataTransfer.files.length) { event.preventDefault(); attachments.onAddFiles(Array.from(event.dataTransfer.files)); }
+    }}>
       <div className="composer-shell relative flex flex-col rounded-[22px] pl-4 pr-2.5 pb-2 pt-3 backdrop-blur">
+        {attachments ? <><DraftAttachments control={attachments} /><input ref={fileInput} type="file" multiple hidden aria-label="Choose attachments" onChange={(event) => { const files = Array.from(event.target.files ?? []); event.target.value = ""; attachments.onAddFiles(files); }} /></> : null}
+        {imageMismatch ? <p role="alert" className="mb-2 text-xs text-[var(--color-warning)]">Choose a model with image support to send these images.</p> : null}
+        {attachments?.items.some((file) => file.name.toLowerCase().endsWith(".pdf")) ? <p className="mb-2 text-xs text-[var(--color-text-tertiary)]">PDFs send extracted text. To include visual content, attach page images.</p> : null}
         <div className="flex items-start gap-3">
           <Lock size={13} aria-hidden="true" className="mt-[5.5px] shrink-0 text-[var(--color-text-muted)]" />
           <textarea
@@ -145,6 +156,7 @@ export function ChatComposer({
             data-chat-input
             value={value}
             onChange={(event) => onChange(event.target.value)}
+            onPaste={(event) => { if (attachments && event.clipboardData.files.length) { event.preventDefault(); attachments.onAddFiles(Array.from(event.clipboardData.files)); } }}
             onKeyDown={(event) => {
               // Enter can commit an IME candidate instead of submitting a message.
               // Keep the legacy 229 check for confirmation after compositionend.
@@ -251,6 +263,7 @@ export function ChatComposer({
                 ) : null}
               </div>
             ) : null}
+            {attachments ? <button type="button" disabled={attachments.busy} aria-label="Attach files" title="Attach images, text/code, or PDFs" className="rounded-md p-1.5 text-[var(--color-text-tertiary)] hover:bg-[var(--wash-chip-hover)] disabled:opacity-50" onClick={() => fileInput.current?.click()}><Paperclip size={16} /></button> : null}
             <button
               type="button"
               data-web-toggle
@@ -293,7 +306,7 @@ export function ChatComposer({
                 <Square size={12} fill="currentColor" strokeWidth={2.5} />
               </button>
             ) : null}
-            {!isStreaming || value.trim() ? (
+            {!isStreaming || value.trim() || attachments?.items.length ? (
               <button
                 type="button"
                 onClick={submit}

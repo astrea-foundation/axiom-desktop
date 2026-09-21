@@ -65,3 +65,13 @@ transaction authority. Currency valuation is distinct from a currency conversion
 archiving; TUI/ACP provide confirmed deletion. Uninstall preserves local account
 data and credential-store entries. See [configuration](configuration.md#paths-and-local-state)
 for paths and the account-scoped reset command.
+
+## Local attachments
+
+Desktop extracts UTF-8/PDF text locally and keeps attachment drafts and queued
+payloads in account-scoped IndexedDB. Accepted inputs are also stored in the native
+account-local conversation database for resume, inspection and regeneration. File
+contents, filenames included in prompts, and image bytes reach the provider only
+inside its authenticated E2EE request; hosted Axiom services do not parse or extract
+files. These local stores are not an additional at-rest encryption boundary.
+PDF extraction includes text only; scan pages and illustrations require images.

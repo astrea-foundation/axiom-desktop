@@ -32,14 +32,31 @@ pub(super) async fn prompt(
     let message_revision = prompt_metadata
         .as_ref()
         .and_then(|metadata| metadata.revision.clone());
+    let mut attachments = prompt_metadata
+        .as_ref()
+        .map(|metadata| metadata.attachments.clone())
+        .unwrap_or_default();
+    if !attachments.is_empty()
+        && !extension_enabled(&ctx_extension_state, ExtensionFeature::Attachments)
+    {
+        return responder.respond_with_error(extension_not_negotiated());
+    }
     let client_item_id = prompt_metadata.map(|metadata| metadata.client_item_id);
-    let prompt = match prompt_text(&request.prompt) {
-        Ok(prompt) => prompt,
+    let prompt = match prompt_input(&request.prompt) {
+        Ok((prompt, embedded)) => {
+            attachments.extend(embedded);
+            prompt
+        }
         Err(message) => return responder.respond_with_internal_error(message),
     };
+    if message_revision.is_none()
+        && let Err(error) = axiom_inference::validate_prompt(&prompt, &attachments)
+    {
+        return responder.respond_with_internal_error(error.to_string());
+    }
     let session_id = request.session_id.clone();
     // Edited user text is data, including a leading slash.
-    let command = match if message_revision.is_some() {
+    let command = match if message_revision.is_some() || !attachments.is_empty() {
         None
     } else {
         slash::parse(&prompt)
@@ -839,7 +856,10 @@ pub(super) async fn prompt(
                 return Err(crate::AxiomError::Cancelled);
             }
             let store = ctx_store.as_ref().ok_or_else(|| crate::AxiomError::Storage("durable thread storage is unavailable".into()))?;
-            store.history_before_user_message(&internal_id, revision)
+            let history = store.history_before_user_message(&internal_id, revision)?;
+            // Revision changes text. Preserve the original local file/image inputs.
+            attachments = store.prompt_attachments(&internal_id, &revision.user_item_id)?;
+            Ok(history)
         })();
         match prepared {
             Ok(history) => Some(history),
@@ -850,11 +870,39 @@ pub(super) async fn prompt(
         }
     } else { None };
 
+    let preflight: crate::Result<()> = async {
+        axiom_inference::validate_prompt(&prompt, &attachments)
+            .map_err(|error| crate::AxiomError::Protocol(error.to_string()))?;
+        let history_has_images = revision_history.as_ref().is_some_and(|history| {
+            history.iter().rev().take_while(|event| !matches!(event.event, AppEvent::ContextCompacted { .. })).any(|event| {
+                matches!(&event.event, AppEvent::PromptAccepted { attachments, .. } if attachments.iter().any(|attachment| matches!(attachment, axiom_inference::PromptAttachment::Image { .. })))
+            })
+        });
+        if history_has_images || attachments.iter().any(|attachment| matches!(attachment, axiom_inference::PromptAttachment::Image { .. })) {
+            let models = ctx_runner.available_model_details(work.cancellation.child_token()).await?;
+            if !models.iter().any(|model| model.id == session_model && model.supports_images) {
+                return Err(crate::AxiomError::Provider("This model does not support encrypted image input. Choose an image-capable model before sending.".into()));
+            }
+        }
+        Ok(())
+    }.await;
+    if let Err(error) = preflight {
+        if should_generate_title {
+            let mut registry = ctx_sessions.lock().await;
+            if work_matches(&registry, &internal_id, &work) && let Some(session) = registry.get_mut(&session_id) {
+                session.has_prompt = false;
+            }
+        }
+        release_session_work(&ctx_sessions, &internal_id, &work).await;
+        return responder.respond_with_error(agent_error(error));
+    }
+
     let submitted = match ctx_runtime
         .dispatch(AppCommand::SubmitPrompt {
             session_id: internal_id.clone(),
             turn_id: turn_id.clone(),
             text: prompt.clone(),
+            attachments: attachments.clone(),
         })
         .await
     {
@@ -972,6 +1020,7 @@ pub(super) async fn prompt(
                     cwd,
                     permission_profile: session_profile,
                     web_enabled,
+                    attachments,
                     steering: work.steering.clone(),
                     approval: Some(Arc::new(AcpApproval {
                         connection: task_connection.clone(),

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { AcpError, ProtocolError, SidecarExitedError } from "./errors.js";
 import type { JsonObject, RpcNotification, RpcRequest } from "./types.js";
 
-const MAX_FRAME_BYTES = 4 * 1024 * 1024;
+const MAX_FRAME_BYTES = 64 * 1024 * 1024;
 const MAX_DIAGNOSTIC_BYTES = 64 * 1024;
 
 type Pending = {

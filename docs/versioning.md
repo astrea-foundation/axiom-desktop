@@ -8,16 +8,18 @@ stable `vMAJOR.MINOR.PATCH`, match AxiomCLI's manifest and point to a promoted
 
 ## Local database
 
-The current SQLite baseline is schema **1**, application ID **`0x41584133`**,
+The current SQLite schema is **2**, application ID **`0x41584133`**,
 defined in [session.rs](../apps/axiomcli/src/session.rs). Each authenticated account
 and frontend has a separate database. It contains threads, turns, timeline items,
-collections, preferences, both activity clocks, Agent settings and request usage.
+collections, preferences, both activity clocks, Agent settings, request usage,
+and full local prompt attachments in a separate table.
 Runtime event envelopes are translated into materialized records.
 
 Pre-baseline application IDs and unsupported versions fail closed. Historical
 receipt repairs and activity backfills have been removed; local response
-verification remains required before content can be marked verified. Future
-schema changes must add transactional forward migrations from this baseline.
+verification remains required before content can be marked verified. Schema 1 upgrades to schema 2 in a transaction without resetting history, adding
+a payload table with cascading deletion from its user timeline row. Future schema
+changes must continue adding transactional forward migrations.
 
 For the authorized development reset, stop all processes using the account and run
 `axiomcli reset-local-state --account ACCOUNT_ID --frontend desktop-chat --confirm`

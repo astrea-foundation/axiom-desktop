@@ -184,3 +184,50 @@ test("setup failure remains reviewable; storage failure prevents the ready trans
   f.queue.failPreparation(id, "Setup failed");
   assert.equal(f.queue.preparations("account")[0]?.status, "queued");
 });
+
+test("large attachment payloads commit before queuing, hydrate paused, and stay account-scoped", async () => {
+  const f = fixture();
+  const data = new Map<string, { text: string; attachments: any[] }>();
+  const payloads = {
+    get: async (account: string, id: string) => data.get(`${account}:${id}`),
+    put: async (account: string, id: string, payload: any) => { data.set(`${account}:${id}`, structuredClone(payload)); },
+    remove: async (account: string, id: string) => { data.delete(`${account}:${id}`); },
+  };
+  const queue = new MessageQueue(f.storage, () => {}, assert.fail, payloads);
+  queue.sync(f.state, f.api);
+  const text = "large private prompt ".repeat(20_000);
+  const files = [{ kind: "text" as const, name: "private.txt", text: "private attachment" }];
+  const id = await queue.reserveDurable("thread", text, false, files);
+  queue.ready(id, "thread");
+  const manifest = [...f.values.values()].join("");
+  assert.ok(manifest.length < 1000);
+  assert.ok(!manifest.includes("private attachment"));
+  const restored = new MessageQueue(f.storage, () => {}, assert.fail, payloads);
+  restored.sync(f.state, f.api); await settle();
+  assert.equal(restored.list("thread")[0]?.text, text);
+  assert.deepEqual(restored.list("thread")[0]?.attachments, files);
+  assert.ok(restored.isPaused("thread"));
+  restored.sendNow(id); assert.equal(f.calls.length, 0, "attachments are queued for the next turn, never dropped into text-only steering");
+  const other = structuredClone(f.state); other.account!.account!.id = "other";
+  restored.sync(other, f.api); await settle();
+  assert.deepEqual(restored.list("thread"), []);
+  restored.sync(f.state, f.api); await settle(); restored.remove(id); await settle();
+  assert.equal(data.size, 0);
+});
+
+test("disk failure or account switch during payload commit leaves the draft unconsumed", async () => {
+  const f = fixture();
+  let release!: () => void;
+  const payloads = { get: async () => undefined, put: async () => new Promise<void>((resolve) => { release = resolve; }), remove: async () => {} };
+  const queue = new MessageQueue(f.storage, () => {}, assert.fail, payloads);
+  queue.sync(f.state, f.api);
+  const reserve = queue.reserveDurable("thread", "private", false);
+  await settle();
+  const other = structuredClone(f.state); other.account!.account!.id = "other";
+  queue.sync(other, f.api); release();
+  await assert.rejects(reserve, /account or connection changed/);
+  assert.equal(queue.list("thread").length, 0);
+  payloads.put = async () => { throw new Error("disk full"); };
+  await assert.rejects(queue.reserveDurable("thread", "keep this", false), /disk full/);
+  assert.equal(f.calls.length, 0);
+});

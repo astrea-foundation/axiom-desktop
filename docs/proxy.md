@@ -54,8 +54,16 @@ are named in `x-axiom-ignored-parameters` and the metadata-only
 `service_tier` are dropped without that report.
 
 Strict mode rejects unsupported parameters and names them in the same header.
-Both modes reject `n > 1` and non-text content parts. Text content-part arrays
-are accepted and joined with newlines. Model tool/streaming capability checks
+Both modes reject `n > 1` and unsupported content parts. Text parts are joined
+with newlines. Inline `image_url` data URLs for PNG/JPEG/WebP/GIF are accepted
+(up to 5 MiB per image, 8 images per message); remote image URLs are rejected.
+Images currently require Tinfoil Kimi K3 and are serialized inside its authenticated
+E2EE body. Other providers/models reject them explicitly. Image `detail` is an
+unsupported parameter (reported/ignored in lenient mode, rejected in strict mode).
+Requests are bounded to 32 MiB of serialized JSON, matching the native relay body
+bound; each message's text is bounded to 4 MiB. These are local resource limits.
+For Tinfoil, an omitted output limit stays omitted, allowing upstream defaults;
+an explicit limit is checked against the catalog ceiling. Model tool/streaming capability checks
 still apply; compatibility mode never relaxes E2EE authentication.
 
 The proxy implements Chat Completions, not every OpenAI endpoint. A third-party

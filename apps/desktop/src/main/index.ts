@@ -1,3 +1,4 @@
+import { validatePrompt } from "@axiom/axiom-acp-client";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -150,9 +151,18 @@ function installAgentIpc(): void {
       agentRevision(revision),
     );
   });
+  agentHandle("agent:prompt-with-attachments", (_event, sessionId: unknown, text: unknown, clientItemId: unknown, webEnabled: unknown, revision: unknown, attachments: unknown) => {
+    if (typeof webEnabled !== "boolean" || typeof text !== "string") throw new Error("Invalid prompt input");
+    validatePrompt(text, attachments);
+    return sidecar.prompt(boundedString(sessionId, "thread ID", 128), text, boundedString(clientItemId, "client item ID", 512), webEnabled, agentRevision(revision), undefined, attachments);
+  });
+  agentHandle("agent:attachments", (_event, threadId: unknown, userItemId: unknown) =>
+    sidecar.getAttachments(boundedString(threadId, "thread ID", 128), boundedString(userItemId, "user message ID", 512)));
   agentHandle("agent:prompt-revise", (_event, sessionId: unknown, text: unknown, userItemId: unknown, expectedRevision: unknown, webEnabled: unknown, revision: unknown) => {
     if (typeof webEnabled !== "boolean") throw new Error("webEnabled must be a boolean");
-    return sidecar.prompt(boundedString(sessionId, "thread ID", 128), boundedString(text, "prompt", 4 * 1024 * 1024),
+    if (typeof text !== "string") throw new Error("Invalid prompt input");
+    validatePrompt(text, [], true);
+    return sidecar.prompt(boundedString(sessionId, "thread ID", 128), text,
       crypto.randomUUID(), webEnabled, agentRevision(revision), {
         userItemId: boundedString(userItemId, "user message ID", 512), expectedRevision: agentRevision(expectedRevision),
       });

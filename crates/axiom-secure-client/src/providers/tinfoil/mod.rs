@@ -140,6 +140,9 @@ impl SecureProvider for TinfoilProvider {
         // The GPT-OSS deployment selects one call even when asked to batch.
         model.supports_parallel_tools = model.upstream_model != "gpt-oss-120b";
         model.supports_streaming = true;
+        // Kimi K3 exposes native image input on this same attested whole-body
+        // transport. Other offerings stay text-only until verified separately.
+        model.supports_images = model.upstream_model == "kimi-k3";
     }
 
     async fn establish(
@@ -521,8 +524,18 @@ fn request_body(model: &ModelInfo, request: &InferenceRequest, stream: bool) -> 
             "Tinfoil GPT-OSS supports sequential tool calls",
         ));
     }
-    let max_tokens = request.max_output_tokens.unwrap_or(model.max_output_tokens);
-    if max_tokens == 0 || max_tokens > model.max_output_tokens {
+    if request
+        .messages
+        .iter()
+        .any(|message| !message.images.is_empty())
+        && model.upstream_model != "kimi-k3"
+    {
+        return Err(invalid_request(
+            "this model does not support encrypted image input",
+        ));
+    }
+    let max_tokens = request.max_output_tokens;
+    if max_tokens.is_some_and(|tokens| tokens == 0 || tokens > model.max_output_tokens) {
         return Err(invalid_request("invalid output limit"));
     }
     let mut messages =
@@ -533,6 +546,17 @@ fn request_body(model: &ModelInfo, request: &InferenceRequest, stream: bool) -> 
         .as_array_mut()
         .ok_or_else(|| invalid_request("invalid messages"))?
     {
+        if let Some(images) = message.as_object_mut().unwrap().remove("images") {
+            let images: Vec<axiom_inference::ImageContent> = serde_json::from_value(images)
+                .map_err(|_| invalid_request("invalid image content"))?;
+            let mut parts = vec![json!({"type": "text", "text": message["content"]})];
+            parts.extend(
+                images.iter().map(
+                    |image| json!({"type": "image_url", "image_url": {"url": image.data_url()}}),
+                ),
+            );
+            message["content"] = Value::Array(parts);
+        }
         if !model.reasoning_replay && message.get("tool_calls").is_none() {
             message.as_object_mut().unwrap().remove("reasoning_content");
         }
@@ -543,7 +567,10 @@ fn request_body(model: &ModelInfo, request: &InferenceRequest, stream: bool) -> 
             message["content"] = Value::Null;
         }
     }
-    let mut body = json!({"model": model.upstream_model, "messages": messages, "max_tokens": max_tokens, "stream": stream});
+    let mut body = json!({"model": model.upstream_model, "messages": messages, "stream": stream});
+    if let Some(max_tokens) = max_tokens {
+        body["max_tokens"] = json!(max_tokens);
+    }
     if stream {
         body["stream_options"] = json!({"include_usage": true});
     }

@@ -3,6 +3,17 @@
 export type DesktopAgentPermission = "approve_commands" | "full_access";
 export type ThreadLifecycle =
   "ready" | "running" | "waiting_for_approval" | "waiting_for_answer" | "compacting" | "closed";
+export type PromptAttachment =
+  | {
+      name: string;
+      text: string;
+      kind: "text";
+    }
+  | {
+      name: string;
+      image: ImageContent;
+      kind: "image";
+    };
 export type TimelineItemKind = "user_message" | "assistant_message" | "reasoning" | "tool_call" | "plan" | "notice";
 export type TimelineItemStatus = "pending" | "in_progress" | "completed" | "cancelled" | "failed" | "interrupted";
 export type AccountState = "starting" | "signed_out" | "valid" | "expired" | "unavailable";
@@ -91,6 +102,8 @@ export interface ProtocolSchema {
   desktopBootstrapRequest: DesktopBootstrapRequest;
   desktopBootstrapResponse: DesktopBootstrapResponse;
   promptMetadata: PromptMetadata;
+  getAttachmentsRequest: GetAttachmentsRequest;
+  getAttachmentsResponse: GetAttachmentsResponse;
   deliveryMetadata: DeliveryMetadata;
   listThreadsRequest: ListThreadsRequest;
   listThreadsResponse: ListThreadsResponse;
@@ -215,6 +228,7 @@ export interface FeatureVersions {
   webConsent?: number;
   steering?: number;
   messageRevision?: number;
+  attachments?: number;
   compaction?: number;
   activity?: number;
   [k: string]: unknown;
@@ -268,11 +282,28 @@ export interface PromptMetadata {
    * native E2EE turn. Never interpreted by the hosted backend.
    */
   revision?: PromptRevision | null;
+  attachments?: PromptAttachment[];
   [k: string]: unknown;
 }
 export interface PromptRevision {
   userItemId: string;
   expectedRevision: number;
+}
+export interface ImageContent {
+  mimeType: string;
+  /**
+   * Canonical base64, without a data-URL prefix. Remote URLs are not images.
+   */
+  data: string;
+}
+export interface GetAttachmentsRequest {
+  threadId: string;
+  userItemId: string;
+  [k: string]: unknown;
+}
+export interface GetAttachmentsResponse {
+  attachments: PromptAttachment[];
+  [k: string]: unknown;
 }
 /**
  * Durable identity attached beneath `_meta.axiom` on standard ACP
@@ -429,6 +460,7 @@ export interface ModelInfo {
   thinkingLevels: string[];
   contextWindowTokens: number;
   maxOutputTokens: number;
+  supportsImages?: boolean;
   autoCompactThresholdTokens: number;
   inputPriceMicrousdPerMillionTokens?: number | null;
   outputPriceMicrousdPerMillionTokens?: number | null;

@@ -1,6 +1,8 @@
 import { EventEmitter } from "node:events";
 import type {
   AccountStatusResponse,
+  PromptAttachment,
+  GetAttachmentsResponse,
   AssignThreadCollectionResponse,
   BillingStatusResponse,
   UsageSummaryResponse,
@@ -28,6 +30,7 @@ import type {
   SteerTurnResponse,
   VerifySecurityResponse,
 } from "./generated/protocol.js";
+import { validatePrompt } from "./attachments.js";
 import { AcpError, ProtocolError } from "./errors.js";
 import { AcpProcess, type IncomingRequest, type SidecarProcessOptions } from "./process.js";
 import { AxiomStateStore, type ClientState } from "./state.js";
@@ -60,6 +63,7 @@ const EXTENSION_CAPABILITIES = {
     webConsent: 1,
     steering: 1,
     messageRevision: 1,
+    attachments: 1,
     compaction: 1,
     activity: 1,
   },
@@ -142,6 +146,7 @@ export class AxiomAcpClient extends EventEmitter {
   private fullResyncRequired = false;
   private initialized = false;
   private supportsMessageRevision = false;
+  private supportsAttachments = false;
   private desktopBootstrap: DesktopBootstrapResponse | null = null;
   private closing = false;
   private accountingTimer: ReturnType<typeof setTimeout> | null = null;
@@ -210,6 +215,7 @@ export class AxiomAcpClient extends EventEmitter {
     } | undefined;
     validateDesktopExtension(meta);
     this.supportsMessageRevision = (meta?.features?.messageRevision ?? 0) >= 1;
+    this.supportsAttachments = (meta?.features?.attachments ?? 0) >= 1;
     this.initialized = true;
     this.state.setConnected(true);
     return result;
@@ -306,7 +312,7 @@ export class AxiomAcpClient extends EventEmitter {
     return { ...result, sessionId: threadId };
   }
 
-  async prompt(threadId: string, text: string, clientItemId: string, webEnabled = false, agentRevision = this.state.snapshot().sessions[threadId]?.desktopAgent?.revision ?? 0, revision?: { userItemId: string; expectedRevision: number }): Promise<PromptResult> {
+  async prompt(threadId: string, text: string, clientItemId: string, webEnabled = false, agentRevision = this.state.snapshot().sessions[threadId]?.desktopAgent?.revision ?? 0, revision?: { userItemId: string; expectedRevision: number }, attachments: PromptAttachment[] = []): Promise<PromptResult> {
     if (revision && (!this.supportsMessageRevision || !revision.userItemId || revision.userItemId.length > 512
       || !Number.isSafeInteger(revision.expectedRevision) || revision.expectedRevision < 0)) {
       throw new ProtocolError("Restart Axiom before editing or regenerating messages.");
@@ -314,7 +320,8 @@ export class AxiomAcpClient extends EventEmitter {
     if (revision && this.state.snapshot().sessions[threadId]?.running) throw new ProtocolError("Stop the current reply first.");
     if (typeof webEnabled !== "boolean") throw new ProtocolError("webEnabled must be a boolean");
     if (!Number.isSafeInteger(agentRevision) || agentRevision < 0) throw new ProtocolError("invalid Agent settings revision");
-    if (!text.trim()) throw new ProtocolError("prompt cannot be empty");
+    validatePrompt(text, attachments, Boolean(revision));
+    if (attachments.length && !this.supportsAttachments) throw new ProtocolError("Restart Axiom to enable attachments. No message was sent.");
     if (!clientItemId || clientItemId.length > 512) throw new ProtocolError("invalid client item ID");
     const accountContext = this.state.accountContextToken();
     await this.waitForSecurityPreflight(threadId);
@@ -326,7 +333,7 @@ export class AxiomAcpClient extends EventEmitter {
         {
           sessionId: threadId,
           prompt: [{ type: "text", text }],
-          _meta: { axiom: { clientItemId, webEnabled, agentRevision, ...(revision ? { revision } : {}) } },
+          _meta: { axiom: { clientItemId, webEnabled, agentRevision, ...(revision ? { revision } : {}), ...(attachments.length ? { attachments } : {}) } },
         },
         0,
       );
@@ -341,6 +348,14 @@ export class AxiomAcpClient extends EventEmitter {
         await this.refreshThread(threadId).catch(() => undefined);
       }
     }
+  }
+
+  async getAttachments(threadId: string, userItemId: string): Promise<GetAttachmentsResponse> {
+    if (!this.supportsAttachments) throw new ProtocolError("Restart Axiom to view attachments.");
+    const context = this.state.accountContextToken();
+    const result = await this.process.request<GetAttachmentsResponse>("_axiom/thread/attachments", { threadId, userItemId });
+    this.assertAccountContext(context);
+    return result;
   }
 
   async cancel(threadId: string): Promise<void> {

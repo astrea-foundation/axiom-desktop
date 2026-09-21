@@ -1168,3 +1168,31 @@ test("native message revision replaces local history, rejects stale edits, and s
     assert.deepEqual(client.getState().sessions[created.sessionId]!.timeline.filter((item) => item.kind === "user").map((item) => item.text), ["replacement"]);
   } finally { await client.close(); }
 });
+
+test("real ACP attachment submission, inspection, reload, and text revision retain the same local input", async () => {
+  let { client, workspace } = await fixture();
+  try {
+    const { sessionId } = await client.newSession(workspace);
+    const attachments = [{ kind: "text" as const, name: "notes.txt", text: "private local attachment\n".repeat(4000) }];
+    await client.prompt(sessionId, "", "attached-client-id", false, 0, undefined, attachments);
+    let session = client.getState().sessions[sessionId]!;
+    let user = session.timeline.find((item) => item.clientItemId === "attached-client-id")!;
+    assert.ok(user);
+    assert.deepEqual((await client.getAttachments(sessionId, user.id)).attachments, attachments);
+    assert.ok(!JSON.stringify(session.timeline).includes("private local attachment"), "state only broadcasts attachment summaries");
+    await client.close();
+    const root = dirname(workspace);
+    client = new AxiomAcpClient({ command: binary, args: ["acp"], env: {
+      AXIOMCLI_TEST_RUNNER: "echo", XDG_CONFIG_HOME: resolve(root, "config"), XDG_DATA_HOME: resolve(root, "data"),
+    } });
+    await client.initialize();
+    await client.loadSession(sessionId, workspace);
+    session = client.getState().sessions[sessionId]!;
+    user = session.timeline.find((item) => item.clientItemId === "attached-client-id")!;
+    await client.prompt(sessionId, "Read the attached notes again", "attachment-edit", false, 0, { userItemId: user.id, expectedRevision: session.threadRevision });
+    session = client.getState().sessions[sessionId]!;
+    user = session.timeline.find((item) => item.clientItemId === "attachment-edit")!;
+    assert.equal(user.text, "Read the attached notes again");
+    assert.deepEqual((await client.getAttachments(sessionId, user.id)).attachments, attachments);
+  } finally { await client.close(); }
+});

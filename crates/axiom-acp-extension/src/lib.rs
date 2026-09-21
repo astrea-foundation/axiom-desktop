@@ -80,6 +80,7 @@ pub struct FeatureVersions {
     pub web_consent: u16,
     pub steering: u16,
     pub message_revision: u16,
+    pub attachments: u16,
     pub compaction: u16,
     pub activity: u16,
 }
@@ -102,6 +103,7 @@ impl FeatureVersions {
             web_consent: 1,
             steering: 1,
             message_revision: 1,
+            attachments: 1,
             compaction: 1,
             activity: 1,
         }
@@ -146,6 +148,8 @@ pub struct PromptMetadata {
     /// native E2EE turn. Never interpreted by the hosted backend.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revision: Option<PromptRevision>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<axiom_inference::PromptAttachment>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -392,6 +396,8 @@ pub struct ModelInfo {
     pub thinking_levels: Vec<String>,
     pub context_window_tokens: u32,
     pub max_output_tokens: u32,
+    #[serde(default)]
+    pub supports_images: bool,
     pub auto_compact_threshold_tokens: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_price_microusd_per_million_tokens: Option<u64>,
@@ -717,6 +723,20 @@ pub struct GetThreadTimelineResponse {
     pub items: Vec<TimelineItem>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcRequest)]
+#[request(method = "_axiom/thread/attachments", response = GetAttachmentsResponse)]
+#[serde(rename_all = "camelCase")]
+pub struct GetAttachmentsRequest {
+    pub thread_id: String,
+    pub user_item_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcResponse)]
+#[serde(rename_all = "camelCase")]
+pub struct GetAttachmentsResponse {
+    pub attachments: Vec<axiom_inference::PromptAttachment>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcRequest)]
@@ -1076,6 +1096,8 @@ pub struct ProtocolSchema {
     pub desktop_bootstrap_request: DesktopBootstrapRequest,
     pub desktop_bootstrap_response: DesktopBootstrapResponse,
     pub prompt_metadata: PromptMetadata,
+    pub get_attachments_request: GetAttachmentsRequest,
+    pub get_attachments_response: GetAttachmentsResponse,
     pub delivery_metadata: DeliveryMetadata,
     pub list_threads_request: ListThreadsRequest,
     pub list_threads_response: ListThreadsResponse,

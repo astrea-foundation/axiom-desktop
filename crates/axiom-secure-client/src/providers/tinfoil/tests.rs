@@ -303,3 +303,27 @@ fn kimi_and_glm_map_all_three_reasoning_levels_without_sending_unsupported_mediu
         }
     }
 }
+
+#[test]
+fn image_parts_are_supported_only_inside_the_encrypted_body_of_a_vision_model() {
+    let mut vision = model();
+    vision.upstream_model = "kimi-k3".into();
+    let image = axiom_inference::ImageContent {
+        mime_type: "image/png".into(),
+        data: "iVBORw0KGgpmaXh0dXJl".into(),
+    };
+    let mut message = ChatMessage::text(ChatRole::User, "describe this private image");
+    message.images.push(image.clone());
+    let request = InferenceRequest::streaming(&vision.id, vec![message], vec![]);
+    let body = request_body(&vision, &request, true).unwrap();
+    assert_eq!(
+        body["messages"][0]["content"][1]["image_url"]["url"],
+        image.data_url()
+    );
+    assert!(body["messages"][0].get("images").is_none());
+    assert!(
+        body.get("max_tokens").is_none(),
+        "proxy omission leaves the upstream default intact"
+    );
+    assert!(request_body(&model(), &request, true).is_err());
+}

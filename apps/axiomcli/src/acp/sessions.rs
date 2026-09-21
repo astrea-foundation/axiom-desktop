@@ -24,6 +24,11 @@ pub(super) fn initialize(
     ));
     let capabilities = protocol::AgentCapabilities::new()
         .load_session(ctx_supports_load)
+        .prompt_capabilities(
+            protocol::PromptCapabilities::new()
+                .image(true)
+                .embedded_context(true),
+        )
         .meta(extension_meta(ExtensionCapabilities::agent(
             ctx_extension_state.runtime_instance_id.clone(),
         )));

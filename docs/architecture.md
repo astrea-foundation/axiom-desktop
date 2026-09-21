@@ -119,3 +119,12 @@ Hosted website code, payment reconciliation and deployment tooling belong to
 axiom-platform. Desktop consumes its public release API, and native packaging
 hands installer files/manifests to its publisher. Neither checkout imports
 source or fixtures from the other to build or test.
+
+### Local attachment storage
+
+Schema v2 upgrades v1 in a transaction by adding `prompt_attachments`, keyed to
+the owning user timeline row with cascading deletion. Timeline metadata retains
+only filename/type/size summaries; full inputs are fetched on demand or restored
+into native model history. Revision replaces payloads in the same transaction as
+the prompt; account guards apply to reads. Missing/corrupt payloads fail closed.
+Older binaries reject v2 instead of silently losing attachments.

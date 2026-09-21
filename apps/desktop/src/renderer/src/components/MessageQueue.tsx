@@ -10,7 +10,7 @@ export function MessageQueue({ messages, paused, canSteer, onSendNow, onRemove }
     <div className="mb-1 text-[var(--color-text-tertiary)]">{paused ? "Queue paused" : "Queued messages"} · {messages.length}</div>
     {messages.map((message) => <div key={message.id} data-queued-message={message.id} className="flex items-start gap-2 py-1.5">
       <div className="min-w-0 flex-1">
-        <p className="line-clamp-2 whitespace-pre-wrap break-words text-[var(--color-text-secondary)]">{message.text}</p>
+        <p className="line-clamp-2 whitespace-pre-wrap break-words text-[var(--color-text-secondary)]">{message.text}{message.attachments?.length ? ` · ${message.attachments.map((file) => file.name).join(", ")}` : ""}</p>
         <p className="mt-0.5 text-[11px] text-[var(--color-text-tertiary)]">{message.error ?? (message.status === "steering" ? "Waiting for current step to finish…" : message.status === "sending" ? "Sending…" : paused ? "Paused · Send when ready" : "Sends after the current reply")}{message.webEnabled ? " · Web on" : ""}</p>
       </div>
       {message.status === "queued" ? <>

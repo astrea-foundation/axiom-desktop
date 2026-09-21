@@ -831,6 +831,7 @@ async fn run_headless(
     }
     let submitted = runtime
         .dispatch(AppCommand::SubmitPrompt {
+            attachments: Vec::new(),
             session_id: session_id.clone(),
             turn_id: turn_id.clone(),
             text: prompt.clone(),
@@ -851,6 +852,7 @@ async fn run_headless(
 
     let (events_tx, mut events_rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
     let context = TurnContext {
+        attachments: Vec::new(),
         session_id: session_id.clone(),
         turn_id: turn_id.clone(),
         cwd,
