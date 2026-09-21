@@ -1,6 +1,6 @@
 # ADR 0016: Byte-bounded local history pages
 
-Status: accepted for implementation.
+Status: implemented.
 
 History is read from the account-scoped local SQLite database and transported
 only between native processes on the same computer. Row-count pagination alone

@@ -205,6 +205,28 @@ impl SessionStore {
         after_sequence: Option<u64>,
         limit: usize,
     ) -> Result<ThreadSnapshot> {
+        self.read_snapshot(id, after_sequence, limit, None, false)
+    }
+
+    /// A bounded page for local IPC. Accounting has its own stable cursor.
+    pub fn thread_page(
+        &self,
+        id: &SessionId,
+        after_sequence: Option<u64>,
+        after_request_id: Option<&str>,
+        limit: usize,
+    ) -> Result<ThreadSnapshot> {
+        self.read_snapshot(id, after_sequence, limit, after_request_id, true)
+    }
+
+    fn read_snapshot(
+        &self,
+        id: &SessionId,
+        after_sequence: Option<u64>,
+        limit: usize,
+        after_request_id: Option<&str>,
+        paged: bool,
+    ) -> Result<ThreadSnapshot> {
         if limit == 0 || limit > MAX_TIMELINE_PAGE {
             return Err(AxiomError::Storage(format!(
                 "timeline page size must be between 1 and {MAX_TIMELINE_PAGE}"
@@ -213,20 +235,40 @@ impl SessionStore {
         let mut connection = self.lock()?;
         let transaction = connection.transaction().map_err(storage_error)?;
         let thread = query_thread_summary(&transaction, id)?;
-        let turns = query_turns(&transaction, id)?;
+        let turns = query_turns_filtered(&transaction, id, paged)?;
+        let mut next_request_usage_cursor = None;
         let request_usage = {
-            let mut statement = transaction
-                .prepare("SELECT record FROM request_usage WHERE thread_id=?1 ORDER BY rowid")
+            let sql = if paged {
+                "SELECT record FROM request_usage WHERE thread_id=?1 AND request_id>?2 ORDER BY request_id LIMIT 101"
+            } else {
+                "SELECT record FROM request_usage WHERE thread_id=?1 AND request_id>?2 ORDER BY rowid"
+            };
+            let mut statement = transaction.prepare(sql).map_err(storage_error)?;
+            let mut rows = statement
+                .query(params![id.to_string(), after_request_id.unwrap_or("")])
                 .map_err(storage_error)?;
-            let records = statement
-                .query_map([id.to_string()], |row| row.get::<_, String>(0))
-                .map_err(storage_error)?
-                .collect::<std::result::Result<Vec<_>, _>>()
-                .map_err(storage_error)?;
+            let mut records: Vec<axiom_inference::RequestUsage> = Vec::new();
+            let mut bytes = 0;
+            while let Some(row) = rows.next().map_err(storage_error)? {
+                let json: String = row.get(0).map_err(storage_error)?;
+                if paged && (records.len() == 100 || bytes + json.len() > 512 * 1024) {
+                    next_request_usage_cursor = Some(
+                        records
+                            .last()
+                            .ok_or_else(|| {
+                                AxiomError::Storage(
+                                    "accounting record exceeds local page limit".into(),
+                                )
+                            })?
+                            .request_id
+                            .clone(),
+                    );
+                    break;
+                }
+                bytes += json.len();
+                records.push(serde_json::from_str(&json)?);
+            }
             records
-                .into_iter()
-                .map(|json| serde_json::from_str(&json))
-                .collect::<std::result::Result<Vec<_>, _>>()?
         };
         let context_usage: Option<String> = transaction
             .query_row(
@@ -248,25 +290,37 @@ impl SessionStore {
                  WHERE thread_id=?1 AND sequence>?2 ORDER BY sequence ASC LIMIT ?3",
             )
             .map_err(storage_error)?;
-        let stored = statement
-            .query_map(
-                params![id.to_string(), after, fetch],
-                StoredTimelineItem::from_row,
-            )
-            .map_err(storage_error)?
-            .collect::<std::result::Result<Vec<_>, _>>()
+        let mut rows = statement
+            .query(params![id.to_string(), after, fetch])
             .map_err(storage_error)?;
-        let mut items = stored
-            .into_iter()
-            .map(StoredTimelineItem::decode)
-            .collect::<Result<Vec<_>>>()?;
-        let has_more = items.len() > limit;
-        if has_more {
-            items.pop();
+        let mut items: Vec<TimelineItem> = Vec::new();
+        let mut bytes = 0;
+        let mut next_cursor = None;
+        while let Some(row) = rows.next().map_err(storage_error)? {
+            let item = StoredTimelineItem::from_row(row)
+                .map_err(storage_error)?
+                .decode()?;
+            // Count JSON bytes, including escaping, rather than raw message text.
+            let item_bytes = if paged {
+                serde_json::to_vec(&item)?.len()
+            } else {
+                0
+            };
+            if items.len() == limit || (paged && bytes + item_bytes > 32 * 1024 * 1024) {
+                next_cursor = Some(
+                    items
+                        .last()
+                        .ok_or_else(|| {
+                            AxiomError::Storage("timeline item exceeds local page limit".into())
+                        })?
+                        .sequence,
+                );
+                break;
+            }
+            bytes += item_bytes;
+            items.push(item);
         }
-        let next_cursor = has_more
-            .then(|| items.last().map(|item| item.sequence))
-            .flatten();
+        drop(rows);
         drop(statement);
         transaction.commit().map_err(storage_error)?;
         Ok(ThreadSnapshot {
@@ -276,6 +330,7 @@ impl SessionStore {
             turns,
             items,
             next_cursor,
+            next_request_usage_cursor,
         })
     }
 
@@ -474,12 +529,25 @@ impl StoredTimelineItem {
 }
 
 pub(super) fn query_turns(connection: &Connection, id: &SessionId) -> Result<Vec<TurnRecord>> {
+    query_turns_filtered(connection, id, false)
+}
+
+fn query_turns_filtered(
+    connection: &Connection,
+    id: &SessionId,
+    active_only: bool,
+) -> Result<Vec<TurnRecord>> {
+    let predicate = if active_only {
+        " AND status='running' ORDER BY started_at, id LIMIT 1"
+    } else {
+        " ORDER BY started_at, id"
+    };
     let mut statement = connection
-        .prepare(
+        .prepare(&format!(
             "SELECT id, thread_id, status, user_item_id, assistant_item_id,
                     input_tokens, output_tokens, error, started_at, completed_at
-             FROM turns WHERE thread_id=?1 ORDER BY started_at, id",
-        )
+             FROM turns WHERE thread_id=?1{predicate}",
+        ))
         .map_err(storage_error)?;
     let stored = statement
         .query_map([id.to_string()], |row| {

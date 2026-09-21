@@ -92,7 +92,7 @@ impl FeatureVersions {
             desktop_chat: 1,
             desktop_agent: 1,
             thread_catalog: 1,
-            timeline: 1,
+            timeline: 2,
             model_catalog: 1,
             profile_preferences: 1,
             collections: 1,
@@ -704,6 +704,8 @@ pub struct GetThreadTimelineRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub after_sequence: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after_request_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<u32>,
 }
 
@@ -723,6 +725,8 @@ pub struct GetThreadTimelineResponse {
     pub items: Vec<TimelineItem>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_request_usage_cursor: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcRequest)]

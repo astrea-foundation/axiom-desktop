@@ -434,10 +434,18 @@ export class AxiomStateStore extends EventEmitter {
     if (items.at(-1)?.sequence !== lastSequence && lastSequence !== 0) {
       throw new Error("timeline replacement did not reach the authoritative tail");
     }
+    const requestUsage = pages.flatMap((page) => page.requestUsage ?? []);
+    const usageIds = new Set<string>();
+    for (const usage of requestUsage) {
+      if (!validRequestUsage(usage) || usageIds.has(usage.requestId)) {
+        throw new Error("timeline accounting page identity is invalid");
+      }
+      usageIds.add(usage.requestId);
+    }
     const session = this.applyThreadSummary(first.thread);
     session.activeTurnId = session.running ? first.activeTurnId ?? null : null;
     session.contextUsage = validContextUsage(first.contextUsage);
-    session.requestUsage = (first.requestUsage ?? []).filter(validRequestUsage);
+    session.requestUsage = requestUsage;
     session.desktopAgent = first.desktopAgent ?? null;
     session.timeline = items.map(fromDurable);
     this.textRevisions.set(threadId, revision);
