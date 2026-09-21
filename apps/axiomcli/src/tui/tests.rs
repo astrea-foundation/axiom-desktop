@@ -1097,7 +1097,7 @@ fn insufficient_credit_failure_has_a_specific_top_up_message() {
 
     let folded = render_symbols(100, 30, &state);
     assert!(folded.contains("Out of credits"));
-    assert!(folded.contains("Open Axiom Desktop Settings > Balance"));
+    assert!(folded.contains("Use /topup"));
     assert!(!folded.contains("insufficient_credit"));
     let task = state.entries[state.task_index(&turn).expect("task")]
         .task

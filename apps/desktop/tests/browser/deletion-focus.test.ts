@@ -2552,3 +2552,51 @@ test("PDF text extraction uses the local bundled worker and unsupported document
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
 });
+
+
+test("gift redemption is masked, updates balance, retries safely and clears on account switch", async () => {
+  const {page, errors} = await openApp();
+  try {
+    await page.evaluate(() => {
+      (window as any).__giftCalls = [];
+      (window as any).axiomDesktop.agent.redeemGiftCode = async (code: string, accountId: string) => {
+        (window as any).__giftCalls.push({code, accountId});
+        if ((window as any).__giftFail) throw new Error("Gift code is invalid or unavailable.");
+        if ((window as any).__giftHold) await new Promise<void>(resolve => { (window as any).__giftRelease = resolve; });
+        const status = {revision: 2, ledgerSequence: 2, currency: "microUSD", postedMicrousd: 25_000_000,
+          availableMicrousd: 25_000_000, paidMicrousd: 25_000_000, trialMicrousd: 0,
+          paymentReviewRequired: false, paymentAccount: null, zecUsdQuote: null};
+        (window as any).__deletionTest.setBilling(status);
+        return {creditedMicrousd: 25_000_000, alreadyRedeemed: false, status};
+      };
+    });
+    await openAccountScreen(page, "Balance");
+    const code = "AXG-AAAA-AAAA-AAAA-AAAA-AAAA-AAAA-AAAA-AAAA";
+    const field = page.getByLabel("Gift code", {exact: true});
+    await field.fill(code);
+    assert.equal(await field.getAttribute("type"), "password");
+    if (process.env.AXIOM_GIFT_CAPTURE_PATH) await page.screenshot({path: process.env.AXIOM_GIFT_CAPTURE_PATH});
+    await page.getByRole("button", {name: "Redeem", exact: true}).click();
+    await page.getByRole("status").filter({hasText: "$25.00 added to your account."}).waitFor();
+    assert.equal(await field.inputValue(), "");
+    const calls = await page.evaluate(() => (window as any).__giftCalls);
+    assert.deepEqual(calls, [{code, accountId: "test-account"}]);
+    assert(!await page.locator("body").innerText().then(text => text.includes(code)));
+    assert.equal(await page.evaluate(() => (window as any).__deletionTest.calls.filter((c: any) => c.method === "prompt").length), 0);
+    await page.evaluate(() => { (window as any).__giftFail = true; });
+    await field.fill(code);
+    await page.getByRole("button", {name: "Redeem", exact: true}).click();
+    await page.getByRole("alert").filter({hasText: "retry the same code safely"}).waitFor();
+    assert.equal(await field.inputValue(), code, "retain the code for a safe retry");
+    await page.evaluate(() => { (window as any).__giftFail = false; (window as any).__giftHold = true; });
+    await page.getByRole("button", {name: "Redeem", exact: true}).click();
+    await page.waitForFunction(() => !!(window as any).__giftRelease);
+    assert.equal(await page.getByRole("button", {name: "Redeeming…", exact: true}).isDisabled(), true);
+    await page.evaluate(() => (window as any).__deletionTest.setAccount("another-account"));
+    await page.evaluate(() => (window as any).__giftRelease());
+    assert.equal(await page.getByText("$25.00 added to your account.", {exact: true}).count(), 0);
+    // Account navigation may dismiss Balance; whichever screen remains cannot retain the code.
+    assert.equal(await page.locator('input[name="gift-code"]').evaluateAll(inputs => inputs.some(input => (input as HTMLInputElement).value.length > 0)), false);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});

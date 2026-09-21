@@ -118,6 +118,10 @@ from the backend. The Axiom Payments path uses persistent **mainnet ZEC** addres
 exact integer receipt amounts, and optional backend-reported USD valuation.
 The client validates the valuation fields and does not perform a currency swap
 or hold payment-provider credentials. Testnet data is rejected in this path.
+Gift redemption uses the same interactive account authority. TUI and Desktop
+send codes through the native account client, receive a validated credit receipt,
+and never store the code as chat/history. Platform issues the card and owns its
+atomic ledger credit; [ADR 0017](adr/0017-gift-credit-controls.md) defines the boundary.
 The native and backend billing contracts must be released together. See [billing.rs](../apps/axiomcli/src/billing.rs)
 and the [Desktop guide](desktop.md#account-credit-and-usage).
 

@@ -1015,6 +1015,10 @@ pub(super) fn render_overlay(
         render_security_overlay(frame, state, *view, theme);
         return;
     }
+    if let Overlay::Billing(view) = overlay {
+        super::billing::render(frame, state, view, theme);
+        return;
+    }
     if matches!(overlay, Overlay::SaveAttestation(_)) {
         render_attestation_save_picker(frame, state, theme);
         return;
@@ -1040,6 +1044,7 @@ pub(super) fn render_overlay(
         return;
     }
     let (title, body): (&str, String) = match overlay {
+        Overlay::Billing(_) => unreachable!("billing rendered separately"),
         Overlay::Help => (
             " Help ",
             "Tab: switch composer/transcript focus\n\
@@ -1087,6 +1092,7 @@ pub(super) fn render_overlay(
     // Help is a fixed list, so give it only the rows it needs; the viewer holds
     // arbitrary entry text and keeps the tall panel.
     let area = match overlay {
+        Overlay::Billing(_) => unreachable!("billing rendered separately"),
         Overlay::Help => {
             let rows = u16::try_from(body.lines().count()).unwrap_or(u16::MAX);
             fitted_rect(88, rows.saturating_add(2), frame.area())

@@ -337,6 +337,14 @@ pub async fn serve_stdio(
         BillingStatusResponse
     );
     let builder = request_handler!(
+        sync,
+        builder,
+        context,
+        account::redeem_gift_code,
+        extension::GiftCodeRedeemRequest,
+        extension::GiftCodeRedeemResponse
+    );
+    let builder = request_handler!(
         async,
         builder,
         context,

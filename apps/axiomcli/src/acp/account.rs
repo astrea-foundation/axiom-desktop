@@ -554,3 +554,55 @@ pub(super) fn billing_status(
     })?;
     Ok(())
 }
+
+pub(super) fn redeem_gift_code(
+    context: &ServerContext,
+    request: extension::GiftCodeRedeemRequest,
+    responder: Responder<extension::GiftCodeRedeemResponse>,
+    connection: &ConnectionTo<Client>,
+) -> agent_client_protocol::Result<()> {
+    let client = context.billing.clone();
+    let state = context.extension_state.clone();
+    if !extension_enabled(&state, ExtensionFeature::GiftCodes) {
+        return responder.respond_with_error(extension_not_negotiated());
+    }
+    let cancellation = CancellationToken::new();
+    let guard = respond_or_return!(
+        responder,
+        context
+            .account_work
+            .register(cancellation.clone())
+            .map_err(agent_error)
+    );
+    let request_cancellation = responder.cancellation();
+    let task_connection = connection.clone();
+    connection.spawn(async move {
+        let _guard = guard;
+        let redemption = client.redeem_gift_code(&request.code, &cancellation);
+        tokio::pin!(redemption);
+        let result = tokio::select! {
+            biased;
+            result = &mut redemption => result,
+            () = request_cancellation.cancelled() => {
+                cancellation.cancel();
+                redemption.await
+            }
+        };
+        let receipt = respond_or_return!(responder, result.map_err(agent_error));
+        let status = extension_billing_status(receipt.status, state.next_billing_revision());
+        send_extension_activity(
+            &task_connection,
+            &state,
+            None,
+            ActivityEvent::BillingChanged {
+                status: status.clone(),
+            },
+        )?;
+        responder.respond(extension::GiftCodeRedeemResponse {
+            credited_microusd: receipt.credited_microusd,
+            already_redeemed: receipt.already_redeemed,
+            status,
+        })
+    })?;
+    Ok(())
+}

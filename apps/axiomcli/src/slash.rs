@@ -20,6 +20,9 @@ pub enum SlashCommand {
     Login,
     Logout,
     Account,
+    Balance,
+    Topup,
+    Redeem,
     Security,
     Refresh,
     Theme(crate::tui::Appearance),
@@ -128,6 +131,9 @@ pub const COMMANDS: &[SlashCommandSpec] = &[
         description: "Enable external search and URL fetching; queries are not E2EE",
         aliases: &[],
     },
+    SlashCommandSpec { name: "balance", usage: "/balance", description: "View credit and Zcash deposits", aliases: &["credits"] },
+    SlashCommandSpec { name: "topup", usage: "/topup", description: "Show your mainnet Zcash deposit address", aliases: &["top-up"] },
+    SlashCommandSpec { name: "redeem", usage: "/redeem", description: "Redeem a gift code in a private entry screen", aliases: &[] },
 ];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -166,6 +172,9 @@ pub fn parse(input: &str) -> Option<Result<SlashCommand, SlashCommandError>> {
         .map(|spec| spec.name);
 
     Some(match canonical {
+        Some("balance") => no_arguments(arguments, SlashCommand::Balance, "/balance"),
+        Some("topup") => no_arguments(arguments, SlashCommand::Topup, "/topup"),
+        Some("redeem") => no_arguments(arguments, SlashCommand::Redeem, "/redeem (enter the code in the private screen)"),
         Some("help") => no_arguments(arguments, SlashCommand::Help, "/help"),
         Some("permissions") => {
             no_arguments(arguments, SlashCommand::Permissions, COMMANDS[0].usage)
@@ -276,6 +285,7 @@ pub fn completions(input: &str) -> Vec<SlashCompletion> {
                             | "account"
                             | "security"
                             | "refresh"
+                            | "balance" | "topup" | "redeem"
                     ) {
                         ""
                     } else {
@@ -319,7 +329,7 @@ pub fn completions(input: &str) -> Vec<SlashCompletion> {
             ("xhigh", "Use extra-high reasoning effort"),
         ],
         "permissions" | "compact" | "help" | "model" | "resume" | "delete" | "login" | "logout"
-        | "account" | "security" | "refresh" => Vec::new(),
+        | "account" | "security" | "refresh" | "balance" | "topup" | "redeem" => Vec::new(),
         _ => unreachable!("all command specs are handled"),
     };
     options

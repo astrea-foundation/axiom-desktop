@@ -745,6 +745,24 @@ async fn axiom_extension_is_silent_until_negotiated_and_rejects_custom_requests(
 }
 
 #[tokio::test]
+async fn gift_redemption_requires_billing_three_and_an_interactive_account() {
+    for version in [2, 3] {
+        let mut acp = AcpProcess::spawn("echo");
+        acp.initialize_with_capabilities(json!({"_meta": {"axiom": {
+            "protocolVersion": "0.2", "features": {"billing": version}
+        }}})).await;
+        acp.send(&json!({"jsonrpc":"2.0", "id":2, "method":"_axiom/billing/redeem_gift_code",
+            "params":{"code":"AXG-AAAA-AAAA-AAAA-AAAA-AAAA-AAAA-AAAA-AAAA"}})).await;
+        let response = acp.response(2).await;
+        assert!(response.get("error").is_some());
+        if version == 2 { assert_eq!(response["error"]["code"], -32601); }
+        else { assert_ne!(response["error"]["code"], -32601); }
+        assert!(!response.to_string().contains("AXG-AAAA"));
+        acp.close().await;
+    }
+}
+
+#[tokio::test]
 async fn axiom_extension_negotiates_each_feature_independently() {
     let mut acp = AcpProcess::spawn("echo");
     acp.initialize_with_capabilities(json!({
@@ -1096,7 +1114,10 @@ async fn slash_commands_are_advertised_and_execute_outside_model_turns() {
             "account",
             "security",
             "refresh",
-            "help"
+            "help",
+            "balance",
+            "topup",
+            "redeem"
         ]
     );
     let model_command = commands

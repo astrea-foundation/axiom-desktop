@@ -61,6 +61,13 @@ Account billing and payment-provider credentials remain backend-owned. Desktop
 receives bounded credit/deposit metadata and an indicative current ZEC/USD quote. It never receives wallet custody or grants the model
 transaction authority. Currency valuation is distinct from a currency conversion.
 
+Gift codes are bearer secrets entered in Desktop's Balance form or the TUI's
+masked `/redeem` screen. The native client sends the code to Axiom's authenticated
+HTTPS account API, outside provider-E2EE inference. The backend stores only a code
+digest and financial records. Clients do not place codes in conversations, saved
+drafts, activity events or diagnostics. The operator's private issuance file is
+the deliberate exception: it contains the generated code for delivery.
+
 [Session commands](cli.md#saved-sessions-and-plans) support explicit export and
 archiving; TUI/ACP provide confirmed deletion. Uninstall preserves local account
 data and credential-store entries. See [configuration](configuration.md#paths-and-local-state)

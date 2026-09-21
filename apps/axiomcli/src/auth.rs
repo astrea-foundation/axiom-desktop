@@ -2626,6 +2626,10 @@ mod tests {
         searches: AtomicUsize,
         search_mode: AtomicUsize,
         search_started: tokio::sync::Notify,
+        gift_mode: AtomicUsize,
+        gift_calls: AtomicUsize,
+        gift_started: tokio::sync::Notify,
+        gift_release: tokio::sync::Notify,
     }
 
     fn account_json() -> Value {
@@ -2853,6 +2857,10 @@ mod tests {
             searches: AtomicUsize::new(0),
             search_mode: AtomicUsize::new(0),
             search_started: tokio::sync::Notify::new(),
+            gift_mode: AtomicUsize::new(0),
+            gift_calls: AtomicUsize::new(0),
+            gift_started: tokio::sync::Notify::new(),
+            gift_release: tokio::sync::Notify::new(),
         });
         let app = Router::new()
             .route(
@@ -2864,6 +2872,7 @@ mod tests {
             .route("/api/v1/auth/token/refresh", post(refresh))
             .route("/api/v1/auth/session", get(session).delete(revoke_session))
             .route("/api/v1/search", post(hosted_search))
+            .route("/api/v1/billing/gift-codes/redeem", post(gift_redeem_test))
             .route(
                 "/api/v1/auth/api-keys",
                 get(api_key_control).post(api_key_control),
@@ -3880,4 +3889,6 @@ mod tests {
         account.avatar_url = Some("file:///tmp/tracking-pixel".into());
         assert!(validate_account(&account).is_err());
     }
+    include!("auth/gift_code_tests.rs");
+
 }

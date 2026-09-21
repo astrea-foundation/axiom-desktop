@@ -130,6 +130,12 @@
     "billingStatusResponse": {
       "$ref": "#/$defs/BillingStatusResponse"
     },
+    "giftCodeRedeemRequest": {
+      "$ref": "#/$defs/GiftCodeRedeemRequest"
+    },
+    "giftCodeRedeemResponse": {
+      "$ref": "#/$defs/GiftCodeRedeemResponse"
+    },
     "usageSummaryRequest": {
       "$ref": "#/$defs/UsageSummaryRequest"
     },
@@ -226,6 +232,8 @@
     "logoutRequest",
     "billingStatusRequest",
     "billingStatusResponse",
+    "giftCodeRedeemRequest",
+    "giftCodeRedeemResponse",
     "usageSummaryRequest",
     "usageSummaryResponse",
     "apiKeyListRequest",
@@ -2091,6 +2099,41 @@
         "source",
         "as_of",
         "expires_at"
+      ]
+    },
+    "GiftCodeRedeemRequest": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "code"
+      ]
+    },
+    "GiftCodeRedeemResponse": {
+      "type": "object",
+      "properties": {
+        "creditedMicrousd": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "alreadyRedeemed": {
+          "type": "boolean"
+        },
+        "status": {
+          "$ref": "#/$defs/BillingStatus"
+        }
+      },
+      "required": [
+        "creditedMicrousd",
+        "alreadyRedeemed",
+        "status"
       ]
     },
     "UsageSummaryRequest": {

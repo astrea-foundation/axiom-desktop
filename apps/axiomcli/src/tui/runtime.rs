@@ -39,6 +39,7 @@ use crate::{
 
 use super::{
     ANIMATION_TICK,
+    billing::{BillingAction, BillingFlow, BillingUpdate, BillingView},
     screens::{composer_text_width, render, scroll_transcript_down, scroll_transcript_up},
     state::{
         AuthOverlay, EntryKind, Focus, InteractionView, Overlay, SaveAttestationPicker,
@@ -161,6 +162,7 @@ pub(super) fn account_status_text(account: &AccountStatus) -> String {
 }
 
 pub(super) enum UiMessage {
+    BillingFinished { generation: u64, account_generation: u64, result: Result<BillingUpdate> },
     AccountingRecovered {
         session_id: SessionId,
         account_generation: u64,
@@ -795,6 +797,9 @@ pub async fn run(
 
     let mut input_events = EventStream::new();
     let (ui_tx, mut ui_rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
+    let mut billing_flow = BillingFlow::new(&auth)?;
+    let mut billing_ticks = tokio::time::interval(Duration::from_secs(5));
+    billing_ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut cancellation: Option<CancellationToken> = None;
     let mut auth_cancellation: Option<CancellationToken> = None;
     let mut security_cancellation: Option<CancellationToken> = None;
@@ -840,6 +845,9 @@ pub async fn run(
     'ui: loop {
         terminal.draw(|frame| render(frame, &state))?;
         tokio::select! {
+            _ = billing_ticks.tick(), if matches!(&state.overlay, Some(Overlay::Billing(view)) if !view.busy && !view.redeem) => {
+                billing_flow.start(&mut state, None, &ui_tx);
+            }
             _ = accounting_ticks.tick(), if !accounting_busy && store.as_ref().is_some_and(SessionStore::is_active) => {
                 accounting_attempts.retain(|id, _| state.request_usage.get(id).is_some_and(|r| !r.settled));
                 let ids: Vec<_> = state.request_usage.values().filter(|r|
@@ -1016,6 +1024,23 @@ pub async fn run(
                                 _ => {
                                     state.status = approval_status(request);
                                 }
+                            }
+                        } else if let Some(Overlay::Billing(view)) = &mut state.overlay {
+                            state.exit_armed = false;
+                            let action = view.key(key);
+                            match key.code {
+                                KeyCode::Up => state.overlay_scroll = state.overlay_scroll.saturating_sub(1),
+                                KeyCode::Down => state.overlay_scroll = state.overlay_scroll.saturating_add(1),
+                                KeyCode::PageUp => state.overlay_scroll = state.overlay_scroll.saturating_sub(10),
+                                KeyCode::PageDown => state.overlay_scroll = state.overlay_scroll.saturating_add(10),
+                                _ => {}
+                            }
+                            match action {
+                                BillingAction::None => {},
+                                BillingAction::Close => { billing_flow.cancel(); state.overlay = None; state.overlay_scroll = 0; },
+                                BillingAction::Refresh => billing_flow.start(&mut state, None, &ui_tx),
+                                BillingAction::Redeem(code) => billing_flow.start(&mut state, Some(code), &ui_tx),
+                                BillingAction::CopyAddress => { BillingFlow::copy_address(&mut state)?; },
                             }
                         } else if matches!(state.overlay, Some(Overlay::Auth(_))) {
                             state.exit_armed = false;
@@ -1574,6 +1599,10 @@ pub async fn run(
                                     state.input.move_to_line_end();
                                 }
                                 KeyCode::Enter if state.focus == Focus::Transcript => state.toggle_selected(),
+                                KeyCode::Enter if state.running && state.focus == Focus::Composer && state.input.trim().starts_with('/') => {
+                                    state.input.take_text();
+                                    show_slash_error(&mut state, "Wait for the current task to finish before using a slash command.");
+                                }
                                 KeyCode::Enter if state.running && state.focus == Focus::Composer && !state.input.trim().is_empty() => {
                                     if let (Some(inbox), Some(turn)) = (&active_steering, &active_turn) {
                                         let text = state.input.to_string();
@@ -1746,6 +1775,13 @@ pub async fn run(
                                             }
                                             Ok(SlashCommand::Login) => {
                                                 state.open_login(None);
+                                            }
+                                            Ok(command @ (SlashCommand::Balance | SlashCommand::Topup | SlashCommand::Redeem)) => {
+                                                billing_flow.cancel();
+                                                let redeem = command == SlashCommand::Redeem;
+                                                state.overlay = Some(Overlay::Billing(Box::new(BillingView::new(redeem))));
+                                                state.overlay_scroll = 0;
+                                                if !redeem { billing_flow.start(&mut state, None, &ui_tx); }
                                             }
                                             Ok(SlashCommand::Logout) => {
                                                 if let Some(token) = auth_cancellation.take() {
@@ -2028,7 +2064,9 @@ pub async fn run(
                     }
                     Event::Paste(text) => {
                         let text = sanitize_terminal_text(&text);
-                        if matches!(
+                        if let Some(Overlay::Billing(view)) = &mut state.overlay {
+                            view.paste(&text);
+                        } else if matches!(
                             state.overlay,
                             Some(Overlay::SaveAttestation(SaveAttestationPicker {
                                 focus: SavePickerFocus::Filename,
@@ -2039,6 +2077,7 @@ pub async fn run(
                         } else if pending_questions.is_some() {
                             state.answer_input.push_str(&text.replace('\n', " "));
                         } else if pending_approval.is_none()
+                            && state.overlay.is_none()
                             && state.focus == Focus::Composer
                             && !state.running
                         {
@@ -2052,6 +2091,10 @@ pub async fn run(
             message = ui_rx.recv() => {
                 let Some(message) = message else { break };
                 match message {
+                    UiMessage::BillingFinished { generation, account_generation, result } => {
+                        billing_flow.finish(&mut state, generation, account_generation, result);
+                        billing_ticks.reset();
+                    }
                     UiMessage::AccountingRecovered { session_id: owner, account_generation, result } => {
                         accounting_busy = false;
                         if owner == session_id && account_generation == auth.generation()

@@ -109,6 +109,7 @@ fn run_tui_at(
                 | "delete"
                 | "composer"
                 | "appearance"
+                | "gift"
         ) {
             "echo"
         } else {
@@ -338,6 +339,21 @@ fn run_tui_at(
                 );
                 output.extend(command_output);
             }
+        } else if runner == "gift" {
+            thread::sleep(Duration::from_millis(500));
+            writer.write_all(b"/redeem\r").expect("open private gift entry");
+            writer.flush().unwrap();
+            wait_for_output(&output_rx, &mut output, b"hidden", "masked gift entry");
+            writer.write_all(b"\x1b[200~AXG-ABCD-EFGH-IJKL-MNOP-QRST-UVWX-YZ23-4567\x1b[201~").unwrap();
+            writer.flush().unwrap();
+            wait_for_output(&output_rx, &mut output, b"********", "masked pasted gift code");
+            writer.write_all(b"\x1b").unwrap();
+            writer.flush().unwrap();
+            thread::sleep(Duration::from_millis(100));
+            writer.write_all(b"aftergift\r").unwrap();
+            writer.flush().unwrap();
+            wait_for_output(&output_rx, &mut output, b"aftergift", "composer restored");
+            thread::sleep(Duration::from_millis(200));
         } else if runner == "composer" {
             thread::sleep(Duration::from_millis(500));
             writer
@@ -916,4 +932,14 @@ fn appearance_and_web_controls_work_in_a_real_terminal_and_restore_background() 
     assert!(output.contains("Web enabled"));
     assert!(output.contains("\x1b]111"));
     assert!(output.contains("\x1b[?1049l"));
+}
+
+#[test]
+fn gift_entry_never_echoes_or_persists_the_code_as_chat() {
+    let directory = tempfile::tempdir().unwrap();
+    let (output, success) = run_tui_at("gift", false, directory.path(), &[]);
+    assert!(success);
+    assert!(!output.contains("AXG-ABCD"));
+    let data = std::fs::read(test_account_database(directory.path())).unwrap();
+    assert!(!data.windows(b"AXG-ABCD".len()).any(|bytes| bytes == b"AXG-ABCD"));
 }
