@@ -38,6 +38,9 @@ promotion rules. Hosted API, auth, payments and deployment guidance belongs to
 
 ## Decisions and historical evidence
 
+The active [native maintenance plan](native-maintenance-plan.md) tracks removal
+of unused code, provider policy alignment and controller refactoring.
+
 - [Architecture decisions](adr/README.md) explain the rationale and identify superseded details.
 - [Historical plans and audits](archive/README.md) retain dated evidence and original unfinished tasks.
 - [Test reports](testing/README.md) retain scoped findings, fixes and measurement limits.
