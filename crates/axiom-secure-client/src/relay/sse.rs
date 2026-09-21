@@ -50,7 +50,7 @@ impl SseDecoder {
         self.total_bytes = self
             .total_bytes
             .checked_add(bytes.len())
-            .ok_or_else(|| too_large())?;
+            .ok_or_else(too_large)?;
         if self.total_bytes > self.stream_limit {
             return Err(too_large());
         }

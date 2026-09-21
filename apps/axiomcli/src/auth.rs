@@ -3404,10 +3404,10 @@ mod tests {
         let _ = caller.await;
 
         tokio::time::timeout(Duration::from_secs(1), async {
-            while !store
+            while store
                 .load()
                 .expect("load")
-                .is_some_and(|token| token != refresh_token)
+                .is_none_or(|token| token == refresh_token)
             {
                 tokio::task::yield_now().await;
             }

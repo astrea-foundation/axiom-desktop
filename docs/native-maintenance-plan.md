@@ -1,11 +1,13 @@
 # Native maintenance implementation plan
 
-Status: in progress. Baseline: `0eec7cd` on `refactor/clean-baseline`.
+Status: complete. Initial baseline: `0eec7cd` on `refactor/clean-baseline`.
+Final branch: `refactor/native-maintenance`, targeting `dev`.
 
-This work completes the cleanup identified by the source audit. It extends the
-existing native cleanup branch and its pull request to `dev`; the earlier invoice
-removal and fresh-storage baseline remain intact. It does not promote `main` or
-deploy a service.
+This work completes the cleanup identified by the source audit. It began on the
+native cleanup branch; PR #3 was merged into `dev` during implementation, including
+this plan’s initial commit. The remaining changes continue in a follow-up PR to
+`dev`. The earlier invoice removal and fresh-storage baseline remain intact.
+This work does not promote `main` or deploy a service.
 
 ## Intended changes
 
@@ -62,12 +64,39 @@ deploy a service.
 
 ## Completion record
 
-- [ ] Unused UI, counters, assets and placeholder directory removed.
-- [ ] Titles use shared synchronous generation and account-bound persistence.
-- [ ] Phala uses verified signed NVIDIA anchor policy with rejection/rotation tests.
-- [ ] NEAR report vectors exercise the production verifier.
-- [ ] ACP registration delegates to feature handlers using typed context.
-- [ ] TUI state, screens and runtime are separated.
-- [ ] Desktop account, model and conversation lifecycle are separated from layout.
-- [ ] Integration checks pass and current guides reflect the final implementation.
-- [ ] Commits are pushed and the existing `dev` pull request describes the full change.
+- [x] Unused UI, counters, assets and placeholder directory removed.
+- [x] Titles use shared synchronous generation and account-bound persistence.
+- [x] Phala uses verified signed NVIDIA anchor policy with rejection/rotation tests.
+- [x] NEAR report vectors exercise the production verifier.
+- [x] ACP registration delegates to feature handlers using typed context.
+- [x] TUI state, screens and runtime are separated.
+- [x] Desktop account, model and conversation lifecycle are separated from layout.
+- [x] Integration checks pass and current guides reflect the final implementation.
+- [x] Commits are pushed and a follow-up `dev` pull request describes the maintenance work.
+
+Final validation on 2026-09-21:
+
+- `cargo fmt --all -- --check`, workspace checks and strict Clippy across all
+  targets/features pass.
+- `cargo test --workspace --all-features`: 510 passed, six opt-in/manual tests
+  ignored. This includes title persistence/notification ordering, trust-policy
+  rotation/rejection, production report vectors, account isolation, ACP, TUI PTY,
+  recovery and reproducible signed release archives.
+- Pinned ACP SDK stack regression: one passed.
+- `scripts/axiomcli-eval deterministic`: both repetitions passed; each covers
+  62 autonomous/multilanguage, soak, ACP, real-terminal and MCP tests.
+- TypeScript checks and all 209 JavaScript/TypeScript tests pass; all 127 Desktop
+  browser regressions pass across the platform fixtures.
+- Desktop production build and compiled callback asset verification pass.
+  ACP protocol regeneration produces no drift.
+- All 393 authored Markdown links/anchors resolve. All 93 Desktop/client source
+  modules are reachable from the application entry points. Removed artifacts
+  have no active references; dated historical evidence remains labeled.
+
+Strict-lint follow-up also boxes the large accounting event payload, removes
+redundant resumed-model reconciliation, and fixes routine clone, conversion,
+formatting and import warnings. Model capability booleans are intentionally
+independent catalog fields and retain a narrowly documented lint expectation.
+
+No live inference, funded payment, native OS acceptance or production deployment
+was performed. Those release gates remain in [validation](validation.md).

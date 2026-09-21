@@ -27,4 +27,5 @@ x25519-dalek = { version = "2", features = ["static_secrets"] }
 x509-parser = { version = "0.17", features = ["verify"] }
 
 [dev-dependencies]
+rcgen = "0.14.5"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

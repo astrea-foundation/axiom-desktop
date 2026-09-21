@@ -87,6 +87,12 @@ workload-policy fields. CLI/Desktop share an atomic rollback journal. A transpor
 outage may use the still-valid last-known-good policy; bad signatures, rollback,
 equivocation and expiry fail closed.
 
+Both NEAR and Phala use the verified policy’s NVIDIA intermediate fingerprints.
+Phala passes that accepted set into its worker verifier; an empty, malformed or
+unlisted anchor is rejected, and signed overlap permits certificate rotation.
+Certificate validity/signatures, verdict nonce, TDX and protocol-specific response
+authentication remain required.
+
 The bundled NEAR workload policy is observational. UI must distinguish observation
 from approved workload identity. Legacy Phala fields remain in the signed v1
 format for compatibility; they are not gateway-source approval controls.

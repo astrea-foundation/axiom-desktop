@@ -842,23 +842,12 @@ async fn run_headless(
         store.set_last_used_thinking(thinking)?;
     }
 
-    let title_task = durable_store.clone().map(|title_store| {
-        let title_runner = runner.clone();
-        let title_session = session_id.clone();
-        let title_prompt = prompt.clone();
-        tokio::spawn(async move {
-            let title = title_runner
-                .generate_title(
-                    &title_session,
-                    &title_prompt,
-                    CancellationToken::new(),
-                    Some(&title_store),
-                )
-                .await?;
-            title_store.set_title_if_absent(&title_session, &title)?;
-            Ok::<(), AxiomError>(())
-        })
-    });
+    if let Some(store) = &durable_store {
+        let title = axiomcli::session_title::session_title(&prompt);
+        if let Err(error) = store.set_title_if_absent(&session_id, &title) {
+            tracing::warn!(%session_id, %error, "could not persist session title");
+        }
+    }
 
     let (events_tx, mut events_rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
     let context = TurnContext {
@@ -920,18 +909,6 @@ async fn run_headless(
     let terminal = runtime.dispatch(terminal).await?;
     if let Some(store) = &durable_store {
         store.append_all(&terminal)?;
-    }
-    if let Some(title_task) = title_task {
-        match tokio::time::timeout(std::time::Duration::from_secs(2), title_task).await {
-            Ok(Ok(Ok(()))) => {}
-            Ok(Ok(Err(error))) => {
-                tracing::warn!(%error, "background session title generation failed");
-            }
-            Ok(Err(error)) => tracing::warn!(%error, "background session title task failed"),
-            Err(_) => {
-                tracing::warn!("background session title generation did not finish before exit");
-            }
-        }
     }
     result.map_err(anyhow::Error::from)
 }

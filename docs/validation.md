@@ -12,8 +12,8 @@ the current state of production, published installers or unrecorded manual work.
 |---|---|
 | Components and independent hosted/native ownership | [workspace](../Cargo.toml), [package scripts](../package.json), [architecture](architecture.md) |
 | Configuration precedence, bounds, storage paths and explicit account reset | [config.rs](../apps/axiomcli/src/config.rs), [paths.rs](../apps/axiomcli/src/paths.rs), [session.rs](../apps/axiomcli/src/session.rs) |
-| Fresh schema 1/application ID `0x41584133` and rejection of obsolete stores | [schema/migrations](../apps/axiomcli/src/session.rs), [versioning](versioning.md) |
-| Local titles, edit/regenerate, staged compaction and stable user-submission ordering | [agent.rs](../apps/axiomcli/src/agent.rs), [ACP](../apps/axiomcli/src/acp.rs), [concurrency regressions](testing/concurrency-ui-2026-09-20/FIXES.md) |
+| Fresh schema 1/application ID `0x41584133` and rejection of obsolete stores | [storage schema](../apps/axiomcli/src/session.rs), [versioning](versioning.md) |
+| Local titles, edit/regenerate, staged compaction and stable user-submission ordering | [title helper](../apps/axiomcli/src/session_title.rs), [agent.rs](../apps/axiomcli/src/agent.rs), [ACP](../apps/axiomcli/src/acp.rs), [concurrency regressions](testing/concurrency-ui-2026-09-20/FIXES.md) |
 | Desktop Agent on all packaged OS targets; Linux-only Bubblewrap isolation | [workspace.rs](../apps/axiomcli/src/workspace.rs), [policy.rs](../apps/axiomcli/src/policy.rs), [Desktop](desktop.md) |
 | ACP 0.2 features, API-key creation and Tinfoil generation exception | [extension DTOs](../crates/axiom-acp-extension/src/lib.rs), [contract](acp-compatibility.md) |
 | Mainnet ZEC deposits, valuation and `billing@2` | [billing.rs](../apps/axiomcli/src/billing.rs), [account UI](../apps/desktop/src/renderer/src/App.tsx) |
@@ -70,7 +70,33 @@ Local validation: 503 platform tests, all native workspace Rust tests, explicit
 reset/plan CLI tests, TypeScript checks/tests, Desktop and auth builds, receiver
 unit/integration tests, local reset and Compose validation. All 127 Desktop browser
 regressions and the updated release-archive regression pass. The development PRs
-record the paired revisions. Strict native Clippy remains blocked by
-pre-existing warnings (including `axiom-inference` enum size and boolean-count
-lints); ordinary Clippy completes. Live inference, funded deposits, OS-specific
+record the paired revisions. At that baseline, ordinary Clippy completed but
+strict Clippy reported existing warnings. The native maintenance work below
+resolves that check. Live inference, funded deposits, OS-specific
 acceptance and production cutover were not exercised by this source cleanup.
+
+
+## Native maintenance verification
+
+The [maintenance plan](native-maintenance-plan.md) removes dormant UI/counters,
+unused assets and asynchronous title plumbing; connects Phala to the verified
+signed NVIDIA anchor policy; tests NEAR report binding through the production
+verifier; and separates ACP, TUI and Desktop controller responsibilities.
+
+Workspace strict Clippy now passes with `--all-targets --all-features -- -D warnings`.
+Accounting events box their large record payload, duplicate model reconciliation
+is removed, and remaining lint fixes preserve the wire/storage contracts. The
+catalog’s independent capability flags keep a documented, targeted lint expectation.
+
+On 2026-09-21, the complete Rust workspace suite passed (510 tests, six opt-in
+or manual tests ignored). All 209 JavaScript/TypeScript tests and 127 Desktop
+browser regressions passed. TypeScript checks, Desktop production build, pinned
+ACP SDK stack regression, generated-contract drift check and callback asset
+verification passed. All 393 authored Markdown links/anchors resolved; all 93
+Desktop/client source modules remain reachable from the application entry points.
+Both repetitions of the deterministic evaluation script passed (62 tests each).
+The maintenance plan records publication and the full command list.
+
+Live inference, funded deposits, production deployment and interactive native
+macOS/Windows acceptance remain separate release checks; browser platform fixtures
+do not substitute for those checks.

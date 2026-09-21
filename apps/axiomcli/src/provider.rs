@@ -243,7 +243,7 @@ impl InferenceProvider for SecureAxiomProvider {
         };
         let output = events;
         output
-            .send(ProviderEvent::Accounting(accounting.clone()))
+            .send(ProviderEvent::Accounting(Box::new(accounting.clone())))
             .await
             .map_err(|_| AxiomError::Cancelled)?;
         let (events, mut incoming) = mpsc::channel(64);
@@ -284,7 +284,7 @@ impl InferenceProvider for SecureAxiomProvider {
                 Some(model.auto_compact_threshold_tokens());
             send_provider_event(
                 &events,
-                ProviderEvent::Accounting(established_accounting),
+                ProviderEvent::Accounting(Box::new(established_accounting)),
                 &cancellation,
             )
             .await?;
@@ -385,7 +385,7 @@ impl InferenceProvider for SecureAxiomProvider {
             accounting.state = InvocationState::Failed;
         }
         output
-            .send(ProviderEvent::Accounting(accounting))
+            .send(ProviderEvent::Accounting(Box::new(accounting)))
             .await
             .map_err(|_| AxiomError::Cancelled)?;
         result
@@ -429,7 +429,7 @@ fn update_request_accounting(
             let verified = record.response_verified;
             let context_window = record.context_window_tokens;
             let compact_at = record.auto_compact_threshold_tokens;
-            *record = snapshot.clone();
+            *record = *snapshot.clone();
             record.response_verified = verified;
             record.context_window_tokens = record.context_window_tokens.or(context_window);
             record.auto_compact_threshold_tokens =
@@ -437,7 +437,7 @@ fn update_request_accounting(
         }
         ProviderEvent::ResponseVerified => record.response_verified = true,
         ProviderEvent::Finished(reason) => {
-            record.finish_reason = Some(format!("{reason:?}").to_lowercase())
+            record.finish_reason = Some(format!("{reason:?}").to_lowercase());
         }
         _ => {}
     }

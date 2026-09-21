@@ -453,22 +453,9 @@ async fn axiom_extension_negotiates_and_exposes_typed_settings_security_and_comp
             break;
         }
     }
-    if !saw_title_notification {
-        saw_title_notification = tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                let value = acp.read().await;
-                let wire = value.to_string();
-                if wire.contains("title_changed") || wire.contains("session_info_update") {
-                    break true;
-                }
-            }
-        })
-        .await
-        .expect("generated title notification timeout");
-    }
     assert!(
         saw_title_notification,
-        "generated titles must be published without polling"
+        "initial titles must be published before the prompt completes"
     );
     acp.close().await;
 }
@@ -1160,7 +1147,7 @@ async fn slash_commands_are_advertised_and_execute_outside_model_turns() {
         }
     }
     assert!(transcript.contains("session mode selector"));
-    assert!(transcript.contains("Crypto permissions are coming soon"));
+    assert!(transcript.contains("session mode selector to change Tools permissions"));
     assert!(!transcript.contains("Echo:"));
 
     acp.send(&json!({

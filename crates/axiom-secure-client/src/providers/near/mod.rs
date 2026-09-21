@@ -15,7 +15,6 @@ use crate::{
 };
 
 pub(crate) mod attestation;
-#[allow(dead_code)]
 pub(crate) mod crypto;
 pub(crate) mod inference;
 

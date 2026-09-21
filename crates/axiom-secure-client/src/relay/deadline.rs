@@ -9,6 +9,45 @@ pub(crate) struct StreamDeadline {
     finalizing: bool,
 }
 
+impl StreamDeadline {
+    pub(crate) fn new() -> Self {
+        Self {
+            deadline: Instant::now() + Duration::from_secs(300),
+            stage: "first model response",
+            finalizing: false,
+        }
+    }
+    pub(crate) fn at(&self) -> Instant {
+        self.deadline
+    }
+    pub(crate) fn observe(&mut self, event: &RelayEvent) {
+        match event {
+            RelayEvent::Delta(_) if !self.finalizing => {
+                self.deadline = Instant::now() + Duration::from_secs(90);
+                self.stage = "model progress";
+            }
+            RelayEvent::Finalizing(_) | RelayEvent::MessageCompleted(_) if !self.finalizing => {
+                self.finalizing = true;
+                self.deadline = Instant::now() + Duration::from_secs(60);
+                self.stage = "final response receipt";
+            }
+            _ => {}
+        }
+    }
+    pub(crate) fn error(&self) -> crate::SecureClientError {
+        crate::SecureClientError::with_code(
+            axiom_inference::ProviderFailureKind::Transient,
+            crate::SecureErrorCode::StreamTimeout,
+            match self.stage {
+                "first model response" => "Timed out waiting for the model to start responding.",
+                "final response receipt" => "Timed out waiting for the final response receipt.",
+                _ => "The provider stopped responding.",
+            },
+            true,
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -46,44 +85,5 @@ mod tests {
         assert_eq!(receipt, deadline.at());
         tokio::time::advance(Duration::from_secs(2)).await;
         assert!(Instant::now() > deadline.at());
-    }
-}
-
-impl StreamDeadline {
-    pub(crate) fn new() -> Self {
-        Self {
-            deadline: Instant::now() + Duration::from_secs(300),
-            stage: "first model response",
-            finalizing: false,
-        }
-    }
-    pub(crate) fn at(&self) -> Instant {
-        self.deadline
-    }
-    pub(crate) fn observe(&mut self, event: &RelayEvent) {
-        match event {
-            RelayEvent::Delta(_) if !self.finalizing => {
-                self.deadline = Instant::now() + Duration::from_secs(90);
-                self.stage = "model progress";
-            }
-            RelayEvent::Finalizing(_) | RelayEvent::MessageCompleted(_) if !self.finalizing => {
-                self.finalizing = true;
-                self.deadline = Instant::now() + Duration::from_secs(60);
-                self.stage = "final response receipt";
-            }
-            _ => {}
-        }
-    }
-    pub(crate) fn error(&self) -> crate::SecureClientError {
-        crate::SecureClientError::with_code(
-            axiom_inference::ProviderFailureKind::Transient,
-            crate::SecureErrorCode::StreamTimeout,
-            match self.stage {
-                "first model response" => "Timed out waiting for the model to start responding.",
-                "final response receipt" => "Timed out waiting for the final response receipt.",
-                _ => "The provider stopped responding.",
-            },
-            true,
-        )
     }
 }

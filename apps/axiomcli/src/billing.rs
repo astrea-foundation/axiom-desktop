@@ -508,7 +508,7 @@ fn exact_integer(value: &str) -> bool {
         && value.len() <= 19
         && (value == "0" || !value.starts_with('0'))
         && value.bytes().all(|c| c.is_ascii_digit())
-        && value.parse::<u64>().is_ok_and(|n| n <= i64::MAX as u64)
+        && value.parse::<u64>().is_ok_and(|n| i64::try_from(n).is_ok())
 }
 
 fn valid_current_quote(
@@ -837,8 +837,8 @@ mod tests {
         assert!(validate_billing_status(&inconsistent).is_err());
 
         let too_large = BillingStatus {
-            posted_microusd: MAX_ACP_SAFE_INTEGER as i64 + 1,
-            available_microusd: MAX_ACP_SAFE_INTEGER as i64 + 1,
+            posted_microusd: i64::try_from(MAX_ACP_SAFE_INTEGER).unwrap() + 1,
+            available_microusd: i64::try_from(MAX_ACP_SAFE_INTEGER).unwrap() + 1,
             ..inconsistent
         };
         assert!(validate_billing_status(&too_large).is_err());

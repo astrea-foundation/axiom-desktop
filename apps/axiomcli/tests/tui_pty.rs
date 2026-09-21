@@ -545,7 +545,7 @@ fn durable_tui_session_resumes_in_the_same_workspace() {
     let stdout = String::from_utf8(listed.stdout).expect("session list utf8");
     assert!(
         stdout.contains("probe"),
-        "background title was not persisted: {stdout}"
+        "initial title was not persisted: {stdout}"
     );
     let id = stdout
         .lines()

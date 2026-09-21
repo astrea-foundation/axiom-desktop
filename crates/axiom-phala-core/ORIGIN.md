@@ -29,7 +29,9 @@ Local security changes from the pinned source:
 - recover standard-profile secp256k1 receipt signers from the 65-byte
   recoverable signature and compare them to the attested receipt key;
 - expose the full quote-bound gateway repository and commit in verified provider
-  state for inspection without claiming Axiom code approval; and
+  state for inspection without claiming Axiom code approval;
+- accept NVIDIA intermediate fingerprints from Axiom’s locally verified signed
+  trust policy, including overlap during certificate rotation; and
 - retain fail-closed TDX, measured compose, keyset, worker-session,
   transparency-event, response-hash, and terminal-receipt verification.
 

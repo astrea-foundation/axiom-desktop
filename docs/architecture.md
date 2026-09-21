@@ -20,11 +20,30 @@ integration for clients that speak OpenAI-compatible HTTP.
 | `packages/axiom-acp-client` | Node-side process framing, negotiation, state reduction and recovery |
 | `packages/brand` | Native fonts/artwork and compiled local login callback page |
 | `packages/desktop-releases` | Release-manifest validation shared by native packaging/update code |
-| `packages/sidecar-protocol` | Reserved directory; ACP generation lives in the ACP client package |
 
 The TUI and proxy call the secure client directly. Desktop chat uses ACP; its
 optional Proxy screen supervises a separate account-bound loopback process.
 The [ACP guide](acp-compatibility.md) owns the control contract.
+
+## Frontend code organization
+
+[ACP registration](../apps/axiomcli/src/acp/server.rs) creates one typed server
+context. Handlers in `apps/axiomcli/src/acp/` own sessions, prompts, account and
+billing operations, thread history, collections, model preferences, settings and
+security/compaction. Account transition barriers, responder errors and spawned
+work retain the same connection ownership.
+
+The [TUI entry point](../apps/axiomcli/src/tui.rs) preserves the public interface.
+Its `state` module owns event reduction and selection; `runtime` owns terminal
+lifecycle, input and asynchronous work; `screens` and `transcript` render those
+states. Attestation export and terminal-safe text helpers have separate modules.
+
+Desktop's [App](../apps/desktop/src/renderer/src/App.tsx) composes layout with
+`useDesktopState`, `useNativeAccount`, `useModelCatalog`, `useConversationNavigation`
+and `useConversations`. These hooks own the IPC subscription, login lifecycle,
+model preferences, selection, and durable submission/queue lifecycle respectively.
+Account/runtime generations and stable submission IDs remain the guards against
+late work affecting a different account or conversation.
 
 ## Account and credential ownership
 
@@ -81,8 +100,10 @@ and encrypts tool results in subsequent model requests.
 
 Request accounting is separate from response verification. A completed billing
 record cannot turn cancelled or unauthenticated output into a verified reply.
-Automatic conversation titles are derived locally from the first prompt; they
-make no title-generation inference request.
+Automatic conversation titles are derived synchronously from the first accepted
+prompt by the shared [title helper](../apps/axiomcli/src/session_title.rs). They
+are bounded to eight words and 80 UTF-8 bytes, persisted only if absent in the
+account-bound store, and require no inference request or background task.
 
 ## Account credit and integrations
 

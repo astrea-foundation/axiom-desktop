@@ -648,16 +648,6 @@ input {
   background: var(--wash-chip);
   white-space: nowrap;
 }
-.ax-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--color-cherry);
-  flex: 0 0 auto;
-}
-.ax-dot-hollow {
-  background: var(--color-text-muted);
-}
 @keyframes dot-working {
   0%,
   100% {
@@ -666,9 +656,6 @@ input {
   50% {
     opacity: 1;
   }
-}
-.ax-dot-working {
-  animation: dot-working 2s ease-in-out infinite;
 }
 /* The trailing slot stays empty for read threads; activity pulses in orange. */
 .thread-dot {
@@ -719,13 +706,6 @@ input {
   }
 }
 
-.ax-meta {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  letter-spacing: -0.01em;
-  color: var(--color-text-muted);
-  font-variant-numeric: tabular-nums;
-}
 
 .cherry-glow {
   background: radial-gradient(
@@ -875,19 +855,6 @@ input {
 }
 .animate-check-pop {
   animation: check-pop 0.4s var(--ease-spring) both;
-}
-
-@keyframes arm-pulse {
-  0%,
-  100% {
-    box-shadow: 0 0 10px rgba(217, 48, 54, 0.12);
-  }
-  50% {
-    box-shadow: 0 0 20px rgba(217, 48, 54, 0.3);
-  }
-}
-.animate-arm-pulse {
-  animation: arm-pulse 1.4s ease-in-out infinite;
 }
 
 @keyframes progress-in {
@@ -1088,7 +1055,6 @@ input {
 @media (prefers-reduced-motion: reduce) {
   .animate-panel-in,
   .animate-check-pop,
-  .animate-arm-pulse,
   .animate-progress-in,
   .animate-pop-in,
   .animate-fade-in-up,
@@ -1098,10 +1064,6 @@ input {
     animation-iteration-count: 1;
   }
   .animate-pulse-glow {
-    animation: none;
-    opacity: 0.55;
-  }
-  .ax-dot-working {
     animation: none;
     opacity: 0.55;
   }

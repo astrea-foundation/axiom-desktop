@@ -481,7 +481,7 @@ impl Session {
         }
         send(
             sink.as_ref(),
-            ProviderEvent::Accounting(record),
+            ProviderEvent::Accounting(Box::new(record)),
             &cancellation,
         )
         .await?;

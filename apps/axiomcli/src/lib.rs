@@ -19,6 +19,7 @@ mod process_env;
 pub mod provider;
 pub mod proxy;
 pub mod session;
+pub mod session_title;
 pub mod slash;
 pub mod steering;
 pub mod tools;
