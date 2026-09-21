@@ -20,7 +20,6 @@ integration for clients that speak OpenAI-compatible HTTP.
 | `packages/axiom-acp-client` | Node-side process framing, negotiation, state reduction and recovery |
 | `packages/brand` | Native fonts/artwork and compiled local login callback page |
 | `packages/desktop-releases` | Release-manifest validation shared by native packaging/update code |
-| `packages/sidecar-protocol` | Reserved directory; ACP generation lives in the ACP client package |
 
 The TUI and proxy call the secure client directly. Desktop chat uses ACP; its
 optional Proxy screen supervises a separate account-bound loopback process.

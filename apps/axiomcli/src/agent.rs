@@ -342,22 +342,7 @@ pub trait TurnRunner: Send + Sync {
         Ok(Vec::new())
     }
 
-    /// Generate a short display title from a session's first prompt. Adapters
-    /// run this independently of the foreground turn and persist the result.
-    async fn generate_title(
-        &self,
-        _session_id: &SessionId,
-        _first_prompt: &str,
-        _cancellation: CancellationToken,
-        _accounting_store: Option<&crate::session::SessionStore>,
-    ) -> Result<String> {
-        Err(AxiomError::InvalidTransition(
-            "this runner does not support session title generation".into(),
-        ))
-    }
-
-    /// Store a provider-neutral reasoning preference. The Axiom
-    /// proxy adapter intentionally does not serialize this yet.
+    /// Store a provider-neutral reasoning preference for this session.
     async fn set_thinking_level(
         &self,
         _session_id: &SessionId,
@@ -536,19 +521,6 @@ impl TurnRunner for EchoTurnRunner {
         _level: ThinkingLevel,
     ) -> Result<()> {
         Ok(())
-    }
-
-    async fn generate_title(
-        &self,
-        _session_id: &SessionId,
-        first_prompt: &str,
-        cancellation: CancellationToken,
-        _accounting_store: Option<&crate::session::SessionStore>,
-    ) -> Result<String> {
-        if cancellation.is_cancelled() {
-            return Err(AxiomError::Cancelled);
-        }
-        normalize_session_title(first_prompt)
     }
 
     async fn compact(
@@ -2571,21 +2543,6 @@ impl TurnRunner for AgentEngine {
         self.provider.request_accounting(ids, cancellation).await
     }
 
-    async fn generate_title(
-        &self,
-        _session_id: &SessionId,
-        first_prompt: &str,
-        cancellation: CancellationToken,
-        _accounting_store: Option<&crate::session::SessionStore>,
-    ) -> Result<String> {
-        if cancellation.is_cancelled() {
-            return Err(AxiomError::Cancelled);
-        }
-        // A label should be instant, available offline, and never consume a
-        // paid reasoning request. Both clients persist it only if still untitled.
-        Ok(normalize_session_title(first_prompt).unwrap_or_else(|_| "Conversation".into()))
-    }
-
     async fn set_thinking_level(&self, session_id: &SessionId, level: ThinkingLevel) -> Result<()> {
         let expected_model = self.settings_for(session_id).await.model;
         let models = self.provider.models(CancellationToken::new()).await?;
@@ -2799,37 +2756,6 @@ fn truncate_utf8(content: &str, max_bytes: usize) -> (String, bool) {
         boundary -= 1;
     }
     (content[..boundary].to_owned(), true)
-}
-
-fn normalize_session_title(raw: &str) -> Result<String> {
-    let line = raw
-        .lines()
-        .find(|line| !line.trim().is_empty())
-        .unwrap_or_default();
-    let safe_line = line
-        .chars()
-        .filter(|character| !character.is_control())
-        .collect::<String>();
-    let line = safe_line.trim().trim_matches(|character: char| {
-        matches!(character, '"' | '\'' | '`' | '#' | '*' | '_' | '[' | ']')
-    });
-    let title = line
-        .split_whitespace()
-        .take(8)
-        .collect::<Vec<_>>()
-        .join(" ");
-    let (title, _) = truncate_utf8(&title, 80);
-    let title = title
-        .trim()
-        .trim_end_matches(['.', ',', ':', ';', '!', '?', '-', '—'])
-        .trim();
-    if title.is_empty() {
-        Err(AxiomError::Provider(
-            "provider returned an empty session title".into(),
-        ))
-    } else {
-        Ok(title.to_owned())
-    }
 }
 
 fn wall_clock_error(limit: Duration) -> AxiomError {
@@ -5184,37 +5110,6 @@ mod engine_tests {
         assert!(continued.contains("thinking level for this session is `provider_default`"));
         assert!(continued.contains("AxiomCLI is the application hosting you"));
         assert!(!continued.contains("You are AxiomCLI"));
-    }
-
-    #[tokio::test]
-    async fn title_generation_is_local_free_and_normalized() {
-        let provider = Arc::new(ScriptedProvider::new(vec![AssistantTurn {
-            reasoning: None,
-            text: "\"Repair Cherry Workspace.\"\nextra text".into(),
-            tool_calls: Vec::new(),
-        }]));
-        let engine = AgentEngine::new(
-            provider.clone(),
-            Arc::new(ToolRegistry::new()),
-            "title-model",
-            2,
-        );
-        let session_id = SessionId::new();
-        let title = engine
-            .generate_title(
-                &session_id,
-                "Please repair the workspace without changing its theme",
-                CancellationToken::new(),
-                None,
-            )
-            .await
-            .expect("title");
-
-        assert_eq!(
-            title,
-            "Please repair the workspace without changing its theme"
-        );
-        assert!(provider.requests.lock().await.is_empty());
     }
 
     #[tokio::test]

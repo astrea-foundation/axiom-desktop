@@ -1160,7 +1160,7 @@ async fn slash_commands_are_advertised_and_execute_outside_model_turns() {
         }
     }
     assert!(transcript.contains("session mode selector"));
-    assert!(transcript.contains("Crypto permissions are coming soon"));
+    assert!(transcript.contains("session mode selector to change Tools permissions"));
     assert!(!transcript.contains("Echo:"));
 
     acp.send(&json!({

@@ -2634,7 +2634,7 @@ pub async fn serve_stdio(
                             send_text(
                                 &connection,
                                 &session_id,
-                                "Open your ACP client's session mode selector to change Tools permissions. Crypto permissions are coming soon.".into(),
+                                "Open your ACP client's session mode selector to change Tools permissions.".into(),
                             )?;
                             Ok(protocol::StopReason::EndTurn)
                         }
@@ -3415,64 +3415,24 @@ pub async fn serve_stdio(
                 };
 
                 if should_generate_title
-                    && let Some(title_store) = prompt_store.clone()
+                    && let Some(title_store) = prompt_store.as_ref()
                 {
-                    let title_cancellation = CancellationToken::new();
-                    let title_guard = prompt_account_work
-                        .register(title_cancellation.clone())
-                        .ok();
-                    let title_runner = runner.clone();
-                    let title_session = internal_id.clone();
-                    let title_prompt = prompt.clone();
-                    let title_connection = connection.clone();
-                    let title_external_id = session_id.clone();
-                    if let Some(title_guard) = title_guard {
-                    tokio::spawn(async move {
-                        let _account_guard = title_guard;
-                        match title_runner
-                            .generate_title(
-                                &title_session,
-                                &title_prompt,
-                                title_cancellation.clone(),
-                                Some(&title_store),
-                            )
-                            .await
-                        {
-                            Ok(_) if title_cancellation.is_cancelled() => {}
-                            Ok(title) => match title_store
-                                .set_title_if_absent(&title_session, &title)
-                            {
-                                Ok(true) => {
-                                    if let Err(error) = title_connection.send_notification(
-                                        protocol::SessionNotification::new(
-                                            title_external_id.clone(),
-                                            protocol::SessionUpdate::SessionInfoUpdate(
-                                                protocol::SessionInfoUpdate::new()
-                                                    .title(title.clone()),
-                                            ),
-                                        ),
-                                    ) {
-                                        tracing::warn!(
-                                            session_id = %title_session,
-                                            %error,
-                                            "could not publish generated ACP session title"
-                                        );
-                                    }
-                                }
-                                Ok(false) => {}
-                                Err(error) => tracing::warn!(
-                                    session_id = %title_session,
-                                    %error,
-                                    "could not persist generated ACP session title"
+                    let title = crate::session_title::session_title(&prompt);
+                    match title_store.set_title_if_absent(&internal_id, &title) {
+                        Ok(true) => {
+                            if let Err(error) = connection.send_notification(
+                                protocol::SessionNotification::new(
+                                    session_id.clone(),
+                                    protocol::SessionUpdate::SessionInfoUpdate(
+                                        protocol::SessionInfoUpdate::new().title(title),
+                                    ),
                                 ),
-                            },
-                            Err(error) => tracing::warn!(
-                                session_id = %title_session,
-                                %error,
-                                "background ACP session title generation failed"
-                            ),
+                            ) {
+                                tracing::warn!(session_id = %internal_id, %error, "could not publish ACP session title");
+                            }
                         }
-                    });
+                        Ok(false) => {}
+                        Err(error) => tracing::warn!(session_id = %internal_id, %error, "could not persist ACP session title"),
                     }
                 }
 

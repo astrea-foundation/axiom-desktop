@@ -46,7 +46,7 @@ Slash commands are handled locally rather than sent to the model as prompts.
 |---|---|
 | `/model` | Search the discovered catalog; unsupported/manual IDs are rejected |
 | `/thinking <level>` | Select a supported reasoning level |
-| `/permissions` | Open tool-profile settings; Crypto remains a future feature |
+| `/permissions` | Open tool permission settings |
 | `/web on` / `/web off` | Opt into or disable external search/fetch tools for subsequent turns |
 | `/resume` | Search saved transcripts matching the canonical workspace |
 | `/delete` | Select and confirm deletion of saved sessions except the active one |

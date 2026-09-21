@@ -164,7 +164,6 @@ enum Overlay {
     Entry(usize),
     Help,
     Permissions {
-        tab: PermissionTab,
         selected: usize,
     },
     ModelPicker {
@@ -202,22 +201,6 @@ struct SaveAttestationPicker {
     selected: usize,
     focus: SavePickerFocus,
     error: Option<String>,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-enum PermissionTab {
-    #[default]
-    Tools,
-    Crypto,
-}
-
-impl PermissionTab {
-    const fn other(self) -> Self {
-        match self {
-            Self::Tools => Self::Crypto,
-            Self::Crypto => Self::Tools,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -383,13 +366,7 @@ pub struct TuiState {
     answer_input: String,
     answer_prompt: Option<String>,
     interaction: Option<InteractionView>,
-    input_tokens: u64,
-    output_tokens: u64,
     request_usage: BTreeMap<String, axiom_inference::RequestUsage>,
-    current_reported_input_tokens: u64,
-    current_reported_output_tokens: u64,
-    unreported_output_bytes: u64,
-    unconfirmed_tokens: u64,
     animation_frame: u64,
     transition_ticks: u8,
     compacting: bool,
@@ -447,13 +424,7 @@ impl TuiState {
             answer_input: String::new(),
             answer_prompt: None,
             interaction: None,
-            input_tokens: 0,
-            output_tokens: 0,
             request_usage: BTreeMap::new(),
-            current_reported_input_tokens: 0,
-            current_reported_output_tokens: 0,
-            unreported_output_bytes: 0,
-            unconfirmed_tokens: 0,
             animation_frame: 0,
             transition_ticks: 0,
             compacting: false,
@@ -764,45 +735,6 @@ impl TuiState {
         }
     }
 
-    // Retained for a future token-usage surface; collection remains live even
-    // though the current TUI intentionally does not render the counter.
-    #[allow(dead_code)]
-    fn displayed_tokens(&self) -> u64 {
-        self.input_tokens
-            .saturating_add(self.output_tokens)
-            .saturating_add(self.unconfirmed_tokens)
-            .saturating_add(estimate_streamed_tokens(self.unreported_output_bytes))
-    }
-
-    fn record_streamed_output(&mut self, text: &str) {
-        self.unreported_output_bytes = self
-            .unreported_output_bytes
-            .saturating_add(u64::try_from(text.len()).unwrap_or(u64::MAX));
-    }
-
-    fn begin_provider_request(&mut self) {
-        self.unconfirmed_tokens = self
-            .unconfirmed_tokens
-            .saturating_add(estimate_streamed_tokens(self.unreported_output_bytes));
-        self.unreported_output_bytes = 0;
-        self.current_reported_input_tokens = 0;
-        self.current_reported_output_tokens = 0;
-    }
-
-    fn apply_authoritative_usage(&mut self, input_tokens: u64, output_tokens: u64) {
-        self.input_tokens = self
-            .input_tokens
-            .saturating_sub(self.current_reported_input_tokens)
-            .saturating_add(input_tokens);
-        self.output_tokens = self
-            .output_tokens
-            .saturating_sub(self.current_reported_output_tokens)
-            .saturating_add(output_tokens);
-        self.current_reported_input_tokens = input_tokens;
-        self.current_reported_output_tokens = output_tokens;
-        self.unreported_output_bytes = 0;
-    }
-
     fn apply(&mut self, event: &AppEvent) {
         match event {
             AppEvent::SteeringApplied { turn_id, text, .. } => {
@@ -831,7 +763,6 @@ impl TuiState {
                 }
             }
             AppEvent::TextDelta { turn_id, text } => {
-                self.record_streamed_output(text);
                 let text = sanitize_terminal_text(text);
                 if let Some(index) = self.task_index(turn_id) {
                     if let Some(task) = self.entries[index].task.as_mut() {
@@ -845,7 +776,6 @@ impl TuiState {
                 self.status_tone = StatusTone::Active;
             }
             AppEvent::ReasoningDelta { turn_id, text } => {
-                self.record_streamed_output(text);
                 let text = sanitize_terminal_text(text);
                 if let Some(index) = self.task_index(turn_id) {
                     if let Some(task) = self.entries[index].task.as_mut() {
@@ -864,12 +794,7 @@ impl TuiState {
                 self.request_usage
                     .insert(usage.request_id.clone(), usage.clone());
             }
-            AppEvent::UsageUpdated {
-                input_tokens,
-                output_tokens,
-            } => {
-                self.apply_authoritative_usage(*input_tokens, *output_tokens);
-            }
+            AppEvent::UsageUpdated { .. } => {}
             AppEvent::ToolProposed {
                 turn_id,
                 call_id,
@@ -1006,9 +931,7 @@ impl TuiState {
                 self.resume_active_task();
             }
             AppEvent::ProviderStatusChanged { connected, detail } => {
-                if *connected {
-                    self.begin_provider_request();
-                } else {
+                if !connected {
                     self.status =
                         format!("Provider unavailable: {}", sanitize_terminal_text(detail));
                     self.status_tone = StatusTone::Error;
@@ -1965,30 +1888,13 @@ impl TuiState {
             .iter()
             .position(|profile| *profile == self.profile)
             .unwrap_or(0);
-        self.overlay = Some(Overlay::Permissions {
-            tab: PermissionTab::Tools,
-            selected,
-        });
+        self.overlay = Some(Overlay::Permissions { selected });
         self.status = "Choose tool permissions".into();
         self.status_tone = StatusTone::Neutral;
     }
 
-    fn switch_permission_tab(&mut self) {
-        if let Some(Overlay::Permissions { tab, .. }) = &mut self.overlay {
-            *tab = tab.other();
-            self.status = match tab {
-                PermissionTab::Tools => "Choose tool permissions".into(),
-                PermissionTab::Crypto => "Crypto permissions are coming soon".into(),
-            };
-        }
-    }
-
     fn move_permission_selection(&mut self, amount: isize) {
-        let Some(Overlay::Permissions {
-            tab: PermissionTab::Tools,
-            selected,
-        }) = &mut self.overlay
-        else {
+        let Some(Overlay::Permissions { selected }) = &mut self.overlay else {
             return;
         };
         if amount.is_negative() {
@@ -2001,11 +1907,7 @@ impl TuiState {
     }
 
     fn selected_permission_profile(&self) -> Option<PermissionProfile> {
-        let Overlay::Permissions {
-            tab: PermissionTab::Tools,
-            selected,
-        } = self.overlay.as_ref()?
-        else {
+        let Overlay::Permissions { selected } = self.overlay.as_ref()? else {
             return None;
         };
         PermissionProfile::ALL.get(*selected).copied()
@@ -2480,7 +2382,6 @@ enum UiMessage {
     SecurityPreflightDone(u64, Result<SecurityVerification>),
     CompactionDone(Result<CompactionResult>),
     ModelsLoaded(Result<Vec<axiom_inference::ModelInfo>>),
-    TitleGenerated(SessionId, Result<String>),
     Approval(ApprovalRequest, oneshot::Sender<ApprovalResponse>),
     Questions(
         QuestionRequest,
@@ -3384,9 +3285,6 @@ pub async fn run(
                                     state.overlay = None;
                                     state.status = "Permission selection cancelled".into();
                                 }
-                                KeyCode::Tab | KeyCode::Left | KeyCode::Right => {
-                                    state.switch_permission_tab();
-                                }
                                 KeyCode::Up => state.move_permission_selection(-1),
                                 KeyCode::Down => state.move_permission_selection(1),
                                 KeyCode::PageUp => state.move_permission_selection(-4),
@@ -3416,10 +3314,6 @@ pub async fn run(
                                                 &error.to_string(),
                                             ),
                                         }
-                                    } else {
-                                        state.status =
-                                            "Crypto permissions are coming soon".into();
-                                        state.status_tone = StatusTone::Neutral;
                                     }
                                 }
                                 _ => {}
@@ -4197,8 +4091,6 @@ pub async fn run(
                                     let turn_id = runtime.turn_id();
                                     let should_generate_title = !state.has_prompt
                                         && store.as_ref().is_some_and(SessionStore::is_active);
-                                    let title_prompt = prompt.clone();
-                                    let title_session = session_id.clone();
                                     let submitted = runtime.dispatch(AppCommand::SubmitPrompt {
                                         session_id: session_id.clone(),
                                         turn_id: turn_id.clone(),
@@ -4208,6 +4100,12 @@ pub async fn run(
                                         store.append_all(&submitted)?;
                                         store.set_last_used_model(&state.model)?;
                                         store.set_last_used_thinking(state.thinking)?;
+                                        if should_generate_title {
+                                            let title = crate::session_title::session_title(&prompt);
+                                            if let Err(error) = store.set_title_if_absent(&session_id, &title) {
+                                                tracing::warn!(%session_id, %error, "could not persist session title");
+                                            }
+                                        }
                                     }
                                     for event in submitted {
                                         state.apply(&event.event);
@@ -4241,27 +4139,6 @@ pub async fn run(
                                         let _ = forward.await;
                                         let _ = task_tx.send(UiMessage::Done(turn_id, result)).await;
                                     });
-                                    if should_generate_title {
-                                        let title_runner = runner.clone();
-                                        let title_tx = ui_tx.clone();
-                                        let title_store = store.clone();
-                                        tokio::spawn(async move {
-                                            let result = title_runner
-                                                .generate_title(
-                                                    &title_session,
-                                                    &title_prompt,
-                                                    CancellationToken::new(),
-                                                    title_store.as_ref(),
-                                                )
-                                                .await;
-                                            let _ = title_tx
-                                                .send(UiMessage::TitleGenerated(
-                                                    title_session,
-                                                    result,
-                                                ))
-                                                .await;
-                                        });
-                                    }
                                 }
                                 KeyCode::Char(character) if state.focus == Focus::Composer && (!state.running || key.modifiers.is_empty()) => {
                                     state.reset_slash_completion();
@@ -4561,28 +4438,6 @@ pub async fn run(
                                     "Could not load available models: {error} · Esc to close"
                                 );
                             }
-                        }
-                    }
-                    UiMessage::TitleGenerated(titled_session, result) => {
-                        match (store.as_ref(), result) {
-                            (Some(store), Ok(title)) => {
-                                if let Err(error) = store.set_title_if_absent(&titled_session, &title)
-                                {
-                                    tracing::warn!(
-                                        session_id = %titled_session,
-                                        %error,
-                                        "could not persist generated session title"
-                                    );
-                                }
-                            }
-                            (_, Err(error)) => {
-                                tracing::warn!(
-                                    session_id = %titled_session,
-                                    %error,
-                                    "background session title generation failed"
-                                );
-                            }
-                            (None, Ok(_)) => {}
                         }
                     }
                     UiMessage::Approval(request, response) => {
@@ -5967,7 +5822,7 @@ fn render_overlay(frame: &mut Frame<'_>, state: &TuiState, overlay: &Overlay, th
 }
 
 fn render_permissions_picker(frame: &mut Frame<'_>, state: &TuiState, theme: Theme) {
-    let Some(Overlay::Permissions { tab, selected }) = &state.overlay else {
+    let Some(Overlay::Permissions { selected }) = &state.overlay else {
         return;
     };
     let area = fitted_rect(82, 23, frame.area());
@@ -5994,126 +5849,82 @@ fn render_permissions_picker(frame: &mut Frame<'_>, state: &TuiState, theme: The
             Constraint::Length(1),
         ])
         .split(inner);
-    let tab_span = |label: &'static str, active: bool| {
-        Span::styled(
-            if active {
-                format!(" {label} ")
-            } else {
-                format!("  {label}  ")
-            },
-            if active {
-                Style::default()
-                    .fg(theme.text)
-                    .patch(theme.selection())
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(theme.muted)
-            },
-        )
-    };
     frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            tab_span("Tools", *tab == PermissionTab::Tools),
-            Span::raw("  "),
-            tab_span("Crypto", *tab == PermissionTab::Crypto),
-        ])),
+        Paragraph::new(Span::styled(
+            "Tools",
+            Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
+        )),
         rows[0],
     );
-
-    match tab {
-        PermissionTab::Tools => {
-            let selected = (*selected).min(PermissionProfile::ALL.len() - 1);
-            let mut lines = Vec::new();
-            for (index, profile) in PermissionProfile::ALL.into_iter().enumerate() {
-                let is_selected = index == selected;
-                let marker = if is_selected {
-                    state.glyph("›", ">")
-                } else {
-                    " "
-                };
-                let is_current = profile == state.profile;
-                let current = if is_current {
-                    state.glyph("✓", "+")
-                } else {
-                    " "
-                };
-                let style = if is_selected {
-                    Style::default()
-                        .fg(theme.text)
-                        .patch(theme.selection())
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(theme.text)
-                };
-                let current_style = if is_current {
-                    style.fg(theme.success)
-                } else {
-                    style
-                };
-                lines.push(Line::from(vec![
-                    Span::styled(format!("{marker} "), style),
-                    Span::styled(format!("{current} "), current_style),
-                    Span::styled(
-                        truncate_end(
-                            profile.label(),
-                            usize::from(rows[1].width).saturating_sub(4),
-                        ),
-                        style,
-                    ),
-                ]));
-                lines.push(Line::from(Span::styled(
-                    truncate_end(
-                        &format!("    {}", profile.description()),
-                        usize::from(rows[1].width),
-                    ),
-                    Style::default().fg(theme.muted),
-                )));
-                if index + 1 < PermissionProfile::ALL.len() {
-                    lines.push(Line::from(""));
-                }
-            }
-            let visible_height = usize::from(rows[1].height);
-            let scroll = if lines.len() > visible_height {
-                selected
-                    .saturating_mul(3)
-                    .min(lines.len().saturating_sub(visible_height))
-            } else {
-                0
-            };
-            let scroll = u16::try_from(scroll).unwrap_or(u16::MAX);
-            frame.render_widget(
-                Paragraph::new(lines)
-                    .scroll((scroll, 0))
-                    .wrap(Wrap { trim: false }),
-                rows[1],
-            );
-        }
-        PermissionTab::Crypto => {
-            let message_area = Rect::new(
-                rows[1].x,
-                rows[1].y.saturating_add(rows[1].height / 2),
-                rows[1].width,
-                1,
-            );
-            frame.render_widget(
-                Paragraph::new(Span::styled(
-                    "Coming soon!",
-                    Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
-                ))
-                .alignment(Alignment::Center),
-                message_area,
-            );
+    let selected = (*selected).min(PermissionProfile::ALL.len() - 1);
+    let mut lines = Vec::new();
+    for (index, profile) in PermissionProfile::ALL.into_iter().enumerate() {
+        let is_selected = index == selected;
+        let marker = if is_selected {
+            state.glyph("›", ">")
+        } else {
+            " "
+        };
+        let is_current = profile == state.profile;
+        let current = if is_current {
+            state.glyph("✓", "+")
+        } else {
+            " "
+        };
+        let style = if is_selected {
+            Style::default()
+                .fg(theme.text)
+                .patch(theme.selection())
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.text)
+        };
+        let current_style = if is_current {
+            style.fg(theme.success)
+        } else {
+            style
+        };
+        lines.push(Line::from(vec![
+            Span::styled(format!("{marker} "), style),
+            Span::styled(format!("{current} "), current_style),
+            Span::styled(
+                truncate_end(
+                    profile.label(),
+                    usize::from(rows[1].width).saturating_sub(4),
+                ),
+                style,
+            ),
+        ]));
+        lines.push(Line::from(Span::styled(
+            truncate_end(
+                &format!("    {}", profile.description()),
+                usize::from(rows[1].width),
+            ),
+            Style::default().fg(theme.muted),
+        )));
+        if index + 1 < PermissionProfile::ALL.len() {
+            lines.push(Line::from(""));
         }
     }
+    let visible_height = usize::from(rows[1].height);
+    let scroll = if lines.len() > visible_height {
+        selected
+            .saturating_mul(3)
+            .min(lines.len().saturating_sub(visible_height))
+    } else {
+        0
+    };
+    let scroll = u16::try_from(scroll).unwrap_or(u16::MAX);
+    frame.render_widget(
+        Paragraph::new(lines)
+            .scroll((scroll, 0))
+            .wrap(Wrap { trim: false }),
+        rows[1],
+    );
     frame.render_widget(
         Paragraph::new(Span::styled(
             truncate_end(
-                match tab {
-                    PermissionTab::Tools => {
-                        "↑/↓ select · Enter apply · Tab or ←/→ switch · Esc cancel"
-                    }
-                    PermissionTab::Crypto => "Tab or ←/→ switch · Esc close",
-                },
+                "↑/↓ select · Enter apply · Esc cancel",
                 usize::from(rows[2].width),
             ),
             Style::default().fg(theme.muted),
@@ -7557,27 +7368,6 @@ fn format_elapsed(duration: Duration) -> String {
     }
 }
 
-const fn estimate_streamed_tokens(bytes: u64) -> u64 {
-    bytes.div_ceil(4)
-}
-
-// Retained with the dormant counter implementation so reintroducing a token
-// surface does not require rebuilding its formatting behavior.
-#[allow(dead_code)]
-fn format_token_usage(total: u64) -> String {
-    let digits = total.to_string();
-    let mut reversed = String::with_capacity(digits.len().saturating_add(digits.len() / 3));
-    for (index, character) in digits.chars().rev().enumerate() {
-        if index > 0 && index % 3 == 0 {
-            reversed.push(',');
-        }
-        reversed.push(character);
-    }
-    let grouped = reversed.chars().rev().collect::<String>();
-    let noun = if total == 1 { "token" } else { "tokens" };
-    format!("{grouped} {noun} used")
-}
-
 #[must_use]
 pub fn sanitize_terminal_text(input: &str) -> String {
     input
@@ -7951,7 +7741,7 @@ mod tests {
     }
 
     #[test]
-    fn permissions_picker_has_tools_and_crypto_tabs() {
+    fn permissions_picker_selects_tool_profiles() {
         let mut state = TuiState::new(
             PathBuf::from("/tmp/project"),
             "model".into(),
@@ -7960,7 +7750,6 @@ mod tests {
         state.open_permissions();
         let output = render_symbols(100, 30, &state);
         assert!(output.contains("Tools"));
-        assert!(output.contains("Crypto"));
         assert!(output.contains("Full Access"));
         assert!(output.contains("one confirmation per use"));
         assert!(!output.contains("Control which tools"));
@@ -7974,12 +7763,11 @@ mod tests {
         let compact = render_symbols(MIN_WIDTH, MIN_HEIGHT, &state);
         assert!(compact.contains("Confirm"));
 
-        state.switch_permission_tab();
-        let crypto = render_symbols(100, 30, &state);
-        assert!(crypto.contains("Coming soon!"));
-        assert!(!crypto.contains("Crypto authority is separate"));
-        assert!(!crypto.contains("Wallets, networks"));
-        assert_eq!(state.selected_permission_profile(), None);
+        state.move_permission_selection(1);
+        assert_ne!(
+            state.selected_permission_profile(),
+            Some(PermissionProfile::Confirm)
+        );
     }
 
     #[test]
@@ -8518,89 +8306,6 @@ mod tests {
         assert_eq!(state.focus, Focus::Composer);
         assert_eq!(state.status, "Draft cleared");
         assert!(!state.clear_composer_draft());
-    }
-
-    #[test]
-    fn token_usage_accumulates_across_provider_requests_without_rendering() {
-        let mut state = TuiState::new(
-            PathBuf::from("/tmp/project"),
-            "model".into(),
-            PermissionProfile::Confirm,
-        );
-        state.apply(&AppEvent::ProviderStatusChanged {
-            connected: true,
-            detail: "connected".into(),
-        });
-        state.apply(&AppEvent::UsageUpdated {
-            input_tokens: 1_000,
-            output_tokens: 100,
-        });
-        state.apply(&AppEvent::ProviderStatusChanged {
-            connected: true,
-            detail: "connected".into(),
-        });
-        state.apply(&AppEvent::UsageUpdated {
-            input_tokens: 120,
-            output_tokens: 14,
-        });
-
-        assert_eq!(state.input_tokens, 1_120);
-        assert_eq!(state.output_tokens, 114);
-        assert_eq!(state.displayed_tokens(), 1_234);
-        assert!(!render_symbols(100, 30, &state).contains("tokens used"));
-    }
-
-    #[test]
-    fn token_usage_label_handles_zero_singular_and_grouping() {
-        assert_eq!(format_token_usage(0), "0 tokens used");
-        assert_eq!(format_token_usage(1), "1 token used");
-        assert_eq!(format_token_usage(12_345_678), "12,345,678 tokens used");
-        assert_eq!(format_token_usage(42), "42 tokens used");
-    }
-
-    #[test]
-    fn token_counter_advances_during_streaming_then_reconciles_to_exact_usage() {
-        let mut state = TuiState::new(
-            PathBuf::from("/tmp/project"),
-            "model".into(),
-            PermissionProfile::Confirm,
-        );
-        let turn_id = TurnId::new();
-        state.apply(&AppEvent::ProviderStatusChanged {
-            connected: true,
-            detail: "connected".into(),
-        });
-        state.apply(&AppEvent::TextDelta {
-            turn_id: turn_id.clone(),
-            text: "12345678".into(),
-        });
-        state.apply(&AppEvent::ReasoningDelta {
-            turn_id,
-            text: "1234".into(),
-        });
-
-        assert_eq!(state.displayed_tokens(), 3);
-        assert!(!render_symbols(100, 30, &state).contains("tokens used"));
-
-        state.apply(&AppEvent::UsageUpdated {
-            input_tokens: 40,
-            output_tokens: 5,
-        });
-        assert_eq!(state.displayed_tokens(), 45);
-        assert!(!render_symbols(100, 30, &state).contains("tokens used"));
-
-        state.apply(&AppEvent::TextDelta {
-            turn_id: TurnId::new(),
-            text: "12345678".into(),
-        });
-        assert_eq!(state.displayed_tokens(), 47);
-        state.apply(&AppEvent::UsageUpdated {
-            input_tokens: 40,
-            output_tokens: 8,
-        });
-        assert_eq!(state.displayed_tokens(), 48);
-        assert_eq!(state.input_tokens, 40);
-        assert_eq!(state.output_tokens, 8);
     }
 
     #[test]
