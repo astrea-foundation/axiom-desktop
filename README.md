@@ -6,7 +6,7 @@ the ACP client packages live under `packages/`.
 
 The marketing website, downloads and update API, hosted account app, and all
 web deployment tooling live exclusively in the companion
-[axiom backend repository](https://github.com/astrea-foundation/axiom).
+[axiom-platform repository](https://github.com/astrea-foundation/axiom-platform).
 This checkout builds and tests independently of those websites.
 
 Ongoing work goes to `dev`; tested batches are promoted to `main` for release.

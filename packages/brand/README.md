@@ -8,7 +8,7 @@ original SVG wordmarks/symbols, PP Cirka, DM Sans, DM Mono, paper `#F2F4FA`, ink
 - `tokens.css` supplies the light/dark palette used by the native callback generator.
 - Import `@axiom/brand/assets/<file>.svg` for versioned artwork.
 - Desktop consumes these native files directly. Hosted web branding lives in
-  the companion `axiom` backend repository. Coordinate intentional changes that
+  the companion `axiom-platform` repository. Coordinate intentional changes that
   affect both copies without importing files between checkouts.
 
 The native completion/rejection page is a self-contained, script-free HTML

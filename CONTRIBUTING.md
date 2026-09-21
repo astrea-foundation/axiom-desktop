@@ -71,7 +71,7 @@ artifact does not update the public download catalog; publishing remains an
 explicit release step.
 
 Use the checks and packaging commands documented in [README.md](README.md).
-If a change spans `axiom` and `axiomai`, promote compatible batches in both and
+If a change spans `axiom-platform` and `axiomai`, promote compatible batches in both and
 record their commit IDs together. Their branch names do not synchronize them.
 
 ## Implementation guidelines

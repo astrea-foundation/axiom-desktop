@@ -59,4 +59,4 @@ is rounding. The final five requests exercised the selectable GLM 5.3 Flash offe
 The backend suite passed 606 tests, including real TLS rotation with zero POST bytes
 sent to the wrong worker and retries that cannot duplicate potentially sent inference.
 Strict Clippy retains pre-existing warnings outside the new provider implementation.
-See the [sanitized validation and billing report](https://github.com/astrea-foundation/axiom/blob/feat/tinfoil-provider/docs/testing/near-v3-2026-09-19/README.md).
+See the [sanitized validation and billing report](https://github.com/astrea-foundation/axiom-platform/blob/feat/tinfoil-provider/docs/testing/near-v3-2026-09-19/README.md).
