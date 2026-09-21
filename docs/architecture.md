@@ -72,11 +72,17 @@ Each signed-in account has separate CLI and Desktop SQLite databases. The
 Signed-out operations cannot open a fallback conversation database. Account
 changes close the old store and invalidate pending operations.
 
-[session.rs](../apps/axiomcli/src/session.rs) stores threads, turns, timeline
-items, collections, preferences, Agent settings, context reports and request
-accounting. Runtime events are translated into materialized records. Startup
-marks unfinished work interrupted; it never replays side effects. Supported
-schema upgrades run transactionally; see [versioning](versioning.md).
+[SessionStore](../apps/axiomcli/src/session.rs) keeps one account-generation-bound
+connection behind a stable public API. Its [storage modules](../apps/axiomcli/src/session)
+separate records, initialization, connection routing, event/timeline writes,
+request accounting, thread queries, collections, preferences, Agent settings,
+recovery, projections and value encoding. Helpers receive the existing connection
+or transaction; moving a method does not create an extra commit boundary.
+Runtime events become materialized records rather than stored event envelopes.
+Startup marks unfinished work interrupted and never replays side effects.
+The inspectable [SQL baseline](../apps/axiomcli/src/session/schema.sql) and
+[versioning policy](versioning.md) define compatibility. See
+[ADR 0015](adr/0015-persistence-modules.md) for this split.
 
 Conversation content and drafts stay local. Desktop drafts, pending submissions,
 Web preferences and queues use account-scoped local state. Deleting a thread

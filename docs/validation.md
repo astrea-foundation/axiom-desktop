@@ -12,7 +12,7 @@ the current state of production, published installers or unrecorded manual work.
 |---|---|
 | Components and independent hosted/native ownership | [workspace](../Cargo.toml), [package scripts](../package.json), [architecture](architecture.md) |
 | Configuration precedence, bounds, storage paths and explicit account reset | [config.rs](../apps/axiomcli/src/config.rs), [paths.rs](../apps/axiomcli/src/paths.rs), [session.rs](../apps/axiomcli/src/session.rs) |
-| Fresh schema 1/application ID `0x41584133` and rejection of obsolete stores | [storage schema](../apps/axiomcli/src/session.rs), [versioning](versioning.md) |
+| Fresh schema 1/application ID `0x41584133` and rejection of obsolete stores | [storage schema](../apps/axiomcli/src/session/schema.sql), [versioning](versioning.md) |
 | Local titles, edit/regenerate, staged compaction and stable user-submission ordering | [title helper](../apps/axiomcli/src/session_title.rs), [agent.rs](../apps/axiomcli/src/agent.rs), [ACP](../apps/axiomcli/src/acp.rs), [concurrency regressions](testing/concurrency-ui-2026-09-20/FIXES.md) |
 | Desktop Agent on all packaged OS targets; Linux-only Bubblewrap isolation | [workspace.rs](../apps/axiomcli/src/workspace.rs), [policy.rs](../apps/axiomcli/src/policy.rs), [Desktop](desktop.md) |
 | ACP 0.2 features, API-key creation and Tinfoil generation exception | [extension DTOs](../crates/axiom-acp-extension/src/lib.rs), [contract](acp-compatibility.md) |
@@ -100,3 +100,17 @@ The maintenance plan records publication and the full command list.
 Live inference, funded deposits, production deployment and interactive native
 macOS/Windows acceptance remain separate release checks; browser platform fixtures
 do not substitute for those checks.
+
+## Persistence refactor verification
+
+On 2026-09-21, the [storage module split](adr/0015-persistence-modules.md) passed
+`cargo fmt --all -- --check`, strict workspace Clippy with
+`--all-targets --all-features -- -D warnings`, and
+`cargo test --workspace --all-features`: 511 tests passed, six opt-in/manual tests
+ignored. The added timeline regression verifies duplicate-sequence rejection and
+indexed pagination after removing the redundant index from the fresh baseline.
+The existing storage, account-switch, recovery, authenticated response and ACP/CLI
+tests pass through the unchanged public `SessionStore` API. The
+[coordinated plan](https://github.com/astrea-foundation/axiom-platform/blob/dev/docs/architecture/persistence-refactor-plan.md)
+records backend and receiver validation. This pass did not repeat UI/browser or
+live-provider acceptance and did not reset an existing user's database.
