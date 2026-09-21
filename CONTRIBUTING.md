@@ -53,10 +53,13 @@ continues on `dev`. Avoid direct commits or pushes to `main`.
 
 ## Releases
 
-CI checks pushes to `dev` and `main`, and pull requests targeting either branch.
-It runs tests and portability checks without packaging release archives or
-Desktop applications. Feature branches use PR checks rather than duplicate push
-runs; superseded runs are cancelled.
+CI checks pushes to `main` and pull requests targeting `main`. Pushes to `dev`
+or other development branches, and pull requests targeting `dev`, do not run
+GitHub Actions. Run the relevant checks locally before pushing development
+changes. Main CI runs tests and portability checks without packaging release
+archives or Desktop applications; superseded runs are cancelled.
+
+Scheduled and manually dispatched live evaluations run only on `main`.
 
 GitHub Actions generates release artifacts only from stable `vMAJOR.MINOR.PATCH`
 tags whose commits have been promoted to `main` and whose version matches the
