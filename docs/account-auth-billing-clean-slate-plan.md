@@ -1033,7 +1033,7 @@ Cloudflare Worker/routes, and client availability. Never run the old API against
 the new API against the old schema.
 
 - [x] Document exact rollback commands without embedding secret values:
-      `/home/salt/clone/axiom/docs/account-cutover-runbook.md`.
+      [current platform deployment and recovery](https://github.com/astrea-foundation/axiom-platform/blob/dev/docs/operations/deployment.md).
 - [ ] Drill rollback in staging.
 - [x] Define the financial no-return point and forward-repair requirement after real new-model
       accounts, usage, or payments are accepted; see the cutover runbook.

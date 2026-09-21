@@ -69,7 +69,7 @@ or payment daemon is introduced into the Windows/macOS/Linux desktop.
 The receiver on `127.0.0.1:8080` is **not** the application's API. Point the
 desktop at the application API's trusted HTTPS origin (and matching auth
 origin), with the backend configured to reach that receiver. See the backend
-repository's `docs/axiom-payments-integration.md` for migration and webhook setup.
+repository's `docs/operations/payments.md` for migration and webhook setup.
 The legacy Shieldz invoice UI remains compatibility-only for a backend explicitly
 configured with `AXIOM_BILLING_PROVIDER=shieldz`; it is hidden for Axiom Payments.
 

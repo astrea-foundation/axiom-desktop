@@ -108,7 +108,7 @@ only after all listed files have been uploaded and fetched with matching hashes.
 
 Then publish the website's release catalog from the `axiom-platform` repository,
 which owns the website, account app, CDN uploader and release API. Follow its
-[CDN and catalog publication guide](https://github.com/astrea-foundation/axiom-platform/blob/main/deploy/cdn/README.md#publish-installers).
+[CDN and catalog publication guide](https://github.com/astrea-foundation/axiom-platform/blob/dev/docs/operations/releases.md#publish-installers).
 Pass the installer directory and generated manifest to that publisher; this
 native repository contains no website build or deployment tooling. CDN promotion
 alone does not change the website's reviewed feed.

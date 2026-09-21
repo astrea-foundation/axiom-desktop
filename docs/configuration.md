@@ -157,9 +157,11 @@ cache is atomic, bounded, non-symlinked, and shared by CLI and desktop so the tw
 frontends cannot disagree after a policy upgrade.
 
 The catalog may contain offerings for more than one provider. Production builds
-currently register NEAR (`near-v2` / `near-tdx-nvidia-v1`) and Phala
-(`phala-aci-v2` / `phala-aci-tdx-v1`). A catalog entry for an unregistered future
-provider is ignored without hiding otherwise supported models; an entry that
+currently register NEAR (`near-v3` / `near-tdx-nvidia-v2`), Phala
+(`phala-aci-v2` / `phala-aci-tdx-v1`) and
+[Tinfoil](protocols/tinfoil-ehbp-v1.md)
+(`tinfoil-ehbp-v1` / `tinfoil-snp-sigstore-v1`). A catalog entry for an unregistered
+future provider is ignored without hiding otherwise supported models; an entry that
 claims a registered provider with the wrong protocol tuple still fails closed.
 Phala offerings are chat-only for now: streaming is supported, but tool and
 parallel-tool capabilities are disabled until every tool field has a receipt-bound
@@ -186,8 +188,8 @@ permission card or structured question. Human waits end on a response,
 cancellation/disconnect, or an enabled whole-turn limit.
 
 Normal context rollover is model-relative: the relay reads each curated
-offering's current `context_length` and `max_output_length` from the live NEAR
-or Phala catalog, and AxiomCLI automatically compacts at 85% of that context
+offering's current `context_length` and `max_output_length` from its provider
+catalog, and AxiomCLI automatically compacts at 85% of that context
 window. `max_context_bytes` and `max_context_tokens` can deliberately lower
 the local hard ceiling, but their defaults do not replace provider metadata.
 

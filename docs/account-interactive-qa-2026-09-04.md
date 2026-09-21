@@ -91,7 +91,7 @@ Remaining gates:
 - Approved infrastructure state backend and complete private release environment files.
 
 The coordinated rollback runbook is in the API repository at
-`/home/salt/clone/axiom/docs/account-cutover-runbook.md`. Documentation is complete; its live commands
+[current platform deployment and recovery](https://github.com/astrea-foundation/axiom-platform/blob/dev/docs/operations/deployment.md). Documentation is complete; its live commands
 have not been executed. Test windows were closed and the disposable native credential was cleared.
 
 ### Shieldz credential follow-up

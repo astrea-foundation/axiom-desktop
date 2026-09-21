@@ -1,7 +1,8 @@
 # Real SearXNG development service
 
-AxiomCLI's normal search integration uses an actual SearXNG process. It does
-not substitute a fake HTTP response. `scripts/searxng-dev` clones the pinned
+When trusted configuration selects `web_search_provider = "searxng"`, AxiomCLI
+uses an actual SearXNG process. The default provider is authenticated hosted Axiom
+search. `scripts/searxng-dev` clones the pinned
 upstream source into `.cache/searxng`, builds an isolated Python 3.13 virtual
 environment with `uv`, and binds the service only to `127.0.0.1:8888`.
 

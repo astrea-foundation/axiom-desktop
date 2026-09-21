@@ -6,6 +6,10 @@ billing configuration.
 
 ## Normal behavior
 
+NEAR now uses [near-v3 worker sessions](protocols/near-v3.md), with fresh client
+challenges and an exact worker/session binding. The generic lease/cache rules
+below do not permit a client to skip those checks or switch workers on retry.
+
 - Backend leases refresh after 240 seconds and hard-expire after 300 seconds.
 - Only retryable attestation-service unavailability may bridge the soft-to-hard
   interval. A TCB, signature, model, endpoint, key, keyset, or workload rejection
@@ -36,17 +40,20 @@ For every policy update:
 4. For an NVIDIA rotation, add the new intermediate fingerprint while the old
    one remains valid, deploy and canary it, then remove the old fingerprint in
    a later sequence.
-5. Add exact quote-bound NEAR measurements and both the Phala repository and
-   full 40-hex commit before moving workload enforcement to `warn` or `enforce`.
+5. Review any NEAR workload-policy changes against its current attestation contract.
+   Phala source updates use exact quote-bound workflow provenance, not repository
+   or commit allowlists. The legacy Phala fields remain in signed v1 documents
+   for signature compatibility; they do not authorize or reject a gateway update.
 6. Sign the canonical policy with the enrolled Ed25519 signer, copy the exact
    envelope to both repositories, run signature/rollback/tamper tests, deploy
    the API first, and then release clients.
 7. Confirm `/api/v1/relay/trust-policy` returns the new sequence and that a
    restarted CLI retains it in the shared rollback journal.
 
-The current policy is deliberately `observe`: approved NEAR measurements and
-Phala commits have not yet completed the production canary collection. The UI
-must not label an observed workload as approved.
+The bundled policy uses `observe` for NEAR workload measurements. The UI must
+not label an observed workload as approved. Phala still verifies the exact
+TEE-measured source/workflow and complete worker/request receipt chain; source
+provenance does not require manual approval of each gateway revision.
 
 ## Canary and alerts
 
@@ -60,7 +67,7 @@ termination, and (for Phala) signed receipt verification. Alert on:
 - policy signature/rollback/expiry failures;
 - NVIDIA `kid` or intermediate fingerprints outside the overlap set;
 - Phala receipt latency approaching the 25-second verification window;
-- quote-bound workload identities outside the signed allowlist.
+- NEAR workload-policy observations and any Phala quote/workflow/source binding mismatch.
 
 ## Incident response
 

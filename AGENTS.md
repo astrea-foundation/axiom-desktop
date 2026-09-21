@@ -25,6 +25,20 @@ the public release API; update tests use native fixtures, never a neighboring
 website checkout. Installer files and their generated manifest are the handoff
 to the backend repository's CDN and website publisher.
 
+## Documentation
+
+Put authored guides, plans, specifications, runbooks, QA instructions and release
+notes in `docs/`, linked from [the documentation index](docs/README.md). Root
+entry points, concise component READMEs, license/provenance files, generated
+contracts and runtime Markdown assets keep their required locations. Detailed
+guides belong in `docs/`; link to one authoritative document instead of copying it.
+
+When changing documented behavior, APIs, configuration, security, commands,
+deployment or tests, update the affected documents in the same change. Repair
+inbound links when moving or deleting files, including companion-repository
+links. Preserve unfinished work before retiring a plan and archive only useful,
+clearly dated historical evidence.
+
 ## Inference authentication policy
 
 Inference requires provider E2EE to a key bound to fresh, locally verified TEE
