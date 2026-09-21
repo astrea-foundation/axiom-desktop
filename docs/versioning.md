@@ -9,10 +9,13 @@ stable `vMAJOR.MINOR.PATCH`, match AxiomCLI's manifest and point to a promoted
 ## Local database
 
 The current SQLite baseline is schema **1**, application ID **`0x41584133`**,
-defined in [session.rs](../apps/axiomcli/src/session.rs). Each authenticated account
+defined in [schema.sql](../apps/axiomcli/src/session/schema.sql) and checked by
+[the initializer](../apps/axiomcli/src/session/schema.rs). Each authenticated account
 and frontend has a separate database. It contains threads, turns, timeline items,
 collections, preferences, both activity clocks, Agent settings and request usage.
 Runtime event envelopes are translated into materialized records.
+The explicit timeline sequence index was removed because the unique constraint
+already supplies the same index. Existing schema 1 records remain compatible.
 
 Pre-baseline application IDs and unsupported versions fail closed. Historical
 receipt repairs and activity backfills have been removed; local response
