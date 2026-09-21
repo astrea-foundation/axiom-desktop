@@ -1,5 +1,7 @@
 # Concurrency and long-conversation fixes — 2026-09-20
 
+Historical validation of the dated revision. Current storage and billing use [ADR 0014](../../adr/0014-clean-storage-and-deposit-billing.md).
+
 All seven findings in [the live report](README.md) and [root-cause investigation](ROOT-CAUSES.md) are addressed. This batch changes the native client and the companion backend on `dev`; it does not publish installers or deploy production.
 
 Companion backend revision: [`dfef1f1`](https://github.com/astrea-foundation/axiom-platform/commit/dfef1f1), with [relay changes and migration notes](https://github.com/astrea-foundation/axiom-platform/blob/dfef1f1/docs/testing/concurrency-fixes-2026-09-20.md).

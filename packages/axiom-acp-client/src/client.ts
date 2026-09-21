@@ -2,7 +2,6 @@ import { EventEmitter } from "node:events";
 import type {
   AccountStatusResponse,
   AssignThreadCollectionResponse,
-  BillingInvoiceResponse,
   BillingStatusResponse,
   UsageSummaryResponse,
   ApiKeyListResponse,
@@ -55,7 +54,7 @@ const EXTENSION_CAPABILITIES = {
     desktopChat: 1,
     desktopAgent: 1,
     account: 2,
-    billing: 1,
+    billing: 2,
     usage: 1,
     securityEvidence: 1,
     webConsent: 1,
@@ -578,39 +577,6 @@ export class AxiomAcpClient extends EventEmitter {
     const result = await this.process.request<BillingStatusResponse>("_axiom/billing/status", {});
     this.assertAccountContext(accountContext);
     this.state.setBilling(result.status);
-    return result;
-  }
-
-  async createBillingInvoice(
-    amountUsdCents: number,
-    clientRequestId: string,
-  ): Promise<BillingInvoiceResponse> {
-    if (!Number.isSafeInteger(amountUsdCents) || amountUsdCents <= 0 || amountUsdCents > 10_000_000) {
-      throw new ProtocolError("invalid invoice amount");
-    }
-    if (!/^[A-Za-z0-9_.:-]{1,128}$/.test(clientRequestId)) {
-      throw new ProtocolError("invalid invoice client request ID");
-    }
-    const accountContext = this.state.accountContextToken();
-    const result = await this.process.request<BillingInvoiceResponse>(
-      "_axiom/billing/invoice_create",
-      { amountUsdCents, clientRequestId },
-      0,
-    );
-    this.assertAccountContext(accountContext);
-    this.state.setInvoice(result.invoice);
-    return result;
-  }
-
-  async billingInvoiceStatus(invoiceId: string): Promise<BillingInvoiceResponse> {
-    if (!/^[0-9a-f]{32}$/.test(invoiceId)) throw new ProtocolError("invalid invoice ID");
-    const accountContext = this.state.accountContextToken();
-    const result = await this.process.request<BillingInvoiceResponse>(
-      "_axiom/billing/invoice_status",
-      { invoiceId },
-    );
-    this.assertAccountContext(accountContext);
-    this.state.setInvoice(result.invoice);
     return result;
   }
 

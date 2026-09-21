@@ -11,8 +11,7 @@
 - plaintext prompts, conversation history, model responses, and tool context
 - native account-session credentials, automation API keys, and ephemeral
   inference key material
-- integrity of account credit/invoice state and short-lived invoice payment
-  URLs
+- integrity of account credit, deposit addresses and receipt metadata
 - integrity of model selection and provider security evidence
 
 ## Trust boundaries
@@ -104,13 +103,11 @@ in, each opaque account ID selects separate CLI and Desktop SQLite databases.
 Signing out closes the active store, and an account change invalidates pending
 Desktop operations before another account's state opens.
 
-Billing is an account-control boundary, not wallet authority. AxiomCLI permits
-status and Shieldz invoice operations only with a current native account access
-token; the automation API-key path cannot authorize them. It validates integer
-amount/balance bounds, invoice identity/state, timestamps, and a bounded HTTPS
-payment URL, then rejects an in-flight result if the account context changed.
-The typed Desktop state may contain pending invoice metadata and its payment
-URL, but never Zcash keys, an Ethereum signature, or a transaction request.
+Billing is an account-control boundary. AxiomCLI permits status and deposit
+operations only with a current native account access token. It validates integer
+balances, credit buckets, mainnet addresses, receipt identity and bounded quotes,
+then rejects results if the account context changed. Desktop never receives
+spending keys, signatures or transaction authority.
 
 ## Principal threats and early mitigations
 
@@ -133,7 +130,7 @@ URL, but never Zcash keys, an Ethereum signature, or a transaction request.
 | Native credential leaked through desktop state | No token/API-key IPC method; browser handles method credentials; only bounded account metadata and opaque login handle reach renderer |
 | Credential exposure | OS credential vault for rotating refresh token, memory-only access token, secret wrappers/redacted tracing, deny child inheritance by default, no file fallback |
 | Account-local thread crossed into another account | Opaque validated account path, separate stores, account-context revision checks, close/invalidate on logout or account change |
-| Stale or forged invoice grants credit/payment authority | Native-account-only billing client, bounded strict invoice DTOs, idempotent client request ID, account-generation recheck, monotonic revisions; payment URL grants no wallet/model authority |
+| Stale or forged deposit metadata | Native-account-only billing client, strict mainnet/amount checks, account-generation recheck and monotonic revisions; backend ledger is credit authority |
 | Relay observes prompts or tool context | Encrypt every secret-bearing field locally; sentinel scans over serialized relay requests and logs |
 | Malicious catalog chooses wrong provider/endpoint | Match compiled provider/protocol versions; HTTPS/public-address policy; verify fresh evidence rather than trusting catalog keys |
 | Replayed or substituted attestation | Fresh nonce, expected model, signing-key/report-data binding, exact live TLS SPKI binding |

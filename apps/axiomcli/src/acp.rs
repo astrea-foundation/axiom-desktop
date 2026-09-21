@@ -16,7 +16,6 @@ use async_trait::async_trait;
 use axiom_acp_extension as extension;
 use axiom_acp_extension::{
     AccountState as ExtensionAccountState, AccountStatus as ExtensionAccountStatus, ActivityEvent,
-    BillingInvoiceCreateRequest, BillingInvoiceResponse, BillingInvoiceStatusRequest,
     BillingStatusRequest, BillingStatusResponse, CollectionStateResponse, CompactRequest,
     CompactResponse, CompactionPhase, DeleteConfirmRequest, DeleteConfirmResponse,
     DeletePreviewRequest, DeletePreviewResponse, DesktopBootstrapRequest, DesktopBootstrapResponse,
@@ -42,7 +41,7 @@ use crate::{
         TurnId,
     },
     auth::{AuthManager, LoginMethod, ValidationStatus, VersionedValidationStatus},
-    billing::{BillingClient, InvoiceState as BackendInvoiceState},
+    billing::BillingClient,
     config::Config,
     paths::FrontendKind,
     policy::{ApprovalChoice, ApprovalHandler, ApprovalRequest, ApprovalResponse},
@@ -757,38 +756,14 @@ fn extension_billing_status(
     extension::BillingStatus {
         revision,
         posted_microusd: status.posted_microusd,
-        held_microusd: status.held_microusd,
         available_microusd: status.available_microusd,
         ledger_sequence: status.ledger_sequence,
         trial_microusd: status.trial_microusd,
         paid_microusd: status.paid_microusd,
         payment_review_required: status.payment_review_required,
         currency: status.currency,
-        invoices_enabled: status.invoices_enabled,
-        invoice_min_usd_cents: status.invoice_min_usd_cents,
-        invoice_max_usd_cents: status.invoice_max_usd_cents,
-        settlement_asset: status.settlement_asset,
         payment_account: status.payment_account,
         zec_usd_quote: status.zec_usd_quote,
-    }
-}
-
-fn extension_invoice(invoice: crate::billing::Invoice, revision: u64) -> extension::BillingInvoice {
-    extension::BillingInvoice {
-        revision,
-        id: invoice.id,
-        amount_usd_cents: invoice.amount_usd_cents,
-        state: match invoice.state {
-            BackendInvoiceState::Creating => extension::InvoiceState::Creating,
-            BackendInvoiceState::Pending => extension::InvoiceState::Pending,
-            BackendInvoiceState::Paid => extension::InvoiceState::Paid,
-            BackendInvoiceState::Expired => extension::InvoiceState::Expired,
-            BackendInvoiceState::Failed => extension::InvoiceState::Failed,
-            BackendInvoiceState::Review => extension::InvoiceState::Review,
-        },
-        expires_at: invoice.expires_at,
-        paid_at: invoice.paid_at,
-        pay_url: invoice.pay_url,
     }
 }
 
@@ -1543,7 +1518,7 @@ impl ExtensionState {
         if features.account >= 2 {
             mask |= ExtensionFeature::Account as u64;
         }
-        if features.billing >= 1 {
+        if features.billing >= 2 {
             mask |= ExtensionFeature::Billing as u64;
         }
         if features.usage >= 1 {
@@ -1888,12 +1863,6 @@ pub async fn serve_stdio(
     let keys_revoke_extension = extension_state.clone();
     let keys_revoke_client = billing.clone();
     let keys_revoke_work = account_work.clone();
-    let billing_create_extension = extension_state.clone();
-    let billing_create_client = billing.clone();
-    let billing_create_work = account_work.clone();
-    let billing_invoice_extension = extension_state.clone();
-    let billing_invoice_client = billing;
-    let billing_invoice_work = account_work.clone();
     let security_extension = extension_state.clone();
     let security_extension_sessions = sessions.clone();
     let security_extension_runner = runner.clone();
@@ -2326,9 +2295,8 @@ pub async fn serve_stdio(
                 }
                 if load_frontend == FrontendKind::DesktopChat {
                     let agent = store.desktop_agent_settings(&internal_id).map_err(agent_error)?;
-                    let legacy = store.active_desktop_cwd().map_err(agent_error)?;
                     if saved_cwd != std::path::Path::new(&agent.working_directory)
-                        && !(agent.revision == 0 && saved_cwd == legacy) {
+                    {
                         return Err(agent_client_protocol::util::internal_error(
                             "desktop chat session has an invalid workspace identity",
                         ));
@@ -5081,127 +5049,6 @@ pub async fn serve_stdio(
                         },
                     )?;
                     responder.respond(BillingStatusResponse { status })
-                })?;
-                Ok(())
-            },
-            agent_client_protocol::on_receive_request!(),
-        )
-        .on_receive_request(
-            async move |request: BillingInvoiceCreateRequest,
-                        responder: Responder<BillingInvoiceResponse>,
-                        connection: ConnectionTo<Client>| {
-                if !extension_enabled(&billing_create_extension, ExtensionFeature::Billing) {
-                    return responder.respond_with_error(extension_not_negotiated());
-                }
-                if request.amount_usd_cents == 0
-                    || request.amount_usd_cents > extension::MAX_INVOICE_USD_CENTS
-                    || request.client_request_id.is_empty()
-                    || request.client_request_id.len() > extension::MAX_CLIENT_REQUEST_ID_BYTES
-                    || !request.client_request_id.bytes().all(|byte| {
-                        byte.is_ascii_alphanumeric() || b"_.:-".contains(&byte)
-                    })
-                {
-                    return responder.respond_with_internal_error(
-                        "invoice creation request is invalid",
-                    );
-                }
-                let task_extension = billing_create_extension.clone();
-                let task_client = billing_create_client.clone();
-                let task_connection = connection.clone();
-                let cancellation = CancellationToken::new();
-                let account_guard = respond_or_return!(
-                    responder,
-                    billing_create_work
-                        .register(cancellation.clone())
-                        .map_err(agent_error)
-                );
-                let request_cancellation = responder.cancellation();
-                connection.spawn(async move {
-                    let _account_guard = account_guard;
-                    let invoice = task_client.create_invoice(
-                        request.amount_usd_cents,
-                        &request.client_request_id,
-                        &cancellation,
-                    );
-                    tokio::pin!(invoice);
-                    let result = tokio::select! {
-                        biased;
-                        result = &mut invoice => result,
-                        () = request_cancellation.cancelled() => {
-                            cancellation.cancel();
-                            invoice.await
-                        }
-                    };
-                    let invoice = respond_or_return!(responder, result.map_err(agent_error));
-                    let invoice = extension_invoice(
-                        invoice,
-                        task_extension.next_billing_revision(),
-                    );
-                    send_extension_activity(
-                        &task_connection,
-                        &task_extension,
-                        None,
-                        ActivityEvent::InvoiceChanged {
-                            invoice: invoice.clone(),
-                        },
-                    )?;
-                    responder.respond(BillingInvoiceResponse { invoice })
-                })?;
-                Ok(())
-            },
-            agent_client_protocol::on_receive_request!(),
-        )
-        .on_receive_request(
-            async move |request: BillingInvoiceStatusRequest,
-                        responder: Responder<BillingInvoiceResponse>,
-                        connection: ConnectionTo<Client>| {
-                if !extension_enabled(&billing_invoice_extension, ExtensionFeature::Billing) {
-                    return responder.respond_with_error(extension_not_negotiated());
-                }
-                if request.invoice_id.len() != 32
-                    || !request.invoice_id.bytes().all(|byte| {
-                        byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
-                    })
-                {
-                    return responder.respond_with_internal_error("invoice ID is invalid");
-                }
-                let task_extension = billing_invoice_extension.clone();
-                let task_client = billing_invoice_client.clone();
-                let task_connection = connection.clone();
-                let cancellation = CancellationToken::new();
-                let account_guard = respond_or_return!(
-                    responder,
-                    billing_invoice_work
-                        .register(cancellation.clone())
-                        .map_err(agent_error)
-                );
-                let request_cancellation = responder.cancellation();
-                connection.spawn(async move {
-                    let _account_guard = account_guard;
-                    let invoice = task_client.invoice_status(&request.invoice_id, &cancellation);
-                    tokio::pin!(invoice);
-                    let result = tokio::select! {
-                        biased;
-                        result = &mut invoice => result,
-                        () = request_cancellation.cancelled() => {
-                            cancellation.cancel();
-                            invoice.await
-                        }
-                    };
-                    let invoice = respond_or_return!(responder, result.map_err(agent_error));
-                    let invoice = extension_invoice(
-                        invoice,
-                        task_extension.next_billing_revision(),
-                    );
-                    send_extension_activity(
-                        &task_connection,
-                        &task_extension,
-                        None,
-                        ActivityEvent::InvoiceChanged {
-                            invoice: invoice.clone(),
-                        },
-                    )?;
-                    responder.respond(BillingInvoiceResponse { invoice })
                 })?;
                 Ok(())
             },

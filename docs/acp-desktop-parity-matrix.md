@@ -3,7 +3,7 @@
 Reviewed against the working tree on 2026-09-04. `standard` means a generic ACP
 client can use the feature. `extension` means the first-party client must
 negotiate `_meta.axiom.protocolVersion = 0.2`, including `account@2` and
-`billing@1`.
+`billing@2`.
 
 ## Commands and controls
 
@@ -20,7 +20,7 @@ negotiate `_meta.axiom.protocolVersion = 0.2`, including `account@2` and
 | Help | `/help` overlay | available commands | renderer-owned help | no | no authority | transcript test |
 | Login | `/login` menu | command fallback | native start/complete/cancel with passkey, Google, password, or Ethereum-wallet hint | OS credential store | no method credential or bearer token crosses ACP/IPC; cancellable | redaction/property tests |
 | Logout/account | overlays/status | command fallback | typed account status/logout | OS credential store | renderer receives bounded metadata only; account transition closes local store | extension/TS types |
-| Credit/invoices | insufficient-credit action | none | `billing@1` status and idempotent Shieldz invoice create/status | remote immutable ledger; process-local projection | native account only; bounded pending HTTPS payment URL; no wallet or transaction authority | extension/client/billing tests |
+| Credit/deposits | insufficient-credit action | none | `billing@2` credit, deposits and quote status | remote immutable ledger; process-local projection | native account only; bounded mainnet deposit metadata; no wallet or transaction authority | extension/client/billing tests |
 | Security | `/security` summary/workload/raw | command fallback | typed verify/evidence/status | process state | failure blocks secure provider; evidence bounded | ACP + secure-client tests |
 
 ## Application events
@@ -41,7 +41,7 @@ negotiate `_meta.axiom.protocolVersion = 0.2`, including `account@2` and
 | question events | question overlay | native form elicitation | standard is authoritative | outcomes journaled |
 | `BackgroundTaskChanged` | task activity | thought fallback | structured background task | journal |
 | setting-change events | header/status | mode/config/session-info updates | profile preferences only | thread/profile tables |
-| `BillingChanged`, `InvoiceChanged` | insufficient-credit action | none | typed account credit/invoice state | remote ledger; process state |
+| `BillingChanged` | insufficient-credit action | none | typed account credit/deposit state | remote ledger; process state |
 | `ContextCompacted` | compacted context card | progress/text fallback | structured phases | journal |
 | provider/security/warning events | header/status | bounded thought fallback | structured security/warning/error | security evidence is process state |
 

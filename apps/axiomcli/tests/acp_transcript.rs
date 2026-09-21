@@ -194,7 +194,7 @@ impl AcpProcess {
                         "profilePreferences": 1,
                         "collections": 1,
                         "account": 2,
-                        "billing": 1,
+                        "billing": 2,
                         "usage": 1,
                         "securityEvidence": 1,
                         "compaction": 1,
@@ -772,6 +772,7 @@ async fn axiom_extension_negotiates_each_feature_independently() {
                     "profilePreferences": 0,
                     "collections": 0,
                     "account": 0,
+                    "billing": 1,
                     "securityEvidence": 0,
                     "compaction": 0,
                     "activity": 0
@@ -809,7 +810,7 @@ async fn axiom_extension_negotiates_each_feature_independently() {
 }
 
 #[tokio::test]
-async fn billing_extension_is_native_account_only_and_validates_requests_locally() {
+async fn billing_extension_requires_native_account_and_rejects_removed_invoice_methods() {
     let mut acp = AcpProcess::spawn("echo");
     acp.initialize_extension().await;
 
@@ -827,7 +828,7 @@ async fn billing_extension_is_native_account_only_and_validates_requests_locally
     }))
     .await;
     let invalid_create = acp.response(3).await;
-    assert!(invalid_create.get("error").is_some(), "{invalid_create}");
+    assert_eq!(invalid_create["error"]["code"], -32601, "{invalid_create}");
 
     acp.send(&json!({
         "jsonrpc":"2.0","id":4,"method":"_axiom/billing/invoice_status",
@@ -835,7 +836,7 @@ async fn billing_extension_is_native_account_only_and_validates_requests_locally
     }))
     .await;
     let invalid_id = acp.response(4).await;
-    assert!(invalid_id.get("error").is_some(), "{invalid_id}");
+    assert_eq!(invalid_id["error"]["code"], -32601, "{invalid_id}");
 
     acp.send(&json!({
         "jsonrpc":"2.0","id":5,"method":"_axiom/thread/list","params":{}
@@ -1418,6 +1419,7 @@ async fn unsupported_structured_questions_close_cleanly_instead_of_sticking() {
                     "profilePreferences": 0,
                     "collections": 0,
                     "account": 0,
+                    "billing": 1,
                     "securityEvidence": 0,
                     "compaction": 0,
                     "activity": 0

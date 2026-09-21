@@ -7,6 +7,7 @@ owns hosted API, billing integration and website operations.
 
 ## Current guides
 
+- [Fresh storage, deposit billing and reset procedure](adr/0014-clean-storage-and-deposit-billing.md).
 - [Configuration](configuration.md), [privacy](privacy.md), [threat model](threat-model.md)
   and [troubleshooting](troubleshooting.md).
 - [Installing Desktop](installing-desktop.md), [platform support](platform-support.md),
@@ -18,10 +19,9 @@ owns hosted API, billing integration and website operations.
 - [Benchmarks](benchmarks.md) and [evaluations](evaluations.md).
 
 Architecture decisions are in `docs/adr/` and scoped validation evidence is in
-`docs/testing/`. The old near-v2 protocol and clean-slate plans are historical;
-use current contracts and release evidence rather than their original proposed
-behavior or deployment status. A plan's unchecked tasks require evidence before
-being declared complete.
+`docs/testing/`. The old near-v2 protocol is historical;
+use current provider contracts. Superseded clean-slate plans and invoice QA were
+removed; their remaining release gates are recorded in ADR 0014.
 
 Keep new guides under `docs/` and update the applicable guide with every change
 to the behavior it describes. Component READMEs remain setup entry points.

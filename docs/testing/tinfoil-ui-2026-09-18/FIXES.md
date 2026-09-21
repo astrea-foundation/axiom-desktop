@@ -1,5 +1,7 @@
 # Tinfoil UX fixes and retest
 
+Historical validation of the dated revision. Current storage and billing use [ADR 0014](../../adr/0014-clean-storage-and-deposit-billing.md).
+
 The actionable findings from the [initial test](README.md) are implemented on `feat/tinfoil-provider` in both repositories. Stop aborts the provider connection and waives charges without final metering, as requested. No merge or deployment was performed. Chutes remains on its separate branches.
 
 The retest used the same isolated HTTPS relay, real Tinfoil inference, synthetic account/credit, and locally verified TEE/EHBP protocol as the original run. Desktop and TUI shared the account and credential store. Desktop-control input drove the live UI tests; read-only native SQLite, CDP and backend accounting confirmed persistence and charges. The temporary debug-only loopback transport patch was restored before the product build. Provider attestation, encryption and response authentication stayed enabled.

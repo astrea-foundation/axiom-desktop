@@ -128,12 +128,10 @@ excluded from renderer state, child environments, session journals, and release
 artifacts. `AXIOM_API_KEY` remains a separate, explicit automation override for
 standalone AxiomCLI and `axiom-proxy`; Axiom Desktop removes it from the sidecar
 environment. Proxy clients use their own generated `AXIOM_PROXY_TOKEN`.
-Account credit and Shieldz invoice status come from the API's immutable ledger,
-not a smart contract or a local chat database. Desktop may receive bounded
-invoice metadata and a short-lived HTTPS payment URL for a pending invoice. It
-never receives Zcash or Ethereum private keys, constructs a transaction, or
-grants the model payment authority; invoice URLs and ledger projections are not
-written into conversation journals.
+Account credit comes from the API's immutable ledger. Desktop receives bounded
+mainnet deposit/address metadata and an indicative current ZEC/USD quote. Only
+backend settlement grants inference credit. Desktop never receives spending keys
+or grants the model payment authority. Billing data is not conversation content.
 Ordinary logs, panic messages, security receipts, and desktop control messages
 must contain only bounded metadata and fingerprints—not credentials, key
 pairs, shared secrets, ciphertext dumps, plaintext request/response fields, or

@@ -40,11 +40,8 @@ packages/
 The proxy and AxiomCLI share the secure Axiom client; the TUI performs secure
 inference directly rather than routing through localhost. See
 [`docs/adr/0009-monorepo-and-secure-client-boundaries.md`](docs/adr/0009-monorepo-and-secure-client-boundaries.md).
-The current account, local-storage, native-auth, and invoice design is defined
-in the
-[`account/auth/billing clean-slate plan`](docs/account-auth-billing-clean-slate-plan.md).
-The older [`v1 plan`](docs/v1-clean-slate-refactor-plan.md) is retained as design
-history rather than the current account contract.
+Current account storage and mainnet deposit billing are described in
+[ADR 0014](docs/adr/0014-clean-storage-and-deposit-billing.md).
 
 ## Development status
 
@@ -214,9 +211,9 @@ credential store. There is no plaintext-file fallback. `/account` validates the
 native session and `/logout` revokes and clears it. `AXIOM_API_KEY` remains a
 separate environment override for standalone automation; Axiom Desktop removes
 it from the sidecar environment and has no manual API-key sign-in path.
-Credits belong to the authenticated account. Top-ups use Shieldz Zcash invoices
-through the hosted account surface, not an Ethereum funding contract; Desktop
-and the model receive no wallet custody or transaction authority.
+Credits belong to the authenticated account. Top-ups use persistent mainnet Zcash deposits in Desktop. Confirmed deposits
+receive USD inference credit; funds stay in ZEC. Desktop and the model receive
+no wallet custody or transaction authority.
 
 ## Permission profiles
 

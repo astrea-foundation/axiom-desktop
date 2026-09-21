@@ -61,13 +61,11 @@ test("balance screen selects native deposits and hides invoice checkout", () => 
     connected: true,
     account: { revision: 1, state: "valid" as const, account: { id: "account-a", linkedMethods: [] } },
     billing: {
-      revision: 1, postedMicrousd: 0, heldMicrousd: 0, availableMicrousd: 0,
-      ledgerSequence: 0, currency: "microUSD", invoicesEnabled: false,
-      invoiceMinUsdCents: 500, invoiceMaxUsdCents: 100_000, paymentAccount: payment,
+      revision: 1, postedMicrousd: 0, availableMicrousd: 0,
+      ledgerSequence: 0, currency: "microUSD", paymentAccount: payment,
     },
-    invoice: null,
     onClose: () => {},
-    onRefreshBilling: async () => {}, onRefreshInvoice: async () => {}, onTopUp: async () => {},
+    onRefreshBilling: async () => {},
     onLogin: () => {},
   };
   const html = renderToStaticMarkup(createElement(BalanceScreen, props));
@@ -122,12 +120,10 @@ test("ZEC stays primary with a current USD estimate or posted credit rounded to 
 test("a payment risk hold explains why existing credit is unavailable", () => {
   const html = renderToStaticMarkup(createElement(BalanceScreen, {
     connected: true, account: { revision: 1, state: "valid", account: { id: "a", linkedMethods: [] } },
-    billing: { revision: 1, postedMicrousd: 3_000_000, availableMicrousd: 0, heldMicrousd: 0,
+    billing: { revision: 1, postedMicrousd: 3_000_000, availableMicrousd: 0,
       trialMicrousd: 1_000_000, paidMicrousd: 2_000_000, paymentReviewRequired: true,
-      ledgerSequence: 1, currency: "microUSD", invoicesEnabled: false, invoiceMinUsdCents: 500,
-      invoiceMaxUsdCents: 100_000, paymentAccount: { ...payment, valuation_enabled: true } },
-    invoice: null, onClose() {}, async onRefreshBilling() {}, async onTopUp() {},
-    async onRefreshInvoice() {}, onLogin() {},
+      ledgerSequence: 1, currency: "microUSD", paymentAccount: { ...payment, valuation_enabled: true } }, onClose() {}, async onRefreshBilling() {}, async onTopUp() {},
+    onLogin() {},
   }));
   assert.match(html, /Spending is paused/);
   assert.match(html, /Free trial credit/);

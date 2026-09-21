@@ -4,7 +4,6 @@ export const PRODUCTION_AUTH_ORIGIN = "https://auth.axiom.stream";
 export const PRODUCTION_API_ORIGIN = "https://api.axiom.stream";
 export const STAGING_AUTH_ORIGIN = "https://auth-staging.axiom.stream";
 export const STAGING_API_ORIGIN = "https://api-staging.axiom.stream";
-export const SHIELDZ_PAYMENT_ORIGIN = "https://shieldz.cash";
 
 export interface ServiceOrigins {
   auth: string;
@@ -74,29 +73,6 @@ export function trustedNativeAuthorizationUrl(value: string, authOrigin: string)
   return target.toString();
 }
 
-/**
- * Validate the narrow checkout capability returned by the billing API before
- * Electron delegates it to the operating-system browser. This is intentionally
- * stricter than a generic HTTPS URL opener.
- */
-export function trustedInvoicePaymentUrl(value: string): string {
-  if (!value || value.length > 4_096) {
-    throw new Error("AxiomCLI returned an invalid invoice payment URL");
-  }
-  const target = new URL(value);
-  if (
-    target.origin !== SHIELDZ_PAYMENT_ORIGIN
-    || target.username
-    || target.password
-    || !/^\/pay\/[A-Za-z0-9_-]{1,128}$/.test(target.pathname)
-    || target.search
-    || target.hash
-  ) {
-    throw new Error("AxiomCLI returned an untrusted invoice payment URL");
-  }
-  return target.toString();
-}
-
 export function requirePaymentAccount(
   accountId: string,
   state: Pick<ClientState, "connected" | "account">,
@@ -105,21 +81,4 @@ export function requirePaymentAccount(
     || state.account.account?.id !== accountId) {
     throw new Error("The account changed. Sign in again before topping up.");
   }
-}
-
-export function activeInvoicePaymentUrl(
-  value: string,
-  state: Pick<ClientState, "connected" | "account" | "invoice">,
-  accountId: string,
-  now = Date.now(),
-): string {
-  requirePaymentAccount(accountId, state);
-  const invoice = state.invoice;
-  if (
-    !invoice || invoice.payUrl !== value
-    || (invoice.state !== "creating" && invoice.state !== "pending")
-    || !invoice.expiresAt || !Number.isFinite(Date.parse(invoice.expiresAt))
-    || Date.parse(invoice.expiresAt) <= now
-  ) throw new Error("This checkout is no longer active for the signed-in account.");
-  return trustedInvoicePaymentUrl(value);
 }

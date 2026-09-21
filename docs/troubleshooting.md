@@ -27,8 +27,8 @@ configuration/session paths without printing credentials.
 - Attestation rejection, stale/mismatched nonces, model/key mismatches, TLS
   binding failures, and ciphertext authentication failures are security
   failures. AxiomCLI does not retry them through an insecure transport.
-- An insufficient-credit response directs the user to create or inspect a
-  Shieldz Zcash invoice. It never grants the renderer payment authority or
+- An insufficient-credit response directs the user to open Desktop Balance for a
+  mainnet Zcash deposit. It never grants the renderer payment authority or
   weakens provider-E2EE verification.
 
 ## Local proxy fails

@@ -78,7 +78,7 @@ async function openApp(platform = "linux", failDelete = false, thinkingLevels: s
       catalog: [summary("old-thread")],
       collections: { revision: 1, collections: [{ id: "folder", name: "Test folder", collapsed: false, threadIds: [] }] },
       preferences: null, account: { revision: 1, state: "valid", account: { id: "test-account", displayName: "Test User", verifiedEmail: "test@example.invalid", linkedMethods: ["password"] } } as AccountStatus,
-      billing: null as BillingStatus | null, invoice: null, diagnostic: "", error: null,
+      billing: null as BillingStatus | null, diagnostic: "", error: null,
     };
     const calls: { method: string; id?: string; text?: string; webEnabled?: boolean; userItemId?: string; expectedRevision?: number }[] = [];
     let failRename = false;
@@ -1758,8 +1758,8 @@ for (const platform of ["linux", "win32", "darwin"]) {
     const { page, errors } = await openApp(platform);
     try {
       await page.evaluate(() => (window as any).__deletionTest.setBilling({
-        revision: 1, availableMicrousd: 12_345_678, postedMicrousd: 12_345_678, heldMicrousd: 0,
-        ledgerSequence: 0, currency: "microUSD", invoicesEnabled: false, invoiceMinUsdCents: 500, invoiceMaxUsdCents: 100_000,
+        revision: 1, availableMicrousd: 12_345_678, postedMicrousd: 12_345_678,
+        ledgerSequence: 0, currency: "microUSD",
       }));
       const trigger = page.getByRole("button", { name: "Account menu", exact: true });
       assert.equal(await trigger.getByText("TU", {exact: true}).count(), 1, "Avatar comes from the account username");
@@ -1813,8 +1813,8 @@ test("balance is a separate screen and payments stay hidden after sign-out", asy
   const { page, errors } = await openApp();
   try {
     await page.evaluate(() => (window as any).__deletionTest.setBilling({
-      revision: 1, postedMicrousd: 25_000_000, heldMicrousd: 0, availableMicrousd: 25_000_000,
-      ledgerSequence: 0, currency: "microUSD", invoicesEnabled: true, invoiceMinUsdCents: 500, invoiceMaxUsdCents: 100_000,
+      revision: 1, postedMicrousd: 25_000_000, availableMicrousd: 25_000_000,
+      ledgerSequence: 0, currency: "microUSD",
     }));
     await openAccountScreen(page, "Balance");
     assert.equal(await page.getByRole("region", { name: "Settings", exact: true }).count(), 0);
@@ -1843,9 +1843,8 @@ test("balance shows debt and top-up action without displaying a reservation", as
   const { page, errors } = await openApp();
   try {
     await page.evaluate(() => (window as any).__deletionTest.setBilling({
-      revision: 1, postedMicrousd: -230_534, heldMicrousd: 0, availableMicrousd: -230_534,
+      revision: 1, postedMicrousd: -230_534, availableMicrousd: -230_534,
       trialMicrousd: 0, paidMicrousd: -230_534, ledgerSequence: 1, currency: "microUSD",
-      invoicesEnabled: true, invoiceMinUsdCents: 500, invoiceMaxUsdCents: 100_000,
     }));
     await openAccountScreen(page, "Balance");
     const panel = page.getByRole("region", { name: "Balance and payments", exact: true });
@@ -1854,9 +1853,8 @@ test("balance shows debt and top-up action without displaying a reservation", as
     assert.equal(await page.getByRole("button", { name: "Top up", exact: true }).isEnabled(), true);
     assert.doesNotMatch(await panel.innerText(), /temporarily held|reserved/i);
     await page.evaluate(() => (window as any).__deletionTest.setBilling({
-      revision: 2, postedMicrousd: 100_000, heldMicrousd: 0, availableMicrousd: 100_000,
+      revision: 2, postedMicrousd: 100_000, availableMicrousd: 100_000,
       trialMicrousd: 0, paidMicrousd: 100_000, ledgerSequence: 2, currency: "microUSD",
-      invoicesEnabled: true, invoiceMinUsdCents: 500, invoiceMaxUsdCents: 100_000,
     }));
     await panel.getByText("$0.10", { exact: true }).first().waitFor();
     assert.equal(await panel.getByText("Top up to send another message.", { exact: true }).count(), 0);
@@ -1941,9 +1939,9 @@ test("balance deposit controls fit the reference window, respect reduced motion,
     await page.evaluate(() => {
       const address = `u1${"a".repeat(180)}`;
       (window as any).__deletionTest.setBilling({
-        revision: 1, postedMicrousd: 2_893_999, heldMicrousd: 0, availableMicrousd: 2_893_999,
+        revision: 1, postedMicrousd: 2_893_999, availableMicrousd: 2_893_999,
         trialMicrousd: 999_676, paidMicrousd: 1_894_323,
-        ledgerSequence: 0, currency: "microUSD", invoicesEnabled: false, invoiceMinUsdCents: 500, invoiceMaxUsdCents: 100_000,
+        ledgerSequence: 0, currency: "microUSD",
         zecUsdQuote: { source: "coinbase", price_microusd_per_zec: "123456789",
           as_of: new Date().toISOString(), expires_at: new Date(Date.now() + 60_000).toISOString() },
         paymentAccount: { network: "mainnet", asset: "ZEC", conversion_status: "none", state: "ready", valuation_enabled: true,
@@ -2014,9 +2012,9 @@ test("deposit progress keeps ZEC primary and changes estimated USD to credited U
       const address = `u1${"a".repeat(180)}`;
       const quoteTime = Date.now();
       (window as any).__deletionTest.setBilling({
-        revision: Number(confirmations), postedMicrousd: credited ? 100001 : 0, heldMicrousd: 0,
+        revision: Number(confirmations), postedMicrousd: credited ? 100001 : 0,
         availableMicrousd: credited ? 100001 : 0, trialMicrousd: 0, paidMicrousd: credited ? 100001 : 0,
-        ledgerSequence: 0, currency: "microUSD", invoicesEnabled: false, invoiceMinUsdCents: 500, invoiceMaxUsdCents: 100_000,
+        ledgerSequence: 0, currency: "microUSD",
         zecUsdQuote: { source: "coinbase", price_microusd_per_zec: "123456789",
           as_of: new Date(quoteTime).toISOString(), expires_at: new Date(quoteTime + 60_000).toISOString() },
         paymentAccount: { network: "mainnet", asset: "ZEC", conversion_status: "none", state: "ready", valuation_enabled: true,

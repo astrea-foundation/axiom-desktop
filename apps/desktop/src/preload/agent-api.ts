@@ -1,7 +1,6 @@
 import { ipcRenderer } from "electron";
 import type {
   AccountStatusResponse,
-  BillingInvoiceResponse,
   BillingStatusResponse,
   UsageSummaryResponse,
   ApiKeyListResponse,
@@ -57,9 +56,6 @@ export interface AgentApi {
   apiKeys: (accountId: string) => Promise<ApiKeyListResponse>;
   createApiKey: (name: string, accountId: string) => Promise<ApiKeyCreatedResponse>;
   revokeApiKey: (id: string, accountId: string) => Promise<ApiKeyRevokeResponse>;
-  createBillingInvoice: (amountUsdCents: number, clientRequestId: string, accountId: string) => Promise<BillingInvoiceResponse>;
-  billingInvoiceStatus: (invoiceId: string) => Promise<BillingInvoiceResponse>;
-  openBillingPayment: (paymentUrl: string, accountId: string) => Promise<void>;
   nativeLoginStart: (methodHint?: LoginMethod) => Promise<NativeLoginStartResponse>;
   nativeLoginComplete: (loginId: string) => Promise<AccountStatusResponse>;
   nativeLoginCancel: (loginId: string) => Promise<AccountStatusResponse>;
@@ -108,10 +104,6 @@ export const agentApi: AgentApi = {
   apiKeys: (accountId) => invoke("api-keys", accountId),
   createApiKey: (name, accountId) => invoke("api-key-create", name, accountId),
   revokeApiKey: (id, accountId) => invoke("api-key-revoke", id, accountId),
-  createBillingInvoice: (amountUsdCents, clientRequestId, accountId) =>
-    invoke("billing-invoice-create", amountUsdCents, clientRequestId, accountId),
-  billingInvoiceStatus: (invoiceId) => invoke("billing-invoice-status", invoiceId),
-  openBillingPayment: (paymentUrl, accountId) => invoke("billing-open-payment", paymentUrl, accountId),
   nativeLoginStart: (methodHint) => invoke("native-login-start", methodHint),
   nativeLoginComplete: (loginId) => invoke("native-login-complete", loginId),
   nativeLoginCancel: (loginId) => invoke("native-login-cancel", loginId),

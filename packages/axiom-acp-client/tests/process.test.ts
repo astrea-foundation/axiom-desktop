@@ -40,7 +40,7 @@ test("Desktop sidecar allowlist excludes inherited application secrets", () => {
       AXIOM_API_KEY: "axm_secret",
       axiom_auth_url: "https://attacker.example",
       DATABASE_URL: "postgres://secret",
-      SHIELDZ_WALLET_SEED: "zcash-secret",
+      WALLET_SEED: "zcash-secret",
       OPENAI_API_KEY: "provider-secret",
     },
     {
@@ -61,7 +61,7 @@ test("Desktop sidecar allowlist excludes inherited application secrets", () => {
     "axiom_api_key",
     "axiom_auth_url",
     "DATABASE_URL",
-    "SHIELDZ_WALLET_SEED",
+    "WALLET_SEED",
     "OPENAI_API_KEY",
   ]) {
     assert.equal(environment[name], undefined, `${name} leaked into the sidecar`);

@@ -8,7 +8,7 @@ import type { ElicitationOutcome, ListThreadsRequest, LoginMethod, PermissionOut
 import { AgentSidecar, resolveSidecar } from "./agent-sidecar";
 import { ProxySupervisor } from "./proxy-supervisor";
 import { agentRevision, desktopAgentRequest } from "./desktop-agent-settings";
-import { activeInvoicePaymentUrl, requirePaymentAccount, resolveServiceOrigins, STAGING_API_ORIGIN } from "./service-origins";
+import { requirePaymentAccount, resolveServiceOrigins, STAGING_API_ORIGIN } from "./service-origins";
 import { platformWindowChrome } from "./window-chrome";
 import { installMacCli } from "./install-cli";
 import { APP_ID, APP_NAME, setLinuxDesktopIdentity } from "../../scripts/desktop-identity.mjs";
@@ -96,25 +96,6 @@ function loginMethod(value: unknown): LoginMethod | undefined {
     throw new Error("login method is invalid");
   }
   return value as LoginMethod;
-}
-
-function invoiceAmount(value: unknown): number {
-  if (!Number.isSafeInteger(value) || (value as number) < 1 || (value as number) > 10_000_000) {
-    throw new Error("invoice amount is invalid");
-  }
-  return value as number;
-}
-
-function invoiceClientRequestId(value: unknown): string {
-  const requestId = boundedString(value, "invoice client request ID", 128);
-  if (!/^[A-Za-z0-9_.:-]+$/.test(requestId)) throw new Error("invoice client request ID is invalid");
-  return requestId;
-}
-
-function invoiceId(value: unknown): string {
-  const id = boundedString(value, "invoice ID", 32);
-  if (!/^[0-9a-f]{32}$/.test(id)) throw new Error("invoice ID is invalid");
-  return id;
 }
 
 type AgentHandler = (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown;
@@ -269,28 +250,6 @@ function installAgentIpc(): void {
     return result;
   });
   agentHandle("agent:billing-status", () => sidecar.billingStatus());
-  agentHandle("agent:billing-invoice-create", (_event, amountUsdCents: unknown, clientRequestId: unknown, accountId: unknown) => {
-    requirePaymentAccount(boundedString(accountId, "account ID", 128), sidecar.state());
-    return sidecar.createBillingInvoice(
-      invoiceAmount(amountUsdCents),
-      invoiceClientRequestId(clientRequestId),
-    );
-  });
-  agentHandle("agent:billing-invoice-status", (_event, value: unknown) =>
-    sidecar.billingInvoiceStatus(invoiceId(value)),
-  );
-  // This is the only payment navigation capability exposed to the renderer.
-  // Only a Top up/Reopen checkout gesture invokes this handler. Background
-  // invoice/balance polling never opens a browser. Revalidate current account
-  // state after async invoice creation, immediately before delegating to the OS.
-  agentHandle("agent:billing-open-payment", async (_event, value: unknown, accountId: unknown) => {
-    const paymentUrl = activeInvoicePaymentUrl(
-      boundedString(value, "invoice payment URL", 4_096),
-      sidecar.state(),
-      boundedString(accountId, "account ID", 128),
-    );
-    await shell.openExternal(paymentUrl);
-  });
   agentHandle("agent:native-login-start", (_event, methodHint: unknown) =>
     sidecar.nativeLoginStart(loginMethod(methodHint)),
   );

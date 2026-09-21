@@ -32,20 +32,14 @@ The installation identity is shared. The rotating native refresh token lives in
 the operating-system credential store rather than this tree, so Desktop and CLI
 can use the same signed-in account without placing a bearer credential on disk.
 Each account and frontend has its own conversation database. No account database
-is opened while signed out. Versioned databases are upgraded through ordered,
-transactional migrations; unversioned pre-release layouts are not guessed at.
-
-During pre-release development, remove an old installation-wide frontend
-database with
-`axiomcli reset-local-state --frontend cli --confirm` or
-`axiomcli reset-local-state --frontend desktop-chat --confirm`. This command is
-only a clean-slate cleanup for the retired `cli/state.sqlite3` or
-`desktop/state.sqlite3` layout. It never scans, migrates, or deletes any
-`accounts/<opaque-account-id>/` data, configuration, installation identity,
-credential-store entry, trust policy, or the other legacy frontend database.
+is opened while signed out. The fresh baseline uses application ID `0x41584133` and schema version `1`.
+Pre-baseline layouts and unsupported versions are rejected. Stop Desktop and CLI,
+then use `axiomcli reset-local-state --account ACCOUNT_ID --frontend desktop-chat --confirm`
+(or `--frontend cli`) to delete only the selected account/frontend database and
+SQLite sidecars. See [the reset decision](adr/0014-clean-storage-and-deposit-billing.md).
 
 `axiomcli acp --frontend desktop-chat` is a product profile. After sign-in, its
-cwd is the active account's canonical `desktop/chat` directory. While signed
+workspace is a separate canonical directory under the account's `desktop/chat` tree for each thread. While signed
 out, thread and chat operations fail with an authentication-required error and
 no fallback database is opened. MCP servers are disabled, the embedded desktop
 system prompt cannot be replaced with `--system-prompt-file`, and the permission

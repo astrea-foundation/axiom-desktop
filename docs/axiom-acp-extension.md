@@ -27,8 +27,7 @@ Methods:
 - `_axiom/account/status`, `_axiom/account/native_login_start`,
   `_axiom/account/native_login_complete`, `_axiom/account/native_login_cancel`,
   `_axiom/account/logout`
-- `_axiom/billing/status`, `_axiom/billing/invoice_create`,
-  `_axiom/billing/invoice_status`
+- `_axiom/billing/status` (`billing@2`)
 - `_axiom/usage/summary` (`usage@1`, optional)
 - `_axiom/security/verify`
 - `_axiom/compaction/start`
@@ -115,13 +114,12 @@ events, renderer IPC, errors, diagnostics, or debug output. Permission and
 elicitation responses are standard ACP messages; the extension does not create
 a second tool-authorization protocol.
 
-The `billing@1` feature exposes account-ledger totals and idempotent Shieldz
-Zcash invoice creation/status. Invoice amounts use integer USD cents; account
-balances use integer microUSD. A pending invoice may include a bounded HTTPS
-payment URL, but never a wallet key, transaction request, or payment authority.
+The `billing@2` feature exposes account-ledger totals, required trial/paid buckets,
+mainnet deposit metadata and an optional current ZEC/USD quote. Account balances
+use integer microUSD; deposit amounts and quote values are exact decimal strings.
 Billing calls require the current native account session and discard results if
-the account changes while a request is in flight. Revisions prevent an older
-status or invoice response from replacing newer state.
+the account changes in flight. Revisions prevent stale status from replacing
+newer state. There are no invoice methods or checkout navigation capabilities.
 
 Extension failures retain ordinary JSON-RPC codes and include a bounded typed
 `data` object with `code`, `message`, `retryable`, and optional

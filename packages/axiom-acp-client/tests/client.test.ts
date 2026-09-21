@@ -89,7 +89,7 @@ test("extension negotiation accepts additive families and optional features only
     profilePreferences: 1,
     collections: 1,
     account: 2,
-    billing: 1,
+    billing: 2,
     securityEvidence: 1,
     webConsent: 1,
     futureFeature: 7,
@@ -363,28 +363,16 @@ test("an account-context change atomically clears every previous account project
   });
   store.setBilling({
     revision: 3,
-    postedMicrousd: 10_000_000,
-    heldMicrousd: 1_000_000,
-    availableMicrousd: 9_000_000,
+    postedMicrousd: 10_000_000, trialMicrousd: 0, paidMicrousd: 10_000_000,
+    availableMicrousd: 10_000_000,
     ledgerSequence: 7,
     currency: "microUSD",
-    invoicesEnabled: true,
-    invoiceMinUsdCents: 500,
-    invoiceMaxUsdCents: 100_000,
-    settlementAsset: "USDC",
     paymentAccount: {
-      network: "testnet", asset: "ZEC", conversion_status: "not_implemented", state: "ready",
-      address: "utest1account-a", payment_uri: "zcash:utest1account-a", monitoring_status: "ready",
+      network: "mainnet", asset: "ZEC", conversion_status: "none", state: "ready",
+      address: "u1account-a", payment_uri: "zcash:u1account-a", monitoring_status: "ready",
       required_confirmations: "10", confirmed_zatoshis: "9007199254740993",
       confirming_zatoshis: "0", review_required: false, deposits: [],
     },
-  });
-  store.setInvoice({
-    revision: 4,
-    id: "a".repeat(32),
-    amountUsdCents: 2_500,
-    state: "pending",
-    payUrl: "https://shieldz.cash/pay/opaque",
   });
   const accountAContext = store.accountContextToken();
 
@@ -412,7 +400,6 @@ test("an account-context change atomically clears every previous account project
   assert.deepEqual(snapshot.collections, { revision: 0, collections: [] });
   assert.equal(snapshot.preferences, null);
   assert.equal(snapshot.billing, null);
-  assert.equal(snapshot.invoice, null);
   assert.equal(snapshot.account?.account?.id, "account-b");
   assert.ok(store.accountContextToken() > accountAContext);
 });
@@ -430,33 +417,14 @@ test("billing projections are monotonic within an account and clear on account s
   });
   const newest = {
     revision: 2,
-    postedMicrousd: 12_000_000,
-    heldMicrousd: 2_000_000,
-    availableMicrousd: 10_000_000,
+    postedMicrousd: 12_000_000, trialMicrousd: 0, paidMicrousd: 12_000_000,
+    availableMicrousd: 12_000_000,
     ledgerSequence: 9,
     currency: "microUSD",
-    invoicesEnabled: true,
-    invoiceMinUsdCents: 500,
-    invoiceMaxUsdCents: 100_000,
-    settlementAsset: "USDC",
   } as const;
   store.setBilling(newest);
   store.setBilling({ ...newest, revision: 3, ledgerSequence: 8, availableMicrousd: 1 });
-  store.setInvoice({
-    revision: 4,
-    id: "b".repeat(32),
-    amountUsdCents: 2_500,
-    state: "pending",
-    payUrl: "https://shieldz.cash/pay/opaque",
-  });
-  store.setInvoice({
-    revision: 5,
-    id: "b".repeat(32),
-    amountUsdCents: 2_500,
-    state: "creating",
-  });
-  assert.equal(store.snapshot().billing?.availableMicrousd, 10_000_000);
-  assert.equal(store.snapshot().invoice?.state, "pending");
+  assert.equal(store.snapshot().billing?.availableMicrousd, 12_000_000);
 
   store.setAccount({
     revision: 2,
@@ -468,7 +436,6 @@ test("billing projections are monotonic within an account and clear on account s
     },
   });
   assert.equal(store.snapshot().billing, null);
-  assert.equal(store.snapshot().invoice, null);
 });
 
 test("switching state rejects delayed old-account events before account B becomes valid", () => {

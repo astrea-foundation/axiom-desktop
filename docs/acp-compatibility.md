@@ -48,16 +48,14 @@ Version 0.2 provides:
 - typed model catalog with provider metadata and atomic session settings;
 - native account status plus passkey, Google, email/password, and
   Ethereum-wallet authorization start/complete/cancel and logout;
-- account-scoped credit status plus idempotent Shieldz Zcash invoice
-  creation/status through `billing@1`;
+- account-scoped credit, mainnet deposit and quote status through `billing@2`;
 - fresh security verification and bounded attestation/workload evidence;
 - cancellable compaction phases and structured progress/task/workspace events.
 
 The account feature is version 2. It exposes only bounded profile/session
 metadata and opaque login handles; neither native bearer tokens nor manual API
-keys cross the ACP or renderer boundary. The billing feature is version 1 and
-exposes bounded ledger/invoice metadata plus a short-lived HTTPS payment URL
-for a pending invoice, never wallet custody or transaction authority. Manual
+keys cross the ACP or renderer boundary. The billing feature is version 2 and
+exposes bounded credit, deposit and quote metadata. Manual
 `AXIOM_API_KEY` use remains a standalone automation concern outside the Desktop
 extension and cannot authorize billing calls.
 

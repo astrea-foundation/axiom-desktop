@@ -5,6 +5,10 @@ use tempfile::TempDir;
 
 fn plans(root: &TempDir, args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_axiomcli"))
+        .env("AXIOMCLI_TEST_RUNNER", "echo")
+        .env("XDG_CONFIG_HOME", root.path().join("config"))
+        .env("XDG_DATA_HOME", root.path().join("data"))
+        .env_remove("AXIOM_API_KEY")
         .arg("plans")
         .arg("--cwd")
         .arg(root.path())

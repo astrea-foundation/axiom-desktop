@@ -38,7 +38,7 @@ Local schema v2 backfills message activity for existing conversations without
 resetting them; message timestamps also travel with live ACP revision metadata.
 The rotating refresh token is shared through the operating-system credential
 store, while CLI and Desktop conversation databases remain separate.
-Account credit and Axiom Payments deposits use the negotiated `billing@1`
+Account credit and Axiom Payments deposits use the negotiated `billing@2`
 extension. When the backend enables persistent deposits, sign-in/billing refresh
 provisions an account-bound mainnet ZEC address. Account menu → Balance shows the
 reusable address beside a QR generated entirely on-device, one copy action, and
@@ -48,7 +48,7 @@ Users can send arbitrary repeated amounts without invoices or memos.
 No browser checkout is opened. Balance polls every five seconds, including
 while the address is provisioning; the backend owns durable idempotency keys.
 
-The native billing request opts in to `include_zec_usd_quote=true`. The backend
+The billing response includes a nullable current quote. The backend
 returns a cached Coinbase-first ZEC/USD quote with a 60-second market-timestamp
 expiry, falling back to Kraken; the renderer hides expired or offline quotes.
 Older backends can omit the quote. The displayed rate is indicative, and the
@@ -70,9 +70,6 @@ The receiver on `127.0.0.1:8080` is **not** the application's API. Point the
 desktop at the application API's trusted HTTPS origin (and matching auth
 origin), with the backend configured to reach that receiver. See the backend
 repository's `docs/operations/payments.md` for migration and webhook setup.
-The legacy Shieldz invoice UI remains compatibility-only for a backend explicitly
-configured with `AXIOM_BILLING_PROVIDER=shieldz`; it is hidden for Axiom Payments.
-
 Brand treatment (light and dark token themes, DM Sans / DM Mono, the PP Cirka
 display face, the falcon symbol) lives in this package; the closed-source
 website is not a runtime or build dependency. `REDESIGN.md` explains the
