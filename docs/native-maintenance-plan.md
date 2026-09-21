@@ -62,12 +62,16 @@ deploy a service.
 
 ## Completion record
 
-- [ ] Unused UI, counters, assets and placeholder directory removed.
-- [ ] Titles use shared synchronous generation and account-bound persistence.
-- [ ] Phala uses verified signed NVIDIA anchor policy with rejection/rotation tests.
-- [ ] NEAR report vectors exercise the production verifier.
+- [x] Unused UI, counters, assets and placeholder directory removed.
+- [x] Titles use shared synchronous generation and account-bound persistence.
+- [x] Phala uses verified signed NVIDIA anchor policy with rejection/rotation tests.
+- [x] NEAR report vectors exercise the production verifier.
 - [ ] ACP registration delegates to feature handlers using typed context.
 - [ ] TUI state, screens and runtime are separated.
 - [ ] Desktop account, model and conversation lifecycle are separated from layout.
 - [ ] Integration checks pass and current guides reflect the final implementation.
 - [ ] Commits are pushed and the existing `dev` pull request describes the full change.
+
+Initial validation: CLI library tests passed (322 passed, 2 explicitly ignored);
+Phala core tests passed (21); secure-client library tests passed (70 passed,
+2 live-provider tests ignored). Full integration validation follows the splits.

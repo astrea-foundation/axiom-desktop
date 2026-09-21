@@ -50,6 +50,8 @@ pub struct AttestationRequest<'a> {
     pub model_id: &'a str,
     pub expected_model: &'a str,
     pub relay: &'a dyn RelayApi,
+    /// Accepted NVIDIA intermediate fingerprints from the locally verified signed policy.
+    pub nvidia_anchor_sha256: &'a [String],
 }
 
 /// Verifies one model's Phala evidence locally. An error means the model must

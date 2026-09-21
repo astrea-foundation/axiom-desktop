@@ -424,11 +424,16 @@ async fn verify_intel(
 }
 
 fn verify_report_data(
-    report_data: &[u8; 64],
+    report_data: &[u8],
     signing_material: &[u8],
     tls_fingerprint: &[u8; 32],
     nonce: &[u8; 32],
 ) -> Result<()> {
+    if report_data.len() != 64 {
+        return Err(SecureClientError::attestation(
+            "Intel report data must be exactly 64 bytes",
+        ));
+    }
     if signing_material.is_empty() {
         return Err(SecureClientError::attestation(
             "attested signing material is invalid",
@@ -926,6 +931,48 @@ mod tests {
             verify_report_data(&response_report_data, &[0x34; 20], &[0x22; 32], &[0x11; 32],)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn authoritative_report_vectors_use_the_production_verifier() {
+        #[derive(serde::Deserialize)]
+        struct Vectors {
+            report_data_vectors: Vec<ReportVector>,
+        }
+        #[derive(serde::Deserialize)]
+        struct ReportVector {
+            signing_key_hex: String,
+            tls_fingerprint_hex: String,
+            nonce_hex: String,
+            report_data_hex: String,
+            valid: bool,
+        }
+        let vectors: Vectors =
+            serde_json::from_str(include_str!("../../../../../fixtures/e2ee/near-v2.json"))
+                .unwrap();
+        for vector in vectors.report_data_vectors {
+            let report = hex::decode(vector.report_data_hex).unwrap();
+            let key = hex::decode(vector.signing_key_hex).unwrap();
+            let tls =
+                <[u8; 32]>::try_from(hex::decode(vector.tls_fingerprint_hex).unwrap()).unwrap();
+            let nonce = <[u8; 32]>::try_from(hex::decode(vector.nonce_hex).unwrap()).unwrap();
+            assert_eq!(
+                verify_report_data(&report, &key, &tls, &nonce).is_ok(),
+                vector.valid
+            );
+            assert!(verify_report_data(&report[..63], &key, &tls, &nonce).is_err());
+            assert!(
+                verify_report_data(&[report.clone(), vec![0]].concat(), &key, &tls, &nonce)
+                    .is_err()
+            );
+            assert!(verify_report_data(&report, &[], &tls, &nonce).is_err());
+            let mut wrong_nonce = nonce;
+            wrong_nonce[0] ^= 1;
+            assert!(verify_report_data(&report, &key, &tls, &wrong_nonce).is_err());
+            let mut wrong_tls = tls;
+            wrong_tls[0] ^= 1;
+            assert!(verify_report_data(&report, &key, &wrong_tls, &nonce).is_err());
+        }
     }
 
     struct NvidiaFixture {

@@ -50,8 +50,6 @@ const HKDF_INFO: &[u8] = b"aci.e2ee.v2.x25519";
 const GATEWAY_REPOSITORY_ENV: &str = "PRIVATE_AI_GATEWAY_REPO_URL";
 const GATEWAY_COMMIT_ENV: &str = "PRIVATE_AI_GATEWAY_REPO_COMMIT";
 const NVIDIA_JWKS_URL: &str = "https://nras.attestation.nvidia.com/.well-known/jwks.json";
-const NVIDIA_NRAS_INTERMEDIATE_SHA256: &str =
-    "2df8907cf4d6c277b855d407ec178a649930a8e73f7294e8fce66e6ee27c5175";
 const MAX_PROOF_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 
 fn now_unix() -> u64 {
@@ -726,7 +724,29 @@ fn decode_jws_json<T: for<'de> Deserialize<'de>>(encoded: &str, label: &str) -> 
     serde_json::from_slice(&bytes).map_err(|_| attestation(format!("Phala {label} is invalid")))
 }
 
-fn verify_nvidia_jwt(jwt: &str, jwks_json: &[u8], expected_nonce: &str) -> Result<()> {
+fn validate_nvidia_anchors(anchors: &[String]) -> Result<()> {
+    if anchors.is_empty()
+        || anchors.iter().any(|anchor| {
+            anchor.len() != 64
+                || !anchor
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        })
+    {
+        return Err(attestation(
+            "Phala NVIDIA trust policy has no valid anchor set",
+        ));
+    }
+    Ok(())
+}
+
+fn verify_nvidia_jwt(
+    jwt: &str,
+    jwks_json: &[u8],
+    expected_nonce: &str,
+    approved_anchors: &[String],
+) -> Result<()> {
+    validate_nvidia_anchors(approved_anchors)?;
     let parts = jwt.split('.').collect::<Vec<_>>();
     let [encoded_header, encoded_payload, encoded_signature] = parts.as_slice() else {
         return Err(attestation("Phala worker NVIDIA verdict is malformed"));
@@ -752,7 +772,8 @@ fn verify_nvidia_jwt(jwt: &str, jwks_json: &[u8], expected_nonce: &str) -> Resul
     let intermediate_der = base64::engine::general_purpose::STANDARD
         .decode(&chain[1])
         .map_err(|_| attestation("Phala NVIDIA intermediate certificate is invalid"))?;
-    if hex::encode(Sha256::digest(&intermediate_der)) != NVIDIA_NRAS_INTERMEDIATE_SHA256 {
+    let anchor_hash = hex::encode(Sha256::digest(&intermediate_der));
+    if !approved_anchors.contains(&anchor_hash) {
         return Err(attestation(
             "Phala NVIDIA certificate chain does not match the pinned trust anchor",
         ));
@@ -851,6 +872,7 @@ async fn verify_worker_session(
     verification_value: &Value,
     minimum_ttl: u64,
     nvidia_jwks: &[u8],
+    approved_anchors: &[String],
     profile: PhalaAciProfile,
     expected_model: &str,
 ) -> Result<PhalaWorkerSession> {
@@ -1052,6 +1074,7 @@ async fn verify_worker_session(
         required_str(verification, "nvidia_jwt", "worker NVIDIA verdict")?,
         nvidia_jwks,
         nonce_value,
+        approved_anchors,
     )?;
     Ok(PhalaWorkerSession {
         session_id,
@@ -1066,6 +1089,7 @@ pub struct PhalaAttestor;
 #[async_trait]
 impl Attestor for PhalaAttestor {
     async fn verify_model(&self, request: AttestationRequest<'_>) -> Result<VerifiedModel> {
+        validate_nvidia_anchors(request.nvidia_anchor_sha256)?;
         let nonce = random_nonce_hex();
         let evidence = request
             .relay
@@ -1298,6 +1322,7 @@ impl Attestor for PhalaAttestor {
                 supplement,
                 minimum_ttl,
                 &nvidia_jwks,
+                request.nvidia_anchor_sha256,
                 profile,
                 request.expected_model,
             )
@@ -2601,6 +2626,150 @@ impl CipherSession for PhalaSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::engine::general_purpose;
+    use p384::{
+        ecdsa::{Signature as NvidiaSignature, SigningKey as NvidiaSigningKey},
+        pkcs8::DecodePrivateKey,
+    };
+    use rcgen::{
+        date_time_ymd, BasicConstraints, CertificateParams, DnType, IsCa, Issuer, KeyPair,
+        KeyUsagePurpose, PKCS_ECDSA_P384_SHA384,
+    };
+
+    struct NvidiaFixture {
+        jwt: String,
+        jwks: Vec<u8>,
+        anchor_hash: String,
+        nonce: String,
+    }
+
+    fn nvidia_fixture(result: &Value, verdict_nonce: Option<String>) -> NvidiaFixture {
+        let mut ca_params = CertificateParams::default();
+        ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        ca_params
+            .distinguished_name
+            .push(DnType::CommonName, "Test NVIDIA Intermediate");
+        ca_params.key_usages = vec![
+            KeyUsagePurpose::DigitalSignature,
+            KeyUsagePurpose::KeyCertSign,
+        ];
+        ca_params.not_before = date_time_ymd(2025, 1, 1);
+        ca_params.not_after = date_time_ymd(2035, 1, 1);
+        let ca_key = KeyPair::generate_for(&PKCS_ECDSA_P384_SHA384).unwrap();
+        let ca_cert = ca_params.self_signed(&ca_key).unwrap();
+        let issuer = Issuer::new(ca_params, ca_key);
+
+        let mut leaf_params = CertificateParams::default();
+        leaf_params
+            .distinguished_name
+            .push(DnType::CommonName, "Test NVIDIA Leaf");
+        leaf_params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
+        leaf_params.not_before = date_time_ymd(2025, 1, 1);
+        leaf_params.not_after = date_time_ymd(2035, 1, 1);
+        let leaf_key = KeyPair::generate_for(&PKCS_ECDSA_P384_SHA384).unwrap();
+        let leaf_cert = leaf_params.signed_by(&leaf_key, &issuer).unwrap();
+
+        let nonce = "ab".repeat(32);
+        let header = general_purpose::URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(&serde_json::json!({"alg":"ES384","kid":"test"})).unwrap());
+        let payload = general_purpose::URL_SAFE_NO_PAD.encode(
+            serde_json::to_vec(&serde_json::json!({
+                "x-nvidia-overall-att-result": result,
+                "eat_nonce": verdict_nonce.unwrap_or_else(|| nonce.clone()),
+            }))
+            .unwrap(),
+        );
+        let signing_key = NvidiaSigningKey::from_pkcs8_der(&leaf_key.serialize_der()).unwrap();
+        let signature: NvidiaSignature = signing_key.sign(format!("{header}.{payload}").as_bytes());
+        let signature = general_purpose::URL_SAFE_NO_PAD.encode(signature.to_bytes());
+        let jwt = format!("{header}.{payload}.{signature}");
+        let jwks = serde_json::to_vec(&serde_json::json!({
+            "keys": [{
+                "kid": "test",
+                "x5c": [
+                    general_purpose::STANDARD.encode(leaf_cert.der()),
+                    general_purpose::STANDARD.encode(ca_cert.der()),
+                ]
+            }]
+        }))
+        .unwrap();
+        NvidiaFixture {
+            jwt,
+            jwks,
+            anchor_hash: hex::encode(Sha256::digest(ca_cert.der())),
+            nonce,
+        }
+    }
+
+    #[test]
+    fn nvidia_verdict_requires_pinned_chain_signature_pass_and_fresh_nonce() {
+        let fixture = nvidia_fixture(&Value::Bool(true), None);
+        assert!(verify_nvidia_jwt(
+            &fixture.jwt,
+            &fixture.jwks,
+            &fixture.nonce,
+            std::slice::from_ref(&fixture.anchor_hash),
+        )
+        .is_ok());
+
+        let mut tampered = fixture.jwt.clone().into_bytes();
+        let last = tampered.last_mut().unwrap();
+        *last = if *last == b'A' { b'B' } else { b'A' };
+        assert!(verify_nvidia_jwt(
+            std::str::from_utf8(&tampered).unwrap(),
+            &fixture.jwks,
+            &fixture.nonce,
+            std::slice::from_ref(&fixture.anchor_hash),
+        )
+        .is_err());
+        assert!(verify_nvidia_jwt(
+            &fixture.jwt,
+            &fixture.jwks,
+            &"cd".repeat(32),
+            std::slice::from_ref(&fixture.anchor_hash),
+        )
+        .is_err());
+        let rejected = nvidia_fixture(&Value::Bool(false), None);
+        assert!(verify_nvidia_jwt(
+            &rejected.jwt,
+            &rejected.jwks,
+            &rejected.nonce,
+            std::slice::from_ref(&rejected.anchor_hash),
+        )
+        .is_err());
+        assert!(verify_nvidia_jwt(
+            &fixture.jwt,
+            &fixture.jwks,
+            &fixture.nonce,
+            &["00".repeat(32)],
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn nvidia_policy_rotation_accepts_overlap_and_rejects_revoked_or_malformed_anchors() {
+        let old = nvidia_fixture(&Value::Bool(true), None);
+        let next = nvidia_fixture(&Value::Bool(true), None);
+        let overlap = vec![old.anchor_hash.clone(), next.anchor_hash.clone()];
+        for fixture in [&old, &next] {
+            assert!(
+                verify_nvidia_jwt(&fixture.jwt, &fixture.jwks, &fixture.nonce, &overlap).is_ok()
+            );
+        }
+        let rotated = vec![next.anchor_hash.clone()];
+        assert!(verify_nvidia_jwt(&old.jwt, &old.jwks, &old.nonce, &rotated).is_err());
+        assert!(verify_nvidia_jwt(&next.jwt, &next.jwks, &next.nonce, &rotated).is_ok());
+        for rejected in [
+            vec![],
+            vec!["zz".repeat(32)],
+            vec!["a".repeat(63)],
+            vec![next.anchor_hash.to_uppercase()],
+            vec![next.anchor_hash.clone(), String::new()],
+        ] {
+            assert!(verify_nvidia_jwt(&next.jwt, &next.jwks, &next.nonce, &rejected).is_err());
+        }
+    }
+
     use ed25519_dalek::{Signer, SigningKey};
 
     #[test]
@@ -3515,6 +3684,7 @@ mod tests {
             &Value::Null,
             30,
             &[],
+            &[],
             PhalaAciProfile::DstackAciDraftD567f6,
             "z-ai/glm-5.2",
         )
@@ -3556,6 +3726,7 @@ mod tests {
             &record,
             &Value::Null,
             30,
+            &[],
             &[],
             PhalaAciProfile::DstackAciDraftD567f6,
             "z-ai/glm-5.2",

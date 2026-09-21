@@ -152,6 +152,7 @@ impl SecureProvider for PhalaProvider {
             model_id: &model.id,
             expected_model: &model.upstream_model,
             relay: &relay,
+            nvidia_anchor_sha256: &policy.nvidia_anchor_sha256,
         };
         let verified = tokio::select! {
             () = cancellation.cancelled() => return Err(SecureClientError::cancelled()),

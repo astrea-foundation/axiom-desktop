@@ -540,6 +540,7 @@ dependencies = [
  "k256",
  "p384",
  "rand_core 0.6.4",
+ "rcgen",
  "reqwest 0.12.28",
  "ryu",
  "serde",
