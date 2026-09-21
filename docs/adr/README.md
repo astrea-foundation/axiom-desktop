@@ -20,5 +20,7 @@ erasing the original decision.
 
 | [0014: Fresh storage and deposit billing](0014-clean-storage-and-deposit-billing.md) | Current reset/billing contract; supersedes invoice plans and old SQLite history |
 
+| [0015: Persistence modules](0015-persistence-modules.md) | Native storage boundaries and SQL baseline organization |
+
 Numbering gaps reflect repository history; no missing numbered ADR is required
 to follow the current implementation.
