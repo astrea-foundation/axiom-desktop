@@ -1,5 +1,10 @@
 # Desktop redesign — hand-off notes (branch `redesign`)
 
+> Historical record, archived 2026-09-21. This preserves the original proposal
+> or dated evidence, including superseded behavior and unfinished checklists.
+> It is not a current implementation or deployment runbook. See the
+> [current guides](../README.md) and [validation follow-up](../validation.md).
+
 Written for the developer merging this branch and for any coding agent working
 in `apps/desktop` afterwards. It explains what changed, why, what it leads to,
 and the rules the new code expects you to keep. The original redesign was

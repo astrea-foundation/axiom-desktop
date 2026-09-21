@@ -1,11 +1,16 @@
 # Axiom clean-slate v1 refactor plan
 
+> Historical record, archived 2026-09-21. This preserves the original proposal
+> or dated evidence, including superseded behavior and unfinished checklists.
+> It is not a current implementation or deployment runbook. See the
+> [current guides](../README.md) and [validation follow-up](../validation.md).
+
 Status: superseded historical record
 
 This document describes the retired wallet-root/browser-storage account design. It is retained only
 as implementation history and is not a current product or security contract. The authoritative
 account, authentication, local-storage, and invoice-billing design is
-[`account-auth-billing-clean-slate-plan.md`](./account-auth-billing-clean-slate-plan.md).
+[`account-auth-billing-clean-slate-plan.md`](account-auth-billing-clean-slate-plan.md).
 
 Scope: `axiomai` desktop/TUI repository and `~/clone/axiom` web/backend repository
 

@@ -1,6 +1,11 @@
 # NEAR provider E2EE v2 protocol
 
-> Historical protocol. Current NEAR integrations use [near-v3](near-v3.md).
+> Historical record, archived 2026-09-21. This preserves the original proposal
+> or dated evidence, including superseded behavior and unfinished checklists.
+> It is not a current implementation or deployment runbook. See the
+> [current guides](../README.md) and [validation follow-up](../validation.md).
+
+> Historical protocol. Current NEAR integrations use [near-v3](../protocols/near-v3.md).
 
 Status: implementation contract for AxiomAI secure inference
 

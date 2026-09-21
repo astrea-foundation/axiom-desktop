@@ -70,7 +70,8 @@ See [the release procedure](docs/releasing.md) for the command. Building an
 artifact does not update the public download catalog; publishing remains an
 explicit release step.
 
-Use the checks and packaging commands documented in [README.md](README.md).
+Use the [development checks](docs/development.md#checks) and
+[release procedure](docs/releasing.md).
 If a change spans `axiom-platform` and `axiomai`, promote compatible batches in both and
 record their commit IDs together. Their branch names do not synchronize them.
 
@@ -79,15 +80,16 @@ record their commit IDs together. Their branch names do not synchronize them.
 This is an early codebase. Prefer the smallest change that establishes a clear
 contract and leaves room to revise it.
 
-1. Work only in the active stage from the implementation plan.
+1. Keep changes within the requested scope; use current guides rather than archived plans.
 2. Add or update tests for externally observable behavior.
 3. Keep terminal rendering, ACP translation, and persistence out of the agent
    domain model.
 4. Treat model, network, tool, terminal, and ACP input as untrusted.
 5. Do not copy implementation code, prompts, comments, names, or tests from a
    reference agent.
-6. Run formatting, Clippy, tests, and the current stage's review checklist.
-7. Do not start the next stage until the current review record is `PASS`.
+6. Run formatting, Clippy and tests appropriate to the change; record any failures.
+7. Update affected documentation with the implementation and preserve unresolved
+   acceptance work in [validation](docs/validation.md).
 
 Application-specific presentation and lifecycle code belongs under `apps/`.
 Code belongs under `crates/` only when it has a narrow contract and more than

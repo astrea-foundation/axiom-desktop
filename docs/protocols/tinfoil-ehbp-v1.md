@@ -41,9 +41,13 @@ The backend publishes current API context windows and token prices. Axiom's init
 
 The native client enforces existing request, stream, event and response bounds. Initial response wait is at most 300 seconds, stream idle timeout 120 seconds and total response deadline 900 seconds. Cancellation drops the subscriber and aborts upstream generation. Exact final metering already received can settle; otherwise the backend waives the charge, preserves unknown token counts and releases the billing hold. Both clients reconcile this metadata while idle without upgrading cancelled output to verified. Provider rate limits are account/model specific; no production numeric entitlement has been established by these canaries.
 
-GPT-OSS supports low/medium/high reasoning. GLM and Kimi translate Axiom low/medium/high to provider low/high/max; Llama has no reasoning selector. GLM sends this control in `chat_template_kwargs`, Kimi at the top level. The three Kimi settings passed encrypted tool roundtrip canaries. Automatic titles are generated locally from the first prompt, with no separate inference or charge.
-
-Desktop edit/regenerate uses native ACP prompt revision metadata. Storage atomically replaces the chosen turn and subsequent local history with the new prompt, preserves request accounting, and starts ordinary attested E2EE inference. Stale revisions, cross-account edits and active turns are rejected. Files already changed by tools are not rolled back. Regeneration after steering targets the turn's original prompt.
+GPT-OSS supports low/medium/high reasoning. GLM and Kimi translate Axiom
+low/medium/high to provider low/high/max; Llama has no reasoning selector. GLM
+sends this control in `chat_template_kwargs`, Kimi at the top level. The adapter
+and its request/response checks live in
+[the Tinfoil driver](../../crates/axiom-secure-client/src/providers/tinfoil/mod.rs).
+Conversation titles, edit/regenerate and usage presentation are shared native
+behavior documented in [Desktop](../desktop.md), not separate Tinfoil flows.
 
 ## Verification commands
 
@@ -72,6 +76,8 @@ The [Desktop and TUI test report](../testing/tinfoil-ui-2026-09-18/README.md) re
 
 `RUST_LOG=axiom_secure_client=info` enables native attestation/exchange timing records in CLI/ACP modes. They include first authenticated delta and total exchange times, with no message or key material. TUI suppresses tracing output to protect its screen. The backend separately measures headers/first ciphertext/body idle time; ciphertext arrival must not be described as time to an authenticated token.
 
-The lockfile also updates Rustls to 0.23.45, fixing [RUSTSEC-2026-0285](https://rustsec.org/advisories/RUSTSEC-2026-0285.html). The dependency audit requires the two pinned Tinfoil Git sources and otherwise retains the repository's source/license policy.
+The dependency audit permits the two pinned Tinfoil Git sources and otherwise
+retains the repository's source/license policy. Current dependency versions and
+advisory results must be checked using [the development checks](../development.md#checks).
 
 References: [EHBP](https://docs.tinfoil.sh/resources/ehbp), [backend proxy contract](https://docs.tinfoil.sh/guides/proxy-server), [Rust verifier](https://docs.tinfoil.sh/sdk/rust-sdk).

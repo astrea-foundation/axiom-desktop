@@ -1,5 +1,10 @@
 # Account, authentication, and invoice billing clean-slate plan
 
+> Historical record, archived 2026-09-21. This preserves the original proposal
+> or dated evidence, including superseded behavior and unfinished checklists.
+> It is not a current implementation or deployment runbook. See the
+> [current guides](../README.md) and [validation follow-up](../validation.md).
+
 Status: headless implementation and available local Linux interactive checks complete; live-service,
 native macOS/Windows release, and cutover gates remain. The original v1/pre-implementation plan is superseded by the account contract implemented
 in ACP extension v0.2. No staging or production deployment has been performed.

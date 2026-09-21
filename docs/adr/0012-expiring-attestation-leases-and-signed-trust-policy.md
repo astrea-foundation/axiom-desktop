@@ -1,5 +1,12 @@
 # ADR 0012: Expiring attestation leases and signed trust policy
 
+> Partially superseded. [ADR 0013](0013-near-worker-sessions.md) replaces NEAR
+> model-wide establishment with challenged worker sessions. Tinfoil has no relay
+> lease generation. Phala verifies exact measured-workflow provenance and the
+> complete worker/receipt chain without repository/commit allowlists or manual
+> approval of gateway updates. The original signed-policy/source-approval wording
+> below must not be used to introduce such pins. See [current trust operations](../threat-model.md).
+
 Status: accepted
 
 Date: 2026-08-28

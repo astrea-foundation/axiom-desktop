@@ -1,79 +1,152 @@
-# ACP compatibility
+# ACP and the Axiom extension
 
-AxiomCLI targets ACP protocol v1 using the latest published
-`agent-client-protocol` runtime available during this implementation: crate
-2.0.0, which pins its runtime schema to 1.5.0. The ACP protocol number, Rust
-crate release, schema crate release, and Axiom extension version are separate
-numbers and must not be compared as if they were one version.
+This is the current compatibility, extension and frontend-parity reference.
+AxiomCLI targets **ACP protocol v1**, using the pinned `agent-client-protocol`
+**2.0.0** runtime and its **1.5.0** schema. The local vendor patch fixes deep-handler
+stack growth; these version numbers are independent of Axiom extension **0.2**.
+No claim about the latest upstream release is needed to implement this contract.
+
+Sources: [Rust adapter](../apps/axiomcli/src/acp.rs),
+[extension DTOs](../crates/axiom-acp-extension/src/lib.rs),
+[JSON Schema](../protocol/axiom-acp-extension/v0.2/schema.json), and
+[Node client](../packages/axiom-acp-client/src/client.ts).
 
 ## Standard ACP
 
-| Operation | Support and mapping |
+| Operation | Implemented behavior |
 |---|---|
-| `initialize` | ACP v1, implementation metadata, load-session capability, and optional `_meta.axiom` negotiation |
-| `session/new` | canonical absolute cwd, durable `CreateSession`, native modes and config options |
-| `session/load` | journal recovery/replay, exact cwd identity, restored model/thinking/profile |
-| `session/prompt` | text/resource-link prompts, ordered user/assistant/reasoning chunks, structured tool activity and stop reason |
-| `session/cancel` | cancels the session's active prompt or compaction |
-| `$/cancel_request` | cooperatively cancels prompt, security, compaction, and native-login completion requests |
-| `session/set_mode` | permission profile; policy remains enforced inside AxiomCLI |
-| `session/set_config_option` | model and thinking level |
-| permission requests | deny, allow once, eligible exact-session, and eligible safe-prefix-session choices |
-| form elicitation | required/optional text, enum, and multiple-choice questions when advertised by the client |
-| plans | native plan updates for tasks and plan review |
-| tools | stable IDs, kinds, pending/running/final states, raw input, bounded output, and native before/after file diffs |
-| session info | generated title updates after the first prompt |
-| available commands | slash-command fallback for interactive generic clients |
+| `initialize` | ACP v1, metadata, load-session support and optional Axiom negotiation |
+| `session/new`, `session/load` | Canonical workspace, durable state and restored model/thinking/profile |
+| `session/prompt` | Text/resource links, ordered user/assistant/reasoning chunks, tools and stop reason |
+| `session/cancel`, `$/cancel_request` | Cooperative cancellation; supported long-running extension requests also cancel |
+| `session/set_mode` | CLI permission profile; Desktop Agent changes use the dedicated revisioned method |
+| `session/set_config_option` | Model/thinking selection validated by native policy and the catalog |
+| Permission requests | Only offered deny/once/eligible session-grant choices are valid |
+| Form elicitation | Text/enum/multiple-choice questions when the unstable client capability is advertised |
+| Plans, tools and diffs | Standard plan updates, stable tool IDs/states, bounded output and before/after diffs |
+| Session info/commands | Local title updates and slash-command discovery |
 
-Prompt image/audio support, client-managed terminals/filesystems, and
-per-session MCP injection are not advertised. Local tool and MCP execution must
-remain behind AxiomCLI's policy boundary. Unknown standard methods receive
-normal JSON-RPC method errors.
+Prompt image/audio support, client-owned terminals/filesystems and per-session
+MCP injection are not advertised. Tools execute behind AxiomCLI policy. Unknown
+standard methods receive normal JSON-RPC method errors.
 
-## Negotiated Axiom extension
+## Extension negotiation
 
-An Axiom-capable client sends compatible capabilities under
-`clientCapabilities._meta.axiom`. AxiomCLI always describes its extension in
-the initialize response so the client can select a compatible feature set, but
-it sends `_axiom/event` only after successful negotiation. Custom calls made
-without negotiation fail safely and do not weaken standard behavior.
+Clients advertise `clientCapabilities._meta.axiom`. AxiomCLI advertises its
+extension at initialization but sends custom notifications and accepts custom
+calls only after compatible negotiation. `protocolVersion` shares a leading-number
+family; each named feature negotiates its own version. Missing/zero versions
+mean unsupported. Desktop checks its required feature set and negotiates optional
+features separately.
 
-Version 0.2 provides:
+`account` is version **2**. Current other advertised features are version **1**:
+`desktopChat`, `desktopAgent`, `threadCatalog`, `timeline`, `modelCatalog`,
+`profilePreferences`, `collections`, `billing`, `usage`, `securityEvidence`,
+`webConsent`, `steering`, `messageRevision`, `compaction`, and `activity`.
+The source `FeatureVersions` and generated schema are authoritative.
 
-- desktop bootstrap with an account-owned workspace root, per-thread default
-  directories, and Agent off by default; negotiated `desktopAgent@1` configures
-  persistent permissions and directory together, only while idle;
-- searchable/paginated session catalog, authoritative snapshots, safe batch
-  deletion, title/settings/outcome metadata;
-- typed model catalog with provider metadata and atomic session settings;
-- native account status plus passkey, Google, email/password, and
-  Ethereum-wallet authorization start/complete/cancel and logout;
-- account-scoped credit status plus idempotent Shieldz Zcash invoice
-  creation/status through `billing@1`;
-- fresh security verification and bounded attestation/workload evidence;
-- cancellable compaction phases and structured progress/task/workspace events.
+## Methods and ownership
 
-The account feature is version 2. It exposes only bounded profile/session
-metadata and opaque login handles; neither native bearer tokens nor manual API
-keys cross the ACP or renderer boundary. The billing feature is version 1 and
-exposes bounded ledger/invoice metadata plus a short-lived HTTPS payment URL
-for a pending invoice, never wallet custody or transaction authority. Manual
-`AXIOM_API_KEY` use remains a standalone automation concern outside the Desktop
-extension and cannot authorize billing calls.
+All methods below are local control-plane operations. Their plaintext payloads
+are never an instruction to send conversation plaintext through a hosted endpoint.
 
-Permission and question answering deliberately remain standard ACP. See
-[`axiom-acp-extension.md`](axiom-acp-extension.md) for method names and schema
-generation, and [`acp-desktop-parity-matrix.md`](acp-desktop-parity-matrix.md)
-for semantic coverage.
+| Group | Method names following `_axiom/` |
+|---|---|
+| Desktop | `desktop/bootstrap`, `desktop/agent/configure` |
+| Threads | `thread/list`, `thread/timeline`, `thread/rename`, `thread/delete_preview`, `thread/delete_confirm` |
+| Models/preferences | `models/list`, `profile/preferences`, `profile/preferences/set` |
+| Collections | `collection/list`, `collection/create`, `collection/rename`, `collection/set_collapsed`, `collection/move`, `collection/delete`, `collection/assign` |
+| Native account | `account/status`, `account/native_login_start`, `account/native_login_complete`, `account/native_login_cancel`, `account/logout` |
+| Automation-key management | `account/api_keys`, `account/api_key_create`, `account/api_key_revoke` |
+| Billing | `billing/status`, `billing/invoice_create`, `billing/invoice_status` |
+| Usage | `usage/summary` |
+| Evidence/compaction/steering | `security/verify`, `compaction/start`, `turn/steer` |
 
-## First-party process rules
+Permission and question responses remain standard ACP. Standard notifications
+are the sole live representation of user/assistant/reasoning content, tools,
+plans, modes and configuration. `_axiom/event` carries additional typed account,
+security, context/accounting and activity state with `runtimeInstanceId`, monotonic
+`sequence`, RFC 3339 `occurredAt`, and optional thread/correlation IDs.
 
-ACP uses newline-delimited JSON-RPC. AxiomCLI reserves stdout for protocol
-frames and sends diagnostics to stderr. The TypeScript client incrementally
-bounds incoming/outgoing frames to 4 MiB, caps retained stderr at 64 KiB,
-honors stdin backpressure, rejects pending work on process exit, and detects
-extension sequence gaps. Renderer code never sees a raw-request method.
+## Durable timeline and recovery
 
-The TypeScript package is tested against the actual `axiomcli acp` binary with
-deterministic runners. Rust transcript tests separately prove a standard-only
-client and a negotiated first-party client.
+Thread summaries/pages include `revision` and `lastTimelineSequence`. Timeline
+pagination uses an exclusive sequence cursor. On gaps/runtime changes, fetch all
+pages from the beginning and atomically replace the projection. Metadata-only
+refresh is insufficient. Standard notifications can include `_meta.axiom`
+delivery identity; stable prompt `clientItemId` values reconcile optimistic
+messages with durable rows.
+
+`lastMessageAt` describes nonempty user/assistant/reasoning activity.
+`lastUserMessageAt` advances on user submissions and is the current catalog sort
+key, descending with empty threads last and ID as tie-breaker. Clients must not
+substitute metadata `updatedAt` or arrival time. Unknown timeline kinds remain
+bounded generic activity until a client understands them.
+
+Context usage is a replacement report from the last completed conversation
+request, with input/output tokens, model, time and optional pinned capacity/
+compaction threshold. It is persisted atomically with thread revision. It does
+not estimate unsent drafts, sum billing, or get overwritten by compaction/title
+work. Request-accounting reconciliation never marks partial output verified.
+
+## Desktop authority and revisions
+
+Bootstrap starts new Desktop threads with Agent off. `desktopAgent@1` atomically
+configures enablement, approval level and directory with `expectedRevision`.
+Changes require idle work; queued prompts/steering carry `agentRevision` to
+reject stale authority. Generic mode setters cannot bypass this path. Desktop
+keeps its embedded system prompt and does not start configured MCP servers.
+
+Every Desktop prompt supplies `_meta.axiom.webEnabled`; only explicit boolean
+`true` permits built-in Web tools. Missing consent is false, and malformed
+values fail. Remembering a warning in the renderer is not native consent.
+
+`messageRevision@1` adds `PromptMetadata.revision = { userItemId,
+expectedRevision }` on standard `session/prompt`. The native store truncates
+local history starting at the selected turn, retains accounting and executes a
+normal E2EE run. It rejects active/stale/cross-account edits. This is the edit
+and regenerate flow; it does not undo prior tool side effects.
+
+`steering@1` takes `{ threadId, expectedTurnId, clientItemId, text, webEnabled }`
+plus the applicable Agent revision. Text is limited to 64 KiB. It waits for a safe
+boundary, skips unstarted tools and cannot change active-turn model/Web authority.
+Identical IDs/text join an existing submission; conflicting ID reuse fails.
+The response acknowledges application to the local transcript, not completion of
+the whole turn. Uncertain delivery requires timeline reconciliation before retry.
+
+## Accounts, billing and public evidence
+
+Login-start accepts a method hint and returns a hosted URL and opaque handle.
+Completion/cancellation use that handle. Native access/refresh tokens and browser
+method credentials never appear in ACP/renderer state. API-key **creation** is an
+explicit exception for a newly issued automation token shown once; account
+snapshots and Debug output omit it. It is not a native-login credential.
+
+`billing@1` carries account-ledger status and optional persistent mainnet deposit
+metadata. Legacy invoice methods use integer USD cents and bounded payment URLs;
+credit totals use microUSD. Calls require the current native account and reject
+stale account/revision results. `usage@1` carries posted spend by model.
+
+Security projections require the registered provider identity, accepted key
+fingerprints and hard expiry. NEAR/Phala require positive lease generation;
+Tinfoil intentionally omits it. The projection must preserve router-versus-worker
+and observed-versus-approved distinctions from [security](threat-model.md).
+
+## Process bounds and contract generation
+
+ACP is newline-delimited JSON-RPC. Stdout is protocol-only. The Node client bounds
+frames to 4 MiB and retained stderr to 64 KiB, honors stdin backpressure, rejects
+pending work on process exit, and never exposes raw method dispatch to the renderer.
+Typed extension failures include a bounded code/message/retryability object;
+clients must not infer authority or retry behavior from display text.
+
+```sh
+pnpm generate:protocol
+pnpm --filter @axiom/axiom-acp-client typecheck
+pnpm --filter @axiom/axiom-acp-client test
+```
+
+The generator exports Rust DTOs to JSON Schema and TypeScript; never hand-edit
+generated TypeScript. Build `cargo build --locked -p axiomcli` first for real-process
+client tests. The Rust schema-drift and ACP transcript tests, Node client/state tests
+and Desktop IPC/browser tests cover the same semantic contract.

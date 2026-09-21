@@ -11,11 +11,38 @@ budgeted live evaluation and before any packaging job. Desktop's source manifest
 is synchronized with AxiomCLI by the packaging script before invoking
 electron-builder.
 
+## Supported platforms
+
+These are checked-in build targets, not a claim about the current public catalog
+or a completed real-machine acceptance run.
+
+| Target | Desktop package formats | Minimum/build constraint |
+|---|---|---|
+| Linux x86-64 | AppImage, DEB, Arch `pkg.tar.xz` | Release build on Ubuntu 22.04; glibc 2.35+ |
+| macOS Intel and Apple Silicon | PKG, DMG, ZIP | Separate x64/arm64 binaries; configured minimum macOS 11 |
+| Windows x64 and ARM64 | NSIS EXE | Matching native sidecar and Visual C++ runtime |
+
+Every Desktop target bundles AxiomCLI. The standalone signed archive targets
+Linux x86-64 GNU and includes both `axiomcli` and `axiom-proxy`. Linux ARM and
+musl are not in the release matrix. Source build support is not a publication
+promise.
+
+Desktop starts in a restricted Web profile and can negotiate per-thread Agent
+mode. CLI and Desktop local tools run on the supported operating systems, with
+different process boundaries: Linux requires Bubblewrap; macOS/Windows currently
+run approved processes on the host with a sanitized environment. They do not
+provide Linux's filesystem/network isolation. See
+[local tool security](threat-model.md#local-tools-and-processes).
+
+Accounts use the OS credential vault and account/frontend-scoped native data
+paths on each platform. No plaintext credential-file fallback is supported.
+
 ## Desktop and terminal CLI installers
 
-Branch pushes and pull requests run checks and tests without producing release
-archives or packaged Desktop applications. Release packaging and upload happen
-only in the release workflows.
+Pushes to `main` and pull requests targeting `main` run checks and tests without
+producing release archives or packaged Desktop applications. Development branches
+need local checks; see [development](development.md#checks). Release packaging
+and upload happen only in the release workflows.
 
 The `desktop installers` workflow (`desktop-packages.yml`) builds Linux x64,
 macOS Intel/Apple Silicon, and Windows x64/ARM64. Run it manually against a stable
@@ -26,10 +53,11 @@ example, after promoting and tagging version `0.1.0`:
 gh workflow run desktop-packages.yml --ref v0.1.0 -f unsigned=true -f platform=all
 ```
 
-Use the explicit `unsigned` option for early-access releases without Apple or
-Windows credentials. This does not change the signed defaults in
-electron-builder.yml. The former `codex/desktop-packaging-*` push trigger has been
-removed.
+The manual workflow currently defaults `unsigned` to `true`; set it explicitly
+for a reproducible invocation. Signed builds need `unsigned=false` and the
+relevant credentials. This does not change the signed defaults in
+`electron-builder.yml` or the mandatory signing in the pushed-tag workflow.
+The manual lane does not run the signed workflow's live-provider gate.
 
 Every desktop package includes the complete matching AxiomCLI binary. The
 packaging script checks its architecture and version before packaging.
@@ -166,7 +194,9 @@ separate, explicitly reviewed operations.
 
 The Linux archive contains `bin/axiomcli`, `bin/axiom-proxy`, the Apache-2.0
 project license, third-party notice/inventory files, user documentation,
-compatibility policy, and build metadata. The exact cargo-deny release used to
+compatibility policy, and build metadata. Bundled Markdown navigation and source
+links point to the exact packaged source revision, so the installed subset does
+not depend on a surrounding repository checkout. The exact cargo-deny release used to
 generate the embedded license inventory is pinned in `.cargo-deny-version` and
 recorded in `BUILD-METADATA`. Reproduce and verify it locally with:
 
@@ -205,9 +235,19 @@ the signed DMG and the app's stapled notarization ticket. Credential scanning
 and independent target-machine verification remain explicit release-review
 checks.
 
-Interactive target-machine acceptance is also required before public promotion;
-see [`platform-support.md`](platform-support.md). Those tests are intentionally
-not run as part of a headless build or while another user controls the desktop.
+## Interactive acceptance
+
+Before public promotion, record the commit, artifact hash, OS version,
+architecture, browser and outcome for each target. Exercise installation,
+upgrade/uninstall and terminal CLI discovery; system-browser return and
+passkey/Google/password/wallet sign-in; vault refusal/locking, refresh,
+account switching and logout; payment/usage UI; verified E2EE chat, cancellation
+and recovery; Agent approvals and OS-specific process behavior; window controls,
+accessibility, sleep/resume and OS security prompts.
+
+Headless packaging cannot establish those outcomes. Preserve remaining gaps in
+[validation](validation.md); [dated test reports](testing/README.md) describe only
+their recorded scope. Interactive tests should run in an owned test session.
 
 Uninstall removes only installed program and documentation files. It preserves
 platform configuration, account-scoped local threads, installation identity,

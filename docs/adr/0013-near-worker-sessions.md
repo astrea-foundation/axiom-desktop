@@ -1,6 +1,6 @@
 # ADR 0013: Single-key NEAR worker sessions
 
-Status: implemented, not deployed
+Status: native implementation accepted; deployment must be checked for the release
 
 Date: 2026-09-19
 
@@ -47,7 +47,10 @@ rejections and unavailable endpoints remain real failures, with specific diagnos
 
 See [the wire contract](../protocols/near-v3.md).
 
-## Validation
+## Validation recorded 2026-09-19
+
+These results describe the original batch and are not a current production or
+release-acceptance claim.
 
 The Rust workspace passed 508 tests (six existing ignores), with a subsequent
 additional retry-classification regression passing too. Desktop proof rendering
@@ -59,4 +62,4 @@ is rounding. The final five requests exercised the selectable GLM 5.3 Flash offe
 The backend suite passed 606 tests, including real TLS rotation with zero POST bytes
 sent to the wrong worker and retries that cannot duplicate potentially sent inference.
 Strict Clippy retains pre-existing warnings outside the new provider implementation.
-See the [sanitized validation and billing report](https://github.com/astrea-foundation/axiom-platform/blob/feat/tinfoil-provider/docs/testing/near-v3-2026-09-19/README.md).
+See the [sanitized validation and billing report](https://github.com/astrea-foundation/axiom-platform/blob/dev/docs/testing/near-v3-2026-09-19/README.md).

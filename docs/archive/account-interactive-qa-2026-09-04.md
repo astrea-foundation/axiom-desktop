@@ -1,5 +1,10 @@
 # Account refactor: interactive QA, September 4, 2026
 
+> Historical record, archived 2026-09-21. This preserves the original proposal
+> or dated evidence, including superseded behavior and unfinished checklists.
+> It is not a current implementation or deployment runbook. See the
+> [current guides](../README.md) and [validation follow-up](../validation.md).
+
 Status: available Linux local integration checks passed. This is not a production deployment,
 hardware-passkey certification, or macOS/Windows release approval.
 

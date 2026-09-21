@@ -1,31 +1,63 @@
-# Versioning and compatibility policy
+# Versioning and compatibility
 
-AxiomCLI follows Semantic Versioning for tagged releases. Before 1.0, a minor
-version may intentionally break CLI/library/configuration behavior; patch
-versions remain bug-fix compatible unless a security issue requires a narrowly
-documented exception.
+Tagged releases use Semantic Versioning. Before 1.0, a minor release may change
+CLI, library or configuration contracts; patch releases preserve compatibility
+except for explicitly documented security fixes. Public package tags must be
+stable `vMAJOR.MINOR.PATCH`, match AxiomCLI's manifest and point to a promoted
+`main` revision. [Releasing](releasing.md) owns the packaging procedure.
 
-The first supported local database contract is SQLite schema version 1. Each
-account and frontend has a separate database; it stores threads, turns,
-timeline items, profile preferences, collections, and thread-to-collection
-assignments. Runtime event envelopes are not the storage format. A fresh
-database is created at version 1 only for an authenticated account; an unknown,
-malformed, or newer database is rejected without modification. There are no
-compatibility paths for pre-release installation-wide databases. The first
-post-release schema change will be a transactional version 2 migration that
-preserves released account data.
+## Local database
 
-ACP support targets stable ACP v1 through `agent-client-protocol` 2.0.0.
-Capabilities are negotiated and unsupported operations are not advertised.
-Structured form elicitation is explicitly unstable and is used only when the
-client advertises it. An ACP behavior change that alters advertised capability,
-wire mapping, session identity, or cancellation semantics requires updating the
-compatibility matrix and transcript suite.
+The current SQLite schema is **7**, defined in
+[session.rs](../apps/axiomcli/src/session.rs). Each authenticated account and
+frontend has a separate database. Runtime event envelopes are translated into
+materialized records; they are not the on-disk format.
 
-AxiomCLI's coding-agent artifact targets Linux x86-64 GNU. Axiom Desktop has
-native signed packaging targets for macOS Intel, macOS Apple Silicon, Windows
-x64, and Windows ARM64; its Web-only product profile does not expose the
-Bubblewrap-dependent coding tool surface. Artifact packaging and interactive
-target-machine acceptance are separate release gates. Release artifacts are
-locked, checksummed or platform-signed as applicable, and contain build metadata
-plus license inventory.
+| Schema | Change |
+|---|---|
+| 1 | Threads, turns, timeline items, profile preferences, collections and assignments |
+| 2 | Last message activity timestamp |
+| 3 | Last provider-reported conversation usage |
+| 4 | Per-thread Desktop Agent settings |
+| 5 | Request-level usage/accounting records |
+| 6 | Narrow repair of missing assistant request bindings using existing local receipt verification |
+| 7 | Last user submission timestamp for stable sidebar ordering |
+
+New databases migrate from empty state to the current version. Each recognized
+migration runs transactionally. Schema 6 repairs only completed, unambiguous
+single-request turns with recorded local response verification; billing or
+attestation metadata alone cannot retroactively verify an answer.
+
+Unknown, malformed, newer or unsupported pre-release databases fail closed.
+There is no automatic migration from the old installation-wide pre-release
+store. `reset-local-state --confirm` handles only the legacy reset path; it is
+not a general account-data repair command. Preserve/export account data before
+investigation. See [configuration paths](configuration.md#paths-and-local-state)
+and [recovery](troubleshooting.md#session-recovery).
+
+On restart, incomplete turns become interrupted and tools are never replayed.
+Downgrading to a binary that does not recognize a newer schema is unsupported;
+installers preserving data does not make a downgrade compatible.
+
+## ACP and provider contracts
+
+Standard ACP uses protocol v1 via `agent-client-protocol` 2.0.0 and the pinned
+schema dependency. The negotiated Axiom extension is 0.2 with separately
+versioned features. See [the ACP contract](acp-compatibility.md) for exact
+versions, methods, bounds and generated files. Changes to advertised behavior,
+session identity, cancellation or wire mapping require corresponding contract
+and transcript validation. Unstable form elicitation is opt-in.
+
+Provider protocol IDs, encryption versions and attestation profiles select
+explicitly compiled drivers. Unsupported offers fail closed; replacing a
+provider protocol requires coordinated native/backend changes. The registered
+contracts are listed in [the threat model](threat-model.md#provider-contracts).
+
+## Packages and acceptance
+
+Desktop ships a matching-version AxiomCLI binary for its OS and architecture;
+the standalone Linux archive also contains the local proxy. Checksums, signing
+and build metadata describe the produced artifact. Supported build targets and
+real-machine acceptance are separate claims; see
+[supported platforms](releasing.md#supported-platforms). No document or green
+build alone establishes that an artifact has been published or accepted.
