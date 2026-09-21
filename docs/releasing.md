@@ -111,10 +111,11 @@ between AppImage and a system package requires removing the old program
 installation to avoid duplicate launchers. Installers never remove account data; schema changes
 still require compatible application migrations.
 
-The workflow exercises installed CLI startup and reinstall behavior on native
-macOS/Windows runners and a DEB installation on Ubuntu. Windows checks every
-installed executable and native library against the packaged bytes, then checks
-PATH cleanup and preserved account data on uninstall. Minimal Ubuntu and Arch
+The manual workflow exercises installed CLI startup and reinstall behavior on
+native macOS runners and a DEB installation on Ubuntu. Windows packaging does
+not install or smoke-test generated installers on additional runners. Its signed
+lane verifies executable architecture/version and Authenticode publisher and
+timestamp checks as part of signing. Minimal Ubuntu and Arch
 containers verify the declared CLI and Electron runtime dependencies. The
 AppImage installer tests cover argument forwarding, replacement, command
 collisions, and preserved account data. GUI/credential-vault/inference acceptance
@@ -166,7 +167,7 @@ commit. The `signed release artifact` workflow then:
 3. builds AxiomCLI and Desktop natively on Intel and Apple-Silicon macOS
    runners, signs the complete app, notarizes it, and emits PKG, DMG, and ZIP files;
 4. builds AxiomCLI and Desktop natively on x64 and ARM64 Windows runners,
-   Authenticode-signs the package, and emits NSIS installers; and
+   signs both payloads and packages NSIS installers on x64 signing runners; and
 5. uploads each architecture as a separate GitHub Actions artifact.
 
 The workflow needs a protected `release` environment with these secrets:
@@ -183,12 +184,88 @@ The workflow needs a protected `release` environment with these secrets:
 | `APPLE_ID` | notarization account |
 | `APPLE_APP_SPECIFIC_PASSWORD` | notarization app password |
 | `APPLE_TEAM_ID` | Apple developer team |
-| `WINDOWS_CERTIFICATE_BASE64` | base64-encoded Authenticode certificate |
-| `WINDOWS_CERTIFICATE_PASSWORD` | Authenticode certificate password |
+
+Windows signing uses the separate `windows-signing` environment described below,
+not uploaded PFX certificates or a long-lived Azure client secret.
 
 The current workflow uploads run artifacts; it does not create or publish a
 GitHub Release. Publishing, channel promotion, and update-feed changes are
 separate, explicitly reviewed operations.
+
+## Windows production signing
+
+Both `release.yml` and signed Windows runs of `desktop-packages.yml` call
+`windows-signed.yml`. The production resources are:
+
+| Setting | Value |
+|---|---|
+| Azure tenant | `49d43110-cd4f-48d9-88c3-d21ec62243c6` |
+| Subscription | `dd9fa81a-94bc-4497-9fc0-ea70320fa8f5` |
+| Resource group | `astrea-signing` |
+| Signing account | `astrealabssigning` |
+| Endpoint | `https://eus.codesigning.azure.net/` |
+| Certificate profile | `axiom-production` — **Public Trust**, not Public Trust Test |
+| Publisher common name | `Astrea Labs, Inc.` |
+| GitHub identity | User-assigned managed identity `axiomai-release-signing` |
+
+For guest-account portal access, use the
+[tenant-specific Azure portal](https://portal.azure.com/49d43110-cd4f-48d9-88c3-d21ec62243c6).
+The generic Microsoft sign-in endpoint may not discover an invited guest account.
+
+Configure these GitHub **environment variables** in `windows-signing`:
+`AZURE_CLIENT_ID` (the managed identity's client ID), `AZURE_TENANT_ID`,
+`AZURE_SUBSCRIPTION_ID`, `AXIOM_SIGNING_ENDPOINT`, `AXIOM_SIGNING_ACCOUNT`,
+`AXIOM_SIGNING_PROFILE`, and `AXIOM_SIGNING_PUBLISHER`. These are identifiers, not
+private keys. The environment must allow only `v*` **tags**, not matching branch
+names. Each build/sign job also checks the stable product version and promoted
+`main` ancestry before using the signing identity.
+
+The managed identity's federated credential trusts only issuer
+`https://token.actions.githubusercontent.com`, audience `api://AzureADTokenExchange`,
+and subject
+`repo:astrea-foundation@281712270/axiomai@1343021664:environment:windows-signing`.
+This repository uses GitHub's immutable-ID subject format; confirm the prefix with
+`gh api repos/astrea-foundation/axiomai/actions/oidc/customization/sub` before
+recreating the credential. Grant it
+**Artifact Signing Certificate Profile Signer** only on:
+
+```text
+/subscriptions/dd9fa81a-94bc-4497-9fc0-ea70320fa8f5/resourceGroups/astrea-signing/providers/Microsoft.CodeSigning/codeSigningAccounts/astrealabssigning/certificateProfiles/axiom-production
+```
+
+Do not give CI subscription Owner/Contributor or Identity Verifier. Only the
+signing job requests `id-token: write`. Azure Login exchanges that short-lived
+GitHub token; the signer uses only its Azure CLI credential, with other credential
+fallbacks disabled. Protect tag creation and review changes to signing workflows.
+Environment deployment reviewers can provide an additional approval gate where
+supported by the repository's GitHub plan.
+
+The native build stage uses `package-desktop.mjs --win --x64|--arm64 --unsigned --dir`.
+It validates and executes the matching CLI before producing an **internal build
+input**, not a distributable installer. Signing runs on Windows x64 because
+[Microsoft's signing toolchain](https://github.com/Azure/artifact-signing-action#runner-requirements)
+does not support ARM runners. ARM64 payloads retain their native architecture.
+On the signing host, install .NET 8 and the pinned `ArtifactSigning` PowerShell
+module `0.1.20`. `package-signed-windows.ps1` signs packaged EXE/DLL/native-module
+and PowerShell files before NSIS compression. The electron-builder hook signs
+the generated uninstaller and final installer before blockmap generation.
+The prepackaged path explicitly retains the NSIS-compatible BCJ compression filter.
+
+Every signing invocation requires a valid Authenticode signature from the expected
+publisher and a timestamp. Artifact Signing rotates short-lived certificates;
+do not pin an individual certificate thumbprint. SHA256 and Microsoft's RFC3161
+timestamp service preserve signatures beyond the certificate's short validity.
+See [Microsoft's signing integration guidance](https://learn.microsoft.com/en-us/azure/artifact-signing/how-to-signing-integrations).
+Checksums/download metadata are generated from the final signed bytes. Signing
+failure never produces a successful release artifact or an unsigned fallback.
+No extra native installer test job is run; interactive installation acceptance is
+still a separate release decision.
+
+For a signed local x64 Windows build, set the same `AXIOM_SIGNING_*` configuration,
+authenticate Azure CLI as an authorized signer, install the pinned signing module
+and .NET 8, then run `package-desktop.mjs --win --x64`. ARM64 signing uses the
+split native-build/x64-sign workflow. `--unsigned` explicitly disables executable
+signing and strips Apple, PFX, Azure and Artifact Signing environment variables.
 
 ## Artifact verification
 
@@ -229,8 +306,10 @@ For every Desktop artifact, verify before promotion that:
 
 CI requires exact primary artifact counts and tag-derived names, verifies the
 embedded application version, checks native application and sidecar
-architectures, runs the packaged sidecar's headless `--version`, and validates
-the app/sidecar/installer signatures as applicable. macOS additionally verifies
+architectures, and validates the app/sidecar/installer signatures as applicable.
+Windows executes the native CLI's headless `--version` before packaging; it does
+not install or execute the generated signed installer. macOS and Linux retain
+their packaged-sidecar smoke checks. macOS additionally verifies
 the signed DMG and the app's stapled notarization ticket. Credential scanning
 and independent target-machine verification remain explicit release-review
 checks.

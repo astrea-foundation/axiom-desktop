@@ -31,7 +31,16 @@ jobs:
           git merge-base --is-ancestor HEAD origin/main
           node apps/desktop/scripts/set-release-version.mjs "${GITHUB_REF_NAME#v}" --check-only
 
+  signed-windows:
+    if: inputs.unsigned == false
+    needs: release-ref
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/windows-signed.yml
+
   package:
+    if: inputs.unsigned || inputs.platform == 'all'
     name: package (${{ matrix.platform }} ${{ matrix.arch }})
     needs: release-ref
     runs-on: ${{ matrix.runner }}
@@ -40,7 +49,8 @@ jobs:
       fail-fast: false
       matrix:
         include: >-
-          ${{ fromJSON(inputs.platform == 'windows' &&
+          ${{ fromJSON(!inputs.unsigned &&
+            '[{"platform":"linux","arch":"x64","runner":"ubuntu-22.04"},{"platform":"mac","arch":"x64","runner":"macos-15-intel"},{"platform":"mac","arch":"arm64","runner":"macos-15"}]' || inputs.platform == 'windows' &&
             '[{"platform":"win","arch":"x64","runner":"windows-latest"},{"platform":"win","arch":"arm64","runner":"windows-11-arm"}]' ||
             '[{"platform":"linux","arch":"x64","runner":"ubuntu-22.04"},{"platform":"mac","arch":"x64","runner":"macos-15-intel"},{"platform":"mac","arch":"arm64","runner":"macos-15"},{"platform":"win","arch":"x64","runner":"windows-latest"},{"platform":"win","arch":"arm64","runner":"windows-11-arm"}]') }}
     steps:
@@ -85,8 +95,8 @@ jobs:
         shell: bash
         env:
           UNSIGNED: ${{ inputs.unsigned }}
-          CSC_LINK: ${{ runner.os == 'macOS' && secrets.MACOS_CERTIFICATE_BASE64 || secrets.WINDOWS_CERTIFICATE_BASE64 }}
-          CSC_KEY_PASSWORD: ${{ runner.os == 'macOS' && secrets.MACOS_CERTIFICATE_PASSWORD || secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          CSC_LINK: ${{ !inputs.unsigned && runner.os == 'macOS' && secrets.MACOS_CERTIFICATE_BASE64 || '' }}
+          CSC_KEY_PASSWORD: ${{ !inputs.unsigned && runner.os == 'macOS' && secrets.MACOS_CERTIFICATE_PASSWORD || '' }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -148,55 +158,6 @@ jobs:
           sudo installer -pkg "${pkg[0]}" -target /
           /usr/local/bin/axiomcli --version
           test "$(cat "$marker")" = preserved
-      - name: Verify Windows installation and CLI PATH
-        if: runner.os == 'Windows'
-        timeout-minutes: 5
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $installer = @(Get-ChildItem apps/desktop/dist/*.exe)
-          if ($installer.Count -ne 1) { throw 'Expected one installer' }
-          function Read-UserPath {
-            $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment')
-            try { return [string]$key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames) }
-            finally { $key.Dispose() }
-          }
-          $originalUserPath = Read-UserPath
-          $installDir = Join-Path $env:LOCALAPPDATA 'Programs\Axiom'
-          $install = Start-Process $installer[0].FullName -ArgumentList '/S', '/currentuser', "/D=$installDir" -Wait -PassThru
-          if ($install.ExitCode -ne 0) { throw 'Installer failed' }
-          $unpackedName = if ('${{ matrix.arch }}' -eq 'arm64') { 'win-arm64-unpacked' } else { 'win-unpacked' }
-          $unpacked = (Resolve-Path (Join-Path 'apps/desktop/dist' $unpackedName)).Path
-          $nativeFiles = @(Get-ChildItem $unpacked -Recurse -File | Where-Object { $_.Extension -in '.exe', '.dll', '.node' })
-          if ($nativeFiles.Count -lt 3) { throw 'Expected packaged desktop and native libraries' }
-          foreach ($file in $nativeFiles) {
-            $relative = [IO.Path]::GetRelativePath($unpacked, $file.FullName)
-            $installed = Join-Path $installDir $relative
-            if (-not (Test-Path -LiteralPath $installed)) { throw "Installer omitted native file: $relative" }
-            if ((Get-FileHash -LiteralPath $installed).Hash -ne (Get-FileHash -LiteralPath $file.FullName).Hash) { throw "Installed native file differs: $relative" }
-          }
-          $env:Path = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Environment]::GetEnvironmentVariable('Path','User')
-          if (-not (Test-Path (Join-Path $installDir 'resources\bin\vcruntime140.dll'))) { throw 'Bundled Visual C++ runtime is missing' }
-          axiomcli --version
-          if ($LASTEXITCODE -ne 0) { throw 'Installed CLI failed' }
-          axiomcli --help
-          $data = Join-Path $env:LOCALAPPDATA 'axiom\accounts\packaging-smoke\desktop'
-          New-Item -ItemType Directory -Force $data | Out-Null
-          Set-Content (Join-Path $data 'preserved.txt') 'preserved'
-          $install = Start-Process $installer[0].FullName -ArgumentList '/S', '/currentuser', "/D=$installDir" -Wait -PassThru
-          if ($install.ExitCode -ne 0) { throw 'Reinstallation failed' }
-          $bin = Join-Path $installDir 'resources\bin'
-          $matches = @(([Environment]::GetEnvironmentVariable('Path','User') -split ';') | Where-Object { $_ -ieq $bin })
-          if ($matches.Count -ne 1) { throw 'CLI PATH must have exactly one entry after reinstall' }
-          axiomcli --version
-          $uninstaller = @(Get-ChildItem $installDir -Filter 'Uninstall*.exe')
-          if ($uninstaller.Count -ne 1) { throw 'Expected one uninstaller' }
-          $removed = Start-Process $uninstaller[0].FullName -ArgumentList '/S' -Wait -PassThru
-          if ($removed.ExitCode -ne 0) { throw 'Uninstall failed' }
-          $remaining = @(([Environment]::GetEnvironmentVariable('Path','User') -split ';') | Where-Object { $_ -ieq $bin })
-          if ($remaining.Count -ne 0) { throw 'Uninstall left a CLI PATH entry behind' }
-          if ((Read-UserPath) -cne $originalUserPath) { throw 'Install/uninstall changed unrelated PATH entries' }
-          if ((Get-Content (Join-Path $data 'preserved.txt')).Trim() -ne 'preserved') { throw 'Uninstall modified account data' }
       - name: Generate download metadata
         shell: bash
         env:

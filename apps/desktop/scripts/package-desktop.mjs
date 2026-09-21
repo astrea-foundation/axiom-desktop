@@ -2,6 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
+import unsignedEnvironment from './unsigned-environment.cjs';
 
 const root = fileURLToPath(new URL('../../..', import.meta.url));
 const desktop = path.join(root, 'apps/desktop');
@@ -9,9 +10,11 @@ const args = process.argv.slice(2);
 const platform = args.find(value => ['--linux', '--mac', '--win'].includes(value));
 const architecture = args.find(value => ['--x64', '--arm64'].includes(value));
 const unsigned = args.includes('--unsigned');
-if (!platform || !architecture || args.some(arg => !['--linux','--mac','--win','--x64','--arm64','--unsigned'].includes(arg))) {
-  throw new Error('Usage: package-desktop.mjs --linux|--mac|--win --x64|--arm64 [--unsigned]');
+const unpacked = args.includes('--dir');
+if (!platform || !architecture || args.some(arg => !['--linux','--mac','--win','--x64','--arm64','--unsigned','--dir'].includes(arg))) {
+  throw new Error('Usage: package-desktop.mjs --linux|--mac|--win --x64|--arm64 [--unsigned] [--dir]');
 }
+if (unpacked && (platform !== '--win' || !unsigned)) throw new Error('--dir is only for unsigned native Windows build inputs; it is not a release artifact.');
 const cliVersion = /^version\s*=\s*"([^"]+)"/m.exec(readFileSync(path.join(root,'apps/axiomcli/Cargo.toml'),'utf8'))?.[1];
 const hostPlatform = { linux: '--linux', darwin: '--mac', win32: '--win' }[process.platform];
 if (platform !== hostPlatform) throw new Error('Build desktop installers on a native runner for that operating system.');
@@ -33,16 +36,25 @@ function run(command, values, env = process.env) {
   if (result.error) throw result.error;
   if (result.status !== 0) process.exit(result.status ?? 1);
 }
+if (platform === '--win' && !unsigned) {
+  if (process.arch !== 'x64') throw new Error('Use the native-build/x64-sign workflow for ARM64 production packages.');
+  run(process.execPath, ['scripts/package-desktop.mjs', '--win', architecture, '--unsigned', '--dir']);
+  run('pwsh', ['-NoProfile', '-NonInteractive', '-File', 'scripts/package-signed-windows.ps1', '-Arch', architecture.slice(2)]);
+  process.exit(0);
+}
 run(process.execPath, ['scripts/set-release-version.mjs', cliVersion]);
 run('pnpm', ['build']);
 const builder = [platform, architecture, '--publish', 'never'];
-const env = { ...process.env };
+const env = unsigned ? unsignedEnvironment(process.env) : { ...process.env };
 if (unsigned) {
   builder.push('--config.forceCodeSigning=false');
   // The unsigned option is explicit; production defaults still require signing.
-  env.CSC_IDENTITY_AUTO_DISCOVERY = 'false';
-  for (const name of Object.keys(env)) if (name.startsWith('CSC_') && name !== 'CSC_IDENTITY_AUTO_DISCOVERY' || name.startsWith('APPLE_')) delete env[name];
+  if (platform === '--win') builder.push('--config.win.signExecutable=false');
   if (platform === '--mac') builder.push('--config.mac.identity=-', '--config.mac.notarize=false', '--config.dmg.sign=false', '--config.mac.entitlements=build/entitlements.unsigned.plist', '--config.mac.entitlementsInherit=build/entitlements.unsigned.plist');
+}
+if (unpacked) {
+  run('pnpm', ['exec', 'electron-builder', ...builder, '--dir', '--config.extraMetadata.axiomUpdateFormat=exe'], env);
+  process.exit(0);
 }
 // Each installer carries its own format inside app.asar/package.json. A single
 // multi-target build cannot distinguish a DMG app from the same app in a ZIP.
