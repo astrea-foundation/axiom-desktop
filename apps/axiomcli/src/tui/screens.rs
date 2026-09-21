@@ -823,14 +823,14 @@ pub(super) fn render_hints(frame: &mut Frame<'_>, state: &TuiState, theme: Theme
     let hint_width = usize::from(inner.width).saturating_sub(context_width);
     let hints: Vec<(&str, &str)> = match &state.interaction {
         Some(InteractionView::Approval(request)) => {
-            let mut hints = vec![("y", "allow once")];
+            let mut hints = vec![("Ctrl+Y", "allow once")];
             if request.allow_session_grants {
-                hints.push(("e", "exact/session"));
+                hints.push(("Ctrl+G", "exact/session"));
             }
-            if request.suggested_prefix_scope.is_some() {
-                hints.push(("p", "scope/session"));
+            if request.allow_session_grants && request.suggested_prefix_scope.is_some() {
+                hints.push(("Ctrl+P", "scope/session"));
             }
-            hints.push(("n", "deny"));
+            hints.push(("Ctrl+N", "deny"));
             hints.push(("Esc", "stop task"));
             hints
         }
@@ -918,14 +918,18 @@ pub(super) fn render_interaction(frame: &mut Frame<'_>, state: &TuiState, theme:
     };
     let (title, body, editing) = match interaction {
         InteractionView::Approval(request) => {
-            let mut choices = vec!["y  Allow this operation once".to_owned()];
+            let mut choices = vec!["Ctrl+Y  Allow this operation once".to_owned()];
             if request.allow_session_grants {
-                choices.push("e  Allow this exact operation for this session".into());
+                choices.push("Ctrl+G  Allow this exact operation for this session".into());
             }
-            if let Some(scope) = &request.suggested_prefix_scope {
-                choices.push(format!("p  Allow {scope} for this session"));
+            if let Some(scope) = request
+                .suggested_prefix_scope
+                .as_ref()
+                .filter(|_| request.allow_session_grants)
+            {
+                choices.push(format!("Ctrl+P  Allow {scope} for this session"));
             }
-            choices.push("n  Deny this operation".into());
+            choices.push("Ctrl+N  Deny this operation".into());
             (
                 " Permission required ",
                 format!(
@@ -1490,7 +1494,7 @@ pub(super) fn security_overlay_lines(
         } else {
             "No attestation evidence is available. Press R to verify now."
         };
-        return vec![Line::from(Span::styled(
+        let mut lines = vec![Line::from(Span::styled(
             message,
             Style::default().fg(if state.security == "SECURITY FAILED" {
                 theme.error
@@ -1498,6 +1502,8 @@ pub(super) fn security_overlay_lines(
                 theme.warning
             }),
         ))];
+        lines.extend(security_failure_lines(state, theme));
+        return lines;
     };
 
     let report = state.report_status();
@@ -1523,11 +1529,30 @@ pub(super) fn security_overlay_lines(
         )),
         Line::default(),
     ];
+    lines.extend(security_failure_lines(state, theme));
     lines.extend(match view {
         SecurityView::Summary => security_summary_lines(evidence, report, theme),
         SecurityView::Workload => workload_lines(evidence, false, theme),
         SecurityView::Raw => workload_lines(evidence, true, theme),
     });
+    lines
+}
+
+fn security_failure_lines(state: &TuiState, theme: Theme) -> Vec<Line<'static>> {
+    let Some(detail) = state
+        .security_error
+        .as_deref()
+        .filter(|_| state.security == "SECURITY FAILED")
+    else {
+        return Vec::new();
+    };
+    let mut lines = vec![Line::default(), Line::from("Failure reason:")];
+    lines.extend(detail.lines().map(|line| {
+        Line::from(Span::styled(
+            line.to_owned(),
+            Style::default().fg(theme.error),
+        ))
+    }));
     lines
 }
 

@@ -39,7 +39,7 @@ use crate::{
 
 use super::{
     ANIMATION_TICK,
-    input::{command_allowed_while_running, is_text_input},
+    input::{approval_choice, command_allowed_while_running, is_text_input},
     screens::{composer_text_width, render, scroll_transcript_down, scroll_transcript_up},
     state::{
         AuthOverlay, EntryKind, Focus, InteractionView, Overlay, SavePickerFocus, SecurityView,
@@ -376,14 +376,18 @@ pub(super) fn restore_question_draft(pending: &PendingQuestions) -> String {
 }
 
 pub(super) fn approval_status(request: &ApprovalRequest) -> String {
-    let mut choices = String::from("[y] allow once");
+    let mut choices = String::from("[Ctrl+Y] allow once");
     if request.allow_session_grants {
-        choices.push_str("  [e] exact for session");
+        choices.push_str("  [Ctrl+G] exact for session");
     }
-    if let Some(scope) = &request.suggested_prefix_scope {
-        let _ = write!(choices, "  [p] {scope} for session");
+    if let Some(scope) = request
+        .suggested_prefix_scope
+        .as_ref()
+        .filter(|_| request.allow_session_grants)
+    {
+        let _ = write!(choices, "  [Ctrl+P] {scope} for session");
     }
-    choices.push_str("  [n] deny");
+    choices.push_str("  [Ctrl+N] deny");
     format!("{}  {choices}", request.explanation)
 }
 
@@ -1041,34 +1045,19 @@ pub async fn run(
                             }
                         } else if let Some((request, _)) = &pending_approval {
                             state.exit_armed = false;
-                            match key.code {
-                                KeyCode::Char('y' | 'Y') => {
-                                    let (request, response) = pending_approval.take().expect("pending approval exists");
-                                    let _ = response.send(ApprovalResponse { choice: ApprovalChoice::AllowOnce });
-                                    state.interaction = None;
-                                    state.status = format!("Allowed once · {}", request.request_id);
-                                }
-                                KeyCode::Char('e' | 'E') if request.allow_session_grants => {
-                                    let (request, response) = pending_approval.take().expect("pending approval exists");
-                                    let _ = response.send(ApprovalResponse { choice: ApprovalChoice::AllowExactSession });
-                                    state.interaction = None;
-                                    state.status = format!("Allowed exact operation for session · {}", request.request_id);
-                                }
-                                KeyCode::Char('p' | 'P') if request.suggested_prefix_scope.is_some() => {
-                                    let (request, response) = pending_approval.take().expect("pending approval exists");
-                                    let _ = response.send(ApprovalResponse { choice: ApprovalChoice::AllowPrefixSession });
-                                    state.interaction = None;
-                                    state.status = format!("Allowed safe scope for session · {}", request.request_id);
-                                }
-                                KeyCode::Char('n' | 'N') | KeyCode::Esc => {
-                                    let (request, response) = pending_approval.take().expect("pending approval exists");
-                                    let _ = response.send(ApprovalResponse::deny());
-                                    state.interaction = None;
-                                    state.status = format!("Denied {}", request.request_id);
-                                }
-                                _ => {
-                                    state.status = approval_status(request);
-                                }
+                            if let Some(choice) = approval_choice(key, request) {
+                                let (request, response) = pending_approval.take().expect("pending approval exists");
+                                let _ = response.send(ApprovalResponse { choice });
+                                state.interaction = None;
+                                let decision = match choice {
+                                    ApprovalChoice::AllowOnce => "Allowed once",
+                                    ApprovalChoice::AllowExactSession => "Allowed exact operation for session",
+                                    ApprovalChoice::AllowPrefixSession => "Allowed safe scope for session",
+                                    ApprovalChoice::Deny => "Denied",
+                                };
+                                state.status = format!("{decision} · {}", request.request_id);
+                            } else {
+                                state.status = approval_status(request);
                             }
                         } else if matches!(state.overlay, Some(Overlay::Auth(_))) {
                             state.exit_armed = false;
@@ -2162,21 +2151,15 @@ pub async fn run(
                                 }
                             }
                             Ok(_) => {
-                                state.security_evidence = None;
-                                state.apply(&AppEvent::SecurityStatusChanged {
-                                    state: crate::app::SecurityStatus::Failed,
-                                });
+                                state.fail_security("Security verification returned no final verdict");
                                 state.status =
                                     "Security verification returned no final verdict".into();
                                 state.status_tone = StatusTone::Error;
                             }
                             Err(AxiomError::Cancelled) => { state.reset_security(); }
                             Err(error) => {
-                                state.security_evidence = None;
-                                state.apply(&AppEvent::SecurityStatusChanged {
-                                    state: crate::app::SecurityStatus::Failed,
-                                });
                                 let detail = sanitize_terminal_text(&error.to_string());
+                                state.fail_security(&detail);
                                 state.status = if is_attestation_failure(&detail) {
                                     "Attestation failed · Run /refresh or /security for details"
                                         .into()

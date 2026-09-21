@@ -82,6 +82,10 @@ verification waits until the task is stopped or complete. Escape closes an open
 viewer or search before it cancels active work.
 Incoming approval and question cards appear above open inspectors and take
 keyboard focus; Escape on a foreground interaction still cancels the task.
+Approval decisions require explicit chords: `Ctrl+Y` allows once, `Ctrl+N`
+denies, and, when offered, `Ctrl+G` grants the exact operation for the session
+or `Ctrl+P` grants the displayed safe scope. Ordinary typing, Enter and paste
+cannot approve or deny a tool when its card arrives during steering input.
 Paste targets the visible input: picker filters, transcript search, question
 answers or the composer. Non-editable overlays never change a hidden draft.
 Automatic and explicit compaction use tool-free attested E2EE inference and
@@ -110,6 +114,9 @@ requests fresh evidence when idle and the current report is unavailable or expir
 `/refresh` or `R` in the inspector explicitly verifies again. Inference continues
 to enforce fresh attestation and authenticated completion in the native provider
 implementation, independently of the displayed report.
+When verification fails without producing a report, the inspector retains the
+sanitized failure reason in its scrollable body. A new check or model/account
+reset clears that process-local diagnostic; it is not saved as verified evidence.
 
 The inspector's summary includes the checked/expiry times, protocol identifiers,
 key bindings, local checks and every provider evidence field. `V` cycles through

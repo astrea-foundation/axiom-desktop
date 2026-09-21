@@ -57,7 +57,7 @@ remain separate.
 | Branding/design hand-off | The legal-line `TODO(brand)` remains in [main](../apps/desktop/src/main/index.ts); product-name/artwork decisions and optional layered icon/tray adoption need explicit design decisions. Current packaging uses `icon.icns`. |
 | Old mock Proxy and missing chat actions | Superseded by the current native proxy integration and implemented conversation controls; retained only in the historical hand-off. |
 | Provider availability/provenance canaries | Run attested E2EE canaries for the promoted native/backend pair. Old near-v2 or early Tinfoil measurements do not establish current deployment health. |
-| Live TUI agent retest | [2026-09-21 input/startup validation](testing/tui-input-2026-09-21.md) passes automated checks and reaches hosted browser sign-in. Authenticated inference, bounded agent tools, steering and cancellation still require completion after account sign-in. |
+| Live TUI agent retest | [2026-09-21 input/startup validation](testing/tui-input-2026-09-21.md): 398 automated tests passed; Chrome/Google native sign-in, attested NEAR agent edits/tests, approvals, steering, resume and streaming cancellation exercised successfully. Qwen 3.6 remains blocked by provider TDX OutOfDate evidence; other providers and release targets still need their own live acceptance. |
 
 Use [release acceptance](releasing.md#interactive-acceptance) for a new release
 and [platform operations](https://github.com/astrea-foundation/axiom-platform/blob/dev/docs/operations/deployment.md)

@@ -120,9 +120,24 @@ fn run_tui_at(
         },
     );
     command.env("AXIOMCLI_ASCII", "1");
+    // Native credentials are scoped to the API origin, not the XDG directory.
+    // Use a fresh loopback origin so this production-runner test cannot discover
+    // the developer's signed-in session or contact the production service.
+    let signed_out_service = (runner == "signed_out").then(|| {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("isolated origin");
+        listener.set_nonblocking(true).unwrap();
+        listener
+    });
     if runner == "signed_out" {
         command.env_remove("AXIOMCLI_TEST_RUNNER");
         command.env_remove("AXIOM_API_KEY");
+        command.env_remove("AXIOMCLI_CREDENTIAL_STORE");
+        let origin = format!(
+            "https://{}",
+            signed_out_service.as_ref().unwrap().local_addr().unwrap()
+        );
+        command.env("AXIOM_BASE_URL", &origin);
+        command.env("AXIOM_AUTH_URL", &origin);
     }
     command.env("NO_COLOR", "1");
     if runner == "appearance" {
@@ -275,7 +290,26 @@ fn run_tui_at(
                 b"Permission required",
                 "approval card",
             );
-            writer.write_all(b"y").expect("allow once");
+            // An approval can arrive in the middle of ordinary typing. Neither
+            // lowercase, uppercase nor pasted letters may authorize or deny it.
+            writer
+                .write_all(b"negpyNEGPY\x05\x1b[200~yNeP\x1b[201~\r")
+                .expect("ordinary typing during approval");
+            writer.flush().expect("flush ordinary typing");
+            thread::sleep(Duration::from_millis(200));
+            while let Ok(chunk) = output_rx.try_recv() {
+                output.extend(chunk);
+            }
+            let before_decision = String::from_utf8_lossy(&output);
+            assert!(
+                !before_decision.contains("allow_once"),
+                "typing authorized the tool: {before_decision}"
+            );
+            assert!(
+                !before_decision.contains("Cancelled"),
+                "typing cancelled the tool: {before_decision}"
+            );
+            writer.write_all(&[25]).expect("Ctrl+Y allows once");
             writer.flush().expect("flush approval");
             wait_for_output(&output_rx, &mut output, b"allow_once", "approval result");
         } else if runner == "plan_review" {
@@ -487,6 +521,13 @@ fn run_tui_at(
         }
         thread::sleep(Duration::from_millis(80));
     };
+    if let Some(listener) = signed_out_service {
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock,
+            "signed-out startup must not make service requests"
+        );
+    }
     drop(writer);
     reader_thread.join().expect("reader thread");
     while let Ok(chunk) = output_rx.try_recv() {

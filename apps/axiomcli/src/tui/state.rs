@@ -225,6 +225,7 @@ pub struct TuiState {
     pub(super) web_enabled: bool,
     pub(super) security: &'static str,
     pub(super) security_evidence: Option<SecurityEvidence>,
+    pub(super) security_error: Option<String>,
     pub(super) input: ComposerBuffer,
     pub(super) entries: Vec<Entry>,
     pub(super) running: bool,
@@ -284,6 +285,7 @@ impl TuiState {
             web_enabled: false,
             security: "NOT VERIFIED",
             security_evidence: None,
+            security_error: None,
             input: ComposerBuffer::default(),
             entries: Vec::new(),
             running: false,
@@ -325,6 +327,13 @@ impl TuiState {
     pub(super) fn reset_security(&mut self) {
         self.security = "NOT VERIFIED";
         self.security_evidence = None;
+        self.security_error = None;
+    }
+
+    pub(super) fn fail_security(&mut self, detail: &str) {
+        self.security = "SECURITY FAILED";
+        self.security_evidence = None;
+        self.security_error = Some(sanitize_terminal_text(detail));
     }
 
     pub(super) fn report_status(&self) -> ReportStatus {
@@ -1018,6 +1027,7 @@ impl TuiState {
                 );
             }
             AppEvent::SecurityStatusChanged { state } => {
+                self.security_error = None;
                 self.security = match state {
                     crate::app::SecurityStatus::Unverified => "NOT VERIFIED",
                     crate::app::SecurityStatus::Verifying => "VERIFYING",
@@ -1067,6 +1077,9 @@ impl TuiState {
                 self.status_tone = StatusTone::Error;
                 self.clear_foreground_attention();
                 let detail = sanitize_terminal_text(message);
+                if self.security == "SECURITY FAILED" {
+                    self.security_error = Some(detail.clone());
+                }
                 self.status = if is_attestation_failure(&detail) {
                     "Attestation failed".into()
                 } else {

@@ -1,4 +1,4 @@
-use super::super::input::{command_allowed_while_running, is_text_input};
+use super::super::input::{approval_choice, command_allowed_while_running, is_text_input};
 use super::*;
 use crate::slash::SlashCommand;
 use std::collections::BTreeSet;
@@ -23,6 +23,89 @@ fn text_input_accepts_shift_but_not_control_or_alt_shortcuts() {
     ] {
         assert!(!is_text_input(modifiers));
     }
+}
+
+#[test]
+fn approval_requires_an_explicit_control_chord_and_respects_grant_scope() {
+    use crate::policy::{ApprovalChoice, Effect};
+    let mut request = ApprovalRequest {
+        request_id: "approval".into(),
+        explanation: "Read the test fixture".into(),
+        effect: Effect::FileRead {
+            path: PathBuf::from("/tmp/project/invoice.py"),
+        },
+        allow_session_grants: true,
+        suggested_prefix_scope: Some("read workspace".into()),
+    };
+    for (character, choice) in [
+        ('y', ApprovalChoice::AllowOnce),
+        ('n', ApprovalChoice::Deny),
+        ('g', ApprovalChoice::AllowExactSession),
+        ('p', ApprovalChoice::AllowPrefixSession),
+    ] {
+        for code in [character, character.to_ascii_uppercase()] {
+            for modifiers in [
+                KeyModifiers::NONE,
+                KeyModifiers::SHIFT,
+                KeyModifiers::ALT,
+                KeyModifiers::CONTROL | KeyModifiers::ALT,
+            ] {
+                assert_eq!(
+                    approval_choice(KeyEvent::new(KeyCode::Char(code), modifiers), &request),
+                    None
+                );
+            }
+            assert_eq!(
+                approval_choice(
+                    KeyEvent::new(KeyCode::Char(code), KeyModifiers::CONTROL),
+                    &request
+                ),
+                Some(choice)
+            );
+        }
+    }
+    assert_eq!(
+        approval_choice(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &request),
+        None
+    );
+    // In particular, the composer's Ctrl+E end-of-line shortcut cannot grant
+    // permissions if an approval arrives just before that editing keystroke.
+    assert_eq!(
+        approval_choice(
+            KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL),
+            &request
+        ),
+        None
+    );
+    request.allow_session_grants = false;
+    for code in ['g', 'p'] {
+        assert_eq!(
+            approval_choice(
+                KeyEvent::new(KeyCode::Char(code), KeyModifiers::CONTROL),
+                &request
+            ),
+            None
+        );
+    }
+    request.allow_session_grants = true;
+    request.suggested_prefix_scope = None;
+    assert_eq!(
+        approval_choice(
+            KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL),
+            &request
+        ),
+        None
+    );
+
+    let mut state = state();
+    state.running = true;
+    state.input = "keep draft".into();
+    state.interaction = Some(InteractionView::Approval(request));
+    state.paste_text("yNeP\n");
+    assert_eq!(state.input, "keep draft");
+    let rendered = render_symbols(120, 40, &state);
+    assert!(rendered.contains("Ctrl+Y"));
+    assert!(rendered.contains("Ctrl+N"));
 }
 
 #[test]

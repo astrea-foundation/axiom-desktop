@@ -19,6 +19,40 @@ fn lines_text(lines: Vec<ratatui::text::Line<'static>>) -> String {
 }
 
 #[test]
+fn security_inspector_retains_failure_details_independently_of_the_status_line() {
+    let mut state = state();
+    state.security_evidence = Some(security_evidence());
+    state.fail_security("Provider TDX status: OutOfDate\nUpdate required\x1b");
+    state.status = "Unrelated status".into();
+    assert_eq!(state.report_status(), ReportStatus::Failed);
+    assert!(state.security_evidence.is_none());
+    for view in [
+        SecurityView::Summary,
+        SecurityView::Workload,
+        SecurityView::Raw,
+    ] {
+        let text = lines_text(security_overlay_lines(&state, view, state.options.theme()));
+        assert!(text.contains("Failure reason:"));
+        assert!(text.contains("OutOfDate"));
+        assert!(text.contains("Update required"));
+        assert!(!text.contains('\x1b'));
+    }
+    state.open_security();
+    assert!(render_symbols(100, 30, &state).contains("OutOfDate"));
+    for status in [
+        crate::app::SecurityStatus::Verifying,
+        crate::app::SecurityStatus::Verified,
+        crate::app::SecurityStatus::Unverified,
+    ] {
+        state.apply(&AppEvent::SecurityStatusChanged { state: status });
+        assert!(state.security_error.is_none());
+        state.fail_security("previous failure");
+    }
+    state.reset_security();
+    assert!(state.security_error.is_none());
+}
+
+#[test]
 fn report_freshness_is_model_bound_and_never_promotes_missing_or_failed_evidence() {
     let mut evidence = security_evidence();
     evidence.verified_at_unix_seconds = 100;

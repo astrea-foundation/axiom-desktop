@@ -1,8 +1,11 @@
 //! Input routing shared by keyboard and bracketed-paste interactions.
 
-use crossterm::event::KeyModifiers;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::slash::SlashCommand;
+use crate::{
+    policy::{ApprovalChoice, ApprovalRequest},
+    slash::SlashCommand,
+};
 
 use super::{
     state::{Focus, InteractionView, Overlay, SavePickerFocus, TuiState},
@@ -11,6 +14,27 @@ use super::{
 
 pub(super) fn is_text_input(modifiers: KeyModifiers) -> bool {
     modifiers.is_empty() || modifiers == KeyModifiers::SHIFT
+}
+
+// Approvals can arrive while the user is typing steering. Ordinary letters must
+// never become authorization decisions when that asynchronous card takes focus.
+pub(super) fn approval_choice(key: KeyEvent, request: &ApprovalRequest) -> Option<ApprovalChoice> {
+    if key.modifiers != KeyModifiers::CONTROL {
+        return None;
+    }
+    match key.code {
+        KeyCode::Char('y' | 'Y') => Some(ApprovalChoice::AllowOnce),
+        KeyCode::Char('n' | 'N') => Some(ApprovalChoice::Deny),
+        KeyCode::Char('g' | 'G') if request.allow_session_grants => {
+            Some(ApprovalChoice::AllowExactSession)
+        }
+        KeyCode::Char('p' | 'P')
+            if request.allow_session_grants && request.suggested_prefix_scope.is_some() =>
+        {
+            Some(ApprovalChoice::AllowPrefixSession)
+        }
+        _ => None,
+    }
 }
 
 pub(super) fn command_allowed_while_running(command: &SlashCommand) -> bool {
