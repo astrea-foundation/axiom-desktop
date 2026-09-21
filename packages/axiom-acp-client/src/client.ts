@@ -5,6 +5,7 @@ import type {
   GetAttachmentsResponse,
   AssignThreadCollectionResponse,
   BillingStatusResponse,
+  GiftCodeRedeemResponse,
   UsageSummaryResponse,
   ApiKeyListResponse,
   ApiKeyCreatedResponse,
@@ -57,7 +58,7 @@ const EXTENSION_CAPABILITIES = {
     desktopChat: 1,
     desktopAgent: 1,
     account: 2,
-    billing: 2,
+    billing: 3,
     usage: 1,
     securityEvidence: 1,
     webConsent: 1,
@@ -593,6 +594,17 @@ export class AxiomAcpClient extends EventEmitter {
   async billingStatus(): Promise<BillingStatusResponse> {
     const accountContext = this.state.accountContextToken();
     const result = await this.process.request<BillingStatusResponse>("_axiom/billing/status", {});
+    this.assertAccountContext(accountContext);
+    this.state.setBilling(result.status);
+    return result;
+  }
+
+  async redeemGiftCode(code: string): Promise<GiftCodeRedeemResponse> {
+    if (typeof code !== "string" || !code.trim() || code.length > 64 || /[^\x20-\x7e]/.test(code)) {
+      throw new ProtocolError("Enter a valid Axiom gift code.");
+    }
+    const accountContext = this.state.accountContextToken();
+    const result = await this.process.request<GiftCodeRedeemResponse>("_axiom/billing/redeem_gift_code", {code});
     this.assertAccountContext(accountContext);
     this.state.setBilling(result.status);
     return result;

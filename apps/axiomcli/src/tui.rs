@@ -3,6 +3,7 @@
 use std::time::Duration;
 
 mod attestation;
+mod billing;
 mod brand;
 mod composer;
 mod markdown;

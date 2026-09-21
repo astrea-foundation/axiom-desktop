@@ -157,6 +157,10 @@ pub(super) async fn prompt(
     if let Some(command) = command {
         let slash_result: agent_client_protocol::Result<_> = async {
         match command {
+            SlashCommand::Balance | SlashCommand::Topup | SlashCommand::Redeem => {
+                send_text(&connection, &session_id, "Open Balance in Desktop to view credit, top up or redeem a gift code. Enter codes only in the redemption form.".into())?;
+                Ok(protocol::StopReason::EndTurn)
+            }
             SlashCommand::Theme(_) | SlashCommand::Web(_) => {
                 Err(agent_client_protocol::Error::invalid_params()
                     .data("Use the desktop appearance settings and Web control; /theme and /web are terminal-only commands."))

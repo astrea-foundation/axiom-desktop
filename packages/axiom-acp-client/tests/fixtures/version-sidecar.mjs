@@ -9,7 +9,7 @@ for await (const line of createInterface({ input: process.stdin })) {
     ...(version === 'missing' ? {} : { agentInfo: { name: 'axiomcli', version } }),
     agentCapabilities: { _meta: { axiom: { protocolVersion: '0.2', features: {
       desktopChat: 1, threadCatalog: 1, timeline: 1, modelCatalog: 1,
-      profilePreferences: 1, collections: 1, account: 2, billing: 2,
+      profilePreferences: 1, collections: 1, account: 2, billing: 3,
       securityEvidence: 1, webConsent: 1,
     } } } },
   } }) + '\n');

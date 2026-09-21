@@ -40,6 +40,7 @@ pub(super) enum Focus {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Overlay {
+    Billing(Box<super::billing::BillingView>),
     Entry(usize),
     Help,
     Permissions {

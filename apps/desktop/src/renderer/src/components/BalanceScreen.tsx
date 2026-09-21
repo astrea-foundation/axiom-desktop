@@ -5,6 +5,7 @@ import { desktopErrorMessage } from "../signInFlow";
 import { usdFromMicrousd } from "../lib/currency";
 import { DepositPanel } from "./DepositPanel";
 import { AccountScreen } from "./AccountScreen";
+import { GiftCodePanel } from "./GiftCodePanel";
 
 interface BalanceScreenProps {
   onClose: () => void;
@@ -99,6 +100,8 @@ export function BalanceScreen({ onClose, connected, account, billing, onRefreshB
               {billing?.paymentAccount ? <DepositPanel key={account?.account?.id} payment={billing.paymentAccount} connected={connected} quote={billing.zecUsdQuote} /> : billing ? (
                 <p className="mt-4 text-[12px] text-[var(--color-text-tertiary)]">Deposits are temporarily unavailable.</p>
               ) : null}
+
+              {account?.account?.id ? <GiftCodePanel key={account.account.id} accountId={account.account.id} connected={connected} /> : null}
 
               {billingError ? (
                 <p role="alert" className="mt-3 text-[12px] text-[var(--color-danger-strong)]">{billingError}</p>

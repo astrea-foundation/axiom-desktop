@@ -3,6 +3,9 @@
 Status: accepted for the September 2026 development reset. Supersedes the old
 clean-slate plans and the invoice billing portion of ADR 0011.
 
+Billing scope later adds gift credit through [ADR 0017](0017-gift-credit-controls.md)
+and `billing@3`; this ADR retains the original reset/deposit decision.
+
 ## Decision
 
 Axiom keeps its current account-scoped architecture and removes the retired

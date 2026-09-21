@@ -725,7 +725,7 @@ fn slash_setting_events_update_the_header_and_compaction_transcript() {
         messages_before: 12,
     });
     let output = render_symbols(100, 30, &state);
-    for label in ["new-model", "Thinking High", "Agent Ask"] {
+    for label in ["new-model", "Thinking High", "Permissions Ask"] {
         assert!(output.contains(label), "missing {label}: {output}");
     }
     assert!(output.contains("CONTEXT COMPACTED"));
@@ -1097,7 +1097,7 @@ fn insufficient_credit_failure_has_a_specific_top_up_message() {
 
     let folded = render_symbols(100, 30, &state);
     assert!(folded.contains("Out of credits"));
-    assert!(folded.contains("Open Axiom Desktop Settings > Balance"));
+    assert!(folded.contains("Use /topup"));
     assert!(!folded.contains("insufficient_credit"));
     let task = state.entries[state.task_index(&turn).expect("task")]
         .task

@@ -48,9 +48,9 @@ family; each named feature negotiates its own version. Missing/zero versions
 mean unsupported. Desktop checks its required feature set and negotiates optional
 features separately.
 
-`account` is version **2**. Current other advertised features are version **1**:
+`account` is version **2** and `billing` is version **3**. Current other advertised features are version **1**:
 `desktopChat`, `desktopAgent`, `threadCatalog`, `timeline`, `modelCatalog`,
-`profilePreferences`, `collections`, `billing`, `usage`, `securityEvidence`,
+`profilePreferences`, `collections`, `usage`, `securityEvidence`,
 `webConsent`, `steering`, `messageRevision`, `attachments`, `compaction`, and `activity`.
 The source `FeatureVersions` and generated schema are authoritative.
 
@@ -67,7 +67,7 @@ are never an instruction to send conversation plaintext through a hosted endpoin
 | Collections | `collection/list`, `collection/create`, `collection/rename`, `collection/set_collapsed`, `collection/move`, `collection/delete`, `collection/assign` |
 | Native account | `account/status`, `account/native_login_start`, `account/native_login_complete`, `account/native_login_cancel`, `account/logout` |
 | Automation-key management | `account/api_keys`, `account/api_key_create`, `account/api_key_revoke` |
-| Billing | `billing/status` |
+| Billing | `billing/status`, `billing/redeem_gift_code` |
 | Usage | `usage/summary` |
 | Evidence/compaction/steering | `security/verify`, `compaction/start`, `turn/steer` |
 
@@ -147,6 +147,13 @@ nullable mainnet deposit metadata and a current ZEC/USD quote. Credit uses integ
 microUSD; deposit/quote amounts use exact decimal strings. Calls require a current
 native account and reject stale account/revision results. Invoice methods and
 checkout capabilities are removed. `usage@1` carries posted spend by model.
+
+`billing@3` adds private gift redemption. Its bounded `code` request returns
+`creditedMicrousd`, `alreadyRedeemed` and `status`; only the updated billing status
+is published as activity. Never log or persist the code. Desktop requires version
+3 and carries its captured account ID through the IPC boundary. New sidecars still
+serve `billing/status` to negotiated version 2 clients, but reject redemption until
+version 3 is negotiated. See [ADR 0017](adr/0017-gift-credit-controls.md).
 
 Security projections require the registered provider identity, accepted key
 fingerprints and hard expiry. NEAR/Phala require positive lease generation;

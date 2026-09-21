@@ -1470,6 +1470,7 @@ enum ExtensionFeature {
     Billing = 1 << 10,
     Usage = 1 << 13,
     Attachments = 1 << 14,
+    GiftCodes = 1 << 15,
 }
 
 struct ExtensionState {
@@ -1537,6 +1538,9 @@ impl ExtensionState {
         }
         if features.billing >= 2 {
             mask |= ExtensionFeature::Billing as u64;
+        }
+        if features.billing >= 3 {
+            mask |= ExtensionFeature::GiftCodes as u64;
         }
         if features.usage >= 1 {
             mask |= ExtensionFeature::Usage as u64;

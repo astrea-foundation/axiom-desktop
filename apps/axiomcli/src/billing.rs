@@ -36,6 +36,14 @@ pub struct BillingStatus {
     pub zec_usd_quote: Option<axiom_acp_extension::ZecUsdQuote>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GiftCodeRedemption {
+    pub credited_microusd: u64,
+    pub already_redeemed: bool,
+    pub status: BillingStatus,
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct UsageSpend {
@@ -179,6 +187,72 @@ impl BillingClient {
             .zec_usd_quote
             .filter(|quote| valid_current_quote(quote, chrono::Utc::now()));
         Ok(status)
+    }
+
+    /// The secret is submitted only to the account API, never to inference or activity logs.
+    pub async fn redeem_gift_code(
+        &self,
+        code: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<GiftCodeRedemption> {
+        let normalized = code.trim().replace(['-', ' '], "").to_ascii_uppercase();
+        if code.len() > 64
+            || !code.is_ascii()
+            || normalized.len() != 35
+            || !normalized.starts_with("AXG")
+            || !normalized[3..]
+                .bytes()
+                .all(|b| b.is_ascii_uppercase() || (b'2'..=b'7').contains(&b))
+        {
+            return Err(AxiomError::Config("Enter a valid Axiom gift code.".into()));
+        }
+        let lease = self
+            .auth
+            .access_token_for_account_operation(cancellation)
+            .await?;
+        let response = send_with_cancellation(
+            self.client
+                .post(self.endpoint("/api/v1/billing/gift-codes/redeem"))
+                .bearer_auth(lease.expose_for_authorization())
+                .json(&serde_json::json!({"code": normalized})),
+            cancellation,
+            "gift redemption",
+        )
+        .await?;
+        match response.status() {
+            StatusCode::BAD_REQUEST => {
+                return Err(AxiomError::Provider(
+                    "Gift code is invalid or unavailable.".into(),
+                ));
+            }
+            StatusCode::TOO_MANY_REQUESTS => {
+                return Err(AxiomError::Provider(
+                    "Too many redemption attempts. Wait a few minutes and try again.".into(),
+                ));
+            }
+            StatusCode::NOT_FOUND => {
+                return Err(AxiomError::Provider(
+                    "Gift redemption is not available on this server yet.".into(),
+                ));
+            }
+            status => ensure_success(status, "gift redemption")?,
+        }
+        let mut result: GiftCodeRedemption =
+            decode_bounded_json(response, cancellation, "gift-redemption").await?;
+        if !(10_000..=10_000_000_000).contains(&result.credited_microusd)
+            || !result.credited_microusd.is_multiple_of(10_000)
+        {
+            return Err(AxiomError::Protocol(
+                "Axiom returned an invalid gift-credit receipt".into(),
+            ));
+        }
+        validate_billing_status(&result.status)?;
+        self.ensure_account_current(&lease)?;
+        result.status.zec_usd_quote = result
+            .status
+            .zec_usd_quote
+            .filter(|quote| valid_current_quote(quote, chrono::Utc::now()));
+        Ok(result)
     }
 
     pub async fn usage_summary(

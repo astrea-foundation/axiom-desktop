@@ -97,7 +97,7 @@ impl FeatureVersions {
             profile_preferences: 1,
             collections: 1,
             account: 2,
-            billing: 2,
+            billing: 3,
             usage: 1,
             security_evidence: 1,
             web_consent: 1,
@@ -923,6 +923,28 @@ pub struct LogoutRequest {}
 #[request(method = "_axiom/billing/status", response = BillingStatusResponse)]
 pub struct BillingStatusRequest {}
 
+#[derive(Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcRequest)]
+#[request(method = "_axiom/billing/redeem_gift_code", response = GiftCodeRedeemResponse)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GiftCodeRedeemRequest {
+    #[schemars(length(min = 1, max = 64))]
+    pub code: String,
+}
+
+impl std::fmt::Debug for GiftCodeRedeemRequest {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("GiftCodeRedeemRequest { code: [REDACTED] }")
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcResponse)]
+#[serde(rename_all = "camelCase")]
+pub struct GiftCodeRedeemResponse {
+    pub credited_microusd: u64,
+    pub already_redeemed: bool,
+    pub status: BillingStatus,
+}
+
 #[derive(
     Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcRequest,
 )]
@@ -1132,6 +1154,8 @@ pub struct ProtocolSchema {
     pub logout_request: LogoutRequest,
     pub billing_status_request: BillingStatusRequest,
     pub billing_status_response: BillingStatusResponse,
+    pub gift_code_redeem_request: GiftCodeRedeemRequest,
+    pub gift_code_redeem_response: GiftCodeRedeemResponse,
     pub usage_summary_request: UsageSummaryRequest,
     pub usage_summary_response: UsageSummaryResponse,
     pub api_key_list_request: ApiKeyListRequest,

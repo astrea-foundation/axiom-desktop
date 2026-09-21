@@ -138,6 +138,8 @@ export interface ProtocolSchema {
   logoutRequest: LogoutRequest;
   billingStatusRequest: BillingStatusRequest;
   billingStatusResponse: BillingStatusResponse;
+  giftCodeRedeemRequest: GiftCodeRedeemRequest;
+  giftCodeRedeemResponse: GiftCodeRedeemResponse;
   usageSummaryRequest: UsageSummaryRequest;
   usageSummaryResponse: UsageSummaryResponse;
   apiKeyListRequest: ApiKeyListRequest;
@@ -664,6 +666,15 @@ export interface ZecUsdQuote {
   source: string;
   as_of: string;
   expires_at: string;
+}
+export interface GiftCodeRedeemRequest {
+  code: string;
+}
+export interface GiftCodeRedeemResponse {
+  creditedMicrousd: number;
+  alreadyRedeemed: boolean;
+  status: BillingStatus;
+  [k: string]: unknown;
 }
 export interface UsageSummaryRequest {
   [k: string]: unknown;
