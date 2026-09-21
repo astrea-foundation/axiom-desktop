@@ -532,6 +532,16 @@ pub(super) async fn restore_tui_session(
         .await?;
     state.profile = PermissionProfile::from_str(&summary.profile).unwrap_or(state.profile);
     for envelope in &loaded.events {
+        // Older versions persisted this routine edit summary as a warning on
+        // every resume. Keep the journal and WorkspaceChanged events intact,
+        // but do not replay the retired synthetic notice into the transcript.
+        if matches!(
+            &envelope.event,
+            AppEvent::WarningRaised { message }
+                if message.starts_with("Workspace changes recorded in this session: ")
+        ) {
+            continue;
+        }
         state.apply(&envelope.event);
     }
     if let Ok(snapshot) = store.thread_snapshot(session_id, None, 1) {
@@ -600,17 +610,6 @@ pub(super) async fn restore_tui_session(
             "Recovered {} interrupted turn(s) and {} tool/task operation(s) with unknown status; nothing was replayed.",
             recovery.interrupted_turns,
             recovery.interrupted_tools.len()
-        ));
-    }
-    if !recovery.changed_paths.is_empty() {
-        notices.push(format!(
-            "Workspace changes recorded in this session: {}",
-            recovery
-                .changed_paths
-                .iter()
-                .map(|path| path.display().to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
         ));
     }
     for message in notices {

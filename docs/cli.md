@@ -164,7 +164,9 @@ The implemented session subcommands are list, show, export, rename, archive and
 unarchive. Interactive deletion uses `/delete`; ACP uses preview/confirm.
 There is no `sessions prune` command. Export supports omitting prompts/tool
 output and a bounded `--max-items` count. Local recovery never replays interrupted
-tool side effects.
+tool side effects. The TUI warns about interrupted operations and recovery
+problems, not ordinary file edits. Recorded edits remain in the task history;
+resume neither adds nor displays the legacy workspace-change summary warning.
 
 Plans are revisioned local artifacts with comments, revision requests, proposal,
 approval and abandonment. Plan approval records review; it does not execute the

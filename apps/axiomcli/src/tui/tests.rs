@@ -44,6 +44,7 @@ use ratatui::backend::TestBackend;
 
 mod input_routing;
 mod provider_presentation;
+mod resume;
 
 #[test]
 fn steering_keeps_completed_output_before_the_new_user_message() {
