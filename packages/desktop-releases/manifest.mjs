@@ -35,5 +35,21 @@ export function parseRelease(value) {
     seen.add(key);
     return { name: file.name, platform: file.platform, arch: file.arch, format, bytes: file.bytes, sha256: file.sha256, url: file.url };
   });
-  return { schemaVersion: 1, version: value.version, signing: value.signing, downloads };
+  // Additive schema-1 extension: older desktop updaters continue to consume only
+  // downloads. CLI archives must never become desktop installer candidates.
+  const cliDownloads = value.cliDownloads === undefined ? [] : value.cliDownloads;
+  if (!Array.isArray(cliDownloads) || downloads.length + cliDownloads.length > 100) throw new Error('Invalid CLI downloads');
+  const cliSeen = new Set();
+  const cli = cliDownloads.map(file => {
+    if (!file || typeof file !== 'object' || file.platform !== 'linux' || file.arch !== 'x64'
+      || file.format !== 'tar.gz' || file.name !== `axiomai-${value.version}-x86_64-unknown-linux-gnu.tar.gz`
+      || cliSeen.has(`${file.platform}:${file.arch}`)
+      || !Number.isSafeInteger(file.bytes) || file.bytes < 1 || file.bytes > 2 * 1024 ** 3
+      || typeof file.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(file.sha256)
+      || file.url !== `https://cdn.axiom.stream/downloads/${value.version}/${file.name}`) throw new Error('Invalid CLI download');
+    cliSeen.add(`${file.platform}:${file.arch}`);
+    return { name: file.name, platform: file.platform, arch: file.arch, format: file.format, bytes: file.bytes, sha256: file.sha256, url: file.url };
+  });
+  // Keep historical manifests byte-compatible after normalization.
+  return { schemaVersion: 1, version: value.version, signing: value.signing, downloads, ...(cli.length ? { cliDownloads: cli } : {}) };
 }

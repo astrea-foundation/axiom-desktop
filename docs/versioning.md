@@ -51,8 +51,12 @@ contracts are listed in [the threat model](threat-model.md#provider-contracts).
 
 ## Packages and acceptance
 
-Desktop ships a matching-version AxiomCLI binary for its OS and architecture;
-the standalone Linux archive also contains the local proxy. Checksums, signing
+Desktop and AxiomCLI use product version **0.1.2** for the next release. Desktop
+ships a matching-version AxiomCLI binary for its OS and architecture and enforces
+that exact match during ACP initialization, before account/chat bootstrap. ACP's
+extension version remains independent of the product version.
+
+The standalone Linux archive also contains the local proxy. Checksums, signing
 and build metadata describe the produced artifact. Supported build targets and
 real-machine acceptance are separate claims; see
 [supported platforms](releasing.md#supported-platforms). No document or green

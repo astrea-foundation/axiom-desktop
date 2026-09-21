@@ -41,6 +41,15 @@ not networking by host-authority programs on those platforms. A configured MCP
 executable is trusted local code at startup; its results and authority claims
 remain untrusted. See [security](threat-model.md#local-tools-and-processes).
 
+## Update checks
+
+Installed Desktop and TUI processes request the public
+`https://axiom.stream/api/releases/latest` feed at startup and every six hours;
+`axiomcli update` checks on demand. These are ordinary HTTPS metadata requests,
+not inference. They contain no account headers, cookies, API keys, conversation
+content, or installed-version query parameters. The website/CDN still observes
+normal network metadata such as the source IP. Update notices remain UI-only.
+
 ## Local data and credentials
 
 Conversations live in account/frontend-specific SQLite databases. Desktop also

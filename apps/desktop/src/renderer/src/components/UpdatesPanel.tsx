@@ -40,7 +40,7 @@ export function UpdatesPanel({ updates }: { updates?: DesktopUpdates }) {
         <div className="min-w-0 pt-0.5">
           <h3 role="status" className="text-[14px] font-medium text-[var(--color-text-primary)]">{heading}</h3>
           <p className="mt-1 text-[12px] leading-5 text-[var(--color-text-tertiary)]">
-            {ready ? 'Quit Axiom when you’re ready, then install the downloaded update.'
+            {ready ? 'Quit Axiom and all AxiomCLI sessions, then install the update to replace Desktop and its bundled CLI together.'
               : downloading ? 'You can keep chatting while it downloads.'
                 : status === 'disabled' ? 'Installed releases check for updates automatically.'
                   : available && file ? `${platform} · ${state.arch} · ${formats[file.format]} · ${mb(file.bytes)}`
@@ -77,7 +77,7 @@ export function UpdatesPanel({ updates }: { updates?: DesktopUpdates }) {
     </div>
     <div className="mt-4 flex flex-wrap items-center justify-between gap-2 text-[11.5px] text-[var(--color-text-tertiary)]">
       <span>{state.checkedAt ? `Last checked ${new Date(state.checkedAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}` : 'No update check yet'}</span>
-      <a href="https://axiom.stream/downloads#versions" target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 hover:text-[var(--color-text-primary)]">All versions<ArrowUpRight size={12} /></a>
+      <a href="https://axiom.stream/api/releases" target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 hover:text-[var(--color-text-primary)]">Release catalog<ArrowUpRight size={12} /></a>
     </div>
     {(file || ready) && release ? <details className="mt-6 border-t border-[var(--color-border)] pt-4 text-[12px] text-[var(--color-text-tertiary)]">
       <summary className="cursor-pointer select-none hover:text-[var(--color-text-primary)]">Download details</summary>

@@ -98,7 +98,12 @@ download, choose **Show in folder** to find the installer.
 
 Versions released before update notifications were introduced need one manual
 upgrade from the website first. The app checks on startup and every six hours;
-**Check for updates** runs a check immediately.
+**Check for updates** runs a check immediately. Installed TUIs show a quiet local
+notice from the same feed, and `axiomcli update` points a bundled CLI back to this
+Desktop update screen. Both programs share product version 0.1.2 for the next
+release. Desktop checks the CLI's reported version before loading account or chat
+state and refuses mixed versions. In a source build, rebuild the CLI if startup
+reports a version mismatch.
 
 Quit Axiom and any running AxiomCLI sessions, then install the newer download
 using the same format and installation location. The Windows EXE, macOS PKG,

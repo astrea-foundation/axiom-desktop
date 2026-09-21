@@ -11,6 +11,28 @@ budgeted live evaluation and before any packaging job. Desktop's source manifest
 is synchronized with AxiomCLI by the packaging script before invoking
 electron-builder.
 
+## Unified release catalog
+
+The next product release is **0.1.2**. Existing public 0.1.0/0.1.1 packages predate
+the updater and need one manual upgrade. A version bump in source does not publish
+installers or change the public feed.
+
+Gather the Desktop installers and the standalone Linux archive from the same
+promoted tag into a clean directory, including the archive's `.asc` signature
+when signed. Run `node scripts/download-manifest.mjs DIRECTORY VERSION unsigned`
+(or `signed` only when the complete release is signed). The generator emits one
+schema-1 manifest, combined `SHA256SUMS`, and the CLI archive's adjacent `.sha256`.
+It rejects mixed versions and unsupported CLI archive variants before writing metadata.
+
+The additive `cliDownloads` list contains the Linux x64 `tar.gz` bundle;
+`downloads` remains exclusively Desktop installers so older updaters continue to
+work. Both lists use the same version and immutable CDN paths. Empty/absent CLI
+lists preserve historical desktop-only releases. Publish and import that combined
+manifest through `axiom-platform`'s CDN and website pipeline; both repositories
+keep identical contract code and JSON test vectors without cross-repo imports.
+The publisher includes the CLI checksum and available signature sidecars. Promoting
+the CDN alone does not update the public release API.
+
 ## Supported platforms
 
 These are checked-in build targets, not a claim about the current public catalog

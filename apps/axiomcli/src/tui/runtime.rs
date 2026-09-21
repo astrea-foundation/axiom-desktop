@@ -162,6 +162,7 @@ pub(super) fn account_status_text(account: &AccountStatus) -> String {
 }
 
 pub(super) enum UiMessage {
+    UpdateAvailable(String),
     BillingFinished {
         generation: u64,
         account_generation: u64,
@@ -801,6 +802,26 @@ pub async fn run(
 
     let mut input_events = EventStream::new();
     let (ui_tx, mut ui_rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
+    if !uses_deterministic_test_runner() {
+        let update_tx = ui_tx.clone();
+        tokio::spawn(async move {
+            let mut ticks = tokio::time::interval(Duration::from_secs(6 * 60 * 60));
+            ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            let mut previous = None;
+            loop {
+                tokio::select! {
+                    () = update_tx.closed() => break,
+                    _ = ticks.tick() => {
+                        if let Ok(Some(notice)) = crate::updates::startup_notice().await
+                            && previous.as_ref() != Some(&notice) {
+                            previous = Some(notice.clone());
+                            if update_tx.send(UiMessage::UpdateAvailable(notice)).await.is_err() { break; }
+                        }
+                    }
+                }
+            }
+        });
+    }
     let mut billing_flow = BillingFlow::new(&auth)?;
     let mut billing_ticks = tokio::time::interval(Duration::from_secs(5));
     billing_ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -2095,6 +2116,10 @@ pub async fn run(
             message = ui_rx.recv() => {
                 let Some(message) = message else { break };
                 match message {
+                    UiMessage::UpdateAvailable(notice) => {
+                        // UI-only information: never model input or persisted conversation history.
+                        state.push_entry(EntryKind::System, notice, false);
+                    }
                     UiMessage::BillingFinished { generation, account_generation, result } => {
                         billing_flow.finish(&mut state, generation, account_generation, result);
                         billing_ticks.reset();
