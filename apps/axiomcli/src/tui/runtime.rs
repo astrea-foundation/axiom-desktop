@@ -39,10 +39,11 @@ use crate::{
 
 use super::{
     ANIMATION_TICK,
+    input::{command_allowed_while_running, is_text_input},
     screens::{composer_text_width, render, scroll_transcript_down, scroll_transcript_up},
     state::{
-        AuthOverlay, EntryKind, Focus, InteractionView, Overlay, SaveAttestationPicker,
-        SavePickerFocus, SecurityView, StatusTone, TuiLaunch, TuiState,
+        AuthOverlay, EntryKind, Focus, InteractionView, Overlay, SavePickerFocus, SecurityView,
+        StatusTone, TuiLaunch, TuiState,
     },
     task::TaskActivity,
     text::{is_attestation_failure, sanitize_terminal_text},
@@ -652,6 +653,48 @@ pub(super) fn activate_tui_account_store(store: &SessionStore, account_id: &str)
     Ok(())
 }
 
+/// Signed-out startup holds only provisional settings in memory. Discover and
+/// validate the model after login, before persisting or using those settings.
+pub(super) async fn finish_authenticated_bootstrap(
+    runtime: &Runtime,
+    runner: &Arc<dyn TurnRunner>,
+    store: &SessionStore,
+    session_id: &SessionId,
+    state: &mut TuiState,
+    pending: &mut Vec<crate::app::EventEnvelope>,
+) -> Result<()> {
+    let models = runner
+        .available_model_details(CancellationToken::new())
+        .await?;
+    let preferences = store.profile_preferences()?;
+    let settings = reconcile_new_session_settings(
+        models.clone(),
+        preferences.model.as_deref(),
+        &state.model,
+        preferences.thinking_level,
+    )?;
+    runner.set_model_settings(session_id, &settings).await?;
+    let corrected = runtime
+        .dispatch(AppCommand::ChangeModelSettings {
+            session_id: session_id.clone(),
+            model: settings.model.clone(),
+            thinking: settings.thinking,
+            reset_security: true,
+        })
+        .await?;
+    pending.extend(corrected.iter().cloned());
+    store.append_all_and_set_profile_preferences(pending, &settings.model, settings.thinking)?;
+    pending.clear();
+    state.model_details = models
+        .into_iter()
+        .map(|model| (model.id.clone(), model))
+        .collect();
+    for envelope in corrected {
+        state.apply(&envelope.event);
+    }
+    Ok(())
+}
+
 pub async fn run(
     runner: Arc<dyn TurnRunner>,
     cwd: PathBuf,
@@ -763,9 +806,11 @@ pub async fn run(
         let initial_settings = initial_settings
             .as_ref()
             .expect("new TUI sessions reconcile catalog settings before creation");
-        runner
-            .set_model_settings(&session_id, initial_settings)
-            .await?;
+        if store.as_ref().is_some_and(SessionStore::is_active) {
+            runner
+                .set_model_settings(&session_id, initial_settings)
+                .await?;
+        }
         let selected_settings = runtime
             .dispatch(AppCommand::ChangeModelSettings {
                 session_id: session_id.clone(),
@@ -898,6 +943,8 @@ pub async fn run(
                 match event {
                     Event::Key(key) if key.kind == KeyEventKind::Press => {
                         if key.code == KeyCode::Esc
+                            && (state.interaction.is_some()
+                                || (state.overlay.is_none() && !state.search_active))
                             && stop_running_turn(&mut state, cancellation.as_ref())
                         {
                             // The runner reports `Done(Cancelled)` after its provider,
@@ -1436,7 +1483,9 @@ pub async fn run(
                                     state.cycle_security_view();
                                 }
                                 KeyCode::Char('r' | 'R') => {
-                                    if auth.has_credential() {
+                                    if state.running {
+                                        show_slash_error(&mut state, "Stop the active task before refreshing attestation.");
+                                    } else if auth.has_credential() {
                                         start_security_preflight(
                                             &mut state,
                                             &runner,
@@ -1580,7 +1629,8 @@ pub async fn run(
                                     state.input.move_to_line_end();
                                 }
                                 KeyCode::Enter if state.focus == Focus::Transcript => state.toggle_selected(),
-                                KeyCode::Enter if state.running && state.focus == Focus::Composer && !state.input.trim().is_empty() => {
+                                KeyCode::Enter if state.running && state.focus == Focus::Composer
+                                    && !state.input.trim().is_empty() && slash::parse(&state.input).is_none() => {
                                     if let (Some(inbox), Some(turn)) = (&active_steering, &active_turn) {
                                         let text = state.input.to_string();
                                         match inbox.submit(turn, uuid::Uuid::new_v4().to_string(), text.clone()) {
@@ -1598,14 +1648,19 @@ pub async fn run(
                                     }
                                 }
                                 KeyCode::Enter
-                                    if !state.running && state.should_accept_slash_selection() =>
+                                    if state.focus == Focus::Composer && state.should_accept_slash_selection() =>
                                 {
                                     state.accept_slash_selection();
                                 }
-                                KeyCode::Enter if !state.running && !state.input.trim().is_empty() => {
+                                KeyCode::Enter if state.focus == Focus::Composer && !state.input.trim().is_empty() => {
                                     let prompt = state.input.take_text();
                                     state.reset_slash_completion();
                                     if let Some(command) = slash::parse(&prompt) {
+                                        if state.running && command.as_ref().is_ok_and(|command| !command_allowed_while_running(command)) {
+                                            state.input.set_text(prompt);
+                                            show_slash_error(&mut state, "Stop the active task before using this command. Your draft is still here.");
+                                            continue;
+                                        }
                                         match command {
                                             Err(error) => show_slash_error(&mut state, &error.to_string()),
                                             Ok(SlashCommand::Help) => {
@@ -1802,7 +1857,8 @@ pub async fn run(
                                             }
                                             Ok(SlashCommand::Security) => {
                                                 state.open_security();
-                                                if state.report_status() != super::attestation::ReportStatus::Verified
+                                                if !state.running
+                                                    && state.report_status() != super::attestation::ReportStatus::Verified
                                                     && security_cancellation.is_none()
                                                     && auth.has_credential()
                                                 {
@@ -1946,7 +2002,7 @@ pub async fn run(
                                         let _ = task_tx.send(UiMessage::Done(turn_id, result)).await;
                                     });
                                 }
-                                KeyCode::Char(character) if state.focus == Focus::Composer && (!state.running || key.modifiers.is_empty()) => {
+                                KeyCode::Char(character) if state.focus == Focus::Composer && is_text_input(key.modifiers) => {
                                     state.reset_slash_completion();
                                     state.input.insert_char(character);
                                 }
@@ -2037,24 +2093,7 @@ pub async fn run(
                         }
                     }
                     Event::Paste(text) => {
-                        let text = sanitize_terminal_text(&text);
-                        if matches!(
-                            state.overlay,
-                            Some(Overlay::SaveAttestation(SaveAttestationPicker {
-                                focus: SavePickerFocus::Filename,
-                                ..
-                            }))
-                        ) {
-                            state.push_attestation_filename(&text.replace(['\n', '\r'], ""));
-                        } else if pending_questions.is_some() {
-                            state.answer_input.push_str(&text.replace('\n', " "));
-                        } else if pending_approval.is_none()
-                            && state.focus == Focus::Composer
-                            && !state.running
-                        {
-                            state.reset_slash_completion();
-                            state.input.insert_str(&text);
-                        }
+                        state.paste_text(&text);
                     }
                     _ => {}
                 }
@@ -2323,19 +2362,14 @@ pub async fn run(
                                 }
                                 if let Some(account_store) = &store
                                     && !pending_session_bootstrap.is_empty()
+                                    && let Err(error) = finish_authenticated_bootstrap(
+                                        &runtime, &runner, account_store, &session_id,
+                                        &mut state, &mut pending_session_bootstrap,
+                                    ).await
                                 {
-                                    if let Err(error) = account_store
-                                        .append_all_and_set_profile_preferences(
-                                            &pending_session_bootstrap,
-                                            &state.model,
-                                            state.thinking,
-                                        )
-                                    {
-                                        let _ = account_store.deactivate_account();
-                                        account_transition_error = Some(error);
-                                        break 'ui;
-                                    }
-                                    pending_session_bootstrap.clear();
+                                    let _ = account_store.deactivate_account();
+                                    account_transition_error = Some(error);
+                                    break 'ui;
                                 }
                                 let detail = account_status_text(&account);
                                 state.reset_security();
@@ -2411,19 +2445,14 @@ pub async fn run(
                                 }
                                 if let Some(account_store) = &store
                                     && !pending_session_bootstrap.is_empty()
+                                    && let Err(error) = finish_authenticated_bootstrap(
+                                        &runtime, &runner, account_store, &session_id,
+                                        &mut state, &mut pending_session_bootstrap,
+                                    ).await
                                 {
-                                    if let Err(error) = account_store
-                                        .append_all_and_set_profile_preferences(
-                                            &pending_session_bootstrap,
-                                            &state.model,
-                                            state.thinking,
-                                        )
-                                    {
-                                        let _ = account_store.deactivate_account();
-                                        account_transition_error = Some(error);
-                                        break 'ui;
-                                    }
-                                    pending_session_bootstrap.clear();
+                                    let _ = account_store.deactivate_account();
+                                    account_transition_error = Some(error);
+                                    break 'ui;
                                 }
                                 let detail = account_status_text(&account);
                                 if purpose == ValidationPurpose::Startup {

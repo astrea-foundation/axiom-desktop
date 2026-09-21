@@ -41,6 +41,9 @@ Terminal restoration is guarded on exit and panic.
 
 Typing `/` filters slash-command hints; `Tab` completes command names/arguments.
 Slash commands are handled locally rather than sent to the model as prompts.
+Signed-out startup opens the login view without requesting the authenticated
+model catalog. After sign-in, the selected model and reasoning settings are
+reconciled against the live catalog before the new session is persisted.
 
 | Command | Purpose |
 |---|---|
@@ -71,6 +74,16 @@ controls, including enabled/disabled modes or supported effort levels. Models
 without reasoning controls do not show a thinking selector.
 
 During active work, Enter can submit steering for the next safe boundary.
+Typing (including uppercase letters) and pasting both edit the steering draft.
+Slash commands remain local: `/help`, `/usage`, `/security` and `/theme` are
+available while running; other commands preserve the draft and ask you to stop
+the active task first. `/security` shows retained evidence during a task; fresh
+verification waits until the task is stopped or complete. Escape closes an open
+viewer or search before it cancels active work.
+Incoming approval and question cards appear above open inspectors and take
+keyboard focus; Escape on a foreground interaction still cancels the task.
+Paste targets the visible input: picker filters, transcript search, question
+answers or the composer. Non-editable overlays never change a hidden draft.
 Automatic and explicit compaction use tool-free attested E2EE inference and
 persist successor context for resume. Failed or cancelled work remains incomplete.
 
@@ -93,7 +106,7 @@ cancelled, failed or unauthenticated output does not gain this completion notice
 The header describes the current model's retained TEE report. Expired, missing,
 mismatched or failed reports are never displayed as current verified proof.
 Expiry updates while idle, including with reduced motion. Opening `/security`
-requests fresh evidence when the current report is unavailable or expired;
+requests fresh evidence when idle and the current report is unavailable or expired;
 `/refresh` or `R` in the inspector explicitly verifies again. Inference continues
 to enforce fresh attestation and authenticated completion in the native provider
 implementation, independently of the displayed report.

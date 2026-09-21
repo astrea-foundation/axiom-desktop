@@ -42,6 +42,7 @@ use super::{
 use axiom_secure_client::{EvidenceCheck, EvidenceClaim, SecurityState};
 use ratatui::backend::TestBackend;
 
+mod input_routing;
 mod provider_presentation;
 
 #[test]

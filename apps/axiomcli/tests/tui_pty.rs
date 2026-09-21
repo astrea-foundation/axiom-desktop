@@ -110,13 +110,20 @@ fn run_tui_at(
                 | "composer"
                 | "appearance"
                 | "usage"
+                | "paste_picker"
         ) {
             "echo"
+        } else if runner == "input_active" {
+            "blocking"
         } else {
             runner
         },
     );
     command.env("AXIOMCLI_ASCII", "1");
+    if runner == "signed_out" {
+        command.env_remove("AXIOMCLI_TEST_RUNNER");
+        command.env_remove("AXIOM_API_KEY");
+    }
     command.env("NO_COLOR", "1");
     if runner == "appearance" {
         command.env("AXIOMCLI_COLOR", "truecolor");
@@ -173,12 +180,81 @@ fn run_tui_at(
         wait_for_output(
             &output_rx,
             &mut output,
-            b"help",
+            if runner == "signed_out" {
+                b"Sign in"
+            } else {
+                b"help"
+            },
             "resized interactive screen",
         );
-        writer.write_all(b"probe\r").expect("submit prompt");
-        writer.flush().expect("flush prompt");
-        if runner == "blocking" {
+        if runner != "signed_out" {
+            writer.write_all(b"probe\r").expect("submit prompt");
+            writer.flush().expect("flush prompt");
+        }
+        if runner == "input_active" {
+            wait_for_output(&output_rx, &mut output, b"Working", "active task");
+            writer
+                .write_all(b"/usage\r")
+                .expect("inspect usage while running");
+            writer.flush().unwrap();
+            wait_for_output(
+                &output_rx,
+                &mut output,
+                b"Usage",
+                "usage inspector during task",
+            );
+            writer
+                .write_all(b"\x1b")
+                .expect("close usage without stopping");
+            writer.flush().unwrap();
+            thread::sleep(Duration::from_millis(100));
+            writer
+                .write_all(b"/logout\r")
+                .expect("reject session mutation while running");
+            writer.flush().unwrap();
+            wait_for_output(&output_rx, &mut output, b"Stop", "active command guard");
+            writer
+                .write_all(&[127; 7])
+                .expect("clear preserved logout draft");
+            writer
+                .write_all(b"aBcD\x1b[200~ PaStEd\nFollowUp\x1b[201~")
+                .expect("type and paste steering draft");
+            writer.flush().unwrap();
+            writer.write_all(b"\x1b").expect("stop task and keep draft");
+            writer.flush().unwrap();
+            wait_for_output(&output_rx, &mut output, b"Cancelled", "cancel active task");
+            writer
+                .write_all(b"\r")
+                .expect("submit preserved draft after cancellation");
+            writer.flush().unwrap();
+            thread::sleep(Duration::from_millis(250));
+        } else if runner == "paste_picker" {
+            thread::sleep(Duration::from_millis(500));
+            writer.write_all(b"/model\r").expect("open model picker");
+            writer.flush().unwrap();
+            wait_for_output(&output_rx, &mut output, b"Select model", "model picker");
+            wait_for_output(
+                &output_rx,
+                &mut output,
+                b"medium-only",
+                "loaded model catalog",
+            );
+            writer
+                .write_all(b"\x1b[200~alternate-model\x1b[201~\r")
+                .expect("paste filter and select model");
+            writer.flush().unwrap();
+            wait_for_output(
+                &output_rx,
+                &mut output,
+                b"Model changed",
+                "pasted model filter",
+            );
+            writer
+                .write_all(b"AfterPicker\r")
+                .expect("submit clean draft");
+            writer.flush().unwrap();
+            thread::sleep(Duration::from_millis(250));
+        } else if runner == "blocking" {
             wait_for_output(&output_rx, &mut output, b"Working", "blocking turn");
         } else if runner == "questions" {
             wait_for_output(
@@ -455,6 +531,66 @@ fn usage_command_opens_an_inspector_without_submitting_a_prompt() {
         assert!(!loaded.iter().any(|envelope| matches!(&envelope.event,
             axiomcli::app::AppEvent::PromptAccepted { text, .. } if text == "/usage")));
     }
+}
+
+fn saved_prompts(root: &Path) -> Vec<String> {
+    let store = SessionStore::open(test_account_database(root)).unwrap();
+    store
+        .list(false)
+        .unwrap()
+        .into_iter()
+        .flat_map(|session| {
+            store
+                .load(&session.id.parse().unwrap())
+                .unwrap()
+                .into_iter()
+                .filter_map(|event| match event.event {
+                    axiomcli::app::AppEvent::PromptAccepted { text, .. } => Some(text),
+                    _ => None,
+                })
+        })
+        .collect()
+}
+
+#[test]
+fn active_input_keeps_commands_local_and_preserves_uppercase_and_paste() {
+    let root = tempfile::tempdir().unwrap();
+    let (output, success) = run_tui_at("input_active", false, root.path(), &[]);
+    assert!(success, "active input session failed: {output:?}");
+    assert!(
+        !output.contains("Steering"),
+        "commands must never enter steering"
+    );
+    assert_eq!(
+        saved_prompts(root.path()),
+        ["probe", "aBcD PaStEd\nFollowUp"]
+    );
+}
+
+#[test]
+fn signed_out_production_runner_reaches_login_without_model_discovery() {
+    let root = tempfile::tempdir().unwrap();
+    let (output, success) = run_tui_at("signed_out", false, root.path(), &[]);
+    assert!(success, "signed-out TUI failed: {output:?}");
+    assert!(output.contains("Sign in"));
+    assert!(
+        std::fs::read_dir(root.path().join("data/axiom/accounts"))
+            .unwrap()
+            .next()
+            .is_none()
+    );
+}
+
+#[test]
+fn model_picker_paste_filters_without_polluting_the_next_prompt() {
+    let root = tempfile::tempdir().unwrap();
+    let (output, success) = run_tui_at("paste_picker", false, root.path(), &[]);
+    assert!(success, "picker session failed: {output:?}");
+    assert_eq!(saved_prompts(root.path()), ["probe", "AfterPicker"]);
+    let store = SessionStore::open(test_account_database(root.path())).unwrap();
+    let session = store.list(false).unwrap().pop().unwrap();
+    let events = store.load(&session.id.parse().unwrap()).unwrap();
+    assert_eq!(model_for_resume(&events, "fallback"), "alternate-model");
 }
 
 #[test]

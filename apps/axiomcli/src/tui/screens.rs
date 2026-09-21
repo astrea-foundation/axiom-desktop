@@ -68,12 +68,13 @@ pub fn render(frame: &mut Frame<'_>, state: &TuiState) {
 
     render_slash_suggestions(frame, state, theme, rows[1]);
 
-    if state.interaction.is_some() {
-        render_interaction(frame, state, theme);
-    }
-
     if let Some(overlay) = &state.overlay {
         render_overlay(frame, state, overlay, theme);
+    }
+    // Foreground questions and approvals receive keyboard input first, so they
+    // must also remain visible above an inspector opened during active work.
+    if state.interaction.is_some() {
+        render_interaction(frame, state, theme);
     }
 }
 
@@ -84,7 +85,6 @@ pub(super) fn render_slash_suggestions(
     area: Rect,
 ) {
     if state.focus != Focus::Composer
-        || state.running
         || state.interaction.is_some()
         || state.overlay.is_some()
         || state.search_active

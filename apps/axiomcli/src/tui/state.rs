@@ -1256,7 +1256,6 @@ impl TuiState {
 
     pub(super) fn can_navigate_slash(&self) -> bool {
         self.focus == Focus::Composer
-            && !self.running
             && self.input.starts_with('/')
             && self.input.is_cursor_at_end()
             && !self.slash_candidates().is_empty()

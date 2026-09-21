@@ -5,6 +5,7 @@ use std::time::Duration;
 mod attestation;
 mod brand;
 mod composer;
+mod input;
 mod markdown;
 mod runtime;
 mod screens;

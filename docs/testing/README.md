@@ -7,6 +7,7 @@ Current behavior lives in [the guides](../README.md).
 
 | Investigation | Follow-up |
 |---|---|
+| [TUI input/startup, 2026-09-21](tui-input-2026-09-21.md) | Input, login and foreground-interaction fixes; live agent run pending authentication |
 | [Tinfoil Desktop/TUI, 2026-09-18](tinfoil-ui-2026-09-18/README.md) | [Fix retest and remaining limits](tinfoil-ui-2026-09-18/FIXES.md) |
 | [Concurrent Desktop workflows, 2026-09-20](concurrency-ui-2026-09-20/README.md) | [Root causes](concurrency-ui-2026-09-20/ROOT-CAUSES.md), [fix retest](concurrency-ui-2026-09-20/FIXES.md) |
 
