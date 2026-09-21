@@ -1,8 +1,14 @@
 //! Terminal lifecycle, user input, and asynchronous application work.
 
 use std::{
-    collections::BTreeMap, env, fmt::Write as _, io, path::PathBuf, str::FromStr as _, sync::Arc,
-    time::Duration,
+    collections::BTreeMap,
+    env,
+    fmt::Write as _,
+    io,
+    path::PathBuf,
+    str::FromStr as _,
+    sync::Arc,
+    time::{Duration, Instant},
 };
 
 use async_trait::async_trait;
@@ -209,6 +215,7 @@ pub(super) fn start_security_preflight(
     *cancellation = Some(token.clone());
     *generation = generation.wrapping_add(1);
     let request_generation = *generation;
+    state.proof_refresh.enable();
     state.apply(&AppEvent::SecurityStatusChanged {
         state: crate::app::SecurityStatus::Verifying,
     });
@@ -856,7 +863,7 @@ pub async fn run(
     let mut pending_questions: Option<PendingQuestions> = None;
     let mut animation_ticks = tokio::time::interval(ANIMATION_TICK);
     animation_ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    // Freshness must repaint even while idle with animations disabled.
+    // Renewal and inactivity must advance even with animations disabled.
     let mut proof_ticks = tokio::time::interval(Duration::from_secs(1));
     proof_ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut accounting_ticks = tokio::time::interval(Duration::from_secs(5));
@@ -891,9 +898,21 @@ pub async fn run(
     );
 
     'ui: loop {
+        if state.running || state.compacting {
+            state.proof_refresh.record_activity(Instant::now());
+        }
         terminal.draw(|frame| render(frame, &state))?;
         tokio::select! {
-            _ = proof_ticks.tick(), if state.security_evidence.is_some() => {}
+            _ = proof_ticks.tick() => {
+                if !startup_auth_pending && auth.has_credential()
+                    && store.as_ref().is_some_and(SessionStore::is_active)
+                    && !matches!(state.overlay, Some(Overlay::Auth(_)))
+                    && security_cancellation.is_none()
+                    && state.security_refresh_due(Instant::now(), u64::try_from(chrono::Utc::now().timestamp()).unwrap_or(0))
+                {
+                    start_security_preflight(&mut state, &runner, &ui_tx, &mut security_cancellation, &mut security_generation);
+                }
+            }
             _ = accounting_ticks.tick(), if !accounting_busy && store.as_ref().is_some_and(SessionStore::is_active) => {
                 accounting_attempts.retain(|id, _| state.request_usage.get(id).is_some_and(|r| !r.settled));
                 let ids: Vec<_> = state.request_usage.values().filter(|r|
@@ -943,6 +962,11 @@ pub async fn run(
             }
             maybe_event = input_events.next() => {
                 let Some(Ok(event)) = maybe_event else { break };
+                if matches!(&event, Event::Key(key) if key.kind != KeyEventKind::Release)
+                    || matches!(&event, Event::Paste(_) | Event::Mouse(_) | Event::FocusGained)
+                {
+                    state.proof_refresh.record_activity(Instant::now());
+                }
                 match event {
                     Event::Key(key) if key.kind == KeyEventKind::Press => {
                         if key.code == KeyCode::Esc
@@ -2128,6 +2152,9 @@ pub async fn run(
                         if generation == security_generation =>
                     {
                         security_cancellation = None;
+                        state.proof_refresh.completed(Instant::now(), matches!(&result,
+                            Ok(SecurityVerification { status: crate::app::SecurityStatus::Verified, .. })
+                        ));
                         match result {
                             Ok(SecurityVerification {
                                 status:

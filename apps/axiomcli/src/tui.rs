@@ -7,6 +7,7 @@ mod brand;
 mod composer;
 mod input;
 mod markdown;
+mod proof_refresh;
 mod runtime;
 mod screens;
 mod state;

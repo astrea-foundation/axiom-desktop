@@ -290,7 +290,7 @@ pub(super) fn render_header(frame: &mut Frame<'_>, state: &TuiState, theme: Them
         ReportStatus::Verifying => (state.activity_glyph(false), theme.brand),
         ReportStatus::Failed => (state.glyph("✕", "!"), theme.error),
         ReportStatus::Expired | ReportStatus::Unavailable => (state.glyph("○", "o"), theme.warning),
-        ReportStatus::Unverified => (state.glyph("○", "o"), theme.muted),
+        ReportStatus::Idle | ReportStatus::Unverified => (state.glyph("○", "o"), theme.muted),
     };
     let security = format!("{marker} {}", report.label());
     let width = usize::from(inner.width);
@@ -1514,18 +1514,23 @@ pub(super) fn security_overlay_lines(
                     "Current TEE report verified locally. Reply completion is verified separately."
                 }
                 ReportStatus::Expired => {
-                    "This report has expired. Press R to obtain current evidence."
+                    "This report has expired. Renewal resumes when active and available; press R to retry."
+                }
+                ReportStatus::Idle => {
+                    "Idle after 30 minutes without activity. Verification resumes when you return."
                 }
                 ReportStatus::Failed => {
                     "Verification failed. This retained report is not current proof."
                 }
                 _ => "Current proof is unavailable. This is a previous report; press R to verify.",
             },
-            Style::default().fg(if report == ReportStatus::Verified {
-                theme.muted
-            } else {
-                theme.warning
-            }),
+            Style::default().fg(
+                if matches!(report, ReportStatus::Verified | ReportStatus::Idle) {
+                    theme.muted
+                } else {
+                    theme.warning
+                },
+            ),
         )),
         Line::default(),
     ];

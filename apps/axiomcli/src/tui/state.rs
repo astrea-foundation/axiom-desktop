@@ -6,6 +6,7 @@ use std::{
     env,
     path::PathBuf,
     str::FromStr as _,
+    time::Instant,
 };
 
 use axiom_secure_client::SecurityEvidence;
@@ -27,6 +28,7 @@ use super::{
     composer::ComposerBuffer,
     markdown::StreamingMarkdownRenderer,
     pick_splash_message,
+    proof_refresh::{ProofRefresh, REFRESH_BEFORE_EXPIRY_SECONDS},
     task::{TaskActivity, TaskPhase, TaskRunView, ToolPhase},
     text::{is_attestation_failure, sanitize_terminal_text, user_facing_provider_error},
     theme::{Appearance, ColorMode, Theme},
@@ -226,6 +228,7 @@ pub struct TuiState {
     pub(super) security: &'static str,
     pub(super) security_evidence: Option<SecurityEvidence>,
     pub(super) security_error: Option<String>,
+    pub(super) proof_refresh: ProofRefresh,
     pub(super) input: ComposerBuffer,
     pub(super) entries: Vec<Entry>,
     pub(super) running: bool,
@@ -286,6 +289,7 @@ impl TuiState {
             security: "NOT VERIFIED",
             security_evidence: None,
             security_error: None,
+            proof_refresh: ProofRefresh::new(Instant::now()),
             input: ComposerBuffer::default(),
             entries: Vec::new(),
             running: false,
@@ -328,6 +332,7 @@ impl TuiState {
         self.security = "NOT VERIFIED";
         self.security_evidence = None;
         self.security_error = None;
+        self.proof_refresh = ProofRefresh::new(Instant::now());
     }
 
     pub(super) fn fail_security(&mut self, detail: &str) {
@@ -337,12 +342,39 @@ impl TuiState {
     }
 
     pub(super) fn report_status(&self) -> ReportStatus {
+        if !self.running && !self.compacting && self.proof_refresh.is_idle(Instant::now()) {
+            return ReportStatus::Idle;
+        }
         report_status(
             self.security,
             &self.model,
             self.security_evidence.as_ref(),
             u64::try_from(chrono::Utc::now().timestamp()).unwrap_or(0),
         )
+    }
+
+    pub(super) fn security_refresh_due(&self, now: Instant, unix_seconds: u64) -> bool {
+        if self.running
+            || self.compacting
+            || self.security == "VERIFYING"
+            || !self.proof_refresh.due(now)
+        {
+            return false;
+        }
+        let report = report_status(
+            self.security,
+            &self.model,
+            self.security_evidence.as_ref(),
+            unix_seconds,
+        );
+        report != ReportStatus::Verified
+            || self.security_evidence.as_ref().is_some_and(|evidence| {
+                evidence
+                    .hard_expires_at_unix_seconds
+                    .is_some_and(|expires| {
+                        expires.saturating_sub(unix_seconds) <= REFRESH_BEFORE_EXPIRY_SECONDS
+                    })
+            })
     }
 
     pub(super) fn open_security(&mut self) {

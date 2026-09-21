@@ -16,6 +16,7 @@ pub(super) const MAX_WORKLOAD_DISPLAY_CHARS: usize = 100_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ReportStatus {
+    Idle,
     Unverified,
     Verifying,
     Verified,
@@ -27,6 +28,7 @@ pub(super) enum ReportStatus {
 impl ReportStatus {
     pub(super) const fn label(self) -> &'static str {
         match self {
+            Self::Idle => "IDLE",
             Self::Unverified => "NOT VERIFIED",
             Self::Verifying => "VERIFYING",
             Self::Verified => "TEE VERIFIED",

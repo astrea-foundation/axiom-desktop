@@ -5,10 +5,11 @@ import type { ProviderModel } from "../types";
 import { proofGroups, proofLabels, replyProof, verificationAge, type ProofState } from "../privacyProof";
 
 const explanation: Record<ProofState, string> = {
+  idle: "Verification is paused after 30 minutes without activity. It resumes when you return; model traffic still requires fresh evidence.",
   verified: "Model messages are encrypted on your device to a key verified through hardware attestation.",
   verifying: "Checking the model’s confidential-computing evidence on this device.",
   failed: "Verification failed. Model traffic requires valid evidence before it can be sent.",
-  expired: "This report has expired. Verification refreshes automatically while connected and idle. You can also refresh it now.",
+  expired: "This report has expired. Verification refreshes automatically while you’re active, connected, and between replies. You can also refresh it now.",
   unavailable: "A current verification report isn’t available. Refresh to inspect the model’s proof.",
   unverified: "Check the model’s hardware evidence and encryption key before sending model messages.",
   development: "This development session has no production TEE proof.",
