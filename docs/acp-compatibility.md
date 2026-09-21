@@ -125,7 +125,7 @@ feature. Standard ACP image/text-resource blocks use the same native validation.
 Timeline metadata carries only file summaries; `thread/attachments` fetches full
 local inputs on demand with `{threadId, userItemId}`, under the active account guard.
 Message revisions preserve the original attachments and change the prompt text.
-The generated schema defines all shapes and defaults for old journals.
+The generated schema defines all shapes and defaults for older stored messages.
 
 ## Accounts, billing and public evidence
 

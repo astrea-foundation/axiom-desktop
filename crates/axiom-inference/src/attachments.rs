@@ -103,7 +103,7 @@ impl PromptAttachment {
         }
     }
 
-    /// Small transcript projection. Original content stays in the local journal.
+    /// Small transcript projection. Original content stays in the local attachment table.
     #[must_use]
     pub fn summary(&self) -> serde_json::Value {
         serde_json::json!({"name": self.name(), "kind": match self { Self::Text { .. } => "text", Self::Image { .. } => "image" }, "bytes": self.bytes()})
