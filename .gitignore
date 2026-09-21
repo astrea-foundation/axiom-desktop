@@ -1,7 +1,4 @@
 /target/
-/fuzz/artifacts/
-/fuzz/corpus/
-/fuzz/target/
 /dist/
 **/node_modules/
 .pnpm-store/

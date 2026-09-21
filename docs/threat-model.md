@@ -179,7 +179,7 @@ Desktop acceptance remains a separate release gate.
 | Terminal control injection | high | closed: content sanitization, no raw model ANSI, snapshots and PTY restoration tests |
 | Resource exhaustion from streams/tools/journals | high | closed to recorded bounds: step/context/output/time caps, bounded exports, soak gates |
 | Dependency/advisory/license or artifact tampering | high | closed: lockfile, Cargo Deny, reproducible tar, SHA-256, detached signature verification, license inventory |
-| Malformed secure-provider wire input | high | closed to recorded bounds: ciphertext/evidence/SSE/request/tool-fragment fuzz entry points, properties, fixture negatives |
+| Malformed secure-provider wire input | high | closed to recorded bounds: parser validation, property tests, negative fixtures |
 | Proxy stream/cancellation resource leak | high | closed on Linux: process soak checks bounded file descriptors and resident memory after completed/cancelled streams |
 
 No blocker/high-severity item remains open within the audited Linux coding-agent

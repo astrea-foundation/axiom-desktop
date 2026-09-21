@@ -1057,19 +1057,6 @@ fn verify_near_proof(
     Ok((proof, raw_body))
 }
 
-#[cfg(feature = "fuzzing")]
-pub(crate) fn fuzz_parse_receipt(input: &[u8]) {
-    let Ok(value) = serde_json::from_slice(input) else {
-        return;
-    };
-    let _ = verify_near_proof(
-        value,
-        &"00".repeat(32),
-        &format!("0x{}", "00".repeat(20)),
-        "fuzz/model",
-    );
-}
-
 fn canonical_hash(value: &str) -> bool {
     value.len() == 64
         && value

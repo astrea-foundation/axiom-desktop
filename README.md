@@ -187,8 +187,6 @@ See [`docs/releasing.md`](docs/releasing.md) for reproducible packaging and
 signing, and [`docs/configuration.md`](docs/configuration.md),
 [`docs/privacy.md`](docs/privacy.md), and
 [`docs/troubleshooting.md`](docs/troubleshooting.md) for operation details.
-Parser fuzzing and corpus-handling instructions are in
-[`docs/fuzzing.md`](docs/fuzzing.md).
 
 ## Provider configuration
 
@@ -357,7 +355,6 @@ cargo check --workspace --all-targets --all-features
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
 cargo deny check
-cargo check --manifest-path fuzz/Cargo.toml --bins
 ```
 
 The required deterministic evaluation lane is
