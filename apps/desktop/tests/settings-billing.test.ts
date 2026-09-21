@@ -34,6 +34,9 @@ test("balance distinguishes revocable trial credit from other credit and ZEC", (
 
 test("missing deposit service and signed-out views do not offer checkout", () => {
   assert.match(render(), /Deposits are temporarily unavailable/);
-  assert.doesNotMatch(render(), /checkout|<form/);
+  assert.doesNotMatch(render(), /checkout/);
+  assert.match(render(), /Redeem a gift code/);
+  assert.match(render(), /type="password"/);
+  assert.doesNotMatch(render(false), /Redeem a gift code/);
   assert.match(render(false), /Sign in to view your balance/);
 });

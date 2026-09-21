@@ -39,6 +39,10 @@ the transcript, `Enter` to expand task details, `v` for the full viewer, and
 active work or closes the current overlay; two consecutive `Ctrl+C` presses exit.
 Terminal restoration is guarded on exit and panic.
 
+The status line shows task progress and interaction prompts. Open `/balance` to
+check account credit. Composer controls show the selected model, thinking level,
+Permissions profile and Web access.
+
 Typing `/` filters slash-command hints; `Tab` completes command names/arguments.
 Slash commands are handled locally rather than sent to the model as prompts.
 
@@ -52,6 +56,9 @@ Slash commands are handled locally rather than sent to the model as prompts.
 | `/delete` | Select and confirm deletion of saved sessions except the active one |
 | `/compact [focus]` | Cancellable encrypted successor-summary operation |
 | `/login`, `/logout`, `/account` | Native account operations |
+| `/balance` (or `/credits`) | View available, trial and other credit; refresh deposit status |
+| `/topup` | Show the mainnet Zcash deposit address |
+| `/redeem` | Open masked gift-code entry; takes no code argument |
 | `/security`, `/refresh` | Inspect cached public evidence or request fresh local verification |
 | `/theme dark\|light\|terminal` | Set the session appearance |
 | `/help` | Show the complete command reference |
@@ -67,8 +74,32 @@ Titles derive locally from the first prompt. A model's reasoning choices and
 context capacity come from validated catalog metadata, not its name.
 
 During active work, Enter can submit steering for the next safe boundary.
+Slash commands wait until the active task finishes and are never submitted as steering.
 Automatic and explicit compaction use tool-free attested E2EE inference and
 persist successor context for resume. Failed or cancelled work remains incomplete.
+
+## Credit and funding
+
+Use `/login` for native interactive sign-in before managing credit. An
+`AXIOM_API_KEY` automation credential does not authorize billing operations.
+`/balance` and `/topup` open the credit screen: **R** refreshes, **G** opens gift
+redemption, **C** copies a ready deposit address using the terminal's OSC 52
+clipboard support, and **Esc** closes it. Terminal selection is also available.
+Use Up/Down or Page Up/Page Down when the content exceeds the viewport. Status
+refreshes every five seconds while viewing the balance.
+
+Send only mainnet ZEC to the displayed address from your wallet. Credit is added
+after the required confirmations and USD valuation. The screen does not offer
+funding while conversion is unavailable. A payment-review hold can keep available
+credit at zero even after a gift is redeemed; topping up does not clear that hold.
+
+Run `/redeem` **without arguments**, then paste/type the gift code in its masked
+input and press Enter. Ctrl+U clears it. Never enter a gift code as a chat prompt.
+The screen handles code input separately and does not save it in conversations.
+After an interrupted attempt, paste the same code to retry; the server credits a
+card once, and replay by the same account is successful without another credit.
+Codes add non-trial USD inference credit and do not expire. The backend must have
+gift redemption deployed; older servers return an availability error.
 
 ## System instructions
 

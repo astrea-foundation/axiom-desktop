@@ -16,7 +16,7 @@ the current state of production, published installers or unrecorded manual work.
 | Local titles, edit/regenerate, staged compaction and stable user-submission ordering | [title helper](../apps/axiomcli/src/session_title.rs), [agent.rs](../apps/axiomcli/src/agent.rs), [ACP](../apps/axiomcli/src/acp.rs), [concurrency regressions](testing/concurrency-ui-2026-09-20/FIXES.md) |
 | Desktop Agent on all packaged OS targets; Linux-only Bubblewrap isolation | [workspace.rs](../apps/axiomcli/src/workspace.rs), [policy.rs](../apps/axiomcli/src/policy.rs), [Desktop](desktop.md) |
 | ACP 0.2 features, API-key creation and Tinfoil generation exception | [extension DTOs](../crates/axiom-acp-extension/src/lib.rs), [contract](acp-compatibility.md) |
-| Mainnet ZEC deposits, valuation and `billing@2` | [billing.rs](../apps/axiomcli/src/billing.rs), [account UI](../apps/desktop/src/renderer/src/App.tsx) |
+| Mainnet ZEC deposits, gift redemption and `billing@3` | [billing.rs](../apps/axiomcli/src/billing.rs), [TUI credit](../apps/axiomcli/src/tui/billing.rs), [Desktop gift form](../apps/desktop/src/renderer/src/components/GiftCodePanel.tsx) |
 | NEAR/Phala/Tinfoil authentication and truthful evidence | [provider drivers](../crates/axiom-secure-client/src/providers), [security](threat-model.md) |
 | Main-only CI, separate manual/signed packaging and publication handoff | [workflows](../.github/workflows), [packager](../apps/desktop/scripts/package-desktop.mjs), [releasing](releasing.md) |
 

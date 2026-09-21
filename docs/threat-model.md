@@ -166,7 +166,11 @@ selection, expire after 60 seconds and are one-use/process-local. IPC framing is
 bounded to 64 MiB (including escaped text and inline image payloads); retained sidecar stderr is capped at 64 KiB. Sequence gaps require
 snapshot replacement, not assumed success.
 
-Account credit/deposit operations require a native account session,
+Account credit/deposit/gift-redemption operations require a native account session,
 validate bounded amounts and identities, and discard results after an account
 change. They do not grant wallet or model transaction authority. See
 [architecture](architecture.md#account-credit-and-integrations).
+Gift codes cross the authenticated HTTPS account boundary only from a private
+input control. They are omitted from conversation persistence, activity events
+and debug output. Interrupted redemption does not establish failure to credit;
+the backend makes same-account retries financially idempotent.

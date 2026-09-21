@@ -26,6 +26,20 @@ draft; navigation, reselecting a thread and reload preserve them. An anonymous
 draft can follow the first sign-in. Pending first-message setup has its own
 identity, so navigating away does not silently discard or redirect it.
 
+## Balance and gift credit
+
+Open the account menu and choose **Balance** to view credit and top up with mainnet
+Zcash. **Redeem a gift code** adds its USD value to the signed-in account. Code
+entry is masked and cleared on success, closing the screen, disconnect or account
+change. It is never a chat message or saved draft. A failed/uncertain request can
+be retried with the same code without duplicate credit; a code already redeemed
+by this account reports that result and refreshes the balance.
+
+Gift credit is part of **Other credit**; trial credit is spent first. Gift
+redemption does not clear payment-review holds. It requires a native interactive
+account and a backend with gift redemption deployed. Desktop and its bundled
+sidecar negotiate `billing@3`; older sidecars must be updated together.
+
 ## Agent and Web controls
 
 New threads start with Agent **off**, a separate managed working directory and

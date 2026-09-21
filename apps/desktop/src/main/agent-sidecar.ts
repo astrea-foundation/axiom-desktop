@@ -281,6 +281,12 @@ export class AgentSidecar {
     });
   }
 
+  redeemGiftCode(code: string) {
+    return this.requireClient().redeemGiftCode(code).catch((error: unknown) => {
+      throw actionableAcpError(error);
+    });
+  }
+
   apiKeys() {
     return this.requireClient().apiKeys().catch((error: unknown) => { throw actionableAcpError(error); });
   }

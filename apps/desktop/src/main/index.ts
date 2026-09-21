@@ -260,6 +260,13 @@ function installAgentIpc(): void {
     return result;
   });
   agentHandle("agent:billing-status", () => sidecar.billingStatus());
+  agentHandle("agent:redeem-gift-code", async (_event, code: unknown, accountId: unknown) => {
+    const id = boundedString(accountId, "account ID", 128);
+    requirePaymentAccount(id, sidecar.state());
+    const result = await sidecar.redeemGiftCode(boundedString(code, "gift code", 64));
+    requirePaymentAccount(id, sidecar.state());
+    return result;
+  });
   agentHandle("agent:native-login-start", (_event, methodHint: unknown) =>
     sidecar.nativeLoginStart(loginMethod(methodHint)),
   );

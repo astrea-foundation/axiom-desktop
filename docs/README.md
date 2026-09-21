@@ -10,7 +10,7 @@ that a particular installer is published or that a live deployment has passed ac
 |---|---|
 | [Install and update](installing-desktop.md) | Package formats, bundled CLI and update installation |
 | [Desktop](desktop.md) | Chat, Agent/Web controls, editing, queues, evidence, credit and usage UI |
-| [CLI and TUI](cli.md) | Commands, terminal interaction, plans and session management |
+| [CLI and TUI](cli.md) | Commands, terminal interaction, credit/funding, plans and sessions |
 | [Local proxy](proxy.md) | Loopback setup, credentials and OpenAI compatibility |
 | [Configuration](configuration.md) | Configuration precedence, paths, limits and environment settings |
 | [Privacy](privacy.md) | What leaves the device, local storage and credential handling |
@@ -23,6 +23,7 @@ that a particular installer is published or that a live deployment has passed ac
 | [Clean baseline and reset](adr/0014-clean-storage-and-deposit-billing.md) | Native/backend reset, deposit-only billing and release gates |
 | [Architecture](architecture.md) | Components, account/storage ownership and backend boundary |
 | [ACP contract](acp-compatibility.md) | Standard ACP, negotiated features, recovery and DTO generation |
+| [Gift credit controls](adr/0017-gift-credit-controls.md) | Private redemption, TUI funding and `billing@3` |
 | [Security and trust operations](threat-model.md) | Trust boundaries, provider verification and signed-policy handling |
 | [NEAR v3](protocols/near-v3.md) | Worker sessions, Ed25519 receipts and relay routing |
 | [Tinfoil EHBP](protocols/tinfoil-ehbp-v1.md) | Router verification and authenticated encrypted completion |

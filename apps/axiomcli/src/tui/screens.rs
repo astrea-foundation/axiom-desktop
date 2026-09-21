@@ -467,72 +467,6 @@ pub(super) fn render_status(frame: &mut Frame<'_>, state: &TuiState, theme: Them
             state.pending_attention.len()
         )
     };
-    let status_text = if !state.exit_armed && !state.search_active && inner.width >= 110 {
-        let latest = state
-            .request_usage
-            .values()
-            .filter(|r| r.purpose == axiom_inference::InvocationPurpose::Conversation)
-            .max_by_key(|r| r.started_at_ms.parse::<u64>().unwrap_or(0));
-        if let Some(latest) = latest {
-            let records: Vec<_> = state
-                .request_usage
-                .values()
-                .filter(|r| {
-                    r.turn_id == latest.turn_id
-                        && r.purpose == axiom_inference::InvocationPurpose::Conversation
-                })
-                .collect();
-            let input: u128 = records
-                .iter()
-                .filter_map(|r| r.input_tokens.as_deref()?.parse::<u128>().ok())
-                .sum();
-            let output: u128 = records
-                .iter()
-                .filter_map(|r| r.output_tokens.as_deref()?.parse::<u128>().ok())
-                .sum();
-            let cost: u128 = records
-                .iter()
-                .filter_map(|r| r.cost_microusd.as_deref()?.parse::<u128>().ok())
-                .sum();
-            let pending = records.iter().any(|r| !r.settled);
-            let qualifier = if records
-                .iter()
-                .any(|r| r.input_tokens.is_none() || r.output_tokens.is_none())
-            {
-                "at least "
-            } else {
-                ""
-            };
-            let counts = if records
-                .iter()
-                .all(|r| r.input_tokens.is_none() && r.output_tokens.is_none())
-            {
-                "usage unavailable".into()
-            } else {
-                format!("{qualifier}{input} in / {output} out")
-            };
-            let waived = records
-                .iter()
-                .any(|r| r.error_code.as_deref() == Some("CANCELLED_USAGE_WAIVED"));
-            format!(
-                "{status_text} · Turn: {} requests, {counts}, ${}.{:06}{}",
-                records.len(),
-                cost / 1_000_000,
-                cost % 1_000_000,
-                if pending {
-                    " pending"
-                } else if waived {
-                    " · charge waived"
-                } else {
-                    ""
-                }
-            )
-        } else {
-            status_text
-        }
-    } else {
-        status_text
-    };
     let status_text = if state.compacting && !state.exit_armed && !state.search_active {
         format!("{}  Compacting…", state.compaction_frame())
     } else {
@@ -580,7 +514,7 @@ pub(super) fn render_composer_controls(
         ThinkingLevel::High => "High",
         ThinkingLevel::ExtraHigh => "Extra high",
     };
-    let agent = match state.profile {
+    let permissions = match state.profile {
         PermissionProfile::None | PermissionProfile::Web => "Off",
         PermissionProfile::Observe if width < 48 => "Read",
         PermissionProfile::Observe => "Read only",
@@ -591,10 +525,10 @@ pub(super) fn render_composer_controls(
     let web = if state.web_enabled { "On" } else { "Off" };
     // Preserve the tool-access states at narrow widths, then give the model
     // the remaining space. Thinking is useful only for models that expose it.
-    let agent_label = format!("Agent {agent}");
+    let permissions_label = format!("Permissions {permissions}");
     let web_label = format!("Web {web}");
     let thinking_label = format!("Thinking {thinking}");
-    let fixed_width = display_width(&agent_label) + display_width(&web_label) + 10;
+    let fixed_width = display_width(&permissions_label) + display_width(&web_label) + 10;
     let show_thinking = details.map_or(state.thinking != ThinkingLevel::ProviderDefault, |model| {
         !model.supported_reasoning_efforts.is_empty()
     }) && width >= fixed_width + display_width(&thinking_label) + 15;
@@ -622,8 +556,8 @@ pub(super) fn render_composer_controls(
     }
     spans.extend([
         Span::raw("  "),
-        Span::styled(" Agent ", label),
-        Span::styled(format!("{agent} "), value),
+        Span::styled(" Permissions ", label),
+        Span::styled(format!("{permissions} "), value),
         Span::raw("  "),
         Span::styled(
             format!(
@@ -1015,6 +949,10 @@ pub(super) fn render_overlay(
         render_security_overlay(frame, state, *view, theme);
         return;
     }
+    if let Overlay::Billing(view) = overlay {
+        super::billing::render(frame, state, view, theme);
+        return;
+    }
     if matches!(overlay, Overlay::SaveAttestation(_)) {
         render_attestation_save_picker(frame, state, theme);
         return;
@@ -1040,6 +978,7 @@ pub(super) fn render_overlay(
         return;
     }
     let (title, body): (&str, String) = match overlay {
+        Overlay::Billing(_) => unreachable!("billing rendered separately"),
         Overlay::Help => (
             " Help ",
             "Tab: switch composer/transcript focus\n\
@@ -1087,6 +1026,7 @@ pub(super) fn render_overlay(
     // Help is a fixed list, so give it only the rows it needs; the viewer holds
     // arbitrary entry text and keeps the tall panel.
     let area = match overlay {
+        Overlay::Billing(_) => unreachable!("billing rendered separately"),
         Overlay::Help => {
             let rows = u16::try_from(body.lines().count()).unwrap_or(u16::MAX);
             fitted_rect(88, rows.saturating_add(2), frame.area())

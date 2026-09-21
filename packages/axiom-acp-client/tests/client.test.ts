@@ -89,7 +89,7 @@ test("extension negotiation accepts additive families and optional features only
     profilePreferences: 1,
     collections: 1,
     account: 2,
-    billing: 2,
+    billing: 3,
     securityEvidence: 1,
     webConsent: 1,
     futureFeature: 7,
@@ -1140,6 +1140,39 @@ test("API key operations reject responses after the account changes and never up
     await assert.rejects(client.createApiKey("bad\nname"), /Invalid API key name/);
     await assert.rejects(client.revokeApiKey("../another-key"), /Invalid API key ID/);
   } finally {await client.close();}
+});
+
+test("gift redemption updates billing and discards a receipt after an account switch", async (t) => {
+  const { client } = await fixture();
+  t.after(() => client.close());
+  const state = (client as unknown as { state: AxiomStateStore }).state;
+  const code = "AXG-AAAA-AAAA-AAAA-AAAA-AAAA-AAAA-AAAA-AAAA";
+  state.setAccount({revision: 1, state: "valid", account: {id: "account-a", linkedMethods: ["password"]}});
+  let complete!: (value: unknown) => void;
+  const original = client.process.request.bind(client.process);
+  client.process.request = <T>(method: string, params: unknown, timeoutMs?: number, signal?: AbortSignal): Promise<T> => {
+    if (method === "_axiom/billing/redeem_gift_code") {
+      assert.deepEqual(params, {code});
+      return new Promise<T>(resolve => { complete = resolve as (value: unknown) => void; });
+    }
+    return original<T>(method, params, timeoutMs, signal);
+  };
+  const receipt = {creditedMicrousd: 5_000_000, alreadyRedeemed: false, status: {
+    revision: 1, ledgerSequence: 1, currency: "microUSD", postedMicrousd: 5_000_000,
+    availableMicrousd: 5_000_000, paidMicrousd: 5_000_000, trialMicrousd: 0,
+    paymentReviewRequired: false, paymentAccount: null, zecUsdQuote: null,
+  }};
+  const first = client.redeemGiftCode(code);
+  complete(receipt);
+  assert.deepEqual(await first, receipt);
+  assert.equal(client.getState().billing?.paidMicrousd, 5_000_000);
+  assert(!JSON.stringify(client.getState()).includes(code));
+  const stale = client.redeemGiftCode(code);
+  state.setAccount({revision: 2, state: "valid", account: {id: "account-b", linkedMethods: ["password"]}});
+  complete(receipt);
+  await assert.rejects(stale, /account changed/i);
+  assert.equal(client.getState().billing, null);
+  await assert.rejects(client.redeemGiftCode("x".repeat(65)), /valid Axiom gift code/);
 });
 
 

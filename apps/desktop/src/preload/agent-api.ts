@@ -3,6 +3,7 @@ import type { PromptAttachment, GetAttachmentsResponse } from "@axiom/axiom-acp-
 import type {
   AccountStatusResponse,
   BillingStatusResponse,
+  GiftCodeRedeemResponse,
   UsageSummaryResponse,
   ApiKeyListResponse,
   ApiKeyCreatedResponse,
@@ -55,6 +56,7 @@ export interface AgentApi {
   setSettings: (settings: ThreadSettingsRequest) => Promise<ThreadSettingsResult>;
   accountStatus: () => Promise<AccountStatusResponse>;
   billingStatus: () => Promise<BillingStatusResponse>;
+  redeemGiftCode: (code: string, accountId: string) => Promise<GiftCodeRedeemResponse>;
   usageSummary: (accountId: string) => Promise<UsageSummaryResponse>;
   apiKeys: (accountId: string) => Promise<ApiKeyListResponse>;
   createApiKey: (name: string, accountId: string) => Promise<ApiKeyCreatedResponse>;
@@ -105,6 +107,7 @@ export const agentApi: AgentApi = {
   setSettings: (settings) => invoke("set-settings", settings),
   accountStatus: () => invoke("account-status"),
   billingStatus: () => invoke("billing-status"),
+  redeemGiftCode: (code, accountId) => invoke("redeem-gift-code", code, accountId),
   usageSummary: (accountId) => invoke("usage-summary", accountId),
   apiKeys: (accountId) => invoke("api-keys", accountId),
   createApiKey: (name, accountId) => invoke("api-key-create", name, accountId),
