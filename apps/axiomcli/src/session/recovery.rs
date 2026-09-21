@@ -1,6 +1,9 @@
 //! Interrupted-store recovery, loading and export.
 
-use std::{collections::BTreeSet, path::PathBuf};
+use std::{
+    collections::{BTreeSet, HashMap},
+    path::PathBuf,
+};
 
 use chrono::Utc;
 use rusqlite::{Connection, params};
@@ -14,7 +17,9 @@ use crate::{
 
 use super::codec::storage_error;
 use super::projection::project_runtime_events;
-use super::queries::{StoredTimelineItem, ensure_thread_exists_connection, query_turns};
+use super::queries::{
+    StoredTimelineItem, ensure_thread_exists_connection, query_prompt_attachments, query_turns,
+};
 use super::records::{
     ExportOptions, InterruptedTool, LoadOutcome, RecoveryStatus, TimelineItemKind,
 };
@@ -117,9 +122,20 @@ impl SessionStore {
                 "thread {id} exceeds the {MAX_TIMELINE_ITEMS_PER_LOAD}-item runtime restore limit"
             ));
         }
+        let mut attachments = HashMap::new();
+        for item in &items {
+            if item.kind == TimelineItemKind::UserMessage
+                && item.metadata.get("attachments").is_some()
+            {
+                attachments.insert(
+                    item.id.clone(),
+                    query_prompt_attachments(&connection, id, &item.id)?,
+                );
+            }
+        }
         drop(statement);
         drop(connection);
-        let events = project_runtime_events(id, &thread, &turns, &items)?;
+        let events = project_runtime_events(id, &thread, &turns, &items, &attachments)?;
         Ok(LoadOutcome { events, warnings })
     }
 

@@ -22,6 +22,12 @@
     "promptMetadata": {
       "$ref": "#/$defs/PromptMetadata"
     },
+    "getAttachmentsRequest": {
+      "$ref": "#/$defs/GetAttachmentsRequest"
+    },
+    "getAttachmentsResponse": {
+      "$ref": "#/$defs/GetAttachmentsResponse"
+    },
     "deliveryMetadata": {
       "$ref": "#/$defs/DeliveryMetadata"
     },
@@ -184,6 +190,8 @@
     "desktopBootstrapRequest",
     "desktopBootstrapResponse",
     "promptMetadata",
+    "getAttachmentsRequest",
+    "getAttachmentsResponse",
     "deliveryMetadata",
     "listThreadsRequest",
     "listThreadsResponse",
@@ -541,6 +549,13 @@
           "maximum": 65535,
           "default": 0
         },
+        "attachments": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535,
+          "default": 0
+        },
         "compaction": {
           "type": "integer",
           "format": "uint16",
@@ -641,6 +656,12 @@
               "type": "null"
             }
           ]
+        },
+        "attachments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PromptAttachment"
+          }
         }
       },
       "required": [
@@ -663,6 +684,98 @@
       "required": [
         "userItemId",
         "expectedRevision"
+      ]
+    },
+    "PromptAttachment": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "text"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "name",
+            "text"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "image": {
+              "$ref": "#/$defs/ImageContent"
+            },
+            "kind": {
+              "type": "string",
+              "const": "image"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "name",
+            "image"
+          ]
+        }
+      ]
+    },
+    "ImageContent": {
+      "type": "object",
+      "properties": {
+        "mimeType": {
+          "type": "string"
+        },
+        "data": {
+          "description": "Canonical base64, without a data-URL prefix. Remote URLs are not images.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "mimeType",
+        "data"
+      ]
+    },
+    "GetAttachmentsRequest": {
+      "type": "object",
+      "properties": {
+        "threadId": {
+          "type": "string"
+        },
+        "userItemId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId",
+        "userItemId"
+      ]
+    },
+    "GetAttachmentsResponse": {
+      "type": "object",
+      "properties": {
+        "attachments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PromptAttachment"
+          }
+        }
+      },
+      "required": [
+        "attachments"
       ]
     },
     "DeliveryMetadata": {
@@ -1274,6 +1387,10 @@
           "type": "integer",
           "format": "uint32",
           "minimum": 0
+        },
+        "supportsImages": {
+          "type": "boolean",
+          "default": false
         },
         "autoCompactThresholdTokens": {
           "type": "integer",

@@ -62,6 +62,7 @@ function providerModels(response: ListModelsResponse): ProviderModel[] {
       inputPriceMicrousdPerMillionTokens: inputPrice,
       outputPriceMicrousdPerMillionTokens: outputPrice,
       contextWindowTokens: model.contextWindowTokens,
+      supportsImages: model.supportsImages,
       autoCompactThresholdTokens: model.autoCompactThresholdTokens,
     };
   });

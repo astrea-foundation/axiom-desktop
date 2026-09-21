@@ -166,6 +166,15 @@ fn build_request(
         .validate()
         .map_err(|_| invalid_request("inference request validation failed"))?;
     let response_format = public_response_format(&request.response_format)?;
+    if request
+        .messages
+        .iter()
+        .any(|message| !message.images.is_empty())
+    {
+        return Err(invalid_request(
+            "NEAR's registered encrypted protocol does not support image input",
+        ));
+    }
     if request.model != model.id {
         return Err(invalid_request(
             "request model does not match verified session",
@@ -2150,6 +2159,7 @@ mod tests {
             crypto::Ed25519PublicKey::from_hex(&recipient.public_key_hex()).unwrap();
         let messages = [
             ChatMessage {
+                images: Vec::new(),
                 role: ChatRole::Assistant,
                 content: String::new(),
                 reasoning_content: None,
@@ -2166,6 +2176,7 @@ mod tests {
                 }],
             },
             ChatMessage {
+                images: Vec::new(),
                 role: ChatRole::Tool,
                 content: "SECRET_RESULT".to_owned(),
                 reasoning_content: None,

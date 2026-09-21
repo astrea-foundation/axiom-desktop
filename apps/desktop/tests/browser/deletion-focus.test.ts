@@ -46,8 +46,8 @@ after(async () => {
   await server?.close();
 });
 
-async function openApp(platform = "linux", failDelete = false, thinkingLevels: string[] = [], rememberedThinking = "medium") {
-  const page = await browser.newPage({ viewport: { width: 1320, height: 900 }, bypassCSP: true });
+async function openApp(platform = "linux", failDelete = false, thinkingLevels: string[] = [], rememberedThinking = "medium", supportsImages = false, bypassCSP = true) {
+  const page = await browser.newPage({ viewport: { width: 1320, height: 900 }, bypassCSP });
   page.setDefaultTimeout(8_000);
   const errors: string[] = [];
   const nativeDialogs: string[] = [];
@@ -60,7 +60,7 @@ async function openApp(platform = "linux", failDelete = false, thinkingLevels: s
     if (route.request().url().startsWith(origin)) return route.continue();
     return route.abort();
   });
-  const installBridge = ({ platform, failDelete, thinkingLevels, rememberedThinking }: { platform: string; failDelete: boolean; thinkingLevels: string[]; rememberedThinking: string }) => {
+  const installBridge = ({ platform, failDelete, thinkingLevels, rememberedThinking, supportsImages }: { platform: string; failDelete: boolean; thinkingLevels: string[]; rememberedThinking: string; supportsImages: boolean }) => {
     const savedThinking = () => localStorage.getItem("test-thinking") ?? rememberedThinking;
     const settingsCalls: { threadId: string; model?: string; thinkingLevel?: string }[] = [];
     const defaultDirectory = (id: string) => platform === "win32" ? `C:\\Axiom\\chat\\${id}` : `/axiom/chat/${id}`;
@@ -116,7 +116,7 @@ async function openApp(platform = "linux", failDelete = false, thinkingLevels: s
       listModels: async () => ({ models: [{
         id: "test-model", label: "Test model", shortLabel: "Test model", providerId: "test",
         providerLabel: "Test provider", upstreamModel: "test-model", thinkingLevels,
-        contextWindowTokens: 100_000, autoCompactThresholdTokens: 85_000,
+        contextWindowTokens: 100_000, autoCompactThresholdTokens: 85_000, supportsImages,
       }] }),
       loadChat: async (id: string) => {
         calls.push({ method: "load", id });
@@ -199,6 +199,11 @@ async function openApp(platform = "linux", failDelete = false, thinkingLevels: s
         state.sessions[id]!.timeline.push({ id: clientItemId, clientItemId, kind: "user", text, status: "completed" });
         emit();
         return { stopReason: "end_turn" };
+      },
+      promptWithAttachments: async (id: string, text: string, clientItemId: string, webEnabled: boolean, _revision: number, attachments: any[]) => {
+        calls.push({ method: "attachments", id, text: JSON.stringify({ text, attachments }), webEnabled });
+        state.sessions[id]!.timeline.push({ id: clientItemId, clientItemId, kind: "user", text, status: "completed", raw: { metadata: { attachments: attachments.map((file) => ({ name: file.name, kind: file.kind })) } } });
+        emit(); return { stopReason: "end_turn" };
       },
       revisePrompt: async (id: string, text: string, userItemId: string, expectedRevision: number, webEnabled: boolean) => {
         calls.push({ method: "revise", id, text, userItemId, expectedRevision, webEnabled });
@@ -320,7 +325,7 @@ async function openApp(platform = "linux", failDelete = false, thinkingLevels: s
   };
   // tsx adds a function-name helper to nested callbacks; serialized browser
   // fixtures must define that helper in their own JavaScript realm.
-  await page.addInitScript({ content: `window.__name = (fn) => fn; (${installBridge.toString()})(${JSON.stringify({ platform, failDelete, thinkingLevels, rememberedThinking })});` });
+  await page.addInitScript({ content: `window.__name = (fn) => fn; (${installBridge.toString()})(${JSON.stringify({ platform, failDelete, thinkingLevels, rememberedThinking, supportsImages })});` });
   await page.goto(origin);
   try {
     await page.getByRole("button", { name: "Test model" }).waitFor();
@@ -485,7 +490,12 @@ for (const destination of ["new", "existing", "account", "runtime"]) {
         assert.equal((await calls(page)).some((call) => call.method === "prompt"), false);
         assert.equal(await page.evaluate(() => (window as any).__deletionTest.settingsCalls.length), 0);
         const saved = await page.evaluate(() => JSON.parse(localStorage.getItem("axiom.message-queue.v1:test-account")!));
-        assert.equal(saved[0].text, "Private pending message");
+        assert.equal(saved[0].text, "", "large payloads are not stored in localStorage");
+        const payload = await page.evaluate(async (id: string) => {
+          const { localPayloads } = await import(`${location.origin}/src/localPayloads.ts`);
+          return localPayloads.get("test-account", id);
+        }, saved[0].payloadId);
+        assert.equal(payload.text, "Private pending message");
         assert.equal(saved[0].preparing, true);
       }
       assert.deepEqual(errors, []);
@@ -2416,7 +2426,7 @@ test("interrupted first-message setup survives reload without automatic dispatch
     assert.match(await queue.innerText(), /Durable first message/);
     assert.equal((await calls(page)).some((call) => call.method === "prompt"), false);
     await queue.getByRole("button", { name: "Review draft" }).click();
-    assert.equal(await page.locator("textarea[data-chat-input]").inputValue(), "Durable first message");
+    await page.waitForFunction(() => (document.querySelector("textarea[data-chat-input]") as HTMLTextAreaElement)?.value === "Durable first message");
     await page.locator("textarea[data-chat-input]").press("Enter");
     await page.waitForFunction(() => (window as any).__deletionTest.calls.some((call: any) => call.method === "prompt"));
     assert.equal((await calls(page)).filter((call) => call.method === "prompt").length, 1);
@@ -2472,6 +2482,73 @@ test("two pending first messages continue independently while a third draft stay
     assert.deepEqual(prompts.map((call) => call.text).sort(), ["First parallel message", "Second parallel message"]);
     assert.equal(new Set(prompts.map((call) => call.id)).size, 2);
     assert.equal(await page.locator("textarea[data-chat-input]").inputValue(), "Third independent draft");
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+
+test("large file text is sent intact through the attachment-aware bridge and survives transcript display", async () => {
+  const { page, errors } = await openApp();
+  try {
+    const content = "local private content\n".repeat(10_000);
+    await page.locator('input[type="file"]').setInputFiles({ name: "notes.txt", mimeType: "text/plain", buffer: Buffer.from(content) });
+    await page.getByRole("button", { name: "Remove notes.txt" }).waitFor();
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    await page.waitForFunction(() => (window as any).__deletionTest.calls.some((call: any) => call.method === "attachments"));
+    const call = (await calls(page)).find((call) => call.method === "attachments")!;
+    assert.deepEqual(JSON.parse(call.text!), { text: "", attachments: [{ kind: "text", name: "notes.txt", text: content }] });
+    await page.getByRole("region", { name: "Chat messages", exact: true }).getByText("notes.txt", { exact: true }).waitFor();
+    assert.equal(await page.getByRole("button", { name: "Remove notes.txt" }).count(), 0);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+const tinyPng = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC", "base64");
+for (const vision of [false, true]) {
+  test(`image-only input respects model capability (${vision})`, async () => {
+    const { page, errors } = await openApp("linux", false, [], "medium", vision);
+    try {
+      await page.locator('input[type="file"]').setInputFiles({ name: "pixel.png", mimeType: "image/png", buffer: tinyPng });
+      await page.getByRole("button", { name: "Remove pixel.png" }).waitFor();
+      const send = page.getByRole("button", { name: "Send", exact: true });
+      if (!vision) {
+        assert.ok(await send.isDisabled());
+        await page.getByText("Choose a model with image support to send these images.").waitFor();
+      } else {
+        await send.click();
+        await page.waitForFunction(() => (window as any).__deletionTest.calls.some((call: any) => call.method === "attachments"));
+        const call = (await calls(page)).find((call) => call.method === "attachments")!;
+        assert.equal(JSON.parse(call.text!).attachments[0].image.data, tinyPng.toString("base64"));
+      }
+      assert.deepEqual(errors, []);
+    } finally { await page.close(); }
+  });
+}
+
+function textPdf(text: string): Buffer {
+  const stream = `BT /F1 12 Tf 72 720 Td (${text}) Tj ET`;
+  const objects = ["<< /Type /Catalog /Pages 2 0 R >>", "<< /Type /Pages /Kids [3 0 R] /Count 1 >>", "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>", "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>", `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`];
+  let pdf = "%PDF-1.4\n";
+  const offsets = [0];
+  for (const [index, object] of objects.entries()) { offsets.push(pdf.length); pdf += `${index + 1} 0 obj\n${object}\nendobj\n`; }
+  const xref = pdf.length;
+  pdf += `xref\n0 6\n0000000000 65535 f \n${offsets.slice(1).map((offset) => String(offset).padStart(10, "0") + " 00000 n \n").join("")}trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`;
+  return Buffer.from(pdf);
+}
+
+test("PDF text extraction uses the local bundled worker and unsupported documents keep the draft", async () => {
+  const { page, errors } = await openApp("linux", false, [], "medium", false, false);
+  try {
+    await page.locator('input[type="file"]').setInputFiles({ name: "notes.pdf", mimeType: "application/pdf", buffer: textPdf("Local PDF fact") });
+    await page.getByRole("button", { name: "Remove notes.pdf" }).waitFor();
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    await page.waitForFunction(() => (window as any).__deletionTest.calls.some((call: any) => call.method === "attachments"));
+    const call = (await calls(page)).find((call) => call.method === "attachments")!;
+    assert.match(JSON.parse(call.text!).attachments[0].text, /Local PDF fact/);
+    await page.locator("textarea[data-chat-input]").fill("Keep this draft");
+    await page.locator('input[type="file"]').setInputFiles({ name: "binary.docx", mimeType: "application/octet-stream", buffer: Buffer.from("binary") });
+    await page.getByRole("alert").filter({ hasText: "Export Office documents" }).waitFor();
+    assert.equal(await page.locator("textarea[data-chat-input]").inputValue(), "Keep this draft");
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
 });

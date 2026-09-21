@@ -37,7 +37,13 @@ The adapter checks requested tool controls against the completed result. Undefin
 
 Initial models are GPT-OSS 120B, GLM-5.3, Kimi K3 and Llama 3.3 70B. All support tools and streaming. GPT-OSS advertises sequential tools only; GLM/Kimi/Llama also passed parallel-call canaries. Gemma 4 is excluded after intermittent empty answers during tool roundtrips.
 
-The backend publishes current API context windows and token prices. Axiom's initial output cap is 8,192 tokens. Existing context compaction uses the advertised full context window. There is no message-count cap in this adapter.
+The backend publishes current API context windows and token prices. The former Axiom-only 8,192-token cap is removed. An explicit upstream output
+limit is preserved when advertised; otherwise the joint context window is the
+conditional ceiling, not a guaranteed output length. Native chat and proxy requests
+with no explicit limit omit `max_tokens`, leaving the provider's exact
+remaining-context/default-generation policy in control. Explicit caller and
+compaction budgets remain bounded by the catalog. See
+[vLLM output-budget selection](https://docs.vllm.ai/en/v0.15.1/api/vllm/entrypoints/utils/#vllm.entrypoints.utils.get_max_tokens). Existing context compaction uses the advertised full context window. There is no message-count cap in this adapter.
 
 The native client enforces existing request, stream, event and response bounds. Initial response wait is at most 300 seconds, stream idle timeout 120 seconds and total response deadline 900 seconds. Cancellation drops the subscriber and aborts upstream generation. Exact final metering already received can settle; otherwise the backend waives the charge, preserves unknown token counts and releases the billing hold. Both clients reconcile this metadata while idle without upgrading cancelled output to verified. Provider rate limits are account/model specific; no production numeric entitlement has been established by these canaries.
 

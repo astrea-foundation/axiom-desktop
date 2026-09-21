@@ -155,6 +155,7 @@ async fn run_agent(
     engine
         .run(
             TurnContext {
+                attachments: Vec::new(),
                 session_id: SessionId::new(),
                 turn_id: TurnId::new(),
                 cwd: root.to_path_buf(),
@@ -480,7 +481,7 @@ async fn live_model_investigation_baseline_is_budgeted_and_non_mutating() {
         let started = Instant::now();
         engine
             .run(
-                TurnContext {
+                TurnContext {attachments: Vec::new(),
                     session_id: SessionId::new(),
                     turn_id: TurnId::new(),
                     cwd: root.path().to_path_buf(),

@@ -6,6 +6,7 @@ import { desktopErrorMessage } from "./signInFlow";
 import { ThreadLoadTracker } from "./threadLoading";
 import { compareThreadMessages, newestMessageAt, orderFoldersByMessages } from "./threadOrdering";
 import type { PendingUserMessage, Thread } from "./types";
+import { useAttachmentDraft } from "./useAttachmentDraft";
 import { useAccountDraft } from "./useAccountDraft";
 import { useWebAccess } from "./useWebAccess";
 import { browserConsentStorage } from "./webConsent";
@@ -27,7 +28,9 @@ export function useConversations(agentState: ClientState, navigation: ReturnType
   const { surface, setSurface, activeThreadId, setActiveThreadId, activeThreadIdRef,
     navigationRevision, threadPreparation, setThreadPreparation, cancelThreadPreparation } = navigation;
   const { desktopReady, selectedModel, effectiveReasoningEffort, rememberSelection, restorePreferredSelection } = catalog;
-  const [draft, setDraft, writeDraft] = useAccountDraft(agentState.account?.state === "valid" ? agentState.account.account?.id ?? null : null, surface === "thread" ? activeThreadId : null);
+  const [draft, setDraft, writeDraft, writeDraftDurable] = useAccountDraft(agentState.account?.state === "valid" ? agentState.account.account?.id ?? null : null, surface === "thread" ? activeThreadId : null);
+  const attachmentDraft = useAttachmentDraft(agentState.account?.state === "valid" ? agentState.account.account?.id ?? null : null, surface === "thread" ? activeThreadId : null, setUiError);
+  const savingDraft = useRef(false);
   const [queueRevision, setQueueRevision] = useState(0);
   const [newAgentDraft, setNewAgentDraft] = useState<{ scope: string; selection: AgentSelection; } | null>(null);
   const [agentSettingsBusy, setAgentSettingsBusy] = useState(false);
@@ -267,7 +270,7 @@ export function useConversations(agentState: ClientState, navigation: ReturnType
     const api = window.axiomDesktop?.agent;
     const viewRevision = navigationRevision.current;
     const scope = `${billingAccountId}:${agentState.runtimeInstanceId}:${viewRevision}:${activeThreadId ?? "new"}`;
-    if (!text || !api || !agentState.connected || [...submittingDraft.current.values()].includes(scope) || agentSettingsBusy) return;
+    if ((!text && !attachmentDraft.attachments.length) || attachmentDraft.attachmentsBusy || savingDraft.current || !api || !agentState.connected || [...submittingDraft.current.values()].includes(scope) || agentSettingsBusy) return;
     if (requiresSignIn) {
       openSignIn();
       return;
@@ -280,24 +283,33 @@ export function useConversations(agentState: ClientState, navigation: ReturnType
       setUiError("Wait for the model catalog before sending.");
       return;
     }
+    const files = attachmentDraft.attachments;
+    if (files.some((file) => file.kind === "image") && !selectedModel.supportsImages) {
+      setUiError("Choose a model with image support before sending."); return;
+    }
+    if (files.length && !api.promptWithAttachments) { setUiError("Restart Axiom to enable attachments. Your draft was kept."); return; }
     const webEnabled = webAccess.enabled;
     const creatingThread = surface !== "thread" || !activeThreadId;
     let submissionId: string;
     try {
       messageQueue.current!.sync(agentState, api);
-      submissionId = messageQueue.current!.reserve(creatingThread ? null : activeThreadId, text, webEnabled);
+      savingDraft.current = true;
+      submissionId = await messageQueue.current!.reserveDurable(creatingThread ? null : activeThreadId, text, webEnabled, files);
     } catch (error) {
       setUiError(desktopErrorMessage(error, "Your message could not be saved. Your draft was kept."));
       return;
-    }
+    } finally { savingDraft.current = false; }
     submittingDraft.current.set(submissionId, scope);
-    setDraft(""); // The outbox now owns the message, before any asynchronous setup.
+    // Clear only the captured draft. A navigation/account change or newer typing
+    // during the disk commit must never clear another composer's text.
+    writeDraft(creatingThread ? null : activeThreadId, (previous) => previous.trim() === text ? "" : previous);
+    attachmentDraft.clearAttachments(files);
     const stillSelected = () => navigationRevision.current === viewRevision;
     rememberSelection(selectedModel.id, effectiveReasoningEffort);
     setUiError(null);
-    if (creatingThread) {
+    if (creatingThread && stillSelected()) {
       // Navigation can dismiss this view without cancelling the durable submission.
-      setThreadPreparation({ id: submissionId, text, accountId: billingAccountId, runtimeId: agentState.runtimeInstanceId });
+      setThreadPreparation({ id: submissionId, text: text || files.map((file) => file.name).join(", "), accountId: billingAccountId, runtimeId: agentState.runtimeInstanceId });
       activeThreadIdRef.current = null;
       setActiveThreadId(null);
       setThreadLoadError(null);
@@ -345,7 +357,7 @@ export function useConversations(agentState: ClientState, navigation: ReturnType
       if (creatingThread && stillSelected()) {
         activeThreadIdRef.current = sessionId;
         setActiveThreadId(sessionId);
-        setPendingUserMessage({ id: messageId, sessionId, text });
+        setPendingUserMessage({ id: messageId, sessionId, text: text || files.map((file) => file.name).join(", ") });
         setNewAgentDraft(null);
         setThreadPreparation(null);
       }
@@ -359,7 +371,7 @@ export function useConversations(agentState: ClientState, navigation: ReturnType
       const current = await api.getState().catch(() => null);
       if (current?.account?.account?.id !== billingAccountId || current?.runtimeInstanceId !== agentState.runtimeInstanceId) return;
       try {
-        if (writeDraft(creatingThread ? null : activeThreadId, (previous) => previous ? `${previous}\n\n${text}` : text, true)) {
+        if (!files.length && writeDraft(creatingThread ? null : activeThreadId, (previous) => previous ? `${previous}\n\n${text}` : text, true)) {
           messageQueue.current!.remove(submissionId);
         }
       } catch { /* Keep the durable outbox entry available for review. */ }
@@ -371,6 +383,16 @@ export function useConversations(agentState: ClientState, navigation: ReturnType
     } finally {
       submittingDraft.current.delete(submissionId);
     }
+  };
+
+  const reviewPreparation = async (id: string) => {
+    const item = messageQueue.current!.preparations(billingAccountId).find((entry) => entry.id === id);
+    if (!item || item.status !== "queued" || draft.trim() || attachmentDraft.attachments.length || attachmentDraft.attachmentsBusy) return;
+    try {
+      if (!await writeDraftDurable(null, item.text)) return;
+      if (!await attachmentDraft.setAttachmentsDurable(item.attachments ?? [])) return;
+      messageQueue.current!.remove(id);
+    } catch { setUiError("The draft could not be saved. Your message is still in the queue."); }
   };
 
   const stopStream = useCallback(() => {
@@ -399,5 +421,5 @@ export function useConversations(agentState: ClientState, navigation: ReturnType
     }
   };
 
-  return { draft, setDraft, writeDraft, threadPreparation, pendingUserMessage, threadLoadError, deleteTarget, setDeleteTarget, renameTarget, setRenameTarget, billingAccountId, webAccess, threads, folders, activeThread, activeSession, agentAccountScope, agentControl, isStreaming, ensureThreadLoaded, loadThread, showWelcome, reviseMessage, submitDraft, stopStream, deleteThread, messageQueue: messageQueue.current, threadLoads: threadLoads.current };
+  return { reviewPreparation, attachmentDraft, draft, setDraft, writeDraft, threadPreparation, pendingUserMessage, threadLoadError, deleteTarget, setDeleteTarget, renameTarget, setRenameTarget, billingAccountId, webAccess, threads, folders, activeThread, activeSession, agentAccountScope, agentControl, isStreaming, ensureThreadLoaded, loadThread, showWelcome, reviseMessage, submitDraft, stopStream, deleteThread, messageQueue: messageQueue.current, threadLoads: threadLoads.current };
 }

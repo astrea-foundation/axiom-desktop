@@ -1469,6 +1469,7 @@ enum ExtensionFeature {
     DesktopAgent = 1 << 12,
     Billing = 1 << 10,
     Usage = 1 << 13,
+    Attachments = 1 << 14,
 }
 
 struct ExtensionState {
@@ -1510,6 +1511,9 @@ impl ExtensionState {
             return;
         };
         let mut mask = 0;
+        if features.attachments >= 1 {
+            mask |= ExtensionFeature::Attachments as u64;
+        }
         if features.steering >= 1 {
             mask |= ExtensionFeature::Steering as u64;
         }
@@ -1707,8 +1711,21 @@ impl QuestionHandler for AcpQuestions {
     }
 }
 
+#[cfg(test)]
 fn prompt_text(blocks: &[protocol::ContentBlock]) -> std::result::Result<String, &'static str> {
+    let (text, attachments) = prompt_input(blocks)?;
+    if text.trim().is_empty() && attachments.is_empty() {
+        Err("AxiomCLI currently requires a non-empty text prompt")
+    } else {
+        Ok(text)
+    }
+}
+
+fn prompt_input(
+    blocks: &[protocol::ContentBlock],
+) -> std::result::Result<(String, Vec<axiom_inference::PromptAttachment>), &'static str> {
     let mut text = String::new();
+    let mut attachments = Vec::new();
     for block in blocks {
         let content = match block {
             protocol::ContentBlock::Text(content) => content.text.clone(),
@@ -1717,6 +1734,30 @@ fn prompt_text(blocks: &[protocol::ContentBlock]) -> std::result::Result<String,
                 resource.title.as_deref().unwrap_or(&resource.name),
                 resource.uri
             ),
+            protocol::ContentBlock::Image(image) => {
+                attachments.push(axiom_inference::PromptAttachment::Image {
+                    name: image.uri.clone().unwrap_or_else(|| "Attached image".into()),
+                    image: axiom_inference::ImageContent {
+                        mime_type: image.mime_type.clone(),
+                        data: image.data.clone(),
+                    },
+                });
+                continue;
+            }
+            protocol::ContentBlock::Resource(resource) => {
+                if let protocol::EmbeddedResourceResource::TextResourceContents(content) =
+                    &resource.resource
+                {
+                    attachments.push(axiom_inference::PromptAttachment::Text {
+                        name: content.uri.clone(),
+                        text: content.text.clone(),
+                    });
+                    continue;
+                }
+                return Err(
+                    "Binary resources must be converted locally to text or image content before sending",
+                );
+            }
             _ => return Err("ACP prompt contains a content type AxiomCLI did not advertise"),
         };
         if !text.is_empty() {
@@ -1724,11 +1765,7 @@ fn prompt_text(blocks: &[protocol::ContentBlock]) -> std::result::Result<String,
         }
         text.push_str(&content);
     }
-    if text.trim().is_empty() {
-        Err("AxiomCLI currently requires a non-empty text prompt")
-    } else {
-        Ok(text)
-    }
+    Ok((text, attachments))
 }
 
 struct EventDelivery<'a> {
@@ -1782,13 +1819,33 @@ fn send_event(
                 Some(client_item_id),
             )
         }
-        AppEvent::PromptAccepted { turn_id, text } => {
+        AppEvent::PromptAccepted {
+            turn_id,
+            text,
+            attachments,
+        } => {
             let message_id =
                 client_item_id.map_or_else(|| format!("user:{turn_id}"), ToOwned::to_owned);
-            let chunk = protocol::ContentChunk::new(protocol::ContentBlock::Text(
+            let mut chunk = protocol::ContentChunk::new(protocol::ContentBlock::Text(
                 protocol::TextContent::new(text),
             ))
             .message_id(message_id.as_str());
+            if !attachments.is_empty()
+                && extension_state
+                    .is_some_and(|state| state.feature_enabled(ExtensionFeature::Attachments))
+            {
+                let mut meta = protocol::Meta::new();
+                meta.insert(
+                    "axiomAttachments".into(),
+                    serde_json::json!(
+                        attachments
+                            .iter()
+                            .map(axiom_inference::PromptAttachment::summary)
+                            .collect::<Vec<_>>()
+                    ),
+                );
+                chunk = chunk.meta(meta);
+            }
             send_session_update(
                 connection,
                 session_id,

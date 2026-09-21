@@ -2,12 +2,14 @@ import { ArrowDown } from "lucide-react";
 import type { ReactNode } from "react";
 import type { ClientSessionState } from "@axiom/axiom-acp-client";
 import type { PendingUserMessage, ProviderModel, ReasoningEffort } from "../types";
+import type { AttachmentControl } from "./Attachments";
 import { ChatComposer } from "./ChatComposer";
 import type { AgentControlOptions } from "./AgentModeControl";
 import { TimelineView } from "./TimelineView";
 import { useChatAutoScroll } from "../useChatAutoScroll";
 
 interface ChatViewProps {
+  attachments?: AttachmentControl;
   agentControl?: AgentControlOptions;
   queue?: ReactNode;
   session: ClientSessionState;
@@ -35,6 +37,7 @@ interface ChatViewProps {
 }
 
 export function ChatView({
+  attachments,
   agentControl,
   queue,
   session,
@@ -96,6 +99,7 @@ export function ChatView({
         <div className="mx-auto w-full max-w-[760px]">
           {queue}
           <ChatComposer
+            attachments={attachments}
             agentControl={agentControl}
             webEnabled={webEnabled}
             webDisabled={webDisabled}

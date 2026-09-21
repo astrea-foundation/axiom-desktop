@@ -9,8 +9,8 @@ function thoughtLabel(durationMs?: number): string {
   return `Thought for ${seconds} ${seconds === 1 ? "second" : "seconds"}`;
 }
 
-export function MessageBubble({ message, onRevise, revisionText }: {
-  message: Message; onRevise?: (text: string) => Promise<void>; revisionText?: string;
+export function MessageBubble({ message, onRevise, revisionText, revisionHasAttachments = false }: {
+  message: Message; onRevise?: (text: string) => Promise<void>; revisionText?: string; revisionHasAttachments?: boolean;
 }) {
   const [copied, setCopied] = useState(false);
   const [revisionMode, setRevisionMode] = useState<"edit" | "regenerate" | null>(null);
@@ -20,7 +20,7 @@ export function MessageBubble({ message, onRevise, revisionText }: {
     {revisionMode === "edit" ? <textarea aria-label="Edited message" value={revisionDraft} onChange={(event) => setRevisionDraft(event.target.value)}
       className="mb-2 min-h-24 w-full rounded bg-[var(--color-bg-surface)] p-2 text-[14px]" /> : null}
     <p>This replaces the reply and all later messages. Files already changed stay as they are.</p>
-    <div className="mt-2 flex gap-3"><button type="button" disabled={!onRevise || revising || !(revisionMode === "edit" ? revisionDraft : revisionText)?.trim()}
+    <div className="mt-2 flex gap-3"><button type="button" disabled={!onRevise || revising || (!revisionHasAttachments && !(revisionMode === "edit" ? revisionDraft : revisionText)?.trim())}
       onClick={() => { setRevising(true); void onRevise?.(revisionMode === "edit" ? revisionDraft : revisionText!)
         .then(() => setRevisionMode(null)).catch(() => {}).finally(() => setRevising(false)); }}
       className="rounded bg-[var(--color-cherry)] px-3 py-1.5 text-on-accent disabled:opacity-40">{revisionMode === "edit" ? "Save and send" : "Regenerate from here"}</button>

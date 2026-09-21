@@ -64,6 +64,7 @@ pub(super) fn list_models(
                 id: model.id,
                 context_window_tokens: model.context_window_tokens,
                 max_output_tokens: model.max_output_tokens,
+                supports_images: model.supports_images,
                 input_price_microusd_per_million_tokens: model
                     .input_price_microusd_per_million_tokens,
                 output_price_microusd_per_million_tokens: model

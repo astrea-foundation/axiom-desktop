@@ -51,7 +51,7 @@ export function App() {
   const account = useNativeAccount(agentState, catalog.desktopReady, catalog.refreshModels, catalog.clearModels, closeAccountScreen, setUiError);
   const { accountView, requiresSignIn, signInState, setSignInState, refreshAccount, logout, refreshBilling, cancelNativeSignIn, openSignIn, openAccountPortal } = account;
   const conversations = useConversations(agentState, navigation, catalog, requiresSignIn, openSignIn, setUiError);
-  const { draft, setDraft, writeDraft, threadPreparation, pendingUserMessage, threadLoadError,
+  const { reviewPreparation, attachmentDraft, draft, setDraft, threadPreparation, pendingUserMessage, threadLoadError,
     deleteTarget, setDeleteTarget, renameTarget, setRenameTarget, billingAccountId, webAccess,
     threads, folders, activeThread, activeSession, agentAccountScope, agentControl, isStreaming,
     ensureThreadLoaded, loadThread, showWelcome, reviseMessage, submitDraft, stopStream, deleteThread,
@@ -247,9 +247,9 @@ export function App() {
           ) : null}
 
           {uiError || webAccess.error || agentState.error ? (
-            <div className="shadow-glass-pop absolute left-1/2 top-12 z-40 max-w-[80%] -translate-x-1/2 truncate rounded-full bg-[var(--surface-float)] px-4 py-2 text-[12.5px] text-[var(--color-danger-strong)] backdrop-blur">{uiError ?? webAccess.error ?? agentState.error}</div>
+            <div role="alert" className="shadow-glass-pop absolute left-1/2 top-12 z-40 max-w-[80%] -translate-x-1/2 truncate rounded-full bg-[var(--surface-float)] px-4 py-2 text-[12.5px] text-[var(--color-danger-strong)] backdrop-blur">{uiError ?? webAccess.error ?? agentState.error}</div>
           ) : modelCatalogError ? (
-            <div className="shadow-glass-pop absolute left-1/2 top-12 z-40 max-w-[80%] -translate-x-1/2 truncate rounded-full bg-[var(--surface-float)] px-4 py-2 text-[12.5px] text-[var(--color-text-secondary)] backdrop-blur">{modelCatalogError}</div>
+            <div role="alert" className="shadow-glass-pop absolute left-1/2 top-12 z-40 max-w-[80%] -translate-x-1/2 truncate rounded-full bg-[var(--surface-float)] px-4 py-2 text-[12.5px] text-[var(--color-text-secondary)] backdrop-blur">{modelCatalogError}</div>
           ) : null}
 
           <div className="relative min-h-0 flex-1">
@@ -267,6 +267,7 @@ export function App() {
                 webDisabled={!billingAccountId || !agentState.connected}
                 onWebToggle={webAccess.toggle}
                 session={activeSession}
+                attachments={{ items: attachmentDraft.attachments, busy: attachmentDraft.attachmentsBusy, onAddFiles: (files) => void attachmentDraft.addFiles(files), onRemove: (index) => attachmentDraft.setAttachments(attachmentDraft.attachments.filter((_, current) => current !== index)) }}
                 draft={draft}
                 onDraftChange={setDraft}
                 onSubmit={() => void submitDraft()}
@@ -305,23 +306,12 @@ export function App() {
             ) : (
               <WelcomeView
                 savedMessages={<MessageQueue messages={messageQueue.preparations(billingAccountId)} paused canSteer={agentState.connected && !draft.trim()}
-                  onSendNow={(id) => {
-                    const item = messageQueue.preparations(billingAccountId).find((item) => item.id === id);
-                    if (!item || item.status !== "queued" || draft.trim()) return;
-                    const threadId = item.threadId.startsWith("pending:") ? null : item.threadId;
-                    try {
-                      if (!writeDraft(threadId, (previous) => previous ? `${previous}\n\n${item.text}` : item.text, true)) return;
-                    } catch {
-                      setUiError("The draft could not be saved. Your message is still in the queue.");
-                      return;
-                    }
-                    messageQueue.remove(id);
-                    if (threadId) void loadThread(threadId);
-                  }} onRemove={(id) => messageQueue?.remove(id)} />}
+                  onSendNow={(id) => void reviewPreparation(id)} onRemove={(id) => messageQueue?.remove(id)} />}
                 agentControl={agentControl}
                 webEnabled={webAccess.enabled}
                 webDisabled={!billingAccountId || !agentState.connected}
                 onWebToggle={webAccess.toggle}
+                attachments={{ items: attachmentDraft.attachments, busy: attachmentDraft.attachmentsBusy, onAddFiles: (files) => void attachmentDraft.addFiles(files), onRemove: (index) => attachmentDraft.setAttachments(attachmentDraft.attachments.filter((_, current) => current !== index)) }}
                 draft={draft}
                 onDraftChange={setDraft}
                 onSubmit={() => void submitDraft()}

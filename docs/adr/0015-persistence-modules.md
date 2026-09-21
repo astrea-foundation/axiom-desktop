@@ -22,3 +22,6 @@ The [platform persistence plan](https://github.com/astrea-foundation/axiom-platf
 tracks the coordinated constraint, redundancy, storage and SQL organization work.
 This decision extends [ADR 0014](0014-clean-storage-and-deposit-billing.md) without
 performing a production reset or changing the release workflow.
+
+The later attachment change extends this baseline with a transactional schema 2
+migration; see [versioning](../versioning.md). It keeps these module boundaries.

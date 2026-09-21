@@ -136,7 +136,9 @@ impl SessionStore {
         let mut client_item_id = client_item_id.as_deref();
         for envelope in envelopes {
             persist_event(&transaction, envelope, client_item_id)?;
-            if matches!(&envelope.event,
+            let has_attachments = matches!(&envelope.event, AppEvent::PromptAccepted { attachments, .. } if !attachments.is_empty());
+            if has_attachments
+                || matches!(&envelope.event,
                 AppEvent::PromptAccepted { text, .. }
                 | AppEvent::SteeringApplied { text, .. }
                 | AppEvent::TextDelta { text, .. }
@@ -150,7 +152,8 @@ impl SessionStore {
                     params![thread_id, message_at],
                 ).map_err(storage_error)?;
             }
-            if matches!(&envelope.event,
+            if has_attachments
+                || matches!(&envelope.event,
                 AppEvent::PromptAccepted { text, .. } | AppEvent::SteeringApplied { text, .. } if !text.is_empty())
             {
                 transaction.execute(
@@ -291,7 +294,11 @@ pub(super) fn persist_event(
                 },
             )?;
         }
-        AppEvent::PromptAccepted { turn_id, text } => {
+        AppEvent::PromptAccepted {
+            turn_id,
+            text,
+            attachments,
+        } => {
             let turn_id = turn_id.to_string();
             let user_content = redact_text(text);
             let (user_item_id, _) = insert_timeline_item(
@@ -304,10 +311,24 @@ pub(super) fn persist_event(
                     client_item_id,
                     external_id: None,
                     content: &user_content,
-                    metadata: json!({}),
+                    metadata: if attachments.is_empty() {
+                        json!({})
+                    } else {
+                        json!({"attachments": attachments.iter().map(axiom_inference::PromptAttachment::summary).collect::<Vec<_>>()})
+                    },
                     now: &now,
                 },
             )?;
+            if !attachments.is_empty() {
+                axiom_inference::validate_prompt(text, attachments)
+                    .map_err(|error| AxiomError::Storage(error.to_string()))?;
+                transaction
+                    .execute(
+                        "INSERT INTO prompt_attachments(user_item_id,payload) VALUES (?1,?2)",
+                        params![user_item_id, serde_json::to_string(attachments)?],
+                    )
+                    .map_err(storage_error)?;
+            }
             let (assistant_item_id, _) = insert_timeline_item(
                 transaction,
                 &thread_id,

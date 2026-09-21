@@ -4,10 +4,12 @@ import { AxiomMark } from "../brand/AxiomLogo";
 import { GreetingHeadline } from "../brand/GreetingHeadline";
 import type { AccountPresentation } from "../signInFlow";
 import type { ProviderModel, ReasoningEffort } from "../types";
+import type { AttachmentControl } from "./Attachments";
 import { ChatComposer } from "./ChatComposer";
 import type { AgentControlOptions } from "./AgentModeControl";
 
 interface WelcomeViewProps {
+  attachments?: AttachmentControl;
   savedMessages?: ReactNode;
   agentControl?: AgentControlOptions;
   draft: string;
@@ -29,6 +31,7 @@ interface WelcomeViewProps {
 }
 
 export function WelcomeView({
+  attachments,
   savedMessages,
   agentControl,
   draft,
@@ -101,6 +104,7 @@ export function WelcomeView({
         <div className="w-full">
           <div className="w-full">{savedMessages}</div>
         <ChatComposer
+            attachments={attachments}
             agentControl={agentControl}
             webEnabled={webEnabled}
             webDisabled={webDisabled}

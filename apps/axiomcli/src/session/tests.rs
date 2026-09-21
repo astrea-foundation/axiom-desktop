@@ -19,7 +19,7 @@ use super::SessionStore;
 use super::records::{
     ThreadLifecycle, ThreadRevision, TimelineItemKind, TimelineItemStatus, TurnStatus,
 };
-use super::schema::{APPLICATION_ID, SCHEMA_VERSION};
+use super::schema::{APPLICATION_ID, SCHEMA_BASELINE, SCHEMA_VERSION};
 
 use std::sync::Barrier;
 
@@ -198,6 +198,7 @@ fn message_revision_is_idle_account_scoped_and_preserves_request_accounting() {
             &id,
             7,
             AppEvent::PromptAccepted {
+                attachments: Vec::new(),
                 turn_id: first.clone(),
                 text: "replacement".into(),
             },
@@ -465,6 +466,7 @@ fn begin_turn(
                     id,
                     2,
                     AppEvent::PromptAccepted {
+                        attachments: Vec::new(),
                         turn_id: turn.clone(),
                         text: "hello".into(),
                     },
@@ -1382,6 +1384,7 @@ fn message_order_ignores_operational_updates_and_paginates_empty_threads() {
         &older,
         "2026-01-01T01:00:00Z",
         AppEvent::PromptAccepted {
+            attachments: Vec::new(),
             turn_id: turn.clone(),
             text: "old".into(),
         },
@@ -1390,6 +1393,7 @@ fn message_order_ignores_operational_updates_and_paginates_empty_threads() {
         &newer,
         "2026-01-01T02:00:00Z",
         AppEvent::PromptAccepted {
+            attachments: Vec::new(),
             turn_id: TurnId::new(),
             text: "new".into(),
         },
@@ -1464,6 +1468,7 @@ fn message_order_ignores_operational_updates_and_paginates_empty_threads() {
         &older,
         "2026-01-03T01:00:00Z",
         AppEvent::PromptAccepted {
+            attachments: Vec::new(),
             turn_id: TurnId::new(),
             text: "follow up".into(),
         },
@@ -1696,4 +1701,109 @@ fn unix_workspace_paths_round_trip_without_unicode_loss() {
         ))
         .expect("create");
     assert_eq!(store.thread_summary(&id).expect("thread").cwd, path);
+}
+
+#[test]
+fn attachments_survive_reopen_and_revision_and_are_deleted_with_their_message() {
+    let (_root, store) = routed_store();
+    store.activate_account("a").unwrap();
+    let id = SessionId::new();
+    let turn = TurnId::new();
+    create(&store, &id);
+    let files = vec![axiom_inference::PromptAttachment::Text {
+        name: "notes.txt".into(),
+        text: "local file contents".into(),
+    }];
+    store
+        .append_prompt_revision(
+            &[envelope(
+                &id,
+                2,
+                AppEvent::PromptAccepted {
+                    turn_id: turn.clone(),
+                    text: String::new(),
+                    attachments: files.clone(),
+                },
+            )],
+            Some("client-id"),
+            None,
+        )
+        .unwrap();
+    store
+        .append(&envelope(&id, 3, AppEvent::TurnCompleted { turn_id: turn }))
+        .unwrap();
+    let snapshot = store.thread_snapshot(&id, None, 100).unwrap();
+    let user = snapshot
+        .items
+        .iter()
+        .find(|item| item.kind == TimelineItemKind::UserMessage)
+        .unwrap();
+    assert!(snapshot.thread.last_user_message_at.is_some());
+    assert!(
+        !serde_json::to_string(&snapshot.items)
+            .unwrap()
+            .contains("local file contents")
+    );
+    assert_eq!(store.prompt_attachments(&id, "client-id").unwrap(), files);
+    store.activate_account("b").unwrap();
+    assert!(store.prompt_attachments(&id, &user.id).is_err());
+    store.activate_account("a").unwrap();
+    assert!(store.load(&id).unwrap().iter().any(|event| matches!(&event.event, AppEvent::PromptAccepted { attachments, .. } if attachments == &files)));
+    let revision = axiom_acp_extension::PromptRevision {
+        user_item_id: user.id.clone(),
+        expected_revision: store.thread_summary(&id).unwrap().revision,
+    };
+    let retained = store.prompt_attachments(&id, &user.id).unwrap();
+    let new_turn = TurnId::new();
+    store
+        .append_prompt_revision(
+            &[envelope(
+                &id,
+                4,
+                AppEvent::PromptAccepted {
+                    turn_id: new_turn.clone(),
+                    text: "edited".into(),
+                    attachments: retained,
+                },
+            )],
+            Some("edited-id"),
+            Some(&revision),
+        )
+        .unwrap();
+    assert!(store.prompt_attachments(&id, &user.id).is_err());
+    assert_eq!(store.prompt_attachments(&id, "edited-id").unwrap(), files);
+    store
+        .append(&envelope(
+            &id,
+            5,
+            AppEvent::TurnCompleted { turn_id: new_turn },
+        ))
+        .unwrap();
+    let count: i64 = store
+        .lock()
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM prompt_attachments", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(count, 1, "revision cascades away the replaced payload");
+}
+
+#[test]
+fn version_one_store_upgrades_without_replacing_existing_history() {
+    let root = tempdir().unwrap();
+    let path = root.path().join("state.sqlite3");
+    let connection = Connection::open(&path).unwrap();
+    connection.execute_batch(SCHEMA_BASELINE).unwrap();
+    drop(connection);
+    let store = SessionStore::open(&path).unwrap();
+    let id = SessionId::new();
+    create(&store, &id);
+    let connection = store.lock().unwrap();
+    let version: i64 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, 2);
+    drop(connection);
+    assert!(!store.load(&id).unwrap().is_empty());
 }

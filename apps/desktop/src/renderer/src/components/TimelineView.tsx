@@ -1,6 +1,7 @@
 import { AlertTriangle, CheckCircle2, ListChecks } from "lucide-react";
 import type { ClientSessionState, ClientTimelineItem } from "@axiom/axiom-acp-client";
 import type { PendingUserMessage } from "../types";
+import { StoredAttachments, attachmentNames } from "./Attachments";
 import { MessageBubble } from "./MessageBubble";
 import { ToolCallCard } from "./ToolCallCard";
 import { InteractionCard } from "./InteractionCard";
@@ -30,7 +31,9 @@ export function TimelineView({
   const rows = presentation.map((row) => {
     if (row.kind === "message") {
       const source = sources.get(row.message.id);
-      return <div key={row.key} data-timeline-kind={row.message.role}><MessageBubble message={row.message}
+      return <div key={row.key} data-timeline-kind={row.message.role}>
+        {row.message.role === "user" ? <StoredAttachments threadId={session.sessionId} userItemId={row.message.id} names={attachmentNames(source?.raw)} /> : null}
+        <MessageBubble message={row.message} revisionHasAttachments={Boolean(attachmentNames(source?.raw).length)}
         revisionText={source?.text} onRevise={source && onRevise ? (text) => onRevise(source.id, text) : undefined} /></div>;
     }
     if (row.kind === "tool" && row.item.tool) {

@@ -20,6 +20,7 @@ pub(super) fn project_runtime_events(
     thread: &ThreadSummary,
     turns: &[TurnRecord],
     items: &[TimelineItem],
+    attachments: &HashMap<String, Vec<axiom_inference::PromptAttachment>>,
 ) -> Result<Vec<EventEnvelope>> {
     let origin = origin_from_name(&thread.origin)?;
     let profile = PermissionProfile::from_str(&thread.profile).map_err(|_| {
@@ -88,6 +89,7 @@ pub(super) fn project_runtime_events(
             projection.push(
                 parse_time(&item.created_at),
                 AppEvent::PromptAccepted {
+                    attachments: attachments.get(&item.id).cloned().unwrap_or_default(),
                     turn_id: parsed_turn.clone(),
                     text: item.content.clone(),
                 },

@@ -7,7 +7,7 @@ use crate::{AxiomError, Result};
 use super::SessionStore;
 use super::codec::storage_error;
 
-pub(super) const SCHEMA_VERSION: i64 = 1;
+pub(super) const SCHEMA_VERSION: i64 = 2;
 // Clean-slate account-scoped storage contract (`AXA3`). Installation-scoped
 // pre-release databases use a different application ID and are never opened.
 pub(super) const APPLICATION_ID: i64 = 0x4158_4133;
@@ -74,6 +74,11 @@ pub(super) fn initialize_schema(connection: &mut Connection, version: i64) -> Re
             .map_err(storage_error)?;
         transaction.commit().map_err(storage_error)?;
     }
+    if version < 2 {
+        let transaction = connection.transaction().map_err(storage_error)?;
+        transaction.execute_batch("CREATE TABLE prompt_attachments (user_item_id TEXT PRIMARY KEY REFERENCES timeline_items(id) ON DELETE CASCADE, payload TEXT NOT NULL); PRAGMA user_version=2;").map_err(storage_error)?;
+        transaction.commit().map_err(storage_error)?;
+    }
     Ok(())
 }
 
@@ -84,6 +89,7 @@ pub(super) fn validate_schema(connection: &Connection) -> Result<()> {
         "threads",
         "turns",
         "timeline_items",
+        "prompt_attachments",
         "collections",
         "thread_collections",
         "profile_preferences",

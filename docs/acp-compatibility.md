@@ -26,8 +26,10 @@ Sources: [Rust adapter](../apps/axiomcli/src/acp.rs),
 | Plans, tools and diffs | Standard plan updates, stable tool IDs/states, bounded output and before/after diffs |
 | Session info/commands | Local title updates and slash-command discovery |
 
-Prompt image/audio support, client-owned terminals/filesystems and per-session
-MCP injection are not advertised. Tools execute behind AxiomCLI policy. Unknown
+Prompt images and embedded text resources are supported and advertised. Image
+inputs still require a model/protocol with encrypted image support. Audio, binary
+embedded documents, client-owned terminals/filesystems and per-session MCP
+injection are not advertised. Tools execute behind AxiomCLI policy. Unknown
 standard methods receive normal JSON-RPC method errors.
 
 ## Extension negotiation
@@ -42,7 +44,7 @@ features separately.
 `account` is version **2**. Current other advertised features are version **1**:
 `desktopChat`, `desktopAgent`, `threadCatalog`, `timeline`, `modelCatalog`,
 `profilePreferences`, `collections`, `billing`, `usage`, `securityEvidence`,
-`webConsent`, `steering`, `messageRevision`, `compaction`, and `activity`.
+`webConsent`, `steering`, `messageRevision`, `attachments`, `compaction`, and `activity`.
 The source `FeatureVersions` and generated schema are authoritative.
 
 ## Methods and ownership
@@ -53,7 +55,7 @@ are never an instruction to send conversation plaintext through a hosted endpoin
 | Group | Method names following `_axiom/` |
 |---|---|
 | Desktop | `desktop/bootstrap`, `desktop/agent/configure` |
-| Threads | `thread/list`, `thread/timeline`, `thread/rename`, `thread/delete_preview`, `thread/delete_confirm` |
+| Threads | `thread/list`, `thread/timeline`, `thread/attachments`, `thread/rename`, `thread/delete_preview`, `thread/delete_confirm` |
 | Models/preferences | `models/list`, `profile/preferences`, `profile/preferences/set` |
 | Collections | `collection/list`, `collection/create`, `collection/rename`, `collection/set_collapsed`, `collection/move`, `collection/delete`, `collection/assign` |
 | Native account | `account/status`, `account/native_login_start`, `account/native_login_complete`, `account/native_login_cancel`, `account/logout` |
@@ -114,6 +116,17 @@ Identical IDs/text join an existing submission; conflicting ID reuse fails.
 The response acknowledges application to the local transcript, not completion of
 the whole turn. Uncertain delivery requires timeline reconciliation before retry.
 
+`attachments@1` adds `_meta.axiom.attachments` to prompt submissions: text files
+carry `{kind: "text", name, text}`, and images carry
+`{kind: "image", name, image: {mimeType, data}}` with inline base64 bytes.
+The native runtime validates count, byte limits, MIME and image signatures.
+Desktop refuses to send attachments to a sidecar that did not advertise this
+feature. Standard ACP image/text-resource blocks use the same native validation.
+Timeline metadata carries only file summaries; `thread/attachments` fetches full
+local inputs on demand with `{threadId, userItemId}`, under the active account guard.
+Message revisions preserve the original attachments and change the prompt text.
+The generated schema defines all shapes and defaults for older stored messages.
+
 ## Accounts, billing and public evidence
 
 Login-start accepts a method hint and returns a hosted URL and opaque handle.
@@ -136,7 +149,7 @@ and observed-versus-approved distinctions from [security](threat-model.md).
 ## Process bounds and contract generation
 
 ACP is newline-delimited JSON-RPC. Stdout is protocol-only. The Node client bounds
-frames to 4 MiB and retained stderr to 64 KiB, honors stdin backpressure, rejects
+frames to 64 MiB and retained stderr to 64 KiB, honors stdin backpressure, rejects
 pending work on process exit, and never exposes raw method dispatch to the renderer.
 Typed extension failures include a bounded code/message/retryability object;
 clients must not infer authority or retry behavior from display text.

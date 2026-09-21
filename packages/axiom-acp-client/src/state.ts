@@ -554,6 +554,8 @@ export class AxiomStateStore extends EventEmitter {
         kind,
         text,
         status: kind === "user" ? "completed" : "streaming",
+        ...(kind === "user" && Array.isArray(object(update._meta)?.axiomAttachments)
+          ? { raw: { metadata: { attachments: object(update._meta)!.axiomAttachments } } } : {}),
       });
       if (metadata) this.textRevisions.set(record.sessionId, metadata.threadRevision);
     } else if (type === "tool_call" || type === "tool_call_update") {

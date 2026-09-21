@@ -626,7 +626,7 @@ impl TuiState {
                 self.push_task(turn_id.clone(), sanitize_terminal_text(text));
                 self.status = "Steering applied · Working…".into();
             }
-            AppEvent::PromptAccepted { turn_id, text } => {
+            AppEvent::PromptAccepted { turn_id, text, .. } => {
                 self.has_prompt = true;
                 self.push_entry(EntryKind::User, sanitize_terminal_text(text), false);
                 self.push_task(turn_id.clone(), sanitize_terminal_text(text));

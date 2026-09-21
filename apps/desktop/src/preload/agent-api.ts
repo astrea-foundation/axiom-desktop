@@ -1,4 +1,5 @@
 import { ipcRenderer } from "electron";
+import type { PromptAttachment, GetAttachmentsResponse } from "@axiom/axiom-acp-client";
 import type {
   AccountStatusResponse,
   BillingStatusResponse,
@@ -42,6 +43,8 @@ export interface AgentApi {
   // Deliberately distinct from the legacy prompt API: a hot-reloaded renderer
   // must never send through a preload/main process that ignores Web consent.
   promptWithWebConsent: (sessionId: string, text: string, clientItemId: string, webEnabled: boolean, agentRevision?: number) => Promise<PromptResult>;
+  promptWithAttachments: (sessionId: string, text: string, clientItemId: string, webEnabled: boolean, agentRevision: number, attachments: PromptAttachment[]) => Promise<PromptResult>;
+  getAttachments: (threadId: string, userItemId: string) => Promise<GetAttachmentsResponse>;
   revisePrompt: (sessionId: string, text: string, userItemId: string, expectedRevision: number, webEnabled: boolean, agentRevision: number) => Promise<PromptResult>;
   steer: (request: SteerTurnRequest) => Promise<SteerTurnResponse>;
   cancel: (sessionId: string) => Promise<void>;
@@ -90,6 +93,8 @@ export const agentApi: AgentApi = {
   chooseWorkingDirectory: (current) => invoke("working-directory-choose", current),
   loadChat: (sessionId) => invoke("chat-load", sessionId),
   promptWithWebConsent: (sessionId, text, clientItemId, webEnabled, agentRevision = 0) => invoke("prompt-with-agent-context", sessionId, text, clientItemId, webEnabled, agentRevision),
+  promptWithAttachments: (sessionId, text, clientItemId, webEnabled, agentRevision, attachments) => invoke("prompt-with-attachments", sessionId, text, clientItemId, webEnabled, agentRevision, attachments),
+  getAttachments: (threadId, userItemId) => invoke("attachments", threadId, userItemId),
   revisePrompt: (sessionId, text, userItemId, expectedRevision, webEnabled, agentRevision) => invoke("prompt-revise", sessionId, text, userItemId, expectedRevision, webEnabled, agentRevision),
   steer: (request) => invoke("steer", request),
   cancel: (sessionId) => invoke("cancel", sessionId),

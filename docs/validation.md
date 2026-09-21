@@ -12,7 +12,7 @@ the current state of production, published installers or unrecorded manual work.
 |---|---|
 | Components and independent hosted/native ownership | [workspace](../Cargo.toml), [package scripts](../package.json), [architecture](architecture.md) |
 | Configuration precedence, bounds, storage paths and explicit account reset | [config.rs](../apps/axiomcli/src/config.rs), [paths.rs](../apps/axiomcli/src/paths.rs), [session.rs](../apps/axiomcli/src/session.rs) |
-| Fresh schema 1/application ID `0x41584133` and rejection of obsolete stores | [storage schema](../apps/axiomcli/src/session/schema.sql), [versioning](versioning.md) |
+| Schema 2/application ID `0x41584133`, transactional upgrade from schema 1, and rejection of obsolete stores | [storage schema/migrations](../apps/axiomcli/src/session/schema.rs), [versioning](versioning.md) |
 | Local titles, edit/regenerate, staged compaction and stable user-submission ordering | [title helper](../apps/axiomcli/src/session_title.rs), [agent.rs](../apps/axiomcli/src/agent.rs), [ACP](../apps/axiomcli/src/acp.rs), [concurrency regressions](testing/concurrency-ui-2026-09-20/FIXES.md) |
 | Desktop Agent on all packaged OS targets; Linux-only Bubblewrap isolation | [workspace.rs](../apps/axiomcli/src/workspace.rs), [policy.rs](../apps/axiomcli/src/policy.rs), [Desktop](desktop.md) |
 | ACP 0.2 features, API-key creation and Tinfoil generation exception | [extension DTOs](../crates/axiom-acp-extension/src/lib.rs), [contract](acp-compatibility.md) |

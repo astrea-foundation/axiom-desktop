@@ -5,6 +5,7 @@ use std::str::FromStr as _;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::Utc;
 use rusqlite::{Connection, OptionalExtension as _, Row, params};
+use serde_json::Value;
 
 use crate::{
     AxiomError, Result,
@@ -311,6 +312,14 @@ impl SessionStore {
         transaction.commit().map_err(storage_error)
     }
 
+    pub fn prompt_attachments(
+        &self,
+        id: &SessionId,
+        item_id: &str,
+    ) -> Result<Vec<axiom_inference::PromptAttachment>> {
+        query_prompt_attachments(&*self.lock()?, id, item_id)
+    }
+
     pub fn history_before_user_message(
         &self,
         id: &SessionId,
@@ -575,4 +584,30 @@ pub(super) fn decode_thread_cursor(cursor: &str) -> Result<(String, String)> {
         ));
     }
     Ok((updated_at, id))
+}
+
+pub(super) fn query_prompt_attachments(
+    connection: &Connection,
+    id: &SessionId,
+    item_id: &str,
+) -> Result<Vec<axiom_inference::PromptAttachment>> {
+    let (payload, metadata, text): (Option<String>, String, String) = connection.query_row(
+        "SELECT p.payload,i.metadata,i.content FROM timeline_items i LEFT JOIN prompt_attachments p ON p.user_item_id=i.id WHERE i.thread_id=?1 AND (i.id=?2 OR i.client_item_id=?2) AND i.kind='user_message'",
+        params![id.to_string(), item_id], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?)),
+    ).map_err(storage_error)?;
+    if let Some(payload) = payload {
+        let attachments: Vec<axiom_inference::PromptAttachment> = serde_json::from_str(&payload)?;
+        axiom_inference::validate_prompt(&text, &attachments)
+            .map_err(|error| AxiomError::Storage(error.to_string()))?;
+        Ok(attachments)
+    } else if serde_json::from_str::<Value>(&metadata)?
+        .get("attachments")
+        .is_some()
+    {
+        Err(AxiomError::Storage(
+            "Stored attachment contents are missing; the message cannot be replayed.".into(),
+        ))
+    } else {
+        Ok(Vec::new())
+    }
 }

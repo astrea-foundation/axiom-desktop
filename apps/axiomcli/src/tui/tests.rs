@@ -51,6 +51,7 @@ fn steering_keeps_completed_output_before_the_new_user_message() {
     );
     let turn = TurnId::new();
     state.apply(&AppEvent::PromptAccepted {
+        attachments: Vec::new(),
         turn_id: turn.clone(),
         text: "Initial request".into(),
     });
@@ -607,6 +608,7 @@ fn composer_status_marker_is_static_and_uses_terminal_outcome_color() {
     );
     let turn_id = TurnId::new();
     state.apply(&AppEvent::PromptAccepted {
+        attachments: Vec::new(),
         turn_id: turn_id.clone(),
         text: "test status".into(),
     });
@@ -861,6 +863,7 @@ fn escape_stop_cancels_a_running_turn_and_updates_the_controls() {
     );
     let turn_id = TurnId::new();
     state.apply(&AppEvent::PromptAccepted {
+        attachments: Vec::new(),
         turn_id: turn_id.clone(),
         text: "keep working".into(),
     });
@@ -1077,6 +1080,7 @@ fn insufficient_credit_failure_has_a_specific_top_up_message() {
     );
     let turn = TurnId::new();
     state.apply(&AppEvent::PromptAccepted {
+        attachments: Vec::new(),
         turn_id: turn.clone(),
         text: "inspect the repository".into(),
     });
@@ -1118,6 +1122,7 @@ fn attestation_failure_is_actionable_and_keeps_raw_detail_folded() {
     );
     let turn = TurnId::new();
     state.apply(&AppEvent::PromptAccepted {
+        attachments: Vec::new(),
         turn_id: turn.clone(),
         text: "test secure inference".into(),
     });
@@ -1168,6 +1173,7 @@ fn ascii_mode_and_every_semantic_category_render_without_controls() {
             profile: PermissionProfile::Confirm,
         },
         AppEvent::PromptAccepted {
+            attachments: Vec::new(),
             turn_id: turn.clone(),
             text: "hello".into(),
         },
@@ -1393,6 +1399,7 @@ fn task_events_update_one_live_card_and_keep_raw_details_folded() {
     let turn = TurnId::new();
     for event in [
         AppEvent::PromptAccepted {
+            attachments: Vec::new(),
             turn_id: turn.clone(),
             text: "inspect the repository".into(),
         },
@@ -1488,6 +1495,7 @@ fn tool_feedback_shows_live_commands_queries_and_workspace_relative_paths() {
     );
     let turn = TurnId::new();
     state.apply(&AppEvent::PromptAccepted {
+        attachments: Vec::new(),
         turn_id: turn.clone(),
         text: "inspect and test".into(),
     });
@@ -1657,6 +1665,7 @@ fn typical_operational_document_snapshot() {
         .parse::<TurnId>()
         .expect("turn");
     state.apply(&AppEvent::PromptAccepted {
+        attachments: Vec::new(),
         turn_id: turn.clone(),
         text: "Inspect the repository".into(),
     });
@@ -1783,6 +1792,7 @@ fn activity_preview(frame: u64) -> TuiState {
     let turn = TurnId::new();
     for event in [
         AppEvent::PromptAccepted {
+            attachments: Vec::new(),
             turn_id: turn.clone(),
             text: "inspect the renderer".into(),
         },
@@ -1806,7 +1816,7 @@ fn preview_scenarios() -> Vec<(&'static str, u16, u16, TuiState)> {
     let mut conversation = preview_state();
     let conversation_turn = TurnId::new();
     for event in [
-        AppEvent::PromptAccepted {
+        AppEvent::PromptAccepted {attachments: Vec::new(),
             turn_id: conversation_turn.clone(),
             text: "hello axiom whats up".into(),
         },
@@ -1834,6 +1844,7 @@ fn preview_scenarios() -> Vec<(&'static str, u16, u16, TuiState)> {
     let working_turn = TurnId::new();
     for event in [
         AppEvent::PromptAccepted {
+            attachments: Vec::new(),
             turn_id: working_turn.clone(),
             text: "run the release verification".into(),
         },
@@ -1903,6 +1914,7 @@ fn preview_scenarios() -> Vec<(&'static str, u16, u16, TuiState)> {
     let waiting_turn = TurnId::new();
     for event in [
         AppEvent::PromptAccepted {
+            attachments: Vec::new(),
             turn_id: waiting_turn.clone(),
             text: "update the release manifest".into(),
         },
@@ -1937,6 +1949,7 @@ fn preview_scenarios() -> Vec<(&'static str, u16, u16, TuiState)> {
     let mut question = preview_state();
     let question_turn = TurnId::new();
     question.apply(&AppEvent::PromptAccepted {
+        attachments: Vec::new(),
         turn_id: question_turn.clone(),
         text: "prepare the release notes".into(),
     });
@@ -1966,7 +1979,7 @@ fn preview_scenarios() -> Vec<(&'static str, u16, u16, TuiState)> {
     let mut details = preview_state();
     let details_turn = TurnId::new();
     for event in [
-        AppEvent::PromptAccepted {
+        AppEvent::PromptAccepted {attachments: Vec::new(),
             turn_id: details_turn.clone(),
             text: "fix the renderer regression".into(),
         },
@@ -2056,6 +2069,7 @@ fn preview_scenarios() -> Vec<(&'static str, u16, u16, TuiState)> {
     let credits_turn = TurnId::new();
     for event in [
         AppEvent::PromptAccepted {
+            attachments: Vec::new(),
             turn_id: credits_turn.clone(),
             text: "what is this repository about?".into(),
         },

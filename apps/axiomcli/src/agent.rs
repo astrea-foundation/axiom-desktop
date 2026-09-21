@@ -57,6 +57,7 @@ pub struct TurnContext {
     pub permission_profile: PermissionProfile,
     /// Per-turn opt-in; false withholds and rejects every Web-access tool.
     pub web_enabled: bool,
+    pub attachments: Vec<axiom_inference::PromptAttachment>,
     pub steering: Option<Arc<crate::steering::TurnSteering>>,
     pub approval: Option<Arc<dyn ApprovalHandler>>,
     pub questions: Option<Arc<dyn QuestionHandler>>,
@@ -205,6 +206,10 @@ impl std::fmt::Debug for TurnContext {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("TurnContext")
+            .field(
+                "attachments",
+                &format_args!("{} local attachments", self.attachments.len()),
+            )
             .field("session_id", &self.session_id)
             .field("turn_id", &self.turn_id)
             .field("cwd", &self.cwd)
@@ -1251,9 +1256,9 @@ impl AgentEngine {
         } else {
             String::new()
         };
-        let parts = compaction_transcripts(&conversation[..recent_start], budget / 2)?;
+        let parts = compaction_inputs(&conversation[..recent_start], budget / 2)?;
         let mut summary = String::new();
-        for (index, transcript) in parts.iter().enumerate() {
+        for (index, (transcript, images)) in parts.iter().enumerate() {
             if cancellation.is_cancelled() {
                 return Err(AxiomError::Cancelled);
             }
@@ -1275,6 +1280,15 @@ impl AgentEngine {
                         ),
                     ),
                 ],
+                Vec::new(),
+                settings.thinking,
+            );
+            request.messages[1].images.clone_from(images);
+            // Recalculate generation space after adding the actual image inputs.
+            request = inference_request_for_model(
+                model,
+                settings.model.clone(),
+                request.messages,
                 Vec::new(),
                 settings.thinking,
             );
@@ -1645,7 +1659,13 @@ impl TurnRunner for AgentEngine {
                         cwd = Some(session_cwd.clone());
                     }
                 }
-                AppEvent::PromptAccepted { text, .. } | AppEvent::SteeringApplied { text, .. } => {
+                AppEvent::PromptAccepted {
+                    text, attachments, ..
+                } => {
+                    last_used_model = Some(active_model.clone());
+                    messages.push(axiom_inference::user_message(text, attachments));
+                }
+                AppEvent::SteeringApplied { text, .. } => {
                     last_used_model = Some(active_model.clone());
                     messages.push(ChatMessage::text(ChatRole::User, text.clone()));
                 }
@@ -1694,6 +1714,7 @@ impl TurnRunner for AgentEngine {
                         message.tool_calls.push(call);
                     } else {
                         messages.push(ChatMessage {
+                            images: Vec::new(),
                             role: ChatRole::Assistant,
                             content: String::new(),
                             reasoning_content: None,
@@ -1707,6 +1728,7 @@ impl TurnRunner for AgentEngine {
                 AppEvent::ToolOutput {
                     call_id, content, ..
                 } => messages.push(ChatMessage {
+                    images: Vec::new(),
                     role: ChatRole::Tool,
                     content: untrusted_tool_result(
                         tool_names
@@ -1877,7 +1899,16 @@ impl TurnRunner for AgentEngine {
                 _ => "\n\nAgent mode for this message: OFF. Local commands and file-editing tools are unavailable.",
             });
         }
-        let prompt_tokens = u64::try_from(estimate_tokens(&prompt)).unwrap_or(u64::MAX);
+        axiom_inference::validate_prompt(&prompt, &context.attachments)
+            .map_err(|error| AxiomError::Protocol(error.to_string()))?;
+        let user_message = axiom_inference::user_message(&prompt, &context.attachments);
+        if !model.supports_images
+            && (!user_message.images.is_empty()
+                || messages.iter().any(|message| !message.images.is_empty()))
+        {
+            return Err(AxiomError::Provider("This conversation contains images. Choose a model that supports encrypted image input.".into()));
+        }
+        let prompt_tokens = estimated_context_tokens(std::slice::from_ref(&user_message));
         let previous_context_tokens = self
             .context_tokens
             .lock()
@@ -1888,9 +1919,12 @@ impl TurnRunner for AgentEngine {
         let mut prospective_context_tokens = previous_context_tokens
             .saturating_add(prompt_tokens)
             .max(estimated_context_tokens(&messages).saturating_add(prompt_tokens));
-        if auto_compact_limit.is_some_and(|limit| {
+        if (auto_compact_limit.is_some_and(|limit| {
             prospective_context_tokens >= u64::try_from(limit).unwrap_or(u64::MAX)
-        }) && messages.len() > 1
+        }) || serialized_message_bytes(&messages)?.saturating_add(serialized_message_bytes(
+            std::slice::from_ref(&user_message),
+        )?) > self.limits.max_context_bytes)
+            && messages.len() > 1
         {
             match self
                 .compact_messages(
@@ -1916,7 +1950,7 @@ impl TurnRunner for AgentEngine {
                         .map_err(|_| AxiomError::Cancelled)?;
                 }
                 Err(error) => {
-                    messages.push(ChatMessage::text(ChatRole::User, prompt));
+                    messages.push(user_message);
                     messages.push(interrupted_turn_context());
                     let retained_tokens = estimated_context_tokens(&messages);
                     self.histories
@@ -1929,7 +1963,7 @@ impl TurnRunner for AgentEngine {
                 }
             }
         }
-        messages.push(ChatMessage::text(ChatRole::User, prompt));
+        messages.push(user_message);
         let mut known_context_tokens =
             prospective_context_tokens.max(estimated_context_tokens(&messages));
         let mut last_call = None;
@@ -1948,10 +1982,10 @@ impl TurnRunner for AgentEngine {
                 return Err(AxiomError::Cancelled);
             }
             if step > 0
-                && auto_compact_limit.is_some_and(|limit| {
+                && (auto_compact_limit.is_some_and(|limit| {
                     known_context_tokens.max(estimated_context_tokens(&messages))
                         >= u64::try_from(limit).unwrap_or(u64::MAX)
-                })
+                }) || serialized_message_bytes(&messages)? > self.limits.max_context_bytes)
                 && messages.len() > 1
             {
                 let (mut compacted, result) = self
@@ -2046,6 +2080,7 @@ impl TurnRunner for AgentEngine {
             all_responses_verified &= response_verified;
 
             messages.push(ChatMessage {
+                images: Vec::new(),
                 role: ChatRole::Assistant,
                 content: assistant.text.clone(),
                 reasoning_content: assistant.reasoning.clone(),
@@ -2425,6 +2460,7 @@ impl TurnRunner for AgentEngine {
                         .map_err(|_| AxiomError::Cancelled)?;
                 }
                 messages.push(ChatMessage {
+                    images: Vec::new(),
                     role: ChatRole::Tool,
                     content: untrusted_tool_result(&call.function.name, &tool_result.content),
                     reasoning_content: None,
@@ -2646,11 +2682,54 @@ fn compaction_transcripts(messages: &[ChatMessage], max_bytes: usize) -> Result<
     Ok(parts)
 }
 
+/// Preserve images as native image inputs; base64 must never become prose.
+fn compaction_inputs(
+    messages: &[ChatMessage],
+    max_bytes: usize,
+) -> Result<Vec<(String, Vec<axiom_inference::ImageContent>)>> {
+    let mut result = Vec::new();
+    let mut start = 0;
+    for (index, message) in messages.iter().enumerate() {
+        if message.images.is_empty() {
+            continue;
+        }
+        if start < index {
+            result.extend(
+                compaction_transcripts(&messages[start..index], max_bytes)?
+                    .into_iter()
+                    .map(|text| (text, Vec::new())),
+            );
+        }
+        let mut text_message = message.clone();
+        let images = std::mem::take(&mut text_message.images);
+        let mut parts = compaction_transcripts(&[text_message], max_bytes)?.into_iter();
+        if let Some(first) = parts.next() {
+            result.push((
+                format!("The images attached to this fragment belong to this message.\n{first}"),
+                images,
+            ));
+        }
+        result.extend(parts.map(|text| (text, Vec::new())));
+        start = index + 1;
+    }
+    if start < messages.len() || result.is_empty() {
+        result.extend(
+            compaction_transcripts(&messages[start..], max_bytes)?
+                .into_iter()
+                .map(|text| (text, Vec::new())),
+        );
+    }
+    Ok(result)
+}
+
 fn recent_compaction_start(messages: &[ChatMessage], max_bytes: usize) -> Result<usize> {
     if let Some(index) = messages
         .iter()
         .rposition(|message| message.role == ChatRole::User)
         && index > 0
+        && messages[index..]
+            .iter()
+            .all(|message| message.images.is_empty())
         && serialized_message_bytes(&messages[index..])? <= max_bytes
     {
         return Ok(index);
@@ -2677,25 +2756,26 @@ fn enforce_context_budget(
     max_tokens: usize,
 ) -> Result<()> {
     let bytes = messages.iter().fold(0_usize, |total, message| {
-        total.saturating_add(message.content.len()).saturating_add(
-            message
-                .tool_calls
-                .iter()
-                .map(|call| call.function.arguments.len())
-                .sum::<usize>(),
-        )
-    });
-    let estimated_tokens = messages.iter().fold(0_usize, |total, message| {
         total
-            .saturating_add(estimate_tokens(&message.content))
+            .saturating_add(message.content.len())
+            .saturating_add(message.reasoning_content.as_ref().map_or(0, String::len))
+            .saturating_add(
+                message
+                    .images
+                    .iter()
+                    .map(|image| image.data.len())
+                    .sum::<usize>(),
+            )
             .saturating_add(
                 message
                     .tool_calls
                     .iter()
-                    .map(|call| estimate_tokens(&call.function.arguments))
+                    .map(|call| call.function.arguments.len())
                     .sum::<usize>(),
             )
     });
+    let estimated_tokens =
+        usize::try_from(estimated_context_tokens(messages)).unwrap_or(usize::MAX);
     if bytes > max_bytes || estimated_tokens > max_tokens {
         Err(AxiomError::Provider(format!(
             "turn context exceeded its budget ({bytes}/{max_bytes} bytes, approximately {estimated_tokens}/{max_tokens} tokens)"
@@ -2722,6 +2802,9 @@ fn estimated_context_tokens(messages: &[ChatMessage]) -> u64 {
         });
         total
             .saturating_add(content)
+            // Image tokenization is model-specific. Reserve a conservative
+            // allowance without incorrectly counting base64 as prompt text.
+            .saturating_add(message.images.len() as u64 * 8192)
             .saturating_add(reasoning)
             .saturating_add(tool_calls)
     })
@@ -2762,6 +2845,7 @@ where
 
 fn tool_error_message(call_id: String, name: &str, message: &str) -> ChatMessage {
     ChatMessage {
+        images: Vec::new(),
         role: ChatRole::Tool,
         content: untrusted_tool_result(name, &format!("REPAIRABLE TOOL ERROR: {message}")),
         reasoning_content: None,
@@ -2820,10 +2904,29 @@ fn inference_request_for_model(
             message.reasoning_content = None;
         }
     }
-    let threshold = model.auto_compact_threshold_tokens();
-    if threshold > 0 && model.max_output_tokens > 0 {
-        let reserved_output = model.context_window_tokens.saturating_sub(threshold).max(1);
-        request.max_output_tokens = Some(model.max_output_tokens.min(reserved_output));
+    // Tinfoil's whole-body protocol allows omission: upstream has the exact
+    // tokenizer/template/image accounting and chooses its remaining-context
+    // default. Field-encrypted protocols below still require a numeric budget.
+    if model.provider_id != "tinfoil"
+        && model.context_window_tokens > 0
+        && model.max_output_tokens > 0
+    {
+        // Compaction controls history occupancy; it must not permanently cap
+        // generation at the unused 15% even when the actual prompt is short.
+        let tools = serde_json::to_string(&request.tools).unwrap_or_default();
+        let input = estimated_context_tokens(&request.messages)
+            .saturating_add(u64::try_from(estimate_tokens(&tools)).unwrap_or(u64::MAX))
+            .saturating_add(request.messages.len() as u64 * 8);
+        let margin = (model.context_window_tokens / 100).max(1);
+        let remaining = u64::from(model.context_window_tokens)
+            .saturating_sub(input)
+            .saturating_sub(u64::from(margin))
+            .max(1);
+        request.max_output_tokens = Some(
+            model
+                .max_output_tokens
+                .min(u32::try_from(remaining).unwrap_or(u32::MAX)),
+        );
     }
     request
 }
@@ -3062,6 +3165,58 @@ mod engine_tests {
     };
 
     #[test]
+    fn compaction_preserves_images_as_inputs_instead_of_base64_text() {
+        let image = axiom_inference::ImageContent {
+            mime_type: "image/png".into(),
+            data: "iVBORw0KGgpmaXh0dXJl".into(),
+        };
+        let mut message = ChatMessage::text(ChatRole::User, "look at this");
+        message.images.push(image.clone());
+        let parts = compaction_inputs(&[message.clone()], 4096).unwrap();
+        assert_eq!(parts[0].1, vec![image.clone()]);
+        assert!(!parts[0].0.contains(&image.data));
+        assert!(enforce_context_budget(&[message.clone()], 10, 100_000).is_err());
+        assert!(enforce_context_budget(&[message], 1000, 100).is_err());
+    }
+
+    #[test]
+    fn output_budget_tracks_request_size_instead_of_compaction_percentage() {
+        let model = axiom_inference::ModelInfo {
+            context_window_tokens: 100_000,
+            max_output_tokens: 90_000,
+            ..Default::default()
+        };
+        let request = inference_request_for_model(
+            &model,
+            "test".into(),
+            vec![ChatMessage::text(ChatRole::User, "hello")],
+            vec![],
+            ThinkingLevel::Medium,
+        );
+        assert_eq!(request.max_output_tokens, Some(90_000));
+        let long = inference_request_for_model(
+            &model,
+            "test".into(),
+            vec![ChatMessage::text(ChatRole::User, "x".repeat(320_000))],
+            vec![],
+            ThinkingLevel::Medium,
+        );
+        assert!(long.max_output_tokens.unwrap() < 20_000);
+        let tinfoil = axiom_inference::ModelInfo {
+            provider_id: "tinfoil".into(),
+            ..model
+        };
+        let native_default = inference_request_for_model(
+            &tinfoil,
+            "test".into(),
+            vec![ChatMessage::text(ChatRole::User, "hello")],
+            vec![],
+            ThinkingLevel::Medium,
+        );
+        assert_eq!(native_default.max_output_tokens, None);
+    }
+
+    #[test]
     fn reasoning_history_is_replayed_only_under_the_selected_models_policy() {
         let model = axiom_inference::ModelInfo {
             id: "m".into(),
@@ -3167,6 +3322,7 @@ mod engine_tests {
                 profile: PermissionProfile::Web,
             },
             AppEvent::PromptAccepted {
+                attachments: Vec::new(),
                 turn_id: ctx.turn_id.clone(),
                 text: "EARLY-MARKER; venue=Harbor".into(),
             },
@@ -3175,6 +3331,7 @@ mod engine_tests {
                 text: "assistant decision: step-free access".into(),
             },
             AppEvent::PromptAccepted {
+                attachments: Vec::new(),
                 turn_id: TurnId::new(),
                 text: "資料🦀 archive ".repeat(3000),
             },
@@ -3183,6 +3340,7 @@ mod engine_tests {
                 text: "Archive read".into(),
             },
             AppEvent::PromptAccepted {
+                attachments: Vec::new(),
                 turn_id: TurnId::new(),
                 text: "Latest correction: venue=Riverside".into(),
             },
@@ -3231,6 +3389,7 @@ mod engine_tests {
                 messages_before: first.messages_before,
             },
             AppEvent::PromptAccepted {
+                attachments: Vec::new(),
                 turn_id: TurnId::new(),
                 text: "SECOND-RESTART-FACT".into(),
             },
@@ -4030,6 +4189,7 @@ mod engine_tests {
 
     fn context() -> TurnContext {
         TurnContext {
+            attachments: Vec::new(),
             session_id: SessionId::new(),
             turn_id: TurnId::new(),
             cwd: PathBuf::from("."),
@@ -4459,8 +4619,8 @@ mod engine_tests {
     async fn provider_usage_triggers_automatic_compaction_at_eighty_five_percent() {
         let provider = Arc::new(AutoCompactProvider {
             requests: Mutex::new(Vec::new()),
-            usage: (80, 6),
-            context_window_tokens: 100,
+            usage: (8_000, 600),
+            context_window_tokens: 10_000,
             max_output_tokens: 10,
         });
         let engine = AgentEngine::new(provider.clone(), Arc::new(ToolRegistry::new()), "test", 3);
@@ -4508,7 +4668,7 @@ mod engine_tests {
         );
         assert_eq!(
             (published[0].input_tokens, published[0].output_tokens),
-            (80, 6)
+            (8_000, 600)
         );
     }
 
@@ -4836,6 +4996,7 @@ mod engine_tests {
 
         let second_prompt = "x".repeat(600);
         let second = TurnContext {
+            attachments: Vec::new(),
             session_id,
             turn_id: TurnId::new(),
             cwd: PathBuf::from("."),
@@ -4952,6 +5113,7 @@ mod engine_tests {
                 origin: Origin::Test,
                 session_id: session_id.clone(),
                 event: AppEvent::PromptAccepted {
+                    attachments: Vec::new(),
                     turn_id: old_turn.clone(),
                     text: "remember cherry".into(),
                 },
@@ -4986,6 +5148,7 @@ mod engine_tests {
         engine
             .run(
                 TurnContext {
+                    attachments: Vec::new(),
                     session_id,
                     turn_id: TurnId::new(),
                     cwd: PathBuf::from("/tmp/resume-fixture"),
@@ -5118,6 +5281,7 @@ mod engine_tests {
                 model: "restored-model".into(),
             },
             AppEvent::PromptAccepted {
+                attachments: Vec::new(),
                 turn_id: turn_id.clone(),
                 text: "old detail that should be gone".into(),
             },
@@ -5157,6 +5321,7 @@ mod engine_tests {
         engine
             .run(
                 TurnContext {
+                    attachments: Vec::new(),
                     session_id,
                     turn_id: TurnId::new(),
                     cwd: PathBuf::from("/tmp/compact-restore"),
@@ -5196,6 +5361,7 @@ mod engine_tests {
                 profile: PermissionProfile::Confirm,
             },
             AppEvent::PromptAccepted {
+                attachments: Vec::new(),
                 turn_id: old_turn.clone(),
                 text: "old context".into(),
             },
@@ -5208,6 +5374,7 @@ mod engine_tests {
             },
             AppEvent::TurnCompleted { turn_id: old_turn },
             AppEvent::PromptAccepted {
+                attachments: Vec::new(),
                 turn_id: active_turn.clone(),
                 text: pending_prompt.into(),
             },
@@ -5267,6 +5434,7 @@ mod engine_tests {
                 profile: PermissionProfile::Confirm,
             },
             AppEvent::PromptAccepted {
+                attachments: Vec::new(),
                 turn_id: failed_turn.clone(),
                 text: "explain the repository".into(),
             },
@@ -5303,6 +5471,7 @@ mod engine_tests {
         engine
             .run(
                 TurnContext {
+                    attachments: Vec::new(),
                     session_id,
                     turn_id: TurnId::new(),
                     cwd: PathBuf::from("/tmp/failed-restore"),
@@ -5565,6 +5734,7 @@ mod engine_tests {
                 profile: PermissionProfile::Web,
             },
             AppEvent::PromptAccepted {
+                attachments: Vec::new(),
                 turn_id: ctx.turn_id.clone(),
                 text: "Remember MAPLE-731".into(),
             },

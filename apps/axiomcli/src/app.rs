@@ -297,6 +297,8 @@ pub enum AppCommand {
         session_id: SessionId,
         turn_id: TurnId,
         text: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        attachments: Vec<axiom_inference::PromptAttachment>,
     },
     CancelTurn {
         session_id: SessionId,
@@ -395,6 +397,8 @@ pub enum AppEvent {
     PromptAccepted {
         turn_id: TurnId,
         text: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        attachments: Vec<axiom_inference::PromptAttachment>,
     },
     TurnStarted {
         turn_id: TurnId,
@@ -728,12 +732,10 @@ impl Kernel {
                 session_id,
                 turn_id,
                 text,
+                attachments,
             } => {
-                if text.trim().is_empty() {
-                    return Err(AxiomError::InvalidTransition(
-                        "prompt cannot be empty".into(),
-                    ));
-                }
+                axiom_inference::validate_prompt(&text, &attachments)
+                    .map_err(|error| AxiomError::InvalidTransition(error.to_string()))?;
                 let session = self.session_mut(&session_id)?;
                 if session.lifecycle != SessionLifecycle::Ready {
                     return Err(AxiomError::InvalidTransition(format!(
@@ -752,6 +754,7 @@ impl Kernel {
                     AppEvent::PromptAccepted {
                         turn_id: turn_id.clone(),
                         text,
+                        attachments,
                     },
                     AppEvent::TurnStarted { turn_id },
                 ]
@@ -1519,6 +1522,7 @@ mod tests {
         kernel
             .apply(envelope(
                 AppCommand::SubmitPrompt {
+                    attachments: Vec::new(),
                     session_id: session_id.clone(),
                     turn_id: turn_id.clone(),
                     text: "hello".into(),
@@ -1530,6 +1534,7 @@ mod tests {
             kernel
                 .apply(envelope(
                     AppCommand::SubmitPrompt {
+                        attachments: Vec::new(),
                         session_id: session_id.clone(),
                         turn_id: TurnId::new(),
                         text: "overlap".into()
@@ -1611,6 +1616,7 @@ mod tests {
             kernel
                 .apply(envelope(
                     AppCommand::SubmitPrompt {
+                        attachments: Vec::new(),
                         session_id,
                         turn_id: TurnId::new(),
                         text: "after close".into()
@@ -1665,6 +1671,7 @@ mod tests {
                 }
                 let command = match candidate {
                     Candidate::Submit => AppCommand::SubmitPrompt {
+                        attachments: Vec::new(),
                         session_id: session.clone(),
                         turn_id: TurnId::new(),
                         text: "next".into(),
@@ -1719,6 +1726,7 @@ mod tests {
         kernel
             .apply(envelope(
                 AppCommand::SubmitPrompt {
+                    attachments: Vec::new(),
                     session_id: session.clone(),
                     turn_id: turn,
                     text: "work".into(),
@@ -1777,7 +1785,7 @@ mod tests {
             let mut kernel = Kernel::with_services(services());
             let session = create(&mut kernel);
             let terminal_turn = TurnId::from_uuid(Uuid::from_u128(600));
-            kernel.apply(envelope(AppCommand::SubmitPrompt { session_id: session.clone(), turn_id: terminal_turn.clone(), text: "work".into() }, 601)).expect("submit");
+            kernel.apply(envelope(AppCommand::SubmitPrompt {attachments: Vec::new(),  session_id: session.clone(), turn_id: terminal_turn.clone(), text: "work".into() }, 601)).expect("submit");
             let terminal = if cancel {
                 AppCommand::CancelTurn { session_id: session.clone(), turn_id: terminal_turn.clone() }
             } else {
@@ -1790,7 +1798,7 @@ mod tests {
             };
             proptest::prop_assert!(kernel.apply(envelope(replay, 603)).is_err());
 
-            let rerun = AppCommand::SubmitPrompt {
+            let rerun = AppCommand::SubmitPrompt {attachments: Vec::new(),
                 session_id: session,
                 turn_id: terminal_turn,
                 text: "attempt to revive a terminal turn".into(),
@@ -1841,6 +1849,7 @@ mod tests {
                 kernel
                     .apply(envelope(
                         AppCommand::SubmitPrompt {
+                            attachments: Vec::new(),
                             session_id: session.clone(),
                             turn_id: turn.clone(),
                             text: "inspect".into(),
@@ -1873,6 +1882,7 @@ mod tests {
         let events = source
             .apply(envelope(
                 AppCommand::SubmitPrompt {
+                    attachments: Vec::new(),
                     session_id: session.clone(),
                     turn_id: turn,
                     text: "work".into(),

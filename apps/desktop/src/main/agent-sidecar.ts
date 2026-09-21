@@ -1,3 +1,4 @@
+import type { PromptAttachment } from "@axiom/axiom-acp-client";
 import { access, stat } from "node:fs/promises";
 import { constants } from "node:fs";
 import { join, resolve } from "node:path";
@@ -230,8 +231,10 @@ export class AgentSidecar {
 
   configureDesktopAgent(request: ConfigureDesktopAgentRequest) { return this.requireClient().configureDesktopAgent(request); }
 
-  prompt(sessionId: string, text: string, clientItemId: string, webEnabled = false, agentRevision = 0, revision?: { userItemId: string; expectedRevision: number }) {
-    return this.requireClient().prompt(sessionId, text, clientItemId, webEnabled, agentRevision, revision);
+  getAttachments(threadId: string, userItemId: string) { return this.requireClient().getAttachments(threadId, userItemId); }
+
+  prompt(sessionId: string, text: string, clientItemId: string, webEnabled = false, agentRevision = 0, revision?: { userItemId: string; expectedRevision: number }, attachments: PromptAttachment[] = []) {
+    return this.requireClient().prompt(sessionId, text, clientItemId, webEnabled, agentRevision, revision, attachments);
   }
 
   steer(request: SteerTurnRequest) { return this.requireClient().steer(request); }

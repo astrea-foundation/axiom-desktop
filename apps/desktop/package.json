@@ -29,20 +29,21 @@
   },
   "dependencies": {
     "@axiom/axiom-acp-client": "workspace:*",
+    "@axiom/brand": "workspace:*",
     "@dnd-kit/core": "^6.3.1",
     "@fontsource-variable/dm-sans": "^5.3.0",
     "@fontsource/dm-mono": "^5.3.0",
     "@lobehub/icons-static-svg": "^1.94.0",
     "katex": "0.16.47",
     "lucide-react": "^0.564.0",
+    "pdfjs-dist": "6.3.289",
     "qrcode.react": "4.2.0",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "react-markdown": "^10.1.0",
     "rehype-katex": "7.0.1",
     "remark-gfm": "^4.0.1",
-    "remark-math": "6.0.0",
-    "@axiom/brand": "workspace:*"
+    "remark-math": "6.0.0"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.0",
