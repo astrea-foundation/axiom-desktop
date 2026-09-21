@@ -15,6 +15,7 @@ axiomcli exec "inspect this repository" --cwd /absolute/path/to/project
 axiomcli acp
 axiomcli doctor
 axiomcli models
+axiomcli update
 ```
 
 Without a subcommand, AxiomCLI starts the TUI. `doctor` reports configuration,
@@ -30,6 +31,31 @@ override. See [configuration](configuration.md) and [privacy](privacy.md).
 trusted tool profile; requests requiring unavailable human authority fail closed.
 `acp` reserves stdout for JSON-RPC and writes diagnostics to stderr. The
 [ACP guide](acp-compatibility.md) owns its capabilities and extension contract.
+
+## Updates
+
+`axiomcli update` checks the same anonymous release feed as Desktop, without
+loading credentials, account state, configuration, or model messages. It reports
+the latest version and the update path for the running executable. Checks reject
+redirects, malformed metadata, unsupported archives, and oversized responses.
+
+Installed TUIs check quietly at startup and every six hours. A newer version
+appears as a local transcript notice; failed checks do not interrupt work, and
+notices are neither saved as conversation history nor sent to models. Source
+builds skip background checks. `exec` and ACP never start update checks.
+
+A CLI inside Desktop's resources directory, including a PATH symlink or AppImage
+wrapper, directs you to **Axiom → Settings → Updates**. One desktop installer
+replaces Desktop and its bundled CLI together; there is no independent bundled
+CLI replacement. Close Desktop and all terminal sessions before installing.
+
+Standalone Linux x86-64 installs made by `scripts/install-release` receive the
+matching CLI + local proxy archive URL, byte size, SHA-256 and checksum-file URL.
+Download and verify the archive, stop CLI and proxy sessions, then reinstall the
+complete bundle with the same prefix. If the release has no compatible standalone
+archive, the command says so and never substitutes a desktop installer or another
+architecture. The command reports updates; it does not install or execute them.
+Unrecognized binaries receive source-build guidance.
 
 ## Terminal controls
 

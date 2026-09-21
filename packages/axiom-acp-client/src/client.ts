@@ -195,7 +195,7 @@ export class AxiomAcpClient extends EventEmitter {
     this.accountingTimer.unref();
   }
 
-  async initialize(): Promise<InitializeResult> {
+  async initialize(expectedProductVersion?: string): Promise<InitializeResult> {
     const result = await this.process.request<InitializeResult>("initialize", {
       protocolVersion: 1,
       clientCapabilities: {
@@ -208,6 +208,9 @@ export class AxiomAcpClient extends EventEmitter {
         title: "Axiom Desktop",
       },
     });
+    if (expectedProductVersion !== undefined && result.agentInfo?.version !== expectedProductVersion) {
+      throw new ProtocolError(`Axiom Desktop ${expectedProductVersion} requires AxiomCLI ${expectedProductVersion}; received ${result.agentInfo?.version ?? 'no version'}. Quit Axiom and all AxiomCLI sessions, then reinstall the matching release (or rebuild the development sidecar).`);
+    }
     if (result.protocolVersion !== 1) throw new ProtocolError("AxiomCLI selected an unsupported ACP version");
     const meta = result.agentCapabilities._meta?.axiom as {
       protocolVersion?: string;

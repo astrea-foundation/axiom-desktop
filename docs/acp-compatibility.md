@@ -11,6 +11,13 @@ Sources: [Rust adapter](../apps/axiomcli/src/acp.rs),
 [JSON Schema](../protocol/axiom-acp-extension/v0.2/schema.json), and
 [Node client](../packages/axiom-acp-client/src/client.ts).
 
+Desktop passes its product version to the client SDK's `initialize` call and
+requires an exact match with `agentInfo.version` before reporting a connected
+state or bootstrapping account/chat data. Missing or mismatched versions stop
+startup with reinstall/rebuild guidance. This product pairing check is separate
+from ACP protocol/extension negotiation; the SDK's argument is optional for
+non-Desktop consumers.
+
 ## Standard ACP
 
 | Operation | Implemented behavior |

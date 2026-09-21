@@ -24,6 +24,7 @@ pub mod slash;
 pub mod steering;
 pub mod tools;
 pub mod tui;
+pub mod updates;
 pub mod web;
 pub mod workspace;
 

@@ -75,6 +75,8 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Check the shared Axiom release feed and show how to update this installation.
+    Update,
     /// Run the account-bound secure loopback proxy under Desktop supervision.
     DesktopProxy {
         #[arg(long)]
@@ -220,6 +222,9 @@ enum SessionAction {
 async fn main() -> anyhow::Result<()> {
     install_descendant_cleanup();
     let cli = Cli::parse();
+    if matches!(cli.command, Some(Command::Update)) {
+        return axiomcli::updates::run().await;
+    }
     // The proxy owns no chat store, tools, agent configuration or system prompt.
     if let Some(Command::DesktopProxy {
         account_id,
@@ -304,6 +309,7 @@ async fn main() -> anyhow::Result<()> {
         cwd: None,
         resume: None,
     }) {
+        Command::Update => unreachable!("update is handled before agent initialization"),
         Command::DesktopProxy { .. } => {
             unreachable!("desktop proxy is handled before agent initialization")
         }

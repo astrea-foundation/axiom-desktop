@@ -140,7 +140,7 @@ export class AgentSidecar {
         if (this.initializingClient === client) this.initializingClient = null;
         if (owned) this.scheduleRestart();
       });
-      await client.initialize();
+      await client.initialize(app.getVersion());
       const bootstrap = await client.bootstrapDesktop();
       await client.initializeDesktopState();
       if (this.shuttingDown || this.initializingClient !== client) {

@@ -164,7 +164,10 @@ automatic following; Scroll to latest resumes it. Theme is light, dark or system
 
 The Proxy screen starts the optional authenticated local integration explicitly.
 See [Local proxy](proxy.md) for its separate credential and lifecycle. Updates
-are downloaded and checked before user installation; see
+use one release feed with AxiomCLI and are downloaded and checked before user
+installation. Desktop requires its CLI to report the exact same product version
+at ACP initialization; a mismatch blocks bootstrap with reinstall/rebuild guidance.
+See
 [Install and update](installing-desktop.md#install-a-newer-version).
 
 Source and regression evidence:

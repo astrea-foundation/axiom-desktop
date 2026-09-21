@@ -105,6 +105,8 @@ for (const theme of ['light','dark']) test(`update notice opens integrated Setti
     assert.equal(await page.getByRole('progressbar').getAttribute('aria-valuenow'),'50','download survives closing Settings');
     await page.evaluate(() => (window as any).__updatesTest.finish());
     await page.getByText('Your update is ready',{exact:true}).waitFor();
+    assert.match(await settings(page).innerText(), /Quit Axiom and all AxiomCLI sessions/);
+    assert.equal(await settings(page).getByRole('link', {name:'Release catalog'}).getAttribute('href'), 'https://axiom.stream/api/releases');
     await page.getByRole('button',{name:'Show in folder'}).click();
     assert.equal(await page.evaluate(() => (window as any).__updatesTest.revealed()),1);
     await page.locator('summary').filter({hasText:'Download details'}).click();
