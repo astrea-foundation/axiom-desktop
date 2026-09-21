@@ -53,6 +53,7 @@ Slash commands are handled locally rather than sent to the model as prompts.
 | `/compact [focus]` | Cancellable encrypted successor-summary operation |
 | `/login`, `/logout`, `/account` | Native account operations |
 | `/security`, `/refresh` | Inspect cached public evidence or request fresh local verification |
+| `/usage` | Inspect the last reported request's usage, context capacity and compaction threshold |
 | `/theme dark\|light\|terminal` | Set the session appearance |
 | `/help` | Show the complete command reference |
 
@@ -65,10 +66,51 @@ for future chats. Resume restores the selected transcript's durable settings;
 a model selection that never ran does not become the resumed prompt's model.
 Titles derive locally from the first prompt. A model's reasoning choices and
 context capacity come from validated catalog metadata, not its name.
+The composer and `/thinking` suggestions use the selected offering's exact
+controls, including enabled/disabled modes or supported effort levels. Models
+without reasoning controls do not show a thinking selector.
 
 During active work, Enter can submit steering for the next safe boundary.
 Automatic and explicit compaction use tool-free attested E2EE inference and
 persist successor context for resume. Failed or cancelled work remains incomplete.
+
+The footer's context percentage uses the last completed conversation request's
+reported input/output tokens and that report's model capacity. `/usage` shows the
+counts, model, report time and effective automatic-compaction threshold. Missing
+usage or capacity is shown as unknown. Reports survive resume; switching models
+does not rescale old counts against a new model. These values are not a draft
+estimate, cumulative turn usage or a response-length limit. Turn totals and
+charges remain separate in the wide-terminal status line.
+
+When the last conversation request in a completed task has an authenticated
+`length` finish reason, the transcript explains that the model reached its output
+limit and can be asked to continue. This uses the native request record across
+providers and survives resume. A settled charge alone never verifies a response;
+cancelled, failed or unauthenticated output does not gain this completion notice.
+
+## Verification reports
+
+The header describes the current model's retained TEE report. Expired, missing,
+mismatched or failed reports are never displayed as current verified proof.
+Expiry updates while idle, including with reduced motion. Opening `/security`
+requests fresh evidence when the current report is unavailable or expired;
+`/refresh` or `R` in the inspector explicitly verifies again. Inference continues
+to enforce fresh attestation and authenticated completion in the native provider
+implementation, independently of the displayed report.
+
+The inspector's summary includes the checked/expiry times, protocol identifiers,
+key bindings, local checks and every provider evidence field. `V` cycles through
+the summary, provider evidence and complete raw JSON report. Optional workload
+documents are displayed without assuming Docker Compose, a particular hardware
+vendor, a signed receipt or a direct worker-attestation topology. Source
+provenance and verification scope remain visible as supplied in each provider's
+claims. A provider with no separate workload document can still have valid proof.
+
+Terminal output is sanitized and large raw/document displays are bounded; `S`
+from the raw view saves the complete original report without overwriting an
+existing file. The retained report's status describes its last check; the header
+and inspector banner separately explain whether that report is current. Report
+verification is distinct from the terminal authentication of each reply.
 
 ## System instructions
 

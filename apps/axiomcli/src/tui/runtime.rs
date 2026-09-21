@@ -546,7 +546,9 @@ pub(super) async fn restore_tui_session(
         {
             store.reconcile_request_usage(session_id, &records)?;
         }
-        for usage in store.thread_snapshot(session_id, None, 1)?.request_usage {
+        let snapshot = store.thread_snapshot(session_id, None, 1)?;
+        state.context_usage = snapshot.context_usage;
+        for usage in snapshot.request_usage {
             state.apply(&AppEvent::RequestUsageUpdated { usage });
         }
     }
@@ -806,6 +808,9 @@ pub async fn run(
     let mut pending_questions: Option<PendingQuestions> = None;
     let mut animation_ticks = tokio::time::interval(ANIMATION_TICK);
     animation_ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // Freshness must repaint even while idle with animations disabled.
+    let mut proof_ticks = tokio::time::interval(Duration::from_secs(1));
+    proof_ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut accounting_ticks = tokio::time::interval(Duration::from_secs(5));
     accounting_ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut accounting_busy = false;
@@ -840,6 +845,7 @@ pub async fn run(
     'ui: loop {
         terminal.draw(|frame| render(frame, &state))?;
         tokio::select! {
+            _ = proof_ticks.tick(), if state.security_evidence.is_some() => {}
             _ = accounting_ticks.tick(), if !accounting_busy && store.as_ref().is_some_and(SessionStore::is_active) => {
                 accounting_attempts.retain(|id, _| state.request_usage.get(id).is_some_and(|r| !r.settled));
                 let ids: Vec<_> = state.request_usage.values().filter(|r|
@@ -1610,6 +1616,10 @@ pub async fn run(
                                                 );
                                                 state.status = "Slash commands".into();
                                             }
+                                            Ok(SlashCommand::Usage) => {
+                                                state.overlay = Some(Overlay::Usage);
+                                                state.overlay_scroll = 0;
+                                            }
                                             Ok(SlashCommand::Theme(appearance)) => {
                                                 state.options.appearance = appearance;
                                                 let background = appearance.terminal_background(state.options.color_mode);
@@ -1792,7 +1802,7 @@ pub async fn run(
                                             }
                                             Ok(SlashCommand::Security) => {
                                                 state.open_security();
-                                                if state.security_evidence.is_none()
+                                                if state.report_status() != super::attestation::ReportStatus::Verified
                                                     && security_cancellation.is_none()
                                                     && auth.has_credential()
                                                 {

@@ -20,8 +20,8 @@ use crate::{
 use super::{
     COMPOSER_MAX_CONTENT_ROWS, GUTTER, MIN_HEIGHT, MIN_WIDTH,
     attestation::{
-        MAX_WORKLOAD_DISPLAY_CHARS, attestation_picker_directories, bounded_workload_display,
-        humanize_manifest_key, parse_workload_manifest,
+        MAX_WORKLOAD_DISPLAY_CHARS, ReportStatus, attestation_picker_directories,
+        bounded_workload_display, humanize_evidence_key,
     },
     brand,
     state::{
@@ -284,13 +284,15 @@ pub(super) fn render_header(frame: &mut Frame<'_>, state: &TuiState, theme: Them
     if inner.is_empty() {
         return;
     }
-    let (marker, color) = match state.security {
-        "SECURE" => (state.glyph("✓", "+"), theme.success),
-        "VERIFYING" => (state.activity_glyph(false), theme.brand),
-        "SECURITY FAILED" => (state.glyph("✕", "!"), theme.error),
-        _ => (state.glyph("○", "o"), theme.muted),
+    let report = state.report_status();
+    let (marker, color) = match report {
+        ReportStatus::Verified => (state.glyph("✓", "+"), theme.success),
+        ReportStatus::Verifying => (state.activity_glyph(false), theme.brand),
+        ReportStatus::Failed => (state.glyph("✕", "!"), theme.error),
+        ReportStatus::Expired | ReportStatus::Unavailable => (state.glyph("○", "o"), theme.warning),
+        ReportStatus::Unverified => (state.glyph("○", "o"), theme.muted),
     };
-    let security = format!("{marker} {}", state.security);
+    let security = format!("{marker} {}", report.label());
     let width = usize::from(inner.width);
     let mut left = vec![Span::styled(
         "Axiom",
@@ -309,8 +311,8 @@ pub(super) fn render_header(frame: &mut Frame<'_>, state: &TuiState, theme: Them
     )));
     left.push(Span::styled(marker, Style::default().fg(color)));
     left.push(Span::styled(
-        format!(" {}", state.security),
-        Style::default().fg(if state.security == "VERIFYING" {
+        format!(" {}", report.label()),
+        Style::default().fg(if report == ReportStatus::Verifying {
             theme.text
         } else {
             color
@@ -596,7 +598,7 @@ pub(super) fn render_composer_controls(
     let thinking_label = format!("Thinking {thinking}");
     let fixed_width = display_width(&agent_label) + display_width(&web_label) + 10;
     let show_thinking = details.map_or(state.thinking != ThinkingLevel::ProviderDefault, |model| {
-        !model.supported_reasoning_efforts.is_empty()
+        !crate::agent::supported_thinking_levels(model).is_empty()
     }) && width >= fixed_width + display_width(&thinking_label) + 15;
     let reserved = fixed_width
         + if show_thinking {
@@ -816,6 +818,9 @@ pub(super) fn render_hints(frame: &mut Frame<'_>, state: &TuiState, theme: Theme
     };
     let separator = if state.options.ascii { " | " } else { " · " };
     let mut spans = Vec::new();
+    let context = state.interaction.is_none().then(|| state.context_summary());
+    let context_width = context.as_ref().map_or(0, |text| display_width(text) + 2);
+    let hint_width = usize::from(inner.width).saturating_sub(context_width);
     let hints: Vec<(&str, &str)> = match &state.interaction {
         Some(InteractionView::Approval(request)) => {
             let mut hints = vec![("y", "allow once")];
@@ -880,7 +885,7 @@ pub(super) fn render_hints(frame: &mut Frame<'_>, state: &TuiState, theme: Theme
             } else {
                 0
             };
-        if used + required > usize::from(inner.width) {
+        if used + required > hint_width {
             break;
         }
         used += required;
@@ -897,6 +902,12 @@ pub(super) fn render_hints(frame: &mut Frame<'_>, state: &TuiState, theme: Theme
             format!(" {label}"),
             Style::default().fg(theme.muted),
         ));
+    }
+    if let Some(context) = context {
+        spans.push(Span::raw(" ".repeat(
+            usize::from(inner.width).saturating_sub(used + display_width(&context)),
+        )));
+        spans.push(Span::styled(context, Style::default().fg(theme.muted)));
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), inner);
 }
@@ -1040,6 +1051,7 @@ pub(super) fn render_overlay(
         return;
     }
     let (title, body): (&str, String) = match overlay {
+        Overlay::Usage => (" Usage · ↑/↓ scroll · Esc close ", state.usage_details()),
         Overlay::Help => (
             " Help ",
             "Tab: switch composer/transcript focus\n\
@@ -1050,6 +1062,7 @@ pub(super) fn render_overlay(
              Ctrl+F: search transcript; n/N: next/previous match\n\
              v: open selected entry in this terminal-viewport viewer\n\
              End: follow streaming output\n\
+             /usage: inspect context capacity and compaction threshold\n\
              Ctrl+C: press twice to exit\n\
              Esc: stop active work, clear a composer draft, or close an overlay"
                 .into(),
@@ -1091,7 +1104,7 @@ pub(super) fn render_overlay(
             let rows = u16::try_from(body.lines().count()).unwrap_or(u16::MAX);
             fitted_rect(88, rows.saturating_add(2), frame.area())
         }
-        Overlay::Entry(_) => centered_rect(88, 82, frame.area()),
+        Overlay::Entry(_) | Overlay::Usage => centered_rect(88, 82, frame.area()),
         Overlay::Permissions { .. } => unreachable!("permissions rendered separately"),
         Overlay::ModelPicker { .. } => unreachable!("model picker rendered separately"),
         Overlay::ResumePicker { .. } => unreachable!("resume picker rendered separately"),
@@ -1398,8 +1411,8 @@ pub(super) fn render_security_overlay(
     frame.render_widget(Clear, area);
     let title = match view {
         SecurityView::Summary => " Security ",
-        SecurityView::Workload => " Attested workload ",
-        SecurityView::Raw => " Raw app_compose ",
+        SecurityView::Workload => " Provider evidence ",
+        SecurityView::Raw => " Raw verification report ",
     };
     let block = Block::default()
         .title(Span::styled(
@@ -1487,23 +1500,52 @@ pub(super) fn security_overlay_lines(
         ))];
     };
 
-    match view {
-        SecurityView::Summary => security_summary_lines(evidence, theme),
+    let report = state.report_status();
+    let mut lines = vec![
+        Line::from(Span::styled(
+            match report {
+                ReportStatus::Verified => {
+                    "Current TEE report verified locally. Reply completion is verified separately."
+                }
+                ReportStatus::Expired => {
+                    "This report has expired. Press R to obtain current evidence."
+                }
+                ReportStatus::Failed => {
+                    "Verification failed. This retained report is not current proof."
+                }
+                _ => "Current proof is unavailable. This is a previous report; press R to verify.",
+            },
+            Style::default().fg(if report == ReportStatus::Verified {
+                theme.muted
+            } else {
+                theme.warning
+            }),
+        )),
+        Line::default(),
+    ];
+    lines.extend(match view {
+        SecurityView::Summary => security_summary_lines(evidence, report, theme),
         SecurityView::Workload => workload_lines(evidence, false, theme),
         SecurityView::Raw => workload_lines(evidence, true, theme),
-    }
+    });
+    lines
 }
 
 pub(super) fn security_summary_lines(
     evidence: &SecurityEvidence,
+    report: ReportStatus,
     theme: Theme,
 ) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     security_field(
         &mut lines,
         "Status",
-        "Cryptographically verified",
-        theme.success,
+        report.label(),
+        if report == ReportStatus::Verified {
+            theme.success
+        } else {
+            theme.warning
+        },
         theme,
     );
     security_field(&mut lines, "Model", &evidence.model_id, theme.text, theme);
@@ -1516,11 +1558,29 @@ pub(super) fn security_summary_lines(
     );
     security_field(
         &mut lines,
-        "Verified",
+        "Checked",
         &format_verification_time(evidence.verified_at_unix_seconds),
         theme.text,
         theme,
     );
+    security_field(
+        &mut lines,
+        "Expires",
+        &evidence
+            .hard_expires_at_unix_seconds
+            .map_or_else(|| "Unavailable".into(), format_verification_time),
+        theme.text,
+        theme,
+    );
+    if let Some(generation) = evidence.attestation_generation {
+        security_field(
+            &mut lines,
+            "Generation",
+            &generation.to_string(),
+            theme.text,
+            theme,
+        );
+    }
     security_field(
         &mut lines,
         "Attestation",
@@ -1558,72 +1618,29 @@ pub(super) fn security_summary_lines(
                     theme.error
                 }),
             ),
-            Span::styled(check.label.clone(), Style::default().fg(theme.text)),
             Span::styled(
-                format!("  {}", check.status),
+                sanitize_terminal_text(&check.label),
+                Style::default().fg(theme.text),
+            ),
+            Span::styled(
+                format!("  {}", sanitize_terminal_text(&check.status)),
                 Style::default().fg(theme.muted),
             ),
         ]));
     }
 
     lines.push(Line::from(""));
-    lines.push(section_line("Workload", theme));
-    if let Some(value) = evidence_claim(evidence, "intel_mr_td") {
-        security_field(&mut lines, "TD measurement", value, theme.text, theme);
-    }
-    if let Some(value) = evidence_claim(evidence, "workload_manifest_sha256") {
-        security_field(&mut lines, "Manifest SHA-256", value, theme.text, theme);
-    }
-
-    if let Some(manifest) = evidence.workload_manifest.as_deref() {
-        let parsed = parse_workload_manifest(manifest);
-        for (key, value) in parsed.metadata {
-            security_field(
-                &mut lines,
-                &humanize_manifest_key(&key),
-                &value,
-                theme.text,
-                theme,
-            );
-        }
-        if !parsed.services.is_empty() {
-            lines.push(Line::from(""));
-            lines.push(section_line("Attested services", theme));
-            for service in parsed.services {
-                lines.push(Line::from(vec![
-                    Span::styled("• ", Style::default().fg(theme.text)),
-                    Span::styled(
-                        service.name,
-                        Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        service
-                            .image
-                            .map_or_else(String::new, |image| format!("  {image}")),
-                        Style::default().fg(theme.muted),
-                    ),
-                ]));
-            }
-        }
-    } else {
-        lines.push(Line::from(Span::styled(
-            "The provider did not retain a workload manifest.",
-            Style::default().fg(theme.warning),
-        )));
-    }
-
-    lines.push(Line::from(""));
-    lines.push(section_line("Endpoint bindings", theme));
+    lines.push(section_line("Key bindings", theme));
     security_field(
         &mut lines,
-        "Model key SHA-256",
+        "Encryption key",
         &evidence.model_key_fingerprint,
         theme.text,
         theme,
     );
     security_field(
         &mut lines,
-        "TLS SPKI SHA-256",
+        "TLS identity",
         evidence
             .tls_spki_fingerprint
             .as_deref()
@@ -1631,6 +1648,30 @@ pub(super) fn security_summary_lines(
         theme.text,
         theme,
     );
+    lines.push(Line::default());
+    lines.extend(provider_claim_lines(evidence, theme));
+    lines
+}
+
+fn provider_claim_lines(evidence: &SecurityEvidence, theme: Theme) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        section_line("Provider evidence fields", theme),
+        Line::from(
+            "Local check results identify what was verified; field names and formats are provider-specific.",
+        ),
+    ];
+    for claim in &evidence.provider_claims {
+        security_field(
+            &mut lines,
+            &humanize_evidence_key(&claim.name),
+            &claim.value,
+            theme.text,
+            theme,
+        );
+    }
+    if evidence.provider_claims.is_empty() {
+        lines.push(Line::from("No additional fields were supplied."));
+    }
     lines
 }
 
@@ -1639,38 +1680,34 @@ pub(super) fn workload_lines(
     raw: bool,
     theme: Theme,
 ) -> Vec<Line<'static>> {
-    let Some(manifest) = evidence.workload_manifest.as_deref() else {
-        return vec![Line::from(Span::styled(
-            "No workload manifest was retained for this provider.",
-            Style::default().fg(theme.warning),
-        ))];
+    let mut lines = if raw {
+        Vec::new()
+    } else {
+        provider_claim_lines(evidence, theme)
     };
-    let parsed = parse_workload_manifest(manifest);
     let (heading, content) = if raw {
         (
-            "Exact provider-supplied app_compose bytes (terminal-sanitized)",
-            manifest.to_owned(),
+            "Retained verification report (JSON)",
+            serde_json::to_string_pretty(evidence)
+                .unwrap_or_else(|_| "Report could not be encoded".into()),
         )
-    } else if let Some(compose) = parsed.compose {
-        (
-            "Docker Compose configuration committed to by the quote",
-            compose,
-        )
+    } else if let Some(document) = &evidence.workload_manifest {
+        ("Retained workload evidence", document.clone())
     } else {
-        (
-            "Workload manifest committed to by the quote",
-            manifest.to_owned(),
-        )
+        lines.push(Line::default());
+        lines.push(Line::from("This provider has no separate workload document. Inspect its checks and evidence fields, or save the full report."));
+        return lines;
     };
     let (content, truncated) = bounded_workload_display(&sanitize_terminal_text(&content));
-    let mut lines = vec![
+    lines.extend([
+        Line::default(),
         section_line(heading, theme),
         Line::from(Span::styled(
-            "This is public attestation evidence. It is not a live process list.",
+            "Public evidence; terminal display is sanitized. Save exports the full original report.",
             Style::default().fg(theme.muted),
         )),
         Line::from(""),
-    ];
+    ]);
     lines.extend(content.lines().map(|line| Line::from(line.to_owned())));
     if truncated {
         lines.push(Line::from(""));
@@ -1690,8 +1727,14 @@ pub(super) fn security_field(
     theme: Theme,
 ) {
     lines.push(Line::from(vec![
-        Span::styled(format!("{label:<20}  "), Style::default().fg(theme.muted)),
-        Span::styled(value.to_owned(), Style::default().fg(value_color)),
+        Span::styled(
+            format!("{:<20}  ", sanitize_terminal_text(label)),
+            Style::default().fg(theme.muted),
+        ),
+        Span::styled(
+            sanitize_terminal_text(value),
+            Style::default().fg(value_color),
+        ),
     ]));
 }
 
@@ -1700,14 +1743,6 @@ pub(super) fn section_line(label: &str, theme: Theme) -> Line<'static> {
         label.to_owned(),
         Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
     ))
-}
-
-pub(super) fn evidence_claim<'a>(evidence: &'a SecurityEvidence, name: &str) -> Option<&'a str> {
-    evidence
-        .provider_claims
-        .iter()
-        .find(|claim| claim.name == name)
-        .map(|claim| claim.value.as_str())
 }
 
 pub(super) fn format_verification_time(timestamp: u64) -> String {

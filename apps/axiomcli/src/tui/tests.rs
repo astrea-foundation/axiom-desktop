@@ -42,6 +42,8 @@ use super::{
 use axiom_secure_client::{EvidenceCheck, EvidenceClaim, SecurityState};
 use ratatui::backend::TestBackend;
 
+mod provider_presentation;
+
 #[test]
 fn steering_keeps_completed_output_before_the_new_user_message() {
     let mut state = TuiState::new(
@@ -102,17 +104,18 @@ fn live_tui_account_change_closes_old_store_and_requires_restart() {
 }
 
 fn security_evidence() -> SecurityEvidence {
+    let now = u64::try_from(chrono::Utc::now().timestamp()).unwrap();
     SecurityEvidence {
         state: SecurityState::Verified,
         provider_id: "near".into(),
         model_id: "deepseek-v4-flash".into(),
-        attestation_protocol: "near-tdx-nvidia-v1".into(),
-        e2ee_protocol: "near-v2".into(),
+        attestation_protocol: "near-tdx-nvidia-v2".into(),
+        e2ee_protocol: "near-v3".into(),
         e2ee_encryption_version: 2,
-        trust_policy_version: "near-v2-trust-v1".into(),
-        verified_at_unix_seconds: 1_777_776_000,
+        trust_policy_version: "axiom-production-v1".into(),
+        verified_at_unix_seconds: now - 1,
         attestation_generation: Some(4),
-        hard_expires_at_unix_seconds: Some(1_777_776_240),
+        hard_expires_at_unix_seconds: Some(now + 240),
         model_key_fingerprint: "11".repeat(32),
         tls_spki_fingerprint: Some("22".repeat(32)),
         checks: vec![EvidenceCheck {
@@ -147,7 +150,7 @@ fn security_evidence() -> SecurityEvidence {
 }
 
 #[test]
-fn security_inspector_shows_summary_workload_and_exact_manifest_views() {
+fn security_inspector_shows_current_summary_provider_evidence_and_raw_report() {
     let mut state = TuiState::new(
         PathBuf::from("/tmp/project"),
         "deepseek-v4-flash".into(),
@@ -159,24 +162,21 @@ fn security_inspector_shows_summary_workload_and_exact_manifest_views() {
 
     let summary = render_symbols(120, 42, &state);
     assert!(summary.contains("Security"));
-    assert!(summary.contains("Cryptographically verified"));
+    assert!(summary.contains("TEE VERIFIED"));
     assert!(summary.contains("Intel TDX"));
-    assert!(summary.contains("dstack-nvidia-test"));
-    assert!(summary.contains("Local key provider enabled  false"));
-    assert!(summary.contains("inference"));
+    assert!(summary.contains("Expires"));
     assert!(!summary.contains("Axiom approval"));
     assert!(!summary.contains("allowlist configured"));
 
     state.cycle_security_view();
     let workload = render_symbols(120, 42, &state);
-    assert!(workload.contains("Attested workload"));
+    assert!(workload.contains("Provider evidence"));
     assert!(workload.contains("registry.example/inference@sha256:abcd"));
 
     state.cycle_security_view();
     let raw = render_symbols(120, 42, &state);
-    assert!(raw.contains("Raw app_compose"));
-    assert!(raw.contains("manifest_version"));
-    assert!(raw.contains("docker_compose_file"));
+    assert!(raw.contains("Raw verification report"));
+    assert!(raw.contains("attestation_protocol"));
     assert!(raw.contains("S save"));
 }
 
@@ -246,25 +246,22 @@ fn ready_status_is_neutral_until_work_completes() {
 }
 
 #[test]
-fn workload_parser_extracts_digest_pinned_compose_services_and_bounds_unicode() {
-    let evidence = security_evidence();
-    let parsed = parse_workload_manifest(
-        evidence
-            .workload_manifest
-            .as_deref()
-            .expect("workload manifest"),
-    );
-    assert_eq!(parsed.services.len(), 2);
-    assert_eq!(parsed.services[0].name, "inference");
-    assert_eq!(
-        parsed.services[0].image.as_deref(),
-        Some("registry.example/inference@sha256:abcd")
-    );
+fn retained_evidence_display_bounds_unicode_without_changing_exports() {
     let oversized = "🌸".repeat(MAX_WORKLOAD_DISPLAY_CHARS + 1);
     let (bounded, truncated) = bounded_workload_display(&oversized);
     assert!(truncated);
     assert_eq!(bounded.chars().count(), MAX_WORKLOAD_DISPLAY_CHARS);
     assert!(bounded.ends_with('🌸'));
+    let mut evidence = security_evidence();
+    evidence.workload_manifest = Some(oversized.clone());
+    let directory = tempfile::tempdir().unwrap();
+    let path = write_attestation_export(directory.path(), "report.json", &evidence).unwrap();
+    let exported: SecurityEvidence =
+        serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+    assert_eq!(
+        exported.workload_manifest.as_deref(),
+        Some(oversized.as_str())
+    );
 }
 
 #[test]
@@ -347,7 +344,7 @@ fn slash_command_menu_is_visible_and_filtered_while_typing() {
     state.input = "/thi".into();
     let output = render_symbols(100, 30, &state);
     assert!(output.contains("/thinking"));
-    assert!(output.contains("reasoning effort"));
+    assert!(output.contains("reasoning mode or effort"));
     assert!(!output.contains("/compact ["));
 }
 
@@ -440,6 +437,8 @@ fn arrow_keys_highlight_slash_commands_and_options_before_accepting() {
 
     state.reset_slash_completion();
     state.input = "/thinking ".into();
+    state.move_slash_selection(1);
+    state.move_slash_selection(1);
     state.move_slash_selection(1);
     state.move_slash_selection(1);
     assert_eq!(state.input, "/thinking ");
@@ -2145,12 +2144,55 @@ fn preview_scenarios() -> Vec<(&'static str, u16, u16, TuiState)> {
     let mut security = preview_state();
     security.security = "SECURE";
     security.security_evidence = Some(security_evidence());
+    security.model = "deepseek-v4-flash".into();
     security.open_security();
 
     let mut security_workload = preview_state();
     security_workload.security = "SECURE";
-    security_workload.security_evidence = Some(security_evidence());
+    let mut provider_report = security_evidence();
+    provider_report.provider_id = "phala".into();
+    provider_report.attestation_protocol = "phala-aci-tdx-v1".into();
+    provider_report.e2ee_protocol = "phala-aci-v2".into();
+    provider_report.workload_manifest = None;
+    provider_report.provider_claims = vec![
+        EvidenceClaim {
+            name: "gateway_source_repository".into(),
+            value: "https://github.com/Dstack-TEE/private-ai-gateway".into(),
+        },
+        EvidenceClaim {
+            name: "gateway_source_commit_full".into(),
+            value: "abcdef0123456789abcdef0123456789abcdef0123".into(),
+        },
+        EvidenceClaim {
+            name: "preverified_worker_sessions".into(),
+            value: "2".into(),
+        },
+    ];
+    security_workload
+        .model
+        .clone_from(&provider_report.model_id);
+    security_workload.security_evidence = Some(provider_report);
     security_workload.overlay = Some(Overlay::Security(SecurityView::Workload));
+
+    let mut security_expired = preview_state();
+    security_expired.security = "SECURE";
+    let mut expired = security_evidence();
+    expired.verified_at_unix_seconds = 100;
+    expired.hard_expires_at_unix_seconds = Some(200);
+    security_expired.model.clone_from(&expired.model_id);
+    security_expired.security_evidence = Some(expired);
+    security_expired.open_security();
+
+    let mut usage = preview_state();
+    usage.context_usage = Some(axiom_acp_extension::ContextUsage {
+        input_tokens: 4000,
+        output_tokens: 1000,
+        model_id: usage.model.clone(),
+        reported_at: "2026-09-21T12:00:00Z".into(),
+        context_window_tokens: Some(10000),
+        auto_compact_threshold_tokens: Some(8500),
+    });
+    usage.overlay = Some(Overlay::Usage);
 
     let narrow = preview_state();
     let minimum = preview_state();
@@ -2214,6 +2256,8 @@ fn preview_scenarios() -> Vec<(&'static str, u16, u16, TuiState)> {
         ("resume-picker", 100, 30, resume_picker),
         ("security", 120, 42, security),
         ("security-workload", 120, 42, security_workload),
+        ("security-expired", 120, 42, security_expired),
+        ("usage", 100, 30, usage),
         ("narrow", 54, 16, narrow),
         ("minimum", 42, 10, minimum),
         ("markdown", 100, 42, markdown),

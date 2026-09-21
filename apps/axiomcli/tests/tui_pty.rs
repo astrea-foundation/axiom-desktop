@@ -109,6 +109,7 @@ fn run_tui_at(
                 | "delete"
                 | "composer"
                 | "appearance"
+                | "usage"
         ) {
             "echo"
         } else {
@@ -217,6 +218,13 @@ fn run_tui_at(
                 .expect("revision comment");
             writer.flush().expect("flush revision comment");
             thread::sleep(Duration::from_millis(180));
+        } else if runner == "usage" {
+            thread::sleep(Duration::from_millis(500));
+            writer.write_all(b"/usage\r").expect("open usage");
+            writer.flush().expect("flush usage command");
+            wait_for_output(&output_rx, &mut output, b"Usage", "usage inspector");
+            writer.write_all(b"\x1b").expect("close usage");
+            writer.flush().expect("flush close");
         } else if runner == "echo" {
             // Ratatui delta redraws can place cursor-control bytes inside the
             // visual status text, so use the deterministic runner's bounded
@@ -429,6 +437,23 @@ fn wait_for_output(
             )
         });
         output.extend_from_slice(&chunk);
+    }
+}
+
+#[test]
+fn usage_command_opens_an_inspector_without_submitting_a_prompt() {
+    let root = tempfile::tempdir().unwrap();
+    let (output, success) = run_tui_at("usage", false, root.path(), &[]);
+    assert!(success, "usage session failed: {output:?}");
+    assert!(output.contains("Usage"));
+    let store = SessionStore::open(test_account_database(root.path())).unwrap();
+    let sessions = store.list(false).unwrap();
+    assert!(!sessions.is_empty());
+    for session in sessions {
+        let id = session.id.parse().unwrap();
+        let loaded = store.load(&id).unwrap();
+        assert!(!loaded.iter().any(|envelope| matches!(&envelope.event,
+            axiomcli::app::AppEvent::PromptAccepted { text, .. } if text == "/usage")));
     }
 }
 

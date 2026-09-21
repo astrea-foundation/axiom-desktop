@@ -13,6 +13,7 @@ mod task;
 mod text;
 mod theme;
 mod transcript;
+mod usage;
 
 pub use runtime::run;
 pub use screens::render;

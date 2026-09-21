@@ -117,7 +117,7 @@ fn send_available_commands(
 ) -> agent_client_protocol::Result<()> {
     let commands = slash::COMMANDS
         .iter()
-        .filter(|spec| !matches!(spec.name, "theme" | "web"))
+        .filter(|spec| !matches!(spec.name, "theme" | "web" | "usage"))
         .map(|spec| {
             let command = protocol::AvailableCommand::new(spec.name, spec.description);
             if matches!(
@@ -299,7 +299,7 @@ fn send_config_update(
 fn slash_help_text() -> String {
     let lines = slash::COMMANDS
         .iter()
-        .filter(|spec| !matches!(spec.name, "theme" | "web"))
+        .filter(|spec| !matches!(spec.name, "theme" | "web" | "usage"))
         .map(|spec| format!("{} — {}", spec.usage, spec.description))
         .collect::<Vec<_>>()
         .join("\n");
