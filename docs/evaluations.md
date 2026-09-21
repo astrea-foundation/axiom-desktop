@@ -1,75 +1,95 @@
-# Evaluation policy
+# Evaluations and performance
 
-AxiomCLI has two deliberately separate evaluation lanes. Deterministic
-evaluations are a required change gate; live-model evaluations measure model
-behavior without making ordinary CI depend on model availability or luck.
+[The development guide](development.md#checks) owns general checks. This guide
+covers behavioral evaluation, real search integration and historical performance
+observations. [scripts/axiomcli-eval](../scripts/axiomcli-eval) defines the lanes.
 
 ## Deterministic lane
 
-Run:
-
-```text
+```sh
 scripts/axiomcli-eval deterministic
 ```
 
-The original fixture set is generated in fresh temporary directories. It
-covers:
+The runner repeats the autonomous agent, multi-language fixture, soak, ACP
+transcript, TUI PTY and MCP integration suites twice. Fixtures are created in
+fresh temporary directories. They cover edits followed by real tests, repair of
+failed commands, TypeScript/Python changes, documentation investigation, policy
+boundaries, cancellation/recovery, TUI/ACP outcomes and bounded background work.
 
-| Outcome | Fixture/evidence |
-|---|---|
-| Rust targeted edit and real test | `autonomous_eval::deterministic_agent_edits_runs_tests_and_reports_completion` |
-| Rust failed command, repair, rerun | `autonomous_eval::deterministic_agent_observes_failure_repairs_and_reruns` |
-| TypeScript multi-file refactor | `evaluation_suite::original_multilanguage_evaluation_set_is_repeatable_from_clean_fixtures` |
-| Python test repair | same multi-language evaluation |
-| Configuration and documentation consistency | same multi-language evaluation |
-| Read-only investigation with file citation | same multi-language evaluation |
-| Denied/out-of-root operations | `autonomous_eval`, workspace, policy, and web adversarial tests |
-| Web research with a real SearXNG service | ignored `searxng_integration` test, run by the dedicated CI job |
-| Real stdio MCP discovery/call/reconnect | `mcp_integration` |
-| Cancellation and durable resume | agent, provider, process, session, ACP, and TUI suites |
-| Equivalent TUI/ACP mutation outcome | `workspace_edit_reaches_*` PTY/transcript tests |
-| Long stream, journal, and background work | `soak` |
+Scorecards check expected workspace state, verification results, policy escapes,
+tool counts, retries, latency and serialized context size. A passing mocked
+provider task tests orchestration; it does not prove a live provider's behavior
+or attestation availability. Linux process fixtures require Bubblewrap.
 
-Each task scorecard records completion, expected workspace state, verification
-command result, policy escapes, tool-call count, expected command failures,
-provider retries, latency, and maximum serialized context size. Deterministic
-tasks fail on any policy escape, wrong workspace outcome, unexpected retry,
-failed verification, context overflow, latency overflow, or excess tool use.
+## Live provider lane
 
-## Live-model lane
+Choose an Axiom relay and a model whose registered E2EE protocol is supported:
 
-Run only against an explicitly selected development endpoint:
-
-```text
-AXIOM_LIVE_BASE_URL=... AXIOM_LIVE_MODEL=... scripts/axiomcli-eval live
+```sh
+AXIOM_LIVE_BASE_URL=https://your-axiom-relay.example \
+AXIOM_LIVE_MODEL=your-model-id \
+scripts/axiomcli-eval live
 ```
 
-`AXIOM_API_KEY` is optional for endpoints that do not require it. Secrets are
-read from the process environment and never included in the report. The live
-test runs three fresh, read-only repository investigations with a six-step,
-120-second-per-run budget. It requires the exact private fixture marker, at
-least one and no more than four tools, no workspace changes, and maximum latency
-no greater than four times minimum latency (with a five-second allowance).
+Set the required `AXIOM_API_KEY` automation credential in the environment. The test uses `SecureAxiomProvider::from_environment`,
+including local attestation, encryption and response authentication. A local
+OpenAI-compatible proxy is not a substitute for this relay contract. No
+plaintext inference or unauthenticated-key option is available.
 
-Baseline recorded on the Linux x86-64 development host on 2026-08-22 using the
-local AxiomIO development proxy and `glm-5-2`:
+The [live test](../apps/axiomcli/tests/evaluation_suite.rs) runs three independent
+read-only investigations. Each must return the fixture's exact marker, use one
+to four tools, and leave the workspace unchanged. Limits are six agent steps,
+120 seconds per run, 256 KiB/64K tokens of context and 32 KiB tool output. The
+largest latency must be no greater than the larger of four times the smallest
+latency or the smallest plus five seconds. Reports omit credentials.
 
-| Run | Latency | Tool calls | Correct | Workspace mutations |
-|---:|---:|---:|---:|---:|
-| 1 | 8,252 ms | 1 | yes | 0 |
-| 2 | 8,036 ms | 1 | yes | 0 |
-| 3 | 5,970 ms | 2 | yes | 0 |
+The [live workflow](../.github/workflows/live-evals.yml) runs on its schedule or
+manual dispatch only on `main`, with a 15-minute job limit and required
+endpoint/model/key secrets. The pushed-tag signed release workflow has a live
+gate too. The manually dispatched Desktop installer workflow is a separate
+packaging lane; passing it is not evidence of a live-provider test.
 
-Observed max/min latency ratio was 1.38. A release candidate is blocked by a
-wrong answer, mutation, policy escape, tool/step/latency budget failure, or a
-variance failure. The scheduled workflow is bounded to 15 minutes and fails
-when its required endpoint/model/key secrets are absent. Tagged release
-packaging has the same mandatory live gate.
+## Real SearXNG integration
 
-## Real integration lane
+The default search provider is authenticated hosted Axiom search. Selecting
+`web_search_provider = "searxng"` explicitly enables the alternative; see
+[configuration](configuration.md). To work with a real local service:
 
-`scripts/axiomcli-eval full` additionally starts pinned real SearXNG instances
-and runs live upstream search behavior. SearXNG results are inherently affected
-by upstream availability, but service lifecycle, empty/disabled/timeout modes,
-agent citations, shutdown behavior, URL normalization, and local-target denial
-are asserted.
+```sh
+scripts/searxng-dev bootstrap
+scripts/searxng-dev start
+scripts/searxng-dev query 'Rust programming language'
+scripts/searxng-dev integration-test
+scripts/searxng-dev stop
+```
+
+The script clones pinned upstream source into `.cache/searxng`, creates a Python
+3.13 environment with `uv`, and uses `127.0.0.1:8888` for the development server.
+Integration tests own ephemeral loopback instances and clean them up. They
+exercise real upstream search plus empty, disabled, timeout and shutdown
+configurations, citations, URL normalization and local-target denial. Upstream
+throttling/network failures can still affect results. Fixture secrets are only
+for local development.
+
+`scripts/axiomcli-eval full` runs deterministic tests, real SearXNG integration,
+and then the live provider test; it therefore needs the live variables too.
+
+## Historical measurements
+
+These observations predate the current provider and storage changes. They are
+retained for comparison, not as current benchmarks or release guarantees.
+Re-measure on an identified commit/build/host before drawing performance claims.
+
+| Date | Linux x86-64 development-host observation |
+|---|---|
+| 2026-08-21 | Release `--version`: <0.01 s, 5,424 KiB maximum RSS |
+| 2026-08-22 | Ten debug `--version` starts: 52 ms total |
+| 2026-08-22 | One second of idle TUI: 25,852 KiB RSS, zero scheduler ticks |
+| 2026-08-22 | 10,000 chunks and 5,000 SQLite entries: 2,502 ms journal time, 2,781,184-byte database |
+| 2026-08-22 | 24 background tasks in six batches: 102 ms, bounded output, all reaped |
+
+An older live baseline using the then-current local development service and
+`glm-5-2` recorded 8,252/8,036/5,970 ms, 1/1/2 tool calls and no mutations.
+This is historical test evidence, not proof of today's registered provider
+contracts. Dated Desktop/provider reports and their fix retests are indexed
+under [testing](testing/README.md).

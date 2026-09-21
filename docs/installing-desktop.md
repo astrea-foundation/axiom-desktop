@@ -2,7 +2,10 @@
 
 Each desktop download includes the matching command-line program, `axiomcli`.
 You do not need Rust, Node.js, or a separate CLI download. Choose the build for
-your operating system and processor. These examples use version 0.1.0.
+your operating system and processor from the published download catalog.
+These filenames illustrate version 0.1.0; they do not assert its current
+availability. [Supported build targets](releasing.md#supported-platforms) and
+[Desktop behavior](desktop.md) are documented separately.
 
 ## Windows
 

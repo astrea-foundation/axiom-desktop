@@ -80,7 +80,7 @@ An ambiguous POST failure or missing receipt never authorizes inference replay.
 
 ## Rollout
 
-Apply migration `0013` and release compatible native/backend revisions together.
+Initialize the current backend baseline and release compatible native/backend revisions together.
 The new driver advertises only `near-v3`; legacy NEAR clients fail closed. Other
 providers retain their existing contracts. This change does not deploy anything.
 

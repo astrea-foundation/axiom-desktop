@@ -1,5 +1,9 @@
 # ADR 0010: Provider-owned verified secure sessions
 
+> The provider-owned session abstraction remains accepted. The initial NEAR v2
+> and single-provider descriptions below are historical; the compiled registry now
+> supports NEAR v3, Phala ACI v2 and Tinfoil EHBP. See [security](../threat-model.md).
+
 Status: accepted
 
 ## Context

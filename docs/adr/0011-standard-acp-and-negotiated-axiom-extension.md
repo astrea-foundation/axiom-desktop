@@ -1,5 +1,10 @@
 # ADR 0011: Standard ACP with a negotiated Axiom extension
 
+> The ACP/extension boundary remains accepted. The original Web-only and
+> Shieldz-only details below are superseded by negotiated Desktop Agent mode,
+> automation-key management and native deposit billing. Use the
+> [current ACP contract](../acp-compatibility.md) for methods, features and recovery.
+
 Status: accepted (early implementation)
 
 ## Context

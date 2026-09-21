@@ -1,5 +1,10 @@
 # macOS compatibility audit — September 9, 2026
 
+> Historical record, archived 2026-09-21. This preserves the original proposal
+> or dated evidence, including superseded behavior and unfinished checklists.
+> It is not a current implementation or deployment runbook. See the
+> [current guides](../README.md) and [validation follow-up](../validation.md).
+
 The audit covered the current Desktop/AxiomCLI checkout, the hosted API/auth
 integration boundary in `/home/salt/clone/axiom`, and the existing 0.1.0 Intel
 and Apple Silicon installers in `dist/desktop-0.1.0`. Inspection and new tests
