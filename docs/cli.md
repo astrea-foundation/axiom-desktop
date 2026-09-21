@@ -39,6 +39,10 @@ the transcript, `Enter` to expand task details, `v` for the full viewer, and
 active work or closes the current overlay; two consecutive `Ctrl+C` presses exit.
 Terminal restoration is guarded on exit and panic.
 
+The status line shows task progress and interaction prompts. Open `/balance` to
+check account credit. Composer controls show the selected model, thinking level,
+Permissions profile and Web access.
+
 Typing `/` filters slash-command hints; `Tab` completes command names/arguments.
 Slash commands are handled locally rather than sent to the model as prompts.
 

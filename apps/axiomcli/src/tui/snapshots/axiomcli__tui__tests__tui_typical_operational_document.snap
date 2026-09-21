@@ -19,6 +19,6 @@ expression: "render_symbols(80, 20, &state)"
 
     › Ask anything, or / for commands
 
-     glm-test    Thinking Medium    Agent Ask    ○ Web Off
+     glm-test    Thinking Medium    Permissions Ask    ○ Web Off
 
   Enter send · Alt+Enter newline · Tab browse · / commands · ? help
