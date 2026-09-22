@@ -1,3 +1,4 @@
+import {registerUpdateFlush, updateRestartPending} from './updateFlush';
 import { useCallback, useEffect, useRef, useState, type SetStateAction } from "react";
 import { localPayloads } from "./localPayloads";
 import { browserConsentStorage } from "./webConsent";
@@ -12,6 +13,14 @@ export function useAccountDraft(accountId: string | null, threadId: string | nul
   const drafts = useRef(new Map<string, string>());
   const versions = useRef(new Map<string, number>());
   const pendingSaves = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  useEffect(() => registerUpdateFlush(async () => {
+    for (const timer of pendingSaves.current.values()) clearTimeout(timer);
+    pendingSaves.current.clear();
+    await Promise.all([...drafts.current].map(([scope,text]) => {
+      const owner = decodeURIComponent(scope.split(':')[1]!);
+      return localPayloads.put(owner, scope, {text, attachments: []});
+    }));
+  }), []);
   const previousAccount = useRef(accountId);
   const currentAccount = useRef(accountId);
   currentAccount.current = accountId;
@@ -44,14 +53,19 @@ export function useAccountDraft(accountId: string | null, threadId: string | nul
     const scope = key(accountId, threadId);
     const version = versions.current.get(scope) ?? 0;
     let active = true;
+    // Synchronous draft storage can be newer than a debounced IndexedDB write
+    // after an abrupt exit. Never replace it with that stale copy on launch.
+    let immediate: string | null = null;
+    try { immediate = storage?.getItem(scope) ?? null; } catch { /* use IndexedDB */ }
     void localPayloads.get(accountId ?? "anonymous", scope).then((saved) => {
+      if (immediate !== null) return;
       if (!active || !saved || (versions.current.get(scope) ?? 0) !== version) return;
       drafts.current.set(scope, saved.text); changed((value) => value + 1);
     }).catch(() => undefined);
     return () => { active = false; };
   }, [accountId, threadId]);
   const writeDraft = useCallback((thread: string | null, next: SetStateAction<string>, requireDurable = false) => {
-    if (currentAccount.current !== accountId) return false;
+    if (updateRestartPending() || currentAccount.current !== accountId) return false;
     const scope = key(accountId, thread);
     let previous = drafts.current.get(scope);
     if (previous === undefined) {
@@ -77,12 +91,12 @@ export function useAccountDraft(accountId: string | null, threadId: string | nul
   }, [accountId, storage]);
   const setDraft = useCallback((next: SetStateAction<string>) => writeDraft(threadId, next), [threadId, writeDraft]);
   const writeDraftDurable = useCallback(async (thread: string | null, text: string) => {
-    if (currentAccount.current !== accountId) return false;
+    if (updateRestartPending() || currentAccount.current !== accountId) return false;
     const scope = key(accountId, thread);
     clearTimeout(pendingSaves.current.get(scope));
     pendingSaves.current.delete(scope);
     await localPayloads.put(accountId ?? "anonymous", scope, { text, attachments: [] });
-    if (currentAccount.current !== accountId) return false;
+    if (updateRestartPending() || currentAccount.current !== accountId) return false;
     drafts.current.set(scope, text);
     versions.current.set(scope, (versions.current.get(scope) ?? 0) + 1);
     try { storage?.setItem(scope, text); } catch { /* IndexedDB committed. */ }

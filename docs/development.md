@@ -131,3 +131,15 @@ provenance, generated protocol files and runtime prompts retain their required
 locations. When moving a document, fix inbound links and distinguish historical
 plans/test evidence from current instructions. Carry unresolved work into
 [validation](validation.md) before retiring a plan.
+
+## Updater development
+
+The native updater lives in `apps/axiomcli/src/updates`; the shared installation
+identity/lease is in `crates/axiom-installation`. Desktop only controls its lifecycle
+and UI. `cargo test -p axiom-installation -p axiomcli` covers signatures, staging,
+transport, locks and the Linux helper. Desktop's normal tests cover update states
+and the standalone installer; `pnpm --filter axiom-desktop exec tsx --test
+tests/browser/updates.test.ts` exercises the light/dark controls. See
+[release previews](releasing.md#development-previews) and
+[qualification](testing/automatic-updates-2026-09-22.md). Production keys are not
+needed for local tests; committed fixture keys must never sign a release.

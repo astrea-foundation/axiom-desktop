@@ -517,6 +517,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "axiom-installation"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "directories",
+ "fs2",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+]
+
+[[package]]
 name = "axiom-openai-compat"
 version = "0.1.0"
 dependencies = [
@@ -532,6 +546,7 @@ name = "axiom-proxy"
 version = "0.1.0"
 dependencies = [
  "axiom-inference",
+ "axiom-installation",
  "axiom-openai-compat",
  "axiom-secure-client",
  "axum",
@@ -598,6 +613,7 @@ dependencies = [
  "async-trait",
  "axiom-acp-extension",
  "axiom-inference",
+ "axiom-installation",
  "axiom-proxy",
  "axiom-secure-client",
  "axum",
@@ -606,11 +622,13 @@ dependencies = [
  "clap",
  "crossterm",
  "directories",
+ "ed25519-dalek 2.2.0",
  "fs2",
  "futures",
  "getrandom 0.4.3",
  "git2",
  "globset",
+ "hex",
  "ignore",
  "insta",
  "keyring",

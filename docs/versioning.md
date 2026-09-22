@@ -65,3 +65,9 @@ and build metadata describe the produced artifact. Supported build targets and
 real-machine acceptance are separate claims; see
 [supported platforms](releasing.md#supported-platforms). No document or green
 build alone establishes that an artifact has been published or accepted.
+
+Automatic updates accept stable product versions and remember the highest signed
+release sequence/version per installation. A release version and its signed
+inventory are immutable. Desktop, bundled CLI and the standalone CLI/proxy pair
+are installed together. This initial updater has no legacy install migration;
+future storage changes must still preserve data compatibility before any rollback.

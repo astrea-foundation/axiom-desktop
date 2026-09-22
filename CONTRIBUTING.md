@@ -53,11 +53,12 @@ continues on `dev`. Avoid direct commits or pushes to `main`.
 
 ## Releases
 
-CI checks pushes to `main` and pull requests targeting `main`. Pushes to `dev`
-or other development branches, and pull requests targeting `dev`, do not run
-GitHub Actions. Run the relevant checks locally before pushing development
-changes. Main CI runs tests and portability checks without packaging release
-archives or Desktop applications; superseded runs are cancelled.
+CI checks pull requests targeting `main`; merges do not repeat those checks.
+Pushes to development branches and pull requests targeting `dev` do not start
+Actions automatically. Run relevant local checks before pushing. Manual CI
+dispatch supports targeted native validation and retries; releases require the
+complete set of successful checks for their exact tagged revision. CI does not
+package applications; superseded runs for the same target are cancelled.
 
 GitHub Actions is limited to CI and release artifact production. There is no
 standalone scheduled or manually dispatched live-evaluation workflow. Run ad hoc
@@ -66,12 +67,12 @@ regression gate as part of producing release artifacts.
 
 GitHub Actions generates release artifacts only from stable `vMAJOR.MINOR.PATCH`
 tags whose commits have been promoted to `main` and whose version matches the
-product. The signed release workflow runs when the tag is pushed. The desktop
-installer workflow can be run manually against that tag, including the explicit
-unsigned option for early-access releases; branch dispatches skip packaging.
-See [the release procedure](docs/releasing.md) for the command. Building an
-artifact does not update the public download catalog; publishing remains an
-explicit release step.
+product. The signed release workflow runs when the tag is pushed, builds both
+Desktop and standalone installers, and hands their signed inventory to the
+platform publisher. The separate Preview installers workflow can run on `dev`
+and produces unsigned Actions artifacts with stable updates disabled. It does
+not publish downloads or change a feed. See [the release procedure](docs/releasing.md)
+for setup, native acceptance and publication commands.
 
 Use the [development checks](docs/development.md#checks) and
 [release procedure](docs/releasing.md).

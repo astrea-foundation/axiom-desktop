@@ -30,8 +30,6 @@ mac:
   gatekeeperAssess: false
   notarize: true
   target:
-    - target: dmg
-    - target: zip
     - target: pkg
   extraResources:
     - from: ../../target/release/axiomcli
@@ -80,6 +78,7 @@ win:
 nsis:
   include: build/installer.nsh
   oneClick: false
+  runAfterFinish: false
   perMachine: false
   allowToChangeInstallationDirectory: true
   installerIcon: build/icon.ico
