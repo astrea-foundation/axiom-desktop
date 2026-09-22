@@ -5,6 +5,7 @@ import type {
   BillingStatusResponse,
   GiftCodeRedeemResponse,
   UsageSummaryResponse,
+  UsageSummaryRequest,
   ApiKeyListResponse,
   ApiKeyCreatedResponse,
   ApiKeyRevokeResponse,
@@ -57,7 +58,7 @@ export interface AgentApi {
   accountStatus: () => Promise<AccountStatusResponse>;
   billingStatus: () => Promise<BillingStatusResponse>;
   redeemGiftCode: (code: string, accountId: string) => Promise<GiftCodeRedeemResponse>;
-  usageSummary: (accountId: string) => Promise<UsageSummaryResponse>;
+  usageSummary: (accountId: string, request?: UsageSummaryRequest) => Promise<UsageSummaryResponse>;
   apiKeys: (accountId: string) => Promise<ApiKeyListResponse>;
   createApiKey: (name: string, accountId: string) => Promise<ApiKeyCreatedResponse>;
   revokeApiKey: (id: string, accountId: string) => Promise<ApiKeyRevokeResponse>;
@@ -108,7 +109,7 @@ export const agentApi: AgentApi = {
   accountStatus: () => invoke("account-status"),
   billingStatus: () => invoke("billing-status"),
   redeemGiftCode: (code, accountId) => invoke("redeem-gift-code", code, accountId),
-  usageSummary: (accountId) => invoke("usage-summary", accountId),
+  usageSummary: (accountId, request = {}) => invoke("usage-summary", accountId, request.period ?? "all_time", request.timezone ?? "UTC"),
   apiKeys: (accountId) => invoke("api-keys", accountId),
   createApiKey: (name, accountId) => invoke("api-key-create", name, accountId),
   revokeApiKey: (id, accountId) => invoke("api-key-revoke", id, accountId),
