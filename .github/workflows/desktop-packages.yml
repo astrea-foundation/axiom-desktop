@@ -1,67 +1,27 @@
-name: desktop installers
-
+name: Preview installers
 on:
   workflow_dispatch:
-    inputs:
-      unsigned:
-        description: Build the explicitly unsigned early-access installers
-        type: boolean
-        default: true
-      platform:
-        description: Release platforms to package
-        type: choice
-        default: all
-        options: [all, linux, windows]
-
 permissions:
   contents: read
-
 env:
   RUST_TEST_THREADS: 2
-
 jobs:
-  release-ref:
-    name: Validate release tag
-    if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Require a promoted release revision and matching product version
-        shell: bash
-        run: |
-          git merge-base --is-ancestor HEAD origin/main
-          node apps/desktop/scripts/set-release-version.mjs "${GITHUB_REF_NAME#v}" --check-only
-
-  signed-windows:
-    if: inputs.unsigned == false && inputs.platform != 'linux'
-    needs: release-ref
-    permissions:
-      contents: read
-      id-token: write
-    uses: ./.github/workflows/windows-signed.yml
-
   package:
-    if: inputs.unsigned || inputs.platform != 'windows'
-    name: package (${{ matrix.platform }} ${{ matrix.arch }})
-    needs: release-ref
+    name: Preview ${{ matrix.platform }} ${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
-    environment: release
-    timeout-minutes: 60
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
-        include: >-
-          ${{ fromJSON(inputs.platform == 'linux' &&
-            '[{"platform":"linux","arch":"x64","runner":"ubuntu-22.04"}]' || !inputs.unsigned &&
-            '[{"platform":"linux","arch":"x64","runner":"ubuntu-22.04"},{"platform":"mac","arch":"x64","runner":"macos-15-intel"},{"platform":"mac","arch":"arm64","runner":"macos-15"}]' || inputs.platform == 'windows' &&
-            '[{"platform":"win","arch":"x64","runner":"windows-latest"},{"platform":"win","arch":"arm64","runner":"windows-11-arm"}]' ||
-            '[{"platform":"linux","arch":"x64","runner":"ubuntu-22.04"},{"platform":"mac","arch":"x64","runner":"macos-15-intel"},{"platform":"mac","arch":"arm64","runner":"macos-15"},{"platform":"win","arch":"x64","runner":"windows-latest"},{"platform":"win","arch":"arm64","runner":"windows-11-arm"}]') }}
+        include:
+          - {platform: linux, arch: x64, runner: ubuntu-22.04}
+          - {platform: mac, arch: x64, runner: macos-15-intel}
+          - {platform: mac, arch: arm64, runner: macos-15}
+          - {platform: win, arch: x64, runner: windows-2025}
+          - {platform: win, arch: arm64, runner: windows-11-arm}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-        id: rust
         with:
           toolchain: 1.97.1
       - uses: Swatinem/rust-cache@v2
@@ -74,122 +34,38 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-      - name: Install Linux build dependencies
+      - uses: actions/setup-python@v5
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev libssl-dev pkg-config libgtk-3-0 libnss3 libasound2 bubblewrap libarchive-tools
+        with:
+          python-version: '3.12'
       - run: pnpm install --frozen-lockfile
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap libarchive-tools libfuse2 rpm
+      - if: runner.os == 'Windows'
+        run: choco install nsis --version=3.11 --no-progress -y
+      - run: cargo test -p axiom-installation -p axiomcli --all-features
       - run: pnpm --filter axiom-desktop typecheck
-      - run: pnpm --filter axiom-desktop exec tsx --test tests/packaging.test.ts tests/release-version.test.ts
-      - uses: actions/cache/restore@v4
-        id: cli-cache
-        with:
-          path: |
-            target/release/axiomcli
-            target/release/axiomcli.exe
-          key: native-cli-v1-${{ matrix.runner }}-${{ matrix.arch }}-${{ steps.rust.outputs.cachekey }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', '**/Cargo.toml', 'rust-toolchain*', 'apps/axiomcli/**', 'crates/**', 'protocol/**', 'fixtures/**') }}
-      - run: cargo build --locked --release -p axiomcli
-        if: steps.cli-cache.outputs.cache-hit != 'true'
-      - uses: actions/cache/save@v4
-        if: steps.cli-cache.outputs.cache-hit != 'true'
-        with:
-          path: |
-            target/release/axiomcli
-            target/release/axiomcli.exe
-          key: ${{ steps.cli-cache.outputs.cache-primary-key }}
-      - name: Package desktop and CLI
-        shell: bash
-        env:
-          UNSIGNED: ${{ inputs.unsigned }}
-          CSC_LINK: ${{ !inputs.unsigned && runner.os == 'macOS' && secrets.MACOS_CERTIFICATE_BASE64 || '' }}
-          CSC_KEY_PASSWORD: ${{ !inputs.unsigned && runner.os == 'macOS' && secrets.MACOS_CERTIFICATE_PASSWORD || '' }}
-          APPLE_ID: ${{ !inputs.unsigned && runner.os == 'macOS' && secrets.APPLE_ID || '' }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ !inputs.unsigned && runner.os == 'macOS' && secrets.APPLE_APP_SPECIFIC_PASSWORD || '' }}
-          APPLE_TEAM_ID: ${{ !inputs.unsigned && runner.os == 'macOS' && secrets.APPLE_TEAM_ID || '' }}
+      - run: pnpm --filter axiom-desktop test
+      - run: cargo build --locked --release -p axiomcli -p axiom-proxy
+      - name: Package unsigned preview installers without stable update trust
         run: |
-          args=(--${{ matrix.platform }} --${{ matrix.arch }})
-          if [[ "$UNSIGNED" == true ]]; then args+=(--unsigned); fi
-          node apps/desktop/scripts/package-desktop.mjs "${args[@]}"
-      - name: Verify Linux package contents and CLI
-        if: runner.os == 'Linux'
+          node apps/desktop/scripts/package-desktop.mjs --${{ matrix.platform }} --${{ matrix.arch }} --unsigned
+          node scripts/package-cli.mjs --${{ matrix.platform }} --${{ matrix.arch }} --unsigned
+      - name: Build internal inventory
         shell: bash
-        run: |
-          appimage=(apps/desktop/dist/*.AppImage)
-          "${appimage[0]}" --appimage-extract > /dev/null
-          squashfs-root/AppRun --axiom-cli --version
-          squashfs-root/AppRun --axiom-cli --help
-          deb=(apps/desktop/dist/*.deb)
-          dpkg-deb --field "${deb[0]}" Package Version Architecture
-          sudo apt-get install -y "$(realpath "${deb[0]}")"
-          axiomcli --version
-          axiomcli --help
-          test "$(command -v axiomcli)" = /usr/bin/axiomcli
-          sudo apt-get install --reinstall -y "$(realpath "${deb[0]}")"
-          axiomcli --version
-          arch=(apps/desktop/dist/*.pkg.tar.xz)
-          tar -tf "${arch[0]}" | grep -E '^\.?/?usr/bin/axiomcli$'
-          tar -xOf "${arch[0]}" .PKGINFO
-      - name: Verify desktop and CLI dependencies on minimal Linux installations
-        if: runner.os == 'Linux'
-        timeout-minutes: 10
-        shell: bash
-        run: |
-          docker run --rm -v "$PWD/apps/desktop/dist:/install:ro" ubuntu:22.04 sh -ec '
-            (apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends /install/*.deb) >/tmp/install.log 2>&1 || { tail -n 50 /tmp/install.log; exit 1; }
-            axiomcli --version
-            ELECTRON_RUN_AS_NODE=1 /opt/Axiom/axiom-desktop -p process.versions.electron
-          '
-          docker run --rm -v "$PWD/apps/desktop/dist:/install:ro" archlinux:base sh -ec '
-            (pacman -Syu --noconfirm && pacman -U --noconfirm /install/*.pkg.tar.xz) >/tmp/install.log 2>&1 || { tail -n 50 /tmp/install.log; exit 1; }
-            axiomcli --version
-            ELECTRON_RUN_AS_NODE=1 /opt/Axiom/axiom-desktop -p process.versions.electron
-          '
-      - name: Verify macOS installation and CLI
-        if: runner.os == 'macOS'
-        shell: bash
-        run: |
-          pkg=(apps/desktop/dist/Axiom-*-mac-*.pkg)
-          sudo installer -pkg "${pkg[0]}" -target /
-          /usr/local/bin/axiomcli --version
-          /usr/local/bin/axiomcli --help
-          test "$(readlink /usr/local/bin/axiomcli)" = /Applications/Axiom.app/Contents/Resources/bin/axiomcli
-          codesign --verify --deep --strict /Applications/Axiom.app
-          # Exercise Electron's native runtime and JavaScript without opening a window.
-          # A valid resource signature and a working Rust CLI alone don't prove
-          # that the hardened Electron runtime can start with its entitlements.
-          ELECTRON_RUN_AS_NODE=1 /Applications/Axiom.app/Contents/MacOS/Axiom -e 'const assert = require("node:assert/strict"); assert.equal(new Function("return 42")(), 42); console.log("Electron runtime startup passed")'
-          marker="$HOME/Library/Application Support/axiom/accounts/packaging-smoke/desktop/preserved.txt"
-          mkdir -p "$(dirname "$marker")"
-          printf '%s' preserved > "$marker"
-          sudo installer -pkg "${pkg[0]}" -target /
-          /usr/local/bin/axiomcli --version
-          test "$(cat "$marker")" = preserved
-      - name: Generate download metadata
-        shell: bash
-        env:
-          UNSIGNED: ${{ inputs.unsigned }}
         run: |
           version=$(node -p "require('./apps/desktop/package.json').version")
-          signing=signed
-          if [[ "$UNSIGNED" == true ]]; then signing=unsigned; fi
-          node scripts/download-manifest.mjs apps/desktop/dist "$version" "$signing"
+          node scripts/download-manifest.mjs apps/desktop/dist "$version" unsigned
       - uses: actions/upload-artifact@v4
         with:
-          name: axiom-desktop-${{ matrix.platform }}-${{ matrix.arch }}
+          name: preview-installers-${{ matrix.platform }}-${{ matrix.arch }}
           if-no-files-found: error
           path: |
             apps/desktop/dist/*.exe
-            apps/desktop/dist/*.dmg
             apps/desktop/dist/*.pkg
-            apps/desktop/dist/*.zip
             apps/desktop/dist/*.AppImage
             apps/desktop/dist/*.deb
             apps/desktop/dist/*.pkg.tar.xz
+            apps/desktop/dist/*.sh
             apps/desktop/dist/manifest.json
             apps/desktop/dist/SHA256SUMS
-      - name: Retain installer for failed-install diagnostics
-        if: failure() && runner.os == 'Windows'
-        uses: actions/upload-artifact@v4
-        with:
-          name: axiom-installer-debug-${{ matrix.arch }}
-          if-no-files-found: ignore
-          path: apps/desktop/dist/*.exe

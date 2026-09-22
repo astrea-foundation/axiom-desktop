@@ -98,28 +98,26 @@ fn run_tui_at(
     for argument in extra_args {
         command.arg(argument);
     }
-    command.env(
-        "AXIOMCLI_TEST_RUNNER",
-        if matches!(
-            runner,
-            "resume"
-                | "resume_reconcile"
-                | "remembered_model"
-                | "preference_bootstrap"
-                | "delete"
-                | "composer"
-                | "appearance"
-                | "gift"
-                | "usage"
-                | "paste_picker"
-        ) {
-            "echo"
-        } else if runner == "input_active" {
-            "blocking"
-        } else {
-            runner
-        },
-    );
+    let test_runner = if matches!(
+        runner,
+        "resume"
+            | "resume_reconcile"
+            | "remembered_model"
+            | "preference_bootstrap"
+            | "delete"
+            | "composer"
+            | "appearance"
+            | "gift"
+            | "usage"
+            | "paste_picker"
+    ) {
+        "echo"
+    } else if runner == "input_active" {
+        "blocking"
+    } else {
+        runner
+    };
+    command.env("AXIOMCLI_TEST_RUNNER", test_runner);
     command.env("AXIOMCLI_ASCII", "1");
     // Native credentials are scoped to the API origin, not the XDG directory.
     // Use a fresh loopback origin so this production-runner test cannot discover
@@ -177,11 +175,27 @@ fn run_tui_at(
     let mut writer = pair.master.take_writer().expect("PTY writer");
     // Crossterm asks the terminal for its cursor position while initializing.
     // A real terminal answers this DSR request; the PTY harness must emulate it.
+    wait_for_output(
+        &output_rx,
+        &mut output,
+        b"\x1b[6n",
+        "cursor position request",
+    );
     writer
         .write_all(b"\x1b[1;1R")
         .expect("cursor position response");
     writer.flush().expect("flush cursor response");
-    thread::sleep(Duration::from_millis(120));
+    if !panic_probe {
+        // Wait for the first frame's cursor visibility command before resizing.
+        // Resizing during initialization can make the first frame already wide,
+        // which does not acknowledge that the input loop consumed the resize.
+        wait_for_output(
+            &output_rx,
+            &mut output,
+            b"\x1b[?25",
+            "initial interactive frame",
+        );
+    }
     pair.master
         .resize(PtySize {
             rows: 30,
@@ -203,9 +217,18 @@ fn run_tui_at(
             },
             "resized interactive screen",
         );
+        let completed_before_probe = completed_turns(state_path);
         if runner != "signed_out" {
             writer.write_all(b"probe\r").expect("submit prompt");
             writer.flush().expect("flush prompt");
+            if test_runner == "echo" {
+                wait_for_completed_turn(
+                    state_path,
+                    &completed_before_probe,
+                    &output_rx,
+                    &mut output,
+                );
+            }
         }
         if runner == "input_active" {
             wait_for_output(&output_rx, &mut output, b"Working", "active task");
@@ -245,7 +268,6 @@ fn run_tui_at(
             writer.flush().unwrap();
             thread::sleep(Duration::from_millis(250));
         } else if runner == "paste_picker" {
-            thread::sleep(Duration::from_millis(500));
             writer.write_all(b"/model\r").expect("open model picker");
             writer.flush().unwrap();
             wait_for_output(&output_rx, &mut output, b"Select model", "model picker");
@@ -265,11 +287,12 @@ fn run_tui_at(
                 b"Model changed",
                 "pasted model filter",
             );
+            let completed_before = completed_turns(state_path);
             writer
                 .write_all(b"AfterPicker\r")
                 .expect("submit clean draft");
             writer.flush().unwrap();
-            thread::sleep(Duration::from_millis(250));
+            wait_for_completed_turn(state_path, &completed_before, &output_rx, &mut output);
         } else if runner == "blocking" {
             wait_for_output(&output_rx, &mut output, b"Working", "blocking turn");
         } else if runner == "questions" {
@@ -330,17 +353,12 @@ fn run_tui_at(
             writer.flush().expect("flush revision comment");
             thread::sleep(Duration::from_millis(180));
         } else if runner == "usage" {
-            thread::sleep(Duration::from_millis(500));
             writer.write_all(b"/usage\r").expect("open usage");
             writer.flush().expect("flush usage command");
             wait_for_output(&output_rx, &mut output, b"Usage", "usage inspector");
             writer.write_all(b"\x1b").expect("close usage");
             writer.flush().expect("flush close");
         } else if runner == "echo" {
-            // Ratatui delta redraws can place cursor-control bytes inside the
-            // visual status text, so use the deterministic runner's bounded
-            // completion time instead of matching that rendered phrase.
-            thread::sleep(Duration::from_millis(500));
             writer
                 // Open the permission window on Confirm, move to Full Access,
                 // then apply the selected tool profile.
@@ -387,13 +405,13 @@ fn run_tui_at(
                 b"Thinking set to high",
                 "slash thinking result",
             );
+            let completed_before = completed_turns(state_path);
             writer
                 .write_all(b"remember this model\r")
                 .expect("submit prompt with selected model");
             writer.flush().expect("flush selected-model prompt");
-            thread::sleep(Duration::from_millis(300));
+            wait_for_completed_turn(state_path, &completed_before, &output_rx, &mut output);
         } else if runner == "delete" {
-            thread::sleep(Duration::from_millis(500));
             writer.write_all(b"/delete\r").expect("open delete picker");
             writer.flush().expect("flush delete command");
             wait_for_output(
@@ -420,7 +438,6 @@ fn run_tui_at(
             writer.flush().expect("flush permanent deletion");
             wait_for_output(&output_rx, &mut output, b"Deleted", "deletion result");
         } else if runner == "resume" {
-            thread::sleep(Duration::from_millis(500));
             writer.write_all(b"/resume\r").expect("open resume picker");
             writer.flush().expect("flush resume command");
             wait_for_output(
@@ -435,7 +452,6 @@ fn run_tui_at(
             writer.flush().expect("flush transcript selection");
             wait_for_output(&output_rx, &mut output, b"Resumed", "resumed transcript");
         } else if runner == "appearance" {
-            thread::sleep(Duration::from_millis(500));
             for (command, expected) in [
                 ("/theme light\r", "#f2f2f4"),
                 ("/theme terminal\r", "\x1b]111"),
@@ -458,7 +474,6 @@ fn run_tui_at(
                 output.extend(command_output);
             }
         } else if runner == "gift" {
-            thread::sleep(Duration::from_millis(500));
             writer
                 .write_all(b"/redeem\r")
                 .expect("open private gift entry");
@@ -477,12 +492,13 @@ fn run_tui_at(
             writer.write_all(b"\x1b").unwrap();
             writer.flush().unwrap();
             thread::sleep(Duration::from_millis(100));
+            let completed_before = completed_turns(state_path);
             writer.write_all(b"aftergift\r").unwrap();
             writer.flush().unwrap();
             wait_for_output(&output_rx, &mut output, b"aftergift", "composer restored");
-            thread::sleep(Duration::from_millis(200));
+            wait_for_completed_turn(state_path, &completed_before, &output_rx, &mut output);
         } else if runner == "composer" {
-            thread::sleep(Duration::from_millis(500));
+            let completed_before = completed_turns(state_path);
             writer
                 .write_all(b"\x1b[200~first line\nsecond line\x1b[201~\x1b[D!\x1b\rthird\r")
                 .expect("paste, edit, and submit multiline prompt");
@@ -493,9 +509,17 @@ fn run_tui_at(
                 b"thirde",
                 "edited multiline prompt",
             );
-            thread::sleep(Duration::from_millis(500));
+            wait_for_completed_turn(state_path, &completed_before, &output_rx, &mut output);
         } else {
             thread::sleep(Duration::from_millis(250));
+        }
+        if matches!(
+            test_runner,
+            "questions" | "approval" | "plan_review" | "workspace_edit"
+        ) {
+            // Answer submission does not acknowledge that the runner and its
+            // terminal UI event have finished. Escape must test idle focus.
+            wait_for_completed_turn(state_path, &completed_before_probe, &output_rx, &mut output);
         }
     }
     if !panic_probe {
@@ -560,6 +584,48 @@ fn run_tui_at(
     }
     let output = String::from_utf8_lossy(&output).into_owned();
     (output, status.success())
+}
+
+// Terminal delta redraws are not a stable text protocol. Wait for the persisted
+// terminal event instead of assuming the deterministic runner finishes in 500 ms.
+fn completed_turns(state_path: &Path) -> std::collections::HashSet<String> {
+    let database = test_account_database(state_path);
+    if !database.exists() {
+        return std::collections::HashSet::new();
+    }
+    // SessionStore::open performs crash recovery; monitoring a live owner must
+    // use a read-only connection so it cannot interrupt the running test turn.
+    let connection =
+        rusqlite::Connection::open_with_flags(database, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .expect("read PTY session state");
+    let mut statement = connection
+        .prepare("SELECT id FROM turns WHERE status = 'completed'")
+        .expect("query completed PTY turns");
+    statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .expect("read completed PTY turns")
+        .collect::<rusqlite::Result<_>>()
+        .expect("decode completed PTY turns")
+}
+
+fn wait_for_completed_turn(
+    state_path: &Path,
+    previous: &std::collections::HashSet<String>,
+    receiver: &mpsc::Receiver<Vec<u8>>,
+    output: &mut Vec<u8>,
+) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while completed_turns(state_path).is_subset(previous) {
+        while let Ok(chunk) = receiver.try_recv() {
+            output.extend_from_slice(&chunk);
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "PTY runner did not complete a new turn; output: {:?}",
+            String::from_utf8_lossy(output)
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
 }
 
 fn wait_for_output(

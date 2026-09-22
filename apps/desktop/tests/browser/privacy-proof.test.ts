@@ -25,7 +25,12 @@ async function open(theme = "light", mockClock = false) {
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   page.setDefaultTimeout(8000);
-  if (mockClock) await page.clock.install({ time: new Date("2026-09-10T05:00:00Z") });
+  if (mockClock) {
+    // Installation alone still advances with real time. Freeze before loading
+    // the fixture so slow page startup cannot consume the renewal boundary.
+    await page.clock.install({ time: new Date("2026-09-10T04:59:00Z") });
+    await page.clock.pauseAt(new Date("2026-09-10T05:00:00Z"));
+  }
   // tsx's name helper must also exist inside serialized page callbacks.
   await page.addInitScript({ content: "window.__name = (fn) => fn;" });
   await page.route("**/*", (route) => {
@@ -63,7 +68,12 @@ for (const theme of ["light", "dark"]) test(`outdated TEE requires a click and k
     await page.evaluate(() => (window as any).__privacyTest.update({ security: { state: "verifying" }, securityVerificationPending: true }));
     await page.getByRole("button", { name: "TEE updates needed. View privacy proof", exact: true }).waitFor();
     assert.match(await notice.innerText(), /You chose to continue/);
-    await page.evaluate(() => (window as any).__privacyTest.update({ security: { state: "failed" }, securityVerificationPending: false }));
+    await page.evaluate(() => {
+      // Keep the injected failed state observable instead of racing automatic
+      // renewal, which has separate tests below.
+      (window as any).__privacyTest.setDisabledReason("Renewal paused for failed-state assertion");
+      (window as any).__privacyTest.update({ security: { state: "failed" }, securityVerificationPending: false });
+    });
     await notice.waitFor({ state: "detached" });
     assert.deepEqual(errors, []);
   } finally { await page.close(); }

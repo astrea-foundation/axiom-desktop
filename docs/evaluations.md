@@ -10,6 +10,11 @@ covers behavioral evaluation and historical performance observations.
 scripts/axiomcli-eval deterministic
 ```
 
+The repeated deterministic suites use the same workspace/all-features selection
+as the preceding CI test pass. This reuses its compiled artifacts instead of
+building a second dependency graph with a different feature selection, which
+can exhaust a hosted runner's disk before evaluation starts.
+
 The runner repeats the autonomous agent, multi-language fixture, soak, ACP
 transcript, TUI PTY and MCP integration suites twice. Fixtures are created in
 fresh temporary directories. They cover edits followed by real tests, repair of
@@ -75,7 +80,31 @@ This is historical test evidence, not proof of today's registered provider
 contracts. Dated Desktop/provider reports and their fix retests are indexed
 under [testing](testing/README.md).
 
-The 5,000-checkpoint persistence soak reports timing before checking its budget:
-10 seconds on Linux, 30 seconds on macOS and Windows to account for durable-write
-latency on shared runners. The 16 MiB database and 512 KiB export bounds remain
-the same on every platform. Path-display fixtures use native absolute paths.
+The 5,000-checkpoint persistence soak reports timing before checking its
+30-second budget on every platform. Shared Linux runners also have variable
+durable-write latency: [the September 22 CI run](https://github.com/astrea-foundation/axiomai/actions/runs/35774248238)
+took 14.17 seconds, exceeding the former Linux-only 10-second limit. Each
+checkpoint still commits separately; the 16 MiB database and 512 KiB export
+bounds remain the same on every platform. Path-display fixtures use native
+absolute paths.
+
+PTY interactions wait for persisted turn completion before sending idle-only
+commands, including after permission decisions, question answers, and plan
+review. Answer submission alone does not establish completion on a loaded
+runner. The harness retains bounded waits and terminal behavior checks, and
+includes captured PTY output when completion times out.
+
+The harness answers the terminal's cursor-position request and waits for its
+initial frame before resizing. Unix CLI input uses Crossterm's `use-dev-tty`
+polling backend so concurrent resize and keyboard readiness cannot lose an
+edge and leave the prompt waiting for another keypress. The PTY suite exercises
+startup, resize, prompt submission, and terminal restoration through that path.
+Credential tests use the production three-second operation deadline; deliberately
+stalled stores derive their delay from that deadline. A shorter test-only limit
+can reject ordinary Windows identity-file and ACL setup on a loaded machine.
+Windows test environments include Git's `usr/bin` directory on `PATH` for the
+`sh`, `printf`, and `env` process fixtures. MCP fixtures resolve `env` through the
+same sanitized path as other processes, without a Unix-only absolute path.
+
+Browser proof-renewal tests pause their mock clock before loading the fixture,
+then advance it explicitly; page startup time must not shift expiry boundaries.

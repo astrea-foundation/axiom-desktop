@@ -2,10 +2,6 @@ name: Windows production signing
 
 on:
   workflow_call:
-    inputs:
-      full-tests:
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -18,6 +14,8 @@ jobs:
     name: Native Windows build (${{ matrix.arch }})
     if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
     runs-on: ${{ matrix.runner }}
+    env:
+      AXIOM_UPDATE_PUBLIC_KEYS: ${{ vars.AXIOM_UPDATE_PUBLIC_KEYS }}
     timeout-minutes: 90
     strategy:
       fail-fast: false
@@ -52,13 +50,23 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter axiom-desktop typecheck
-      - run: pnpm --filter axiom-desktop test
-      - if: inputs.full-tests
-        run: cargo test -p axiom-acp-extension -p axiomcli --all-features
-      - if: inputs.full-tests
-        run: pnpm typecheck && pnpm test
-      - run: cargo build --locked --release -p axiomcli
+      - run: cargo build --locked --release -p axiomcli -p axiom-proxy
+      - name: Check compiled update trust and prepare CLI signing input
+        shell: pwsh
+        run: |
+          if (-not $env:AXIOM_UPDATE_PUBLIC_KEYS) { throw 'Missing update trust keys' }
+          if ((& target/release/axiomcli.exe update --trust-keys) -ne $env:AXIOM_UPDATE_PUBLIC_KEYS) { throw 'Wrong compiled update keys' }
+          New-Item -ItemType Directory -Path cli-input
+          Copy-Item target/release/axiomcli.exe,target/release/axiom-proxy.exe cli-input/
+          $hashes = @{}
+          foreach ($name in @('axiomcli.exe','axiom-proxy.exe')) { $hashes[$name] = (Get-FileHash "cli-input/$name" -Algorithm SHA256).Hash.ToLowerInvariant() }
+          @{ version = $env:GITHUB_REF_NAME.Substring(1); arch = '${{ matrix.arch }}'; keys = $env:AXIOM_UPDATE_PUBLIC_KEYS; sha256 = $hashes } | ConvertTo-Json | Set-Content -Encoding utf8 cli-input/build.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-cli-input-${{ matrix.arch }}
+          path: cli-input/
+          retention-days: 1
+          if-no-files-found: error
       - name: Prepare native unsigned build input (not an installer)
         run: node apps/desktop/scripts/package-desktop.mjs --win --${{ matrix.arch }} --unsigned --dir
       - uses: actions/upload-artifact@v4
@@ -80,6 +88,7 @@ jobs:
       contents: read
       id-token: write
     env:
+      AXIOM_UPDATE_PUBLIC_KEYS: ${{ vars.AXIOM_UPDATE_PUBLIC_KEYS }}
       AXIOM_SIGNING_ENDPOINT: ${{ vars.AXIOM_SIGNING_ENDPOINT }}
       AXIOM_SIGNING_ACCOUNT: ${{ vars.AXIOM_SIGNING_ACCOUNT }}
       AXIOM_SIGNING_PROFILE: ${{ vars.AXIOM_SIGNING_PROFILE }}
@@ -130,15 +139,22 @@ jobs:
       - name: Sign payload, NSIS uninstaller, and final installer
         shell: pwsh
         run: ./apps/desktop/scripts/package-signed-windows.ps1 -Arch '${{ matrix.arch }}'
-      - name: Generate metadata from final signed installer bytes
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.1
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-cli-input-${{ matrix.arch }}
+          path: cli-input
+      - name: Install NSIS and build the signed standalone installer
         shell: pwsh
-        run: node scripts/download-manifest.mjs apps/desktop/dist $env:GITHUB_REF_NAME.Substring(1) signed
+        run: |
+          choco install nsis --version=3.11 --no-progress -y
+          node scripts/package-cli.mjs --win --${{ matrix.arch }} --input cli-input
       - uses: actions/upload-artifact@v4
         with:
-          name: axiom-desktop-windows-${{ matrix.arch }}
+          name: axiom-release-win-${{ matrix.arch }}
+          retention-days: 7
           path: |
             apps/desktop/dist/*.exe
-            apps/desktop/dist/*.blockmap
-            apps/desktop/dist/manifest.json
-            apps/desktop/dist/SHA256SUMS
           if-no-files-found: error

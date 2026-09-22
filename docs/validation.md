@@ -1,5 +1,10 @@
 # Documentation validation and outstanding acceptance
 
+Automatic updates: the [2026-09-22 implementation report](testing/automatic-updates-2026-09-22.md)
+records local signature, helper, installer, UI and publication tests. Signed
+Windows/macOS and real Linux package A-to-B acceptance plus release credential
+provisioning remain required before publication. Implementation stays on `dev`.
+
 The 2026-09-21 consolidation reviewed the native implementation at `fa9c4ab`
 (the then-current `dev` baseline), manifests, generated contracts, tests and workflow definitions.
 The clean-baseline refactor updates the storage and billing findings below and

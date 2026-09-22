@@ -268,10 +268,11 @@ icons, and disabled controls retain their muted state.
 
 The Proxy screen starts the optional authenticated local integration explicitly.
 See [Local proxy](proxy.md) for its separate credential and lifecycle. Updates
-use one release feed with AxiomCLI and are downloaded and checked before user
-installation. The Updates panel shows the installed version, with platform,
-architecture and package format under **Installation details**. Quit Axiom and
-AxiomCLI before installing. Desktop requires its CLI to report the exact same
+use the signed release feed shared with AxiomCLI. **Update and restart** downloads,
+verifies, waits for active chats/proxy work, commits drafts and applies the owning
+installer before reopening. Cancel is available before installation starts. Other
+installed CLI/proxy processes must close before replacement; they are never killed.
+Desktop requires its CLI to report the exact same
 product version at ACP initialization; a mismatch blocks bootstrap with
 reinstall/rebuild guidance.
 See

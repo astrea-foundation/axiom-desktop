@@ -960,6 +960,7 @@ pub async fn run(
         "requested terminal restoration probe"
     );
 
+    let mut update_requested = false;
     'ui: loop {
         if state.running || state.compacting {
             state.proof_refresh.record_activity(Instant::now());
@@ -1758,6 +1759,10 @@ pub async fn run(
                                         }
                                         match command {
                                             Err(error) => show_slash_error(&mut state, &error.to_string()),
+                                            Ok(SlashCommand::Update) => {
+                                                update_requested = true;
+                                                break 'ui;
+                                            }
                                             Ok(SlashCommand::Help) => {
                                                 state.push_entry(
                                                     EntryKind::System,
@@ -2742,5 +2747,13 @@ pub async fn run(
         return Err(error);
     }
 
+    if update_requested {
+        drop(terminal);
+        drop(terminal_guard);
+        drop(store);
+        crate::updates::run_with_resume(cwd, session_id.to_string())
+            .await
+            .map_err(|error| crate::AxiomError::Config(error.to_string()))?;
+    }
     Ok(())
 }
