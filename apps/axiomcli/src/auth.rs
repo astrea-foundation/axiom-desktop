@@ -37,12 +37,7 @@ const KEYRING_ACCOUNT_PREFIX: &str = "native-refresh-token-v1";
 const MAX_TOKEN_BYTES: usize = 8 * 1024;
 const MAX_HTTP_REQUEST_BYTES: usize = 16 * 1024;
 const CREDENTIAL_INITIALIZATION_TIMEOUT: Duration = Duration::from_secs(3);
-#[cfg(not(test))]
 const CREDENTIAL_OPERATION_TIMEOUT: Duration = Duration::from_secs(3);
-#[cfg(test)]
-// Leave scheduling headroom on shared native CI runners. Stalled-store fixtures
-// derive their delay from this deadline, preserving timeout coverage.
-const CREDENTIAL_OPERATION_TIMEOUT: Duration = Duration::from_secs(1);
 const CREDENTIAL_TIMEOUT_MARKER: &str =
     "timed out; the system credential store remains unavailable";
 const DEFAULT_MINIMUM_ACCESS_LIFETIME: Duration = Duration::from_secs(120);

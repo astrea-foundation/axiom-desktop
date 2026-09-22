@@ -175,11 +175,27 @@ fn run_tui_at(
     let mut writer = pair.master.take_writer().expect("PTY writer");
     // Crossterm asks the terminal for its cursor position while initializing.
     // A real terminal answers this DSR request; the PTY harness must emulate it.
+    wait_for_output(
+        &output_rx,
+        &mut output,
+        b"\x1b[6n",
+        "cursor position request",
+    );
     writer
         .write_all(b"\x1b[1;1R")
         .expect("cursor position response");
     writer.flush().expect("flush cursor response");
-    thread::sleep(Duration::from_millis(120));
+    if !panic_probe {
+        // Wait for the first frame's cursor visibility command before resizing.
+        // Resizing during initialization can make the first frame already wide,
+        // which does not acknowledge that the input loop consumed the resize.
+        wait_for_output(
+            &output_rx,
+            &mut output,
+            b"\x1b[?25",
+            "initial interactive frame",
+        );
+    }
     pair.master
         .resize(PtySize {
             rows: 30,

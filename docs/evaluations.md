@@ -89,5 +89,14 @@ review. Answer submission alone does not establish completion on a loaded
 runner. The harness retains bounded waits and terminal behavior checks, and
 includes captured PTY output when completion times out.
 
+The harness answers the terminal's cursor-position request and waits for its
+initial frame before resizing. Unix CLI input uses Crossterm's `use-dev-tty`
+polling backend so concurrent resize and keyboard readiness cannot lose an
+edge and leave the prompt waiting for another keypress. The PTY suite exercises
+startup, resize, prompt submission, and terminal restoration through that path.
+Credential tests use the production three-second operation deadline; deliberately
+stalled stores derive their delay from that deadline. A shorter test-only limit
+can reject ordinary Windows identity-file and ACL setup on a loaded machine.
+
 Browser proof-renewal tests pause their mock clock before loading the fixture,
 then advance it explicitly; page startup time must not shift expiry boundaries.
