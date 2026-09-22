@@ -5,8 +5,8 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $BinPath = [IO.Path]::GetFullPath($BinPath).TrimEnd('\')
-if ($Action -eq 'Install' -and -not (Test-Path -LiteralPath (Join-Path $BinPath 'axiomcli.exe') -PathType Leaf)) {
-  throw 'The bundled axiomcli.exe is missing.'
+if ($Action -eq 'Install' -and -not (Test-Path -LiteralPath (Join-Path $BinPath 'axiomcli.cmd') -PathType Leaf)) {
+  throw 'The bundled axiomcli launcher is missing.'
 }
 # Read raw registry text: expanding %USERPROFILE% here would corrupt other entries.
 $hive = if ($Scope -eq 'Machine') { [Microsoft.Win32.Registry]::LocalMachine } else { [Microsoft.Win32.Registry]::CurrentUser }

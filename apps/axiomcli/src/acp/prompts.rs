@@ -194,6 +194,10 @@ pub(super) async fn prompt(
                 Err(agent_client_protocol::Error::invalid_params()
                     .data("Use the desktop appearance, Web, and usage controls; /theme, /web, and /usage are terminal-only commands."))
             }
+            SlashCommand::Update => {
+                send_text(&connection, &session_id, "Open Settings → Updates in Desktop, or run axiomcli update in your terminal.".into())?;
+                Ok(protocol::StopReason::EndTurn)
+            }
             SlashCommand::Help => {
                 send_text(&connection, &session_id, slash_help_text())?;
                 Ok(protocol::StopReason::EndTurn)

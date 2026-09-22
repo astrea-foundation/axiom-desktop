@@ -12,6 +12,7 @@ default = []
 test-fixture = ["axiom-secure-client/test-fixture"]
 
 [dependencies]
+axiom-installation.workspace = true
 axiom-inference.workspace = true
 axiom-openai-compat.workspace = true
 axiom-secure-client.workspace = true

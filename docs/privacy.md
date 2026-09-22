@@ -54,7 +54,12 @@ Installed Desktop and TUI processes request the public
 `axiomcli update` checks on demand. These are ordinary HTTPS metadata requests,
 not inference. They contain no account headers, cookies, API keys, conversation
 content, or installed-version query parameters. The website/CDN still observes
-normal network metadata such as the source IP. Update notices remain UI-only.
+normal network metadata such as the source IP. Update notices remain UI-only. Selecting Update downloads the signed installer
+from the CDN with the same anonymous transport. Private local staging contains
+installer bytes, signed release metadata, installation paths and a restart
+workspace/session identifier; it contains no credentials or message text. The
+helper verifies the signature and bytes before executing the installer. Public
+GitHub links offer identical installers without embedding GitHub credentials.
 
 ## Local data and credentials
 

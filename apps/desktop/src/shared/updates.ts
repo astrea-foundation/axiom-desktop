@@ -10,7 +10,7 @@ export type UpdateIdentity = {
 };
 export type UpdateState = UpdateIdentity & {
   revision: number;
-  status: 'disabled' | 'idle' | 'checking' | 'current' | 'available' | 'downloading' | 'downloaded' | 'error';
+  status: 'disabled' | 'idle' | 'checking' | 'current' | 'available' | 'downloading' | 'waiting' | 'installing' | 'error';
   release: Release | null;
   checkedAt: number | null;
   error: string | null;
@@ -18,8 +18,9 @@ export type UpdateState = UpdateIdentity & {
 };
 export type UpdatesApi = {
   getState: () => Promise<UpdateState>;
+  onBeforeRestart: (callback: () => Promise<void>) => () => void;
   check: () => Promise<UpdateState>;
-  download: (format?: PackageFormat) => Promise<UpdateState>;
-  reveal: () => Promise<void>;
+  install: () => Promise<UpdateState>;
+  cancel: () => Promise<UpdateState>;
   onStateChange: (callback: (state: UpdateState) => void) => () => void;
 };

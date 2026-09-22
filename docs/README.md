@@ -32,7 +32,7 @@ that a particular installer is published or that a live deployment has passed ac
 | [Development](development.md) | Build/check commands, Desktop development and visual assets |
 | [Evaluations](evaluations.md) | Deterministic and live-provider evaluation lanes |
 | [Release procedure](releasing.md) | Target matrix, signing, packaging and publication handoff |
-| [Automatic updates plan](automatic-updates-plan.md) | Planned Desktop/TUI install-and-restart updates and CDN/GitHub installer publication; development targets `dev` |
+| [Automatic updates plan](automatic-updates-plan.md) | Implemented update design, dev scope and remaining installer qualification |
 | [Versioning](versioning.md) | Product, storage and protocol compatibility |
 | [Validation and outstanding work](validation.md) | Source evidence and release checks still requiring recorded outcomes |
 

@@ -103,3 +103,22 @@ and `v` opens its full viewer. `Esc` clears focus/closes an overlay. Two consecu
 Use `AXIOMCLI_COLOR=none`, `NO_COLOR=1`, `AXIOMCLI_ASCII=1` or
 `AXIOMCLI_REDUCED_MOTION=1` for terminal compatibility/accessibility. Terminal
 restoration is guarded for normal exit and panic.
+
+## Updates
+
+Use `axiomcli update --check` or Settings → Updates to inspect a failure. Close
+other installed AxiomCLI/ACP sessions and proxies before applying; a bundled TUI
+also needs Desktop to close. The helper waits at most three minutes and does not
+kill those processes. Keep using the installed Windows launcher for TUI updates.
+
+Signature, unknown-key, changed-inventory and checksum errors fail closed. Retry
+after connectivity is restored; do not bypass verification. Source builds require
+a rebuild. A release without a matching platform/package is not substituted with
+another product. Unsigned previews have stable updates disabled.
+
+If installation or OS authorization fails, the helper records the error in the
+per-installation `axiom/updates` directory under the OS user cache. The next app
+check displays it. Retry the same verified installer from the public release to
+repair program files; account data is outside the installation. Staging directories
+can be removed once no update helper is running. Linux standalone keeps previous
+version directories, but do not reactivate one against incompatible account data.
