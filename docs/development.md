@@ -70,7 +70,10 @@ packaging and require separate release evidence.
 
 Portability fixtures compare canonical working directories and keep differently
 cased Desktop resource layouts in separate directories, including on macOS's
-case-insensitive filesystem.
+case-insensitive filesystem. ACP workspace-edit tests decode diff and location
+paths from JSON, require absolute paths, and compare canonical paths to the edited
+file. This preserves path assertions across filesystem aliases and Windows JSON
+escaping.
 
 ## Desktop UI and captures
 

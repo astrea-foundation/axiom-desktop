@@ -1342,9 +1342,13 @@ async fn workspace_edit_reaches_the_expected_acp_semantics_and_final_workspace()
     }))
     .await;
     let mut transcript = String::new();
+    let mut updates = Vec::new();
     loop {
         let value = acp.read().await;
         transcript.push_str(&value.to_string());
+        if value["method"] == "session/update" {
+            updates.push(value["params"]["update"].clone());
+        }
         if value.get("id").and_then(Value::as_i64) == Some(3) {
             assert_eq!(value["result"]["stopReason"], "end_turn");
             break;
@@ -1356,13 +1360,37 @@ async fn workspace_edit_reaches_the_expected_acp_semantics_and_final_workspace()
     );
     assert!(transcript.contains("replace_text"));
     assert!(transcript.contains("frontend-edit"));
-    assert!(transcript.contains("\"type\":\"diff\""));
-    assert!(transcript.contains("\"oldText\":\"before\\n\""));
-    assert!(transcript.contains("\"newText\":\"after\\n\""));
-    assert!(transcript.contains("\"locations\""));
-    // The transcript is serialized JSON, including escaped Windows separators.
-    let expected_path = json!(workspace.path().join("frontend.txt")).to_string();
-    assert!(transcript.contains(&expected_path));
+    let diff_update = updates
+        .iter()
+        .find(|update| {
+            update["sessionUpdate"] == "tool_call_update"
+                && update["toolCallId"] == "frontend-edit"
+                && update["content"][0]["type"] == "diff"
+        })
+        .expect("workspace edit diff update");
+    let content = diff_update["content"].as_array().expect("diff content");
+    assert_eq!(content.len(), 1, "one edited file");
+    let diff = &content[0];
+    assert_eq!(diff["oldText"], "before\n");
+    assert_eq!(diff["newText"], "after\n");
+    let locations = diff_update["locations"].as_array().expect("diff locations");
+    assert_eq!(locations.len(), 1, "one edited file location");
+    // Decode JSON escapes (including Windows separators) before normalizing
+    // filesystem aliases such as macOS /var and /private/var.
+    let expected_path = workspace
+        .path()
+        .join("frontend.txt")
+        .canonicalize()
+        .expect("canonical edited file");
+    for (kind, path) in [("diff", &diff["path"]), ("location", &locations[0]["path"])] {
+        let path = Path::new(path.as_str().expect("file path"));
+        assert!(path.is_absolute(), "{kind} path must be absolute: {path:?}");
+        assert_eq!(
+            path.canonicalize().expect("canonical ACP file path"),
+            expected_path,
+            "{kind} path must identify the edited file"
+        );
+    }
     assert!(transcript.contains("Updated frontend.txt through the shared turn contract."));
     acp.close().await;
 }
