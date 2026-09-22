@@ -13,7 +13,7 @@ electron-builder.
 
 ## Unified release catalog
 
-The next product release is **0.1.2**. Existing public 0.1.0/0.1.1 packages predate
+The current product release version is **0.1.4**. Existing public 0.1.0/0.1.1 packages predate
 the updater and need one manual upgrade. A version bump in source does not publish
 installers or change the public feed.
 
