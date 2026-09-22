@@ -68,9 +68,9 @@ A 429 means the rolling account quota was reached; honor `Retry-After`. A 502/50
 indicates service/provider failure. There is no automatic provider fallback.
 Search queries leave the device outside inference E2EE; see [privacy](privacy.md).
 
-For an explicitly configured SearXNG service, use the
-[real-service commands](evaluations.md#real-searxng-integration). Empty results
-or engine warnings can reflect upstream throttling. Rejection of loopback/private
+Only `web_search_provider = "axiom"` is supported. If startup rejects an older
+provider setting, remove that override or explicitly select `axiom` after
+reviewing the hosted-search privacy behavior. Rejection of loopback/private
 URLs by `fetch_url` is expected.
 
 MCP server commands belong in trusted user configuration. Desktop's chat profile

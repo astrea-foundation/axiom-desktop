@@ -1239,7 +1239,7 @@ for (const platform of ["linux", "win32", "darwin"]) {
       const warning = page.getByRole("alertdialog", { name: "Turn on Web?" });
       await warning.waitFor();
       assert.match(await warning.innerText(), /Web searches run outside Axiom’s verified private environment/);
-      assert.doesNotMatch(await warning.innerText(), /Decodo|SearXNG/i);
+      assert.doesNotMatch(await warning.innerText(), /Decodo/i);
       if (platform === "linux") {
         await page.emulateMedia({ colorScheme: "dark" });
         await page.waitForFunction(() => getComputedStyle(document.querySelector("dialog")!).color === "rgb(244, 244, 246)");

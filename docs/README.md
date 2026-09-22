@@ -30,7 +30,7 @@ that a particular installer is published or that a live deployment has passed ac
 | [NEAR v3](protocols/near-v3.md) | Worker sessions, Ed25519 receipts and relay routing |
 | [Tinfoil EHBP](protocols/tinfoil-ehbp-v1.md) | Router verification and authenticated encrypted completion |
 | [Development](development.md) | Build/check commands, Desktop development and visual assets |
-| [Evaluations](evaluations.md) | Deterministic, live-provider and real-search lanes |
+| [Evaluations](evaluations.md) | Deterministic and live-provider evaluation lanes |
 | [Release procedure](releasing.md) | Target matrix, signing, packaging and publication handoff |
 | [Versioning](versioning.md) | Product, storage and protocol compatibility |
 | [Validation and outstanding work](validation.md) | Source evidence and release checks still requiring recorded outcomes |

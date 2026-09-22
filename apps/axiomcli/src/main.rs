@@ -25,7 +25,7 @@ use axiomcli::{
     policy::{EffectClass, PolicyRule, RuleAction},
     provider::{InferenceProvider, SecureAxiomProvider},
     session::{ExportOptions, SessionStore},
-    tools::{default_registry, registry_with_search},
+    tools::registry_with_search,
     web::HostedSearchClient,
 };
 use clap::{Parser, Subcommand};
@@ -514,23 +514,7 @@ async fn doctor(config: &Config, auth: &AuthManager, paths: &AxiomPaths) {
         ValidationStatus::Unavailable(message) => format!("not checked ({message})"),
     };
     println!("Axiom authorization: {auth_status}");
-    if config.web_search_provider == "searxng" {
-        let endpoint = format!("{}/", config.searxng_url.trim_end_matches('/'));
-        let status = reqwest::Client::new()
-            .get(endpoint)
-            .timeout(std::time::Duration::from_secs(3))
-            .send()
-            .await
-            .map_or_else(
-                |error| format!("unavailable ({error})"),
-                |response| response.status().to_string(),
-            );
-        println!("SearXNG health: {status}");
-    } else {
-        println!(
-            "web search: authenticated Axiom API (Decodo); no paid search issued by diagnostics"
-        );
-    }
+    println!("web search: authenticated Axiom API (Decodo); no paid search issued by diagnostics");
     if let Some(path) = Config::user_path() {
         println!("user config: {}", path.display());
     }
@@ -690,14 +674,10 @@ async fn build_runner(
         }
     }
     let provider = build_provider(config, auth)?;
-    let mut tools = if config.web_search_provider == "searxng" {
-        default_registry(config.max_tool_output_bytes, &config.searxng_url)?
-    } else {
-        registry_with_search(
-            config.max_tool_output_bytes,
-            Arc::new(HostedSearchClient::new(auth.clone())?),
-        )?
-    };
+    let mut tools = registry_with_search(
+        config.max_tool_output_bytes,
+        Arc::new(HostedSearchClient::new(auth.clone())?),
+    )?;
     if frontend == FrontendKind::Cli {
         for tool in
             axiomcli::mcp::connect_tools(&config.mcp_servers, config.max_tool_output_bytes).await?

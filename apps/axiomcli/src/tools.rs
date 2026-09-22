@@ -19,7 +19,7 @@ use crate::{
     planning::PlanArtifact,
     policy::{Effect, ToolAccess, normalized_executable_name},
     provider::{FunctionDefinition, ToolDefinition},
-    web::{SafeFetcher, SearchProvider, SearxngClient},
+    web::{SafeFetcher, SearchProvider},
     workspace::{EditIntent, ProcessManager, ProcessRequest, StructuredPatch, Workspace},
 };
 
@@ -488,15 +488,26 @@ fn parse_plan_line_range(value: &str, line_count: usize) -> Result<(usize, usize
     Ok((start, end))
 }
 
-pub fn default_registry(max_output_bytes: usize, searxng_url: &str) -> Result<ToolRegistry> {
-    registry_with_search(
-        max_output_bytes,
-        Arc::new(SearxngClient::new(
-            searxng_url,
-            Duration::from_secs(30),
-            20,
-        )?),
-    )
+#[cfg(test)]
+pub(crate) fn test_registry(max_output_bytes: usize) -> Result<ToolRegistry> {
+    struct UnexpectedSearch;
+
+    #[async_trait]
+    impl SearchProvider for UnexpectedSearch {
+        fn provenance(&self) -> &'static str {
+            "https://search.invalid/"
+        }
+
+        async fn search(
+            &self,
+            _query: &str,
+            _cancellation: CancellationToken,
+        ) -> Result<crate::web::SearchReport> {
+            panic!("this fixture must not issue web searches")
+        }
+    }
+
+    registry_with_search(max_output_bytes, Arc::new(UnexpectedSearch))
 }
 
 pub fn registry_with_search(
@@ -2302,7 +2313,7 @@ mod tests {
 
     #[test]
     fn tool_profiles_filter_the_catalog_before_inference() {
-        let registry = default_registry(4096, "http://127.0.0.1:8888").expect("registry");
+        let registry = test_registry(4096).expect("registry");
         let names = |profile| {
             registry
                 .definitions_for(profile)
@@ -2347,7 +2358,7 @@ mod tests {
             cwd: root.path().to_path_buf(),
             permission_profile: PermissionProfile::Confirm,
         };
-        let registry = default_registry(4096, "http://127.0.0.1:8888").expect("registry");
+        let registry = test_registry(4096).expect("registry");
         let read = registry
             .execute(
                 "read_file",
@@ -2424,7 +2435,7 @@ mod tests {
             cwd: root.path().to_path_buf(),
             permission_profile: PermissionProfile::FullAccess,
         };
-        let registry = default_registry(4096, "http://127.0.0.1:8888").expect("registry");
+        let registry = test_registry(4096).expect("registry");
         let policy = PolicyEngine::for_workspace(root.path()).expect("policy");
         let create_args = json!({"markdown":"# Plan\n\n1. Inspect"});
         for effect in registry
@@ -2517,7 +2528,7 @@ mod tests {
             cwd: root.path().to_path_buf(),
             permission_profile: PermissionProfile::Observe,
         };
-        let registry = default_registry(4096, "http://127.0.0.1:8888").expect("registry");
+        let registry = test_registry(4096).expect("registry");
         let result = registry
             .execute(
                 "update_progress",
@@ -2551,7 +2562,7 @@ mod tests {
             cwd: root.path().to_path_buf(),
             permission_profile: PermissionProfile::Observe,
         };
-        let registry = default_registry(4096, "http://127.0.0.1:8888").expect("registry");
+        let registry = test_registry(4096).expect("registry");
         let policy = PolicyEngine::for_workspace(root.path()).expect("policy");
         for (name, arguments) in [
             ("list_files", json!({})),
@@ -2606,7 +2617,7 @@ mod tests {
             cwd: root.path().to_path_buf(),
             permission_profile: PermissionProfile::FullAccess,
         };
-        let registry = default_registry(4096, "http://127.0.0.1:8888").expect("registry");
+        let registry = test_registry(4096).expect("registry");
         let policy = PolicyEngine::for_workspace(root.path()).expect("policy");
 
         let read_effects = registry
