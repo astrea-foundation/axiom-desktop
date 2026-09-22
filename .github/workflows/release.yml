@@ -33,6 +33,8 @@ jobs:
         with:
           toolchain: 1.97.1
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
       - name: Require and run the budgeted live regression gate
         shell: bash
         run: |
@@ -51,6 +53,8 @@ jobs:
         with:
           toolchain: 1.97.1
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
       - run: sudo apt-get update && sudo apt-get install -y bubblewrap jq
       - name: Install pinned cargo-deny
         shell: bash
@@ -100,6 +104,8 @@ jobs:
         with:
           toolchain: 1.97.1
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
       - uses: pnpm/action-setup@v4
         with:
           version: 10

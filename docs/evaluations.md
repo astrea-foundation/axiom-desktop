@@ -74,3 +74,8 @@ An older live baseline using the then-current local development service and
 This is historical test evidence, not proof of today's registered provider
 contracts. Dated Desktop/provider reports and their fix retests are indexed
 under [testing](testing/README.md).
+
+The 5,000-checkpoint persistence soak reports timing before checking its budget:
+10 seconds on Linux, 30 seconds on macOS and Windows to account for durable-write
+latency on shared runners. The 16 MiB database and 512 KiB export bounds remain
+the same on every platform. Path-display fixtures use native absolute paths.

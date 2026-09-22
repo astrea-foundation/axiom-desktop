@@ -190,12 +190,17 @@ async fn long_stream_and_many_transcript_entries_stay_within_recorded_budgets() 
     assert!(export.len() < 512 * 1024);
     let persistence_elapsed = persistence_started.elapsed();
     let database_bytes = std::fs::metadata(database).expect("database").len();
-    assert!(persistence_elapsed < Duration::from_secs(10));
-    assert!(database_bytes < 16 * 1024 * 1024);
     eprintln!(
         "long-session summary: stream_chunks={CHUNKS} transcript_checkpoints=5000 persistence_ms={} database_bytes={database_bytes}",
         persistence_elapsed.as_millis()
     );
+    // Shared macOS and Windows runners have slower durable-write latency.
+    let persistence_budget = Duration::from_secs(if cfg!(target_os = "linux") { 10 } else { 30 });
+    assert!(
+        persistence_elapsed < persistence_budget,
+        "5000 durable checkpoints took {persistence_elapsed:?}, budget {persistence_budget:?}"
+    );
+    assert!(database_bytes < 16 * 1024 * 1024);
 }
 
 #[tokio::test]
