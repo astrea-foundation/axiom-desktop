@@ -10,6 +10,9 @@ on:
 permissions:
   contents: read
 
+env:
+  RUST_TEST_THREADS: 2
+
 jobs:
   build:
     name: Native Windows build (${{ matrix.arch }})
