@@ -50,6 +50,8 @@
   --color-success-glow: rgba(63, 155, 70, 0.1);
 
   --color-brand: #ff7653;
+  --color-brand-hover: #ff8b6e;
+  --color-on-brand: #1f1f1f;
   --color-on-accent: #ffffff;
 
   --color-warning: #d97706;

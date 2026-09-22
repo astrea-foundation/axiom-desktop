@@ -247,6 +247,9 @@ To keep streamed replies responsive, blocks over 50,000 characters (10,000 for
 automatic language detection), or beyond a 100,000-character per-message highlighting
 budget, remain plain text without truncation. Scrolling up or selecting transcript content pauses
 automatic following; Scroll to latest resumes it. Theme is light, dark or system.
+Enabled Web and Agent controls, Agent selection indicators, and the composer's
+Send/Stop button use Axiom signal orange (`#FF7653`) in both themes, with dark
+labels and icons on filled controls. Disabled controls retain their muted state.
 
 The Proxy screen starts the optional authenticated local integration explicitly.
 See [Local proxy](proxy.md) for its separate credential and lifecycle. Updates
