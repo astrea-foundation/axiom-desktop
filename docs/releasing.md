@@ -68,9 +68,11 @@ paths on each platform. No plaintext credential-file fallback is supported.
 Pushes to `main` and pull requests targeting `main` run checks and tests without
 producing release archives or packaged Desktop applications. Development branches
 need local checks; see [development](development.md#checks). Release packaging
-and upload happen only in the release workflows. Linux Rust checks use the same
-Ubuntu 22.04 baseline as release builds so Bubblewrap namespace tests run on the
-supported build environment. All CI and release workflows limit Rust test concurrency to two; test-only
+and upload happen only in the release workflows. Linux Rust checks use Ubuntu 24.04 for Python 3.12 and its `tomllib` evaluation
+dependency. The disposable CI runner disables AppArmor's unprivileged-user-namespace
+restriction so Bubblewrap isolation tests can create their network namespace;
+this does not change application sandboxing or production host settings. Linux
+release builds retain Ubuntu 22.04 for the glibc 2.35 baseline. All CI and release workflows limit Rust test concurrency to two; test-only
 credential deadlines allow one second of scheduling headroom while stalled-store
 fixtures still exceed that deadline. Production credential deadlines remain three
 seconds. Git attributes retain LF line endings across checkouts so generated
