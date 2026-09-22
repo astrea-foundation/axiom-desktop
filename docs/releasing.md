@@ -65,7 +65,12 @@ macOS uses the protected `release` secrets `MACOS_CERTIFICATE_BASE64`,
 `MACOS_CERTIFICATE_PASSWORD`, `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, and
 `APPLE_TEAM_ID`. The certificate bundle must contain Developer ID **Application**
 and **Installer** identities. The workflow uses a temporary keychain, signs the
-code and PKGs, submits notarization and staples/verifies tickets.
+code and PKGs, submits notarization and staples/verifies tickets. Desktop's
+packaging script disables electron-builder's separate app notarization and
+submits the final PKG once, including its signed app payload. This follows
+[Apple's outermost-container guidance](https://developer.apple.com/documentation/xcode/packaging-mac-software-for-distribution)
+and avoids an extra notarization queue wait for each architecture. The standalone
+CLI's separate PKG still requires its own notarization and stapled ticket.
 
 Windows uses the existing protected `windows-signing` environment and Azure OIDC:
 `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, and

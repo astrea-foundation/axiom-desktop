@@ -41,6 +41,9 @@ if (platform === '--win' && !unsigned) {
 run(process.execPath, ['scripts/set-release-version.mjs', cliVersion]);
 run('pnpm', ['build']);
 const builder = [platform, architecture, '--publish', 'never', `--config.extraMetadata.axiomUpdateChannel=${process.env.AXIOM_UPDATE_PUBLIC_KEYS ? 'stable' : 'preview'}`];
+// Notarize the outer PKG below, including its signed app payload. Submitting the
+// app separately first adds a redundant Apple queue wait for each architecture.
+if (platform === '--mac') builder.push('--config.mac.notarize=false');
 const env = unsigned ? unsignedEnvironment(process.env) : { ...process.env };
 if (unsigned) {
   builder.push('--config.forceCodeSigning=false');
