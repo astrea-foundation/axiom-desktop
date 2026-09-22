@@ -117,7 +117,8 @@ of this updater's public contract; the native helper uses the complete installer
 
 Pull requests targeting `main` run Linux Rust and Desktop UI checks. Merging does
 not repeat those checks automatically. Native macOS/Windows validation is an
-explicit `ci.yml` dispatch with `target=all` or a specific platform; `linux` and
+explicit `ci.yml` dispatch with `target=native` (all four native jobs), `all`
+(also Linux/UI), or a specific platform; `linux` and
 `desktop` rerun only those checks. Validate the complete candidate on `dev`,
 promote it, confirm the promoted tree matches, and tag that validated candidate
 commit now reachable from `main`. The release gate requires successful Rust, UI,
@@ -125,6 +126,16 @@ and all four native CI jobs for the exact tagged revision, combining targeted
 runs when needed. Packaging reuses those results instead of repeating the suites.
 Retry only failed validation targets or packaging jobs. These checks do not
 replace signed OS installation acceptance.
+
+Routine qualification runs functional tests once. The repeated deterministic
+evaluation and three host-performance benchmarks are opt-in with
+`extended=true`; see [evaluations](evaluations.md#routine-checks-and-opt-in-extended-lane).
+Small persistence, cancellation, process cleanup, protocol and security tests
+stay required. Clippy already checks all Linux targets, and native tests compile
+their targets, so CI does not precede either with a duplicate `cargo check`.
+CI omits development/test debug symbols, retains assertions, caches the pinned
+`cargo-deny` executable, and limits a dispatched native matrix to two concurrent
+jobs. Release build profiles and signing checks are unchanged.
 
 The release build retains the complete signed `axiom-signed-release` artifact for seven days
 before cross-repository publication. If the narrow upload or dispatch credentials

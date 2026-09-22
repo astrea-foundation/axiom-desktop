@@ -9,7 +9,11 @@ on:
         description: Checks to run (native release validation is explicit)
         type: choice
         default: all
-        options: [all, linux, desktop, macos-intel, macos-arm64, windows-x64, windows-arm64]
+        options: [all, native, linux, desktop, macos-intel, macos-arm64, windows-x64, windows-arm64]
+      extended:
+        description: Repeat deterministic suites and run performance/soak benchmarks
+        type: boolean
+        default: false
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ inputs.target || 'pr' }}
@@ -18,9 +22,12 @@ concurrency:
 permissions:
   contents: read
 
-# Keep short test-only credential deadlines reliable on shared native runners.
+# Bound concurrent fixtures on shared runners. Debug symbols are unnecessary for
+# these checks; assertions, overflow checks and test coverage remain enabled.
 env:
   RUST_TEST_THREADS: 2
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
 
 jobs:
   rust:
@@ -41,15 +48,23 @@ jobs:
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - run: python3 -m unittest discover -s scripts/tests -p test_release_ci.py
       - run: cargo fmt --all -- --check
-      - run: cargo check --workspace --all-targets --all-features
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: Cache pinned cargo-deny executable
+        uses: actions/cache@v4
+        id: cargo-deny
+        with:
+          path: ~/.cargo/bin/cargo-deny
+          key: cargo-deny-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.cargo-deny-version') }}
       - name: Install pinned cargo-deny
+        if: steps.cargo-deny.outputs.cache-hit != 'true'
         shell: bash
         run: cargo install cargo-deny --version "=$(tr -d '\r\n' < .cargo-deny-version)" --locked
-      - run: cargo test --workspace --all-features
+      - run: cargo test --workspace --all-features --locked --no-fail-fast
       - run: cargo test --target-dir target/acp-sdk-vendor --locked --manifest-path vendor/agent-client-protocol-2.0.0/Cargo.toml --test jsonrpc_deep_chain_stack
-      - run: scripts/axiomcli-eval deterministic
       - run: cargo deny check
+      - name: Extended deterministic and performance evaluation
+        if: inputs.extended == true
+        run: scripts/axiomcli-eval deterministic
 
   desktop-ui:
     if: github.event_name == 'pull_request' || inputs.target == 'all' || inputs.target == 'desktop'
@@ -76,6 +91,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
+      max-parallel: 2
       matrix:
         include: >-
           ${{ fromJSON(inputs.target == 'macos-intel' && '[{"name":"macOS Intel","runner":"macos-15-intel"}]' ||
@@ -102,8 +118,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       # Formatting is enforced by the rust job. Keep native platform tests
       # running even when that independent check fails.
-      - run: cargo check --workspace --all-targets --all-features
-      - run: cargo test -p axiom-acp-extension -p axiomcli --all-features
+      - run: cargo test -p axiom-acp-extension -p axiomcli --all-features --locked --no-fail-fast
       - run: cargo test --target-dir target/acp-sdk-vendor --locked --manifest-path vendor/agent-client-protocol-2.0.0/Cargo.toml --test jsonrpc_deep_chain_stack
       - run: pnpm generate:protocol
       - name: Generated ACP contract is committed
@@ -111,5 +126,8 @@ jobs:
         run: git diff --exit-code -- protocol/axiom-acp-extension packages/axiom-acp-client/src/generated
       - run: pnpm typecheck
       - run: pnpm test
+      - name: Extended deterministic and performance evaluation
+        if: inputs.extended == true
+        run: bash scripts/axiomcli-eval deterministic
       # Release archives and Desktop bundles are built only by the release
       # workflows. Keep branch and PR CI focused on checks and tests.

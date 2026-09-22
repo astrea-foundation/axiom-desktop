@@ -11,9 +11,9 @@ run_deterministic() {
     echo "deterministic evaluation repetition ${repetition}/2"
     cargo test --workspace --all-features --locked --test autonomous_eval
     cargo test --workspace --all-features --locked --test evaluation_suite original_multilanguage_evaluation_set_is_repeatable_from_clean_fixtures
-    cargo test --workspace --all-features --locked --test soak
+    cargo test --workspace --all-features --locked --test soak -- --include-ignored
     cargo test --workspace --all-features --locked --test acp_transcript
-    cargo test --workspace --all-features --locked --test tui_pty
+    cargo test --workspace --all-features --locked --test tui_pty -- --include-ignored
     cargo test --workspace --all-features --locked --test mcp_integration
   done
 }
