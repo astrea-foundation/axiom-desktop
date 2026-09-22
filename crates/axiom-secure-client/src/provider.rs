@@ -45,7 +45,7 @@ pub trait SecureProvider: sealed::Provider + Send + Sync {
 
     /// Whether this installed provider engine understands the complete
     /// cryptographic contract. Server advertisements can offer rollout
-    /// choices, but cannot expand this local allowlist.
+    /// choices, but cannot add cryptographic protocols the driver does not implement.
     fn supports_contract(
         &self,
         e2ee_protocol: &str,

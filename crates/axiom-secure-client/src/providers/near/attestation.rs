@@ -285,18 +285,6 @@ pub(crate) async fn verify_model(
         name: "response_signing_key_fingerprint".into(),
         value: hex::encode(Sha256::digest(model_key.as_bytes())),
     });
-    if matches!(
-        policy.workload_enforcement,
-        crate::WorkloadEnforcement::Enforce
-    ) && !evidence.approved_workload_identity
-    {
-        return Err(SecureClientError::with_code(
-            axiom_inference::ProviderFailureKind::AttestationRejected,
-            crate::SecureErrorCode::WorkloadNotApproved,
-            "NEAR workload identity is not approved by policy",
-            false,
-        ));
-    }
     Ok((
         VerifiedNearAttestation {
             model_key,
@@ -663,10 +651,6 @@ fn build_evidence(
     intel: &IntelEvidence,
     workload_manifest: String,
 ) -> SecurityEvidence {
-    let approved_workload_identity = policy
-        .approved_workload_measurements
-        .iter()
-        .any(|measurement| measurement == &intel.mr_td || measurement == &intel.compose_hash);
     SecurityEvidence {
         state: SecurityState::Verified,
         provider_id: super::PROVIDER_ID.into(),
@@ -706,8 +690,6 @@ fn build_evidence(
             },
         ],
         workload_manifest: Some(workload_manifest),
-        workload_identity_allowlist_configured: !policy.approved_workload_measurements.is_empty(),
-        approved_workload_identity,
     }
 }
 
@@ -1143,7 +1125,6 @@ mod tests {
         .unwrap();
 
         assert_eq!(verified.evidence.state, SecurityState::Verified);
-        assert!(!verified.evidence.approved_workload_identity);
         assert!(verified.evidence.checks.iter().all(|check| check.passed));
         assert_eq!(verified.model_key.to_hex().len(), 64);
         assert_eq!(

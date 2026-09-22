@@ -213,3 +213,33 @@ on the unchanged tree shared by `a30b4a8` and merged `dev` revision `5fb9f01`.
 No additional browser failures appeared. Light/dark update screens, the usage
 panel and Web disclosure were visually checked with deterministic browser
 fixtures; native OS interaction and live inference were not exercised.
+
+## Verification policy cleanup (2026-09-22)
+
+The current signed policy contains vendor requirements, certificate anchors and
+validity metadata. Native and platform bundle identical schema 2, sequence 3
+envelopes. The [rollout notes](threat-model.md#trust-policy-operations) cover the
+new signing key and existing client journals. `securityEvidence@2` carries the
+updated report contract through the native sidecar and Desktop. Tinfoil source
+provenance, vendor attestation, key binding and response authentication remain
+required.
+
+Validation passed:
+
+- Full Rust workspace: 547 tests passed, six opt-in/manual tests ignored;
+  strict workspace Clippy and formatting passed.
+- All 78 ACP client tests and 189 Desktop unit/contract tests passed; one
+  Desktop signing test was skipped because PowerShell was unavailable.
+- TypeScript checks, generated ACP contract consistency and the Desktop
+  production build passed.
+- All 16 privacy-proof browser checks passed, including report copying,
+  refresh, expiry and keyboard behavior. Light/dark evidence dialogs were
+  visually checked with deterministic fixtures.
+- The paired platform change passed 87 relay and NEAR worker-session tests,
+  including verification of the served policy signature and exact payload.
+
+Policy tests cover signatures, tampering, expiry, rollback and replacement of an
+older journal. Client negotiation rejects an incompatible evidence contract.
+The previously recorded billing browser failures remain open; this change did
+not rerun the complete browser suite, perform live inference or deploy either
+repository.

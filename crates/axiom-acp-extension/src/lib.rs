@@ -99,7 +99,7 @@ impl FeatureVersions {
             account: 2,
             billing: 3,
             usage: 1,
-            security_evidence: 1,
+            security_evidence: 2,
             web_consent: 1,
             steering: 1,
             message_revision: 1,
@@ -380,8 +380,6 @@ pub struct SecurityEvidence {
     pub provider_claims: Vec<EvidenceClaim>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workload_manifest: Option<String>,
-    pub workload_identity_allowlist_configured: bool,
-    pub approved_workload_identity: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]

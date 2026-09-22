@@ -248,8 +248,6 @@ impl SecureProvider for TinfoilProvider {
             workload_manifest: Some(
                 serde_json::to_string(&ground).map_err(|_| invalid("invalid Tinfoil evidence"))?,
             ),
-            workload_identity_allowlist_configured: false,
-            approved_workload_identity: false,
         };
         let material = Material { key, evidence };
         tracing::info!(

@@ -30,8 +30,7 @@ This work does not promote `main` or deploy a service.
    accepted intermediate fingerprints into the Phala verifier. Reject absent,
    malformed or unapproved anchors; allow signed overlap during rotation.
    Preserve certificate signatures/validity, nonce binding, TDX, measured source,
-   worker identity and receipt checks. No gateway repository/commit allowlist or
-   manual approval of provider source updates is introduced.
+   worker identity and receipt checks.
 4. **Test the production NEAR report verifier.** Eliminate the duplicate
    report-binding helper and its blanket dead-code suppression. Run the existing
    cross-language report vectors through the verifier used during attestation,

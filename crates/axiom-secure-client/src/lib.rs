@@ -18,9 +18,7 @@ pub use client::SecureClient;
 pub use config::{EndpointPolicy, SecureClientConfig, SecureClientLimits};
 pub use error::{Result, SecureClientError, SecureErrorCode};
 pub use provider::{ProviderRegistry, SecureProvider, VerifiedSession};
-pub use security::{
-    EvidenceCheck, EvidenceClaim, SecurityEvidence, SecurityState, TrustPolicy, WorkloadEnforcement,
-};
+pub use security::{EvidenceCheck, EvidenceClaim, SecurityEvidence, SecurityState, TrustPolicy};
 
 /// Cryptographic helpers for the deterministic process-level fixture.
 ///

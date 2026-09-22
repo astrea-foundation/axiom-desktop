@@ -111,7 +111,7 @@ test("expiry, missing evidence, and provisional replies stay explicit without an
   try {
     await page.evaluate(() => (window as any).__privacyTest.setDisabledReason("Reconnect to refresh verification"));
     await page.evaluate((evidence) => (window as any).__privacyTest.update({ securityEvidence: evidence }),
-      { ...securityEvidence(), hardExpiresAtUnixSeconds: Math.floor(Date.now() / 1000) + 1, approvedWorkloadIdentity: false, workloadIdentityAllowlistConfigured: false });
+      { ...securityEvidence(), hardExpiresAtUnixSeconds: Math.floor(Date.now() / 1000) + 1 });
     await page.getByRole("button", { name: "TEE proof expired. View privacy proof", exact: true }).waitFor();
     await proofButton(page).click();
     assert.match(await dialog(page).innerText(), /expired/);

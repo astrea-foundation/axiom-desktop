@@ -515,7 +515,6 @@ fn log_security_evidence(request_id: &str, evidence: &axiom_secure_client::Secur
             "verified_at_unix_seconds":evidence.verified_at_unix_seconds,
             "model_key_fingerprint":evidence.model_key_fingerprint,
             "tls_spki_fingerprint":evidence.tls_spki_fingerprint,
-            "approved_workload_identity":evidence.approved_workload_identity,
             "checks":checks,
         })
     );

@@ -36,7 +36,7 @@ The adapter checks requested tool controls against the completed result. Undefin
 ## Models and limits
 
 Chat models and their tools, images, reasoning and file capabilities come from the
-[refreshed catalog](../provider-catalogs.md), with no fixed model allowlist. The
+[refreshed catalog](../provider-catalogs.md). The
 native driver still pins the protocol and router endpoint. A new model can appear
 without a native release only if its advertised contract is already supported.
 

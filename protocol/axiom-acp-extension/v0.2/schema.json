@@ -2506,12 +2506,6 @@
             "string",
             "null"
           ]
-        },
-        "workloadIdentityAllowlistConfigured": {
-          "type": "boolean"
-        },
-        "approvedWorkloadIdentity": {
-          "type": "boolean"
         }
       },
       "required": [
@@ -2526,9 +2520,7 @@
         "hardExpiresAtUnixSeconds",
         "modelKeyFingerprint",
         "checks",
-        "providerClaims",
-        "workloadIdentityAllowlistConfigured",
-        "approvedWorkloadIdentity"
+        "providerClaims"
       ]
     },
     "SecurityStatus": {
