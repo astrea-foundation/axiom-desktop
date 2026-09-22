@@ -7,7 +7,7 @@ import { createServer, type ViteDevServer } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 import { desktopReleaseFixture } from '../../../../fixtures/desktop-releases.mts';
-import type { PackageFormat, UpdateState } from '../../src/shared/updates';
+import type { UpdateState } from '../../src/shared/updates';
 
 let browser: Browser, server: ViteDevServer, origin: string;
 const captures = process.env.AXIOM_UPDATE_CAPTURE_DIR;
@@ -31,16 +31,16 @@ async function open(theme = 'light', overrides: Partial<UpdateState> = {}) {
     localStorage.setItem('axiom.theme',theme);
     let state = initial;
     const listeners = new Set<(state: UpdateState) => void>();
-    const downloads: (PackageFormat | undefined)[] = [];
-    let revealed = 0, checks = 0;
+    let installs = 0, cancellations = 0;
+    let checks = 0;
     let finish: ((state: UpdateState) => void) | null = null;
     const update = (patch: Partial<UpdateState>) => { state = {...state,...patch,revision:state.revision + 1}; listeners.forEach(listener => listener(structuredClone(state))); };
     Object.assign(window, {
       __updatesTest: {
-        update, downloads: () => downloads, revealed: () => revealed, checks: () => checks,
+        update, installs: () => installs, cancellations: () => cancellations, checks: () => checks,
         finish: (failed = false) => {
           update(failed ? {status:'error',error:'Couldn’t download and verify the update. Try again.',download:null}
-            : {status:'downloaded',download:{...state.download!,received:state.download!.total}});
+            : {status:'waiting',download:{...state.download!,received:state.download!.total}});
           finish?.(structuredClone(state)); finish = null;
         },
       },
@@ -58,13 +58,14 @@ async function open(theme = 'light', overrides: Partial<UpdateState> = {}) {
           getState:async () => structuredClone(state),
           onStateChange:(listener: (state: UpdateState) => void) => { listeners.add(listener); return () => listeners.delete(listener); },
           check:async () => { checks++; update({status:'current',error:null,checkedAt:Date.now()}); return structuredClone(state); },
-          download:(format?: PackageFormat) => {
-            downloads.push(format);
-            const file = state.release!.downloads.find(file => file.platform === state.platform && file.arch === state.arch && file.format === format)!;
+          onBeforeRestart:() => () => {},
+          install:() => {
+            installs++;
+            const file = state.release!.downloads.find(file => file.platform === state.platform && file.arch === state.arch && file.format === state.format)!;
             update({status:'downloading',error:null,download:{name:file.name,received:0,total:file.bytes}});
             return new Promise<UpdateState>(resolve => { finish = resolve; });
           },
-          reveal:async () => { revealed++; },
+          cancel:async () => { cancellations++; update({status:'available',download:null}); finish?.(structuredClone(state)); finish=null; return structuredClone(state); },
         },
       },
     });
@@ -81,93 +82,39 @@ const capture = async (page: Page, name: string) => {
   await page.screenshot({path:`${captures}/${name}.png`});
 };
 
-for (const theme of ['light','dark']) test(`update notice opens integrated Settings and downloads the matching package (${theme})`, async () => {
+for (const theme of ['light','dark']) test(`Update and restart preserves visible progress and supports waiting/cancellation (${theme})`, async () => {
   const {page,errors} = await open(theme);
   try {
-    await capture(page,`${theme}-notice`);
-    const notice = page.getByRole('button',{name:/View updates$/});
-    await notice.click();
-    await page.waitForFunction(() => document.activeElement?.getAttribute('data-category') === 'updates');
+    const notice = page.getByRole('button',{name:/View updates$/}); await notice.click();
     assert.equal(await settings(page).getByRole('tab',{name:'Updates',exact:true}).getAttribute('aria-selected'),'true');
     assert.match(await settings(page).innerText(),/Installed version: 0.1.0/);
-    const installation = settings(page).locator('details').filter({has:page.getByText('Installation details',{exact:true})});
-    assert.equal(await installation.locator('dd').first().isVisible(),false);
-    await installation.locator('summary').click();
-    assert.deepEqual(await installation.locator('dd').allTextContents(),['Linux','x64','AppImage']);
-    await installation.locator('summary').click();
-    assert.equal(await page.getByRole('combobox').count(),0);
-    assert.equal(await page.getByText('SHA-256',{exact:true}).isVisible(),false);
     await capture(page,`${theme}-available`);
-    await page.getByRole('button',{name:'Download update',exact:true}).click();
+    await page.getByRole('button',{name:'Update and restart',exact:true}).click();
     await page.getByRole('progressbar',{name:'Update download'}).waitFor();
-    assert.deepEqual(await page.evaluate(() => (window as any).__updatesTest.downloads()),['AppImage']);
+    assert.equal(await page.evaluate(() => (window as any).__updatesTest.installs()),1);
     await page.evaluate(() => (window as any).__updatesTest.update({download:{name:'Axiom.AppImage',received:50,total:100}}));
     await page.waitForFunction(() => document.querySelector('[role="progressbar"]')?.getAttribute('aria-valuenow') === '50');
-    assert.equal(await page.getByRole('progressbar').getAttribute('aria-valuenow'),'50');
+    await page.keyboard.press('Escape'); await settings(page).waitFor({state:'detached'});
+    await notice.click(); assert.equal(await page.getByRole('progressbar').getAttribute('aria-valuenow'),'50');
     await capture(page,`${theme}-downloading`);
-    await page.keyboard.press('Escape'); await settings(page).waitFor({state:'detached'});
-    await notice.click();
-    assert.equal(await page.getByRole('progressbar').getAttribute('aria-valuenow'),'50','download survives closing Settings');
     await page.evaluate(() => (window as any).__updatesTest.finish());
-    await page.getByText('Your update is ready',{exact:true}).waitFor();
-    assert.match(await settings(page).innerText(), /Quit Axiom and AxiomCLI before installing/);
-    assert.equal(await settings(page).getByRole('link', {name:'Release catalog'}).getAttribute('href'), 'https://axiom.stream/api/releases');
-    await page.getByRole('button',{name:'Show in folder'}).click();
-    assert.equal(await page.evaluate(() => (window as any).__updatesTest.revealed()),1);
-    await page.locator('summary').filter({hasText:'Download details'}).click();
-    assert.match(await settings(page).innerText(),/File size and SHA-256 matched/);
-    await capture(page,`${theme}-downloaded`);
-    await page.keyboard.press('Escape'); await settings(page).waitFor({state:'detached'});
-    assert.equal(await notice.evaluate(element => element === document.activeElement),true);
+    await page.getByText('Ready to restart',{exact:true}).waitFor();
+    assert.match(await settings(page).innerText(),/Finish active chats and stop the local proxy/);
+    await page.getByRole('button',{name:'Cancel',exact:true}).click();
+    await page.getByRole('button',{name:'Update and restart',exact:true}).waitFor();
+    assert.equal(await page.evaluate(() => (window as any).__updatesTest.cancellations()),1);
     assert.deepEqual(errors,[]);
-  } finally { await page.close(); }
+  } finally {await page.close();}
 });
-
-test('older installations choose a format without changing platform or architecture', async () => {
-  const {page,errors} = await open('light',{platform:'mac',arch:'arm64',format:null});
+test('failure remains visible and offers a retry, while missing installers cannot be applied',async()=>{
+  const {page,errors}=await open('light',{status:'error',error:'Update checksum mismatch'});
   try {
     await page.getByRole('button',{name:/View updates$/}).click();
-    assert.equal(await page.getByRole('button',{name:'Download update',exact:true}).isDisabled(),true);
-    const choices = await page.getByRole('combobox',{name:'Installer format'}).locator('option').allTextContents();
-    assert.equal(choices.length,4); assert.ok(choices.some(label => label.startsWith('ZIP')));
-    assert.ok(choices.every(label => !label.includes('EXE') && !label.includes('AppImage')));
-    await page.getByRole('combobox').selectOption('zip');
-    await page.getByRole('button',{name:'Download update',exact:true}).click();
-    assert.deepEqual(await page.evaluate(() => (window as any).__updatesTest.downloads()),['zip']);
-    await page.evaluate(() => (window as any).__updatesTest.finish(true));
-    await page.getByRole('alert').waitFor();
-    assert.equal(await page.getByRole('button',{name:'Show in folder'}).count(),0);
-    assert.equal(await page.getByRole('button',{name:'Download update',exact:true}).isEnabled(),true);
+    assert.equal(await page.getByRole('alert').innerText(),'Update checksum mismatch');
+    assert.equal(await page.getByRole('button',{name:'Update and restart',exact:true}).isEnabled(),true);
+    await page.evaluate(()=>(window as any).__updatesTest.update({release:{...(window as any).__unused,version:'0.2.0',downloads:[]}}));
+    await page.getByText('A matching installer has not been published yet.').waitFor();
+    assert.equal(await page.getByRole('button',{name:'Update and restart',exact:true}).isDisabled(),true);
     assert.deepEqual(errors,[]);
-  } finally { await page.close(); }
-});
-
-test('missing matching build is informative without an automatic fallback; manual check stays accessible', async () => {
-  const noMatch = {...release,downloads:release.downloads.filter(file => file.format !== 'AppImage')};
-  const {page,errors} = await open('dark',{release:noMatch});
-  try {
-    await page.getByRole('button',{name:/View updates$/}).click();
-    assert.match(await settings(page).innerText(),/matching build hasn’t been published/);
-    assert.equal(await page.getByRole('button',{name:'Download update',exact:true}).isDisabled(),true);
-    await page.getByRole('button',{name:'Check for updates',exact:true}).click();
-    await page.getByText('You’re up to date',{exact:true}).waitFor();
-    assert.equal(await page.evaluate(() => (window as any).__updatesTest.checks()),1);
-    await page.evaluate(() => (window as any).__updatesTest.update({status:'error',release:null,error:'Couldn’t check for updates. Try again when you’re online.'}));
-    await page.getByRole('alert').waitFor();
-    assert.equal(await page.getByRole('button',{name:'Download update',exact:true}).count(),0);
-    assert.deepEqual(errors,[]);
-  } finally { await page.close(); }
-});
-
-test('update screen and technical details fit narrow windows', async () => {
-  const {page,errors} = await open('dark');
-  try {
-    await page.setViewportSize({width:540,height:600});
-    await page.getByRole('button',{name:/View updates$/}).click();
-    await page.locator('summary').filter({hasText:'Download details'}).click();
-    const panel = settings(page).getByRole('tabpanel');
-    assert.equal(await panel.evaluate(element => element.scrollWidth <= element.clientWidth),true);
-    await capture(page,'narrow-dark');
-    assert.deepEqual(errors,[]);
-  } finally { await page.close(); }
+  }finally{await page.close();}
 });

@@ -1177,7 +1177,8 @@ async fn slash_commands_are_advertised_and_execute_outside_model_turns() {
             "help",
             "balance",
             "topup",
-            "redeem"
+            "redeem",
+            "update"
         ]
     );
     let model_command = commands
@@ -1308,6 +1309,20 @@ async fn slash_commands_are_advertised_and_execute_outside_model_turns() {
     }
     assert!(refreshed.contains("Attestation refreshed"));
     assert!(!refreshed.contains("Echo:"));
+    acp.send(&json!({"jsonrpc":"2.0","id":9,"method":"session/prompt",
+        "params":{"sessionId":session,"prompt":[{"type":"text","text":"/update"}]}}))
+        .await;
+    let mut update_help = String::new();
+    loop {
+        let value = acp.read().await;
+        update_help.push_str(&value.to_string());
+        if value.get("id").and_then(Value::as_i64) == Some(9) {
+            assert_eq!(value["result"]["stopReason"], "end_turn");
+            break;
+        }
+    }
+    assert!(update_help.contains("axiomcli update"));
+    assert!(!update_help.contains("Echo:"));
     acp.close().await;
 }
 

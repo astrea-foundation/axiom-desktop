@@ -1,36 +1,36 @@
-import { createHash } from 'node:crypto';
-import { createReadStream } from 'node:fs';
-import { readdir, stat, writeFile } from 'node:fs/promises';
+import {createHash} from 'node:crypto';
+import {createReadStream} from 'node:fs';
+import {readdir, stat, writeFile} from 'node:fs/promises';
+import {execFileSync} from 'node:child_process';
 import path from 'node:path';
-import {parseRelease} from '../packages/desktop-releases/manifest.mjs';
+import {artifactFormat, parseRelease, requireCompleteRelease} from '../packages/desktop-releases/manifest.mjs';
+import {publicKeyHex, signRelease} from '../packages/desktop-releases/signing.mjs';
 
 const [directory, version, signing = 'unsigned'] = process.argv.slice(2);
-if (!directory || !/^\d+\.\d+\.\d+$/.test(version ?? '') || !['unsigned','signed'].includes(signing)) {
-  throw new Error('Usage: download-manifest.mjs DIRECTORY VERSION [unsigned|signed]');
-}
-const downloads = [];
-const cliDownloads = [];
+if (!directory || !version || !['unsigned','signed'].includes(signing)) throw new Error('Usage: download-manifest.mjs DIRECTORY VERSION [unsigned|signed]');
+const revision = process.env.AXIOM_RELEASE_REVISION ?? execFileSync('git', ['rev-parse', 'HEAD'], {encoding:'utf8'}).trim();
+const sequence = Number(process.env.AXIOM_RELEASE_SEQUENCE ?? execFileSync('git', ['show','-s','--format=%ct',revision], {encoding:'utf8'}).trim());
+const downloads = [], cliDownloads = [];
 for (const name of (await readdir(directory)).sort()) {
-  if (!/^[A-Za-z0-9._-]+\.(?:exe|dmg|pkg|zip|AppImage|deb|pkg\.tar\.(?:xz|zst)|tar\.gz)$/.test(name)) continue;
+  const format = artifactFormat(name); if (!format) continue;
   if (!name.includes(`-${version}-`)) throw new Error(`Artifact version mismatch: ${name}`);
-  const file = path.join(directory, name);
-  const metadata = await stat(file);
+  const file = path.join(directory, name), metadata = await stat(file);
   if (!metadata.isFile() || metadata.size === 0) throw new Error(`Invalid artifact: ${name}`);
-  const hash = createHash('sha256');
-  for await (const chunk of createReadStream(file)) hash.update(chunk);
-  const sha256 = hash.digest('hex');
-  const platform = /\.(?:dmg|pkg|zip)$/.test(name) ? 'mac' : name.endsWith('.exe') ? 'win' : 'linux';
+  const hash = createHash('sha256'); for await (const chunk of createReadStream(file)) hash.update(chunk);
+  const product = name.startsWith('AxiomCLI-') ? 'cli' : 'desktop';
+  const platform = format === 'pkg' ? 'mac' : format === 'exe' ? 'win' : 'linux';
   const arch = /-arm64[.-]/.test(name) ? 'arm64' : /-(?:x64|x86_64|amd64)[.-]/.test(name) ? 'x64' : null;
-  if (!arch) throw new Error(`Unknown architecture: ${name}`);
-  const target = name.endsWith('.tar.gz') ? cliDownloads : downloads;
-  target.push({ name, platform, arch, ...(target === cliDownloads ? { format: 'tar.gz' } : {}), bytes: metadata.size, sha256, url: `https://cdn.axiom.stream/downloads/${version}/${name}` });
+  (product === 'cli' ? cliDownloads : downloads).push({name, product, platform, arch, format, bytes:metadata.size, sha256:hash.digest('hex'),
+    url:`https://cdn.axiom.stream/downloads/${version}/${name}`, githubUrl:`https://github.com/astrea-foundation/axiom-releases/releases/download/v${version}/${name}`});
 }
-if (downloads.length === 0) throw new Error('No installer artifacts found');
-const release = parseRelease({ version, signing, downloads, cliDownloads });
-const all = [...release.downloads, ...(release.cliDownloads ?? [])];
-for (const file of release.cliDownloads ?? []) {
-  await writeFile(path.join(directory, `${file.name}.sha256`), `${file.sha256}  ${file.name}\n`);
+let release = parseRelease({schemaVersion:2, version, revision, sequence, signing:'unsigned', downloads, cliDownloads});
+if (signing === 'signed') {
+  requireCompleteRelease(release);
+  const privateKey = process.env.AXIOM_UPDATE_SIGNING_KEY;
+  const publicKey = publicKeyHex(privateKey);
+  if (!(process.env.AXIOM_UPDATE_PUBLIC_KEYS ?? '').split(',').map(s=>s.trim()).includes(publicKey)) throw new Error('Signing key is absent from compiled trust configuration');
+  release = signRelease(release, privateKey, publicKey);
 }
-await writeFile(path.join(directory, 'SHA256SUMS'), all.map(d => `${d.sha256}  ${d.name}\n`).join(''));
-await writeFile(path.join(directory, 'manifest.json'), JSON.stringify(release, null, 2) + '\n');
-console.log(`Prepared manifest and checksums for ${downloads.length} desktop installers and ${cliDownloads.length} CLI bundles.`);
+await writeFile(path.join(directory, 'SHA256SUMS'), [...release.downloads,...release.cliDownloads].map(f=>`${f.sha256}  ${f.name}\n`).join(''));
+await writeFile(path.join(directory, 'manifest.json'), JSON.stringify(release, null, 2)+'\n');
+console.log(`Prepared ${release.signing} inventory for ${downloads.length} Desktop and ${cliDownloads.length} CLI installers.`);

@@ -11,6 +11,7 @@ use crate::app::ThinkingLevel;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SlashCommand {
     Help,
+    Update,
     Usage,
     Permissions,
     Compact { focus: Option<String> },
@@ -157,6 +158,12 @@ pub const COMMANDS: &[SlashCommandSpec] = &[
         description: "Inspect reported context usage, capacity, and compaction threshold",
         aliases: &[],
     },
+    SlashCommandSpec {
+        name: "update",
+        usage: "/update",
+        description: "Install the latest Axiom release and restart this session",
+        aliases: &[],
+    },
 ];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -202,6 +209,7 @@ pub fn parse(input: &str) -> Option<Result<SlashCommand, SlashCommandError>> {
             SlashCommand::Redeem,
             "/redeem (enter the code in the private screen)",
         ),
+        Some("update") => no_arguments(arguments, SlashCommand::Update, "/update"),
         Some("help") => no_arguments(arguments, SlashCommand::Help, "/help"),
         Some("usage") => no_arguments(arguments, SlashCommand::Usage, "/usage"),
         Some("permissions") => {
@@ -362,10 +370,9 @@ pub fn completions(input: &str) -> Vec<SlashCompletion> {
             ("high", "Use high reasoning effort"),
             ("xhigh", "Use extra-high reasoning effort"),
         ],
-        "permissions" | "compact" | "help" | "model" | "resume" | "delete" | "login" | "logout"
-        | "account" | "security" | "refresh" | "balance" | "topup" | "redeem" | "usage" => {
-            Vec::new()
-        }
+        "permissions" | "compact" | "help" | "update" | "model" | "resume" | "delete" | "login"
+        | "logout" | "account" | "security" | "refresh" | "balance" | "topup" | "redeem"
+        | "usage" => Vec::new(),
         _ => unreachable!("all command specs are handled"),
     };
     options

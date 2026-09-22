@@ -52,9 +52,9 @@ test('unpacked build input is restricted to the explicit unsigned Windows path',
   }
 });
 
-test('signed release and manual Windows lanes share the protected native-build/sign workflow', () => {
+test('signed release uses the protected native-build/sign workflow', () => {
   const read = (file: string) => readFileSync(`${root}/.github/workflows/${file}`, 'utf8');
-  for (const file of ['release.yml', 'desktop-packages.yml']) {
+  for (const file of ['release.yml']) {
     assert.match(read(file), /uses: \.\/\.github\/workflows\/windows-signed\.yml/);
     assert.doesNotMatch(read(file), /WINDOWS_CERTIFICATE/);
   }
@@ -65,7 +65,8 @@ test('signed release and manual Windows lanes share the protected native-build/s
   assert.match(workflow, /windows-11-arm/);
   assert.match(workflow, /runs-on: windows-2025/);
   assert.doesNotMatch(workflow, /test-windows-install|windows-signed-candidate/);
-  assert.ok(workflow.indexOf('package-signed-windows.ps1') < workflow.indexOf('download-manifest.mjs'));
+  assert.match(read('release.yml'), /Sign the complete final-byte inventory/);
+  assert.match(workflow, /package-cli.mjs/);
   assert.match(workflow, /--unsigned --dir/);
 });
 
