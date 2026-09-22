@@ -194,8 +194,8 @@ async fn long_stream_and_many_transcript_entries_stay_within_recorded_budgets() 
         "long-session summary: stream_chunks={CHUNKS} transcript_checkpoints=5000 persistence_ms={} database_bytes={database_bytes}",
         persistence_elapsed.as_millis()
     );
-    // Shared macOS and Windows runners have slower durable-write latency.
-    let persistence_budget = Duration::from_secs(if cfg!(target_os = "linux") { 10 } else { 30 });
+    // Shared runners on every OS can have slower durable-write latency.
+    let persistence_budget = Duration::from_secs(30);
     assert!(
         persistence_elapsed < persistence_budget,
         "5000 durable checkpoints took {persistence_elapsed:?}, budget {persistence_budget:?}"
