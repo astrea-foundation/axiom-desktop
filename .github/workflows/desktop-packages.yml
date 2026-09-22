@@ -16,6 +16,9 @@ on:
 permissions:
   contents: read
 
+env:
+  RUST_TEST_THREADS: 2
+
 jobs:
   release-ref:
     name: Validate release tag

@@ -13,7 +13,11 @@ electron-builder.
 
 ## Unified release catalog
 
-The current product release version is **0.1.4**. Existing public 0.1.0/0.1.1 packages predate
+The [automatic updates and installer publication plan](automatic-updates-plan.md)
+tracks future Desktop/TUI installation and restart, plus CDN/GitHub Releases
+publication. It targets `dev`; the procedures below describe current behavior.
+
+The current product release version is **0.1.5**. Existing public 0.1.0/0.1.1 packages predate
 the updater and need one manual upgrade. A version bump in source does not publish
 installers or change the public feed.
 
@@ -66,8 +70,11 @@ producing release archives or packaged Desktop applications. Development branche
 need local checks; see [development](development.md#checks). Release packaging
 and upload happen only in the release workflows. Linux Rust checks use the same
 Ubuntu 22.04 baseline as release builds so Bubblewrap namespace tests run on the
-supported build environment. Branch CI limits Rust test concurrency to two to
-avoid starving short test-only credential deadlines on shared native runners.
+supported build environment. All CI and release workflows limit Rust test concurrency to two; test-only
+credential deadlines allow one second of scheduling headroom while stalled-store
+fixtures still exceed that deadline. Production credential deadlines remain three
+seconds. Git attributes retain LF line endings across checkouts so generated
+contracts compare byte-for-byte on Windows.
 
 The `desktop installers` workflow (`desktop-packages.yml`) builds Linux x64,
 macOS Intel/Apple Silicon, and Windows x64/ARM64. Run it manually against a stable
