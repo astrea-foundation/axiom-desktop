@@ -2,7 +2,8 @@ import { AlertTriangle, CheckCircle2, ListChecks } from "lucide-react";
 import type { ClientSessionState, ClientTimelineItem } from "@axiom/axiom-acp-client";
 import type { PendingUserMessage } from "../types";
 import { replyErrorPresentation } from "../replyErrors";
-import { StoredAttachments, attachmentNames } from "./Attachments";
+import { AttachmentCards, StoredAttachments, attachmentSummaries } from "./Attachments";
+import type { AttachmentPreviews } from "../attachmentPreviews";
 import { MessageBubble } from "./MessageBubble";
 import { ToolCallCard } from "./ToolCallCard";
 import { InteractionCard } from "./InteractionCard";
@@ -40,10 +41,12 @@ export function TimelineView({
   session,
   pendingUserMessage,
   onRevise,
+  attachmentPreviews,
 }: {
   session: ClientSessionState;
   pendingUserMessage?: PendingUserMessage | null;
   onRevise?: (userItemId: string, text: string) => Promise<void>;
+  attachmentPreviews?: AttachmentPreviews;
 }) {
   const presentation = presentTimeline(session.timeline);
   const sources = messageRevisionSources(session.timeline);
@@ -53,9 +56,11 @@ export function TimelineView({
     if (row.kind === "message") {
       const source = sources.get(row.message.id);
       const turnId = turnsByItem.get(row.message.id);
+      const summaries = attachmentSummaries(source?.raw);
       return <div key={row.key} data-timeline-kind={row.message.role}>
-        {row.message.role === "user" ? <StoredAttachments threadId={session.sessionId} userItemId={row.message.id} names={attachmentNames(source?.raw)} /> : null}
-        <MessageBubble message={row.message} revisionHasAttachments={Boolean(attachmentNames(source?.raw).length)}
+        {row.message.role === "user" ? <StoredAttachments key={`${session.sessionId}:${row.message.id}`} threadId={session.sessionId} userItemId={row.message.id} summaries={summaries}
+          initialFiles={attachmentPreviews?.get(source?.clientItemId)} /> : null}
+        <MessageBubble message={row.message} revisionHasAttachments={Boolean(summaries.length)}
         showFailureNotice={!turnId || !turnsWithErrors.has(turnId)}
         revisionText={source?.text} onRevise={source && onRevise ? (text) => onRevise(source.id, text) : undefined} /></div>;
     }
@@ -71,7 +76,7 @@ export function TimelineView({
   );
   if (showPendingUser && pendingUserMessage) {
     rows.push(
-      <div key={pendingUserMessage.id} data-timeline-kind="user"><MessageBubble
+      <div key={pendingUserMessage.id} data-timeline-kind="user"><AttachmentCards files={pendingUserMessage.attachments ?? []} /><MessageBubble
         message={{
           id: pendingUserMessage.id,
           role: "user",

@@ -202,7 +202,8 @@ async function openApp(platform = "linux", failDelete = false, thinkingLevels: s
       },
       promptWithAttachments: async (id: string, text: string, clientItemId: string, webEnabled: boolean, _revision: number, attachments: any[]) => {
         calls.push({ method: "attachments", id, text: JSON.stringify({ text, attachments }), webEnabled });
-        state.sessions[id]!.timeline.push({ id: clientItemId, clientItemId, kind: "user", text, status: "completed", raw: { metadata: { attachments: attachments.map((file) => ({ name: file.name, kind: file.kind })) } } });
+        await waitForSetup("prompt");
+        state.sessions[id]!.timeline.push({ id: `native-${clientItemId}`, clientItemId, kind: "user", text, status: "completed", raw: { metadata: { attachments: attachments.map((file) => ({ name: file.name, kind: file.kind })) } } });
         emit(); return { stopReason: "end_turn" };
       },
       revisePrompt: async (id: string, text: string, userItemId: string, expectedRevision: number, webEnabled: boolean) => {
@@ -2852,6 +2853,192 @@ test("top error banners dismiss without clearing native errors and show new fail
     await page.evaluate(() => (window as any).__deletionTest.setError(null));
     await page.evaluate(() => (window as any).__deletionTest.setError("Connection failed again"));
     await alert.getByText("Connection failed again", { exact: true }).waitFor();
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+for (const existing of [false, true]) {
+  test(`attachment cards and image previews remain visible through sending (${existing ? "existing" : "new"} thread)`, async () => {
+    const { page, errors } = await openApp("linux", false, [], "medium", true, false);
+    try {
+      if (existing) await page.locator('[data-thread-id="old-thread"]').click();
+      await page.evaluate((existing) => {
+        const app = (window as any).__deletionTest;
+        for (const stage of existing ? ["prompt"] : ["new", "settings", "prompt"]) app.holdSetup(stage);
+        (window as any).__previewReads = 0;
+        (window as any).axiomDesktop.agent.getAttachments = async () => {
+          (window as any).__previewReads++;
+          throw new Error("Newly sent attachments must use their local previews");
+        };
+      }, existing);
+      await page.locator('input[type="file"]').setInputFiles([
+        { name: "pixel.png", mimeType: "image/png", buffer: tinyPng },
+        { name: "notes.txt", mimeType: "text/plain", buffer: Buffer.from("Original file bytes") },
+      ]);
+      await page.getByRole("button", { name: "Remove notes.txt" }).waitFor();
+      await page.waitForFunction(() => document.querySelector<HTMLImageElement>('[data-attachment-card] img')?.naturalWidth === 1);
+      await page.locator("textarea[data-chat-input]").fill("What is in these files?");
+      await page.evaluate(() => {
+        const state = { running: true, missing: 0, frames: 0 };
+        (window as any).__previewContinuity = state;
+        const observe = () => {
+          if (!state.running) return;
+          state.frames++;
+          const image = document.querySelector<HTMLImageElement>('[data-attachment-card] img[alt="pixel.png"]');
+          if (!image?.complete || !image.naturalWidth) state.missing++;
+          requestAnimationFrame(observe);
+        };
+        requestAnimationFrame(observe);
+      });
+      await page.getByRole("button", { name: "Send", exact: true }).click();
+      const cards = page.locator("[data-attachment-card]");
+      if (!existing) {
+        await page.getByRole("status", { name: "Sending message" }).waitFor();
+        assert.equal(await cards.count(), 2);
+        assert.equal(await page.getByRole("img", { name: "pixel.png" }).isVisible(), true);
+        if (process.env.AXIOM_ATTACHMENT_CAPTURE) await page.screenshot({ path: `${process.env.AXIOM_ATTACHMENT_CAPTURE}/sending.png`, animations: "disabled" });
+        await page.evaluate(() => (window as any).__deletionTest.releaseSetup("new"));
+        await page.waitForFunction(() => (window as any).__deletionTest.settingsCalls.length > 0);
+        assert.equal(await cards.count(), 2);
+        await page.evaluate(() => (window as any).__deletionTest.releaseSetup("settings"));
+      }
+      await page.waitForFunction(() => (window as any).__deletionTest.calls.some((call: any) => call.method === "attachments"));
+      assert.equal(await cards.count(), 2);
+      assert.equal(await page.getByRole("img", { name: "pixel.png" }).isVisible(), true);
+      await page.evaluate(() => (window as any).__deletionTest.releaseSetup("prompt"));
+      const transcript = page.getByRole("region", { name: "Chat messages", exact: true });
+      await transcript.getByRole("img", { name: "pixel.png" }).waitFor();
+      await page.getByRole("button", { name: "Edit message", exact: true }).waitFor();
+      await page.locator("textarea[data-chat-input]").fill("Next message");
+      assert.equal(await cards.count(), 2);
+      assert.equal(await transcript.getByText("notes.txt", { exact: true }).count(), 1);
+      assert.equal(await page.evaluate(() => (window as any).__previewReads), 0);
+      const continuity = await page.evaluate(() => {
+        const state = (window as any).__previewContinuity;
+        state.running = false;
+        return state;
+      });
+      assert.ok(continuity.frames > 0);
+      assert.equal(continuity.missing, 0, "no painted frame drops the image preview during handoff");
+      const bounds = await transcript.locator("[data-attachment-card]").first().boundingBox();
+      assert.ok(bounds && bounds.width < 200 && bounds.height > 140, "attachments use compact cards rather than full-width bars");
+      if (!existing && process.env.AXIOM_ATTACHMENT_CAPTURE) {
+        await page.emulateMedia({ colorScheme: "dark" });
+        await page.waitForFunction(() => document.documentElement.dataset.theme === "dark");
+        await page.screenshot({ path: `${process.env.AXIOM_ATTACHMENT_CAPTURE}/sent-dark.png`, animations: "disabled" });
+      }
+      assert.deepEqual(errors, []);
+    } finally { await page.close(); }
+  });
+}
+
+test("saved image cards load previews automatically and discard late results after an account switch", async () => {
+  const { page, errors } = await openApp("linux", false, [], "medium", true);
+  try {
+    await page.locator('[data-thread-id="old-thread"]').click();
+    await page.evaluate(() => {
+      (window as any).__previewReads = 0;
+      (window as any).axiomDesktop.agent.getAttachments = async () => {
+        (window as any).__previewReads++;
+        return new Promise((resolve) => { (window as any).__resolvePreview = resolve; });
+      };
+      (window as any).__deletionTest.setTimeline([{ id: "saved-image", kind: "user", text: "Saved picture", status: "completed",
+        raw: { metadata: { attachments: [{ name: "saved.png", kind: "image" }] } } }]);
+    });
+    await page.waitForFunction(() => (window as any).__previewReads === 1);
+    assert.equal(await page.locator("[data-attachment-card]").count(), 1);
+    await page.evaluate(() => (window as any).__resolvePreview({ attachments: [] }));
+    await page.getByRole("button", { name: "Retry preview" }).waitFor();
+    assert.equal(await page.getByText("saved.png", { exact: true }).count(), 1, "failed previews keep their cards");
+    await page.getByRole("button", { name: "Retry preview" }).click();
+    await page.waitForFunction(() => (window as any).__previewReads === 2);
+    const file = { kind: "image", name: "saved.png", image: { mimeType: "image/png", data: tinyPng.toString("base64") } };
+    await page.evaluate((file) => (window as any).__resolvePreview({ attachments: [file] }), file);
+    await page.getByRole("img", { name: "saved.png" }).waitFor();
+    await page.getByRole("button", { name: "New thread", exact: true }).click();
+    await page.locator('[data-thread-id="old-thread"]').click();
+    await page.waitForFunction(() => (window as any).__previewReads === 3);
+    await page.evaluate(() => {
+      (window as any).__oldResolvePreview = (window as any).__resolvePreview;
+      (window as any).__deletionTest.setAccount("different-account");
+    });
+    await page.waitForFunction(() => (window as any).__previewReads === 4);
+    await page.evaluate(async (file) => {
+      (window as any).__oldResolvePreview({ attachments: [file] });
+      await new Promise(requestAnimationFrame);
+    }, file);
+    assert.equal(await page.getByRole("img", { name: "saved.png" }).count(), 0);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+for (const existing of [false, true]) {
+  test(`files dropped across the ${existing ? "conversation" : "welcome"} panel attach once and nested drags keep feedback`, async () => {
+    const { page, errors } = await openApp("linux", false, [], "medium", true);
+    try {
+      if (existing) await page.locator('[data-thread-id="old-thread"]').click();
+      const zone = page.locator("[data-chat-drop-zone]");
+      for (const [index, selector] of ["[data-chat-drop-zone]", "[data-chat-drop-zone] header", "textarea[data-chat-input]"].entries()) {
+        const transfer = await page.evaluateHandle((name) => {
+          const data = new DataTransfer();
+          data.items.add(new File(["Dropped original bytes"], name, { type: "text/plain" }));
+          return data;
+        }, `drop-${index}.txt`);
+        await zone.dispatchEvent("dragenter", { dataTransfer: transfer });
+        await page.locator("textarea[data-chat-input]").dispatchEvent("dragenter", { dataTransfer: transfer });
+        await page.locator("textarea[data-chat-input]").dispatchEvent("dragleave", { dataTransfer: transfer });
+        assert.equal(await page.locator("[data-file-drop-overlay]").isVisible(), true);
+        if (!existing && index === 0 && process.env.AXIOM_ATTACHMENT_CAPTURE) await page.screenshot({ path: `${process.env.AXIOM_ATTACHMENT_CAPTURE}/drop-zone.png`, animations: "disabled" });
+        await page.locator(selector).dispatchEvent("dragover", { dataTransfer: transfer });
+        await page.locator(selector).dispatchEvent("drop", { dataTransfer: transfer });
+        await page.getByRole("button", { name: `Remove drop-${index}.txt` }).waitFor();
+        assert.equal(await page.locator("[data-attachment-card]").count(), index + 1);
+        assert.equal(await page.locator("[data-file-drop-overlay]").count(), 0);
+        await transfer.dispose();
+      }
+      const textDrag = await page.evaluateHandle(() => {
+        const data = new DataTransfer(); data.setData("text/plain", "Selected text"); return data;
+      });
+      await zone.dispatchEvent("dragenter", { dataTransfer: textDrag });
+      assert.equal(await page.locator("[data-file-drop-overlay]").count(), 0);
+      await textDrag.dispose();
+      const outside = await page.evaluateHandle(() => {
+        const data = new DataTransfer(); data.items.add(new File(["Outside"], "outside.txt", { type: "text/plain" })); return data;
+      });
+      await page.getByPlaceholder("Search threads").dispatchEvent("drop", { dataTransfer: outside });
+      assert.equal(await page.locator("[data-attachment-card]").count(), 3);
+      await page.getByRole("button", { name: "Agent", exact: true }).click();
+      const dialog = page.getByRole("dialog", { name: "Agent settings" });
+      await dialog.dispatchEvent("dragenter", { dataTransfer: outside });
+      await dialog.dispatchEvent("drop", { dataTransfer: outside });
+      assert.equal(await page.locator("[data-file-drop-overlay]").count(), 0);
+      await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+      assert.equal(await page.locator("[data-attachment-card]").count(), 3, "a dialog outside the panel does not attach files");
+      await outside.dispose();
+      assert.deepEqual(errors, []);
+    } finally { await page.close(); }
+  });
+}
+
+test("attachment cards wrap within narrow windows and the draft tray scrolls without hiding Send", async () => {
+  const { page, errors } = await openApp("linux", false, [], "medium", true);
+  try {
+    await page.setViewportSize({ width: 640, height: 800 });
+    await page.locator('input[type="file"]').setInputFiles(Array.from({ length: 8 }, (_, index) => ({
+      name: `long-attachment-name-${index}-with-extra-words.png`, mimeType: "image/png", buffer: tinyPng,
+    })));
+    await page.getByRole("button", { name: "Remove long-attachment-name-7-with-extra-words.png" }).waitFor();
+    const send = page.getByRole("button", { name: "Send", exact: true });
+    const bounds = await send.boundingBox();
+    assert.ok(bounds && bounds.y >= 0 && bounds.y + bounds.height <= 800);
+    await send.click();
+    const transcript = page.getByRole("region", { name: "Chat messages", exact: true });
+    await transcript.locator("[data-attachment-card]").nth(7).waitFor();
+    assert.equal(await transcript.locator("[data-attachment-card]").count(), 8);
+    const fits = await transcript.evaluate((element) => element.scrollWidth <= element.clientWidth);
+    assert.equal(fits, true, "card rows do not overflow the chat viewport");
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    if (process.env.AXIOM_ATTACHMENT_CAPTURE) await page.screenshot({ path: `${process.env.AXIOM_ATTACHMENT_CAPTURE}/narrow.png`, animations: "disabled" });
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
 });

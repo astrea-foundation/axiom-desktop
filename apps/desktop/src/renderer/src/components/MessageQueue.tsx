@@ -1,5 +1,6 @@
 import { ArrowUp, LoaderCircle, X } from "lucide-react";
 import type { QueuedMessage } from "../messageQueue";
+import { AttachmentCards } from "./Attachments";
 
 export function MessageQueue({ messages, paused, canSend, onSendNow, onRemove }: {
   messages: QueuedMessage[]; paused: boolean; canSend: boolean;
@@ -11,7 +12,7 @@ export function MessageQueue({ messages, paused, canSend, onSendNow, onRemove }:
     {messages.map((message) => <div key={message.id} data-queued-message={message.id} className="flex items-start gap-2 py-1.5">
       <div className="min-w-0 flex-1">
         <p className="line-clamp-2 whitespace-pre-wrap break-words text-[var(--color-text-secondary)]">{message.text}</p>
-        {message.attachments?.length ? <p className="truncate text-[var(--color-text-secondary)]">{message.attachments.map((file) => file.name).join(", ")}</p> : null}
+        <AttachmentCards files={message.attachments ?? []} compact />
         <p className="mt-0.5 flex flex-wrap gap-x-3 text-[11px] text-[var(--color-text-tertiary)]"><span>{message.error ?? (message.status === "stopping" ? "Stopping…" : message.status === "sending" ? "Sending…" : paused ? "Paused" : "Sends after the current reply")}</span>{message.webEnabled ? <span>Web on</span> : null}</p>
       </div>
       {message.status === "queued"

@@ -1,4 +1,5 @@
 import { acceptsAttachment } from "./attachments";
+import { AttachmentPreviews } from "./attachmentPreviews";
 import type { ClientState } from "@axiom/axiom-acp-client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DEFAULT_AGENT_SELECTION, type AgentControlOptions, type AgentSelection } from "./components/AgentModeControl";
@@ -122,6 +123,11 @@ export function useConversations(agentState: ClientState, navigation: ReturnType
   const activeThread = threads.find((thread) => thread.id === activeThreadId) ?? null;
   const activeSession = activeThreadId ? agentState.sessions[activeThreadId] ?? null : null;
   const agentAccountScope = JSON.stringify([billingAccountId, agentState.runtimeInstanceId]);
+  const attachmentPreviews = useMemo(() => new AttachmentPreviews(), [agentAccountScope]);
+  // Restored queued messages also hand their local bytes to the transcript.
+  for (const message of messageQueue.current.list(activeThreadId, billingAccountId)) {
+    attachmentPreviews.remember(message.id, message.attachments ?? []);
+  }
   const newAgentSelection = newAgentDraft?.scope === agentAccountScope ? newAgentDraft.selection : DEFAULT_AGENT_SELECTION;
   const currentAgent = surface === "thread" ? activeSession?.desktopAgent : null;
   const agentControl: AgentControlOptions = {
@@ -301,6 +307,7 @@ export function useConversations(agentState: ClientState, navigation: ReturnType
       return;
     } finally { savingDraft.current = false; }
     submittingDraft.current.set(submissionId, scope);
+    attachmentPreviews.remember(submissionId, files);
     // Clear only the captured draft. A navigation/account change or newer typing
     // during the disk commit must never clear another composer's text.
     writeDraft(creatingThread ? null : activeThreadId, (previous) => previous.trim() === text ? "" : previous);
@@ -310,7 +317,7 @@ export function useConversations(agentState: ClientState, navigation: ReturnType
     setUiError(null);
     if (creatingThread && stillSelected()) {
       // Navigation can dismiss this view without cancelling the durable submission.
-      setThreadPreparation({ id: submissionId, text: text || files.map((file) => file.name).join(", "), accountId: billingAccountId, runtimeId: agentState.runtimeInstanceId });
+      setThreadPreparation({ id: submissionId, text, attachments: files, accountId: billingAccountId, runtimeId: agentState.runtimeInstanceId });
       activeThreadIdRef.current = null;
       setActiveThreadId(null);
       setThreadLoadError(null);
@@ -358,7 +365,7 @@ export function useConversations(agentState: ClientState, navigation: ReturnType
       if (creatingThread && stillSelected()) {
         activeThreadIdRef.current = sessionId;
         setActiveThreadId(sessionId);
-        setPendingUserMessage({ id: messageId, sessionId, text: text || files.map((file) => file.name).join(", ") });
+        setPendingUserMessage({ id: messageId, sessionId, text, attachments: files });
         setNewAgentDraft(null);
         setThreadPreparation(null);
       }
@@ -422,5 +429,5 @@ export function useConversations(agentState: ClientState, navigation: ReturnType
     }
   };
 
-  return { reviewPreparation, attachmentDraft, draft, setDraft, writeDraft, threadPreparation, pendingUserMessage, threadLoadError, deleteTarget, setDeleteTarget, renameTarget, setRenameTarget, billingAccountId, webAccess, threads, folders, activeThread, activeSession, agentAccountScope, agentControl, isStreaming, ensureThreadLoaded, loadThread, showWelcome, reviseMessage, submitDraft, stopStream, deleteThread, messageQueue: messageQueue.current, threadLoads: threadLoads.current };
+  return { reviewPreparation, attachmentDraft, attachmentPreviews, draft, setDraft, writeDraft, threadPreparation, pendingUserMessage, threadLoadError, deleteTarget, setDeleteTarget, renameTarget, setRenameTarget, billingAccountId, webAccess, threads, folders, activeThread, activeSession, agentAccountScope, agentControl, isStreaming, ensureThreadLoaded, loadThread, showWelcome, reviseMessage, submitDraft, stopStream, deleteThread, messageQueue: messageQueue.current, threadLoads: threadLoads.current };
 }

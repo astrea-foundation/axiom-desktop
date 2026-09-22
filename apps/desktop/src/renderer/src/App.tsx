@@ -20,6 +20,7 @@ import { WindowControls } from "./components/WindowControls";
 import { setThemePreference, useTheme } from "./lib/theme";
 import { isMac, MAC_TRAFFIC_LIGHT_INSET_CLASS, useFullScreen } from "./lib/window-chrome";
 import { useDesktopUpdates } from "./useDesktopUpdates";
+import { useChatFileDrop } from "./useChatFileDrop";
 
 import { useConversationNavigation } from "./useConversationNavigation";
 import { useConversations } from "./useConversations";
@@ -62,6 +63,11 @@ export function App() {
     : webAccess.error ? { source: "web", text: webAccess.error }
     : agentState.error ? { source: "agent", text: agentState.error }
     : modelCatalogError ? { source: "catalog", text: modelCatalogError } : null;
+  const fileDrop = useChatFileDrop(
+    !accountScreenOpen && !preparation && (surface === "welcome" || (surface === "thread" && !!activeSession)) && !attachmentDraft.attachmentsBusy,
+    attachmentDraft.attachmentScope + surface,
+    (files) => void attachmentDraft.addFiles(files),
+  );
 
   const showProxy = useCallback(() => {
     cancelThreadPreparation();
@@ -217,7 +223,10 @@ export function App() {
       >
         <div className="stage-shadow pointer-events-none absolute inset-0 rounded-[22px]" aria-hidden="true" />
         <div className="stage-ring pointer-events-none absolute inset-0" aria-hidden="true" />
-        <section className="stage-card absolute inset-px flex flex-col overflow-hidden rounded-[21px] bg-[var(--surface-stage)]">
+        <section data-chat-drop-zone {...fileDrop.handlers} className="stage-card absolute inset-px flex flex-col overflow-hidden rounded-[21px] bg-[var(--surface-stage)]">
+          {fileDrop.dragging ? <div data-file-drop-overlay className="pointer-events-none absolute inset-3 z-50 flex items-center justify-center rounded-[16px] border-2 border-dashed border-[var(--color-cherry)] bg-[var(--surface-stage)]/90">
+            <div className="rounded-xl bg-[var(--surface-float)] px-6 py-4 text-center text-[15px] font-medium text-[var(--color-text-primary)]">Drop files to attach</div>
+          </div> : null}
           <header
             className={[
               "drag-region absolute left-0 top-0 z-30 flex h-11 items-center bg-transparent",
@@ -264,6 +273,7 @@ export function App() {
             {surface === "proxy" ? <ProxyView accountId={agentState.connected ? billingAccountId : null} runtimeId={agentState.runtimeInstanceId} onInspecting={setProxyInspecting} /> : surface === "thread" && (preparation || activeSession) ? (
               <ChatView
                 preparation={preparation}
+                attachmentPreviews={conversations.attachmentPreviews}
                 onRevise={!activeSession?.running && agentState.account?.state === "valid" ? reviseMessage : undefined}
                 agentControl={agentControl}
                 queue={<MessageQueue messages={messageQueue.list(activeThreadId, billingAccountId).filter((message) => message.id !== pendingUserMessage?.id || message.status !== "sending")}

@@ -100,7 +100,9 @@ after Stop can start normally when no older queued message needs review.
 
 ## Images and files
 
-Use Attach, paste an image, or drop files onto the composer. Image and file icons
+Use Attach, paste an image, or drop files anywhere in the main chat panel,
+including its empty space and transcript. A drop indicator marks the panel;
+the sidebar and Proxy view do not attach files. Image and file icons
 in the model picker show the selected model's current capabilities; hover or use
 the accessible label for their meaning. See [catalog discovery](provider-catalogs.md)
 for refreshes and unavailable models.
@@ -120,7 +122,11 @@ truncated. Audio/video and remote URLs are unsupported.
 
 Original bytes and filenames reach the provider inside its authenticated E2EE
 request. Attachments remain in account-local history, survive edit/regeneration,
-and appear by filename in the transcript. Compaction sends original image/file
+and appear as wrapping cards in the draft, queue, and transcript. Image cards
+show local previews. Sending retains these cards through thread setup and native
+acknowledgement, without waiting for the provider or reloading the original
+files. Saved image previews load from local history as they come into view.
+Compaction sends original image/file
 parts to a capable model and retains a textual successor summary; it never
 inserts encoded file bytes as message text. Older extracted-text attachments are
 readable in saved history but cannot be submitted as new uploads.
