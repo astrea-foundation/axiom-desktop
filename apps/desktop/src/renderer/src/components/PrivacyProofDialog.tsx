@@ -9,7 +9,7 @@ const explanation: Record<ProofState, string> = {
   verified: "Model messages are encrypted on your device to a key verified through hardware attestation.",
   verifying: "Checking the model’s confidential-computing evidence on this device.",
   failed: "Verification failed. Model traffic requires valid evidence before it can be sent.",
-  expired: "Report expired. Refresh to check again.",
+  expired: "This cached report has expired. Axiom requires fresh evidence for new model requests. Ongoing replies still require authentication against the evidence accepted when each request started.",
   unavailable: "A current verification report isn’t available. Refresh to inspect the model’s proof.",
   unverified: "Check the model’s hardware evidence and encryption key before sending model messages.",
   development: "This development session has no production TEE proof.",
@@ -154,6 +154,10 @@ export function PrivacyProofDialog({ session, model, modelId, state, now, webEna
           className="-mr-1 rounded-lg p-1.5 text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--wash-chip-hover)] hover:text-[var(--color-text-primary)]"><X size={16} /></button>
       </header>
       <div className="min-h-0 overflow-y-auto px-6 pb-5 sm:px-7">
+        <div className="-mx-3 mb-4">
+          <Disclosure title="Latest reply verification" value={reply.label} verified={reply.verified}><p>{reply.detail}</p></Disclosure>
+        </div>
+        <h3 className="mb-3 text-[12px] font-medium text-[var(--color-text-secondary)]">Cached attestation report</h3>
         <div className="flex items-center gap-3">
           <div className={`shadow-glass-tile flex h-10 w-10 shrink-0 items-center justify-center rounded-[13px] bg-[var(--surface-tile)] ${verified ? "text-[var(--color-success)]" : state === "failed" ? "text-[var(--color-danger)]" : "text-[var(--color-text-tertiary)]"}`}>
             {verified ? <ShieldCheck size={21} aria-hidden="true" /> : state === "failed" ? <ShieldX size={21} aria-hidden="true" /> : <Shield size={21} aria-hidden="true" />}
@@ -176,9 +180,6 @@ export function PrivacyProofDialog({ session, model, modelId, state, now, webEna
             {group.title === "Freshness" ? <p className="mt-2">{evidence.hardExpiresAtUnixSeconds * 1000 <= now ? "Expired" : "Expires"} {new Date(evidence.hardExpiresAtUnixSeconds * 1000).toLocaleString()}</p> : null}
           </Disclosure>)}
         </div> : <p className="mb-3 mt-4 rounded-[11px] bg-[var(--wash-row)] px-3 py-3 text-[12px] text-[var(--color-text-tertiary)]">{state === "verifying" ? "The report will appear when verification finishes." : "No report available for this model."}</p>}
-        <div className="-mx-3 mt-1">
-          <Disclosure title="Latest reply verification" value={reply.label} verified={reply.verified}><p>{reply.detail}</p></Disclosure>
-        </div>
         {evidence ? <details className="group/technical mt-3 border-t border-[var(--color-border)] pt-3">
           <summary className="flex cursor-pointer list-none items-center gap-2 rounded-lg py-1.5 text-[12px] text-[var(--color-text-secondary)] [&::-webkit-details-marker]:hidden">
             <FileCode2 size={14} aria-hidden="true" /><span className="flex-1">Technical details</span><ChevronRight size={13} className="transition-transform group-open/technical:rotate-90 motion-reduce:transition-none" aria-hidden="true" />

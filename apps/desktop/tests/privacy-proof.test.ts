@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ClientSessionState } from "@axiom/axiom-acp-client";
-import { proofGroups, proofState, replyProof } from "../src/renderer/src/privacyProof";
+import { proofBadge, proofGroups, proofState, replyProof } from "../src/renderer/src/privacyProof";
 import { securityEvidence } from "../../../fixtures/desktop-security.mts";
 const session = (): ClientSessionState => ({
   sessionId: "thread", title: null, cwd: "", settings: null, security: { state: "verified" },
@@ -9,7 +9,7 @@ const session = (): ClientSessionState => ({
   configOptions: [], interactions: [], running: false, needsResync: false, threadRevision: 0, lastTimelineSequence: 0,
 });
 
-test("badge verification requires a matching, unexpired report and no pending/error state", () => {
+test("report verification requires a matching, unexpired report and no pending/error state", () => {
   const current = session();
   assert.equal(proofState(current, "test-model", Date.now()), "verified");
   assert.equal(proofState(current, "other-model", Date.now()), "unavailable");
@@ -63,4 +63,76 @@ test("TEE checks and NEAR's required-receipt policy cannot verify an incomplete 
   current.running = false;
   current.timeline.push({ id: "answer-2", turnId: "turn", kind: "assistant", text: "Synthetic failed segment", status: "failed" });
   assert.equal(replyProof(current).label, "Failed");
+});
+
+test("a running reply stays provisional when the cached report expires", () => {
+  const current = session();
+  current.running = true;
+  const expiry = current.securityEvidence!.hardExpiresAtUnixSeconds * 1000;
+  for (const now of [expiry - 1, expiry, expiry + 60_000]) {
+    const badge = proofBadge(current, proofState(current, "test-model", now));
+    assert.deepEqual(badge, { label: "Verifying reply", tone: "muted" });
+    assert.equal(replyProof(current).verified, false);
+  }
+  assert.equal(proofState(current, "test-model", expiry), "expired", "the cached report itself stays expired");
+  current.security = { state: "failed" };
+  assert.equal(proofBadge(current, "failed").label, "Reply check failed");
+});
+
+test("only durable completion verifies a reply, independently of report renewal", () => {
+  const current = session();
+  current.timeline = [{ id: "answer", turnId: "turn", kind: "assistant", text: "Reply", status: "completed" }];
+  const expiry = current.securityEvidence!.hardExpiresAtUnixSeconds * 1000;
+  assert.equal(proofBadge(current, "verified").label, "Reply incomplete", "a fresh report cannot verify a reply");
+  current.timeline[0]!.terminalVerified = true;
+  assert.equal(proofBadge(current, proofState(current, "test-model", expiry)).label, "Reply verified");
+  current.securityVerificationPending = true;
+  assert.equal(proofBadge(current, proofState(current, "test-model", expiry)).label, "Reply verified");
+  current.securityVerificationPending = false;
+  current.security = { state: "failed" };
+  assert.equal(proofBadge(current, "failed").label, "Reply verified", "a later report failure does not revoke a verified reply");
+  current.timeline[0]!.status = "cancelled";
+  assert.equal(proofBadge(current, "verified").label, "Reply incomplete");
+  current.timeline[0]!.status = "failed";
+  assert.equal(proofBadge(current, "verified").label, "Reply check failed");
+});
+
+test("a newer empty or failed turn cannot inherit an older reply's verification", () => {
+  const current = session();
+  current.timeline = [
+    { id: "old", turnId: "old-turn", kind: "assistant", text: "Verified", status: "completed", terminalVerified: true },
+    { id: "question", turnId: "new-turn", kind: "user", text: "Next", status: "completed" },
+  ];
+  assert.equal(replyProof(current).verified, false);
+  current.timeline.push({ id: "reasoning", turnId: "new-turn", kind: "reasoning", text: "Partial", status: "in_progress" });
+  assert.equal(replyProof(current).label, "Incomplete");
+  current.timeline.pop();
+  current.timeline.push({ id: "error", turnId: "new-turn", kind: "error", text: "Verification failed", status: "failed" });
+  assert.equal(replyProof(current).label, "Failed");
+});
+
+test("all reply segments need verification while handled tool failures remain separate", () => {
+  const current = session();
+  current.timeline = [
+    { id: "reasoning", turnId: "turn", kind: "reasoning", text: "Thought", status: "completed" },
+    { id: "tool", turnId: "turn", kind: "tool", text: "No match", status: "failed" },
+    { id: "answer", turnId: "turn", kind: "assistant", text: "Reply", status: "completed", terminalVerified: true },
+  ];
+  assert.equal(replyProof(current).label, "Incomplete");
+  current.timeline[0]!.terminalVerified = true;
+  assert.equal(replyProof(current).label, "Verified");
+  current.needsResync = true;
+  assert.equal(proofBadge(current, "unavailable").label, "Reply unavailable");
+});
+
+test("legacy replies without turn IDs are scoped to the latest user message", () => {
+  const current = session();
+  current.timeline = [
+    { id: "old", kind: "assistant", text: "Old partial", status: "failed" },
+    { id: "question", kind: "user", text: "Next", status: "completed" },
+    { id: "answer", kind: "assistant", text: "Reply", status: "completed", terminalVerified: true },
+  ];
+  assert.equal(replyProof(current).label, "Verified");
+  current.timeline.push({ id: "next", kind: "user", text: "Again", status: "completed" });
+  assert.equal(replyProof(current).verified, false);
 });

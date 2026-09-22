@@ -2,7 +2,7 @@ import { Check, RotateCcw, Shield, X } from "lucide-react";
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import type { ClientSessionState } from "@axiom/axiom-acp-client";
 import type { ProviderModel } from "../types";
-import { PROOF_IDLE_AFTER_MS, proofLabels, proofState } from "../privacyProof";
+import { PROOF_IDLE_AFTER_MS, proofBadge, proofState } from "../privacyProof";
 import { PrivacyProofDialog } from "./PrivacyProofDialog";
 
 const REFRESH_BEFORE_EXPIRY_MS = 60_000;
@@ -69,10 +69,10 @@ export function TeeVerificationBadge({ session, model, modelId, webEnabled, disa
   const currentProofState = refreshing ? "verifying" : proofState(session, modelId, now);
   const idle = !session.running && now - lastActivityAt.current >= PROOF_IDLE_AFTER_MS;
   const state = idle && currentProofState !== "development" ? "idle" : currentProofState;
+  const badge = proofBadge(session, state);
   const verifying = currentProofState === "verifying";
   const reason = disabledReason || (session.needsResync ? "Wait for the thread to reconnect" : session.running ? "Wait for the current reply to finish" : verifying ? "Verification in progress" : undefined);
-  const color = state === "verified" ? "var(--color-success)" : state === "failed" ? "var(--color-danger)"
-    : state === "expired" || state === "development" ? "var(--color-warning)" : "var(--color-text-muted)";
+  const color = badge.tone === "muted" ? "var(--color-text-muted)" : `var(--color-${badge.tone})`;
   const refresh = useCallback(async () => {
     if (!mounted.current || busy.current || reason) return;
     busy.current = true; setRefreshing(true); setError(null);
@@ -96,20 +96,20 @@ export function TeeVerificationBadge({ session, model, modelId, webEnabled, disa
     if (state === "verified" && evidence?.modelId === modelId && typeof expiresAt === "number" && Number.isFinite(expiresAt)
       && expiresAt * 1000 - now > REFRESH_BEFORE_EXPIRY_MS) return;
     // Uses the same native verifier as the button. Only a returned report can
-    // renew the badge; the timer never extends evidence or marks it verified.
+    // renew the report; the timer never extends evidence or marks it verified.
     void refresh();
   }, [idle, modelId, now, reason, refresh, session.securityEvidence, state]);
 
   return <>
     <div className="inline-flex h-7 shrink-0 items-center rounded-full bg-[var(--surface-tile)] text-[11.5px] font-medium tracking-[-0.01em] text-[var(--color-text-secondary)] shadow-[0_0_0_1px_var(--ring-hairline),0_1px_2px_var(--shade-xs)]">
       <button type="button" onClick={() => setOpen(true)} aria-haspopup="dialog" aria-expanded={open}
-        aria-label={`${proofLabels[state]}. View privacy proof`} title="View privacy proof"
+        aria-label={`${badge.label}. View privacy proof`} title="View privacy proof"
         className="inline-flex h-full items-center gap-1.5 rounded-l-full pl-2 pr-2 transition-colors hover:bg-[var(--wash-chip-hover)]">
         <span className="relative flex h-4 w-4 items-center justify-center" aria-hidden="true">
           <Shield size={15} strokeWidth={0} fill={color} />
-          {state === "verified" ? <Check size={8} strokeWidth={3.5} className="absolute text-on-accent" /> : state === "failed" ? <X size={8} strokeWidth={3.5} className="absolute text-on-accent" /> : null}
+          {badge.tone === "success" ? <Check size={8} strokeWidth={3.5} className="absolute text-on-accent" /> : badge.tone === "danger" ? <X size={8} strokeWidth={3.5} className="absolute text-on-accent" /> : null}
         </span>
-        <span aria-live="polite">{proofLabels[state]}</span>
+        <span aria-live="polite">{badge.label}</span>
       </button>
       <span aria-hidden="true" className="h-3 w-px bg-[var(--color-border)]" />
       <button type="button" onClick={() => void refresh()} disabled={!!reason} aria-label="Refresh TEE verification" title={reason ?? "Refresh TEE verification"}

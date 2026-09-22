@@ -17,8 +17,15 @@ Provider-specific verification and its limits are documented in
 Authenticated streaming deltas can appear provisionally. A missing or invalid
 terminal authentication fails the response; partial output may remain locally
 as incomplete history. Later accounting reconciliation cannot upgrade it to a
-verified reply. NEAR use receipts; Tinfoil uses request-bound AEAD and
+verified reply. NEAR uses receipts; Tinfoil uses request-bound AEAD and
 an encrypted authenticated terminal marker, without claiming a signed receipt.
+
+Cached attestation reports and reply authentication have separate lifetimes.
+Report expiry prevents reuse of stale evidence for new requests; it does not
+by itself fail an ongoing reply or revoke a reply's authenticated completion.
+Each ongoing response still requires its protocol's authentication against the
+environment and request accepted at its start. See the [Desktop privacy badge](desktop.md#usage-and-verification)
+for the separate reply and report displays.
 
 ## Web tools and local integrations
 

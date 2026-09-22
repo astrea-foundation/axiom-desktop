@@ -170,8 +170,17 @@ subsets, settlement state, elapsed time and other thread charges. Tab reaches th
 disclosure; Escape closes the panel and returns focus to the meter. Partial or
 unavailable usage and reports from a different model remain visible above it.
 
-Click the TEE badge for the last local verification report. The question-mark
-button beside **TEE verified** explains TEE protection and the check of the
+The privacy badge summarizes the latest reply: **Verifying reply**
+while streaming, **Reply verified** only after native authenticated completion,
+or **Reply incomplete** / **Reply check failed** when completion is absent
+or fails. A newer turn cannot inherit an older reply's verification. Expiry or
+renewal of the cached attestation report does not change a reply's verification.
+Before any reply, the badge summarizes the report instead; an expired report
+shows **Report needs refresh**.
+
+Click the badge to inspect **Latest reply verification** separately from the
+**Cached attestation report**. The question-mark button beside **TEE verified**
+in the report explains TEE protection and the check of the
 server’s hardware in plain language. Hover, focus or click it to show the help;
 Escape dismisses the help before closing the report. Refresh requests
 fresh evidence when allowed. While active and connected, the badge automatically
@@ -180,7 +189,8 @@ from 30 seconds to at most five minutes; even a successful short lease is paced.
 After 30 minutes without user interaction or a running reply, it shows neutral
 `Idle` and stops automatic checks. Keyboard/pointer activity or returning to the
 window resumes verification. Background checks and network events do not reset
-inactivity. A failed or blocked refresh cannot extend a report or mark it verified;
+inactivity. Reply verification remains available in the inspector while idle.
+A failed or blocked refresh cannot extend a report or mark it verified;
 native inference always enforces fresh proof independently of this display.
 Reports show hardware, encryption-key, freshness and source-provenance checks
 for the selected provider. Tinfoil reports router

@@ -36,7 +36,7 @@ test("pending response followed by status notices renders exactly one Generating
   const badge = renderToStaticMarkup(createElement(TeeVerificationBadge, {
     session: session([]), modelId: "test-model", webEnabled: false, onVerify: () => {},
   }));
-  assert.match(badge, /Verifying TEE/);
+  assert.match(badge, /Verifying reply/);
 });
 
 test("fallback appears once before the assistant placeholder arrives", () => {
