@@ -83,3 +83,6 @@ the same on every platform. Path-display fixtures use native absolute paths.
 PTY interactions wait for persisted turn completion before sending idle-only
 commands. Fixed sleeps do not establish completion on a loaded runner; the
 harness retains bounded waits and still checks terminal behavior over the PTY.
+
+Browser proof-renewal tests pause their mock clock before loading the fixture,
+then advance it explicitly; page startup time must not shift expiry boundaries.

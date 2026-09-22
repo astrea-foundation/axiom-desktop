@@ -206,7 +206,7 @@ fn run_tui_at(
             writer.write_all(b"probe\r").expect("submit prompt");
             writer.flush().expect("flush prompt");
             if test_runner == "echo" {
-                wait_for_completed_turn(state_path, completed_before);
+                wait_for_completed_turn(state_path, &completed_before);
             }
         }
         if runner == "input_active" {
@@ -388,7 +388,7 @@ fn run_tui_at(
                 .write_all(b"remember this model\r")
                 .expect("submit prompt with selected model");
             writer.flush().expect("flush selected-model prompt");
-            wait_for_completed_turn(state_path, completed_before);
+            wait_for_completed_turn(state_path, &completed_before);
         } else if runner == "delete" {
             writer.write_all(b"/delete\r").expect("open delete picker");
             writer.flush().expect("flush delete command");
@@ -474,7 +474,7 @@ fn run_tui_at(
             writer.write_all(b"aftergift\r").unwrap();
             writer.flush().unwrap();
             wait_for_output(&output_rx, &mut output, b"aftergift", "composer restored");
-            wait_for_completed_turn(state_path, completed_before);
+            wait_for_completed_turn(state_path, &completed_before);
         } else if runner == "composer" {
             let completed_before = completed_turns(state_path);
             writer
@@ -487,7 +487,7 @@ fn run_tui_at(
                 b"thirde",
                 "edited multiline prompt",
             );
-            wait_for_completed_turn(state_path, completed_before);
+            wait_for_completed_turn(state_path, &completed_before);
         } else {
             thread::sleep(Duration::from_millis(250));
         }
@@ -578,9 +578,9 @@ fn completed_turns(state_path: &Path) -> std::collections::HashSet<String> {
         .expect("decode completed PTY turns")
 }
 
-fn wait_for_completed_turn(state_path: &Path, previous: std::collections::HashSet<String>) {
+fn wait_for_completed_turn(state_path: &Path, previous: &std::collections::HashSet<String>) {
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while completed_turns(state_path).is_subset(&previous) {
+    while completed_turns(state_path).is_subset(previous) {
         assert!(
             std::time::Instant::now() < deadline,
             "PTY runner did not complete a new turn"

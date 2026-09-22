@@ -1345,15 +1345,9 @@ async fn workspace_edit_reaches_the_expected_acp_semantics_and_final_workspace()
     assert!(transcript.contains("\"oldText\":\"before\\n\""));
     assert!(transcript.contains("\"newText\":\"after\\n\""));
     assert!(transcript.contains("\"locations\""));
-    assert!(
-        transcript.contains(
-            workspace
-                .path()
-                .join("frontend.txt")
-                .to_string_lossy()
-                .as_ref()
-        )
-    );
+    // The transcript is serialized JSON, including escaped Windows separators.
+    let expected_path = json!(workspace.path().join("frontend.txt")).to_string();
+    assert!(transcript.contains(&expected_path));
     assert!(transcript.contains("Updated frontend.txt through the shared turn contract."));
     acp.close().await;
 }
