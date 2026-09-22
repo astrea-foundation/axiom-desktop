@@ -146,8 +146,16 @@ survive reload, and model switches do not rescale old counts against a new model
 No report is shown as unknown, rather than fabricated zero usage.
 
 Click the TEE badge for the last local verification report; Refresh requests
-fresh evidence when allowed. Reports describe the provider-specific verified
-claims. Tinfoil reports router verification, and NEAR v3 identifies an attested
+fresh evidence when allowed. While active and connected, the badge automatically
+renews within 60 seconds of expiry, between replies. Checks are deduplicated and retries back off
+from 30 seconds to at most five minutes; even a successful short lease is paced.
+After 30 minutes without user interaction or a running reply, it shows neutral
+`Idle` and stops automatic checks. Keyboard/pointer activity or returning to the
+window resumes verification. Background checks and network events do not reset
+inactivity. A failed or blocked refresh cannot extend a report or mark it verified;
+native inference always enforces fresh proof independently of this display.
+Reports describe the provider-specific verified claims. Tinfoil reports router
+verification, and NEAR v3 identifies an attested
 worker TLS key rather than claiming the client observed the backend's socket.
 Provisional streamed text becomes verified only after authenticated completion;
 cancelled/incomplete output retains that status even if billing later settles.

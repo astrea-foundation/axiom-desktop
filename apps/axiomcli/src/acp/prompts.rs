@@ -161,9 +161,9 @@ pub(super) async fn prompt(
                 send_text(&connection, &session_id, "Open Balance in Desktop to view credit, top up or redeem a gift code. Enter codes only in the redemption form.".into())?;
                 Ok(protocol::StopReason::EndTurn)
             }
-            SlashCommand::Theme(_) | SlashCommand::Web(_) => {
+            SlashCommand::Theme(_) | SlashCommand::Web(_) | SlashCommand::Usage => {
                 Err(agent_client_protocol::Error::invalid_params()
-                    .data("Use the desktop appearance settings and Web control; /theme and /web are terminal-only commands."))
+                    .data("Use the desktop appearance, Web, and usage controls; /theme, /web, and /usage are terminal-only commands."))
             }
             SlashCommand::Help => {
                 send_text(&connection, &session_id, slash_help_text())?;

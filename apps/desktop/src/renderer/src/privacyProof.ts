@@ -1,6 +1,8 @@
 import type { ClientSessionState, SecurityEvidence } from "@axiom/axiom-acp-client";
 
-export type ProofState = "verified" | "verifying" | "failed" | "expired" | "unavailable" | "unverified" | "development";
+export const PROOF_IDLE_AFTER_MS = 30 * 60_000;
+
+export type ProofState = "idle" | "verified" | "verifying" | "failed" | "expired" | "unavailable" | "unverified" | "development";
 
 export function proofState(session: ClientSessionState, modelId: string, now: number): ProofState {
   if (session.securityVerificationPending || session.security?.state === "verifying") return "verifying";
@@ -16,6 +18,7 @@ export function proofState(session: ClientSessionState, modelId: string, now: nu
 }
 
 export const proofLabels: Record<ProofState, string> = {
+  idle: "Idle",
   verified: "TEE verified", verifying: "Verifying TEE", failed: "TEE check failed",
   expired: "TEE proof expired", unavailable: "Proof unavailable", unverified: "Verify TEE", development: "Unattested dev",
 };
