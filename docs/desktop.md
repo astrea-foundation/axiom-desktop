@@ -170,8 +170,8 @@ subsets, settlement state, elapsed time and other thread charges. Tab reaches th
 disclosure; Escape closes the panel and returns focus to the meter. Partial or
 unavailable usage and reports from a different model remain visible above it.
 
-The privacy badge summarizes the latest reply: **Verifying reply**
-while streaming, **Reply verified** only after native authenticated completion,
+The privacy badge summarizes the latest reply: **Verifying reply** with a green
+shield while streaming, **Reply verified** with a checkmark only after native authenticated completion,
 or **Reply incomplete** / **Reply check failed** when completion is absent
 or fails. A newer turn cannot inherit an older reply's verification. Expiry or
 renewal of the cached attestation report does not change a reply's verification.

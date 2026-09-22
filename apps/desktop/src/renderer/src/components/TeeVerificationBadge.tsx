@@ -107,7 +107,7 @@ export function TeeVerificationBadge({ session, model, modelId, webEnabled, disa
         className="inline-flex h-full items-center gap-1.5 rounded-l-full pl-2 pr-2 transition-colors hover:bg-[var(--wash-chip-hover)]">
         <span className="relative flex h-4 w-4 items-center justify-center" aria-hidden="true">
           <Shield size={15} strokeWidth={0} fill={color} />
-          {badge.tone === "success" ? <Check size={8} strokeWidth={3.5} className="absolute text-on-accent" /> : badge.tone === "danger" ? <X size={8} strokeWidth={3.5} className="absolute text-on-accent" /> : null}
+          {badge.tone === "success" && !session.running ? <Check size={8} strokeWidth={3.5} className="absolute text-on-accent" /> : badge.tone === "danger" ? <X size={8} strokeWidth={3.5} className="absolute text-on-accent" /> : null}
         </span>
         <span aria-live="polite">{badge.label}</span>
       </button>

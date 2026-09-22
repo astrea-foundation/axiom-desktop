@@ -98,7 +98,7 @@ export function proofBadge(session: ClientSessionState, reportState: ProofState)
   const reply = replyProof(session);
   if (reportState !== "idle" && reportState !== "development") {
     switch (reply.state) {
-      case "pending": return { label: "Verifying reply", tone: "muted" };
+      case "pending": return { label: "Verifying reply", tone: "success" };
       case "verified": return { label: "Reply verified", tone: "success" };
       case "failed": return { label: "Reply check failed", tone: "danger" };
       case "incomplete": return { label: "Reply incomplete", tone: "warning" };

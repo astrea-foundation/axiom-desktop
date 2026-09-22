@@ -71,7 +71,7 @@ test("a running reply stays provisional when the cached report expires", () => {
   const expiry = current.securityEvidence!.hardExpiresAtUnixSeconds * 1000;
   for (const now of [expiry - 1, expiry, expiry + 60_000]) {
     const badge = proofBadge(current, proofState(current, "test-model", now));
-    assert.deepEqual(badge, { label: "Verifying reply", tone: "muted" });
+    assert.deepEqual(badge, { label: "Verifying reply", tone: "success" });
     assert.equal(replyProof(current).verified, false);
   }
   assert.equal(proofState(current, "test-model", expiry), "expired", "the cached report itself stays expired");
