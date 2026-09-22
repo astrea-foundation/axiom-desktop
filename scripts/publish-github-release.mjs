@@ -28,7 +28,10 @@ const response = JSON.parse(gh(['api',`repos/${repository}/releases?per_page=100
 let release = response.find(r=>r.tag_name === tag);
 if (!release) {
   gh(['release','create',tag,'--repo',repository,'--target',repositoryInfo.default_branch,'--draft','--title',`Axiom ${manifest.version}`,'--notes',`Desktop and AxiomCLI installers. SHA-256 and the signed installer inventory are attached. Public CDN downloads: https://axiom.stream/downloads`]);
-  release = JSON.parse(gh(['api',`repos/${repository}/releases/tags/${tag}`]));
+  // The tag endpoint resolves published releases; new drafts are available to
+  // the authenticated operator through the release listing instead.
+  release = JSON.parse(gh(['api',`repos/${repository}/releases?per_page=100`])).find(r=>r.tag_name === tag);
+  if (!release) throw new Error('Created draft is not visible; retry to resume publication');
 }
 
 const existing = new Map(release.assets.map(asset=>[asset.name,asset]));
