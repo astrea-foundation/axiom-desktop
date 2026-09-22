@@ -1907,6 +1907,47 @@ test("balance is a separate screen and payments stay hidden after sign-out", asy
   } finally { await page.close(); }
 });
 
+test("balance refreshes keep one top-up panel and preserve gift code input", async () => {
+  const { page, errors } = await openApp();
+  const keyWarnings: string[] = [];
+  page.on("console", (message) => {
+    if (message.text().includes("same key")) keyWarnings.push(message.text());
+  });
+  try {
+    await page.clock.install();
+    const billing = depositBilling(900_000);
+    await page.evaluate((billing) => (window as any).__deletionTest.setBilling(billing), billing);
+    await openAccountScreen(page, "Balance");
+    const panel = page.getByRole("region", { name: "Balance and payments", exact: true });
+    const giftCode = panel.getByLabel("Gift code", { exact: true });
+    await giftCode.fill("AXG-UNSUBMITTED");
+    for (let revision = 2; revision <= 4; revision++) {
+      const updated = { ...billing, revision, availableMicrousd: revision * 1_000_000 };
+      await page.evaluate((billing) => {
+        const now = Date.now();
+        billing.zecUsdQuote = billing.revision % 2 === 0 ? {
+          source: "coinbase", price_microusd_per_zec: "1510360000",
+          as_of: new Date(now).toISOString(), expires_at: new Date(now + 60_000).toISOString(),
+        } : null;
+        (window as any).__deletionTest.setBilling(billing);
+      }, updated);
+      await panel.getByText(`$${revision}.00`, { exact: true }).first().waitFor();
+      await page.getByRole("button", { name: "Refresh balance", exact: true }).click();
+      await page.clock.runFor(5_001);
+      assert.equal(await panel.getByRole("region", { name: "Zcash deposits", exact: true }).count(), 1);
+      assert.equal(await panel.getByLabel("Mainnet deposit address", { exact: true }).count(), 1);
+      assert.equal(await panel.locator("svg title").filter({ hasText: "Mainnet Zcash deposit payment URI" }).count(), 1);
+      assert.equal(await panel.getByRole("button", { name: "Copy address", exact: true }).count(), 1);
+      assert.equal(await panel.getByRole("region", { name: "Gift credit", exact: true }).count(), 1);
+      assert.equal(await giftCode.inputValue(), "AXG-UNSUBMITTED");
+      assert.match(await panel.getByLabel("Current ZEC exchange rate").innerText(),
+        revision % 2 === 0 ? /1 ZEC ≈ \$1,510\.36/ : /Rate unavailable/);
+    }
+    assert.deepEqual(keyWarnings, []);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
 test("balance shows debt and a reusable deposit address without displaying a reservation", async () => {
   const { page, errors } = await openApp();
   try {
@@ -2031,11 +2072,15 @@ test("balance deposit controls fit the reference window, respect reduced motion,
       assert.equal(await page.getByRole("region", { name: "Balance", exact: true }).evaluate((element) => getComputedStyle(element).animationName), "none");
       const panel = page.getByRole("region", { name: "Balance and payments", exact: true });
       if (screenshot) await page.screenshot({ path: `${screenshot}-${theme}-balance.png`, animations: "disabled" });
-      assert.equal(await panel.evaluate((element) => element.scrollHeight <= element.clientHeight), true, "the empty deposit screen fits without scrolling");
+      assert.equal(await panel.evaluate((element) => element.scrollWidth <= element.clientWidth), true, "balance content fits the panel width");
       const action = await page.getByRole("button", { name: "Copy address", exact: true }).boundingBox();
       const panelBounds = await panel.boundingBox();
       assert.ok(action && panelBounds && action.y + action.height <= panelBounds.y + panelBounds.height);
       assert.equal(await page.getByLabel("Current ZEC exchange rate").innerText(), "1 ZEC ≈ $123.46\n\nRate at confirmation applies");
+      const giftCode = panel.getByLabel("Gift code", { exact: true });
+      await giftCode.scrollIntoViewIfNeeded();
+      const giftBounds = await giftCode.boundingBox();
+      assert.ok(giftBounds && panelBounds && giftBounds.y >= panelBounds.y && giftBounds.y + giftBounds.height <= panelBounds.y + panelBounds.height);
       await page.getByRole("button", { name: "Back", exact: true }).click();
     }
     await openAccountScreen(page, "Balance");

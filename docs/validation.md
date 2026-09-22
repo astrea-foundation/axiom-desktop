@@ -261,3 +261,18 @@ the Linux, Windows and macOS renderer fixtures. Light/dark queue controls were
 visually checked. TypeScript checks and the Desktop production build passed.
 These checks used local fixtures; live inference and native OS qualification
 were not repeated, and the existing billing browser failures remain open.
+
+## Balance panel refreshes (2026-09-22)
+
+Deposit and gift-credit panels now have distinct account-scoped React keys.
+A browser regression reproduced four deposit panels before the fix and verifies
+one address, QR code and copy button after repeated manual/automatic refreshes
+and exchange-rate changes, while preserving unsubmitted gift-code input.
+
+All nine focused balance, deposit and gift-redemption browser checks passed,
+including the previously failing billing checks. The layout check now permits
+vertical scrolling to the gift form while requiring the deposit action to remain
+visible and all content to fit the panel width. Light/dark screenshots were
+visually checked. All 198 Desktop unit/contract tests, Desktop TypeScript checks
+and the production build passed; one PowerShell-dependent test was skipped.
+These checks used local fixtures and did not submit payments or redeem live codes.

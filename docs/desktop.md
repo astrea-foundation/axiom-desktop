@@ -29,7 +29,9 @@ identity, so navigating away does not silently discard or redirect it.
 ## Balance and gift credit
 
 Open the account menu and choose **Balance** to view credit and top up with mainnet
-Zcash. **Redeem a gift code** adds its USD value to the signed-in account. Code
+Zcash. The reusable address and QR code appear once; automatic and manual balance
+refreshes update that panel in place without clearing an entered gift code.
+**Redeem a gift code** adds its USD value to the signed-in account. Code
 entry is masked and cleared on success, closing the screen, disconnect or account
 change. It is never a chat message or saved draft. A failed/uncertain request can
 be retried with the same code without duplicate credit; a code already redeemed

@@ -97,11 +97,11 @@ export function BalanceScreen({ onClose, connected, account, billing, onRefreshB
                 </details>
               ) : null}
               {billing?.paymentReviewRequired ? <p role="alert" className="mt-4 text-[12px] text-[var(--color-warning-strong)]">Spending is paused while a deposit is reviewed. Your trial credit is unchanged.</p> : null}
-              {billing?.paymentAccount ? <DepositPanel key={account?.account?.id} payment={billing.paymentAccount} connected={connected} quote={billing.zecUsdQuote} /> : billing ? (
+              {billing?.paymentAccount ? <DepositPanel key={`deposit:${account?.account?.id}`} payment={billing.paymentAccount} connected={connected} quote={billing.zecUsdQuote} /> : billing ? (
                 <p className="mt-4 text-[12px] text-[var(--color-text-tertiary)]">Deposits are temporarily unavailable.</p>
               ) : null}
 
-              {account?.account?.id ? <GiftCodePanel key={account.account.id} accountId={account.account.id} connected={connected} /> : null}
+              {account?.account?.id ? <GiftCodePanel key={`gift:${account.account.id}`} accountId={account.account.id} connected={connected} /> : null}
 
               {billingError ? (
                 <p role="alert" className="mt-3 text-[12px] text-[var(--color-danger-strong)]">{billingError}</p>
