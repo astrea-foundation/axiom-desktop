@@ -80,6 +80,10 @@ for a reproducible invocation. Signed builds need `unsigned=false` and the
 relevant credentials. This does not change the signed defaults in
 `electron-builder.yml` or the mandatory signing in the pushed-tag workflow.
 The manual lane does not run the signed workflow's live-provider gate.
+After pushing a signed release tag, dispatch the manual workflow with
+`unsigned=false` and `platform=linux` to add Linux Desktop installers. The tag
+workflow already builds the standalone Linux archive and signed macOS/Windows
+installers; the Linux-only dispatch avoids repeating those native builds.
 
 The manual packaging job uses the protected `release` environment, including for
 unsigned builds. Allow the intended `v*` release tags in that environment's
@@ -304,6 +308,13 @@ split native-build/x64-sign workflow. `--unsigned` explicitly disables executabl
 signing and strips Apple, PFX, Azure and Artifact Signing environment variables.
 
 ## Artifact verification
+
+The Axiom CLI release-signing public key is checked in at
+[`release-keys/axiomcli-release-2026.asc`](release-keys/axiomcli-release-2026.asc).
+Its full fingerprint is `625118F3A2C54E247BF4EC2E09F5CD2FE0F6423D`.
+Import this public key into the verification keyring before checking the Linux
+archive's detached signature. The corresponding private key is restricted to the
+protected release environment and the operator's private backup.
 
 The Linux archive contains `bin/axiomcli`, `bin/axiom-proxy`, the Apache-2.0
 project license, third-party notice/inventory files, user documentation,
