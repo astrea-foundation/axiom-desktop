@@ -1113,6 +1113,7 @@ fn workspace_edit_reaches_the_expected_tui_semantics_and_final_workspace() {
 
 #[test]
 #[cfg(target_os = "linux")]
+#[ignore = "CPU/RSS benchmark; run scripts/axiomcli-eval deterministic explicitly"]
 fn idle_tui_stays_within_linux_memory_and_cpu_budgets() {
     let state = tempfile::tempdir().expect("state");
     let pair = native_pty_system()

@@ -4,20 +4,40 @@
 covers behavioral evaluation and historical performance observations.
 [scripts/axiomcli-eval](../scripts/axiomcli-eval) defines the lanes.
 
-## Deterministic lane
+## Routine checks and opt-in extended lane
+
+Normal `cargo test` and CI run the functional suites once. They include a small
+64-chunk/32-checkpoint persistence case with the same transcript merging,
+durability and storage-bound assertions as the large soak. Background process
+ordering/reaping and functional PTY tests remain required. Only the ten-start
+timing benchmark, 10,000-chunk/5,000-durable-write soak, and Linux idle CPU/RSS
+benchmark are marked `#[ignore]`; Rust reports those skips explicitly. These
+benchmarks are opt-in both locally and in CI, without checking a hidden `CI`
+environment variable or disabling security/protocol assertions.
+
+Run the extended lane locally:
 
 ```sh
 scripts/axiomcli-eval deterministic
 ```
 
-The repeated deterministic suites use the same workspace/all-features selection
-as the preceding CI test pass. This reuses its compiled artifacts instead of
+Or dispatch `ci.yml` with `extended=true` and a chosen target, for example:
+
+```sh
+gh workflow run ci.yml --ref dev -f target=linux -f extended=true
+```
+
+There is no automatic schedule for these benchmarks. Routine PR/release
+qualification leaves `extended=false`. The extended deterministic suites use
+the workspace/all-features selection of Linux CI. This reuses its artifacts instead of
 building a second dependency graph with a different feature selection, which
 can exhaust a hosted runner's disk before evaluation starts.
 
 The runner repeats the autonomous agent, multi-language fixture, soak, ACP
 transcript, TUI PTY and MCP integration suites twice. Fixtures are created in
-fresh temporary directories. They cover edits followed by real tests, repair of
+fresh temporary directories. It explicitly includes the three ignored
+benchmarks, without enabling the separate ignored live-provider tests. The
+suites cover edits followed by real tests, repair of
 failed commands, TypeScript/Python changes, documentation investigation, policy
 boundaries, cancellation/recovery, TUI/ACP outcomes and bounded background work.
 
@@ -81,10 +101,12 @@ contracts. Dated Desktop/provider reports and their fix retests are indexed
 under [testing](testing/README.md).
 
 The 5,000-checkpoint persistence soak reports timing before checking its
-30-second budget on every platform. Shared Linux runners also have variable
+30-second Unix or 180-second Windows budget. Shared Linux runners also have variable
 durable-write latency: [the September 22 CI run](https://github.com/astrea-foundation/axiomai/actions/runs/35774248238)
 took 14.17 seconds, exceeding the former Linux-only 10-second limit. Each
-checkpoint still commits separately; the 16 MiB database and 512 KiB export
+checkpoint still commits separately. The [Windows x64 qualification run](https://github.com/astrea-foundation/axiomai/actions/runs/35780630279)
+measured 103.13 seconds for those individually durable writes, so Windows has a
+separate disk-latency allowance. The 16 MiB database and 512 KiB export
 bounds remain the same on every platform. Path-display fixtures use native
 absolute paths.
 

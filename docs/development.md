@@ -30,16 +30,14 @@ and [configuration](configuration.md).
 
 ## Checks
 
-Run the checks relevant to a change before pushing `dev`; CI currently runs on
-pushes to `main` and pull requests targeting `main`, not on development pushes.
+Run the checks relevant to a change before pushing `dev`; CI runs on pull
+requests targeting `main` and explicit dispatches, without repeating on merge.
 The full local checks corresponding to the main workflow are:
 
 ```sh
 cargo fmt --all -- --check
-cargo check --workspace --all-targets --all-features
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 pnpm test:rust
-scripts/axiomcli-eval deterministic
 cargo install cargo-deny --version "=$(tr -d '\r\n' < .cargo-deny-version)" --locked
 cargo deny check
 node packages/brand/scripts/build-callback.mjs --check
@@ -56,15 +54,20 @@ regression. ACP client tests need the debug AxiomCLI binary built first. Protoco
 generation must leave the committed schema and TypeScript DTOs unchanged unless
 an intentional contract change is part of the patch.
 
-The [evaluation guide](evaluations.md) owns deterministic and budgeted
-live-provider instructions. Live inference always uses registered, locally
+The [evaluation guide](evaluations.md) owns the opt-in repeated deterministic
+and performance lane (`scripts/axiomcli-eval deterministic`) and budgeted
+live-provider instructions. Routine tests explicitly skip three host-performance
+benchmarks and retain a small persistence regression. Live inference always uses registered, locally
 verified provider E2EE; it is not a prerequisite for a documentation edit.
 
 The [CI workflow](../.github/workflows/ci.yml) runs Rust/security and browser UI
 checks on pull requests, without repeating them on merge. Manual dispatch accepts
-`target=all`, `linux`, `desktop`, `macos-intel`, `macos-arm64`, `windows-x64`, or
-`windows-arm64` so native validation and failure retries can be targeted. Run all
-required platforms before release packaging. These jobs do not package applications
+`target=all`, `native`, `linux`, `desktop`, `macos-intel`, `macos-arm64`,
+`windows-x64`, or `windows-arm64` so native validation and failure retries can
+be targeted. Use `native` alongside a promotion PR to run the four native jobs
+without duplicating its Linux/UI checks. Run all
+required platforms before release packaging. Set `extended=true` only when the
+additional repetitions and performance benchmarks are wanted. These jobs do not package applications
 or establish interactive OS acceptance. [Release workflows](releasing.md) do the
 packaging and require separate release evidence.
 
