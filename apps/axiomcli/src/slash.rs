@@ -361,7 +361,9 @@ pub fn completions(input: &str) -> Vec<SlashCompletion> {
             ("xhigh", "Use extra-high reasoning effort"),
         ],
         "permissions" | "compact" | "help" | "model" | "resume" | "delete" | "login" | "logout"
-        | "account" | "security" | "refresh" | "balance" | "topup" | "redeem" | "usage" => Vec::new(),
+        | "account" | "security" | "refresh" | "balance" | "topup" | "redeem" | "usage" => {
+            Vec::new()
+        }
         _ => unreachable!("all command specs are handled"),
     };
     options

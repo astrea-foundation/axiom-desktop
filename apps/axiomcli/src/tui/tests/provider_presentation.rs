@@ -147,9 +147,9 @@ fn evidence_views_support_current_and_unknown_provider_shapes() {
             Some("{\"docker_compose_file\":\"services: {}\"}"),
         ),
         (
-            "phala",
-            "phala-aci-tdx-v1",
-            "phala-aci-v2",
+            "future-gateway",
+            "gateway-evidence-v1",
+            "gateway-e2ee-v1",
             "gateway_source_commit_full",
             "abcdef0123456789abcdef0123456789abcdef0123",
             None,

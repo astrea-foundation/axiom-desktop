@@ -37,6 +37,20 @@ regression passed against the updated packaging script. Application behavior was
 reviewed against source and existing regression evidence; no new live inference,
 payment, production deployment or interactive OS acceptance was performed.
 
+## Windows signing verification
+
+On 2026-09-21, the Artifact Signing integration passed all 150 Desktop source
+tests, Desktop TypeScript checks, and Actionlint 1.7.12 for the three affected
+workflows. PowerShell 7.6.6 parsed the signing scripts and exercised signature
+validation with mocked Authenticode results (wrong publisher, invalid signature,
+and missing timestamp all fail closed). These are source checks, not a successful
+Azure signing operation or generated-installer acceptance result.
+
+The Windows installer smoke tests and extra native installer-test jobs are not
+part of this pipeline. Production packaging retains publisher, timestamp,
+architecture and version checks. A promoted release must establish the first
+end-to-end OIDC/signing result; this change did not publish a release.
+
 ## Carry-forward work
 
 The superseded account/invoice plans have been removed. Their remaining release

@@ -2153,9 +2153,9 @@ fn preview_scenarios() -> Vec<(&'static str, u16, u16, TuiState)> {
     let mut security_workload = preview_state();
     security_workload.security = "SECURE";
     let mut provider_report = security_evidence();
-    provider_report.provider_id = "phala".into();
-    provider_report.attestation_protocol = "phala-aci-tdx-v1".into();
-    provider_report.e2ee_protocol = "phala-aci-v2".into();
+    provider_report.provider_id = "future-gateway".into();
+    provider_report.attestation_protocol = "gateway-evidence-v1".into();
+    provider_report.e2ee_protocol = "gateway-e2ee-v1".into();
     provider_report.workload_manifest = None;
     provider_report.provider_claims = vec![
         EvidenceClaim {
