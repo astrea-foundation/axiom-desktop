@@ -59,7 +59,10 @@ GitHub Actions. Run the relevant checks locally before pushing development
 changes. Main CI runs tests and portability checks without packaging release
 archives or Desktop applications; superseded runs are cancelled.
 
-Scheduled and manually dispatched live evaluations run only on `main`.
+GitHub Actions is limited to CI and release artifact production. There is no
+standalone scheduled or manually dispatched live-evaluation workflow. Run ad hoc
+live evaluations locally; the signed release workflow retains its live-provider
+regression gate as part of producing release artifacts.
 
 GitHub Actions generates release artifacts only from stable `vMAJOR.MINOR.PATCH`
 tags whose commits have been promoted to `main` and whose version matches the

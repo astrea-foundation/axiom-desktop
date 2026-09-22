@@ -43,11 +43,13 @@ to four tools, and leave the workspace unchanged. Limits are six agent steps,
 largest latency must be no greater than the larger of four times the smallest
 latency or the smallest plus five seconds. Reports omit credentials.
 
-The [live workflow](../.github/workflows/live-evals.yml) runs on its schedule or
-manual dispatch only on `main`, with a 15-minute job limit and required
-endpoint/model/key secrets. The pushed-tag signed release workflow has a live
-gate too. The manually dispatched Desktop installer workflow is a separate
-packaging lane; passing it is not evidence of a live-provider test.
+Live evaluations run locally on demand with the command above. GitHub Actions
+has no standalone live-evaluation workflow or schedule; automation is limited
+to CI and release artifact production. The pushed-tag [signed release
+workflow](../.github/workflows/release.yml) retains its live-provider gate, with
+a 15-minute job limit and required endpoint/model/key secrets. The manually
+dispatched Desktop installer workflow is a separate packaging lane; passing it
+is not evidence of a live-provider test.
 
 ## Real SearXNG integration
 
