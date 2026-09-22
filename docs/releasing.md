@@ -13,6 +13,10 @@ electron-builder.
 
 ## Unified release catalog
 
+The [automatic updates and installer publication plan](automatic-updates-plan.md)
+tracks future Desktop/TUI installation and restart, plus CDN/GitHub Releases
+publication. It targets `dev`; the procedures below describe current behavior.
+
 The current product release version is **0.1.4**. Existing public 0.1.0/0.1.1 packages predate
 the updater and need one manual upgrade. A version bump in source does not publish
 installers or change the public feed.
