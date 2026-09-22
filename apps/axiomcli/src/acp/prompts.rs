@@ -2,6 +2,35 @@
 
 use super::*;
 
+fn publish_title(
+    connection: &ConnectionTo<Client>,
+    session_id: &protocol::SessionId,
+    store: &SessionStore,
+    internal_id: &SessionId,
+) -> agent_client_protocol::Result<()> {
+    let summary = store.thread_summary(internal_id).map_err(agent_error)?;
+    if let Some(title) = summary.title {
+        let revision = crate::session::ThreadRevision {
+            revision: summary.revision,
+            last_timeline_sequence: summary.last_timeline_sequence,
+            last_message_at: summary.last_message_at,
+            last_user_message_at: summary.last_user_message_at,
+            timeline_item_id: None,
+        };
+        send_session_update(
+            connection,
+            session_id,
+            protocol::SessionUpdate::SessionInfoUpdate(
+                protocol::SessionInfoUpdate::new().title(title),
+            ),
+            Some(&revision),
+            None,
+            None,
+        )?;
+    }
+    Ok(())
+}
+
 pub(super) async fn prompt(
     context: &ServerContext,
     request: protocol::PromptRequest,
@@ -1002,24 +1031,51 @@ pub(super) async fn prompt(
         }
     };
 
+    let title_cancellation = CancellationToken::new();
     if should_generate_title
         && let Some(title_store) = ctx_store.as_ref()
     {
-        let title = crate::session_title::session_title(&prompt);
-        match title_store.set_title_if_absent(&internal_id, &title) {
-            Ok(true) => {
-                if let Err(error) = connection.send_notification(
-                    protocol::SessionNotification::new(
-                        session_id.clone(),
-                        protocol::SessionUpdate::SessionInfoUpdate(
-                            protocol::SessionInfoUpdate::new().title(title),
-                        ),
-                    ),
-                ) {
-                    tracing::warn!(session_id = %internal_id, %error, "could not publish ACP session title");
+        let prepared = ctx_account_work.register_store_with_cancellation(title_store, title_cancellation.clone())
+            .and_then(|account_store| {
+                let job = crate::session_title::TitleGeneration::prepare(&account_store.store, &internal_id, &prompt, &session_model)?;
+                Ok((account_store, job))
+            });
+        match prepared {
+            Ok((account_store, job)) => {
+                if let Err(error) = account_store.publish(|| publish_title(&connection, &session_id, &account_store.store, &internal_id)) {
+                    tracing::debug!(%error, "could not publish initial title");
+                }
+                if let Some(job) = job {
+                    let title_runner = ctx_runner.clone();
+                    let title_connection = connection.clone();
+                    let title_session = session_id.clone();
+                    let title_internal_id = internal_id.clone();
+                    let title_extension = ctx_extension_state.clone();
+                    if let Err(error) = connection.spawn(async move {
+                        let result = job.run(title_runner.as_ref(), account_store.cancellation.clone()).await;
+                        if let Err(error) = result {
+                            tracing::debug!(%error, "background title kept its local fallback");
+                        }
+                        let publication = account_store.publish(|| {
+                            if let Ok(snapshot) = account_store.store.thread_snapshot(&title_internal_id, None, 1) {
+                                for usage in snapshot.request_usage.into_iter().filter(|usage| usage.purpose == axiom_inference::InvocationPurpose::Title) {
+                                    send_extension_activity(&title_connection, &title_extension, Some(&title_session), ActivityEvent::RequestUsageChanged { usage })?;
+                                }
+                                publish_title(&title_connection, &title_session, &account_store.store, &title_internal_id)?;
+                            }
+                            Ok(())
+                        });
+                        // A background cancellation (including an account switch) must
+                        // never shut down the ACP connection or its foreground prompts.
+                        if let Err(error) = publication {
+                            tracing::debug!(%error, "background title publication skipped");
+                        }
+                        Ok(())
+                    }) {
+                        tracing::debug!(%error, "could not start background title request");
+                    }
                 }
             }
-            Ok(false) => {}
             Err(error) => tracing::warn!(session_id = %internal_id, %error, "could not persist ACP session title"),
         }
     }
@@ -1101,6 +1157,7 @@ pub(super) async fn prompt(
             };
             if result.is_err() {
                 work.cancellation.cancel();
+                title_cancellation.cancel();
             }
             while let Ok(event) = events_rx.try_recv() {
                 let envelope = task_runtime

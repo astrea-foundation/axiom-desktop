@@ -100,7 +100,12 @@ boundary. Tool profiles and process isolation are described in
 Submitting an ordinary prompt remembers its model and thinking level as defaults
 for future chats. Resume restores the selected transcript's durable settings;
 a model selection that never ran does not become the resumed prompt's model.
-Titles derive locally from the first prompt. A model's reasoning choices and
+In the TUI, a short local label appears immediately, followed by one background
+title request to the selected model through attested provider E2EE. Its normal
+model charge is recorded as title usage. Failures retain the local label; manual
+renames and existing named threads are preserved. Title requests omit tools and
+attachments, use bounded first-prompt text and stop after 60 seconds. Headless
+commands retain local labels. A model's reasoning choices and
 context capacity come from validated catalog metadata, not its name.
 The composer and `/thinking` suggestions use the selected offering's exact
 controls, including enabled/disabled modes or supported effort levels. Models

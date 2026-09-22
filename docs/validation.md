@@ -13,7 +13,7 @@ the current state of production, published installers or unrecorded manual work.
 | Components and independent hosted/native ownership | [workspace](../Cargo.toml), [package scripts](../package.json), [architecture](architecture.md) |
 | Configuration precedence, bounds, storage paths and explicit account reset | [config.rs](../apps/axiomcli/src/config.rs), [paths.rs](../apps/axiomcli/src/paths.rs), [session.rs](../apps/axiomcli/src/session.rs) |
 | Schema 2/application ID `0x41584133`, transactional upgrade from schema 1, and rejection of obsolete stores | [storage schema/migrations](../apps/axiomcli/src/session/schema.rs), [versioning](versioning.md) |
-| Local titles, edit/regenerate, staged compaction and stable user-submission ordering | [title helper](../apps/axiomcli/src/session_title.rs), [agent.rs](../apps/axiomcli/src/agent.rs), [ACP](../apps/axiomcli/src/acp.rs), [concurrency regressions](testing/concurrency-ui-2026-09-20/FIXES.md) |
+| Background encrypted titles, rename protection, failure accounting and local fallbacks; edit/regenerate and staged compaction | [title regressions](../apps/axiomcli/src/agent_title_tests.rs), [storage tests](../apps/axiomcli/src/session/tests.rs), [ACP transcripts](../apps/axiomcli/tests/acp_transcript.rs), [sidebar updates](../packages/axiom-acp-client/tests/state-streaming.test.ts), [concurrency regressions](testing/concurrency-ui-2026-09-20/FIXES.md) |
 | Desktop Agent on all packaged OS targets; Linux-only Bubblewrap isolation | [workspace.rs](../apps/axiomcli/src/workspace.rs), [policy.rs](../apps/axiomcli/src/policy.rs), [Desktop](desktop.md) |
 | ACP 0.2 features, API-key creation and Tinfoil generation exception | [extension DTOs](../crates/axiom-acp-extension/src/lib.rs), [contract](acp-compatibility.md) |
 | Mainnet ZEC deposits, gift redemption and `billing@3` | [billing.rs](../apps/axiomcli/src/billing.rs), [TUI credit](../apps/axiomcli/src/tui/billing.rs), [Desktop gift form](../apps/desktop/src/renderer/src/components/GiftCodePanel.tsx) |
@@ -94,7 +94,8 @@ acceptance and production cutover were not exercised by this source cleanup.
 ## Native maintenance verification
 
 The [maintenance plan](native-maintenance-plan.md) removes dormant UI/counters,
-unused assets and asynchronous title plumbing; historically connected the now-retired
+unused assets and the former asynchronous title plumbing (replaced by account-bound
+background titles on September 22); historically connected the now-retired
 Phala verifier to signed NVIDIA policy; tests NEAR report binding through the production
 verifier; and separates ACP, TUI and Desktop controller responsibilities.
 

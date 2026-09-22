@@ -458,6 +458,50 @@ async fn axiom_extension_negotiates_and_exposes_typed_settings_security_and_comp
 }
 
 #[tokio::test]
+async fn generated_title_arrives_after_the_first_prompt_and_survives_reload() {
+    let workspace = tempfile::tempdir().unwrap();
+    let mut acp = AcpProcess::spawn("echo");
+    acp.initialize_extension().await;
+    let session = acp.new_session(2, workspace.path()).await;
+    acp.send(&json!({"jsonrpc":"2.0","id":3,"method":"session/prompt",
+        "params":{"sessionId":session,"prompt":[{"type":"text","text":"Please fix my login redirect"}]}})).await;
+    let mut completed = false;
+    let mut saw_fallback = false;
+    loop {
+        let value = acp.read().await;
+        if value["id"] == 3 {
+            assert_eq!(value["result"]["stopReason"], "end_turn");
+            completed = true;
+        }
+        if value["params"]["update"]["sessionUpdate"] == "session_info_update" {
+            let title = value["params"]["update"]["title"].as_str().unwrap();
+            if title == "Please fix my login redirect" {
+                saw_fallback = true;
+            }
+            if title == "Generated conversation title" {
+                assert!(saw_fallback);
+                assert!(
+                    completed,
+                    "title work must outlive a successfully completed prompt"
+                );
+                break;
+            }
+        }
+    }
+    acp.send(&json!({"jsonrpc":"2.0","id":4,"method":"_axiom/thread/list","params":{"limit":20}}))
+        .await;
+    let listed = acp.response(4).await;
+    let thread = listed["result"]["threads"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|thread| thread["threadId"] == session)
+        .unwrap();
+    assert_eq!(thread["title"], "Generated conversation title");
+    acp.close().await;
+}
+
+#[tokio::test]
 async fn model_changes_reconcile_disjoint_reasoning_capabilities_atomically() {
     let workspace = tempfile::tempdir().expect("workspace");
     let mut acp = AcpProcess::spawn("echo");
