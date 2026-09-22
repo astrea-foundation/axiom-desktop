@@ -161,3 +161,39 @@ records discovery and backend tests. Live paid image/document inference,
 deployment and interactive OS acceptance were not performed. Provider attestation
 and authenticated completion must still succeed in release canaries; a public
 catalog listing alone does not establish that an offering works end to end.
+
+## Combined native PR verification (2026-09-22)
+
+The integration of native PRs #7, #8, #9 and #12 combines provider-neutral TUI
+input/security/usage, bounded local history and independently paged accounting,
+Windows artifact signing, and dynamic catalogs with encrypted direct uploads.
+The merged ACP contract advertises `account@2`, `timeline@2`, `attachments@2`
+and `billing@3`. The product-version handshake fixture now uses the current
+timeline contract; rejection coverage for `timeline@1` remains intact.
+
+Conflict resolution preserves billing controls and proof refreshes together.
+Bracketed gift-code paste stays in the masked billing input, leaves the chat
+draft untouched and remains redeemable; an added regression verifies that
+boundary. Provider-neutral presentation fixtures use a generic future gateway,
+without restoring a retired provider registration. Explicit dependency versions
+match the existing lockfile and leave the Tinfoil Git revisions unchanged.
+
+Validation passed:
+
+- Full Rust workspace: 546 tests passed, six opt-in/manual tests ignored;
+  strict workspace Clippy, formatting and a locked all-targets/all-features check.
+- All 268 JavaScript/TypeScript tests, TypeScript checks, the Desktop production
+  build, generated ACP contract consistency and the pinned SDK stack regression.
+- `cargo deny` advisories, bans, licenses and sources; workflow `actionlint`;
+  PowerShell parsing and mocked signature-rejection checks within the JS suite.
+
+The complete Desktop browser suite ran 137 checks: 134 passed and three failed.
+The remaining failures are the previously reproduced duplicate deposit-address
+elements, deposit-screen overflow and duplicate deposit summaries described
+above. The gift account-transition check passed in this run; a single passing
+run does not close its previously observed failure. No new browser failures
+appeared, and the complete browser suite remains non-green.
+
+This is development-branch integration evidence. Paid provider inference,
+deployment, real Azure OIDC signing and interactive native OS acceptance were
+not performed. Pushes and pull requests targeting `dev` do not trigger Actions.

@@ -12,6 +12,25 @@ fn state() -> TuiState {
 }
 
 #[test]
+fn gift_code_paste_stays_in_the_masked_billing_input() {
+    use super::super::billing::{BillingAction, BillingView};
+    let mut state = state();
+    state.input.insert_str("Keep this chat draft");
+    state.overlay = Some(Overlay::Billing(Box::new(BillingView::new(true))));
+    state.paste_text("AXG-PRIVATE-TEST-CODE");
+    assert_eq!(state.input.as_str(), "Keep this chat draft");
+    assert!(!render_symbols(100, 30, &state).contains("AXG-PRIVATE-TEST-CODE"));
+    let Some(Overlay::Billing(view)) = &mut state.overlay else {
+        panic!("gift entry must remain visible");
+    };
+    let BillingAction::Redeem(code) = view.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+    else {
+        panic!("pasted code must be redeemable");
+    };
+    assert_eq!(code, "AXG-PRIVATE-TEST-CODE");
+}
+
+#[test]
 fn text_input_accepts_shift_but_not_control_or_alt_shortcuts() {
     for modifiers in [KeyModifiers::NONE, KeyModifiers::SHIFT] {
         assert!(is_text_input(modifiers));
