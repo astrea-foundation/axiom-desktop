@@ -169,6 +169,7 @@ pub fn reconcile_new_session_settings(
         .retain(|model| !model.id.trim().is_empty() && !model.id.chars().any(char::is_whitespace));
     models.sort_by(|left, right| left.id.cmp(&right.id));
     models.dedup_by(|left, right| left.id == right.id);
+    models.sort_by(compare_model_preference);
     let selected = preferred_model
         .and_then(|preferred| models.iter().find(|model| model.id == preferred))
         .or_else(|| {
@@ -183,6 +184,25 @@ pub fn reconcile_new_session_settings(
             )
         })?;
     Ok(reconcile_model_settings(selected, preferred_thinking))
+}
+
+/// Order discovered offerings for new-session defaults and model pickers.
+/// This preference never creates an offering or authorizes a provider protocol.
+pub(crate) fn compare_model_preference(
+    left: &axiom_inference::ModelInfo,
+    right: &axiom_inference::ModelInfo,
+) -> std::cmp::Ordering {
+    fn key(model: &axiom_inference::ModelInfo) -> (u8, &str, bool, &str) {
+        let priority = match model.provider_id.as_str() {
+            "tinfoil" => 0,
+            "near" => 1,
+            _ => 2,
+        };
+        let preferred =
+            model.provider_id == "tinfoil" && model.upstream_model == "deepseek-v4-1-flash";
+        (priority, &model.provider_id, !preferred, &model.id)
+    }
+    key(left).cmp(&key(right))
 }
 
 impl From<ProviderSecurityVerification> for SecurityVerification {
@@ -1137,15 +1157,18 @@ impl AgentEngine {
         cancellation: CancellationToken,
     ) -> Result<axiom_inference::ModelInfo> {
         match self.provider.models(cancellation).await {
-            Ok(models) => models
-                .into_iter()
-                .find(|model| settings.model == "auto" || model.id == settings.model)
-                .ok_or_else(|| {
-                    AxiomError::Provider(format!(
-                        "selected model `{}` is no longer in the live provider catalog",
-                        settings.model
-                    ))
-                }),
+            Ok(mut models) => {
+                models.sort_by(compare_model_preference);
+                models
+                    .into_iter()
+                    .find(|model| settings.model == "auto" || model.id == settings.model)
+                    .ok_or_else(|| {
+                        AxiomError::Provider(format!(
+                            "selected model `{}` is no longer in the live provider catalog",
+                            settings.model
+                        ))
+                    })
+            }
             // Deterministic embedders that do not offer model discovery keep
             // manual compaction but cannot opt into provider-sized automatic
             // compaction. Production SecureAxiomProvider always discovers the
@@ -2556,17 +2579,12 @@ impl TurnRunner for AgentEngine {
     }
 
     async fn available_models(&self, cancellation: CancellationToken) -> Result<Vec<String>> {
-        let mut models = self
-            .provider
-            .models(cancellation)
+        Ok(self
+            .available_model_details(cancellation)
             .await?
             .into_iter()
             .map(|model| model.id)
-            .filter(|model| !model.trim().is_empty() && !model.chars().any(char::is_whitespace))
-            .collect::<Vec<_>>();
-        models.sort();
-        models.dedup();
-        Ok(models)
+            .collect())
     }
 
     async fn available_model_details(
@@ -2579,6 +2597,7 @@ impl TurnRunner for AgentEngine {
         });
         models.sort_by(|left, right| left.id.cmp(&right.id));
         models.dedup_by(|left, right| left.id == right.id);
+        models.sort_by(compare_model_preference);
         Ok(models)
     }
 
@@ -3637,6 +3656,101 @@ mod engine_tests {
 
         assert_eq!(resolved.model, "current-default");
         assert_eq!(resolved.thinking, ThinkingLevel::ProviderDefault);
+    }
+
+    #[tokio::test]
+    async fn tinfoil_default_and_catalog_order_preserve_explicit_model_choices() {
+        let model = |id: &str, provider: &str, upstream: &str| axiom_inference::ModelInfo {
+            id: id.into(),
+            provider_id: provider.into(),
+            upstream_model: upstream.into(),
+            ..axiom_inference::ModelInfo::default()
+        };
+        let models = vec![
+            model("a-near", "near", "deepseek-v4-1-flash"),
+            model("a-other", "other", "deepseek-v4-1-flash"),
+            model("tinfoil-a", "tinfoil", "another-model"),
+            model("tinfoil-deepseek", "tinfoil", "deepseek-v4-1-flash"),
+        ];
+        let engine = AgentEngine::new(
+            Arc::new(CatalogOnlyProvider {
+                models: models.clone(),
+            }),
+            Arc::new(ToolRegistry::new()),
+            "auto",
+            1,
+        );
+        let ordered = engine
+            .available_models(CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(
+            ordered,
+            ["tinfoil-deepseek", "tinfoil-a", "a-near", "a-other"]
+        );
+        let mut settings = engine.default_settings();
+        assert_eq!(
+            engine
+                .model_info(&settings, CancellationToken::new())
+                .await
+                .unwrap()
+                .id,
+            "tinfoil-deepseek"
+        );
+        settings.model = "a-near".into();
+        assert_eq!(
+            engine
+                .model_info(&settings, CancellationToken::new())
+                .await
+                .unwrap()
+                .id,
+            "a-near"
+        );
+        settings.model = "withdrawn".into();
+        assert!(
+            engine
+                .model_info(&settings, CancellationToken::new())
+                .await
+                .is_err()
+        );
+        for (saved, configured, expected) in [
+            (None, "auto", "tinfoil-deepseek"),
+            (Some("a-near"), "auto", "a-near"),
+            (None, "a-near", "a-near"),
+        ] {
+            let resolved = reconcile_new_session_settings(
+                models.clone(),
+                saved,
+                configured,
+                ThinkingLevel::ProviderDefault,
+            )
+            .unwrap();
+            assert_eq!(resolved.model, expected);
+        }
+        let without_default: Vec<_> = models
+            .into_iter()
+            .filter(|model| model.id != "tinfoil-deepseek")
+            .collect();
+        let resolved = reconcile_new_session_settings(
+            without_default.clone(),
+            None,
+            "auto",
+            ThinkingLevel::ProviderDefault,
+        )
+        .unwrap();
+        assert_eq!(resolved.model, "tinfoil-a");
+        let without_tinfoil = without_default
+            .into_iter()
+            .filter(|model| model.provider_id != "tinfoil")
+            .collect();
+        let resolved = reconcile_new_session_settings(
+            without_tinfoil,
+            None,
+            "auto",
+            ThinkingLevel::ProviderDefault,
+        )
+        .unwrap();
+        assert_eq!(resolved.model, "a-near");
     }
 
     #[test]

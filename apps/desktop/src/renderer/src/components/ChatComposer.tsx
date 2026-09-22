@@ -14,7 +14,7 @@ import type { ClientSessionState } from "@axiom/axiom-acp-client";
 import type { ProviderModel, ReasoningEffort } from "../types";
 import { explicitReasoningEfforts, reconcileReasoningEffort } from "../reasoningSettings";
 import { ContextUsageIndicator } from "./ContextUsageIndicator";
-import { ModelBrandIcon } from "./ModelBrandIcon";
+import { ModelBrandIcon, ProviderBrandIcon } from "./ModelBrandIcon";
 import { ModelPicker } from "./ModelPicker";
 import { TeeVerificationBadge } from "./TeeVerificationBadge";
 import { DraftAttachments, type AttachmentControl } from "./Attachments";
@@ -191,7 +191,10 @@ export function ChatComposer({
                 title={requiresSignIn ? "Sign in to choose a model" : models.length === 0 ? modelStatusLabel : "Select model"}
               >
                 {selectedModel ? (
-                  <ModelBrandIcon model={selectedModel} className="h-3.5 w-3.5 shrink-0" />
+                  <>
+                    <ProviderBrandIcon providerId={selectedModel.providerId} providerLabel={selectedModel.providerLabel} className="h-3.5 w-3.5 shrink-0" />
+                    <ModelBrandIcon model={selectedModel} className="h-3.5 w-3.5 shrink-0" />
+                  </>
                 ) : (
                   <span className="h-1.5 w-1.5 rounded-full bg-[var(--color-cherry)]" />
                 )}

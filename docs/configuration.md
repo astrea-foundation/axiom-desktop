@@ -168,6 +168,8 @@ Desktop service-origin pairing and development overrides are described in
 a sanitized environment, not the application's credentials; per-command additions
 are limited by native policy.
 
-The default model setting is `auto`: resolve a current offering from the validated
-provider catalog when creating a session. Configure an explicit model ID to select
-a particular offering. No default provider model name is compiled into the client.
+The default model setting is `auto`: prefer Tinfoil's DeepSeek V4.1 Flash
+(`deepseek-v4-1-flash`) when it appears in the validated provider catalog. Other
+Tinfoil offerings come next, followed by NEAR and then other registered providers.
+Configure an explicit model ID to select a particular offering. Saved selections
+take precedence; this preference cannot add an unavailable model to the catalog.

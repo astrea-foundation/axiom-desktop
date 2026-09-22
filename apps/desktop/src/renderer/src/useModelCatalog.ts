@@ -2,6 +2,7 @@ import type { ClientState, ListModelsResponse } from "@axiom/axiom-acp-client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { desktopErrorMessage } from "./signInFlow";
 import type { ProviderModel, ReasoningEffort } from "./types";
+import { compareModelPreference } from "./modelPreferences";
 
 import { explicitReasoningEfforts, isReasoningEffort, reconcileReasoningEffort } from "./reasoningSettings";
 
@@ -66,7 +67,7 @@ function providerModels(response: ListModelsResponse): ProviderModel[] {
       fileMimeTypes: model.fileMimeTypes,
       autoCompactThresholdTokens: model.autoCompactThresholdTokens,
     };
-  });
+  }).sort(compareModelPreference);
 }
 
 export function useModelCatalog(agentState: ClientState, navigation: ReturnType<typeof useConversationNavigation>, setUiError: (error: string | null) => void) {

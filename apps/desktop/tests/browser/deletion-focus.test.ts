@@ -5,7 +5,7 @@ import { chromium, type Browser, type Page } from "playwright";
 import { createServer, type ViteDevServer } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
-import type { ApiKeyRecord, AccountStatus, BillingStatus, ClientSessionState, ClientTimelineItem, ContextUsage, ConfigureDesktopAgentRequest, DesktopAgentSettings } from "@axiom/axiom-acp-client";
+import type { ApiKeyRecord, AccountStatus, BillingStatus, ClientSessionState, ClientTimelineItem, ContextUsage, ConfigureDesktopAgentRequest, DesktopAgentSettings, ListModelsResponse } from "@axiom/axiom-acp-client";
 
 // Real renderer/DOM focus tests, but no Electron window, OS input, account,
 // sidecar, or provider request. The bridge below operates only on fake threads.
@@ -46,7 +46,7 @@ after(async () => {
   await server?.close();
 });
 
-async function openApp(platform = "linux", failDelete = false, thinkingLevels: string[] = [], rememberedThinking = "medium", supportsImages = false, bypassCSP = true) {
+async function openApp(platform = "linux", failDelete = false, thinkingLevels: string[] = [], rememberedThinking = "medium", supportsImages = false, bypassCSP = true, modelCatalog?: ListModelsResponse, rememberedModel = "test-model") {
   const page = await browser.newPage({ viewport: { width: 1320, height: 900 }, bypassCSP });
   page.setDefaultTimeout(8_000);
   const errors: string[] = [];
@@ -60,7 +60,7 @@ async function openApp(platform = "linux", failDelete = false, thinkingLevels: s
     if (route.request().url().startsWith(origin)) return route.continue();
     return route.abort();
   });
-  const installBridge = ({ platform, failDelete, thinkingLevels, rememberedThinking, supportsImages }: { platform: string; failDelete: boolean; thinkingLevels: string[]; rememberedThinking: string; supportsImages: boolean }) => {
+  const installBridge = ({ platform, failDelete, thinkingLevels, rememberedThinking, supportsImages, modelCatalog, rememberedModel }: { platform: string; failDelete: boolean; thinkingLevels: string[]; rememberedThinking: string; supportsImages: boolean; modelCatalog?: ListModelsResponse; rememberedModel: string }) => {
     const savedThinking = () => localStorage.getItem("test-thinking") ?? rememberedThinking;
     const settingsCalls: { threadId: string; model?: string; thinkingLevel?: string }[] = [];
     const defaultDirectory = (id: string) => platform === "win32" ? `C:\\Axiom\\chat\\${id}` : `/axiom/chat/${id}`;
@@ -111,8 +111,8 @@ async function openApp(platform = "linux", failDelete = false, thinkingLevels: s
     const agent = {
       onState: (listener: (state: unknown) => void) => { listeners.add(listener); return () => listeners.delete(listener); },
       getState: async () => structuredClone(state),
-      desktopBootstrap: async () => ({ newThreadSettings: { model: "test-model", thinkingLevel: savedThinking() } }),
-      listModels: async () => ({ models: [{
+      desktopBootstrap: async () => ({ newThreadSettings: { model: rememberedModel, thinkingLevel: savedThinking() } }),
+      listModels: async () => modelCatalog ?? ({ models: [{
         id: "test-model", label: "Test model", shortLabel: "Test model", providerId: "test",
         providerLabel: "Test provider", upstreamModel: "test-model", thinkingLevels,
         contextWindowTokens: 100_000, autoCompactThresholdTokens: 85_000, supportsImages,
@@ -318,10 +318,11 @@ async function openApp(platform = "linux", failDelete = false, thinkingLevels: s
   };
   // tsx adds a function-name helper to nested callbacks; serialized browser
   // fixtures must define that helper in their own JavaScript realm.
-  await page.addInitScript({ content: `window.__name = (fn) => fn; (${installBridge.toString()})(${JSON.stringify({ platform, failDelete, thinkingLevels, rememberedThinking, supportsImages })});` });
+  await page.addInitScript({ content: `window.__name = (fn) => fn; (${installBridge.toString()})(${JSON.stringify({ platform, failDelete, thinkingLevels, rememberedThinking, supportsImages, modelCatalog, rememberedModel })});` });
   await page.goto(origin);
   try {
-    await page.getByRole("button", { name: "Test model" }).waitFor();
+    if (modelCatalog) await page.locator("textarea[data-chat-input]").waitFor();
+    else await page.getByRole("button", { name: "Test model" }).waitFor();
   } catch (error) {
     console.error("Renderer startup failed", errors, await page.locator("body").innerText());
     await page.close();
@@ -2771,6 +2772,47 @@ test("gift redemption is masked, updates balance, retries safely and clears on a
   } finally { await page.close(); }
 });
 
+
+for (const remembered of ["auto", "near-glm"]) test(`Tinfoil default, provider order and composer logos preserve ${remembered} selection`, async () => {
+  const model = (id: string, label: string, providerId: string, upstreamModel: string) => ({
+    id, label, shortLabel: label, providerId, providerLabel: providerId === "near" ? "NEAR AI" : "Tinfoil",
+    upstreamModel, thinkingLevels: [], contextWindowTokens: 32768, maxOutputTokens: 8192,
+    autoCompactThresholdTokens: 27853, supportsImages: false, fileMimeTypes: [],
+    inputPriceMicrousdPerMillionTokens: 500000, outputPriceMicrousdPerMillionTokens: 2000000,
+  });
+  const catalog = { models: [
+    model("near-glm", "GLM 5.3 Flash", "near", "glm-5-3-flash"),
+    model("tinfoil-a", "Gemma 4", "tinfoil", "gemma4-31b"),
+    model("tinfoil-deepseek-v4-1-flash", "DeepSeek V4.1 Flash", "tinfoil", "deepseek-v4-1-flash"),
+  ] };
+  const { page, errors } = await openApp("linux", false, [], "provider_default", false, true, catalog, remembered);
+  try {
+    const currentLabel = remembered === "auto" ? "DeepSeek V4.1 Flash" : "GLM 5.3 Flash";
+    const control = page.getByRole("button", { name: currentLabel, exact: true });
+    await control.waitFor();
+    await control.click();
+    const picker = page.getByRole("dialog", { name: "Choose a model" });
+    const tabs = picker.getByRole("tab");
+    assert.match(await tabs.nth(0).innerText(), /^Tinfoil/);
+    assert.match(await tabs.nth(1).innerText(), /^NEAR AI/);
+    assert.equal(await tabs.nth(remembered === "auto" ? 0 : 1).getAttribute("aria-selected"), "true");
+    await tabs.nth(0).click();
+    const choices = picker.getByRole("tabpanel").getByRole("button");
+    assert.match(await choices.first().innerText(), /^DeepSeek V4.1 Flash/);
+    await choices.first().click();
+    const selected = page.getByRole("button", { name: "DeepSeek V4.1 Flash", exact: true });
+    const logos = selected.locator("img");
+    assert.deepEqual(await logos.evaluateAll(images => images.map(image => image.getAttribute("title"))), ["Tinfoil", "DeepSeek"]);
+    await page.waitForFunction(() => [...document.querySelectorAll('button[title="Select model"] img')].every(image => (image as HTMLImageElement).complete && (image as HTMLImageElement).naturalWidth > 0));
+    const providerBounds = (await logos.nth(0).boundingBox())!;
+    const modelBounds = (await logos.nth(1).boundingBox())!;
+    assert.ok(providerBounds.x + providerBounds.width <= modelBounds.x);
+    await page.locator("textarea[data-chat-input]").fill("Keep the chosen model");
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    assert.equal(await selected.isVisible(), true);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
 
 test("catalog refresh withdraws saved models and shows Tinfoil upload icons", async () => {
   const { page, errors } = await openApp();

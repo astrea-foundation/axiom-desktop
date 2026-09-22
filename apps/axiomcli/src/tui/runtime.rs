@@ -2342,6 +2342,7 @@ pub async fn run(
                                 });
                                 models.sort_by(|left, right| left.id.cmp(&right.id));
                                 models.dedup_by(|left, right| left.id == right.id);
+                                models.sort_by(crate::agent::compare_model_preference);
                                 state.model_candidates =
                                     models.iter().map(|model| model.id.clone()).collect();
                                 state.model_details = models
