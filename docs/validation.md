@@ -243,3 +243,21 @@ older journal. Client negotiation rejects an incompatible evidence contract.
 The previously recorded billing browser failures remain open; this change did
 not rerun the complete browser suite, perform live inference or deploy either
 repository.
+
+## Queued-message controls (2026-09-22)
+
+Desktop's Send now action cancels the current reply and submits the selected
+queued message as a new turn after cancellation and prompt cleanup. Queued
+messages can also be cancelled while that cleanup is pending. The queue retains
+attachments, Web choice, Agent revision and stable message IDs; disconnects,
+account changes and failed cancellation cannot silently replay the message.
+Stopping during verification also prevents a waiting prompt from starting later.
+
+All 79 ACP client tests and 198 Desktop unit/contract tests passed; one
+PowerShell-dependent signing check was skipped. This includes 21 queue tests
+covering priority, cancellation, storage failure, attachments, account/runtime
+changes and delayed cleanup. All 12 focused queue browser tests passed across
+the Linux, Windows and macOS renderer fixtures. Light/dark queue controls were
+visually checked. TypeScript checks and the Desktop production build passed.
+These checks used local fixtures; live inference and native OS qualification
+were not repeated, and the existing billing browser failures remain open.

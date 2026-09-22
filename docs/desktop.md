@@ -68,14 +68,15 @@ execution without consent. Changing Web access requires the active response to s
 On platforms without process network isolation, turning Web off does not disable
 networking by approved local programs.
 
-## Sending, queues and steering
+## Sending and queues
 
 Enter sends when idle. During a response, it adds input to a FIFO queue.
-**Send now** steers the active turn at the next safe model/tool/compaction
-boundary. It does not cancel an in-flight provider stream or repeat completed
-tools; unstarted tool calls are explicitly skipped. Model and Web authority
-remain those of the active turn. Steering remains bounded to 64 KiB; larger
-messages and attachments wait for a new turn without dropping any content.
+**Send now** stops the current reply, waits for its cleanup, then sends the
+selected message as a new turn. Its text, attachments, Web choice and Agent
+settings are preserved. Other queued messages retain their order. The cancel
+button removes a queued message, including while Send now is stopping a reply.
+Cancelling that pending send leaves the remaining queue paused. Once a message
+has been sent, use Stop on its reply.
 
 Prompt text may use up to **4 MiB of UTF-8**; direct file bounds are listed below.
 The model's context capacity and the configured native context budget still apply.

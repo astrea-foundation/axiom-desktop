@@ -1,4 +1,4 @@
-import type { ClientState, PromptResult, SteerTurnRequest, SteerTurnResponse } from "@axiom/axiom-acp-client";
+import type { ClientState, PromptResult } from "@axiom/axiom-acp-client";
 import { promptBytes, validatePrompt, type PromptAttachment } from "@axiom/axiom-acp-client/attachments";
 import { localPayloads, type PayloadStore } from "./localPayloads";
 import type { ConsentStorage } from "./webConsent";
@@ -11,7 +11,7 @@ export interface QueuedMessage {
   payloadId?: string;
   webEnabled: boolean;
   agentRevision: number;
-  status: "queued" | "sending" | "steering";
+  status: "queued" | "sending" | "stopping";
   preparing?: boolean;
   error?: string;
 }
@@ -19,7 +19,7 @@ export interface QueueApi {
   getState(): Promise<ClientState>;
   promptWithWebConsent(thread: string, text: string, id: string, web: boolean, agentRevision: number): Promise<PromptResult>;
   promptWithAttachments?(thread: string, text: string, id: string, web: boolean, agentRevision: number, attachments: PromptAttachment[]): Promise<PromptResult>;
-  steer(request: SteerTurnRequest): Promise<SteerTurnResponse>;
+  cancel(threadId: string): Promise<void>;
 }
 const MAX_MESSAGES = 32;
 const MAX_QUEUE_BYTES = 64 * 1024 * 1024;
@@ -38,7 +38,8 @@ export class MessageQueue {
   private items: QueuedMessage[] = [];
   private paused = new Set<string>();
   private freshSends = new Set<string>();
-  private operations = new Map<string, { threadId: string; steering: boolean }>();
+  private operations = new Map<string, string>();
+  private interruptions = new Map<string, { id: string | null; ready: boolean }>();
 
   constructor(private storage: ConsentStorage | null, private changed: () => void, private reportError: (message: string) => void, private payloads: PayloadStore = localPayloads) {}
 
@@ -50,9 +51,10 @@ export class MessageQueue {
     return accountId === this.account ? this.items.filter((item) => item.preparing).map((item) => ({ ...item })) : [];
   }
   isPaused(threadId: string): boolean { return this.paused.has(threadId); }
+  isStopping(threadId: string): boolean { return this.interruptions.has(threadId); }
   dispose(): void {
     this.generation++; this.account = null; this.runtime = null; this.api = null; this.state = null;
-    this.operations.clear();
+    this.operations.clear(); this.interruptions.clear();
   }
   private persist(): void {
     if (!this.storage || !this.account) throw new Error("The message queue could not be saved. No new message was sent.");
@@ -70,7 +72,7 @@ export class MessageQueue {
     if (account !== this.account || runtime !== this.runtime) {
       this.generation++;
       this.account = account; this.runtime = runtime;
-      this.operations.clear(); this.items = []; this.paused.clear(); this.freshSends.clear();
+      this.operations.clear(); this.interruptions.clear(); this.items = []; this.paused.clear(); this.freshSends.clear();
       if (account) {
         try {
           const raw = this.storage?.getItem(key(account));
@@ -191,11 +193,15 @@ export class MessageQueue {
   }
   remove(id: string): void {
     const item = this.items.find((item) => item.id === id);
-    if (!item || item.status !== "queued") return;
+    if (!item || item.status === "sending") return;
     const previous = this.items;
     this.items = this.items.filter((item) => item.id !== id);
-    if (!this.save()) this.items = previous;
-    else { this.freshSends.delete(id); this.cleanup(item); }
+    if (!this.save()) { this.items = previous; this.pause(item.threadId); }
+    else {
+      const interruption = this.interruptions.get(item.threadId);
+      if (interruption?.id === id) { interruption.id = null; this.paused.add(item.threadId); }
+      this.freshSends.delete(id); this.cleanup(item);
+    }
     this.changed();
   }
   forget(threadId: string): void {
@@ -203,72 +209,111 @@ export class MessageQueue {
     const removed = this.items.filter((item) => item.threadId === threadId);
     this.items = this.items.filter((item) => item.threadId !== threadId);
     this.paused.delete(threadId);
+    this.interruptions.delete(threadId);
     if (this.save()) for (const item of removed) this.cleanup(item);
     this.changed();
   }
   pause(threadId: string): void {
     for (const item of this.items) if (item.threadId === threadId) this.freshSends.delete(item.id);
+    const interruption = this.interruptions.get(threadId);
+    if (interruption) {
+      const item = this.items.find((item) => item.id === interruption.id);
+      if (item) item.status = "queued";
+      interruption.id = null;
+      this.save();
+    }
     this.paused.add(threadId); this.changed();
   }
   sendNow(id: string): void {
     const item = this.items.find((item) => item.id === id);
     if (!item || item.preparing || item.status !== "queued") return;
     const session = this.state?.sessions[item.threadId];
-    if (!session || !this.state?.connected || !this.account) return;
-    const steering = session.running;
-    if (steering && ((item.attachments?.length ?? 0) > 0 || new TextEncoder().encode(item.text).length > 64 * 1024)) {
-      item.error = "This message will send as a new turn after the current reply.";
-      this.freshSends.add(item.id); this.save(); this.changed(); return;
+    const api = this.api;
+    if (!session || !this.state?.connected || !this.account || !api || this.interruptions.has(item.threadId)) return;
+    if (!this.checkAgentRevision(item)) return;
+    if (!session.running && !this.hasOperation(item.threadId)) { void this.dispatch(item); return; }
+    this.freshSends.delete(item.id);
+    item.status = "stopping"; delete item.error;
+    if (!this.save()) { item.status = "queued"; this.paused.add(item.threadId); this.changed(); return; }
+    const interruption = { id: item.id as string | null, ready: false };
+    this.interruptions.set(item.threadId, interruption);
+    this.changed();
+    void this.interrupt(item.threadId, interruption, api);
+  }
+  private async interrupt(threadId: string, interruption: { id: string | null; ready: boolean }, api: QueueApi): Promise<void> {
+    const generation = this.generation;
+    const current = () => generation === this.generation && this.interruptions.get(threadId) === interruption;
+    try {
+      await api.cancel(threadId);
+      if (!current()) return;
+      const state = await api.getState();
+      if (!current()) return;
+      // Cancellation is a notification, not a completion acknowledgement.
+      // Keep this thread gated until native state and the old prompt settle.
+      interruption.ready = true;
+      this.sync(state, api);
+    } catch {
+      if (!current()) return;
+      const item = this.items.find((item) => item.id === interruption.id);
+      if (item) { item.status = "queued"; item.error = "Couldn’t stop the reply. Try again."; }
+      this.interruptions.delete(threadId);
+      this.paused.add(threadId); this.save(); this.changed();
     }
-    if (steering && (!session.activeTurnId || [...this.operations.values()].some((op) => op.threadId === item.threadId && op.steering))) return;
-    if (!steering && [...this.operations.values()].some((op) => op.threadId === item.threadId)) return;
-    void this.dispatch(item, steering ? session.activeTurnId! : null);
+  }
+  private hasOperation(threadId: string): boolean {
+    return [...this.operations.values()].includes(threadId);
   }
   private pump(): void {
     if (!this.account || !this.api || !this.state?.connected || this.loading) return;
+    for (const [threadId, interruption] of this.interruptions) {
+      const session = this.state.sessions[threadId];
+      if (!interruption.ready || !session || session.running || this.hasOperation(threadId)) continue;
+      this.interruptions.delete(threadId);
+      const item = this.items.find((item) => item.id === interruption.id);
+      if (item) void this.dispatch(item);
+      else this.changed();
+    }
     const seen = new Set<string>();
     for (const item of this.items) {
-      if (item.preparing) continue;
+      if (item.preparing || this.interruptions.has(item.threadId)) continue;
       if (this.paused.has(item.threadId) && !this.freshSends.has(item.id)) continue;
       if (seen.has(item.threadId)) continue;
       seen.add(item.threadId);
       const session = this.state.sessions[item.threadId];
       if (item.status === "queued" && session && !session.running
-        && ![...this.operations.values()].some((op) => op.threadId === item.threadId)) void this.dispatch(item, null);
+        && !this.hasOperation(item.threadId)) void this.dispatch(item);
     }
   }
-  private async dispatch(item: QueuedMessage, turnId: string | null): Promise<void> {
-    const api = this.api;
-    if (!api || !this.account) return;
+  private checkAgentRevision(item: QueuedMessage): boolean {
     if (item.agentRevision !== (this.state?.sessions[item.threadId]?.desktopAgent?.revision ?? 0)) {
+      item.status = "queued";
       item.error = "Agent settings changed. Remove this queued message and send it again with the settings you want.";
-      this.paused.add(item.threadId); this.save(); this.changed(); return;
+      this.paused.add(item.threadId); this.save(); this.changed(); return false;
     }
+    return true;
+  }
+  private async dispatch(item: QueuedMessage): Promise<void> {
+    const api = this.api;
+    if (!api || !this.account || !this.checkAgentRevision(item)) return;
     const generation = this.generation;
     this.freshSends.delete(item.id);
-    item.status = turnId ? "steering" : "sending"; delete item.error;
+    item.status = "sending"; delete item.error;
     if (!this.save()) { item.status = "queued"; this.paused.add(item.threadId); this.changed(); return; }
-    this.operations.set(item.id, { threadId: item.threadId, steering: turnId !== null });
+    this.operations.set(item.id, item.threadId);
     this.changed();
     try {
-      if (turnId) {
-        if (typeof api.steer !== "function") throw new Error("Restart Axiom to enable steering. Your message is still queued.");
-        await api.steer({ threadId: item.threadId, expectedTurnId: turnId, clientItemId: item.id, text: item.text, webEnabled: item.webEnabled, agentRevision: item.agentRevision });
-      } else {
-        if (item.attachments?.length && !api.promptWithAttachments) throw new Error("Restart Axiom to enable attachments.");
-        const result = item.attachments?.length
-          ? await api.promptWithAttachments!(item.threadId, item.text, item.id, item.webEnabled, item.agentRevision, item.attachments)
-          : await api.promptWithWebConsent(item.threadId, item.text, item.id, item.webEnabled, item.agentRevision);
-        if (generation !== this.generation) return;
-        this.sync(await api.getState(), api);
-        if (generation !== this.generation) return;
-        if (result.stopReason !== "end_turn") this.paused.add(item.threadId);
-      }
+      if (item.attachments?.length && !api.promptWithAttachments) throw new Error("Restart Axiom to enable attachments.");
+      const result = item.attachments?.length
+        ? await api.promptWithAttachments!(item.threadId, item.text, item.id, item.webEnabled, item.agentRevision, item.attachments)
+        : await api.promptWithWebConsent(item.threadId, item.text, item.id, item.webEnabled, item.agentRevision);
       if (generation !== this.generation) return;
-      // Steer resolves only after native persistence. Normal prompts are
-      // removed by their echoed client ID, never merely by end_turn (e.g. auth).
-      if (turnId) { this.items = this.items.filter((queued) => queued.id !== item.id); if (this.save()) this.cleanup(item); }
-      else if (this.items.some((queued) => queued.id === item.id)) {
+      const state = await api.getState();
+      if (generation !== this.generation) return;
+      this.sync(state, api);
+      if (generation !== this.generation) return;
+      if (result.stopReason !== "end_turn" && !this.interruptions.has(item.threadId)) this.paused.add(item.threadId);
+      // Only an echoed client ID confirms delivery, never end_turn alone.
+      if (this.items.some((queued) => queued.id === item.id)) {
         item.status = "queued"; item.error = "Delivery was not confirmed. Check the thread before retrying.";
         this.paused.add(item.threadId);
       }

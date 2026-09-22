@@ -658,6 +658,34 @@ test("permission requests remain owned by AxiomCLI and resolve through the clien
   }
 });
 
+test("cancelling during verification prevents a waiting prompt from starting later", async () => {
+  const { client, workspace } = await fixture();
+  try {
+    const created = await client.newSession(workspace);
+    await client.verifySecurity(created.sessionId);
+    const request = client.process.request.bind(client.process);
+    let rejectVerification!: (error: Error) => void;
+    let prompts = 0;
+    client.process.request = <T>(method: string, params: unknown, timeoutMs?: number, signal?: AbortSignal): Promise<T> => {
+      if (method === "_axiom/security/verify") return new Promise<T>((_resolve, reject) => { rejectVerification = reject; });
+      if (method === "session/prompt") prompts++;
+      return request<T>(method, params, timeoutMs, signal);
+    };
+    const verification = assert.rejects(client.verifySecurity(created.sessionId), /stopped/);
+    await new Promise((resolve) => setImmediate(resolve));
+    const pending = client.prompt(created.sessionId, "cancel before sending", "cancel-preflight");
+    await client.cancel(created.sessionId);
+    rejectVerification(new Error("verification stopped"));
+    await verification;
+    assert.equal((await pending).stopReason, "cancelled");
+    assert.equal(prompts, 0);
+    assert.equal(client.getState().sessions[created.sessionId]?.running, false);
+    client.process.request = request;
+    assert.equal((await client.prompt(created.sessionId, "new instruction", "after-cancel")).stopReason, "end_turn");
+    assert.equal(client.getState().sessions[created.sessionId]?.timeline.some((item) => item.clientItemId === "cancel-preflight"), false);
+  } finally { await client.close(); }
+});
+
 test("cancelling fail-closes and clears a pending permission", async () => {
   const { client, workspace } = await fixture("approval");
   try {

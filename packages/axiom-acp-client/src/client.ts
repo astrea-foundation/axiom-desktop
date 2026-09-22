@@ -143,6 +143,7 @@ export class AxiomAcpClient extends EventEmitter {
   private readonly refreshingThreads = new Map<string, Promise<GetThreadTimelineResponse>>();
   private readonly securityPreflights = new Map<string, Promise<void>>();
   private readonly securityVerifications = new Map<string, { context: object; promise: Promise<VerifySecurityResponse> }>();
+  private readonly pendingPrompts = new Set<{ threadId: string; cancelled: boolean }>();
   private fullResync: Promise<void> | null = null;
   private fullResyncRequired = false;
   private initialized = false;
@@ -328,8 +329,15 @@ export class AxiomAcpClient extends EventEmitter {
     if (attachments.length && !this.supportsAttachments) throw new ProtocolError("Restart Axiom to enable attachments. No message was sent.");
     if (!clientItemId || clientItemId.length > 512) throw new ProtocolError("invalid client item ID");
     const accountContext = this.state.accountContextToken();
-    await this.waitForSecurityPreflight(threadId);
+    const pending = { threadId, cancelled: false };
+    this.pendingPrompts.add(pending);
+    try {
+      await this.waitForSecurityPreflight(threadId);
+    } finally {
+      this.pendingPrompts.delete(pending);
+    }
     this.assertAccountContext(accountContext);
+    if (pending.cancelled) return { stopReason: "cancelled" };
     this.state.setRunning(threadId, true);
     try {
       const result = await this.process.request<PromptResult>(
@@ -363,6 +371,8 @@ export class AxiomAcpClient extends EventEmitter {
   }
 
   async cancel(threadId: string): Promise<void> {
+    // A prompt waiting for attestation must not start after Stop was sent.
+    for (const pending of this.pendingPrompts) if (pending.threadId === threadId) pending.cancelled = true;
     try {
       await this.process.notify("session/cancel", { sessionId: threadId });
     } finally {

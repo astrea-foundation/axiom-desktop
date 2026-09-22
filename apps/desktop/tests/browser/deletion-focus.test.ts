@@ -104,7 +104,6 @@ async function openApp(platform = "linux", failDelete = false, thinkingLevels: s
     const pendingLogins = new Map<string, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
     const setupGates = new Map<string, { promise: Promise<void>; resolve: () => void; reject: (error: Error) => void }>();
     const waitForSetup = async (stage: string) => { await setupGates.get(stage)?.promise; };
-    const pendingSteers = new Map<string, { thread: string; text: string; resolve: (value: unknown) => void }>();
     const listeners = new Set<(state: unknown) => void>();
     const emit = () => {
       for (const listener of listeners) listener(structuredClone(state));
@@ -210,12 +209,12 @@ async function openApp(platform = "linux", failDelete = false, thinkingLevels: s
         calls.push({ method: "revise", id, text, userItemId, expectedRevision, webEnabled });
         return { stopReason: "end_turn" };
       },
-      steer: async (request: { threadId: string; clientItemId: string; text: string; expectedTurnId: string; webEnabled: boolean }) => {
-        calls.push({ method: "steer", id: request.clientItemId, text: request.text, webEnabled: request.webEnabled });
-        if (state.sessions[request.threadId]?.activeTurnId !== request.expectedTurnId) throw new Error("stale turn");
-        return new Promise((resolve) => pendingSteers.set(request.clientItemId, { thread: request.threadId, text: request.text, resolve }));
+      steer: async () => { calls.push({ method: "steer" }); throw new Error("Desktop queue must send a new turn"); },
+      cancel: async (id: string) => {
+        calls.push({ method: "cancel", id });
+        await waitForSetup("cancel");
+        state.sessions[id]!.running = false; state.sessions[id]!.activeTurnId = null; emit();
       },
-      cancel: async (id: string) => { calls.push({ method: "cancel", id }); state.sessions[id]!.running = false; emit(); },
       listThreads: async () => state.catalog,
       apiKeys: async () => ({keys: []}),
       createApiKey: async () => { throw new Error("API keys not configured in this fixture"); },
@@ -269,15 +268,6 @@ async function openApp(platform = "linux", failDelete = false, thinkingLevels: s
         setBilling: (billing: BillingStatus) => { state.billing = billing; emit(); },
         failBalance: (fail: boolean) => { failBalance = fail; },
         setRuntime: (id: string, connected = true) => { state.runtimeInstanceId = id; state.connected = connected; emit(); },
-        finishSteers: () => {
-          for (const [id, pending] of pendingSteers) {
-            const session = state.sessions[pending.thread]!;
-            session.timeline.push({ id, clientItemId: id, kind: "user", text: pending.text });
-            session.timeline.push({ id: `reply-${id}`, kind: "assistant", text: "Continuing with your update", status: "streaming" });
-            pending.resolve({ clientItemId: id, turnId: session.activeTurnId });
-          }
-          pendingSteers.clear(); emit();
-        },
         finishTurn: () => { state.sessions["old-thread"]!.running = false; state.sessions["old-thread"]!.activeTurnId = null; emit(); },
         failRename: (fail: boolean) => { failRename = fail; },
         failAgent: (fail: boolean) => { failAgent = fail; },
@@ -865,16 +855,19 @@ for (const platform of ["linux", "win32", "darwin"]) {
     } finally { await page.close(); }
   });
 
-  test(`messages queue during a reply and Send now waits for a safe boundary (${platform})`, async () => {
+  test(`Send now stops the reply and sends the selected queued message first (${platform})`, async () => {
     const { page, errors } = await openApp(platform);
     try {
       await page.getByRole("button", { name: "Viewed Existing thread", exact: true }).click();
-      await page.evaluate(() => (window as any).__deletionTest.setTimeline([
-        { id: "intro", kind: "assistant", text: "I am checking that now.", status: "streaming" },
-      ], true));
+      await page.evaluate(() => {
+        (window as any).__deletionTest.setTimeline([
+          { id: "intro", kind: "assistant", text: "I am checking that now.", status: "streaming" },
+        ], true);
+        (window as any).__deletionTest.holdSetup("cancel");
+        (window as any).__deletionTest.holdSetup("prompt");
+      });
       const queue = page.getByRole("region", { name: "Message queue", exact: true });
       await page.locator("textarea").fill("After that, summarize the result.");
-      await page.getByRole("button", { name: "Stop generating", exact: true }).waitFor();
       await page.getByRole("button", { name: "Queue message", exact: true }).click();
       await queue.getByText("After that, summarize the result.", { exact: true }).waitFor();
       await page.locator("textarea").fill("Use the revised requirements instead.");
@@ -882,24 +875,58 @@ for (const platform of ["linux", "win32", "darwin"]) {
       await page.waitForFunction(() => document.querySelectorAll("[data-queued-message]").length === 2);
       assert.equal(await page.locator("textarea").inputValue(), "");
       assert.equal((await calls(page)).filter((call) => ["prompt", "steer", "cancel"].includes(call.method)).length, 0);
+      if (platform === "linux" && process.env.AXIOM_QUEUE_CAPTURE_DIR) {
+        await queue.screenshot({ path: `${process.env.AXIOM_QUEUE_CAPTURE_DIR}/queued-light.png` });
+        await page.emulateMedia({ colorScheme: "dark" });
+        await page.waitForFunction(() => document.documentElement.dataset.theme === "dark");
+        await queue.screenshot({ path: `${process.env.AXIOM_QUEUE_CAPTURE_DIR}/queued-dark.png` });
+      }
       await queue.getByRole("button", { name: "Send now", exact: true }).last().click();
-      await queue.getByText("Waiting for current step to finish…", { exact: true }).waitFor();
-      assert.deepEqual((await calls(page)).filter((call) => ["prompt", "steer", "cancel"].includes(call.method)).map((call) => [call.method, call.text]), [
-        ["steer", "Use the revised requirements instead."],
-      ]);
-      assert.equal(await page.getByRole("region", { name: "Chat messages" }).getByText("Use the revised requirements instead.", { exact: true }).count(), 0,
-        "steering is not presented as delivered before the boundary acknowledgement");
-      if (platform === "linux") await page.screenshot({ path: "/tmp/axiom-message-queue.png" });
-      await page.evaluate(() => (window as any).__deletionTest.finishSteers());
-      await page.getByRole("region", { name: "Chat messages" }).getByText("Use the revised requirements instead.", { exact: true }).waitFor();
-      await page.waitForFunction(() => document.querySelectorAll("[data-queued-message]").length === 1);
-      const transcript = await page.getByRole("region", { name: "Chat messages" }).innerText();
-      assert.ok(transcript.indexOf("I am checking") < transcript.indexOf("Use the revised"));
-      assert.ok(transcript.indexOf("Use the revised") < transcript.indexOf("Continuing with your update"));
-      assert.equal((await calls(page)).filter((call) => call.method === "prompt").length, 0);
-      await page.evaluate(() => (window as any).__deletionTest.finishTurn());
+      await queue.getByText("Stopping…", { exact: true }).waitFor();
+      assert.equal(await queue.getByRole("button", { name: "Cancel queued message", exact: true }).count(), 2);
+      assert.equal(await queue.getByRole("button", { name: "Send now", exact: true }).isEnabled(), false);
+      assert.deepEqual((await calls(page)).filter((call) => ["prompt", "steer", "cancel"].includes(call.method)).map((call) => call.method), ["cancel"]);
+      const transcript = page.getByRole("region", { name: "Chat messages" });
+      assert.equal(await transcript.getByText("Use the revised requirements instead.", { exact: true }).count(), 0);
+      await page.evaluate(() => (window as any).__deletionTest.releaseSetup("cancel"));
+      await page.waitForFunction(() => (window as any).__deletionTest.calls.some((call: any) => call.method === "prompt"));
+      assert.deepEqual((await calls(page)).filter((call) => call.method === "prompt").map((call) => call.text), ["Use the revised requirements instead."]);
+      await page.evaluate(() => (window as any).__deletionTest.releaseSetup("prompt"));
       await queue.waitFor({ state: "hidden" });
-      assert.deepEqual((await calls(page)).filter((call) => call.method === "prompt").map((call) => call.text), ["After that, summarize the result."]);
+      assert.deepEqual((await calls(page)).filter((call) => call.method === "prompt").map((call) => call.text), [
+        "Use the revised requirements instead.", "After that, summarize the result.",
+      ]);
+      assert.equal(await transcript.getByText("Use the revised requirements instead.", { exact: true }).count(), 1);
+      assert.deepEqual(errors, []);
+    } finally { await page.close(); }
+  });
+
+  for (const stopping of [false, true]) test(`cancel a queued message${stopping ? " while Send now is stopping" : " without interrupting the reply"} (${platform})`, async () => {
+    const { page, errors } = await openApp(platform);
+    try {
+      await page.getByRole("button", { name: "Viewed Existing thread", exact: true }).click();
+      await page.evaluate(() => {
+        (window as any).__deletionTest.setTimeline([], true);
+        (window as any).__deletionTest.holdSetup("cancel");
+      });
+      await page.locator("textarea").fill("Do not send this queued message.");
+      await page.locator("textarea").press("Enter");
+      const queue = page.getByRole("region", { name: "Message queue", exact: true });
+      await queue.getByText("Do not send this queued message.", { exact: true }).waitFor();
+      if (stopping) {
+        await queue.getByRole("button", { name: "Send now", exact: true }).click();
+        await queue.getByText("Stopping…", { exact: true }).waitFor();
+      }
+      const cancel = queue.getByRole("button", { name: "Cancel queued message", exact: true });
+      await cancel.focus(); await page.keyboard.press("Enter");
+      await queue.waitFor({ state: "hidden" });
+      await page.evaluate(() => (window as any).__deletionTest.releaseSetup("cancel"));
+      if (stopping) await page.getByRole("button", { name: "Stop generating", exact: true }).waitFor({ state: "hidden" });
+      else assert.equal(await page.getByRole("button", { name: "Stop generating", exact: true }).count(), 1);
+      assert.deepEqual((await calls(page)).filter((call) => ["prompt", "steer", "cancel"].includes(call.method)).map((call) => call.method), stopping ? ["cancel"] : []);
+      await page.reload();
+      await page.getByRole("button", { name: "Viewed Existing thread", exact: true }).click();
+      assert.equal(await queue.count(), 0, "cancelled messages do not return after reload");
       assert.deepEqual(errors, []);
     } finally { await page.close(); }
   });
@@ -917,7 +944,7 @@ for (const platform of ["linux", "win32", "darwin"]) {
       const queue = page.getByRole("region", { name: "Message queue", exact: true });
       await queue.getByText("Restored after reconnect. Review and send when ready.", { exact: true }).waitFor();
       assert.equal((await calls(page)).filter((call) => call.method === "prompt").length, 0);
-      await queue.getByRole("button", { name: "Remove queued message", exact: true }).click();
+      await queue.getByRole("button", { name: "Cancel queued message", exact: true }).click();
       await queue.waitFor({ state: "hidden" });
       assert.deepEqual(errors, []);
     } finally { await page.close(); }

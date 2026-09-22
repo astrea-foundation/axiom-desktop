@@ -1,8 +1,8 @@
 import { ArrowUp, LoaderCircle, X } from "lucide-react";
 import type { QueuedMessage } from "../messageQueue";
 
-export function MessageQueue({ messages, paused, canSteer, onSendNow, onRemove }: {
-  messages: QueuedMessage[]; paused: boolean; canSteer: boolean;
+export function MessageQueue({ messages, paused, canSend, onSendNow, onRemove }: {
+  messages: QueuedMessage[]; paused: boolean; canSend: boolean;
   onSendNow: (id: string) => void; onRemove: (id: string) => void;
 }) {
   if (!messages.length) return null;
@@ -12,12 +12,12 @@ export function MessageQueue({ messages, paused, canSteer, onSendNow, onRemove }
       <div className="min-w-0 flex-1">
         <p className="line-clamp-2 whitespace-pre-wrap break-words text-[var(--color-text-secondary)]">{message.text}</p>
         {message.attachments?.length ? <p className="truncate text-[var(--color-text-secondary)]">{message.attachments.map((file) => file.name).join(", ")}</p> : null}
-        <p className="mt-0.5 flex flex-wrap gap-x-3 text-[11px] text-[var(--color-text-tertiary)]"><span>{message.error ?? (message.status === "steering" ? "Waiting for current step to finish…" : message.status === "sending" ? "Sending…" : paused ? "Paused" : "Sends after the current reply")}</span>{message.webEnabled ? <span>Web on</span> : null}</p>
+        <p className="mt-0.5 flex flex-wrap gap-x-3 text-[11px] text-[var(--color-text-tertiary)]"><span>{message.error ?? (message.status === "stopping" ? "Stopping…" : message.status === "sending" ? "Sending…" : paused ? "Paused" : "Sends after the current reply")}</span>{message.webEnabled ? <span>Web on</span> : null}</p>
       </div>
-      {message.status === "queued" ? <>
-        <button type="button" onClick={() => onSendNow(message.id)} disabled={!canSteer} className="flex shrink-0 items-center gap-1 rounded-md px-2 py-1 hover:bg-[var(--wash-chip-hover)] disabled:opacity-40" title={message.preparing ? "Review the saved message before sending" : "Continue with this message after the current operation finishes"}><ArrowUp size={12} />{message.preparing ? "Review draft" : "Send now"}</button>
-        <button type="button" onClick={() => onRemove(message.id)} aria-label="Remove queued message" className="rounded-md p-1.5 hover:bg-[var(--wash-chip-hover)]"><X size={13} /></button>
-      </> : <LoaderCircle size={14} className="mt-1 shrink-0 animate-spin text-[var(--color-text-tertiary)]" aria-label="Message pending" />}
+      {message.status === "queued"
+        ? <button type="button" onClick={() => onSendNow(message.id)} disabled={!canSend} className="flex shrink-0 items-center gap-1 rounded-md px-2 py-1 hover:bg-[var(--wash-chip-hover)] disabled:opacity-40" title={message.preparing ? "Review the saved message before sending" : "Stop the current reply and send this message"}><ArrowUp size={12} />{message.preparing ? "Review draft" : "Send now"}</button>
+        : <LoaderCircle size={14} className="mt-1 shrink-0 animate-spin text-[var(--color-text-tertiary)]" aria-label="Message pending" />}
+      {message.status !== "sending" ? <button type="button" onClick={() => onRemove(message.id)} aria-label="Cancel queued message" title="Cancel queued message" className="shrink-0 rounded-md p-1.5 hover:bg-[var(--wash-chip-hover)]"><X size={13} /></button> : null}
     </div>)}
   </section>;
 }

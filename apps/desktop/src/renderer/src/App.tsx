@@ -261,7 +261,7 @@ export function App() {
                 agentControl={agentControl}
                 queue={<MessageQueue messages={messageQueue.list(activeThreadId, billingAccountId).filter((message) => message.id !== pendingUserMessage?.id || message.status !== "sending")}
                   paused={!!activeThreadId && messageQueue.isPaused(activeThreadId)}
-                  canSteer={agentState.connected && (!activeSession.running || !!activeSession.activeTurnId)}
+                  canSend={agentState.connected && !!billingAccountId && !messageQueue.isStopping(activeThreadId!)}
                   onSendNow={(id) => messageQueue?.sendNow(id)} onRemove={(id) => messageQueue?.remove(id)} />}
                 webEnabled={webAccess.enabled}
                 webDisabled={!billingAccountId || !agentState.connected}
@@ -305,7 +305,7 @@ export function App() {
               </div>
             ) : (
               <WelcomeView
-                savedMessages={<MessageQueue messages={messageQueue.preparations(billingAccountId)} paused canSteer={agentState.connected && !draft.trim()}
+                savedMessages={<MessageQueue messages={messageQueue.preparations(billingAccountId)} paused canSend={agentState.connected && !draft.trim()}
                   onSendNow={(id) => void reviewPreparation(id)} onRemove={(id) => messageQueue?.remove(id)} />}
                 agentControl={agentControl}
                 webEnabled={webAccess.enabled}
