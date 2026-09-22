@@ -80,6 +80,48 @@ for (const theme of ["light", "dark"]) test(`privacy proof matches the composer 
   } finally { await page.close(); }
 });
 
+test("TEE help supports hover, keyboard, clicks and narrow dialogs without refreshing proof", async () => {
+  const { page, errors } = await open();
+  try {
+    await proofButton(page).click();
+    const help = page.getByRole("button", { name: "What does TEE verified mean?", exact: true });
+    const tooltip = page.getByRole("tooltip");
+    await help.hover();
+    await tooltip.waitFor();
+    assert.equal(await tooltip.innerText(), "What does TEE verified mean?\n\nA TEE (Trusted Execution Environment) is a protected space on the provider’s servers. Axiom checks security evidence from the server’s hardware before sending your encrypted messages there. This helps keep your messages private while the AI processes them.");
+    await tooltip.hover();
+    assert.equal(await tooltip.isVisible(), true, "help stays open while reading it");
+    await page.getByRole("heading", { name: "Privacy proof", exact: true }).hover();
+    await tooltip.waitFor({ state: "hidden" });
+
+    await help.focus();
+    await tooltip.waitFor();
+    assert.equal(await help.getAttribute("aria-describedby"), await tooltip.getAttribute("id"));
+    await page.keyboard.press("Escape");
+    await tooltip.waitFor({ state: "hidden" });
+    assert.equal(await dialog(page).isVisible(), true, "Escape dismisses help before the report");
+    assert.equal(await help.evaluate((element) => element === document.activeElement), true);
+    await page.keyboard.press("Enter");
+    await tooltip.waitFor();
+    await page.keyboard.press("Tab");
+    await tooltip.waitFor({ state: "hidden" });
+
+    await page.setViewportSize({ width: 360, height: 640 });
+    await help.click();
+    await tooltip.waitFor();
+    const helpBounds = (await tooltip.boundingBox())!;
+    const reportBounds = (await dialog(page).boundingBox())!;
+    assert.ok(helpBounds.x >= reportBounds.x && helpBounds.x + helpBounds.width <= reportBounds.x + reportBounds.width);
+    assert.ok(helpBounds.y + helpBounds.height <= reportBounds.y + reportBounds.height);
+    await page.getByRole("heading", { name: "Privacy proof", exact: true }).click();
+    await tooltip.waitFor({ state: "hidden" });
+    assert.equal(await count(page), 0, "explaining verification must not request new evidence");
+    await page.evaluate(() => (window as any).__privacyTest.update({ security: { state: "failed" } }));
+    await help.waitFor({ state: "detached" });
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
 test("refresh is separate, deduplicated, and leaves inspection accessible during verification", async () => {
   const { page, errors } = await open();
   try {

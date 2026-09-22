@@ -168,7 +168,10 @@ subsets, settlement state, elapsed time and other thread charges. Tab reaches th
 disclosure; Escape closes the panel and returns focus to the meter. Partial or
 unavailable usage and reports from a different model remain visible above it.
 
-Click the TEE badge for the last local verification report; Refresh requests
+Click the TEE badge for the last local verification report. The question-mark
+button beside **TEE verified** explains TEE protection and the check of the
+server’s hardware in plain language. Hover, focus or click it to show the help;
+Escape dismisses the help before closing the report. Refresh requests
 fresh evidence when allowed. While active and connected, the badge automatically
 renews within 60 seconds of expiry, between replies. Checks are deduplicated and retries back off
 from 30 seconds to at most five minutes; even a successful short lease is paced.

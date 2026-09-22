@@ -1,4 +1,4 @@
-import { Check, ChevronRight, Copy, FileCode2, Globe2, Minus, RotateCcw, Shield, ShieldCheck, ShieldX, X } from "lucide-react";
+import { Check, ChevronRight, CircleHelp, Copy, FileCode2, Globe2, Minus, RotateCcw, Shield, ShieldCheck, ShieldX, X } from "lucide-react";
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import type { ClientSessionState } from "@axiom/axiom-acp-client";
 import type { ProviderModel } from "../types";
@@ -14,6 +14,47 @@ const explanation: Record<ProofState, string> = {
   unverified: "Check the model’s hardware evidence and encryption key before sending model messages.",
   development: "This development session has no production TEE proof.",
 };
+
+function VerifiedStatus() {
+  const id = useId();
+  const root = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (!open) return;
+    const dismissOutside = (event: PointerEvent) => {
+      if (event.target instanceof Node && !root.current?.contains(event.target)) setOpen(false);
+    };
+    const dismissEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      setOpen(false);
+    };
+    document.addEventListener("pointerdown", dismissOutside);
+    document.addEventListener("keydown", dismissEscape, true);
+    return () => {
+      document.removeEventListener("pointerdown", dismissOutside);
+      document.removeEventListener("keydown", dismissEscape, true);
+    };
+  }, [open]);
+  return <div ref={root} className="relative flex items-center gap-1.5"
+    onMouseLeave={(event) => { if (!event.currentTarget.contains(document.activeElement)) setOpen(false); }}
+    onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false); }}>
+    <p role="status" className="text-[15px] font-medium">{proofLabels.verified}</p>
+    <button type="button" aria-label="What does TEE verified mean?" aria-describedby={open ? id : undefined}
+      onMouseEnter={() => setOpen(true)} onFocus={() => setOpen(true)} onClick={() => setOpen(true)}
+      className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--wash-chip-hover)] hover:text-[var(--color-text-primary)]">
+      <CircleHelp size={14} aria-hidden="true" />
+    </button>
+    <div id={id} role="tooltip" aria-hidden={!open}
+      className={`absolute left-0 top-full z-50 w-[340px] max-w-full pt-2 transition-[opacity,transform,visibility] duration-150 motion-reduce:transition-none ${open ? "visible translate-y-0 opacity-100" : "pointer-events-none invisible -translate-y-1 opacity-0"}`}>
+      <div className="glass-panel-solid shadow-glass-pop rounded-xl border border-[var(--color-border)] p-3.5 text-[12px] leading-[19px] text-[var(--color-text-secondary)]">
+        <p className="mb-1 font-medium text-[var(--color-text-primary)]">What does TEE verified mean?</p>
+        <p>A TEE (Trusted Execution Environment) is a protected space on the provider’s servers. Axiom checks security evidence from the server’s hardware before sending your encrypted messages there. This helps keep your messages private while the AI processes them.</p>
+      </div>
+    </div>
+  </div>;
+}
 
 function Disclosure({ title, value, children, verified = false }: {
   title: string; value?: string; children: ReactNode; verified?: boolean;
@@ -117,8 +158,8 @@ export function PrivacyProofDialog({ session, model, modelId, state, now, webEna
           <div className={`shadow-glass-tile flex h-10 w-10 shrink-0 items-center justify-center rounded-[13px] bg-[var(--surface-tile)] ${verified ? "text-[var(--color-success)]" : state === "failed" ? "text-[var(--color-danger)]" : "text-[var(--color-text-tertiary)]"}`}>
             {verified ? <ShieldCheck size={21} aria-hidden="true" /> : state === "failed" ? <ShieldX size={21} aria-hidden="true" /> : <Shield size={21} aria-hidden="true" />}
           </div>
-          <div className="min-w-0">
-            <p role="status" className="text-[15px] font-medium">{proofLabels[state]}</p>
+          <div className="min-w-0 flex-1">
+            {verified ? <VerifiedStatus /> : <p role="status" className="text-[15px] font-medium">{proofLabels[state]}</p>}
             <p className="mt-0.5 flex flex-wrap gap-x-3 text-[12px] text-[var(--color-text-secondary)] [overflow-wrap:anywhere]"><span>{model?.shortLabel ?? modelId}</span>{providerLabel ? <span>{providerLabel}</span> : null}</p>
           </div>
         </div>
