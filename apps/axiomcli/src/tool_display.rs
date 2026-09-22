@@ -649,24 +649,25 @@ mod tests {
 
     #[test]
     fn paths_are_relative_inside_the_workspace_and_absolute_outside_it() {
-        let cwd = Path::new("/work/axiomai");
+        let cwd = std::env::current_dir().expect("absolute workspace");
+        let outside = std::env::temp_dir().join("axiom-outside.txt");
         assert_eq!(
             describe_tool(
                 "read_file",
-                &json!({"path": "/work/axiomai/src/main.rs"}),
+                &json!({"path": cwd.join("src/main.rs")}),
                 ToolDisplayPhase::Completed,
-                Some(cwd),
+                Some(&cwd),
             ),
             "Read `src/main.rs`"
         );
         assert_eq!(
             describe_tool(
                 "read_file",
-                &json!({"path": "/tmp/outside.txt"}),
+                &json!({"path": outside}),
                 ToolDisplayPhase::Completed,
-                Some(cwd),
+                Some(&cwd),
             ),
-            "Read `/tmp/outside.txt`"
+            format!("Read `{}`", outside.display())
         );
     }
 
