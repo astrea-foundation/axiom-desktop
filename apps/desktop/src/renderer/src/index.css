@@ -990,6 +990,58 @@ input {
   overflow-wrap: normal;
   word-break: normal;
 }
+
+/* Bundled syntax tokens follow the app theme without changing code layout. */
+.markdown-prose {
+  --syntax-comment: #626977;
+  --syntax-keyword: #8250df;
+  --syntax-string: #116329;
+  --syntax-number: #9a4600;
+  --syntax-title: #0550ae;
+  --syntax-type: #953800;
+  --syntax-property: #0a5964;
+  --syntax-tag: #cf222e;
+}
+:root[data-theme="dark"] .markdown-prose {
+  --syntax-comment: #9a9aa6;
+  --syntax-keyword: #c8a0ff;
+  --syntax-string: #8ccf9b;
+  --syntax-number: #e9b27a;
+  --syntax-title: #82b6ff;
+  --syntax-type: #e3bd7c;
+  --syntax-property: #72c6d0;
+  --syntax-tag: #ffa198;
+}
+.markdown-prose .hljs-comment,
+.markdown-prose .hljs-quote { color: var(--syntax-comment); }
+.markdown-prose .hljs-keyword,
+.markdown-prose .hljs-selector-tag,
+.markdown-prose .hljs-doctag { color: var(--syntax-keyword); }
+.markdown-prose .hljs-string,
+.markdown-prose .hljs-regexp,
+.markdown-prose .hljs-addition { color: var(--syntax-string); }
+.markdown-prose .hljs-number,
+.markdown-prose .hljs-literal { color: var(--syntax-number); }
+.markdown-prose .hljs-title,
+.markdown-prose .hljs-section,
+.markdown-prose .hljs-selector-id,
+.markdown-prose .hljs-selector-class { color: var(--syntax-title); }
+.markdown-prose .hljs-type,
+.markdown-prose .hljs-built_in,
+.markdown-prose .hljs-title.class_ { color: var(--syntax-type); }
+.markdown-prose .hljs-attr,
+.markdown-prose .hljs-attribute,
+.markdown-prose .hljs-property,
+.markdown-prose .hljs-variable,
+.markdown-prose .hljs-symbol,
+.markdown-prose .hljs-bullet { color: var(--syntax-property); }
+.markdown-prose .hljs-meta,
+.markdown-prose .hljs-name,
+.markdown-prose .hljs-tag,
+.markdown-prose .hljs-deletion { color: var(--syntax-tag); }
+.markdown-prose .hljs-subst { color: var(--color-text-primary); }
+.markdown-prose .hljs-emphasis { font-style: italic; }
+.markdown-prose .hljs-strong { font-weight: 600; }
 .markdown-prose ul,
 .markdown-prose ol {
   padding-inline-start: 1.5em;

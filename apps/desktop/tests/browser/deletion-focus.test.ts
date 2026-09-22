@@ -3243,3 +3243,42 @@ test("attachment cards wrap within narrow windows and the draft tray scrolls wit
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
 });
+
+test("code highlighting follows both themes and preserves exact text through streamed updates", async () => {
+  const { page, errors } = await openApp();
+  try {
+    await page.locator('[data-thread-id="old-thread"]').click();
+    const source = '#!/usr/bin/env python3\n# extra precision\ndef pi(digits: int = 100):\n    return "3.14"\n';
+    const show = async (text: string) => page.evaluate((text) => (window as any).__deletionTest.setTimeline([
+      { id: "code", kind: "assistant", text, status: "streaming" },
+    ]), text);
+    await show(`\`\`\`python\n${source}\`\`\``);
+    const block = page.locator(".markdown-prose pre code");
+    await block.locator(".hljs-keyword").first().waitFor();
+    assert.equal(await block.textContent(), source);
+    const themeColours: string[][] = [];
+    for (const theme of ["light", "dark"] as const) {
+      await page.emulateMedia({ colorScheme: theme });
+      await page.waitForFunction(value => document.documentElement.dataset.theme === value, theme);
+      const colours = await block.evaluate(el => [el, ...["keyword", "string", "number", "comment"].map(kind => el.querySelector(`.hljs-${kind}`)!)].map(token => getComputedStyle(token).color));
+      assert.equal(new Set(colours).size, 5, `${theme} code has distinct token colours`);
+      themeColours.push(colours);
+      assert.equal(await block.textContent(), source);
+    }
+    assert.notDeepEqual(themeColours[0], themeColours[1]);
+    // Same transcript row, first incomplete and then complete, just as streaming supplies it.
+    const partial = 'def pi():\n    return "3.';
+    await show(`\`\`\`python\n${partial}`);
+    await page.waitForFunction(expected => document.querySelector(".markdown-prose pre code")?.textContent === expected, `${partial}\n`);
+    await show('```python\ndef pi():\n    return "3.14"\n```');
+    await page.waitForFunction(() => document.querySelector(".markdown-prose pre code")?.textContent === 'def pi():\n    return "3.14"\n');
+    assert.ok(await block.locator(".hljs-string").count() > 0);
+    await show(`\`\`\`\n${source}\`\`\``);
+    await block.locator(".hljs-keyword").first().waitFor();
+    assert.equal(await block.textContent(), source);
+    await show('```html\n<img src=x onerror=alert(1)>\n```');
+    await page.waitForFunction(() => document.querySelector(".markdown-prose pre code")?.textContent === '<img src=x onerror=alert(1)>\n');
+    assert.equal(await block.locator("img").count(), 0);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
