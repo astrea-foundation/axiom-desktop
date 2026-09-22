@@ -964,6 +964,12 @@
           "format": "uint64",
           "minimum": 0
         },
+        "afterRequestId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "limit": {
           "type": [
             "integer",
@@ -1030,6 +1036,12 @@
           ],
           "format": "uint64",
           "minimum": 0
+        },
+        "nextRequestUsageCursor": {
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [

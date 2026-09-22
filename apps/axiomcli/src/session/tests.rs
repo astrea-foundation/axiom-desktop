@@ -1811,3 +1811,85 @@ fn version_one_store_upgrades_without_replacing_existing_history() {
     drop(connection);
     assert!(!store.load(&id).unwrap().is_empty());
 }
+
+#[test]
+fn local_history_pages_bound_escaped_bytes_and_paginate_accounting_independently() {
+    use axiom_inference::{InvocationState, RequestUsage};
+    let store = SessionStore::in_memory().unwrap();
+    let id = SessionId::new();
+    create(&store, &id);
+    let mut sequence = 1;
+    // Three legal 4 MiB messages expand beyond the transport's 64 MiB ceiling.
+    let text = "\u{0001}".repeat(4 * 1024 * 1024);
+    for _ in 0..3 {
+        let turn_id = TurnId::new();
+        for event in [
+            AppEvent::PromptAccepted {
+                turn_id: turn_id.clone(),
+                text: text.clone(),
+                attachments: vec![],
+            },
+            AppEvent::TurnStarted {
+                turn_id: turn_id.clone(),
+            },
+            AppEvent::TurnCompleted { turn_id },
+        ] {
+            sequence += 1;
+            store.append(&envelope(&id, sequence, event)).unwrap();
+        }
+    }
+    for index in 0..205 {
+        store
+            .record_request_usage(
+                &id,
+                &RequestUsage {
+                    request_id: format!("{index:032x}"),
+                    model_id: "model".into(),
+                    provider_id: "near".into(),
+                    state: InvocationState::Failed,
+                    ..RequestUsage::default()
+                },
+            )
+            .unwrap();
+    }
+    let mut cursor = None;
+    let mut usage_cursor = None;
+    let mut items = vec![];
+    let mut usage_ids = vec![];
+    let mut page_count = 0;
+    loop {
+        let page = store
+            .thread_page(&id, cursor, usage_cursor.as_deref(), 250)
+            .unwrap();
+        assert!(serde_json::to_vec(&page).unwrap().len() < 33 * 1024 * 1024);
+        assert!(page.turns.is_empty());
+        let more = page.next_cursor.is_some() || page.next_request_usage_cursor.is_some();
+        cursor = page
+            .next_cursor
+            .or(Some(page.thread.last_timeline_sequence));
+        usage_cursor = page
+            .next_request_usage_cursor
+            .or_else(|| page.request_usage.last().map(|r| r.request_id.clone()))
+            .or(usage_cursor);
+        items.extend(page.items);
+        usage_ids.extend(page.request_usage.into_iter().map(|r| r.request_id));
+        page_count += 1;
+        assert!(page_count <= 4);
+        if !more {
+            break;
+        }
+    }
+    assert_eq!(page_count, 3);
+    assert_eq!(items.iter().filter(|item| item.content == text).count(), 3);
+    assert_eq!(usage_ids.len(), 205);
+    assert!(usage_ids.windows(2).all(|pair| pair[0] < pair[1]));
+    // Internal recovery consumers retain their complete accounting snapshot.
+    assert_eq!(
+        store
+            .thread_snapshot(&id, None, 1)
+            .unwrap()
+            .request_usage
+            .len(),
+        205
+    );
+}

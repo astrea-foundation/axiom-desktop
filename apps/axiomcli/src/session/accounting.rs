@@ -9,6 +9,22 @@ use super::codec::storage_error;
 use super::timeline::ensure_thread;
 
 impl SessionStore {
+    pub fn pending_accounting_ids(&self, id: &SessionId) -> Result<Vec<String>> {
+        let connection = self.lock()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT request_id FROM request_usage WHERE thread_id=?1
+             AND json_extract(record, '$.settled')=0
+             AND json_extract(record, '$.state')!='running' ORDER BY request_id LIMIT 100",
+            )
+            .map_err(storage_error)?;
+        statement
+            .query_map([id.to_string()], |row| row.get(0))
+            .map_err(storage_error)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(storage_error)
+    }
+
     /// Persist one runtime update and return the resulting durable thread
     /// revision. The envelope itself is never serialized.
     pub fn record_request_usage(

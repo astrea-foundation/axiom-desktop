@@ -367,6 +367,7 @@ export interface RenameThreadResponse {
 export interface GetThreadTimelineRequest {
   threadId: string;
   afterSequence?: number | null;
+  afterRequestId?: string | null;
   limit?: number | null;
   [k: string]: unknown;
 }
@@ -381,6 +382,7 @@ export interface GetThreadTimelineResponse {
   requestUsage?: RequestUsage[];
   items: TimelineItem[];
   nextCursor?: number | null;
+  nextRequestUsageCursor?: string | null;
   [k: string]: unknown;
 }
 /**

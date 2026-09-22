@@ -19,6 +19,7 @@ erasing the original decision.
 | [0013: NEAR worker sessions](0013-near-worker-sessions.md) | Implemented contract; [NEAR v3](../protocols/near-v3.md); deployment evidence is dated |
 | [0014: Fresh storage and deposit billing](0014-clean-storage-and-deposit-billing.md) | Current reset/billing contract; supersedes invoice plans and old SQLite history |
 | [0015: Persistence modules](0015-persistence-modules.md) | Native storage boundaries and SQL baseline organization |
+| [0016: Bounded local history](0016-bounded-local-history.md) | Local byte-bounded timeline and usage pagination |
 | [0017: Gift credit controls](0017-gift-credit-controls.md) | Private redemption, native billing and `billing@3` |
 
 Numbering gaps reflect repository history; no missing numbered ADR is required

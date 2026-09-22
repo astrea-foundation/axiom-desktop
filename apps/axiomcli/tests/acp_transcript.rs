@@ -189,7 +189,7 @@ impl AcpProcess {
                     "features": {
                         "desktopChat": 1,
                         "threadCatalog": 1,
-                        "timeline": 1,
+                        "timeline": 2,
                         "modelCatalog": 1,
                         "profilePreferences": 1,
                         "collections": 1,
@@ -1438,7 +1438,7 @@ async fn unsupported_structured_questions_close_cleanly_instead_of_sticking() {
                 "features": {
                     "desktopChat": 0,
                     "threadCatalog": 0,
-                    "timeline": 1,
+                    "timeline": 2,
                     "modelCatalog": 0,
                     "profilePreferences": 0,
                     "collections": 0,

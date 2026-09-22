@@ -49,10 +49,11 @@ family; each named feature negotiates its own version. Missing/zero versions
 mean unsupported. Desktop checks its required feature set and negotiates optional
 features separately.
 
-`account` is version **2** and `billing` is version **3**. Current other advertised features are version **1**:
-`desktopChat`, `desktopAgent`, `threadCatalog`, `timeline`, `modelCatalog`,
+`account`, `timeline`, and `attachments` are version **2**; `billing` is version **3**.
+Other advertised features are version **1**:
+`desktopChat`, `desktopAgent`, `threadCatalog`, `modelCatalog`,
 `profilePreferences`, `collections`, `usage`, `securityEvidence`,
-`webConsent`, `steering`, `messageRevision`, `attachments`, `compaction`, and `activity`.
+`webConsent`, `steering`, `messageRevision`, `compaction`, and `activity`.
 The source `FeatureVersions` and generated schema are authoritative.
 
 ## Methods and ownership
@@ -182,3 +183,18 @@ The generator exports Rust DTOs to JSON Schema and TypeScript; never hand-edit
 generated TypeScript. Build `cargo build --locked -p axiomcli` first for real-process
 client tests. The Rust schema-drift and ACP transcript tests, Node client/state tests
 and Desktop IPC/browser tests cover the same semantic contract.
+
+## Local history pagination
+
+Timeline v2 accepts independent `afterSequence` and `afterRequestId` cursors and
+returns `nextCursor` and `nextRequestUsageCursor`. Continue until both are absent,
+keeping each finished stream's last cursor while reading the other. Request usage
+is ordered by request ID, limited to 100 records and 512 KiB per page. Timeline
+items are limited by row count and 32 MiB of serialized JSON (including escaping);
+the final wire response is also checked below the 64 MiB transport ceiling.
+Oversized individual records fail explicitly without truncating stored content.
+Only the active turn is queried for a wire page. Accounting recovery runs before
+the first page, at most 100 pending requests per refresh, to avoid changing the
+snapshot revision during pagination. Desktop validates cursor progress and
+assembles both streams atomically at one revision and account generation.
+These exchanges use the native local pipe and never upload conversation history.
