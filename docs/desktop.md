@@ -233,9 +233,15 @@ Testnet or inconsistent valuation responses are rejected. Only mainnet deposits
 are supported; invoice checkout is removed.
 
 Settings → Usage shows posted account-ledger inference charges, including other
-clients/devices. Top-ups, pending holds and unbilled estimates are excluded.
-Unknown historical model attribution stays in Other models. Account changes
-invalidate stale requests and projections.
+clients/devices. **This week**, **This month** and **All time** tabs update the total,
+pie chart and model breakdown together; All time is the initial selection. Weeks
+start Monday and months start on the first, using the device's IANA timezone and
+calendar boundaries (including DST). Charges count when posted to the ledger.
+Top-ups, pending holds and unbilled estimates are excluded. Empty periods show
+zero spending; failed loads show an error with retry. Arrow keys, Home and End
+switch the period tabs. Account/period changes discard stale responses, and a
+backend or sidecar that returns a different period fails without showing mislabeled
+totals. Inconsistent model attribution remains an explicit error.
 
 Settings → API keys lists, creates and revokes named automation keys and shows
 usage attribution. Creation can require recent sign-in; the newly created key

@@ -3317,3 +3317,65 @@ test("code highlighting follows both themes and preserves exact text through str
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
 });
+
+test("usage period tabs update totals and charts, discard stale replies, and support keyboard retry", async () => {
+  const { page, errors } = await openApp();
+  try {
+    await page.evaluate(() => {
+      const win = window as any;
+      win.__periodRequests = [];
+      win.__weekCalls = 0;
+      win.axiomDesktop.agent.usageSummary = async (accountId: string, request: { period: string; timezone: string }) => {
+        win.__periodRequests.push({ accountId, ...request });
+        const model = (costMicrousd: string, modelName: string) => ({ provider: "tinfoil", modelId: modelName, modelName, costMicrousd });
+        if (request.period === "week") {
+          win.__weekCalls++;
+          if (win.__weekCalls === 1) return new Promise(resolve => { win.__lateWeek = resolve; });
+          if (win.__weekCalls === 2) return { summary: { period: "all_time", totalCostMicrousd: "0", models: [] } };
+          return { summary: { period: "week", totalCostMicrousd: "0", models: [] } };
+        }
+        if (request.period === "month") return { summary: { period: "month", totalCostMicrousd: "3000000", models: [model("1000000", "Month A"), model("2000000", "Month B")] } };
+        return { summary: { period: "all_time", totalCostMicrousd: "9000000", models: [model("9000000", "All-time model")] } };
+      };
+    });
+    await openAccountScreen(page, "Settings");
+    await page.getByRole("tab", { name: "Usage", exact: true }).click();
+    const total = page.locator("[data-usage-total]");
+    await total.waitFor();
+    assert.equal(await total.innerText(), "$9.00");
+    const tabs = page.getByRole("tablist", { name: "Spending period" });
+    await tabs.getByRole("tab", { name: "This week" }).click();
+    await page.waitForFunction(() => !!(window as any).__lateWeek);
+    assert.equal(await total.count(), 0);
+    assert.equal(await tabs.isVisible(), true);
+    await tabs.getByRole("tab", { name: "This month" }).click();
+    await page.getByText("Spending this month", { exact: true }).waitFor();
+    assert.equal(await total.innerText(), "$3.00");
+    assert.equal(await page.getByRole("img", { name: /Spending by model/ }).locator("path").count(), 2);
+    assert.equal(await page.getByRole("button", { name: /Month B.*66.7%/ }).count(), 1);
+    await page.evaluate(async () => {
+      (window as any).__lateWeek({ summary: { period: "week", totalCostMicrousd: "77000000", models: [{ provider: "near", modelId: "old", modelName: "Stale week", costMicrousd: "77000000" }] } });
+      await new Promise(resolve => requestAnimationFrame(resolve));
+    });
+    assert.equal(await total.innerText(), "$3.00");
+    assert.equal(await page.getByText("Stale week", { exact: true }).count(), 0);
+    await tabs.getByRole("tab", { name: "This month" }).press("Home");
+    await page.getByRole("alert").filter({ hasText: "Couldn’t load your usage." }).waitFor();
+    assert.equal(await total.count(), 0);
+    assert.equal(await tabs.getByRole("tab", { name: "This week" }).getAttribute("aria-selected"), "true");
+    await page.getByRole("button", { name: "Try again" }).click();
+    await page.getByRole("heading", { name: "No spending this week" }).waitFor();
+    assert.equal(await total.innerText(), "$0.00");
+    await tabs.getByRole("tab", { name: "This week" }).press("ArrowRight");
+    await page.getByText("Spending this month", { exact: true }).waitFor();
+    await tabs.getByRole("tab", { name: "This month" }).press("End");
+    await page.getByText("All-time spending", { exact: true }).waitFor();
+    assert.equal(await total.innerText(), "$9.00");
+    const requests = await page.evaluate(() => (window as any).__periodRequests);
+    assert.equal(requests[0]?.period, "all_time");
+    // StrictMode can issue the initial request twice; switching must send each selected period.
+    assert.deepEqual(requests.slice(-6).map((r: { period: string }) => r.period), ["week", "month", "week", "week", "month", "all_time"]);
+    assert.ok(requests.every((r: { accountId: string; timezone: string }) => r.accountId === "test-account" && typeof r.timezone === "string" && r.timezone.length > 0));
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});

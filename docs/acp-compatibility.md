@@ -79,7 +79,7 @@ are never an instruction to send conversation plaintext through a hosted endpoin
 | Native account | `account/status`, `account/native_login_start`, `account/native_login_complete`, `account/native_login_cancel`, `account/logout` |
 | Automation-key management | `account/api_keys`, `account/api_key_create`, `account/api_key_revoke` |
 | Billing | `billing/status`, `billing/redeem_gift_code` |
-| Usage | `usage/summary` |
+| Usage | `usage/summary` (optional `period`: `week`/`month`/`all_time`, IANA `timezone`; defaults: all time/UTC) |
 | Evidence/compaction/steering | `security/verify`, `compaction/start`, `turn/steer` |
 
 Permission and question responses remain standard ACP. Standard notifications

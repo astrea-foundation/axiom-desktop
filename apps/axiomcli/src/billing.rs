@@ -61,7 +61,10 @@ struct UsageSpendModel {
     cost_microusd: String,
 }
 
-fn validated_usage_spend(spend: UsageSpend) -> Result<axiom_acp_extension::UsageSummary> {
+fn validated_usage_spend(
+    spend: UsageSpend,
+    period: axiom_acp_extension::UsagePeriod,
+) -> Result<axiom_acp_extension::UsageSummary> {
     let invalid = || AxiomError::Protocol("Axiom returned invalid usage spending".into());
     let amount = |value: &str| -> Result<u128> {
         if value.is_empty()
@@ -73,7 +76,7 @@ fn validated_usage_spend(spend: UsageSpend) -> Result<axiom_acp_extension::Usage
         }
         value.parse().map_err(|_| invalid())
     };
-    if spend.period != "all_time" || spend.models.len() > 512 {
+    if spend.period != period.as_str() || spend.models.len() > 512 {
         return Err(invalid());
     }
     let total = amount(&spend.total_cost_microusd)?;
@@ -257,8 +260,18 @@ impl BillingClient {
 
     pub async fn usage_summary(
         &self,
+        request: &axiom_acp_extension::UsageSummaryRequest,
         cancellation: &CancellationToken,
     ) -> Result<axiom_acp_extension::UsageSummary> {
+        let timezone = request.timezone.as_deref().unwrap_or("UTC");
+        if timezone.is_empty()
+            || timezone.len() > 128
+            || !timezone
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || b"/_+-".contains(&c))
+        {
+            return Err(AxiomError::Protocol("Invalid usage timezone".into()));
+        }
         let lease = self
             .auth
             .access_token_for_account_operation(cancellation)
@@ -266,6 +279,7 @@ impl BillingClient {
         let response = send_with_cancellation(
             self.client
                 .get(self.endpoint("/api/v1/usage/spend"))
+                .query(&[("period", request.period.as_str()), ("timezone", timezone)])
                 .bearer_auth(lease.expose_for_authorization()),
             cancellation,
             "usage",
@@ -273,7 +287,7 @@ impl BillingClient {
         .await?;
         ensure_success(response.status(), "usage")?;
         let spend = decode_bounded_json::<UsageSpend>(response, cancellation, "usage").await?;
-        let summary = validated_usage_spend(spend)?;
+        let summary = validated_usage_spend(spend, request.period)?;
         self.ensure_account_current(&lease)?;
         Ok(summary)
     }
@@ -749,27 +763,71 @@ mod tests {
             "models": [{ "provider": "test", "model_id": "model", "model_name": "Model",
                 "cost_microusd": "9007199254740993" }]
         });
-        let parsed = validated_usage_spend(serde_json::from_value(valid.clone()).unwrap()).unwrap();
+        let parsed = validated_usage_spend(
+            serde_json::from_value(valid.clone()).unwrap(),
+            axiom_acp_extension::UsagePeriod::AllTime,
+        )
+        .unwrap();
         assert_eq!(parsed.total_cost_microusd, "9007199254740993");
         for amount in ["9007199254740992", "-1", "01", "1e9", "1.5", ""] {
             let mut bad = valid.clone();
             bad["total_cost_microusd"] = amount.into();
-            assert!(validated_usage_spend(serde_json::from_value(bad).unwrap()).is_err());
+            assert!(
+                validated_usage_spend(
+                    serde_json::from_value(bad).unwrap(),
+                    axiom_acp_extension::UsagePeriod::AllTime
+                )
+                .is_err()
+            );
         }
         let empty =
             serde_json::json!({ "period": "all_time", "total_cost_microusd": "0", "models": [] });
         assert!(
-            validated_usage_spend(serde_json::from_value(empty).unwrap())
-                .unwrap()
-                .models
-                .is_empty()
+            validated_usage_spend(
+                serde_json::from_value(empty).unwrap(),
+                axiom_acp_extension::UsagePeriod::AllTime
+            )
+            .unwrap()
+            .models
+            .is_empty()
         );
         let mut bad = valid.clone();
         bad["models"][0]["model_id"] = serde_json::Value::Null;
-        assert!(validated_usage_spend(serde_json::from_value(bad).unwrap()).is_err());
+        assert!(
+            validated_usage_spend(
+                serde_json::from_value(bad).unwrap(),
+                axiom_acp_extension::UsagePeriod::AllTime
+            )
+            .is_err()
+        );
         let mut bad = valid;
         bad["models"][0]["model_name"] = "bad\nname".into();
-        assert!(validated_usage_spend(serde_json::from_value(bad).unwrap()).is_err());
+        assert!(
+            validated_usage_spend(
+                serde_json::from_value(bad).unwrap(),
+                axiom_acp_extension::UsagePeriod::AllTime
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn usage_requires_the_requested_period_including_legacy_server_responses() {
+        use axiom_acp_extension::UsagePeriod;
+        for requested in [UsagePeriod::Week, UsagePeriod::Month, UsagePeriod::AllTime] {
+            for returned in ["week", "month", "all_time", "day"] {
+                let raw = serde_json::json!({
+                    "period": returned, "total_cost_microusd": "0", "models": []
+                });
+                assert_eq!(
+                    validated_usage_spend(serde_json::from_value(raw).unwrap(), requested).is_ok(),
+                    returned == requested.as_str()
+                );
+            }
+        }
+        let legacy: axiom_acp_extension::UsageSummaryRequest = serde_json::from_str("{}").unwrap();
+        assert_eq!(legacy.period, UsagePeriod::AllTime);
+        assert!(legacy.timezone.is_none());
     }
 
     #[test]
