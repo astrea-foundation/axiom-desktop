@@ -28,7 +28,8 @@ availability list; models are never substituted based on aliases or similar name
 
 Image and file icons replace capability words in Desktop. Tinfoil uses its official
 provider symbol. The composer model control shows the provider symbol to the left
-of the model brand icon and name. Brand artwork is presentation metadata, not a model availability
+of the model brand icon and name; hovering the provider symbol shows its name.
+Brand artwork is presentation metadata, not a model availability
 list. A previously unseen model uses the generic model icon when no brand matches.
 
 ## Direct uploads and compatibility

@@ -192,7 +192,9 @@ export function ChatComposer({
               >
                 {selectedModel ? (
                   <>
-                    <ProviderBrandIcon providerId={selectedModel.providerId} providerLabel={selectedModel.providerLabel} className="h-3.5 w-3.5 shrink-0" />
+                    <span title={selectedModel.providerLabel} className="inline-flex shrink-0">
+                      <ProviderBrandIcon providerId={selectedModel.providerId} providerLabel={selectedModel.providerLabel} className="pointer-events-none h-3.5 w-3.5" />
+                    </span>
                     <ModelBrandIcon model={selectedModel} className="h-3.5 w-3.5 shrink-0" />
                   </>
                 ) : (
