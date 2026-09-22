@@ -201,12 +201,17 @@ fn run_tui_at(
             },
             "resized interactive screen",
         );
+        let completed_before_probe = completed_turns(state_path);
         if runner != "signed_out" {
-            let completed_before = completed_turns(state_path);
             writer.write_all(b"probe\r").expect("submit prompt");
             writer.flush().expect("flush prompt");
             if test_runner == "echo" {
-                wait_for_completed_turn(state_path, &completed_before);
+                wait_for_completed_turn(
+                    state_path,
+                    &completed_before_probe,
+                    &output_rx,
+                    &mut output,
+                );
             }
         }
         if runner == "input_active" {
@@ -266,11 +271,12 @@ fn run_tui_at(
                 b"Model changed",
                 "pasted model filter",
             );
+            let completed_before = completed_turns(state_path);
             writer
                 .write_all(b"AfterPicker\r")
                 .expect("submit clean draft");
             writer.flush().unwrap();
-            thread::sleep(Duration::from_millis(250));
+            wait_for_completed_turn(state_path, &completed_before, &output_rx, &mut output);
         } else if runner == "blocking" {
             wait_for_output(&output_rx, &mut output, b"Working", "blocking turn");
         } else if runner == "questions" {
@@ -388,7 +394,7 @@ fn run_tui_at(
                 .write_all(b"remember this model\r")
                 .expect("submit prompt with selected model");
             writer.flush().expect("flush selected-model prompt");
-            wait_for_completed_turn(state_path, &completed_before);
+            wait_for_completed_turn(state_path, &completed_before, &output_rx, &mut output);
         } else if runner == "delete" {
             writer.write_all(b"/delete\r").expect("open delete picker");
             writer.flush().expect("flush delete command");
@@ -474,7 +480,7 @@ fn run_tui_at(
             writer.write_all(b"aftergift\r").unwrap();
             writer.flush().unwrap();
             wait_for_output(&output_rx, &mut output, b"aftergift", "composer restored");
-            wait_for_completed_turn(state_path, &completed_before);
+            wait_for_completed_turn(state_path, &completed_before, &output_rx, &mut output);
         } else if runner == "composer" {
             let completed_before = completed_turns(state_path);
             writer
@@ -487,9 +493,17 @@ fn run_tui_at(
                 b"thirde",
                 "edited multiline prompt",
             );
-            wait_for_completed_turn(state_path, &completed_before);
+            wait_for_completed_turn(state_path, &completed_before, &output_rx, &mut output);
         } else {
             thread::sleep(Duration::from_millis(250));
+        }
+        if matches!(
+            test_runner,
+            "questions" | "approval" | "plan_review" | "workspace_edit"
+        ) {
+            // Answer submission does not acknowledge that the runner and its
+            // terminal UI event have finished. Escape must test idle focus.
+            wait_for_completed_turn(state_path, &completed_before_probe, &output_rx, &mut output);
         }
     }
     if !panic_probe {
@@ -578,12 +592,21 @@ fn completed_turns(state_path: &Path) -> std::collections::HashSet<String> {
         .expect("decode completed PTY turns")
 }
 
-fn wait_for_completed_turn(state_path: &Path, previous: &std::collections::HashSet<String>) {
+fn wait_for_completed_turn(
+    state_path: &Path,
+    previous: &std::collections::HashSet<String>,
+    receiver: &mpsc::Receiver<Vec<u8>>,
+    output: &mut Vec<u8>,
+) {
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while completed_turns(state_path).is_subset(previous) {
+        while let Ok(chunk) = receiver.try_recv() {
+            output.extend_from_slice(&chunk);
+        }
         assert!(
             std::time::Instant::now() < deadline,
-            "PTY runner did not complete a new turn"
+            "PTY runner did not complete a new turn; output: {:?}",
+            String::from_utf8_lossy(output)
         );
         thread::sleep(Duration::from_millis(25));
     }
