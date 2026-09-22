@@ -475,7 +475,13 @@ mod tests {
         let stdout = String::from_utf8(output.stdout).expect("UTF-8 shell output");
         let mut lines = stdout.lines();
         assert_eq!(lines.next(), Some("unset"));
-        assert_eq!(lines.next(), Some(workspace.to_string_lossy().as_ref()));
+        let reported = std::path::Path::new(lines.next().expect("shell working directory"));
+        assert_eq!(
+            reported.canonicalize().expect("reported working directory"),
+            workspace
+                .canonicalize()
+                .expect("requested working directory")
+        );
         assert_eq!(lines.next(), None);
     }
 

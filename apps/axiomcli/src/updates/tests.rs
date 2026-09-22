@@ -69,8 +69,10 @@ fn stable_numeric_versions_never_offer_a_downgrade() {
 #[test]
 fn routes_bundled_and_standalone_installations_without_mixing_artifacts() {
     let root = tempfile::tempdir().unwrap();
-    for resources in ["resources", "Resources"] {
-        let path = root.path().join(resources);
+    for (index, resources) in ["resources", "Resources"].into_iter().enumerate() {
+        // Separate fixtures also work on case-insensitive macOS filesystems.
+        let fixture = root.path().join(format!("desktop-{index}"));
+        let path = fixture.join(resources);
         fs::create_dir_all(path.join("bin")).unwrap();
         fs::write(path.join("app.asar"), b"desktop").unwrap();
         fs::write(path.join("bin/axiomcli"), b"cli").unwrap();
@@ -80,7 +82,7 @@ fn routes_bundled_and_standalone_installations_without_mixing_artifacts() {
         );
         #[cfg(unix)]
         {
-            let link = root.path().join(format!("{resources}-link"));
+            let link = fixture.join("cli-link");
             std::os::unix::fs::symlink(path.join("bin/axiomcli"), &link).unwrap();
             assert_eq!(installation_at(&link), Installation::Desktop);
         }
