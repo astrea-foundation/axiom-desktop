@@ -121,6 +121,16 @@ runs when needed. Packaging reuses those results instead of repeating the suites
 Retry only failed validation targets or packaging jobs. These checks do not
 replace signed OS installation acceptance.
 
+The release build retains the complete signed `axiom-signed-release` artifact
+before cross-repository publication. If the narrow upload or dispatch credentials
+are not configured, the job summary records that operator publication is still
+required; a successful build alone does not mean the release is public. An
+authenticated operator can download that artifact, set `AXIOM_UPDATE_PUBLIC_KEYS`
+to the release public key, and run `node scripts/publish-github-release.mjs DIRECTORY`
+from the promoted native checkout. Follow the platform publication guide to
+verify both mirrors and promote the catalog. Do not rebuild installers merely to
+retry publication, and do not copy a broad personal token into Actions.
+
 Branch checks use Ubuntu 24.04 with Python 3.12 and permit Bubblewrap user
 namespaces on the disposable runner. Release binaries retain Ubuntu 22.04 for
 glibc 2.35; the release/preview jobs install Python 3.12 explicitly. Rust test

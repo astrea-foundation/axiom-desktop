@@ -49,6 +49,7 @@ jobs:
 
   linux:
     needs: live-evaluation
+    timeout-minutes: 60
     runs-on: ubuntu-22.04
     environment: release
     env:
@@ -93,6 +94,7 @@ jobs:
 
   macos:
     name: Signed macOS installers (${{ matrix.arch }})
+    timeout-minutes: 90
     needs: live-evaluation
     runs-on: ${{ matrix.runner }}
     environment: release
@@ -169,6 +171,7 @@ jobs:
 
   publish-draft:
     needs: [linux, macos, windows-desktop]
+    timeout-minutes: 30
     runs-on: ubuntu-latest
     environment: release
     permissions:
@@ -191,13 +194,30 @@ jobs:
         env:
           AXIOM_UPDATE_SIGNING_KEY: ${{ secrets.AXIOM_UPDATE_SIGNING_KEY }}
         run: node scripts/download-manifest.mjs release "${GITHUB_REF_NAME#v}" signed
+      - name: Retain verified installers for publication retries
+        uses: actions/upload-artifact@v4
+        with:
+          name: axiom-signed-release
+          path: release/
+          if-no-files-found: error
       - name: Create or verify immutable GitHub draft assets
+        id: draft
         env:
           GH_TOKEN: ${{ secrets.AXIOM_RELEASES_TOKEN }}
-        run: node scripts/publish-github-release.mjs release
+        run: |
+          if [ -n "$GH_TOKEN" ]; then
+            node scripts/publish-github-release.mjs release
+            echo 'published=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'Cross-repository credential is not configured; publish the axiom-signed-release artifact using the documented operator procedure.' >> "$GITHUB_STEP_SUMMARY"
+          fi
       - name: Hand off to the promoted platform publisher
+        if: steps.draft.outputs.published == 'true'
         env:
           GH_TOKEN: ${{ secrets.AXIOM_PLATFORM_RELEASE_TOKEN }}
         run: |
-          test -n "$GH_TOKEN"
-          gh workflow run release.yml --repo astrea-foundation/axiom-platform --ref main -f version="${GITHUB_REF_NAME#v}" -f revision="$(git rev-parse HEAD)"
+          if [ -n "$GH_TOKEN" ]; then
+            gh workflow run release.yml --repo astrea-foundation/axiom-platform --ref main -f version="${GITHUB_REF_NAME#v}" -f revision="$(git rev-parse HEAD)"
+          else
+            echo 'Platform dispatch credential is not configured; operator publication remains required.' >> "$GITHUB_STEP_SUMMARY"
+          fi
