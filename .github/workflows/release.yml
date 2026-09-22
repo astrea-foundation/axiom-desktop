@@ -40,7 +40,7 @@ jobs:
 
   linux-x86-64:
     needs: live-evaluation
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     environment: release
     steps:
       - uses: actions/checkout@v4
@@ -124,7 +124,7 @@ jobs:
           test -n "$APPLE_ID"
           test -n "$APPLE_APP_SPECIFIC_PASSWORD"
           test -n "$APPLE_TEAM_ID"
-          pnpm --filter axiom-desktop dist -- --mac --${{ matrix.arch }} --publish never
+          node apps/desktop/scripts/package-desktop.mjs --mac --${{ matrix.arch }}
       - name: Verify packaged identity, architecture, signatures, and notarization
         shell: bash
         run: |

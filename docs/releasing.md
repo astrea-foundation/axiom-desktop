@@ -108,7 +108,7 @@ node apps/desktop/scripts/package-desktop.mjs --linux --x64 --unsigned
 # Native Windows: --win --x64 (or --arm64)
 ```
 
-Linux release builds use Ubuntu 22.04 so the CLI does not acquire newer glibc
+Linux Desktop and standalone CLI release builds use Ubuntu 22.04 so the CLI does not acquire newer glibc
 requirements from a rolling-release workstation. Linux ARM is not in this
 release matrix. Install `libarchive-tools` on the Ubuntu build machine: the
 Arch packaging step requires `bsdtar`. The Arch package installs with `sudo pacman -U FILE.pkg.tar.xz`;
@@ -178,6 +178,7 @@ version. Desktop checks the feed on startup and every six hours.
 Use `package:release` for installers: it builds each target separately and stamps
 `axiomUpdateFormat` into the packaged app's metadata. This keeps updates on the
 same OS, binary architecture, and installer format, including DMG versus ZIP.
+Both the manual installer and automatic macOS tag workflows use this packager.
 The app downloads and verifies the new installer; installation is user initiated.
 Existing releases without update support need one manual upgrade to a release
 containing this feature before they can display future update notifications.
