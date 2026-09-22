@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FileText, ImageIcon, X } from "lucide-react";
 import type { PromptAttachment } from "@axiom/axiom-acp-client";
+import { ImagePreviewDialog } from "./ImagePreviewDialog";
 
 export interface AttachmentControl {
   items: PromptAttachment[];
@@ -20,6 +21,7 @@ function AttachmentCard({ summary, attachment, compact, onRemove, disabled }: {
 }) {
   const image = attachment?.kind === "image" ? attachment.image : null;
   const imageUrl = useMemo(() => image ? `data:${image.mimeType};base64,${image.data}` : undefined, [image]);
+  const [preview, setPreview] = useState<{ name: string; src: string } | null>(null);
   const extension = summary.name.split(".").at(-1)?.toUpperCase();
   return <div data-attachment-card data-attachment-kind={summary.kind}
     className={`relative min-w-0 max-w-full shrink-0 overflow-hidden rounded-[14px] border border-[var(--color-border)] bg-[var(--wash-chip)] ${compact ? "w-32" : "w-44"}`}>
@@ -33,8 +35,13 @@ function AttachmentCard({ summary, attachment, compact, onRemove, disabled }: {
       <p className="truncate text-[12px] font-medium text-[var(--color-text-primary)]" title={summary.name}>{summary.name}</p>
       <p className="mt-0.5 text-[10px] text-[var(--color-text-tertiary)]">{extension && extension.length <= 8 ? extension : summary.kind === "image" ? "Image" : "File"}</p>
     </div>
+    {imageUrl ? <button type="button" aria-label={`View image ${summary.name}`} aria-haspopup="dialog"
+      data-preserve-follow onClick={() => setPreview({ name: summary.name, src: imageUrl })}
+      className="absolute inset-0 cursor-zoom-in rounded-[14px] focus-visible:outline-2 focus-visible:-outline-offset-2" /> : null}
     {onRemove ? <button type="button" disabled={disabled} aria-label={`Remove ${summary.name}`} onClick={onRemove}
       className="absolute right-1 top-1 rounded-full bg-[var(--surface-float)] p-1 text-[var(--color-text-secondary)] shadow hover:text-[var(--color-text-primary)] disabled:opacity-50"><X size={13} /></button> : null}
+    {preview && preview.src === imageUrl && preview.name === summary.name
+      ? <ImagePreviewDialog name={preview.name} src={preview.src} onClose={() => setPreview(null)} /> : null}
   </div>;
 }
 

@@ -123,7 +123,9 @@ truncated. Audio/video and remote URLs are unsupported.
 Original bytes and filenames reach the provider inside its authenticated E2EE
 request. Attachments remain in account-local history, survive edit/regeneration,
 and appear as wrapping cards in the draft, queue, and transcript. Image cards
-show local previews. Sending retains these cards through thread setup and native
+show local previews. Click an image card to view the full image in a larger
+overlay; close it with Escape, the close button, or a click outside the viewer.
+Sending retains these cards through thread setup and native
 acknowledgement, without waiting for the provider or reloading the original
 files. Saved image previews load from local history as they come into view.
 Compaction sends original image/file

@@ -3020,6 +3020,115 @@ for (const existing of [false, true]) {
   });
 }
 
+test("image card viewer enlarges local images, fits the window, and restores keyboard focus", async () => {
+  const { page, errors } = await openApp("linux", false, [], "medium", true, false);
+  try {
+    const data = await page.evaluate(() => {
+      const canvas = document.createElement("canvas"); canvas.width = 1600; canvas.height = 900;
+      const context = canvas.getContext("2d")!;
+      const gradient = context.createLinearGradient(0, 0, 1600, 900);
+      gradient.addColorStop(0, "#164e63"); gradient.addColorStop(1, "#fb923c");
+      context.fillStyle = gradient; context.fillRect(0, 0, 1600, 900);
+      context.fillStyle = "white"; context.font = "72px sans-serif"; context.fillText("Image preview", 120, 450);
+      return canvas.toDataURL("image/png").split(",")[1]!;
+    });
+    await page.locator('input[type="file"]').setInputFiles({ name: "landscape.png", mimeType: "image/png", buffer: Buffer.from(data, "base64") });
+    const trigger = page.getByRole("button", { name: "View image landscape.png", exact: true });
+    await trigger.waitFor();
+    const thumbnail = await page.locator("[data-attachment-card] img").boundingBox();
+    await trigger.focus();
+    await page.keyboard.press("Enter");
+    const dialog = page.getByRole("dialog", { name: "Image preview: landscape.png", exact: true });
+    await dialog.waitFor();
+    const close = dialog.getByRole("button", { name: "Close image preview" });
+    const image = dialog.getByRole("img", { name: "landscape.png" });
+    await page.waitForFunction(() => document.querySelector<HTMLImageElement>("dialog img")?.naturalWidth === 1600);
+    assert.equal(await image.getAttribute("src"), `data:image/png;base64,${data}`);
+    const enlarged = await image.boundingBox();
+    assert.ok(enlarged && thumbnail && enlarged.width > thumbnail.width * 3 && enlarged.height > thumbnail.height * 3);
+    assert.equal(await image.evaluate((element) => getComputedStyle(element).objectFit), "contain");
+    for (const key of ["Tab", "Shift+Tab"]) {
+      await page.keyboard.press(key);
+      assert.ok(await close.evaluate((element) => element === document.activeElement));
+    }
+    await image.click();
+    assert.ok(await dialog.isVisible(), "clicking the picture keeps it open");
+    if (process.env.AXIOM_IMAGE_VIEWER_CAPTURE) await page.screenshot({ path: `${process.env.AXIOM_IMAGE_VIEWER_CAPTURE}/large.png`, animations: "disabled" });
+    await page.setViewportSize({ width: 640, height: 500 });
+    const bounds = await dialog.boundingBox();
+    assert.ok(bounds && bounds.x >= 0 && bounds.y >= 0 && bounds.x + bounds.width <= 640 && bounds.y + bounds.height <= 500);
+    assert.ok(await image.evaluate((element) => {
+      const rect = element.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0 && rect.bottom <= innerHeight && rect.right <= innerWidth;
+    }));
+    if (process.env.AXIOM_IMAGE_VIEWER_CAPTURE) await page.screenshot({ path: `${process.env.AXIOM_IMAGE_VIEWER_CAPTURE}/narrow.png`, animations: "disabled" });
+    await page.keyboard.press("Escape");
+    await dialog.waitFor({ state: "detached" });
+    assert.ok(await trigger.evaluate((element) => element === document.activeElement));
+    await page.keyboard.press("Space");
+    await dialog.waitFor();
+    await close.click();
+    await dialog.waitFor({ state: "detached" });
+    assert.ok(await trigger.evaluate((element) => element === document.activeElement));
+    await trigger.click();
+    await dialog.waitFor();
+    await page.mouse.click(2, 2);
+    await dialog.waitFor({ state: "detached" });
+    assert.ok(await trigger.evaluate((element) => element === document.activeElement));
+    await page.getByRole("button", { name: "Remove landscape.png" }).click();
+    assert.equal(await page.locator("[data-attachment-card], dialog").count(), 0, "removing an image does not open its viewer");
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("image card viewer opens during sending and after acknowledgement without reloading attachments", async () => {
+  const { page, errors } = await openApp("linux", false, [], "medium", true, false);
+  try {
+    await page.evaluate(() => {
+      (window as any).__deletionTest.holdSetup("prompt");
+      (window as any).__previewReads = 0;
+      (window as any).axiomDesktop.agent.getAttachments = async () => { (window as any).__previewReads++; throw new Error("Unexpected preview read"); };
+    });
+    await page.locator('input[type="file"]').setInputFiles({ name: "pixel.png", mimeType: "image/png", buffer: tinyPng });
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    await page.waitForFunction(() => (window as any).__deletionTest.calls.some((call: any) => call.method === "attachments"));
+    const transcript = page.getByRole("region", { name: "Chat messages", exact: true });
+    for (const acknowledged of [false, true]) {
+      if (acknowledged) {
+        await page.evaluate(() => (window as any).__deletionTest.releaseSetup("prompt"));
+        await page.getByText("Sending…", { exact: true }).waitFor({ state: "hidden" });
+      }
+      await transcript.getByRole("button", { name: "View image pixel.png" }).click();
+      const dialog = page.getByRole("dialog", { name: "Image preview: pixel.png" });
+      await dialog.waitFor();
+      assert.equal(await dialog.getByRole("img").getAttribute("src"), `data:image/png;base64,${tinyPng.toString("base64")}`);
+      await page.keyboard.press("Escape");
+      await dialog.waitFor({ state: "detached" });
+    }
+    assert.equal(await page.evaluate(() => (window as any).__previewReads), 0);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("saved image card viewer closes when its account is replaced", async () => {
+  const { page, errors } = await openApp("linux", false, [], "medium", true, false);
+  try {
+    await page.locator('[data-thread-id="old-thread"]').click();
+    await page.evaluate((data) => {
+      (window as any).axiomDesktop.agent.getAttachments = async () => ({ attachments: [{ kind: "image", name: "saved.png", image: { mimeType: "image/png", data } }] });
+      (window as any).__deletionTest.setTimeline([{ id: "saved-image", kind: "user", text: "Saved picture", status: "completed",
+        raw: { metadata: { attachments: [{ name: "saved.png", kind: "image" }] } } }]);
+    }, tinyPng.toString("base64"));
+    await page.getByRole("button", { name: "View image saved.png" }).click();
+    const dialog = page.getByRole("dialog", { name: "Image preview: saved.png" });
+    await dialog.waitFor();
+    await page.evaluate(() => (window as any).__deletionTest.setAccount("different-account"));
+    await dialog.waitFor({ state: "detached" });
+    assert.equal(await page.locator("dialog:modal").count(), 0);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
 test("attachment cards wrap within narrow windows and the draft tray scrolls without hiding Send", async () => {
   const { page, errors } = await openApp("linux", false, [], "medium", true);
   try {
