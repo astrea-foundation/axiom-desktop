@@ -127,10 +127,12 @@ function installAgentIpc(): void {
     clipboard.writeText(proxy.copyToken(boundedString(accountId, "account ID", 128), boundedString(runtimeId, "runtime ID", 128)));
   });
   agentHandle("agent:state", () => sidecar.state());
-  agentHandle("agent:usage-summary", async (_event, accountId: unknown) => {
+  agentHandle("agent:usage-summary", async (_event, accountId: unknown, period: unknown = "all_time", timezone: unknown = "UTC") => {
     const id = boundedString(accountId, "account ID", 128);
+    if (period !== "week" && period !== "month" && period !== "all_time") throw new Error("Invalid usage period");
+    const zone = boundedString(timezone, "timezone", 128);
     requirePaymentAccount(id, sidecar.state());
-    const result = await sidecar.usageSummary();
+    const result = await sidecar.usageSummary({ period, timezone: zone });
     requirePaymentAccount(id, sidecar.state());
     return result;
   });

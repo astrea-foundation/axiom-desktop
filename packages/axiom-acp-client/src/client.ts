@@ -7,6 +7,7 @@ import type {
   BillingStatusResponse,
   GiftCodeRedeemResponse,
   UsageSummaryResponse,
+  UsageSummaryRequest,
   ApiKeyListResponse,
   ApiKeyCreatedResponse,
   ApiKeyRevokeResponse,
@@ -571,10 +572,13 @@ export class AxiomAcpClient extends EventEmitter {
     return this.accountRequest("_axiom/account/logout", {});
   }
 
-  async usageSummary(): Promise<UsageSummaryResponse> {
+  async usageSummary(request: UsageSummaryRequest = {}): Promise<UsageSummaryResponse> {
     const accountContext = this.state.accountContextToken();
-    const result = await this.process.request<UsageSummaryResponse>("_axiom/usage/summary", {});
+    const result = await this.process.request<UsageSummaryResponse>("_axiom/usage/summary", request);
     this.assertAccountContext(accountContext);
+    if (result.summary.period !== (request.period ?? "all_time")) {
+      throw new Error("Usage is unavailable for the selected period");
+    }
     return result;
   }
 

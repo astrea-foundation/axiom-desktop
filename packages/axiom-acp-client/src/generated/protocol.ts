@@ -693,6 +693,11 @@ export interface GiftCodeRedeemResponse {
   [k: string]: unknown;
 }
 export interface UsageSummaryRequest {
+  period?: "week" | "month" | "all_time";
+  /**
+   * IANA timezone for calendar boundaries. Omitted clients retain UTC/all-time behavior.
+   */
+  timezone?: string | null;
   [k: string]: unknown;
 }
 export interface UsageSummaryResponse {

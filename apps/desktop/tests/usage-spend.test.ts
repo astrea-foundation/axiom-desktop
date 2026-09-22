@@ -40,3 +40,14 @@ test("invalid amounts and inconsistent totals fail instead of displaying a misle
   assert.throws(() => spendingBreakdown({ ...summary("0", []), period: "month" }));
   assert.throws(() => spendingBreakdown(summary("1", [model("1", "\u0000bad")])));
 });
+
+
+test("spending accepts only totals for the selected period", () => {
+  for (const period of ["week", "month", "all_time"] as const) {
+    const value = { ...summary("1234567", [model("1234567")]), period };
+    assert.equal(spendingBreakdown(value, period).total, 1234567n);
+    for (const different of ["week", "month", "all_time"] as const) {
+      if (different !== period) assert.throws(() => spendingBreakdown(value, different));
+    }
+  }
+});

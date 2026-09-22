@@ -2198,7 +2198,30 @@
       ]
     },
     "UsageSummaryRequest": {
-      "type": "object"
+      "type": "object",
+      "properties": {
+        "period": {
+          "$ref": "#/$defs/UsagePeriod",
+          "default": "all_time"
+        },
+        "timezone": {
+          "description": "IANA timezone for calendar boundaries. Omitted clients retain UTC/all-time behavior.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "maxLength": 128
+        }
+      }
+    },
+    "UsagePeriod": {
+      "type": "string",
+      "enum": [
+        "week",
+        "month",
+        "all_time"
+      ]
     },
     "UsageSummaryResponse": {
       "type": "object",
