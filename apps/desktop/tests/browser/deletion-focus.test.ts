@@ -1071,7 +1071,7 @@ for (const platform of ["linux", "win32", "darwin"]) {
       await web.click();
       const warning = page.getByRole("alertdialog", { name: "Turn on Web?" });
       await warning.waitFor();
-      assert.match(await warning.innerText(), /Search queries may include details from your messages and are shared with an external search service/);
+      assert.match(await warning.innerText(), /Web searches run outside Axiom’s verified private environment/);
       assert.doesNotMatch(await warning.innerText(), /Decodo|SearXNG/i);
       if (platform === "linux") {
         await page.emulateMedia({ colorScheme: "dark" });
@@ -1090,7 +1090,7 @@ for (const platform of ["linux", "win32", "darwin"]) {
       await warning.waitFor({ state: "detached" });
       assert.equal(await web.getAttribute("aria-pressed"), "false");
       await web.click();
-      await page.getByRole("button", { name: "Turn on Web", exact: true }).click();
+      await page.getByRole("button", { name: "Yes, I understand", exact: true }).click();
       assert.equal(await web.getAttribute("aria-pressed"), "true");
       await page.getByRole("button", { name: "Send", exact: true }).click();
       await page.waitForFunction(() => (window as unknown as { __deletionTest: { calls: { method: string }[] } }).__deletionTest.calls.some((call) => call.method === "prompt"));
@@ -1106,7 +1106,7 @@ for (const platform of ["linux", "win32", "darwin"]) {
       await web.click();
       await warning.waitFor(); // Not remembered: every off -> on asks again.
       await page.getByRole("checkbox", { name: "Don’t show this warning again" }).check();
-      await page.getByRole("button", { name: "Turn on Web", exact: true }).click();
+      await page.getByRole("button", { name: "Yes, I understand", exact: true }).click();
       await page.getByRole("button", { name: "New thread", exact: true }).click();
       assert.equal(await web.getAttribute("aria-pressed"), "false", "new chat always starts off");
       await web.click();
@@ -1158,7 +1158,7 @@ for (const platform of ["linux", "win32", "darwin"]) {
       await openThread();
       await expectWeb(false);
       await web.click();
-      await page.getByRole("button", { name: "Turn on Web", exact: true }).click();
+      await page.getByRole("button", { name: "Yes, I understand", exact: true }).click();
       await expectWeb(true);
       assert.equal((await calls(page)).filter((call) => call.method === "prompt").length, 0, "toggle saves without a message");
 
@@ -1204,7 +1204,7 @@ test("saved Web choices from the welcome draft stay with its new thread and are 
   try {
     const web = page.getByRole("button", { name: "Web", exact: true });
     await web.click();
-    await page.getByRole("button", { name: "Turn on Web", exact: true }).click();
+    await page.getByRole("button", { name: "Yes, I understand", exact: true }).click();
     await page.locator("textarea").fill("Create with Web on");
     await page.getByRole("button", { name: "Send", exact: true }).click();
     await page.waitForFunction(() => (window as any).__deletionTest.calls.some((call: any) => call.method === "prompt"));
@@ -1234,12 +1234,12 @@ test("Web storage failures never silently enable Web or claim an opt-out was sav
       Storage.prototype.setItem = () => { throw new Error("Storage full"); };
     });
     await web.click();
-    await page.getByRole("button", { name: "Turn on Web", exact: true }).click();
+    await page.getByRole("button", { name: "Yes, I understand", exact: true }).click();
     await page.getByText("Web could not be saved and remains off. Please try again.", { exact: true }).waitFor();
     assert.equal(await web.getAttribute("aria-pressed"), "false");
     await page.evaluate(() => (window as any).__restoreWebStorage());
     await web.click();
-    await page.getByRole("button", { name: "Turn on Web", exact: true }).click();
+    await page.getByRole("button", { name: "Yes, I understand", exact: true }).click();
     assert.equal(await web.getAttribute("aria-pressed"), "true");
     await page.evaluate(() => { Storage.prototype.setItem = () => { throw new Error("Storage full"); }; });
     await web.click();

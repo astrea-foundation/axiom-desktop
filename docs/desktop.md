@@ -61,8 +61,11 @@ See [process boundaries](threat-model.md#local-tools-and-processes).
 
 Web independently controls Axiom's search and page-fetch tools. Enabling it
 shows a privacy disclosure: queries and fetched URLs are shared with external
-services and are not provider E2EE. Each existing thread remembers its explicit
-choice locally; warning acknowledgement is a separate per-account preference.
+services and are not provider E2EE. The warning explains that Web searches run
+outside Axiom’s verified private environment while model conversations remain
+end-to-end encrypted; **Yes, I understand** confirms enabling Web. Each existing
+thread remembers its explicit choice locally; warning acknowledgement is a
+separate per-account preference.
 Every prompt passes an explicit boolean, and the native runtime rejects Web
 execution without consent. Changing Web access requires the active response to stop.
 On platforms without process network isolation, turning Web off does not disable
