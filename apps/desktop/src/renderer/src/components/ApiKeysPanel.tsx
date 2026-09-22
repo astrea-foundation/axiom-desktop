@@ -94,7 +94,6 @@ export function ApiKeysPanel({accountId, onLogin}: {accountId: string; onLogin: 
         <details className="key-details"><summary>Usage details</summary><dl><div><dt>Input tokens</dt><dd>{count(key.usage.inputTokens)}</dd></div><div><dt>Cached input</dt><dd>{count(key.usage.cachedInputTokens)}</dd></div><div><dt>Output tokens</dt><dd>{count(key.usage.outputTokens)}</dd></div><div><dt>Exact spend</dt><dd>{exactCost(key.usage.costMicrousd)}</dd></div></dl><p>Tracked since {date(key.usageStartedAt)}. Spend reflects posted charges and refunds; tokens reflect reported usage.</p></details>
       </article>)}</div>
       {keys?.some(inactive) && <button type="button" className="quiet-link key-history" aria-expanded={history} onClick={() => setHistory(value => !value)}>{history ? "Hide inactive keys" : "Show revoked and expired keys"}</button>}
-      <p className="card-help">Keys use your account balance and work with AxiomCLI or the local proxy.</p>
       {revoking && <ConfirmDialog title={`Revoke “${revoking.name}”?`} confirmLabel="Revoke key" busy={busy} onCancel={() => {setRevoking(null); setError(null);}} onConfirm={() => void revoke()}><p>Tools using this key will stop connecting. Its usage history stays available.</p>{error && <Notice kind="error">{error}</Notice>}</ConfirmDialog>}
     </section>
   </div>;
