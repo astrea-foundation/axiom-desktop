@@ -181,6 +181,10 @@ Unexpected stream endings show one short notice, with the technical reason under
 **Details**. A turn's error notice replaces the duplicate warning below its reply.
 Stopping a reply yourself does not show an error banner. These presentation
 choices do not change completion verification or mark partial replies successful.
+Reply notices and the top error banners have an **×** button to dismiss them.
+Dismissal hides the current notice in the open view; a new or changed error is
+shown again. It does not delete conversation records or change a failed reply's
+status.
 See [security](threat-model.md).
 
 ## Account credit and usage

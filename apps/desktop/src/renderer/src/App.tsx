@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { BalanceScreen } from "./components/BalanceScreen";
 import { ChatView } from "./components/ChatView";
 import { DeleteConfirmationDialog } from "./components/DeleteConfirmationDialog";
+import { DismissibleNotice } from "./components/DismissibleNotice";
 import { MessageQueue } from "./components/MessageQueue";
 import { OverflowTitle } from "./components/OverflowTitle";
 import { ProxyView } from "./components/ProxyView";
@@ -41,7 +42,7 @@ export function App() {
   const accountScreenReturnFocus = useRef<HTMLElement | null>(null);
   const [proxyInspecting, setProxyInspecting] = useState(false);
   const [uiError, setUiError] = useState<string | null>(null);
-  const { agentState } = useDesktopState(setUiError);
+  const { agentState, errorRevision } = useDesktopState(setUiError);
   const navigation = useConversationNavigation();
   const { surface, setSurface, activeThreadId, cancelThreadPreparation } = navigation;
   const catalog = useModelCatalog(agentState, navigation, setUiError);
@@ -57,6 +58,10 @@ export function App() {
     messageQueue, threadLoads } = conversations;
   const preparation = threadPreparation?.accountId === billingAccountId
     && threadPreparation?.runtimeId === agentState.runtimeInstanceId ? threadPreparation : null;
+  const errorNotice = uiError ? { source: "ui", text: uiError }
+    : webAccess.error ? { source: "web", text: webAccess.error }
+    : agentState.error ? { source: "agent", text: agentState.error }
+    : modelCatalogError ? { source: "catalog", text: modelCatalogError } : null;
 
   const showProxy = useCallback(() => {
     cancelThreadPreparation();
@@ -247,10 +252,12 @@ export function App() {
             </div>
           ) : null}
 
-          {uiError || webAccess.error || agentState.error ? (
-            <div role="alert" className="shadow-glass-pop absolute left-1/2 top-12 z-40 max-w-[80%] -translate-x-1/2 truncate rounded-full bg-[var(--surface-float)] px-4 py-2 text-[12.5px] text-[var(--color-danger-strong)] backdrop-blur">{uiError ?? webAccess.error ?? agentState.error}</div>
-          ) : modelCatalogError ? (
-            <div role="alert" className="shadow-glass-pop absolute left-1/2 top-12 z-40 max-w-[80%] -translate-x-1/2 truncate rounded-full bg-[var(--surface-float)] px-4 py-2 text-[12.5px] text-[var(--color-text-secondary)] backdrop-blur">{modelCatalogError}</div>
+          {errorNotice ? (
+            <DismissibleNotice key={JSON.stringify([billingAccountId, agentState.runtimeInstanceId, errorNotice.source, errorNotice.text, errorNotice.source === "agent" ? errorRevision : 0])}
+              onDismiss={errorNotice.source === "ui" ? () => setUiError(null) : undefined}
+              className={`shadow-glass-pop absolute left-1/2 top-12 z-40 max-w-[80%] -translate-x-1/2 rounded-xl bg-[var(--surface-float)] px-4 py-2 text-[12.5px] ${errorNotice.source === "catalog" ? "text-[var(--color-text-secondary)]" : "text-[var(--color-danger-strong)]"} backdrop-blur`}>
+              <span className="min-w-0 break-words">{errorNotice.text}</span>
+            </DismissibleNotice>
           ) : null}
 
           <div className="relative min-h-0 flex-1">

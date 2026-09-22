@@ -93,7 +93,7 @@ async function openApp(platform = "linux", failDelete = false, thinkingLevels: s
       catalog: [summary("old-thread")],
       collections: { revision: 1, collections: [{ id: "folder", name: "Test folder", collapsed: false, threadIds: [] }] },
       preferences: null, account: { revision: 1, state: "valid", account: { id: "test-account", displayName: "Test User", verifiedEmail: "test@example.invalid", linkedMethods: ["password"] } } as AccountStatus,
-      billing: null as BillingStatus | null, diagnostic: "", error: null,
+      billing: null as BillingStatus | null, diagnostic: "", error: null as string | null,
     };
     const calls: { method: string; id?: string; text?: string; webEnabled?: boolean; userItemId?: string; expectedRevision?: number }[] = [];
     let failRename = false;
@@ -266,6 +266,7 @@ async function openApp(platform = "linux", failDelete = false, thinkingLevels: s
         setAccount: (id: string) => { state.account.account!.id = id; emit(); },
         setAccountState: (account: AccountStatus) => { state.account = account; state.sessions = {}; state.catalog = []; emit(); },
         setBilling: (billing: BillingStatus) => { state.billing = billing; emit(); },
+        setError: (error: string | null) => { state.error = error; emit(); },
         failBalance: (fail: boolean) => { failBalance = fail; },
         setRuntime: (id: string, connected = true) => { state.runtimeInstanceId = id; state.connected = connected; emit(); },
         finishTurn: () => { state.sessions["old-thread"]!.running = false; state.sessions["old-thread"]!.activeTurnId = null; emit(); },
@@ -905,6 +906,18 @@ for (const platform of ["linux", "win32", "darwin"]) {
           await page.screenshot({ path: `${process.env.AXIOM_REPLY_ERROR_SCREENSHOT}-${theme}.png`, animations: "disabled" });
         }
       }
+      await notice.getByRole("button", { name: "Dismiss notice", exact: true }).focus();
+      await page.keyboard.press("Enter");
+      assert.equal(await notice.count(), 0);
+      assert.equal(await transcript.locator('[data-timeline-kind="activity"]').count(), 0);
+      assert.equal(await transcript.evaluate((element) => element === document.activeElement), true);
+      assert.equal(await transcript.getByRole("button", { name: "Copy", exact: true }).isDisabled(), true);
+      await page.evaluate(async () => {
+        const state = await (window as any).axiomDesktop.agent.getState();
+        (window as any).__deletionTest.setTimeline(state.sessions["old-thread"].timeline, false);
+      });
+      assert.equal(await notice.count(), 0, "routine updates must not restore a dismissed notice");
+      assert.equal(await transcript.getByRole("alert").count(), 0, "dismissal must not reveal the duplicate warning");
       const status = await page.evaluate(async () => {
         const state = await (window as any).axiomDesktop.agent.getState();
         return state.sessions["old-thread"].timeline.find((item: ClientTimelineItem) => item.id === "partial");
@@ -2787,6 +2800,58 @@ test("catalog refresh withdraws saved models and shows Tinfoil upload icons", as
     await page.screenshot({path:"/tmp/axiom-provider-picker.png"});
     await picker.getByRole("button", {name:/New vision/}).click();
     assert.ok(await page.getByRole("button", { name: "Send", exact: true }).isEnabled());
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("dismissing reply errors preserves failed output and allows new notices", async () => {
+  const { page, errors } = await openApp();
+  try {
+    await page.getByRole("button", { name: "Viewed Existing thread", exact: true }).click();
+    const reply = { id: "partial", turnId: "failed-turn", kind: "assistant" as const, text: "Partial reply", status: "failed", terminalVerified: false };
+    const transcript = page.getByRole("region", { name: "Chat messages" });
+    await page.evaluate((reply) => (window as any).__deletionTest.setTimeline([reply], false), reply);
+    const alert = transcript.getByRole("alert");
+    await alert.getByText("This reply couldn't be verified. Try again.", { exact: true }).waitFor();
+    await alert.getByRole("button", { name: "Dismiss notice", exact: true }).click();
+    assert.equal(await alert.count(), 0);
+    assert.equal(await transcript.getByText("Partial reply", { exact: true }).isVisible(), true);
+    assert.equal(await transcript.getByRole("button", { name: "Copy", exact: true }).isDisabled(), true);
+    const firstError = { id: "failure-1", turnId: "failed-turn", kind: "error" as const, text: "stream response identity changed" };
+    for (const failure of [firstError, { ...firstError, text: "invalid authenticated SSE framing" }, { ...firstError, id: "failure-2" }]) {
+      await page.evaluate(({ reply, failure }) => (window as any).__deletionTest.setTimeline([reply, failure], false), { reply, failure });
+      await alert.getByText(failure.text, { exact: true }).waitFor();
+      assert.equal(await alert.count(), 1);
+      await alert.getByRole("button", { name: "Dismiss notice", exact: true }).click();
+      assert.equal(await alert.count(), 0);
+    }
+    const stored = await page.evaluate(async () => {
+      const state = await (window as any).axiomDesktop.agent.getState();
+      return state.sessions["old-thread"].timeline;
+    });
+    assert.deepEqual(stored, [reply, { ...firstError, id: "failure-2" }]);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("top error banners dismiss without clearing native errors and show new failures", async () => {
+  const { page, errors } = await openApp();
+  try {
+    await page.evaluate(() => (window as any).__deletionTest.setError("Connection lost"));
+    const alert = page.getByRole("alert");
+    await alert.getByText("Connection lost", { exact: true }).waitFor();
+    assert.equal(await alert.evaluate((node) => getComputedStyle(node).position), "absolute");
+    await alert.getByRole("button", { name: "Dismiss notice", exact: true }).click();
+    assert.equal(await alert.count(), 0);
+    assert.equal(await page.evaluate(async () => (await (window as any).axiomDesktop.agent.getState()).error), "Connection lost");
+    await page.evaluate(() => (window as any).__deletionTest.setError("Connection lost"));
+    assert.equal(await alert.count(), 0);
+    await page.evaluate(() => (window as any).__deletionTest.setError("Connection failed again"));
+    await alert.getByText("Connection failed again", { exact: true }).waitFor();
+    await alert.getByRole("button", { name: "Dismiss notice", exact: true }).click();
+    await page.evaluate(() => (window as any).__deletionTest.setError(null));
+    await page.evaluate(() => (window as any).__deletionTest.setError("Connection failed again"));
+    await alert.getByText("Connection failed again", { exact: true }).waitFor();
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
 });

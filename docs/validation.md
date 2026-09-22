@@ -290,3 +290,10 @@ failures, deliberate cancellation, keyboard-operated details and regeneration
 through the existing native revision flow. Desktop TypeScript checks and the
 production build passed. Light/dark screenshots were visually checked; provider
 traffic and native cryptographic verification were unchanged and not rerun.
+
+Reply notices and global error banners also have keyboard-accessible dismissal
+buttons. Eight focused browser checks cover dismissal, later/changed errors,
+rapid connection recovery and failure, preserved native errors and failed reply
+status, and removal of the notice without an empty timeline row. The 26 timeline
+unit tests, Desktop TypeScript checks and production build passed. Light/dark
+screenshots were checked with the dismissal controls visible.

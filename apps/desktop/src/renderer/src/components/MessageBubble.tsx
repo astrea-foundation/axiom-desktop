@@ -2,6 +2,7 @@ import { AlertTriangle, Check, ChevronDown, Copy, LoaderCircle, Lock, Pencil, Ro
 import { useState } from "react";
 import type { Message } from "../types";
 import { ChatMarkdown } from "./ChatMarkdown";
+import { DismissibleNotice } from "./DismissibleNotice";
 
 function thoughtLabel(durationMs?: number): string {
   if (durationMs === undefined) return "Thought";
@@ -116,10 +117,10 @@ export function MessageBubble({ message, onRevise, revisionText, revisionHasAtta
           ) : null}
           {message.finishReason === "length" && message.terminalVerified ? <div className="mt-2 text-[12px] text-[var(--color-text-tertiary)]">The model reached its output limit. You can ask it to continue.</div> : null}
           {terminalFailure && showFailureNotice ? (
-            <div role="alert" className="mt-3 flex items-center gap-2 rounded-[8px] border border-[var(--color-danger-border)] bg-[var(--color-danger-soft)] px-3 py-2 text-[12px] leading-5 text-[var(--color-danger-strong)]">
+            <DismissibleNotice key={message.id} className="mt-3 flex items-center gap-2 rounded-[8px] border border-[var(--color-danger-border)] bg-[var(--color-danger-soft)] px-3 py-2 text-[12px] leading-5 text-[var(--color-danger-strong)]">
               <AlertTriangle size={13} className="shrink-0 text-[var(--color-danger)]" />
-              <span>This reply couldn't be verified. Try again.</span>
-            </div>
+              <span className="min-w-0">This reply couldn't be verified. Try again.</span>
+            </DismissibleNotice>
           ) : null}
         </div>
       </div>

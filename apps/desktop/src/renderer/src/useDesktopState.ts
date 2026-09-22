@@ -16,7 +16,7 @@ const EMPTY_AGENT_STATE: ClientState = {
 };
 
 export function useDesktopState(setUiError: (error: string | null) => void) {
-  const [agentState, setAgentState] = useState<ClientState>(EMPTY_AGENT_STATE);
+  const [{ agentState, errorRevision }, setSnapshot] = useState({ agentState: EMPTY_AGENT_STATE, errorRevision: 0 });
 
   useEffect(() => {
     const api = window.axiomDesktop?.agent;
@@ -26,6 +26,12 @@ export function useDesktopState(setUiError: (error: string | null) => void) {
     }
     let disposed = false;
     let receivedLiveState = false;
+    const setAgentState = (state: ClientState) => setSnapshot((previous) => ({
+      agentState: state,
+      // Count distinct error occurrences even when recovery and a new failure
+      // arrive in one React batch. Ordinary state refreshes keep dismissal.
+      errorRevision: previous.errorRevision + (state.error && state.error !== previous.agentState.error ? 1 : 0),
+    }));
     const unsubscribe = api.onState((state) => {
       if (disposed) return;
       receivedLiveState = true;
@@ -44,5 +50,5 @@ export function useDesktopState(setUiError: (error: string | null) => void) {
     };
   }, []);
 
-  return { agentState };
+  return { agentState, errorRevision };
 }

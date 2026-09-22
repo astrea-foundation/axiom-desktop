@@ -6,13 +6,14 @@ import { StoredAttachments, attachmentNames } from "./Attachments";
 import { MessageBubble } from "./MessageBubble";
 import { ToolCallCard } from "./ToolCallCard";
 import { InteractionCard } from "./InteractionCard";
+import { DismissibleNotice } from "./DismissibleNotice";
 import { hasActiveResponse, messageRevisionSources, presentTimeline } from "./timelinePresentation";
 
 function ActivityRow({ item }: { item: ClientTimelineItem }) {
   const error = item.kind === "error";
   const failure = error ? replyErrorPresentation(item.text) : null;
   if (failure) return (
-    <div role={failure.interrupted ? "status" : "alert"} className={`flex items-start gap-2 rounded-lg px-3 py-2 text-[12.5px] ${failure.interrupted ? "bg-[var(--wash-row)] text-[var(--color-text-secondary)]" : "bg-[var(--color-danger-soft)] text-[var(--color-danger-strong)]"}`}>
+    <DismissibleNotice data-timeline-kind="activity" role={failure.interrupted ? "status" : "alert"} className={`flex items-start gap-2 rounded-lg px-3 py-2 text-[12.5px] ${failure.interrupted ? "bg-[var(--wash-row)] text-[var(--color-text-secondary)]" : "bg-[var(--color-danger-soft)] text-[var(--color-danger-strong)]"}`}>
       <AlertTriangle size={14} aria-hidden="true" className="mt-0.5 shrink-0" />
       <div className="min-w-0">
         <p>{failure.message}</p>
@@ -21,11 +22,15 @@ function ActivityRow({ item }: { item: ClientTimelineItem }) {
           <p className="mt-1 break-words">{item.text}</p>
         </details>
       </div>
-    </div>
+    </DismissibleNotice>
   );
+  if (error) return <DismissibleNotice data-timeline-kind="activity" className="flex items-start gap-2 rounded-lg bg-[var(--color-danger-soft)] px-3 py-2 text-[12.5px] text-[var(--color-danger-strong)]">
+    <AlertTriangle size={14} aria-hidden="true" className="mt-0.5 shrink-0" />
+    <span className="min-w-0 break-words">{item.text}</span>
+  </DismissibleNotice>;
   return (
-    <div role={error ? "alert" : undefined} className={`flex items-start gap-2 rounded-lg px-3 py-2 text-[12.5px] ${error ? "bg-[var(--color-danger-soft)] text-[var(--color-danger-strong)]" : "bg-[var(--wash-row)] text-[var(--color-text-tertiary)]"}`}>
-      {error ? <AlertTriangle size={14} className="mt-0.5 shrink-0" /> : item.kind === "plan" ? <ListChecks size={14} className="mt-0.5 shrink-0" /> : <CheckCircle2 size={14} className="mt-0.5 shrink-0" />}
+    <div data-timeline-kind="activity" className="flex items-start gap-2 rounded-lg bg-[var(--wash-row)] px-3 py-2 text-[12.5px] text-[var(--color-text-tertiary)]">
+      {item.kind === "plan" ? <ListChecks size={14} className="mt-0.5 shrink-0" /> : <CheckCircle2 size={14} className="mt-0.5 shrink-0" />}
       <span>{item.text}</span>
     </div>
   );
@@ -57,7 +62,7 @@ export function TimelineView({
     if (row.kind === "tool" && row.item.tool) {
       return <div key={row.item.tool.callId} data-timeline-kind="tool"><ToolCallCard tool={row.item.tool} /></div>;
     }
-    return <div key={row.key} data-timeline-kind="activity"><ActivityRow item={row.item} /></div>;
+    return <ActivityRow key={JSON.stringify([session.sessionId, row.key, row.item.text])} item={row.item} />;
   });
   const showPendingUser = Boolean(
     pendingUserMessage
