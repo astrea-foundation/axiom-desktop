@@ -1,6 +1,6 @@
 [package]
 name = "axiomcli"
-version = "0.1.0"
+version = "0.1.2"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
@@ -12,7 +12,7 @@ async-trait = "0.1.89"
 axiom-inference.workspace = true
 axiom-acp-extension.workspace = true
 axiom-secure-client.workspace = true
-axiom-proxy = { path = "../axiom-proxy" }
+axiom-proxy = { version = "0.1.0", path = "../axiom-proxy" }
 base64 = "0.22.1"
 chrono = { version = "0.4.42", features = ["serde"] }
 clap = { version = "4.5.50", features = ["derive", "env"] }

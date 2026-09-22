@@ -56,8 +56,9 @@ async fn main() -> anyhow::Result<()> {
         "Persistent address changed"
     );
     anyhow::ensure!(
-        status.trial_microusd.is_some() && status.paid_microusd.is_some(),
-        "Missing source-separated credit"
+        i64::try_from(status.trial_microusd)?.checked_add(status.paid_microusd)
+            == Some(status.posted_microusd),
+        "Inconsistent source-separated credit"
     );
     println!(
         "{}",

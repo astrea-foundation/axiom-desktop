@@ -75,6 +75,8 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Check the shared Axiom release feed and show how to update this installation.
+    Update,
     /// Run the account-bound secure loopback proxy under Desktop supervision.
     DesktopProxy {
         #[arg(long)]
@@ -106,8 +108,10 @@ enum Command {
     Doctor,
     /// List models exposed by the configured secure Axiom service.
     Models,
-    /// Delete one pre-release frontend state database after explicit confirmation.
+    /// Delete one account/frontend state database. Stop Desktop and CLI first.
     ResetLocalState {
+        #[arg(long)]
+        account: String,
         #[arg(long, value_enum)]
         frontend: FrontendKind,
         /// Confirm permanent deletion of this frontend's local threads and collections.
@@ -218,6 +222,9 @@ enum SessionAction {
 async fn main() -> anyhow::Result<()> {
     install_descendant_cleanup();
     let cli = Cli::parse();
+    if matches!(cli.command, Some(Command::Update)) {
+        return axiomcli::updates::run().await;
+    }
     // The proxy owns no chat store, tools, agent configuration or system prompt.
     if let Some(Command::DesktopProxy {
         account_id,
@@ -243,6 +250,22 @@ async fn main() -> anyhow::Result<()> {
     paths
         .prepare()
         .context("failed to prepare Axiom platform paths")?;
+    if let Some(Command::ResetLocalState {
+        account,
+        frontend,
+        confirm,
+    }) = &cli.command
+    {
+        anyhow::ensure!(*confirm, "refusing to delete local state without --confirm");
+        let removed = paths
+            .reset_account_frontend_state(account, *frontend)
+            .context("failed to reset account local state")?;
+        println!(
+            "removed {} local state file(s) for account {account}, frontend {frontend}",
+            removed.len()
+        );
+        return Ok(());
+    }
     let config =
         Config::load_for(frontend, &paths).context("failed to load AxiomCLI configuration")?;
     let auth = {
@@ -286,6 +309,7 @@ async fn main() -> anyhow::Result<()> {
         cwd: None,
         resume: None,
     }) {
+        Command::Update => unreachable!("update is handled before agent initialization"),
         Command::DesktopProxy { .. } => {
             unreachable!("desktop proxy is handled before agent initialization")
         }
@@ -300,20 +324,8 @@ async fn main() -> anyhow::Result<()> {
             }
             Ok(())
         }
-        Command::ResetLocalState { frontend, confirm } => {
-            anyhow::ensure!(confirm, "refusing to delete local state without --confirm");
-            let removed = paths
-                .reset_legacy_frontend_state(frontend)
-                .context("failed to reset frontend local state")?;
-            if removed.is_empty() {
-                println!("{frontend} local state is already empty");
-            } else {
-                println!(
-                    "removed {} {frontend} local state file(s); shared identity, credentials, trust policy, configuration, and chat workspace were preserved",
-                    removed.len()
-                );
-            }
-            Ok(())
+        Command::ResetLocalState { .. } => {
+            unreachable!("local reset handled before authentication")
         }
         Command::Sessions { action } => manage_sessions(action, &account_store),
         Command::Plans { cwd, action } => manage_plans(&resolve_cwd(cwd)?, action),
@@ -825,6 +837,7 @@ async fn run_headless(
     }
     let submitted = runtime
         .dispatch(AppCommand::SubmitPrompt {
+            attachments: Vec::new(),
             session_id: session_id.clone(),
             turn_id: turn_id.clone(),
             text: prompt.clone(),
@@ -836,26 +849,16 @@ async fn run_headless(
         store.set_last_used_thinking(thinking)?;
     }
 
-    let title_task = durable_store.clone().map(|title_store| {
-        let title_runner = runner.clone();
-        let title_session = session_id.clone();
-        let title_prompt = prompt.clone();
-        tokio::spawn(async move {
-            let title = title_runner
-                .generate_title(
-                    &title_session,
-                    &title_prompt,
-                    CancellationToken::new(),
-                    Some(&title_store),
-                )
-                .await?;
-            title_store.set_title_if_absent(&title_session, &title)?;
-            Ok::<(), AxiomError>(())
-        })
-    });
+    if let Some(store) = &durable_store {
+        let title = axiomcli::session_title::session_title(&prompt);
+        if let Err(error) = store.set_title_if_absent(&session_id, &title) {
+            tracing::warn!(%session_id, %error, "could not persist session title");
+        }
+    }
 
     let (events_tx, mut events_rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
     let context = TurnContext {
+        attachments: Vec::new(),
         session_id: session_id.clone(),
         turn_id: turn_id.clone(),
         cwd,
@@ -914,18 +917,6 @@ async fn run_headless(
     let terminal = runtime.dispatch(terminal).await?;
     if let Some(store) = &durable_store {
         store.append_all(&terminal)?;
-    }
-    if let Some(title_task) = title_task {
-        match tokio::time::timeout(std::time::Duration::from_secs(2), title_task).await {
-            Ok(Ok(Ok(()))) => {}
-            Ok(Ok(Err(error))) => {
-                tracing::warn!(%error, "background session title generation failed");
-            }
-            Ok(Err(error)) => tracing::warn!(%error, "background session title task failed"),
-            Err(_) => {
-                tracing::warn!("background session title generation did not finish before exit");
-            }
-        }
     }
     result.map_err(anyhow::Error::from)
 }

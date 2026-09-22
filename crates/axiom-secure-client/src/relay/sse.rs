@@ -50,7 +50,7 @@ impl SseDecoder {
         self.total_bytes = self
             .total_bytes
             .checked_add(bytes.len())
-            .ok_or_else(|| too_large())?;
+            .ok_or_else(too_large)?;
         if self.total_bytes > self.stream_limit {
             return Err(too_large());
         }
@@ -316,43 +316,5 @@ mod tests {
         let parsed = decoder.feed(&bytes[blossom + 1..]).unwrap();
         assert!(matches!(parsed.as_slice(), [RelayEvent::Failed(_)]));
         decoder.finish().unwrap();
-    }
-
-    #[test]
-    fn preserves_phala_stream_binding_fields_and_terminal_proof() {
-        let stream = concat!(
-            "event: message.encrypted_delta\n",
-            "data: {\"run_id\":\"r1\",\"encrypted_delta\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"sequence\":0,\"response_id\":\"response-1\",\"content_field\":\"choices.0.delta.content\",\"reasoning_field\":\"choices.0.delta.reasoning_content\"}\n\n",
-            "event: message.encrypted_completed\n",
-            "data: {\"run_id\":\"r1\",\"usage\":{},\"finish_reason\":\"stop\",\"proof\":{\"receipt_version\":1}}\n\n",
-        );
-        let mut decoder = SseDecoder::new(8 * 1024, 32 * 1024);
-        let events = decoder.feed(stream.as_bytes()).unwrap();
-        decoder.finish().unwrap();
-
-        let RelayEvent::Delta(delta) = &events[0] else {
-            panic!("expected encrypted delta");
-        };
-        assert_eq!(delta.response_id.as_deref(), Some("response-1"));
-        assert_eq!(
-            delta.content_field.as_deref(),
-            Some("choices.0.delta.content")
-        );
-        assert_eq!(
-            delta.reasoning_field.as_deref(),
-            Some("choices.0.delta.reasoning_content")
-        );
-
-        let RelayEvent::MessageCompleted(completed) = &events[1] else {
-            panic!("expected encrypted completion");
-        };
-        assert_eq!(
-            completed
-                .proof
-                .as_ref()
-                .and_then(|proof| proof.get("receipt_version"))
-                .and_then(serde_json::Value::as_u64),
-            Some(1)
-        );
     }
 }

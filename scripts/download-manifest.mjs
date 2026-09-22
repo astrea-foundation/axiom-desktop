@@ -9,8 +9,9 @@ if (!directory || !/^\d+\.\d+\.\d+$/.test(version ?? '') || !['unsigned','signed
   throw new Error('Usage: download-manifest.mjs DIRECTORY VERSION [unsigned|signed]');
 }
 const downloads = [];
+const cliDownloads = [];
 for (const name of (await readdir(directory)).sort()) {
-  if (!/^[A-Za-z0-9._-]+\.(?:exe|dmg|pkg|zip|AppImage|deb|pkg\.tar\.(?:xz|zst))$/.test(name)) continue;
+  if (!/^[A-Za-z0-9._-]+\.(?:exe|dmg|pkg|zip|AppImage|deb|pkg\.tar\.(?:xz|zst)|tar\.gz)$/.test(name)) continue;
   if (!name.includes(`-${version}-`)) throw new Error(`Artifact version mismatch: ${name}`);
   const file = path.join(directory, name);
   const metadata = await stat(file);
@@ -21,9 +22,15 @@ for (const name of (await readdir(directory)).sort()) {
   const platform = /\.(?:dmg|pkg|zip)$/.test(name) ? 'mac' : name.endsWith('.exe') ? 'win' : 'linux';
   const arch = /-arm64[.-]/.test(name) ? 'arm64' : /-(?:x64|x86_64|amd64)[.-]/.test(name) ? 'x64' : null;
   if (!arch) throw new Error(`Unknown architecture: ${name}`);
-  downloads.push({ name, platform, arch, bytes: metadata.size, sha256, url: `https://cdn.axiom.stream/downloads/${version}/${name}` });
+  const target = name.endsWith('.tar.gz') ? cliDownloads : downloads;
+  target.push({ name, platform, arch, ...(target === cliDownloads ? { format: 'tar.gz' } : {}), bytes: metadata.size, sha256, url: `https://cdn.axiom.stream/downloads/${version}/${name}` });
 }
 if (downloads.length === 0) throw new Error('No installer artifacts found');
-await writeFile(path.join(directory, 'SHA256SUMS'), downloads.map(d => `${d.sha256}  ${d.name}\n`).join(''));
-await writeFile(path.join(directory, 'manifest.json'), JSON.stringify(parseRelease({ version, signing, downloads }), null, 2) + '\n');
-console.log(`Prepared manifest and checksums for ${downloads.length} installers.`);
+const release = parseRelease({ version, signing, downloads, cliDownloads });
+const all = [...release.downloads, ...(release.cliDownloads ?? [])];
+for (const file of release.cliDownloads ?? []) {
+  await writeFile(path.join(directory, `${file.name}.sha256`), `${file.sha256}  ${file.name}\n`);
+}
+await writeFile(path.join(directory, 'SHA256SUMS'), all.map(d => `${d.sha256}  ${d.name}\n`).join(''));
+await writeFile(path.join(directory, 'manifest.json'), JSON.stringify(release, null, 2) + '\n');
+console.log(`Prepared manifest and checksums for ${downloads.length} desktop installers and ${cliDownloads.length} CLI bundles.`);

@@ -81,7 +81,7 @@ export function toolLabel(tool: ToolActivity): string {
     const verb = failed ? "Failed to search the web" : done ? "Searched the web" : "Searching the web";
     const query = typeof input?.query === "string" ? compact(input.query, 140) : "";
     label = reason
-      ? `${reason} · Web search${query ? ` for “${query}”` : ""}`
+      ? `${reason}: Web search${query ? ` for “${query}”` : ""}`
       : query ? `${verb} for “${query}”` : verb;
   } else if (isFetchTool(tool)) {
     const verb = failed ? "Failed to fetch" : done ? "Fetched" : "Fetching";
@@ -93,14 +93,14 @@ export function toolLabel(tool: ToolActivity): string {
         target = compact(`${url.host}${url.pathname === "/" ? "" : url.pathname}`, 140);
       } catch { /* Keep a safe generic label for malformed URLs. */ }
     }
-    label = reason ? `${reason} · ${target}` : `${verb} ${target}`;
+    label = reason ? `${reason}: ${target}` : `${verb} ${target}`;
   } else {
     // New snapshots already use the native TUI formatter for every tool.
     label = tool.title.replace(/ · [a-z][a-z0-9_]*$/, "").replace(/`([^`]+)`/g, "$1");
     if (label === name && /^[a-z][a-z0-9_]*$/.test(name)) {
       label = `${failed ? "Failed to run" : done ? "Ran" : "Running"} ${name.replace(/_/g, " ")}`;
     }
-    if (reason) label = `${reason} · ${label}`;
+    if (reason) label = `${reason}: ${label}`;
   }
   return compact(label, 220);
 }

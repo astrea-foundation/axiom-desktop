@@ -36,6 +36,10 @@ struct CatalogE2eeContract {
 }
 
 #[derive(Clone, Deserialize, Serialize)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "Independent advertised model capabilities"
+)]
 struct CatalogModel {
     #[serde(default)]
     relay_contract_version: u32,
@@ -61,6 +65,18 @@ struct CatalogModel {
     supported_thinking_modes: Vec<axiom_inference::ThinkingMode>,
     #[serde(default)]
     reasoning_replay: bool,
+    #[serde(default)]
+    supports_tools: bool,
+    #[serde(default)]
+    supports_parallel_tools: bool,
+    #[serde(default)]
+    supports_images: bool,
+    #[serde(default)]
+    file_mime_types: Vec<String>,
+    #[serde(default)]
+    reasoning_parameters: std::collections::BTreeMap<String, Value>,
+    #[serde(default)]
+    thinking_parameters: std::collections::BTreeMap<String, Value>,
     #[serde(default)]
     e2ee_contracts: Vec<CatalogE2eeContract>,
 }
@@ -254,6 +270,12 @@ fn validate_models(
             supported_reasoning_efforts,
             supported_thinking_modes: item.supported_thinking_modes,
             reasoning_replay: item.reasoning_replay,
+            supports_tools: item.supports_tools,
+            supports_parallel_tools: item.supports_parallel_tools,
+            supports_images: item.supports_images,
+            file_mime_types: item.file_mime_types,
+            reasoning_parameters: item.reasoning_parameters,
+            thinking_parameters: item.thinking_parameters,
             ..ModelInfo::default()
         };
         if let Err(error) = providers.validate_model(&mut model) {
@@ -435,6 +457,12 @@ mod tests {
             relay_contract_version: 2,
             supported_thinking_modes: Vec::new(),
             reasoning_replay: false,
+            supports_tools: true,
+            supports_parallel_tools: true,
+            supports_images: false,
+            file_mime_types: Vec::new(),
+            reasoning_parameters: std::collections::BTreeMap::default(),
+            thinking_parameters: std::collections::BTreeMap::default(),
             id: id.into(),
             label: "Model".into(),
             short_label: "Model".into(),
@@ -442,9 +470,9 @@ mod tests {
             base_url: "https://127.0.0.1/v1".into(),
             provider: "near".into(),
             provider_label: "NEAR".into(),
-            e2ee_protocol: "near-v2".into(),
+            e2ee_protocol: "near-v3".into(),
             e2ee_encryption_version: 2,
-            attestation_protocol: "near-tdx-nvidia-v1".into(),
+            attestation_protocol: "near-tdx-nvidia-v2".into(),
             context_window_tokens: 1_000_000,
             max_output_tokens: 8_192,
             input_price_microusd_per_million_tokens: Some(440_000),
@@ -480,7 +508,7 @@ mod tests {
         assert!(validate_models(vec![wire(legacy)], &config, &providers).is_err());
 
         let mut invalid = model("invalid");
-        invalid.e2ee_protocol = "near-v3".into();
+        invalid.e2ee_protocol = "near-v2".into();
         assert!(validate_models(vec![wire(invalid)], &config, &providers).is_err());
 
         let mut invalid = model("invalid");
@@ -516,7 +544,7 @@ mod tests {
         assert!(validate_models(vec![wire(unknown)], &config, &providers).is_err());
 
         let mut mismatched_near = model("bad-near");
-        mismatched_near.e2ee_protocol = "near-v3".into();
+        mismatched_near.e2ee_protocol = "near-v2".into();
         assert!(validate_models(vec![wire(mismatched_near)], &config, &providers).is_err());
     }
 
@@ -581,16 +609,16 @@ mod tests {
                 retire_after_unix_seconds: None,
             },
             CatalogE2eeContract {
-                e2ee_protocol: "near-v2".into(),
+                e2ee_protocol: "near-v3".into(),
                 e2ee_encryption_version: 2,
-                attestation_protocol: "near-tdx-nvidia-v1".into(),
+                attestation_protocol: "near-tdx-nvidia-v2".into(),
                 preferred: false,
                 retire_after_unix_seconds: None,
             },
         ];
         let supported = validate_models(vec![wire(advertised)], &config, &providers).unwrap();
         assert_eq!(supported.len(), 1);
-        assert_eq!(supported[0].e2ee_protocol, "near-v2");
+        assert_eq!(supported[0].e2ee_protocol, "near-v3");
         assert_eq!(supported[0].e2ee_encryption_version, 2);
 
         let mut retired = model("retired");
@@ -606,9 +634,9 @@ mod tests {
                 retire_after_unix_seconds: None,
             },
             CatalogE2eeContract {
-                e2ee_protocol: "near-v2".into(),
+                e2ee_protocol: "near-v3".into(),
                 e2ee_encryption_version: 2,
-                attestation_protocol: "near-tdx-nvidia-v1".into(),
+                attestation_protocol: "near-tdx-nvidia-v2".into(),
                 preferred: false,
                 retire_after_unix_seconds: Some(1),
             },

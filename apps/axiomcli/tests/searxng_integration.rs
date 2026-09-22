@@ -186,6 +186,7 @@ async fn real_service_lifecycle_failure_modes_and_agent_citations() {
     engine
         .run(
             TurnContext {
+                attachments: Vec::new(),
                 session_id: SessionId::new(),
                 turn_id: TurnId::new(),
                 cwd: PathBuf::from(workspace.path()),

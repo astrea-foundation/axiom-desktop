@@ -1,5 +1,13 @@
 # ADR 0010: Provider-owned verified secure sessions
 
+> September 21, 2026: Phala is retired. Current providers and dynamic discovery
+> are documented in [provider catalogs](../provider-catalogs.md); Phala details
+> below describe the historical decision only.
+
+> The provider-owned session abstraction remains accepted. The initial NEAR v2
+> and single-provider descriptions below are historical; the compiled registry now
+> supports NEAR v3 and Tinfoil EHBP. See [security](../threat-model.md).
+
 Status: accepted
 
 ## Context

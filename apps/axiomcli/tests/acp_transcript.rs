@@ -189,14 +189,14 @@ impl AcpProcess {
                     "features": {
                         "desktopChat": 1,
                         "threadCatalog": 1,
-                        "timeline": 1,
+                        "timeline": 2,
                         "modelCatalog": 1,
                         "profilePreferences": 1,
                         "collections": 1,
                         "account": 2,
-                        "billing": 1,
+                        "billing": 2,
                         "usage": 1,
-                        "securityEvidence": 1,
+                        "securityEvidence": 3,
                         "compaction": 1,
                         "activity": 1
                     }
@@ -284,10 +284,7 @@ async fn desktop_bootstrap_is_local_and_does_not_require_provider_or_auth() {
     assert!(bootstrap.get("error").is_none(), "{bootstrap}");
     assert_eq!(bootstrap["result"]["frontend"], "desktop-chat");
     assert_eq!(bootstrap["result"]["permissionProfile"], "web");
-    assert_eq!(
-        bootstrap["result"]["newThreadSettings"]["model"],
-        "deepseek-v4-flash"
-    );
+    assert_eq!(bootstrap["result"]["newThreadSettings"]["model"], "auto");
     assert_eq!(
         bootstrap["result"]["newThreadSettings"]["thinkingLevel"],
         "medium"
@@ -453,23 +450,54 @@ async fn axiom_extension_negotiates_and_exposes_typed_settings_security_and_comp
             break;
         }
     }
-    if !saw_title_notification {
-        saw_title_notification = tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                let value = acp.read().await;
-                let wire = value.to_string();
-                if wire.contains("title_changed") || wire.contains("session_info_update") {
-                    break true;
-                }
-            }
-        })
-        .await
-        .expect("generated title notification timeout");
-    }
     assert!(
         saw_title_notification,
-        "generated titles must be published without polling"
+        "initial titles must be published before the prompt completes"
     );
+    acp.close().await;
+}
+
+#[tokio::test]
+async fn generated_title_arrives_after_the_first_prompt_and_survives_reload() {
+    let workspace = tempfile::tempdir().unwrap();
+    let mut acp = AcpProcess::spawn("echo");
+    acp.initialize_extension().await;
+    let session = acp.new_session(2, workspace.path()).await;
+    acp.send(&json!({"jsonrpc":"2.0","id":3,"method":"session/prompt",
+        "params":{"sessionId":session,"prompt":[{"type":"text","text":"Please fix my login redirect"}]}})).await;
+    let mut completed = false;
+    let mut saw_fallback = false;
+    loop {
+        let value = acp.read().await;
+        if value["id"] == 3 {
+            assert_eq!(value["result"]["stopReason"], "end_turn");
+            completed = true;
+        }
+        if value["params"]["update"]["sessionUpdate"] == "session_info_update" {
+            let title = value["params"]["update"]["title"].as_str().unwrap();
+            if title == "Please fix my login redirect" {
+                saw_fallback = true;
+            }
+            if title == "Generated conversation title" {
+                assert!(saw_fallback);
+                assert!(
+                    completed,
+                    "title work must outlive a successfully completed prompt"
+                );
+                break;
+            }
+        }
+    }
+    acp.send(&json!({"jsonrpc":"2.0","id":4,"method":"_axiom/thread/list","params":{"limit":20}}))
+        .await;
+    let listed = acp.response(4).await;
+    let thread = listed["result"]["threads"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|thread| thread["threadId"] == session)
+        .unwrap();
+    assert_eq!(thread["title"], "Generated conversation title");
     acp.close().await;
 }
 
@@ -690,9 +718,11 @@ async fn new_acp_sessions_reconcile_stale_catalog_preferences_before_use() {
     let options = created["result"]["configOptions"]
         .as_array()
         .expect("new-session config options");
-    assert!(options.iter().any(|option| {
-        option["id"] == "model" && option["currentValue"] == "deepseek-v4-flash"
-    }));
+    assert!(
+        options.iter().any(|option| {
+            option["id"] == "model" && option["currentValue"] == "alternate-model"
+        })
+    );
     retired
         .send(&json!({
             "jsonrpc":"2.0","id":3,"method":"_axiom/profile/preferences","params":{}
@@ -701,12 +731,9 @@ async fn new_acp_sessions_reconcile_stale_catalog_preferences_before_use() {
     let corrected = retired.response(3).await;
     assert_eq!(
         corrected["result"]["preferences"]["model"],
-        "deepseek-v4-flash"
+        "alternate-model"
     );
-    assert_eq!(
-        corrected["result"]["preferences"]["thinkingLevel"],
-        "provider_default"
-    );
+    assert_eq!(corrected["result"]["preferences"]["thinkingLevel"], "high");
     retired.close().await;
 
     {
@@ -758,6 +785,31 @@ async fn axiom_extension_is_silent_until_negotiated_and_rejects_custom_requests(
 }
 
 #[tokio::test]
+async fn gift_redemption_requires_billing_three_and_an_interactive_account() {
+    for version in [2, 3] {
+        let mut acp = AcpProcess::spawn("echo");
+        acp.initialize_with_capabilities(json!({"_meta": {"axiom": {
+            "protocolVersion": "0.2", "features": {"billing": version}
+        }}}))
+        .await;
+        acp.send(
+            &json!({"jsonrpc":"2.0", "id":2, "method":"_axiom/billing/redeem_gift_code",
+            "params":{"code":"AXG-AAAA-AAAA-AAAA-AAAA-AAAA-AAAA-AAAA-AAAA"}}),
+        )
+        .await;
+        let response = acp.response(2).await;
+        assert!(response.get("error").is_some());
+        if version == 2 {
+            assert_eq!(response["error"]["code"], -32601);
+        } else {
+            assert_ne!(response["error"]["code"], -32601);
+        }
+        assert!(!response.to_string().contains("AXG-AAAA"));
+        acp.close().await;
+    }
+}
+
+#[tokio::test]
 async fn axiom_extension_negotiates_each_feature_independently() {
     let mut acp = AcpProcess::spawn("echo");
     acp.initialize_with_capabilities(json!({
@@ -772,6 +824,7 @@ async fn axiom_extension_negotiates_each_feature_independently() {
                     "profilePreferences": 0,
                     "collections": 0,
                     "account": 0,
+                    "billing": 1,
                     "securityEvidence": 0,
                     "compaction": 0,
                     "activity": 0
@@ -809,7 +862,7 @@ async fn axiom_extension_negotiates_each_feature_independently() {
 }
 
 #[tokio::test]
-async fn billing_extension_is_native_account_only_and_validates_requests_locally() {
+async fn billing_extension_requires_native_account_and_rejects_removed_invoice_methods() {
     let mut acp = AcpProcess::spawn("echo");
     acp.initialize_extension().await;
 
@@ -827,7 +880,7 @@ async fn billing_extension_is_native_account_only_and_validates_requests_locally
     }))
     .await;
     let invalid_create = acp.response(3).await;
-    assert!(invalid_create.get("error").is_some(), "{invalid_create}");
+    assert_eq!(invalid_create["error"]["code"], -32601, "{invalid_create}");
 
     acp.send(&json!({
         "jsonrpc":"2.0","id":4,"method":"_axiom/billing/invoice_status",
@@ -835,7 +888,7 @@ async fn billing_extension_is_native_account_only_and_validates_requests_locally
     }))
     .await;
     let invalid_id = acp.response(4).await;
-    assert!(invalid_id.get("error").is_some(), "{invalid_id}");
+    assert_eq!(invalid_id["error"]["code"], -32601, "{invalid_id}");
 
     acp.send(&json!({
         "jsonrpc":"2.0","id":5,"method":"_axiom/thread/list","params":{}
@@ -990,7 +1043,7 @@ async fn resumed_acp_sessions_restore_model_thinking_and_permissions() {
 }
 
 #[tokio::test]
-async fn resumed_acp_sessions_reconcile_retired_models_and_changed_reasoning_support() {
+async fn resumed_acp_sessions_retain_retired_models_and_reconcile_changed_reasoning_support() {
     let workspace = tempfile::tempdir().expect("workspace");
     let state = tempfile::tempdir().expect("shared state");
     let database = state
@@ -1023,7 +1076,7 @@ async fn resumed_acp_sessions_reconcile_retired_models_and_changed_reasoning_sup
     let mut acp = AcpProcess::spawn_with_state("echo", state.path());
     acp.initialize_extension().await;
     for (request_id, session_id, expected_model, expected_thinking) in [
-        (2, &retired_id, "deepseek-v4-flash", None),
+        (2, &retired_id, "retired-model", None),
         (3, &changed_reasoning_id, "medium-only", Some("medium")),
     ] {
         acp.send(&json!({
@@ -1054,17 +1107,17 @@ async fn resumed_acp_sessions_reconcile_retired_models_and_changed_reasoning_sup
     }
     acp.close().await;
 
-    let store = SessionStore::open(&database).expect("reopen corrected state");
+    let store = SessionStore::open(&database).expect("reopen preserved state");
     let retired = store
         .load_recovering(&retired_id)
         .expect("load retired-model correction");
     assert_eq!(
         model_for_resume(&retired.events, "fallback"),
-        "deepseek-v4-flash"
+        "retired-model"
     );
     assert_eq!(
         thinking_for_resume(&retired.events, ThinkingLevel::Medium),
-        ThinkingLevel::ProviderDefault
+        ThinkingLevel::High
     );
     let changed_reasoning = store
         .load_recovering(&changed_reasoning_id)
@@ -1077,6 +1130,19 @@ async fn resumed_acp_sessions_reconcile_retired_models_and_changed_reasoning_sup
         thinking_for_resume(&changed_reasoning.events, ThinkingLevel::ExtraHigh),
         ThinkingLevel::Medium
     );
+    drop(store);
+    let mut replacement = AcpProcess::spawn_with_state("echo", state.path());
+    replacement.initialize_extension().await;
+    replacement
+        .send(&json!({"jsonrpc":"2.0","id":2,"method":"session/load",
+        "params":{"sessionId":retired_id.to_string(),"cwd":workspace.path(),"mcpServers":[]}}))
+        .await;
+    assert!(replacement.response(2).await.get("result").is_some());
+    replacement.send(&json!({"jsonrpc":"2.0","id":3,"method":"session/set_config_option",
+        "params":{"sessionId":retired_id.to_string(),"configId":"model","value":"alternate-model"}})).await;
+    let selected = replacement.response(3).await;
+    assert!(selected.get("error").is_none(), "{selected}");
+    replacement.close().await;
 }
 
 #[tokio::test]
@@ -1108,7 +1174,10 @@ async fn slash_commands_are_advertised_and_execute_outside_model_turns() {
             "account",
             "security",
             "refresh",
-            "help"
+            "help",
+            "balance",
+            "topup",
+            "redeem"
         ]
     );
     let model_command = commands
@@ -1159,7 +1228,7 @@ async fn slash_commands_are_advertised_and_execute_outside_model_turns() {
         }
     }
     assert!(transcript.contains("session mode selector"));
-    assert!(transcript.contains("Crypto permissions are coming soon"));
+    assert!(transcript.contains("session mode selector to change Tools permissions"));
     assert!(!transcript.contains("Echo:"));
 
     acp.send(&json!({
@@ -1413,11 +1482,12 @@ async fn unsupported_structured_questions_close_cleanly_instead_of_sticking() {
                 "features": {
                     "desktopChat": 0,
                     "threadCatalog": 0,
-                    "timeline": 1,
+                    "timeline": 2,
                     "modelCatalog": 0,
                     "profilePreferences": 0,
                     "collections": 0,
                     "account": 0,
+                    "billing": 1,
                     "securityEvidence": 0,
                     "compaction": 0,
                     "activity": 0

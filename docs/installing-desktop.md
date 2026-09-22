@@ -2,7 +2,10 @@
 
 Each desktop download includes the matching command-line program, `axiomcli`.
 You do not need Rust, Node.js, or a separate CLI download. Choose the build for
-your operating system and processor. These examples use version 0.1.0.
+your operating system and processor from the published download catalog.
+These filenames illustrate version 0.1.0; they do not assert its current
+availability. [Supported build targets](releasing.md#supported-platforms) and
+[Desktop behavior](desktop.md) are documented separately.
 
 ## Windows
 
@@ -95,7 +98,12 @@ download, choose **Show in folder** to find the installer.
 
 Versions released before update notifications were introduced need one manual
 upgrade from the website first. The app checks on startup and every six hours;
-**Check for updates** runs a check immediately.
+**Check for updates** runs a check immediately. Installed TUIs show a quiet local
+notice from the same feed, and `axiomcli update` points a bundled CLI back to this
+Desktop update screen. Both programs share product version 0.1.2 for the next
+release. Desktop checks the CLI's reported version before loading account or chat
+state and refuses mixed versions. In a source build, rebuild the CLI if startup
+reports a version mismatch.
 
 Quit Axiom and any running AxiomCLI sessions, then install the newer download
 using the same format and installation location. The Windows EXE, macOS PKG,

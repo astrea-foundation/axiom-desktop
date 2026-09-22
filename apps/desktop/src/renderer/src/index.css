@@ -1,6 +1,8 @@
 @import "@axiom/brand/fonts.css";
 @import "tailwindcss";
 
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
 /* A tool is an inline step in a response, not another full message. */
 .chat-timeline > [data-timeline-kind] + [data-timeline-kind] {
   margin-top: 12px;
@@ -50,6 +52,8 @@
   --color-success-glow: rgba(63, 155, 70, 0.1);
 
   --color-brand: #ff7653;
+  --color-brand-hover: #ff8b6e;
+  --color-on-brand: #1f1f1f;
   --color-on-accent: #ffffff;
 
   --color-warning: #d97706;
@@ -648,16 +652,6 @@ input {
   background: var(--wash-chip);
   white-space: nowrap;
 }
-.ax-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--color-cherry);
-  flex: 0 0 auto;
-}
-.ax-dot-hollow {
-  background: var(--color-text-muted);
-}
 @keyframes dot-working {
   0%,
   100% {
@@ -666,9 +660,6 @@ input {
   50% {
     opacity: 1;
   }
-}
-.ax-dot-working {
-  animation: dot-working 2s ease-in-out infinite;
 }
 /* The trailing slot stays empty for read threads; activity pulses in orange. */
 .thread-dot {
@@ -719,13 +710,6 @@ input {
   }
 }
 
-.ax-meta {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  letter-spacing: -0.01em;
-  color: var(--color-text-muted);
-  font-variant-numeric: tabular-nums;
-}
 
 .cherry-glow {
   background: radial-gradient(
@@ -877,19 +861,6 @@ input {
   animation: check-pop 0.4s var(--ease-spring) both;
 }
 
-@keyframes arm-pulse {
-  0%,
-  100% {
-    box-shadow: 0 0 10px rgba(217, 48, 54, 0.12);
-  }
-  50% {
-    box-shadow: 0 0 20px rgba(217, 48, 54, 0.3);
-  }
-}
-.animate-arm-pulse {
-  animation: arm-pulse 1.4s ease-in-out infinite;
-}
-
 @keyframes progress-in {
   from {
     transform: scaleX(0);
@@ -1023,9 +994,61 @@ input {
   overflow-wrap: normal;
   word-break: normal;
 }
+
+/* Bundled syntax tokens follow the app theme without changing code layout. */
+.markdown-prose {
+  --syntax-comment: #626977;
+  --syntax-keyword: #8250df;
+  --syntax-string: #116329;
+  --syntax-number: #9a4600;
+  --syntax-title: #0550ae;
+  --syntax-type: #953800;
+  --syntax-property: #0a5964;
+  --syntax-tag: #cf222e;
+}
+:root[data-theme="dark"] .markdown-prose {
+  --syntax-comment: #9a9aa6;
+  --syntax-keyword: #c8a0ff;
+  --syntax-string: #8ccf9b;
+  --syntax-number: #e9b27a;
+  --syntax-title: #82b6ff;
+  --syntax-type: #e3bd7c;
+  --syntax-property: #72c6d0;
+  --syntax-tag: #ffa198;
+}
+.markdown-prose .hljs-comment,
+.markdown-prose .hljs-quote { color: var(--syntax-comment); }
+.markdown-prose .hljs-keyword,
+.markdown-prose .hljs-selector-tag,
+.markdown-prose .hljs-doctag { color: var(--syntax-keyword); }
+.markdown-prose .hljs-string,
+.markdown-prose .hljs-regexp,
+.markdown-prose .hljs-addition { color: var(--syntax-string); }
+.markdown-prose .hljs-number,
+.markdown-prose .hljs-literal { color: var(--syntax-number); }
+.markdown-prose .hljs-title,
+.markdown-prose .hljs-section,
+.markdown-prose .hljs-selector-id,
+.markdown-prose .hljs-selector-class { color: var(--syntax-title); }
+.markdown-prose .hljs-type,
+.markdown-prose .hljs-built_in,
+.markdown-prose .hljs-title.class_ { color: var(--syntax-type); }
+.markdown-prose .hljs-attr,
+.markdown-prose .hljs-attribute,
+.markdown-prose .hljs-property,
+.markdown-prose .hljs-variable,
+.markdown-prose .hljs-symbol,
+.markdown-prose .hljs-bullet { color: var(--syntax-property); }
+.markdown-prose .hljs-meta,
+.markdown-prose .hljs-name,
+.markdown-prose .hljs-tag,
+.markdown-prose .hljs-deletion { color: var(--syntax-tag); }
+.markdown-prose .hljs-subst { color: var(--color-text-primary); }
+.markdown-prose .hljs-emphasis { font-style: italic; }
+.markdown-prose .hljs-strong { font-weight: 600; }
 .markdown-prose ul,
 .markdown-prose ol {
-  padding-left: 1.5em;
+  padding-inline-start: 1.5em;
   margin: 0.4em 0;
 }
 .markdown-prose ul {
@@ -1062,6 +1085,10 @@ input {
   border-top: 1px solid var(--color-border);
   margin: 1em 0;
 }
+.markdown-table-scroll {
+  overflow-x: auto;
+  max-width: 100%;
+}
 .markdown-prose table {
   border-collapse: collapse;
   font-size: 0.92em;
@@ -1070,6 +1097,8 @@ input {
 }
 .markdown-prose th,
 .markdown-prose td {
+  word-break: normal;
+  overflow-wrap: normal;
   border: 1px solid var(--color-border);
   padding: 0.4em 0.7em;
   text-align: left;
@@ -1082,7 +1111,6 @@ input {
 @media (prefers-reduced-motion: reduce) {
   .animate-panel-in,
   .animate-check-pop,
-  .animate-arm-pulse,
   .animate-progress-in,
   .animate-pop-in,
   .animate-fade-in-up,
@@ -1095,10 +1123,6 @@ input {
     animation: none;
     opacity: 0.55;
   }
-  .ax-dot-working {
-    animation: none;
-    opacity: 0.55;
-  }
   .dot-bounce {
     animation: none;
     opacity: 0.7;
@@ -1108,3 +1132,33 @@ input {
     transition: none;
   }
 }
+
+/* API key controls follow the account cards, with details available on demand. */
+.desktop-api-keys .section-heading { align-items:flex-start; flex-wrap:wrap; }
+.desktop-api-keys .card-help { margin:8px 0 0; }
+.desktop-api-keys .key-actions { display:flex; align-items:center; flex-wrap:wrap; gap:8px; }
+.desktop-api-keys .key-refresh { display:grid; place-items:center; width:36px; height:36px; border:0; border-radius:9px; background:transparent; color:var(--muted); }
+.desktop-api-keys .key-refresh:hover { background:var(--surface-hover); }
+.desktop-api-keys .key-create-form,.desktop-api-keys .key-secret { display:grid; gap:15px; margin:18px 0; padding:20px; border:1px solid var(--line); border-radius:13px; background:var(--tile); }
+.desktop-api-keys .key-secret strong { font-size:14px; font-weight:500; }.desktop-api-keys .key-secret p { margin:0; color:var(--muted); font-size:12px; }
+.desktop-api-keys .key-secret input { font-family:var(--font-mono); font-size:11px; }
+.desktop-api-keys .key-empty { display:grid; justify-items:center; gap:9px; padding:33px 10px; text-align:center; color:var(--subtle); }
+.desktop-api-keys .key-empty h3 { margin:2px 0 0; color:var(--text); font-size:14px; font-weight:500; }.desktop-api-keys .key-empty p { margin:0; color:var(--muted); font-size:12px; }
+.desktop-api-keys .key-list { margin:18px 0; }.desktop-api-keys .key-row { padding:18px 0; border-top:1px solid var(--line); }
+.desktop-api-keys .key-summary { display:flex; align-items:center; gap:20px; }.desktop-api-keys .key-name { min-width:0; flex:1; }.desktop-api-keys .key-name strong { overflow-wrap:anywhere; }
+.desktop-api-keys .key-name,.desktop-api-keys .key-stat { display:flex; flex-direction:column; gap:5px; }.desktop-api-keys .key-name strong,.desktop-api-keys .key-stat strong { font-size:13px; font-weight:500; }.desktop-api-keys .key-name span,.desktop-api-keys .key-stat span { font-size:11px; color:var(--subtle); }.desktop-api-keys .key-stat { text-align:right; font-variant-numeric:tabular-nums; }
+.desktop-api-keys .key-details { margin-top:12px; color:var(--muted); font-size:11px; }.desktop-api-keys .key-details summary { cursor:pointer; width:fit-content; }.desktop-api-keys .key-details dl { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px 20px; padding:15px; background:var(--tile); border-radius:10px; }.desktop-api-keys .key-details dl div { display:flex; justify-content:space-between; gap:10px; }.desktop-api-keys .key-details dd { margin:0; color:var(--text); font-variant-numeric:tabular-nums; }.desktop-api-keys .key-details p { font-size:11px; line-height:1.7; }.desktop-api-keys .key-history { margin-bottom:10px; }
+@media(max-width:760px) { .desktop-api-keys { padding:23px; }.desktop-api-keys .key-summary { flex-wrap:wrap; gap:16px; }.desktop-api-keys .key-name { flex-basis:100%; }.desktop-api-keys .key-summary > .quiet-link { margin-left:auto; }.desktop-api-keys .key-details dl { grid-template-columns:1fr; }.desktop-api-keys .key-create-form,.desktop-api-keys .key-secret { padding:14px; } }
+
+.desktop-api-keys { --line:var(--color-border); --muted:var(--color-text-secondary); --subtle:var(--color-text-tertiary); --text:var(--color-text-primary); --tile:var(--wash-row); --surface-hover:var(--wash-hover); --font-mono:monospace; }
+.desktop-api-keys .section-heading { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:18px; }
+.desktop-api-keys .key-heading { font-size:13px; color:var(--color-text-secondary); }
+.desktop-api-keys .action-button,.desktop-api-keys .text-button { display:inline-flex; align-items:center; justify-content:center; gap:7px; border:1px solid var(--color-border); background:var(--surface-button-secondary); color:var(--color-text-secondary); padding:8px 12px; border-radius:8px; font-size:12.5px; }
+.desktop-api-keys .action-button:hover,.desktop-api-keys .text-button:hover { background:var(--surface-button-secondary-hover); }
+.desktop-api-keys button:disabled { opacity:.5; }
+.desktop-api-keys .quiet-link { font-size:12px; color:var(--color-text-secondary); text-decoration:underline; text-underline-offset:3px; }
+.desktop-api-keys .card-help { font-size:12px; line-height:1.7; color:var(--color-text-tertiary); }
+.desktop-api-keys .field { display:grid; gap:7px; font-size:12px; color:var(--color-text-secondary); }
+.desktop-api-keys .field input { min-width:0; width:100%; padding:10px 12px; border:1px solid var(--color-border); border-radius:8px; background:var(--surface-track); color:var(--color-text-primary); }
+.desktop-api-keys .center-loading { display:flex; align-items:center; gap:8px; padding:20px 0; color:var(--color-text-tertiary); font-size:12px; }
+.desktop-api-keys .key-notice { margin:12px 0; font-size:12px; line-height:1.7; color:var(--color-danger-strong); }

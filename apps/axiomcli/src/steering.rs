@@ -33,6 +33,7 @@ pub struct TurnSteering {
 }
 
 impl TurnSteering {
+    #[must_use]
     pub fn new(turn_id: TurnId) -> Self {
         Self {
             turn_id,

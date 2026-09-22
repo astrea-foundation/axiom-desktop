@@ -1062,7 +1062,7 @@ impl AuthManager {
             .expect("static API path is valid")
     }
 
-    fn generation(&self) -> u64 {
+    pub(crate) fn generation(&self) -> u64 {
         self.shared
             .state
             .read()
@@ -1370,10 +1370,7 @@ impl AuthManager {
                 .send()
                 .await;
             self.adopt_external_credential(persisted)?;
-            return Err(AxiomError::InvalidTransition(
-                "the native account changed in another Axiom process; refresh account status"
-                    .into(),
-            ));
+            return Err(account_changed());
         }
         let refresh = bundle.refresh_token.expose_secret().to_owned();
         let persistence = self
@@ -1512,13 +1509,14 @@ impl AuthManager {
         };
         let local_refresh = self.refresh_token_value();
         let changed_externally = persisted != local_refresh;
-        if changed_externally {
+        let previous_account = self.active_account_id();
+        // A peer normally changes the credential by rotating the same account's
+        // session. Keep its identity until the server authenticates the new
+        // bundle; changing the identity generation here invalidates live work.
+        if changed_externally && (previous_account.is_none() || persisted.is_none()) {
             self.adopt_external_credential(persisted.clone())?;
             if !allow_external_change {
-                return Err(AxiomError::InvalidTransition(
-                    "the native account changed in another Axiom process; refresh account status"
-                        .into(),
-                ));
+                return Err(account_changed());
             }
         }
         let refresh = persisted.ok_or_else(authentication_required)?;
@@ -1587,8 +1585,19 @@ impl AuthManager {
                 "session refresh omitted rotated tokens".into(),
             ));
         };
+        let switched_account = changed_externally
+            && previous_account.is_some()
+            && previous_account.as_deref() != Some(bundle.account.id.as_str());
+        if switched_account {
+            // Preserve the peer's newly rotated credential, but never give it
+            // to work registered against the previous account's local store.
+            self.adopt_external_credential(Some(refresh.clone()))?;
+        }
         self.commit_bundle_under_credential_lock(bundle, false, Some(&refresh), &credential_lock)
             .await?;
+        if switched_account && !allow_external_change {
+            return Err(account_changed());
+        }
         let state = self
             .shared
             .state
@@ -1637,10 +1646,7 @@ impl AuthManager {
                 });
             }
             if state.external_change_pending && !allow_external_change {
-                return Err(AxiomError::InvalidTransition(
-                    "the native account changed in another Axiom process; refresh account status"
-                        .into(),
-                ));
+                return Err(account_changed());
             }
             if let Some(token) = &state.access_token
                 && token.expires_at > minimum_expiry(minimum_remaining)
@@ -1667,10 +1673,7 @@ impl AuthManager {
                 .read()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             if state.external_change_pending && !allow_external_change {
-                return Err(AxiomError::InvalidTransition(
-                    "the native account changed in another Axiom process; refresh account status"
-                        .into(),
-                ));
+                return Err(account_changed());
             }
             if let Some(token) = &state.access_token
                 && token.expires_at > minimum_expiry(minimum_remaining)
@@ -2319,8 +2322,20 @@ fn parse_service_url(value: &str, label: &str) -> Result<Url> {
     Ok(url)
 }
 
+fn account_changed() -> AxiomError {
+    AxiomError::SecureProvider {
+        kind: axiom_inference::ProviderFailureKind::LocalAuthentication,
+        code: "ACCOUNT_CHANGED",
+        message: "the native account changed in another Axiom process; refresh account status",
+    }
+}
+
 fn authentication_required() -> AxiomError {
-    AxiomError::Provider("authentication required; sign in to your Axiom account".into())
+    AxiomError::SecureProvider {
+        kind: axiom_inference::ProviderFailureKind::LocalAuthentication,
+        code: "AUTHENTICATION_REQUIRED",
+        message: "authentication required; sign in to your Axiom account",
+    }
 }
 
 #[cfg(unix)]
@@ -2611,6 +2626,10 @@ mod tests {
         searches: AtomicUsize,
         search_mode: AtomicUsize,
         search_started: tokio::sync::Notify,
+        gift_mode: AtomicUsize,
+        gift_calls: AtomicUsize,
+        gift_started: tokio::sync::Notify,
+        gift_release: tokio::sync::Notify,
     }
 
     fn account_json() -> Value {
@@ -2788,6 +2807,41 @@ mod tests {
         }], "warnings": []})).into_response()
     }
 
+    async fn api_key_control(request: axum::extract::Request) -> Response {
+        assert!(
+            request
+                .headers()
+                .get("authorization")
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("Bearer access-token-")
+        );
+        let method = request.method().clone();
+        if method == axum::http::Method::DELETE {
+            return AxumStatus::NO_CONTENT.into_response();
+        }
+        let key = json!({"id": "key-1", "name": "Coding tools", "scopes": ["inference"],
+            "created_at": "2026-09-10T12:00:00Z", "last_used_at": null, "expires_at": null,
+            "revoked_at": null, "usage_started_at": "2026-09-10T12:00:00Z",
+            "usage": {"request_count": "1", "input_tokens": "12345", "cached_input_tokens": "1000",
+                "output_tokens": "4000", "cost_microusd": "123456"}});
+        if method == axum::http::Method::GET {
+            return Json(json!({"keys": [key]})).into_response();
+        }
+        let body = axum::body::to_bytes(request.into_body(), 4096)
+            .await
+            .unwrap();
+        let input: Value = serde_json::from_slice(&body).unwrap();
+        if input["name"] == "Needs sign-in" {
+            return (AxumStatus::FORBIDDEN, "private response details").into_response();
+        }
+        assert_eq!(input, json!({"name": "Coding tools"}));
+        let mut created = key;
+        created["token"] = "axm_once_only_fixture_1234567890".into();
+        (AxumStatus::CREATED, Json(created)).into_response()
+    }
+
     async fn manager() -> (AuthManager, Arc<MockState>, Arc<MemoryStore>) {
         let state = Arc::new(MockState {
             challenge: Mutex::new(None),
@@ -2803,6 +2857,10 @@ mod tests {
             searches: AtomicUsize::new(0),
             search_mode: AtomicUsize::new(0),
             search_started: tokio::sync::Notify::new(),
+            gift_mode: AtomicUsize::new(0),
+            gift_calls: AtomicUsize::new(0),
+            gift_started: tokio::sync::Notify::new(),
+            gift_release: tokio::sync::Notify::new(),
         });
         let app = Router::new()
             .route(
@@ -2814,6 +2872,12 @@ mod tests {
             .route("/api/v1/auth/token/refresh", post(refresh))
             .route("/api/v1/auth/session", get(session).delete(revoke_session))
             .route("/api/v1/search", post(hosted_search))
+            .route("/api/v1/billing/gift-codes/redeem", post(gift_redeem_test))
+            .route(
+                "/api/v1/auth/api-keys",
+                get(api_key_control).post(api_key_control),
+            )
+            .route("/api/v1/auth/api-keys/{id}", delete(api_key_control))
             .with_state(state.clone());
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
         let base = format!("http://{}", listener.local_addr().expect("address"));
@@ -2854,6 +2918,42 @@ mod tests {
         );
         auth.launch_browser = false;
         (auth, state, store)
+    }
+
+    #[tokio::test]
+    async fn api_keys_use_native_auth_without_replacing_the_sign_in_credential() {
+        let (auth, state, store) = manager().await;
+        let login = auth.start_native_login(None).await.unwrap();
+        state.approved.store(true, Ordering::Release);
+        login.complete(CancellationToken::new()).await.unwrap();
+        let credential = store.load().unwrap();
+        let client = crate::billing::BillingClient::new(
+            auth.api_base_url.as_str(),
+            auth.clone(),
+            Duration::from_secs(2),
+        )
+        .unwrap();
+        let cancellation = CancellationToken::new();
+        let created = client
+            .create_api_key("Coding tools", &cancellation)
+            .await
+            .unwrap();
+        assert_eq!(created.token, "axm_once_only_fixture_1234567890");
+        let listed = client.api_keys(&cancellation).await.unwrap();
+        assert_eq!(listed.keys[0].usage.cost_microusd, "123456");
+        assert!(!serde_json::to_string(&listed).unwrap().contains("axm_"));
+        client
+            .revoke_api_key(&created.key.id, &cancellation)
+            .await
+            .unwrap();
+        let error = client
+            .create_api_key("Needs sign-in", &cancellation)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Sign in again"));
+        assert!(!error.contains("private response details"));
+        assert_eq!(store.load().unwrap(), credential);
     }
 
     #[tokio::test]
@@ -3109,6 +3209,83 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn peer_rotation_preserves_account_identity_and_live_operation_leases() {
+        let (first, server, store) = manager().await;
+        let initial = "initial-refresh-token-with-enough-entropy";
+        store.save(initial).unwrap();
+        first.shared.state.write().unwrap().refresh_token = Some(initial.to_owned().into());
+        let second = peer_manager(&first, &store, initial);
+        let ValidationStatus::Valid(status) = first.validate().await else {
+            panic!("first account")
+        };
+        assert!(matches!(
+            second.validate().await,
+            ValidationStatus::Valid(_)
+        ));
+        first.shared.state.write().unwrap().access_token = None;
+        let generation = first.generation();
+        let first_cancel = CancellationToken::new();
+        let second_cancel = CancellationToken::new();
+        let (one, two) = tokio::join!(
+            first.access_token_for_secure_operation(&first_cancel),
+            first.access_token_for_secure_operation(&second_cancel),
+        );
+        assert!(one.is_ok() && two.is_ok());
+        assert_eq!(server.refreshes.load(Ordering::Acquire), 3);
+        assert_eq!(first.generation(), generation);
+        assert!(first.account_status_is_current(&status));
+        assert_eq!(server.revocations.load(Ordering::Acquire), 0);
+        second.shared.state.write().unwrap().access_token = None;
+        assert!(matches!(
+            second.validate().await,
+            ValidationStatus::Valid(_)
+        ));
+        first.shared.state.write().unwrap().access_token = None;
+        assert!(matches!(first.validate().await, ValidationStatus::Valid(_)));
+        assert_eq!(
+            first.generation(),
+            generation,
+            "account refresh also preserves identity"
+        );
+        assert!(first.account_status_is_current(&status));
+    }
+
+    #[tokio::test]
+    async fn peer_account_switch_preserves_credential_but_blocks_existing_work() {
+        let (auth, server, store) = manager().await;
+        let initial = "initial-refresh-token-with-enough-entropy";
+        store.save(initial).unwrap();
+        auth.shared.state.write().unwrap().refresh_token = Some(initial.to_owned().into());
+        assert!(matches!(auth.validate().await, ValidationStatus::Valid(_)));
+        {
+            let mut state = auth.shared.state.write().unwrap();
+            state.account.as_mut().unwrap().id = "previous-account".into();
+            state.access_token = None;
+        }
+        let generation = auth.generation();
+        store
+            .save("peer-login-refresh-token-with-enough-entropy")
+            .unwrap();
+        let error = auth
+            .access_token_for_secure_operation(&CancellationToken::new())
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("account changed"));
+        assert!(auth.generation() > generation);
+        assert_eq!(server.revocations.load(Ordering::Acquire), 0);
+        assert_eq!(
+            store.load().unwrap().as_deref(),
+            Some("refresh-token-with-enough-entropy-00000002")
+        );
+        assert!(
+            auth.access_token_for_secure_operation(&CancellationToken::new())
+                .await
+                .is_err()
+        );
+        assert!(matches!(auth.validate().await, ValidationStatus::Valid(_)));
+    }
+
+    #[tokio::test]
     async fn stale_manager_never_deletes_a_newer_persisted_refresh_token() {
         let (auth, _server, store) = manager().await;
         let stale_refresh = "stale-refresh-token-with-enough-entropy";
@@ -3236,12 +3413,16 @@ mod tests {
         let _ = caller.await;
 
         tokio::time::timeout(Duration::from_secs(1), async {
-            while store.saves.load(Ordering::Acquire) == 0 {
+            while store
+                .load()
+                .expect("load")
+                .is_none_or(|token| token == refresh_token)
+            {
                 tokio::task::yield_now().await;
             }
         })
         .await
-        .expect("detached rotation reached the credential store");
+        .expect("detached rotation committed to the credential store");
         assert_eq!(state.refreshes.load(Ordering::Acquire), 1);
         assert_eq!(store.saves.load(Ordering::Acquire), 1);
         assert!(
@@ -3708,4 +3889,5 @@ mod tests {
         account.avatar_url = Some("file:///tmp/tracking-pixel".into());
         assert!(validate_account(&account).is_err());
     }
+    include!("auth/gift_code_tests.rs");
 }

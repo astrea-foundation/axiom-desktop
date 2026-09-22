@@ -80,7 +80,7 @@ export function AccountMenu({ account, accountId, billing, connected, onRefreshB
       </span>
       <span className="flex min-w-0 flex-1 flex-col items-start leading-tight">
         <span className="max-w-full truncate text-[12.5px] text-[var(--color-text-primary)]">{account.title}</span>
-        <span className="max-w-full truncate text-[11px] text-[var(--color-text-tertiary)]">{account.detail}</span>
+        {account.detail ? <span className="max-w-full truncate text-[11px] text-[var(--color-text-tertiary)]">{account.detail}</span> : null}
       </span>
       <ChevronUp size={13} aria-hidden="true" className={`shrink-0 text-[var(--color-text-tertiary)] transition-transform motion-reduce:transition-none ${open ? "rotate-180" : ""}`} />
     </button>

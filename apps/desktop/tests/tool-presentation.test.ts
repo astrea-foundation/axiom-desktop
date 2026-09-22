@@ -14,7 +14,7 @@ const search: ToolActivity = {
 test("web tools use phase-aware TUI-style action and target labels", () => {
   assert.equal(toolLabel(search), "Searched the web for “current news”");
   assert.equal(toolLabel({ ...search, status: "in_progress" }), "Searching the web for “current news”");
-  assert.equal(toolLabel({ ...search, status: "failed" }), "Search failed · Web search for “current news”");
+  assert.equal(toolLabel({ ...search, status: "failed" }), "Search failed: Web search for “current news”");
   assert.equal(toolLabel({ ...search, title: "Searching the web for `current news` · web_search" }), "Searched the web for “current news”");
   assert.equal(toolLabel({ ...search, title: "fetch_url", input: { url: "https://user:password@example.com/story?token=secret#private" } }), "Fetched example.com/story");
   assert.equal(toolLabel({ ...search, title: "Read `src/main.rs`", name: "read_file" }), "Read src/main.rs");
@@ -51,7 +51,7 @@ test("native fetch failures become short, accurate reasons in both live and save
     ]) {
       const tool = { ...fetch, content };
       assert.equal(toolFailureReason(tool), reason);
-      assert.equal(toolLabel(tool), `${reason} · example.com/story`);
+      assert.equal(toolLabel(tool), `${reason}: example.com/story`);
     }
   }
 });

@@ -1,9 +1,8 @@
 //! Test-only support for an encrypted provider fixture.
 
 use base64::{Engine as _, engine::general_purpose};
-use k256::ecdsa::SigningKey;
+use ed25519_dalek::{Signer, SigningKey};
 use sha2::{Digest as _, Sha256};
-use sha3::Keccak256;
 
 use crate::{Result, providers::near::crypto};
 
@@ -42,11 +41,8 @@ pub fn encrypt_for_client(client_public_key_hex: &str, plaintext: &[u8]) -> Resu
 /// Canonical address of the deterministic test-only response signer.
 #[must_use]
 pub fn fixture_response_signing_address() -> String {
-    let key = SigningKey::from_bytes((&RESPONSE_SIGNING_SEED).into())
-        .expect("the fixed fixture response-signing seed is valid");
-    let encoded = key.verifying_key().to_encoded_point(false);
-    let hash = Keccak256::digest(&encoded.as_bytes()[1..]);
-    format!("0x{}", hex::encode(&hash[12..]))
+    let key = SigningKey::from_bytes(&RESPONSE_SIGNING_SEED);
+    hex::encode(key.verifying_key().to_bytes())
 }
 
 /// Build the exact closed NEAR receipt shape around deterministic fixture response bytes.
@@ -57,30 +53,20 @@ pub fn sign_response_receipt(
     chat_id: &str,
     model: &str,
 ) -> serde_json::Value {
-    let key = SigningKey::from_bytes((&RESPONSE_SIGNING_SEED).into())
-        .expect("the fixed fixture response-signing seed is valid");
+    let key = SigningKey::from_bytes(&RESPONSE_SIGNING_SEED);
     let response_hash = hex::encode(Sha256::digest(response_body));
     let signed_text = format!("{model}:{request_hash}:{response_hash}");
-    let prefix = format!("\x19Ethereum Signed Message:\n{}", signed_text.len());
-    let mut digest = Keccak256::new();
-    digest.update(prefix.as_bytes());
-    digest.update(signed_text.as_bytes());
-    let message_hash = digest.finalize();
-    let (signature, recovery_id) = key
-        .sign_prehash_recoverable(message_hash.as_slice())
-        .expect("the deterministic fixture response signature succeeds");
-    let mut signature_bytes = signature.to_bytes().to_vec();
-    signature_bytes.push(recovery_id.to_byte() + 27);
+    let signature_bytes = key.sign(signed_text.as_bytes()).to_bytes();
     serde_json::json!({
         "provider": "near",
-        "protocol": "near-v2",
+        "protocol": "near-v3",
         "chat_id": chat_id,
         "model": model,
         "request_hash": request_hash,
         "response_hash": response_hash,
         "response_body_base64": general_purpose::STANDARD.encode(response_body),
         "signed_text": signed_text,
-        "signature": format!("0x{}", hex::encode(signature_bytes)),
+        "signature": hex::encode(signature_bytes),
         "signing_address": fixture_response_signing_address(),
     })
 }

@@ -74,6 +74,14 @@ pub struct McpServerConfig {
     /// are display hints and never grant this policy classification.
     #[serde(default)]
     pub read_only_tools: Vec<String>,
+    /// Trusted per-server tool deadline; discovery keeps a separate short timeout.
+    #[serde(default = "default_mcp_tool_timeout_secs")]
+    pub tool_timeout_secs: u64,
+}
+
+#[must_use]
+pub const fn default_mcp_tool_timeout_secs() -> u64 {
+    300
 }
 
 #[derive(Default, Deserialize)]
@@ -231,7 +239,7 @@ const fn profile_is_narrower_or_equal(
 impl Default for Config {
     fn default() -> Self {
         Self {
-            model: "deepseek-v4-flash".into(),
+            model: "auto".into(),
             base_url: "https://api.axiom.stream".into(),
             permission_profile: PermissionProfile::Confirm,
             searxng_url: "http://127.0.0.1:8888".into(),
@@ -396,6 +404,11 @@ impl Config {
             rule.validate()?;
         }
         for server in &self.mcp_servers {
+            if !(1..=86_400).contains(&server.tool_timeout_secs) {
+                return Err(AxiomError::Config(
+                    "MCP tool_timeout_secs must be between 1 and 86400".into(),
+                ));
+            }
             if server.name.trim().is_empty()
                 || server.command.trim().is_empty()
                 || server.name.contains('\0')
@@ -557,7 +570,13 @@ fn warn_about_unknown_config_fields(path: &Path, content: &str) -> Result<()> {
         "policy_rules",
         "mcp_servers",
     ];
-    const MCP_FIELDS: &[&str] = &["name", "command", "args", "read_only_tools"];
+    const MCP_FIELDS: &[&str] = &[
+        "name",
+        "command",
+        "args",
+        "read_only_tools",
+        "tool_timeout_secs",
+    ];
 
     let document: toml::Value = toml::from_str(content)
         .map_err(|error| AxiomError::Config(format!("{}: {error}", path.display())))?;

@@ -1,4 +1,12 @@
-use std::{net::IpAddr, path::PathBuf, time::Duration};
+use std::{
+    net::IpAddr,
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 use url::Url;
 
@@ -6,6 +14,8 @@ use crate::{Result, SecureClientError};
 
 #[derive(Clone, Debug)]
 pub struct SecureClientConfig {
+    // Shared by this runtime's client clones, never serialized or written to disk.
+    accept_outdated_near_tcb: Arc<AtomicBool>,
     pub relay_base_url: Url,
     pub request_timeout: Duration,
     pub attestation_timeout: Duration,
@@ -32,10 +42,11 @@ impl SecureClientConfig {
             ));
         }
         Ok(Self {
+            accept_outdated_near_tcb: Arc::new(AtomicBool::new(false)),
             relay_base_url,
             request_timeout: Duration::from_secs(120),
             attestation_timeout: Duration::from_secs(60),
-            catalog_max_stale: Duration::from_secs(24 * 60 * 60),
+            catalog_max_stale: Duration::from_secs(30 * 60),
             verified_session_ttl: Duration::from_secs(240),
             trust_policy_cache_path: None,
             trust_policy_refresh_interval: Duration::from_secs(300),
@@ -61,6 +72,7 @@ impl SecureClientConfig {
             ));
         }
         Ok(Self {
+            accept_outdated_near_tcb: Arc::new(AtomicBool::new(false)),
             relay_base_url,
             request_timeout: Duration::from_secs(15),
             attestation_timeout: Duration::from_secs(10),
@@ -81,6 +93,22 @@ impl SecureClientConfig {
     #[cfg(feature = "test-fixture")]
     pub(crate) const fn uses_test_fixture(&self) -> bool {
         self.test_fixture
+    }
+
+    /// Explicit local-user consent for missing Intel updates, for this runtime only.
+    /// This cannot relax any cryptographic, identity, freshness or GPU check.
+    pub fn accept_outdated_tee_for_provider(&self, provider: &str) -> Result<()> {
+        if provider != "near" {
+            return Err(SecureClientError::configuration(
+                "this provider has no supported outdated-TEE exception",
+            ));
+        }
+        self.accept_outdated_near_tcb.store(true, Ordering::SeqCst);
+        Ok(())
+    }
+
+    pub(crate) fn accepts_outdated_tcb(&self, provider: &str) -> bool {
+        provider == "near" && self.accept_outdated_near_tcb.load(Ordering::SeqCst)
     }
 }
 
@@ -106,10 +134,7 @@ impl Default for SecureClientLimits {
         Self {
             model_catalog_bytes: 4 * 1024 * 1024,
             trust_policy_bytes: 128 * 1024,
-            // Phala's independently verified gateway report includes fresh
-            // Intel collateral and NVIDIA verdicts for every eligible worker.
-            // A live 17-worker bundle is currently about 8 MiB, so keep a
-            // dedicated bounded ceiling with enough room for evidence churn.
+            // Bounded provider evidence, independently verified on this device.
             attestation_report_bytes: 16 * 1024 * 1024,
             attestation_quote_bytes: 256 * 1024,
             nvidia_evidence_bytes: 1024 * 1024,
@@ -125,7 +150,7 @@ impl Default for SecureClientLimits {
             relay_response_bytes: 96 * 1024 * 1024,
             relay_sse_event_bytes: 48 * 1024 * 1024,
             relay_stream_bytes: 128 * 1024 * 1024,
-            serialized_relay_request_bytes: 32 * 1024 * 1024,
+            serialized_relay_request_bytes: 64 * 1024 * 1024,
         }
     }
 }

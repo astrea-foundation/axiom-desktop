@@ -1,3 +1,4 @@
+import type { PromptAttachment } from "@axiom/axiom-acp-client";
 import { access, stat } from "node:fs/promises";
 import { constants } from "node:fs";
 import { join, resolve } from "node:path";
@@ -15,6 +16,7 @@ import {
   type PermissionOutcome,
   type ThreadSettingsRequest,
   type SteerTurnRequest,
+  type UsageSummaryRequest,
 } from "@axiom/axiom-acp-client";
 import { RestartPolicy } from "./restart-policy";
 import { actionableAcpError } from "./agent-errors";
@@ -69,7 +71,6 @@ export class AgentSidecar {
     preferences: null,
     account: null,
     billing: null,
-    invoice: null,
     diagnostic: "",
     error: null,
   };
@@ -140,7 +141,7 @@ export class AgentSidecar {
         if (this.initializingClient === client) this.initializingClient = null;
         if (owned) this.scheduleRestart();
       });
-      await client.initialize();
+      await client.initialize(app.getVersion());
       const bootstrap = await client.bootstrapDesktop();
       await client.initializeDesktopState();
       if (this.shuttingDown || this.initializingClient !== client) {
@@ -231,8 +232,10 @@ export class AgentSidecar {
 
   configureDesktopAgent(request: ConfigureDesktopAgentRequest) { return this.requireClient().configureDesktopAgent(request); }
 
-  prompt(sessionId: string, text: string, clientItemId: string, webEnabled = false, agentRevision = 0) {
-    return this.requireClient().prompt(sessionId, text, clientItemId, webEnabled, agentRevision);
+  getAttachments(threadId: string, userItemId: string) { return this.requireClient().getAttachments(threadId, userItemId); }
+
+  prompt(sessionId: string, text: string, clientItemId: string, webEnabled = false, agentRevision = 0, revision?: { userItemId: string; expectedRevision: number }, attachments: PromptAttachment[] = []) {
+    return this.requireClient().prompt(sessionId, text, clientItemId, webEnabled, agentRevision, revision, attachments);
   }
 
   steer(request: SteerTurnRequest) { return this.requireClient().steer(request); }
@@ -279,20 +282,26 @@ export class AgentSidecar {
     });
   }
 
-  usageSummary() {
-    return this.requireClient().usageSummary().catch((error: unknown) => {
+  redeemGiftCode(code: string) {
+    return this.requireClient().redeemGiftCode(code).catch((error: unknown) => {
       throw actionableAcpError(error);
     });
   }
 
-  createBillingInvoice(amountUsdCents: number, clientRequestId: string) {
-    return this.requireClient().createBillingInvoice(amountUsdCents, clientRequestId).catch((error: unknown) => {
-      throw actionableAcpError(error);
-    });
+  apiKeys() {
+    return this.requireClient().apiKeys().catch((error: unknown) => { throw actionableAcpError(error); });
   }
 
-  billingInvoiceStatus(invoiceId: string) {
-    return this.requireClient().billingInvoiceStatus(invoiceId).catch((error: unknown) => {
+  createApiKey(name: string) {
+    return this.requireClient().createApiKey(name).catch((error: unknown) => { throw actionableAcpError(error); });
+  }
+
+  revokeApiKey(id: string) {
+    return this.requireClient().revokeApiKey(id).catch((error: unknown) => { throw actionableAcpError(error); });
+  }
+
+  usageSummary(request: UsageSummaryRequest = {}) {
+    return this.requireClient().usageSummary(request).catch((error: unknown) => {
       throw actionableAcpError(error);
     });
   }
@@ -332,8 +341,8 @@ export class AgentSidecar {
     return this.requireClient().logout();
   }
 
-  verifySecurity(sessionId: string) {
-    return this.requireClient().verifySecurity(sessionId);
+  verifySecurity(sessionId: string, acceptOutdatedTee = false, modelId?: string) {
+    return this.requireClient().verifySecurity(sessionId, acceptOutdatedTee, modelId);
   }
 
   compact(sessionId: string, focus?: string) {

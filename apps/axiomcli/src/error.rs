@@ -11,6 +11,8 @@ pub enum AxiomError {
     SessionNotFound(String),
     #[error("permission denied: {0}")]
     PermissionDenied(String),
+    #[error("you declined this action; stopped without running it")]
+    ApprovalDeclined,
     #[error("operation requires approval: {0}")]
     ApprovalRequired(String),
     #[error("path is outside the workspace: {0}")]

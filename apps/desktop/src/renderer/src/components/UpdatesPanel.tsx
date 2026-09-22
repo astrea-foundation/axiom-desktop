@@ -30,8 +30,15 @@ export function UpdatesPanel({ updates }: { updates?: DesktopUpdates }) {
   const platform = state.platform ? {mac: 'macOS', win: 'Windows', linux: 'Linux'}[state.platform] : 'Unsupported platform';
   const progress = state.download ? Math.floor(state.download.received / state.download.total * 100) : 0;
   const error = updates?.error ?? state.error;
+  const description = ready ? 'Quit Axiom and AxiomCLI before installing.'
+    : downloading ? null
+      : status === 'disabled' ? 'Installed releases check for updates automatically.'
+        : available && file ? null
+          : available && !options.length ? 'A matching build hasn’t been published for this installation yet.'
+            : available ? 'Choose your installer format.'
+              : 'Updates are checked automatically.';
   return <div className="max-w-[560px]">
-    <p className="mb-4 text-[12px] text-[var(--color-text-tertiary)]">Installed · Axiom {state.currentVersion} · {platform} · {state.arch ?? 'Unknown architecture'}{state.format ? ` · ${formats[state.format]}` : ''}</p>
+    <p className="mb-4 text-[12px] text-[var(--color-text-tertiary)]">Installed version: {state.currentVersion}</p>
     <div className="rounded-[13px] border border-[var(--color-border)] bg-[var(--wash-row)] p-5">
       <div className="flex items-start gap-3">
         <span className="shadow-glass-tile flex size-9 shrink-0 items-center justify-center rounded-[10px] bg-[var(--surface-tile)] text-[var(--color-text-secondary)]">
@@ -39,15 +46,7 @@ export function UpdatesPanel({ updates }: { updates?: DesktopUpdates }) {
         </span>
         <div className="min-w-0 pt-0.5">
           <h3 role="status" className="text-[14px] font-medium text-[var(--color-text-primary)]">{heading}</h3>
-          <p className="mt-1 text-[12px] leading-5 text-[var(--color-text-tertiary)]">
-            {ready ? 'Quit Axiom when you’re ready, then install the downloaded update.'
-              : downloading ? 'You can keep chatting while it downloads.'
-                : status === 'disabled' ? 'Installed releases check for updates automatically.'
-                  : available && file ? `${platform} · ${state.arch} · ${formats[file.format]} · ${mb(file.bytes)}`
-                    : available && !options.length ? 'A matching build hasn’t been published for this installation yet.'
-                      : available ? 'Choose the installer format used for this older installation.'
-                        : 'Axiom checks automatically every six hours.'}
-          </p>
+          {description ? <p className="mt-1 text-[12px] leading-5 text-[var(--color-text-tertiary)]">{description}</p> : null}
         </div>
       </div>
       {available && !state.format && options.length > 0 && !downloading && !ready ? <div className="mt-4">
@@ -55,7 +54,7 @@ export function UpdatesPanel({ updates }: { updates?: DesktopUpdates }) {
         <select id={id} value={choice} onChange={event => setChoice(event.target.value as PackageFormat)}
           className="w-full rounded-lg border border-[var(--color-border)] bg-[var(--surface-tile)] px-3 py-2 text-[13px] text-[var(--color-text-primary)]">
           <option value="" disabled>Choose a format</option>
-          {options.map(item => <option key={item.format} value={item.format}>{formats[item.format]} · {mb(item.bytes)}</option>)}
+          {options.map(item => <option key={item.format} value={item.format}>{formats[item.format]} ({mb(item.bytes)})</option>)}
         </select>
       </div> : null}
       {downloading ? <div className="mt-5">
@@ -63,7 +62,7 @@ export function UpdatesPanel({ updates }: { updates?: DesktopUpdates }) {
           className="h-1.5 overflow-hidden rounded-full bg-[var(--surface-track)]">
           <div className="h-full rounded-full bg-[var(--color-text-secondary)] transition-[width] motion-reduce:transition-none" style={{width: `${progress}%`}} />
         </div>
-        <p className="mt-2 text-[11.5px] tabular-nums text-[var(--color-text-tertiary)]">{progress === 100 ? 'Verifying download…' : `${progress}% · ${mb(state.download?.received ?? 0)} of ${mb(state.download?.total ?? 0)}`}</p>
+        <p className="mt-2 flex flex-wrap justify-between gap-2 text-[11.5px] tabular-nums text-[var(--color-text-tertiary)]">{progress === 100 ? 'Verifying download…' : <><span>{progress}%</span><span>{mb(state.download?.received ?? 0)} of {mb(state.download?.total ?? 0)}</span></>}</p>
       </div> : null}
       {error ? <p role="alert" className="mt-4 text-[12px] leading-5 text-[var(--color-danger-strong)]">{error}</p> : null}
       <div className="mt-5 flex flex-wrap gap-2">
@@ -77,12 +76,26 @@ export function UpdatesPanel({ updates }: { updates?: DesktopUpdates }) {
     </div>
     <div className="mt-4 flex flex-wrap items-center justify-between gap-2 text-[11.5px] text-[var(--color-text-tertiary)]">
       <span>{state.checkedAt ? `Last checked ${new Date(state.checkedAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}` : 'No update check yet'}</span>
-      <a href="https://axiom.stream/downloads#versions" target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 hover:text-[var(--color-text-primary)]">All versions<ArrowUpRight size={12} /></a>
+      <a href="https://axiom.stream/api/releases" target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 hover:text-[var(--color-text-primary)]">Release catalog<ArrowUpRight size={12} /></a>
     </div>
-    {(file || ready) && release ? <details className="mt-6 border-t border-[var(--color-border)] pt-4 text-[12px] text-[var(--color-text-tertiary)]">
+    <details className="mt-6 border-t border-[var(--color-border)] pt-4 text-[12px] text-[var(--color-text-tertiary)]">
+      <summary className="cursor-pointer select-none hover:text-[var(--color-text-primary)]">Installation details</summary>
+      <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-4 gap-y-2">
+        <dt>Platform</dt><dd>{platform}</dd>
+        <dt>Architecture</dt><dd>{state.arch ?? 'Unknown'}</dd>
+        {state.format ? <><dt>Format</dt><dd>{formats[state.format]}</dd></> : null}
+      </dl>
+    </details>
+    {(file || ready) && release ? <details className="mt-4 border-t border-[var(--color-border)] pt-4 text-[12px] text-[var(--color-text-tertiary)]">
       <summary className="cursor-pointer select-none hover:text-[var(--color-text-primary)]">Download details</summary>
       <div className="mt-3 space-y-3 leading-5">
         <p className="break-all text-[var(--color-text-secondary)]">{state.download?.name ?? file?.name}</p>
+        {file ? <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2">
+          <dt>Platform</dt><dd>{platform}</dd>
+          <dt>Architecture</dt><dd>{state.arch}</dd>
+          <dt>Format</dt><dd>{formats[file.format]}</dd>
+          <dt>Size</dt><dd>{mb(file.bytes)}</dd>
+        </dl> : null}
         <p>{ready ? 'File size and SHA-256 matched the release manifest.' : 'The download is checked against the release’s file size and SHA-256.'}</p>
         {file ? <div><span>SHA-256</span><code className="mt-1 block select-all break-all text-[11px]">{file.sha256}</code></div> : null}
         <a href={`https://axiom.stream/api/releases/${release.version}`} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 hover:text-[var(--color-text-primary)]">Release manifest<ArrowUpRight size={12} /></a>

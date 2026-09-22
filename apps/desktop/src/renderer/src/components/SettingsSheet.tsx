@@ -5,6 +5,7 @@ import { useTheme, type ThemePreference } from "../lib/theme";
 import { AccountScreen } from "./AccountScreen";
 import { SETTINGS_CATEGORIES, SettingsPanel, type SettingsCategory } from "./SettingsPanel";
 import { UsagePanel } from "./UsagePanel";
+import { ApiKeysPanel } from "./ApiKeysPanel";
 import { UpdatesPanel } from "./UpdatesPanel";
 import type { DesktopUpdates } from "../useDesktopUpdates";
 import { accountAvatar } from "../lib/accountAvatar";
@@ -151,7 +152,7 @@ export function SettingsSheet({
                 </div>
                 {signedIn && linkedMethods.length > 0 ? (
                   <div className="mt-1 text-[11px] text-[var(--color-text-muted)]">
-                    {linkedMethods.join(" · ")}
+                    {linkedMethods.join(", ")}
                   </div>
                 ) : null}
               </div>
@@ -198,6 +199,11 @@ export function SettingsSheet({
               connected={connected}
               onLogin={onLogin}
             /> : null}
+          </SettingsPanel>
+          <SettingsPanel category="api-keys" active={category} idPrefix={id}>
+            {category === "api-keys" && (connected && signedIn && account.account ? <ApiKeysPanel
+              key={`${runtimeInstanceId}:${account.account.id}`} accountId={account.account.id} onLogin={onLogin}
+            /> : <div className="text-[13px] text-[var(--color-text-secondary)]"><p>Sign in to manage API keys.</p><button type="button" disabled={!connected} onClick={onLogin} className="mt-4 rounded-lg border border-[var(--color-border)] px-3 py-2 disabled:opacity-50">Sign in</button></div>)}
           </SettingsPanel>
           <SettingsPanel category="updates" active={category} idPrefix={id}>
             <UpdatesPanel updates={updates} />

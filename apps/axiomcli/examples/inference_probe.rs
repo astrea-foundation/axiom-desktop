@@ -48,7 +48,6 @@ async fn run(
     while let Ok(event) = rx.try_recv() {
         observe(event);
     }
-    drop(observe);
     println!(
         "{}",
         serde_json::json!({"phase":phase, "verified": verified, "answer_bytes":text,
@@ -59,7 +58,10 @@ async fn run(
     let assistant = result?;
     if let Some(record) = accounting {
         let recovered = provider
-            .request_accounting(&[record.request_id.clone()], CancellationToken::new())
+            .request_accounting(
+                std::slice::from_ref(&record.request_id),
+                CancellationToken::new(),
+            )
             .await?;
         anyhow::ensure!(
             recovered.len() == 1,

@@ -1,130 +1,101 @@
 # Privacy behavior
 
-AxiomCLI's default build performs provider attestation and end-to-end
-encryption directly in-process through `axiom-secure-client`; it does not route
-inference through the local proxy. It reuses only bounded, locally verified
-public evidence and never beyond provider evidence, backend lease, signed-policy,
-or local cache expiry. Fresh client secrets, nonces, ciphertext, and receipt
-bindings are created for every inference. Secret-bearing fields are encrypted
-only after the selected offering's exact provider/protocol tuple verifies. NEAR verification
-binds the nonce, selected model, signing key, Intel and NVIDIA evidence, and live
-TLS SPKI. Phala ACI v2 verification binds the nonce-quoted gateway, measured
-workflow and keyset, source-transparency values, and content-addressed eligible
-worker sessions. An attestation, binding, encryption, receipt, or decryption
-failure stops the request without a plaintext or TLS-only fallback.
+## Inference
 
-Phala completion ciphertext is not accepted merely because it decrypts.
-Non-streaming output remains untrusted until its signed receipt binds the exact
-local request hash, exact encrypted response bytes, model, and a preverified
-worker session. AEAD-authenticated streaming text is displayed immediately and
-stored locally as provisional output while the complete transcript is retained
-within bounded memory for final receipt verification. Partial replies remain
-available in conversation context after interruption, with an incomplete-turn
-notice; this does not claim that a final receipt was verified. Tool execution
-and successful completion still require terminal verification. Missing, invalid,
-reordered, truncated, or mismatched receipts fail the turn and never mark its
-partial output as receipt-verified.
+Desktop, TUI, CLI and the local proxy use the same registered provider-E2EE
+client. Model messages, system instructions, history and tool definitions/results
+are constructed and encrypted on the device. Recipient keys are accepted only
+from current, locally verified TEE evidence. Responses are authenticated to the
+accepted environment and request. Ordinary TLS is not an inference fallback.
 
-The Axiom relay necessarily sees authentication, billing, routing, provider and
-model identifiers, public client key material, ciphertext, bounded inference
-parameters, usage, and terminal status. It must not see plaintext prompts,
-conversation content, reasoning, refusals, model output, tool names,
-descriptions, schemas, arguments, or results. The signed policy currently
-observes workload identity while production measurements and Phala commits are
-collected for an enforce-mode rollout. Evidence explicitly reports whether an
-allowlist was configured and whether the quote-bound identity was approved;
-observation is never presented as approval.
+The backend sees authentication, routing/provider/model identifiers, ciphertext,
+public protocol metadata, aggregate usage, accounting and terminal status. It
+must not receive model-message plaintext, assistant output or tool-message secrets.
+Provider-specific verification and its limits are documented in
+[security](threat-model.md#provider-contracts).
 
-Web search is a separate, explicitly non-E2EE tool service. By default, the
-native client sends only the model-selected search query to the authenticated
-Axiom `/api/v1/search` endpoint, which sends it to Decodo. Both services can see
-that query; do not include secrets in searches. Axiom does not log, cache, or
-persist queries/results and stores only account quota timestamps. The client
-receives the results locally and encrypts them for subsequent model inference.
-No full transcript or backend-generated model message enters the search path.
-Selecting `web_search_provider = "searxng"` instead shares queries with that
-configured service. `fetch_url` still fetches public pages from the native client.
+Authenticated streaming deltas can appear provisionally. A missing or invalid
+terminal authentication fails the response; partial output may remain locally
+as incomplete history. Later accounting reconciliation cannot upgrade it to a
+verified reply. NEAR uses receipts; Tinfoil uses request-bound AEAD and
+an encrypted authenticated terminal marker, without claiming a signed receipt.
 
-`axiom-proxy` accepts plaintext OpenAI-compatible requests from authenticated
-clients on loopback, then uses the same secure client for the remote hop. A
-local process holding `AXIOM_PROXY_TOKEN` can submit and receive that plaintext;
-the operating-system process boundary and careful token distribution are
-therefore part of the local trust model. The sidecar never gives clients
-`AXIOM_API_KEY`, never executes model-proposed tools, and rejects non-loopback
-bind addresses. It emits metadata-only lifecycle records to stderr and a
-bounded readiness object to stdout.
+Cached attestation reports and reply authentication have separate lifetimes.
+Report expiry prevents reuse of stale evidence for new requests; it does not
+by itself fail an ongoing reply or revoke a reply's authenticated completion.
+Each ongoing response still requires its protocol's authentication against the
+environment and request accepted at its start. See the [Desktop privacy badge](desktop.md#usage-and-verification)
+for the separate reply and report displays.
 
-Local reads, edits, Git inspection, and process execution happen on the user’s
-machine. On supported Linux builds, child commands run through Bubblewrap with
-the workspace writable, system directories read-only, a new network namespace,
-temporary home directories, an explicit environment, and process-group
-cancellation. There is no silent unsandboxed fallback when Bubblewrap is
-missing.
+## Web tools and local integrations
 
-`web_search` contacts the configured search service. Search terms and ordinary
-HTTP metadata are therefore visible to that service and to whatever upstream
-engines it uses. `fetch_url` is performed locally, with local/private/metadata
-destinations and redirect pivots rejected. A configured MCP executable is
-trusted user-selected local code and starts with that user's host authority;
-therefore MCP commands are accepted only from trusted user configuration, not
-repository configuration. Once connected, server descriptions, schemas,
-results, and side-effect claims remain untrusted. Tool calls receive only their
-explicit protocol arguments from AxiomCLI.
+Web starts off for a new conversation. Opting in permits search queries and URL
+fetches to leave the device outside provider E2EE. Default hosted search sends
+only a bounded query to Axiom's authenticated search endpoint and Decodo. The
+hosted contract prohibits retaining/logging query or result text. Explicit
+SearXNG configuration sends searches to that service instead. Page fetching
+runs in the native client with public-address/redirect checks. Results are
+locally encrypted when included in later inference.
 
-Session events are stored in an account-scoped local SQLite database under the
-platform data directory. AxiomCLI redacts known secret shapes before
-persistence, bounds events/exports, and supports explicit export and retention
-commands. Redaction is defense in depth, not permission to paste secrets into
-prompts. Session data is not encrypted at rest by AxiomCLI; rely on
-operating-system account and disk-encryption protections.
+The [local proxy](proxy.md) receives plaintext from authenticated loopback
+clients and returns plaintext to them. A process with its local token can use
+that interface; its upstream Axiom credential is separate.
 
-`axiomcli sessions prune` can delete archived sessions under an explicit
-retention policy. Package uninstall intentionally preserves user configuration
-and session data. Remove the config/data paths printed by `axiomcli doctor`
-manually only when permanent local-data deletion is intended.
+Local agent tools can read files and execute approved operations. On Linux,
+process tools require Bubblewrap. macOS/Windows process execution does not
+provide equivalent OS isolation. The Web toggle controls Axiom's Web tools,
+not networking by host-authority programs on those platforms. A configured MCP
+executable is trusted local code at startup; its results and authority claims
+remain untrusted. See [security](threat-model.md#local-tools-and-processes).
 
-Axiom Desktop and AxiomCLI share an installation identity and native account
-session, but each account and frontend has a separate conversation journal.
-Desktop state lives below
-`accounts/<opaque-account-id>/desktop/state.sqlite3`; its app-owned chat cwd is
-the sibling `desktop/chat/` directory. Signing out closes the active account
-store instead of opening an installation-wide fallback. Sidebar folders and
-thread membership are local database records; their names are UI labels and
-never filesystem paths. The desktop product profile allows only Web tools, and
-they are off by default. Enabling the composer Web toggle requires acknowledging
-that queries and page requests leave the private inference environment. Users
-can remember that warning per account on this device. New chats always start
-with Web off. Existing chats save their explicit on/off choice in desktop local
-storage, scoped to the account and thread, and restore it across app and sidecar
-restarts. The warning preference is separate and cannot enable other chats;
-missing or invalid saved choices default off. Each prompt explicitly opts in; the native
-engine both withholds and blocks Web tools otherwise. The desktop does not
-start configured MCP servers or grant local file/process access. Web
-queries and fetched URLs have the same network privacy implications described
-above.
+## Update checks
 
-Native sign-in is completed in the system browser using passkey, Google,
-email/password, or Ethereum-wallet authentication. The native authorization is
-bound to the initiating process with PKCE and a one-time device secret. Polling
-is authoritative when the loopback notification is blocked; the callback only
-accelerates completion. Method-specific passwords, OAuth codes, passkey
-assertions, and wallet signatures stay in the browser and hosted auth surface.
+Installed Desktop and TUI processes request the public
+`https://axiom.stream/api/releases/latest` feed at startup and every six hours;
+`axiomcli update` checks on demand. These are ordinary HTTPS metadata requests,
+not inference. They contain no account headers, cookies, API keys, conversation
+content, or installed-version query parameters. The website/CDN still observes
+normal network metadata such as the source IP. Update notices remain UI-only.
 
-The resulting short-lived access token is memory-only. Its rotating refresh
-token is persisted only in the operating-system credential store; if that store
-is unavailable, native sign-in fails closed and no plaintext file fallback is
-used. Tokens are wrapped as secrets in memory, redacted from debug output,
-excluded from renderer state, child environments, session journals, and release
-artifacts. `AXIOM_API_KEY` remains a separate, explicit automation override for
-standalone AxiomCLI and `axiom-proxy`; Axiom Desktop removes it from the sidecar
-environment. Proxy clients use their own generated `AXIOM_PROXY_TOKEN`.
-Account credit and Shieldz invoice status come from the API's immutable ledger,
-not a smart contract or a local chat database. Desktop may receive bounded
-invoice metadata and a short-lived HTTPS payment URL for a pending invoice. It
-never receives Zcash or Ethereum private keys, constructs a transaction, or
-grants the model payment authority; invoice URLs and ledger projections are not
-written into conversation journals.
-Ordinary logs, panic messages, security receipts, and desktop control messages
-must contain only bounded metadata and fingerprints—not credentials, key
-pairs, shared secrets, ciphertext dumps, plaintext request/response fields, or
-raw attestation artifacts.
+## Local data and credentials
+
+Conversations live in account/frontend-specific SQLite databases. Desktop also
+stores account-scoped drafts, queues and Web preferences locally. They are not
+synchronized through a plaintext backend cache. AxiomCLI does not encrypt its
+conversation database at rest; OS-account and disk protections apply. Sensitive
+content can also appear in workspace files, exports and the system clipboard.
+Signing out closes the store but does not erase all local history or workspace files.
+
+Native method credentials remain in the browser/hosted account flow. Access
+tokens remain in AxiomCLI memory; rotating refresh tokens require the OS credential
+store, with no plaintext-file fallback. Desktop's normal sign-in does not accept
+a manually entered automation key. Its separate API-key management UI intentionally
+shows a newly created automation key once for copying; it is not the native
+session token and must not be retained in account snapshots or diagnostics.
+
+Account billing and payment-provider credentials remain backend-owned. Desktop
+receives bounded credit/deposit metadata and an indicative current ZEC/USD quote. It never receives wallet custody or grants the model
+transaction authority. Currency valuation is distinct from a currency conversion.
+
+Gift codes are bearer secrets entered in Desktop's Balance form or the TUI's
+masked `/redeem` screen. The native client sends the code to Axiom's authenticated
+HTTPS account API, outside provider-E2EE inference. The backend stores only a code
+digest and financial records. Clients do not place codes in conversations, saved
+drafts, activity events or diagnostics. The operator's private issuance file is
+the deliberate exception: it contains the generated code for delivery.
+
+[Session commands](cli.md#saved-sessions-and-plans) support explicit export and
+archiving; TUI/ACP provide confirmed deletion. Uninstall preserves local account
+data and credential-store entries. See [configuration](configuration.md#paths-and-local-state)
+for paths and the account-scoped reset command.
+
+## Local attachments
+
+Desktop reads original file bytes and keeps attachment drafts and queued payloads
+in account-scoped IndexedDB. Accepted inputs are also stored in the native
+account-local conversation database for resume, inspection and regeneration.
+No local PDF/text extraction or OCR is performed. Original bytes and filenames
+reach the selected provider only inside its attested, authenticated E2EE request;
+Tinfoil's attested services handle document processing. Hosted Axiom services
+cannot parse files or see extracted content. These local stores are not an additional at-rest encryption boundary.
+Upload availability follows the current model capabilities; see [Desktop](desktop.md#images-and-files).

@@ -130,7 +130,7 @@ export function ProxyView({ accountId, runtimeId, onInspecting }: {
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div className={`${well} px-4 py-3.5`}><div className="text-[11px] uppercase text-[var(--color-text-tertiary)]">Verified requests</div><div className="mt-1 font-mono text-[18px]">{state.completedRequests.toLocaleString()}</div></div>
-            <div className={`${well} px-4 py-3.5`}><div className="text-[11px] uppercase text-[var(--color-text-tertiary)]">Tokens · completed requests</div><div className="mt-1 font-mono text-[18px]">{state.totalTokens.toLocaleString()}</div></div>
+            <div className={`${well} px-4 py-3.5`}><div className="text-[11px] uppercase text-[var(--color-text-tertiary)]">Tokens</div><div className="mt-1 font-mono text-[18px]">{state.totalTokens.toLocaleString()}</div><div className="mt-1 text-[11px] text-[var(--color-text-tertiary)]">Completed requests</div></div>
           </div>
           {state.errors.length ? <div className={`${well} px-4 py-3`}><h2 className="mb-2 text-[13px]">Recent errors</h2>{state.errors.map((entry, i) => <p key={`${entry.at}:${i}`} className="flex justify-between gap-3 py-1 text-[12px]"><span>{failureLabels[entry.kind] ?? "Request failed"}</span><time>{new Date(entry.at).toLocaleTimeString()}</time></p>)}</div> : null}
           <button type="button" onClick={() => setInspecting(true)} className={`${well} flex items-center gap-3 px-4 py-3.5 text-left hover:bg-[var(--surface-card-hover)]`}><ShieldCheck size={20} /><span><span className="block text-[13.5px]">Attestation</span><span className="block text-[12px] text-[var(--color-text-tertiary)]">Inspect evidence from this proxy run</span></span></button>

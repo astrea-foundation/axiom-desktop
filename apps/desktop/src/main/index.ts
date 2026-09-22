@@ -1,3 +1,4 @@
+import { validatePrompt } from "@axiom/axiom-acp-client";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -8,7 +9,7 @@ import type { ElicitationOutcome, ListThreadsRequest, LoginMethod, PermissionOut
 import { AgentSidecar, resolveSidecar } from "./agent-sidecar";
 import { ProxySupervisor } from "./proxy-supervisor";
 import { agentRevision, desktopAgentRequest } from "./desktop-agent-settings";
-import { activeInvoicePaymentUrl, requirePaymentAccount, resolveServiceOrigins, STAGING_API_ORIGIN } from "./service-origins";
+import { requirePaymentAccount, resolveServiceOrigins, STAGING_API_ORIGIN } from "./service-origins";
 import { platformWindowChrome } from "./window-chrome";
 import { installMacCli } from "./install-cli";
 import { APP_ID, APP_NAME, setLinuxDesktopIdentity } from "../../scripts/desktop-identity.mjs";
@@ -98,25 +99,6 @@ function loginMethod(value: unknown): LoginMethod | undefined {
   return value as LoginMethod;
 }
 
-function invoiceAmount(value: unknown): number {
-  if (!Number.isSafeInteger(value) || (value as number) < 1 || (value as number) > 10_000_000) {
-    throw new Error("invoice amount is invalid");
-  }
-  return value as number;
-}
-
-function invoiceClientRequestId(value: unknown): string {
-  const requestId = boundedString(value, "invoice client request ID", 128);
-  if (!/^[A-Za-z0-9_.:-]+$/.test(requestId)) throw new Error("invoice client request ID is invalid");
-  return requestId;
-}
-
-function invoiceId(value: unknown): string {
-  const id = boundedString(value, "invoice ID", 32);
-  if (!/^[0-9a-f]{32}$/.test(id)) throw new Error("invoice ID is invalid");
-  return id;
-}
-
 type AgentHandler = (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown;
 
 function agentHandle(channel: string, handler: AgentHandler): void {
@@ -145,10 +127,12 @@ function installAgentIpc(): void {
     clipboard.writeText(proxy.copyToken(boundedString(accountId, "account ID", 128), boundedString(runtimeId, "runtime ID", 128)));
   });
   agentHandle("agent:state", () => sidecar.state());
-  agentHandle("agent:usage-summary", async (_event, accountId: unknown) => {
+  agentHandle("agent:usage-summary", async (_event, accountId: unknown, period: unknown = "all_time", timezone: unknown = "UTC") => {
     const id = boundedString(accountId, "account ID", 128);
+    if (period !== "week" && period !== "month" && period !== "all_time") throw new Error("Invalid usage period");
+    const zone = boundedString(timezone, "timezone", 128);
     requirePaymentAccount(id, sidecar.state());
-    const result = await sidecar.usageSummary();
+    const result = await sidecar.usageSummary({ period, timezone: zone });
     requirePaymentAccount(id, sidecar.state());
     return result;
   });
@@ -168,6 +152,22 @@ function installAgentIpc(): void {
       webEnabled,
       agentRevision(revision),
     );
+  });
+  agentHandle("agent:prompt-with-attachments", (_event, sessionId: unknown, text: unknown, clientItemId: unknown, webEnabled: unknown, revision: unknown, attachments: unknown) => {
+    if (typeof webEnabled !== "boolean" || typeof text !== "string") throw new Error("Invalid prompt input");
+    validatePrompt(text, attachments);
+    return sidecar.prompt(boundedString(sessionId, "thread ID", 128), text, boundedString(clientItemId, "client item ID", 512), webEnabled, agentRevision(revision), undefined, attachments);
+  });
+  agentHandle("agent:attachments", (_event, threadId: unknown, userItemId: unknown) =>
+    sidecar.getAttachments(boundedString(threadId, "thread ID", 128), boundedString(userItemId, "user message ID", 512)));
+  agentHandle("agent:prompt-revise", (_event, sessionId: unknown, text: unknown, userItemId: unknown, expectedRevision: unknown, webEnabled: unknown, revision: unknown) => {
+    if (typeof webEnabled !== "boolean") throw new Error("webEnabled must be a boolean");
+    if (typeof text !== "string") throw new Error("Invalid prompt input");
+    validatePrompt(text, [], true);
+    return sidecar.prompt(boundedString(sessionId, "thread ID", 128), text,
+      crypto.randomUUID(), webEnabled, agentRevision(revision), {
+        userItemId: boundedString(userItemId, "user message ID", 512), expectedRevision: agentRevision(expectedRevision),
+      });
   });
   agentHandle("agent:cancel", (_event, sessionId: unknown) =>
     sidecar.cancel(boundedString(sessionId, "session ID", 128)),
@@ -240,28 +240,34 @@ function installAgentIpc(): void {
     return sidecar.setSettings(settings);
   });
   agentHandle("agent:account-status", () => sidecar.accountStatus());
-  agentHandle("agent:billing-status", () => sidecar.billingStatus());
-  agentHandle("agent:billing-invoice-create", (_event, amountUsdCents: unknown, clientRequestId: unknown, accountId: unknown) => {
-    requirePaymentAccount(boundedString(accountId, "account ID", 128), sidecar.state());
-    return sidecar.createBillingInvoice(
-      invoiceAmount(amountUsdCents),
-      invoiceClientRequestId(clientRequestId),
-    );
+  agentHandle("agent:api-keys", async (_event, accountId: unknown) => {
+    const id = boundedString(accountId, "account ID", 128);
+    requirePaymentAccount(id, sidecar.state());
+    const result = await sidecar.apiKeys();
+    requirePaymentAccount(id, sidecar.state());
+    return result;
   });
-  agentHandle("agent:billing-invoice-status", (_event, value: unknown) =>
-    sidecar.billingInvoiceStatus(invoiceId(value)),
-  );
-  // This is the only payment navigation capability exposed to the renderer.
-  // Only a Top up/Reopen checkout gesture invokes this handler. Background
-  // invoice/balance polling never opens a browser. Revalidate current account
-  // state after async invoice creation, immediately before delegating to the OS.
-  agentHandle("agent:billing-open-payment", async (_event, value: unknown, accountId: unknown) => {
-    const paymentUrl = activeInvoicePaymentUrl(
-      boundedString(value, "invoice payment URL", 4_096),
-      sidecar.state(),
-      boundedString(accountId, "account ID", 128),
-    );
-    await shell.openExternal(paymentUrl);
+  agentHandle("agent:api-key-create", async (_event, name: unknown, accountId: unknown) => {
+    const id = boundedString(accountId, "account ID", 128);
+    requirePaymentAccount(id, sidecar.state());
+    const result = await sidecar.createApiKey(boundedString(name, "API key name", 480));
+    requirePaymentAccount(id, sidecar.state());
+    return result;
+  });
+  agentHandle("agent:api-key-revoke", async (_event, keyId: unknown, accountId: unknown) => {
+    const id = boundedString(accountId, "account ID", 128);
+    requirePaymentAccount(id, sidecar.state());
+    const result = await sidecar.revokeApiKey(boundedString(keyId, "API key ID", 128));
+    requirePaymentAccount(id, sidecar.state());
+    return result;
+  });
+  agentHandle("agent:billing-status", () => sidecar.billingStatus());
+  agentHandle("agent:redeem-gift-code", async (_event, code: unknown, accountId: unknown) => {
+    const id = boundedString(accountId, "account ID", 128);
+    requirePaymentAccount(id, sidecar.state());
+    const result = await sidecar.redeemGiftCode(boundedString(code, "gift code", 64));
+    requirePaymentAccount(id, sidecar.state());
+    return result;
   });
   agentHandle("agent:native-login-start", (_event, methodHint: unknown) =>
     sidecar.nativeLoginStart(loginMethod(methodHint)),
@@ -274,8 +280,9 @@ function installAgentIpc(): void {
   );
   agentHandle("agent:account-open", () => sidecar.openAccountPortal());
   agentHandle("agent:logout", async () => { await proxy.stop(); return sidecar.logout(); });
-  agentHandle("agent:security-verify", (_event, sessionId: unknown) =>
-    sidecar.verifySecurity(boundedString(sessionId, "session ID", 128)),
+  agentHandle("agent:security-verify", (_event, sessionId: unknown, acceptOutdatedTee: unknown, modelId: unknown) =>
+    sidecar.verifySecurity(boundedString(sessionId, "session ID", 128), acceptOutdatedTee === true,
+      acceptOutdatedTee === true ? boundedString(modelId, "model ID", 512) : undefined),
   );
   agentHandle("agent:compact", (_event, sessionId: unknown, focus: unknown) =>
     sidecar.compact(

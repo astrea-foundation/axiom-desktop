@@ -4,8 +4,8 @@ Status: accepted
 
 ## Context
 
-ADR 0004 intentionally kept the early coding agent in one package until a
-boundary had multiple real consumers. AxiomCLI, a standalone local proxy, and
+The early coding agent stayed in one package until a boundary had multiple
+real consumers. AxiomCLI, a standalone local proxy, and
 the Electron desktop application now establish those consumers. They need the
 same Axiom inference contracts and the same attested, end-to-end encrypted
 client without sharing presentation or server concerns.
@@ -43,9 +43,9 @@ streaming responses to and from `axiom-inference` contracts. It does not
 establish trust or perform encryption.
 
 `apps/axiom-proxy` is a separate Rust executable. It binds to loopback
-by default, authenticates local clients, exposes the selected compatibility
-endpoints, and uses `axiom-secure-client` for upstream inference. AxiomCLI will
-call the same secure client in-process and will not require the local proxy.
+only, authenticates local clients, exposes the selected compatibility
+endpoints, and uses `axiom-secure-client` for upstream inference. AxiomCLI calls
+the same secure client in-process and does not require the local proxy.
 
 The Electron main process supervises `axiomcli acp` for Desktop chat. The Proxy
 screen separately supervises `axiomcli desktop-proxy`, which hosts the same
@@ -64,6 +64,7 @@ permission profiles, or silently enable development modes.
 - The proxy and TUI can share all attestation, E2EE, model, and transport logic.
 - OpenAI compatibility remains an edge adapter rather than shaping Axiom's
   internal protocol.
-- Electron can ship and supervise independently versioned Rust sidecars.
+- Electron supervises a Rust sidecar; current release packages require a
+  matching product version and architecture.
 - Moving the current package changes source paths but preserves the `axiomcli`
   Cargo package and executable names.

@@ -1,3 +1,4 @@
+import { acceptsAttachment, attachmentAccept } from "../attachments";
 import {
   ArrowUp,
   BrainCog,
@@ -5,6 +6,7 @@ import {
   ChevronDown,
   Globe2,
   Lock,
+  Paperclip,
   Square,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -12,9 +14,10 @@ import type { ClientSessionState } from "@axiom/axiom-acp-client";
 import type { ProviderModel, ReasoningEffort } from "../types";
 import { explicitReasoningEfforts, reconcileReasoningEffort } from "../reasoningSettings";
 import { ContextUsageIndicator } from "./ContextUsageIndicator";
-import { ModelBrandIcon } from "./ModelBrandIcon";
+import { ModelBrandIcon, ProviderBrandIcon } from "./ModelBrandIcon";
 import { ModelPicker } from "./ModelPicker";
 import { TeeVerificationBadge } from "./TeeVerificationBadge";
+import { DraftAttachments, type AttachmentControl } from "./Attachments";
 import { AgentModeControl, type AgentControlOptions } from "./AgentModeControl";
 
 function reasoningEffortLabel(effort: ReasoningEffort): string {
@@ -27,6 +30,7 @@ function reasoningEffortLabel(effort: ReasoningEffort): string {
 type OpenMenu = "model" | "thinking" | "agent" | null;
 
 interface ChatComposerProps {
+  attachments?: AttachmentControl;
   agentControl?: AgentControlOptions;
   value: string;
   onChange: (value: string) => void;
@@ -34,6 +38,7 @@ interface ChatComposerProps {
   onStop?: () => void;
   placeholder?: string;
   autoFocus?: boolean;
+  preparing?: boolean;
   isStreaming?: boolean;
   models: ProviderModel[];
   selectedModelId: string;
@@ -56,6 +61,7 @@ interface ChatComposerProps {
 }
 
 export function ChatComposer({
+  attachments,
   agentControl,
   value,
   onChange,
@@ -63,6 +69,7 @@ export function ChatComposer({
   onStop,
   placeholder = "Ask anything",
   autoFocus = false,
+  preparing = false,
   isStreaming = false,
   models,
   selectedModelId,
@@ -83,14 +90,16 @@ export function ChatComposer({
   webDisabled = false,
   onWebToggle,
 }: ChatComposerProps) {
+  const fileInput = useRef<HTMLInputElement>(null);
   const ref = useRef<HTMLTextAreaElement>(null);
   const controlsRef = useRef<HTMLDivElement>(null);
   const [openMenu, setOpenMenu] = useState<OpenMenu>(null);
-  const selectedModel = models.find((model) => model.id === selectedModelId) ?? models[0];
+  const selectedModel = models.find((model) => model.id === selectedModelId) ?? (selectedModelId ? undefined : models[0]);
   const supportedReasoningEfforts = explicitReasoningEfforts(selectedModel?.supportedReasoningEfforts ?? []);
   const showThinkingSelector = supportedReasoningEfforts.length > 0;
   const selectedThinking = reconcileReasoningEffort(reasoningEffort, supportedReasoningEfforts);
-  const canSend = Boolean(value.trim()) && (Boolean(selectedModel) || requiresSignIn);
+  const imageMismatch = attachments?.items.some((file) => !acceptsAttachment(selectedModel, file));
+  const canSend = !preparing && (Boolean(value.trim()) || Boolean(attachments?.items.length)) && !attachments?.busy && !imageMismatch && (Boolean(selectedModel) || requiresSignIn);
 
   useEffect(() => {
     const el = ref.current;
@@ -137,7 +146,9 @@ export function ChatComposer({
 
   return (
     <div className="group relative w-full">
-      <div className="composer-shell relative flex flex-col rounded-[22px] pl-4 pr-2.5 pb-2 pt-3 backdrop-blur">
+      <fieldset disabled={preparing} aria-busy={preparing || undefined} className="composer-shell relative flex min-w-0 flex-col rounded-[22px] pl-4 pr-2.5 pb-2 pt-3 backdrop-blur">
+        {attachments ? <><DraftAttachments control={attachments} /><input ref={fileInput} type="file" accept={attachmentAccept(selectedModel)} multiple hidden aria-label="Choose attachments" onChange={(event) => { const files = Array.from(event.target.files ?? []); event.target.value = ""; attachments.onAddFiles(files); }} /></> : null}
+        {imageMismatch ? <p role="alert" className="mb-2 text-xs text-[var(--color-warning)]">Choose a model that supports these files, or remove the unsupported attachments.</p> : null}
         <div className="flex items-start gap-3">
           <Lock size={13} aria-hidden="true" className="mt-[5.5px] shrink-0 text-[var(--color-text-muted)]" />
           <textarea
@@ -145,6 +156,7 @@ export function ChatComposer({
             data-chat-input
             value={value}
             onChange={(event) => onChange(event.target.value)}
+            onPaste={(event) => { if (attachments && event.clipboardData.files.length) { event.preventDefault(); attachments.onAddFiles(Array.from(event.clipboardData.files)); } }}
             onKeyDown={(event) => {
               // Enter can commit an IME candidate instead of submitting a message.
               // Keep the legacy 229 check for confirmation after compositionend.
@@ -179,7 +191,12 @@ export function ChatComposer({
                 title={requiresSignIn ? "Sign in to choose a model" : models.length === 0 ? modelStatusLabel : "Select model"}
               >
                 {selectedModel ? (
-                  <ModelBrandIcon model={selectedModel} className="h-3.5 w-3.5 shrink-0" />
+                  <>
+                    <span title={selectedModel.providerLabel} className="inline-flex shrink-0">
+                      <ProviderBrandIcon providerId={selectedModel.providerId} providerLabel={selectedModel.providerLabel} className="pointer-events-none h-3.5 w-3.5" />
+                    </span>
+                    <ModelBrandIcon model={selectedModel} className="h-3.5 w-3.5 shrink-0" />
+                  </>
                 ) : (
                   <span className="h-1.5 w-1.5 rounded-full bg-[var(--color-cherry)]" />
                 )}
@@ -251,6 +268,7 @@ export function ChatComposer({
                 ) : null}
               </div>
             ) : null}
+            {attachments ? <button type="button" disabled={attachments.busy} aria-label="Attach files" title="Attach images, text/code, or PDFs" className="rounded-md p-1.5 text-[var(--color-text-tertiary)] hover:bg-[var(--wash-chip-hover)] disabled:opacity-50" onClick={() => fileInput.current?.click()}><Paperclip size={16} /></button> : null}
             <button
               type="button"
               data-web-toggle
@@ -258,8 +276,8 @@ export function ChatComposer({
               aria-pressed={webEnabled}
               disabled={isStreaming || webDisabled || !onWebToggle}
               onClick={() => { setOpenMenu(null); onWebToggle?.(); }}
-              title={isStreaming ? "Web access is fixed for the current response" : webEnabled ? "Web is on — click to turn off" : "Web is off — click to enable external searches"}
-              className={`flex h-7 shrink-0 items-center gap-1.5 rounded-[7px] px-2.5 text-[12px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${webEnabled ? "bg-[var(--color-cherry)] text-on-accent" : "text-[var(--color-text-tertiary)] hover:bg-[var(--wash-chip-hover)] hover:text-[var(--color-text-primary)]"}`}
+              title={isStreaming ? "Web access is fixed for the current response" : webEnabled ? "Turn off Web" : "Turn on Web"}
+              className={`flex h-7 shrink-0 items-center gap-1.5 rounded-[7px] px-2.5 text-[12px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${webEnabled ? "bg-brand text-on-brand enabled:hover:bg-brand-hover dark:bg-[var(--color-cherry)] dark:text-on-accent dark:enabled:hover:bg-[var(--color-cherry)]" : "text-[var(--color-text-tertiary)] hover:bg-[var(--wash-chip-hover)] hover:text-[var(--color-text-primary)]"}`}
             >
               <Globe2 size={13} aria-hidden="true" />
               Web
@@ -287,18 +305,18 @@ export function ChatComposer({
               <button
                 type="button"
                 onClick={onStop}
-                className="flex h-[34px] w-[34px] items-center justify-center rounded-full bg-[var(--color-cherry)] text-on-accent shadow-[0_1px_3px_var(--shade-button)] transition-[background-color,transform] hover:bg-[var(--color-cherry-bright)] active:scale-[0.94] disabled:cursor-not-allowed disabled:opacity-40"
+                className="flex h-[34px] w-[34px] items-center justify-center rounded-full bg-brand text-on-brand dark:bg-[var(--color-cherry)] dark:text-on-accent shadow-[0_1px_3px_var(--shade-button)] transition-[background-color,transform] hover:bg-brand-hover dark:hover:bg-[var(--color-cherry-bright)] active:scale-[0.94] disabled:cursor-not-allowed disabled:opacity-40"
                 aria-label="Stop generating"
               >
                 <Square size={12} fill="currentColor" strokeWidth={2.5} />
               </button>
             ) : null}
-            {!isStreaming || value.trim() ? (
+            {!isStreaming || value.trim() || attachments?.items.length ? (
               <button
                 type="button"
                 onClick={submit}
                 disabled={!canSend}
-                className="flex h-[34px] w-[34px] items-center justify-center rounded-full bg-[var(--color-cherry)] text-on-accent shadow-[0_1px_3px_var(--shade-button)] transition-[background-color,transform] hover:bg-[var(--color-cherry-bright)] active:scale-[0.94] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-[var(--color-cherry)] disabled:active:scale-100"
+                className="flex h-[34px] w-[34px] items-center justify-center rounded-full bg-brand text-on-brand dark:bg-[var(--color-cherry)] dark:text-on-accent shadow-[0_1px_3px_var(--shade-button)] transition-[background-color,transform] hover:bg-brand-hover dark:hover:bg-[var(--color-cherry-bright)] active:scale-[0.94] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-brand dark:disabled:hover:bg-[var(--color-cherry)] disabled:active:scale-100"
                 aria-label={requiresSignIn ? "Sign in to send" : isStreaming ? "Queue message" : "Send"}
               >
                 <ArrowUp size={15} strokeWidth={2.5} />
@@ -306,7 +324,7 @@ export function ChatComposer({
             ) : null}
           </div>
         </div>
-      </div>
+      </fieldset>
     </div>
   );
 }

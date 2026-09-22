@@ -1,12 +1,11 @@
 use std::io::Write;
 
 use base64::{Engine, engine::general_purpose};
+use ed25519_dalek::{Signature, VerifyingKey};
 use futures_util::StreamExt;
-use k256::ecdsa::{RecoveryId, Signature as Secp256k1Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use serde_json::ser::Formatter;
 use sha2::{Digest, Sha256};
-use sha3::Keccak256;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -44,6 +43,7 @@ pub(crate) struct NearInferenceContext<'a> {
     pub(crate) model_key: crypto::Ed25519PublicKey,
     pub(crate) response_signing_address: &'a str,
     pub(crate) binding: &'a AttestationBinding,
+    pub(crate) worker_session_id: &'a str,
 }
 
 pub(crate) async fn complete(
@@ -58,8 +58,9 @@ pub(crate) async fn complete(
         model_key,
         response_signing_address,
         binding,
+        worker_session_id,
     } = context;
-    let (identity, relay_request, request_hash) = build_request(
+    let (identity, mut relay_request, request_hash) = build_request(
         model,
         model_key,
         response_signing_address,
@@ -67,6 +68,10 @@ pub(crate) async fn complete(
         &request,
         false,
     )?;
+    relay_request
+        .provider_e2ee_context
+        .as_mut()
+        .expect("built context")["worker_session_id"] = worker_session_id.into();
     let completion = RelayClient::new(config, credential)
         .complete(&relay_request, cancellation)
         .await?;
@@ -92,8 +97,9 @@ pub(crate) async fn stream(
         model_key,
         response_signing_address,
         binding,
+        worker_session_id,
     } = context;
-    let (identity, relay_request, request_hash) = build_request(
+    let (identity, mut relay_request, request_hash) = build_request(
         model,
         model_key,
         response_signing_address,
@@ -101,6 +107,10 @@ pub(crate) async fn stream(
         &request,
         true,
     )?;
+    relay_request
+        .provider_e2ee_context
+        .as_mut()
+        .expect("built context")["worker_session_id"] = worker_session_id.into();
     let response = RelayClient::new(config, credential)
         .stream(&relay_request, cancellation)
         .await?;
@@ -156,16 +166,22 @@ fn build_request(
         .validate()
         .map_err(|_| invalid_request("inference request validation failed"))?;
     let response_format = public_response_format(&request.response_format)?;
+    if request.messages.iter().any(|message| {
+        (!model.supports_images && !message.images.is_empty()) || !message.files.is_empty()
+    }) {
+        return Err(invalid_request(
+            "this NEAR model does not support the attached file format",
+        ));
+    }
     if request.model != model.id {
         return Err(invalid_request(
             "request model does not match verified session",
         ));
     }
     if request.thinking_mode != axiom_inference::ThinkingMode::ProviderDefault
-        && (!model
+        && !model
             .supported_thinking_modes
             .contains(&request.thinking_mode)
-            || model.upstream_model != "deepseek-ai/DeepSeek-V4-Flash")
     {
         return Err(invalid_request(
             "thinking mode is not supported by the model",
@@ -634,8 +650,17 @@ fn encrypt_message(
         message.role,
         ChatRole::System | ChatRole::Developer | ChatRole::User | ChatRole::Tool
     );
-    let encrypted_content = (required_content || !message.content.is_empty())
-        .then(|| encrypt(model_key, message.content.as_bytes()))
+    // The upstream proxy decrypts and restores JSON content arrays. Inline
+    // image bytes and text are encrypted together, never placed in relay JSON.
+    let content = if message.images.is_empty() {
+        message.content.clone()
+    } else {
+        let mut parts = vec![serde_json::json!({"type": "text", "text": message.content})];
+        parts.extend(message.images.iter().map(|image| serde_json::json!({"type": "image_url", "image_url": {"url": image.data_url()}})));
+        serde_json::to_string(&parts).map_err(|_| invalid_request("invalid image content"))?
+    };
+    let encrypted_content = (required_content || !content.is_empty())
+        .then(|| encrypt(model_key, content.as_bytes()))
         .transpose()?;
     let encrypted_tool_calls = (!message.tool_calls.is_empty())
         .then(|| {
@@ -1040,24 +1065,11 @@ fn verify_near_proof(
     }
     let hash_pair = format!("{}:{}", proof.request_hash, proof.response_hash);
     let model_hash_pair = format!("{}:{hash_pair}", proof.model);
-    if proof.signed_text != hash_pair && proof.signed_text != model_hash_pair {
+    if proof.signed_text != model_hash_pair {
         return Err(invalid("NEAR completion receipt signed text is invalid"));
     }
-    verify_personal_signature(&proof.signed_text, &proof.signature, &proof.signing_address)?;
+    verify_ed25519_signature(&proof.signed_text, &proof.signature, &proof.signing_address)?;
     Ok((proof, raw_body))
-}
-
-#[cfg(feature = "fuzzing")]
-pub(crate) fn fuzz_parse_receipt(input: &[u8]) {
-    let Ok(value) = serde_json::from_slice(input) else {
-        return;
-    };
-    let _ = verify_near_proof(
-        value,
-        &"00".repeat(32),
-        &format!("0x{}", "00".repeat(20)),
-        "fuzz/model",
-    );
 }
 
 fn canonical_hash(value: &str) -> bool {
@@ -1068,62 +1080,35 @@ fn canonical_hash(value: &str) -> bool {
 }
 
 fn canonical_signing_address(value: &str) -> bool {
-    value.len() == 42
-        && value.starts_with("0x")
-        && value[2..]
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    canonical_hash(value)
 }
 
-fn verify_personal_signature(
+fn verify_ed25519_signature(
     signed_text: &str,
     encoded_signature: &str,
     expected_address: &str,
 ) -> Result<()> {
-    if signed_text.len() > 1024 || !canonical_signing_address(expected_address) {
-        return Err(invalid("NEAR completion signature binding is invalid"));
-    }
-    let signature_hex = encoded_signature
-        .strip_prefix("0x")
-        .unwrap_or(encoded_signature);
-    if signature_hex.len() != 130 {
+    if signed_text.len() > 1024
+        || !canonical_signing_address(expected_address)
+        || encoded_signature.len() != 128
+        || !encoded_signature
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    {
         return Err(invalid("NEAR completion signature encoding is invalid"));
     }
-    let signature_bytes = hex::decode(signature_hex)
-        .map_err(|_| invalid("NEAR completion signature encoding is invalid"))?;
-    let recovery_byte = match signature_bytes[64] {
-        0 | 1 => signature_bytes[64],
-        27 | 28 => signature_bytes[64] - 27,
-        _ => return Err(invalid("NEAR completion signature recovery ID is invalid")),
-    };
-    let signature = Secp256k1Signature::from_slice(&signature_bytes[..64])
-        .map_err(|_| invalid("NEAR completion signature is invalid"))?;
-    if signature.normalize_s().is_some() {
-        return Err(invalid("NEAR completion signature is not canonical"));
-    }
-    let recovery_id = RecoveryId::from_byte(recovery_byte)
-        .ok_or_else(|| invalid("NEAR completion signature recovery ID is invalid"))?;
-    let prefix = format!("\x19Ethereum Signed Message:\n{}", signed_text.len());
-    let mut digest = Keccak256::new();
-    digest.update(prefix.as_bytes());
-    digest.update(signed_text.as_bytes());
-    let message_hash = digest.finalize();
-    let verifying_key =
-        VerifyingKey::recover_from_prehash(message_hash.as_slice(), &signature, recovery_id)
-            .map_err(|_| invalid("NEAR completion signature recovery failed"))?;
-    let encoded_key = verifying_key.to_encoded_point(false);
-    let key_bytes = encoded_key.as_bytes();
-    if key_bytes.len() != 65 || key_bytes[0] != 4 {
-        return Err(invalid("NEAR completion signature key is invalid"));
-    }
-    let recovered_hash = Keccak256::digest(&key_bytes[1..]);
-    let recovered_address = format!("0x{}", hex::encode(&recovered_hash[12..]));
-    if recovered_address != expected_address {
-        return Err(invalid(
-            "NEAR completion signature does not match attestation",
-        ));
-    }
-    Ok(())
+    let key_bytes: [u8; 32] = hex::decode(expected_address)
+        .map_err(|_| invalid("NEAR receipt key is invalid"))?
+        .try_into()
+        .map_err(|_| invalid("NEAR receipt key is invalid"))?;
+    let key =
+        VerifyingKey::from_bytes(&key_bytes).map_err(|_| invalid("NEAR receipt key is invalid"))?;
+    let signature_bytes =
+        hex::decode(encoded_signature).map_err(|_| invalid("NEAR receipt signature is invalid"))?;
+    let signature = Signature::from_slice(&signature_bytes)
+        .map_err(|_| invalid("NEAR receipt signature is invalid"))?;
+    key.verify_strict(signed_text.as_bytes(), &signature)
+        .map_err(|_| invalid("NEAR completion signature does not match attestation"))
 }
 
 fn decrypt_tool_calls(
@@ -1483,7 +1468,12 @@ impl StreamState {
                 if !usage.validate_counters() || usage.response_verified {
                     return Err(invalid("invalid operational accounting"));
                 }
-                send(sink, ProviderEvent::Accounting(usage), cancellation).await?;
+                send(
+                    sink,
+                    ProviderEvent::Accounting(Box::new(usage)),
+                    cancellation,
+                )
+                .await?;
             }
             RelayEvent::RunCreated(payload) => {
                 if self.run_id.is_some() || payload.inference_encryption != INFERENCE_ENCRYPTION {
@@ -1784,7 +1774,7 @@ mod tests {
         EncryptedToolCallDelta, RunPayload,
     };
     use axiom_inference::{FunctionDefinition, ToolDefinition};
-    use k256::ecdsa::SigningKey;
+    use ed25519_dalek::{Signer, SigningKey};
 
     #[derive(Serialize)]
     struct SerializationVector<'a> {
@@ -1812,6 +1802,35 @@ mod tests {
             keyset_digest: None,
             hard_expires_at_unix_seconds: u64::MAX,
         }
+    }
+
+    #[test]
+    fn image_parts_are_encrypted_together_and_decrypt_to_the_upstream_array() {
+        let worker = crypto::ClientIdentity::generate();
+        let key = crypto::Ed25519PublicKey::from_hex(&worker.public_key_hex()).unwrap();
+        let mut message = ChatMessage::text(ChatRole::User, "private image question");
+        let image = axiom_inference::ImageContent {
+            mime_type: "image/png".into(),
+            data: "iVBORw0KGgpmaXh0dXJl".into(),
+        };
+        message.images.push(image.clone());
+        let encrypted = encrypt_message(key, &message).unwrap();
+        let wire = serde_json::to_string(&encrypted).unwrap();
+        assert!(!wire.contains("private image question"));
+        assert!(!wire.contains(&image.data));
+        assert!(!wire.contains("image_url"));
+        let plaintext = worker
+            .decrypt_hex(encrypted.encrypted_content.as_ref().unwrap().as_str())
+            .unwrap();
+        let content: serde_json::Value = serde_json::from_slice(&plaintext).unwrap();
+        assert_eq!(content[0]["text"], message.content);
+        assert_eq!(content[1]["image_url"]["url"], image.data_url());
+        let other_worker = crypto::ClientIdentity::generate();
+        assert!(
+            other_worker
+                .decrypt_hex(encrypted.encrypted_content.as_ref().unwrap().as_str())
+                .is_err()
+        );
     }
 
     #[test]
@@ -2034,10 +2053,9 @@ mod tests {
     }
 
     fn response_signer() -> (SigningKey, String) {
-        let key = SigningKey::from_bytes((&[7_u8; 32]).into()).unwrap();
-        let encoded = key.verifying_key().to_encoded_point(false);
-        let hash = Keccak256::digest(&encoded.as_bytes()[1..]);
-        (key, format!("0x{}", hex::encode(&hash[12..])))
+        let key = SigningKey::from_bytes(&[7_u8; 32]);
+        let address = hex::encode(key.verifying_key().to_bytes());
+        (key, address)
     }
 
     fn signed_proof(
@@ -2049,26 +2067,17 @@ mod tests {
     ) -> serde_json::Value {
         let response_hash = hex::encode(Sha256::digest(raw_body));
         let signed_text = format!("{}:{request_hash}:{response_hash}", model().upstream_model);
-        let prefix = format!("\x19Ethereum Signed Message:\n{}", signed_text.len());
-        let mut digest = Keccak256::new();
-        digest.update(prefix.as_bytes());
-        digest.update(signed_text.as_bytes());
-        let message_hash = digest.finalize();
-        let (signature, recovery_id) = signing_key
-            .sign_prehash_recoverable(message_hash.as_slice())
-            .unwrap();
-        let mut signature_bytes = signature.to_bytes().to_vec();
-        signature_bytes.push(recovery_id.to_byte() + 27);
+        let signature_bytes = signing_key.sign(signed_text.as_bytes()).to_bytes();
         serde_json::json!({
             "provider": "near",
-            "protocol": "near-v2",
+            "protocol": "near-v3",
             "chat_id": chat_id,
             "model": model().upstream_model,
             "request_hash": request_hash,
             "response_hash": response_hash,
             "response_body_base64": general_purpose::STANDARD.encode(raw_body),
             "signed_text": signed_text,
-            "signature": format!("0x{}", hex::encode(signature_bytes)),
+            "signature": hex::encode(signature_bytes),
             "signing_address": signing_address,
         })
     }
@@ -2185,6 +2194,8 @@ mod tests {
             crypto::Ed25519PublicKey::from_hex(&recipient.public_key_hex()).unwrap();
         let messages = [
             ChatMessage {
+                images: Vec::new(),
+                files: Vec::new(),
                 role: ChatRole::Assistant,
                 content: String::new(),
                 reasoning_content: None,
@@ -2201,6 +2212,8 @@ mod tests {
                 }],
             },
             ChatMessage {
+                images: Vec::new(),
+                files: Vec::new(),
                 role: ChatRole::Tool,
                 content: "SECRET_RESULT".to_owned(),
                 reasoning_content: None,
@@ -2338,7 +2351,7 @@ mod tests {
 
         for (field, replacement) in [
             ("provider", serde_json::json!("other")),
-            ("protocol", serde_json::json!("near-v3")),
+            ("protocol", serde_json::json!("near-v2")),
             ("model", serde_json::json!("other/model")),
             ("request_hash", serde_json::json!("55".repeat(32))),
             ("response_hash", serde_json::json!("66".repeat(32))),
