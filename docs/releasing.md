@@ -64,7 +64,10 @@ paths on each platform. No plaintext credential-file fallback is supported.
 Pushes to `main` and pull requests targeting `main` run checks and tests without
 producing release archives or packaged Desktop applications. Development branches
 need local checks; see [development](development.md#checks). Release packaging
-and upload happen only in the release workflows.
+and upload happen only in the release workflows. Linux Rust checks use the same
+Ubuntu 22.04 baseline as release builds so Bubblewrap namespace tests run on the
+supported build environment. Branch CI limits Rust test concurrency to two to
+avoid starving short test-only credential deadlines on shared native runners.
 
 The `desktop installers` workflow (`desktop-packages.yml`) builds Linux x64,
 macOS Intel/Apple Silicon, and Windows x64/ARM64. Run it manually against a stable
