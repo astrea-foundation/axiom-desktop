@@ -116,17 +116,6 @@ done < <(
     | @tsv
   ' <<< "$metadata"
 )
-mkdir -p "$third_party_files/axiom-phala-core-0.1.0"
-install -m 0644 "$workspace_root/crates/axiom-phala-core/LICENSE" \
-  "$third_party_files/axiom-phala-core-0.1.0/LICENSE"
-install -m 0644 "$workspace_root/crates/axiom-phala-core/ORIGIN.md" \
-  "$third_party_files/axiom-phala-core-0.1.0/ORIGIN.md"
-printf '%s\t%s\t%s\t%s\n' \
-  'axiom-phala-core' '0.1.0' 'MIT' 'axiom-phala-core-0.1.0/LICENSE' \
-  >> "$third_party_manifest"
-printf '%s\t%s\t%s\t%s\n' \
-  'axiom-phala-core' '0.1.0' 'MIT' 'axiom-phala-core-0.1.0/ORIGIN.md' \
-  >> "$third_party_manifest"
 # Installed docs are a subset of the source tree. Resolve navigation/source links
 # against this exact revision so they also work outside a repository checkout.
 source_revision=$(git -C "$workspace_root" rev-parse HEAD)

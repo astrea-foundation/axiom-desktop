@@ -6,7 +6,9 @@ mod attestation;
 mod billing;
 mod brand;
 mod composer;
+mod input;
 mod markdown;
+mod proof_refresh;
 mod runtime;
 mod screens;
 mod state;
@@ -14,6 +16,7 @@ mod task;
 mod text;
 mod theme;
 mod transcript;
+mod usage;
 
 pub use runtime::run;
 pub use screens::render;

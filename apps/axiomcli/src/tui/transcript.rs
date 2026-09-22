@@ -353,6 +353,22 @@ impl TuiState {
             _ => {}
         }
 
+        if task.phase == TaskPhase::Completed
+            && self.task_index(&task.turn_id) == Some(index)
+            && self.response_hit_output_limit(&task.turn_id)
+        {
+            self.push_task_body(
+                &mut lines,
+                task,
+                "The model reached its output limit. You can ask it to continue.",
+                Style::default().fg(theme.warning),
+                body_width,
+                theme,
+                rail_row,
+            );
+            rail_row = rail_row.saturating_add(1);
+        }
+
         if !entry.collapsed && (!task.tools.is_empty() || !task.reasoning.trim().is_empty()) {
             self.push_task_body(
                 &mut lines,

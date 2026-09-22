@@ -11,6 +11,7 @@ use crate::app::ThinkingLevel;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SlashCommand {
     Help,
+    Usage,
     Permissions,
     Compact { focus: Option<String> },
     Model,
@@ -50,7 +51,7 @@ pub const COMMANDS: &[SlashCommandSpec] = &[
     SlashCommandSpec {
         name: "permissions",
         usage: "/permissions",
-        description: "Open tool and crypto permission settings",
+        description: "Open tool permission settings",
         aliases: &[],
     },
     SlashCommandSpec {
@@ -79,14 +80,14 @@ pub const COMMANDS: &[SlashCommandSpec] = &[
     },
     SlashCommandSpec {
         name: "thinking",
-        usage: "/thinking <minimal|low|medium|high|xhigh>",
-        description: "Set the reasoning effort for subsequent requests",
+        usage: "/thinking <enabled|disabled|minimal|low|medium|high|xhigh>",
+        description: "Set a reasoning mode or effort supported by the selected model",
         aliases: &["reasoning"],
     },
     SlashCommandSpec {
         name: "login",
         usage: "/login",
-        description: "Connect an Axiom account or use an Axiom API key",
+        description: "Sign in to an Axiom account in your browser",
         aliases: &["signin"],
     },
     SlashCommandSpec {
@@ -149,6 +150,12 @@ pub const COMMANDS: &[SlashCommandSpec] = &[
         description: "Redeem a gift code in a private entry screen",
         aliases: &[],
     },
+    SlashCommandSpec {
+        name: "usage",
+        usage: "/usage",
+        description: "Inspect reported context usage, capacity, and compaction threshold",
+        aliases: &[],
+    },
 ];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -195,6 +202,7 @@ pub fn parse(input: &str) -> Option<Result<SlashCommand, SlashCommandError>> {
             "/redeem (enter the code in the private screen)",
         ),
         Some("help") => no_arguments(arguments, SlashCommand::Help, "/help"),
+        Some("usage") => no_arguments(arguments, SlashCommand::Usage, "/usage"),
         Some("permissions") => {
             no_arguments(arguments, SlashCommand::Permissions, COMMANDS[0].usage)
         }
@@ -307,6 +315,7 @@ pub fn completions(input: &str) -> Vec<SlashCompletion> {
                             | "balance"
                             | "topup"
                             | "redeem"
+                            | "usage"
                     ) {
                         ""
                     } else {
@@ -343,6 +352,8 @@ pub fn completions(input: &str) -> Vec<SlashCompletion> {
             ("off", "Disable external search and URL fetching"),
         ],
         "thinking" => vec![
+            ("enabled", "Enable reasoning"),
+            ("disabled", "Disable reasoning"),
             ("minimal", "Use minimal reasoning effort"),
             ("low", "Use low reasoning effort"),
             ("medium", "Use medium reasoning effort"),
@@ -350,7 +361,9 @@ pub fn completions(input: &str) -> Vec<SlashCompletion> {
             ("xhigh", "Use extra-high reasoning effort"),
         ],
         "permissions" | "compact" | "help" | "model" | "resume" | "delete" | "login" | "logout"
-        | "account" | "security" | "refresh" | "balance" | "topup" | "redeem" => Vec::new(),
+        | "account" | "security" | "refresh" | "balance" | "topup" | "redeem" | "usage" => {
+            Vec::new()
+        }
         _ => unreachable!("all command specs are handled"),
     };
     options

@@ -177,6 +177,7 @@ pub struct ThreadSnapshot {
     pub turns: Vec<TurnRecord>,
     pub items: Vec<TimelineItem>,
     pub next_cursor: Option<u64>,
+    pub next_request_usage_cursor: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

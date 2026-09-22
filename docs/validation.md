@@ -17,7 +17,7 @@ the current state of production, published installers or unrecorded manual work.
 | Desktop Agent on all packaged OS targets; Linux-only Bubblewrap isolation | [workspace.rs](../apps/axiomcli/src/workspace.rs), [policy.rs](../apps/axiomcli/src/policy.rs), [Desktop](desktop.md) |
 | ACP 0.2 features, API-key creation and Tinfoil generation exception | [extension DTOs](../crates/axiom-acp-extension/src/lib.rs), [contract](acp-compatibility.md) |
 | Mainnet ZEC deposits, gift redemption and `billing@3` | [billing.rs](../apps/axiomcli/src/billing.rs), [TUI credit](../apps/axiomcli/src/tui/billing.rs), [Desktop gift form](../apps/desktop/src/renderer/src/components/GiftCodePanel.tsx) |
-| NEAR/Phala/Tinfoil authentication and truthful evidence | [provider drivers](../crates/axiom-secure-client/src/providers), [security](threat-model.md) |
+| NEAR/Tinfoil authentication and truthful evidence | [provider drivers](../crates/axiom-secure-client/src/providers), [security](threat-model.md) |
 | Main-only CI, separate manual/signed packaging and publication handoff | [workflows](../.github/workflows), [packager](../apps/desktop/scripts/package-desktop.mjs), [releasing](releasing.md) |
 
 Local Markdown links and heading anchors are checked during this consolidation,
@@ -36,6 +36,20 @@ The existing `release_archive_is_reproducible_signed_installable_and_cleanly_uni
 regression passed against the updated packaging script. Application behavior was
 reviewed against source and existing regression evidence; no new live inference,
 payment, production deployment or interactive OS acceptance was performed.
+
+## Windows signing verification
+
+On 2026-09-21, the Artifact Signing integration passed all 150 Desktop source
+tests, Desktop TypeScript checks, and Actionlint 1.7.12 for the three affected
+workflows. PowerShell 7.6.6 parsed the signing scripts and exercised signature
+validation with mocked Authenticode results (wrong publisher, invalid signature,
+and missing timestamp all fail closed). These are source checks, not a successful
+Azure signing operation or generated-installer acceptance result.
+
+The Windows installer smoke tests and extra native installer-test jobs are not
+part of this pipeline. Production packaging retains publisher, timestamp,
+architecture and version checks. A promoted release must establish the first
+end-to-end OIDC/signing result; this change did not publish a release.
 
 ## Carry-forward work
 
@@ -57,6 +71,7 @@ remain separate.
 | Branding/design hand-off | The legal-line `TODO(brand)` remains in [main](../apps/desktop/src/main/index.ts); product-name/artwork decisions and optional layered icon/tray adoption need explicit design decisions. Current packaging uses `icon.icns`. |
 | Old mock Proxy and missing chat actions | Superseded by the current native proxy integration and implemented conversation controls; retained only in the historical hand-off. |
 | Provider availability/provenance canaries | Run attested E2EE canaries for the promoted native/backend pair. Old near-v2 or early Tinfoil measurements do not establish current deployment health. |
+| Live TUI agent retest | [2026-09-21 input/startup validation](testing/tui-input-2026-09-21.md): 398 automated tests passed; Chrome/Google native sign-in, attested NEAR agent edits/tests, approvals, steering, resume and streaming cancellation exercised successfully. Qwen 3.6 remains blocked by provider TDX OutOfDate evidence; other providers and release targets still need their own live acceptance. |
 
 Use [release acceptance](releasing.md#interactive-acceptance) for a new release
 and [platform operations](https://github.com/astrea-foundation/axiom-platform/blob/dev/docs/operations/deployment.md)
@@ -79,8 +94,8 @@ acceptance and production cutover were not exercised by this source cleanup.
 ## Native maintenance verification
 
 The [maintenance plan](native-maintenance-plan.md) removes dormant UI/counters,
-unused assets and asynchronous title plumbing; connects Phala to the verified
-signed NVIDIA anchor policy; tests NEAR report binding through the production
+unused assets and asynchronous title plumbing; historically connected the now-retired
+Phala verifier to signed NVIDIA policy; tests NEAR report binding through the production
 verifier; and separates ACP, TUI and Desktop controller responsibilities.
 
 Workspace strict Clippy now passes with `--all-targets --all-features -- -D warnings`.
@@ -114,3 +129,71 @@ tests pass through the unchanged public `SessionStore` API. The
 [coordinated plan](https://github.com/astrea-foundation/axiom-platform/blob/dev/docs/architecture/persistence-refactor-plan.md)
 records backend and receiver validation. This pass did not repeat UI/browser or
 live-provider acceptance and did not reset an existing user's database.
+
+## Provider catalog and upload verification
+
+On 2026-09-21, the [catalog and direct upload change](provider-catalogs.md) passed
+the full Rust workspace suite (510 tests, six opt-in/manual tests ignored), strict
+workspace Clippy, formatting, TypeScript checks, all 261 JavaScript/TypeScript
+tests, generated ACP contract consistency and the Desktop production build.
+The picker was visually checked with the Tinfoil logo and image/file icons.
+
+The final browser run passed 129 checks with four existing billing tests excluded.
+All four failures reproduce on unchanged `dev` revision `aa38e4e` with its own
+installed dependencies:
+
+- `balance is a separate screen and payments stay hidden after sign-out`:
+  duplicate deposit-address elements during transitions.
+- `balance deposit controls fit the reference window, respect reduced motion, and match both themes`:
+  the empty deposit screen overflows the reference window.
+- `deposit progress keeps ZEC primary and changes estimated USD to credited USD`:
+  duplicate deposit summaries during transitions.
+- `gift redemption is masked, updates balance, retries safely and clears on account switch`:
+  the old masked field retains its value during the account transition.
+
+These failures remain open; the complete browser suite is not green. Reproduce
+them with `pnpm exec tsx --test --test-name-pattern='balance is a separate|balance deposit controls|deposit progress keeps|gift redemption is masked' tests/browser/deletion-focus.test.ts`
+from `apps/desktop`. The same expression passed to `--test-skip-pattern` with
+`tests/browser/*.test.ts` selects the other 129 checks.
+
+The platform's paired [catalog validation](https://github.com/astrea-foundation/axiom-platform/blob/dev/docs/architecture/provider-catalogs.md#validation-2026-09-21)
+records discovery and backend tests. Live paid image/document inference,
+deployment and interactive OS acceptance were not performed. Provider attestation
+and authenticated completion must still succeed in release canaries; a public
+catalog listing alone does not establish that an offering works end to end.
+
+## Combined native PR verification (2026-09-22)
+
+The integration of native PRs #7, #8, #9 and #12 combines provider-neutral TUI
+input/security/usage, bounded local history and independently paged accounting,
+Windows artifact signing, and dynamic catalogs with encrypted direct uploads.
+The merged ACP contract advertises `account@2`, `timeline@2`, `attachments@2`
+and `billing@3`. The product-version handshake fixture now uses the current
+timeline contract; rejection coverage for `timeline@1` remains intact.
+
+Conflict resolution preserves billing controls and proof refreshes together.
+Bracketed gift-code paste stays in the masked billing input, leaves the chat
+draft untouched and remains redeemable; an added regression verifies that
+boundary. Provider-neutral presentation fixtures use a generic future gateway,
+without restoring a retired provider registration. Explicit dependency versions
+match the existing lockfile and leave the Tinfoil Git revisions unchanged.
+
+Validation passed:
+
+- Full Rust workspace: 546 tests passed, six opt-in/manual tests ignored;
+  strict workspace Clippy, formatting and a locked all-targets/all-features check.
+- All 268 JavaScript/TypeScript tests, TypeScript checks, the Desktop production
+  build, generated ACP contract consistency and the pinned SDK stack regression.
+- `cargo deny` advisories, bans, licenses and sources; workflow `actionlint`;
+  PowerShell parsing and mocked signature-rejection checks within the JS suite.
+
+The complete Desktop browser suite ran 137 checks: 134 passed and three failed.
+The remaining failures are the previously reproduced duplicate deposit-address
+elements, deposit-screen overflow and duplicate deposit summaries described
+above. The gift account-transition check passed in this run; a single passing
+run does not close its previously observed failure. No new browser failures
+appeared, and the complete browser suite remains non-green.
+
+This is development-branch integration evidence. Paid provider inference,
+deployment, real Azure OIDC signing and interactive native OS acceptance were
+not performed. Pushes and pull requests targeting `dev` do not trigger Actions.

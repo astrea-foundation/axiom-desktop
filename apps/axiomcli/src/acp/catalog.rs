@@ -65,6 +65,7 @@ pub(super) fn list_models(
                 context_window_tokens: model.context_window_tokens,
                 max_output_tokens: model.max_output_tokens,
                 supports_images: model.supports_images,
+                file_mime_types: model.file_mime_types.clone(),
                 input_price_microusd_per_million_tokens: model
                     .input_price_microusd_per_million_tokens,
                 output_price_microusd_per_million_tokens: model

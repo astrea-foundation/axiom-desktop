@@ -17,7 +17,7 @@ Provider-specific verification and its limits are documented in
 Authenticated streaming deltas can appear provisionally. A missing or invalid
 terminal authentication fails the response; partial output may remain locally
 as incomplete history. Later accounting reconciliation cannot upgrade it to a
-verified reply. NEAR/Phala use receipts; Tinfoil uses request-bound AEAD and
+verified reply. NEAR use receipts; Tinfoil uses request-bound AEAD and
 an encrypted authenticated terminal marker, without claiming a signed receipt.
 
 ## Web tools and local integrations
@@ -84,10 +84,11 @@ for paths and the account-scoped reset command.
 
 ## Local attachments
 
-Desktop extracts UTF-8/PDF text locally and keeps attachment drafts and queued
-payloads in account-scoped IndexedDB. Accepted inputs are also stored in the native
-account-local conversation database for resume, inspection and regeneration. File
-contents, filenames included in prompts, and image bytes reach the provider only
-inside its authenticated E2EE request; hosted Axiom services do not parse or extract
-files. These local stores are not an additional at-rest encryption boundary.
-PDF extraction includes text only; scan pages and illustrations require images.
+Desktop reads original file bytes and keeps attachment drafts and queued payloads
+in account-scoped IndexedDB. Accepted inputs are also stored in the native
+account-local conversation database for resume, inspection and regeneration.
+No local PDF/text extraction or OCR is performed. Original bytes and filenames
+reach the selected provider only inside its attested, authenticated E2EE request;
+Tinfoil's attested services handle document processing. Hosted Axiom services
+cannot parse files or see extracted content. These local stores are not an additional at-rest encryption boundary.
+Upload availability follows the current model capabilities; see [Desktop](desktop.md#images-and-files).

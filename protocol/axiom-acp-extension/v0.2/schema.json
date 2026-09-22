@@ -737,6 +737,27 @@
             "name",
             "image"
           ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "file": {
+              "$ref": "#/$defs/FileContent"
+            },
+            "kind": {
+              "type": "string",
+              "const": "file"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "name",
+            "file"
+          ]
         }
       ]
     },
@@ -753,6 +774,27 @@
       },
       "additionalProperties": false,
       "required": [
+        "mimeType",
+        "data"
+      ]
+    },
+    "FileContent": {
+      "description": "Original file bytes. Extraction belongs to the attested provider, not Axiom.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "mimeType": {
+          "type": "string"
+        },
+        "data": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
         "mimeType",
         "data"
       ]
@@ -922,6 +964,12 @@
           "format": "uint64",
           "minimum": 0
         },
+        "afterRequestId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "limit": {
           "type": [
             "integer",
@@ -988,6 +1036,12 @@
           ],
           "format": "uint64",
           "minimum": 0
+        },
+        "nextRequestUsageCursor": {
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
@@ -1399,6 +1453,13 @@
         "supportsImages": {
           "type": "boolean",
           "default": false
+        },
+        "fileMimeTypes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
         },
         "autoCompactThresholdTokens": {
           "type": "integer",

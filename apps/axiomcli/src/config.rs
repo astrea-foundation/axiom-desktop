@@ -239,7 +239,7 @@ const fn profile_is_narrower_or_equal(
 impl Default for Config {
     fn default() -> Self {
         Self {
-            model: "deepseek-v4-flash".into(),
+            model: "auto".into(),
             base_url: "https://api.axiom.stream".into(),
             permission_profile: PermissionProfile::Confirm,
             searxng_url: "http://127.0.0.1:8888".into(),

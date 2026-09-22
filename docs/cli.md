@@ -71,6 +71,9 @@ Permissions profile and Web access.
 
 Typing `/` filters slash-command hints; `Tab` completes command names/arguments.
 Slash commands are handled locally rather than sent to the model as prompts.
+Signed-out startup opens the login view without requesting the authenticated
+model catalog. After sign-in, the selected model and reasoning settings are
+reconciled against the live catalog before the new session is persisted.
 
 | Command | Purpose |
 |---|---|
@@ -86,6 +89,7 @@ Slash commands are handled locally rather than sent to the model as prompts.
 | `/topup` | Show the mainnet Zcash deposit address |
 | `/redeem` | Open masked gift-code entry; takes no code argument |
 | `/security`, `/refresh` | Inspect cached public evidence or request fresh local verification |
+| `/usage` | Inspect the last reported request's usage, context capacity and compaction threshold |
 | `/theme dark\|light\|terminal` | Set the session appearance |
 | `/help` | Show the complete command reference |
 
@@ -98,11 +102,78 @@ for future chats. Resume restores the selected transcript's durable settings;
 a model selection that never ran does not become the resumed prompt's model.
 Titles derive locally from the first prompt. A model's reasoning choices and
 context capacity come from validated catalog metadata, not its name.
+The composer and `/thinking` suggestions use the selected offering's exact
+controls, including enabled/disabled modes or supported effort levels. Models
+without reasoning controls do not show a thinking selector.
 
 During active work, Enter can submit steering for the next safe boundary.
-Slash commands wait until the active task finishes and are never submitted as steering.
+Typing (including uppercase letters) and pasting both edit the steering draft.
+Slash commands remain local: `/help`, `/usage`, `/security` and `/theme` are
+available while running; other commands preserve the draft and ask you to stop
+the active task first. `/security` shows retained evidence during a task; fresh
+verification waits until the task is stopped or complete. Escape closes an open
+viewer or search before it cancels active work.
+Incoming approval and question cards appear above open inspectors and take
+keyboard focus; Escape on a foreground interaction still cancels the task.
+Approval decisions require explicit chords: `Ctrl+Y` allows once, `Ctrl+N`
+denies, and, when offered, `Ctrl+G` grants the exact operation for the session
+or `Ctrl+P` grants the displayed safe scope. Ordinary typing, Enter and paste
+cannot approve or deny a tool when its card arrives during steering input.
+Paste targets the visible input: picker filters, transcript search, question
+answers, the masked gift-code field or the composer. Non-editable overlays never change a hidden draft.
 Automatic and explicit compaction use tool-free attested E2EE inference and
 persist successor context for resume. Failed or cancelled work remains incomplete.
+
+The footer's context percentage uses the last completed conversation request's
+reported input/output tokens and that report's model capacity. `/usage` shows the
+counts, model, report time and effective automatic-compaction threshold. Missing
+usage or capacity is shown as unknown. Reports survive resume; switching models
+does not rescale old counts against a new model. These values are not a draft
+estimate, cumulative turn usage or a response-length limit. Per-request usage and charges remain available in the account usage views.
+
+When the last conversation request in a completed task has an authenticated
+`length` finish reason, the transcript explains that the model reached its output
+limit and can be asked to continue. This uses the native request record across
+providers and survives resume. A settled charge alone never verifies a response;
+cancelled, failed or unauthenticated output does not gain this completion notice.
+
+## Verification reports
+
+The header describes the current model's retained TEE report. Expired, missing,
+mismatched or failed reports are never displayed as current verified proof.
+While active and signed in, the TUI renews proof within 60 seconds of expiry,
+between tasks and without opening the inspector. Only a new locally verified
+report renews the proof; a timer never extends its validity. Checks are singleflight
+and retries back off from 30 seconds to at most five minutes, including a minimum
+30-second interval when the provider returns the same short lease. Failed or
+blocked renewals remain visibly unverified/expired.
+
+After 30 minutes without user input or running work, the header becomes neutral
+`IDLE` and automatic checks pause. Input wakes verification again. Background
+checks and accounting updates do not reset inactivity. A running task or
+compaction remains active; renewal waits for it to finish. These transitions also
+work with reduced motion. Opening `/security`
+requests fresh evidence between tasks when the current report is unavailable or expired;
+`/refresh` or `R` in the inspector explicitly verifies again. Inference continues
+to enforce fresh attestation and authenticated completion in the native provider
+implementation, independently of the displayed report.
+When verification fails without producing a report, the inspector retains the
+sanitized failure reason in its scrollable body. A new check or model/account
+reset clears that process-local diagnostic; it is not saved as verified evidence.
+
+The inspector's summary includes the checked/expiry times, protocol identifiers,
+key bindings, local checks and every provider evidence field. `V` cycles through
+the summary, provider evidence and complete raw JSON report. Optional workload
+documents are displayed without assuming Docker Compose, a particular hardware
+vendor, a signed receipt or a direct worker-attestation topology. Source
+provenance and verification scope remain visible as supplied in each provider's
+claims. A provider with no separate workload document can still have valid proof.
+
+Terminal output is sanitized and large raw/document displays are bounded; `S`
+from the raw view saves the complete original report without overwriting an
+existing file. The retained report's status describes its last check; the header
+and inspector banner separately explain whether that report is current. Report
+verification is distinct from the terminal authentication of each reply.
 
 ## Credit and funding
 
@@ -159,7 +230,9 @@ The implemented session subcommands are list, show, export, rename, archive and
 unarchive. Interactive deletion uses `/delete`; ACP uses preview/confirm.
 There is no `sessions prune` command. Export supports omitting prompts/tool
 output and a bounded `--max-items` count. Local recovery never replays interrupted
-tool side effects.
+tool side effects. The TUI warns about interrupted operations and recovery
+problems, not ordinary file edits. Recorded edits remain in the task history;
+resume neither adds nor displays the legacy workspace-change summary warning.
 
 Plans are revisioned local artifacts with comments, revision requests, proposal,
 approval and abandonment. Plan approval records review; it does not execute the

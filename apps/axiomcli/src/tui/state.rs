@@ -6,6 +6,7 @@ use std::{
     env,
     path::PathBuf,
     str::FromStr as _,
+    time::Instant,
 };
 
 use axiom_secure_client::SecurityEvidence;
@@ -21,11 +22,13 @@ use crate::{
 
 use super::{
     attestation::{
-        attestation_export_filename, attestation_picker_directories, write_attestation_export,
+        ReportStatus, attestation_export_filename, attestation_picker_directories, report_status,
+        write_attestation_export,
     },
     composer::ComposerBuffer,
     markdown::StreamingMarkdownRenderer,
     pick_splash_message,
+    proof_refresh::{ProofRefresh, REFRESH_BEFORE_EXPIRY_SECONDS},
     task::{TaskActivity, TaskPhase, TaskRunView, ToolPhase},
     text::{is_attestation_failure, sanitize_terminal_text, user_facing_provider_error},
     theme::{Appearance, ColorMode, Theme},
@@ -43,6 +46,7 @@ pub(super) enum Overlay {
     Billing(Box<super::billing::BillingView>),
     Entry(usize),
     Help,
+    Usage,
     Permissions {
         selected: usize,
     },
@@ -224,6 +228,8 @@ pub struct TuiState {
     pub(super) web_enabled: bool,
     pub(super) security: &'static str,
     pub(super) security_evidence: Option<SecurityEvidence>,
+    pub(super) security_error: Option<String>,
+    pub(super) proof_refresh: ProofRefresh,
     pub(super) input: ComposerBuffer,
     pub(super) entries: Vec<Entry>,
     pub(super) running: bool,
@@ -247,6 +253,7 @@ pub struct TuiState {
     pub(super) answer_prompt: Option<String>,
     pub(super) interaction: Option<InteractionView>,
     pub(super) request_usage: BTreeMap<String, axiom_inference::RequestUsage>,
+    pub(super) context_usage: Option<axiom_acp_extension::ContextUsage>,
     pub(super) animation_frame: u64,
     pub(super) transition_ticks: u8,
     pub(super) compacting: bool,
@@ -282,6 +289,8 @@ impl TuiState {
             web_enabled: false,
             security: "NOT VERIFIED",
             security_evidence: None,
+            security_error: None,
+            proof_refresh: ProofRefresh::new(Instant::now()),
             input: ComposerBuffer::default(),
             entries: Vec::new(),
             running: false,
@@ -305,6 +314,7 @@ impl TuiState {
             answer_prompt: None,
             interaction: None,
             request_usage: BTreeMap::new(),
+            context_usage: None,
             animation_frame: 0,
             transition_ticks: 0,
             compacting: false,
@@ -322,6 +332,50 @@ impl TuiState {
     pub(super) fn reset_security(&mut self) {
         self.security = "NOT VERIFIED";
         self.security_evidence = None;
+        self.security_error = None;
+        self.proof_refresh = ProofRefresh::new(Instant::now());
+    }
+
+    pub(super) fn fail_security(&mut self, detail: &str) {
+        self.security = "SECURITY FAILED";
+        self.security_evidence = None;
+        self.security_error = Some(sanitize_terminal_text(detail));
+    }
+
+    pub(super) fn report_status(&self) -> ReportStatus {
+        if !self.running && !self.compacting && self.proof_refresh.is_idle(Instant::now()) {
+            return ReportStatus::Idle;
+        }
+        report_status(
+            self.security,
+            &self.model,
+            self.security_evidence.as_ref(),
+            u64::try_from(chrono::Utc::now().timestamp()).unwrap_or(0),
+        )
+    }
+
+    pub(super) fn security_refresh_due(&self, now: Instant, unix_seconds: u64) -> bool {
+        if self.running
+            || self.compacting
+            || self.security == "VERIFYING"
+            || !self.proof_refresh.due(now)
+        {
+            return false;
+        }
+        let report = report_status(
+            self.security,
+            &self.model,
+            self.security_evidence.as_ref(),
+            unix_seconds,
+        );
+        report != ReportStatus::Verified
+            || self.security_evidence.as_ref().is_some_and(|evidence| {
+                evidence
+                    .hard_expires_at_unix_seconds
+                    .is_some_and(|expires| {
+                        expires.saturating_sub(unix_seconds) <= REFRESH_BEFORE_EXPIRY_SECONDS
+                    })
+            })
     }
 
     pub(super) fn open_security(&mut self) {
@@ -670,6 +724,9 @@ impl TuiState {
                 self.status = "Reasoning…".into();
                 self.status_tone = StatusTone::Active;
             }
+            AppEvent::ContextUsageUpdated { usage } => {
+                self.context_usage = Some(usage.clone());
+            }
             AppEvent::RequestUsageUpdated { usage } => {
                 self.request_usage
                     .insert(usage.request_id.clone(), usage.clone());
@@ -825,6 +882,7 @@ impl TuiState {
                 self.model.clone_from(model);
                 if changed {
                     self.reset_security();
+                    self.reset_slash_completion();
                 }
                 self.status = format!("Model changed to {model}");
             }
@@ -1002,6 +1060,7 @@ impl TuiState {
                 );
             }
             AppEvent::SecurityStatusChanged { state } => {
+                self.security_error = None;
                 self.security = match state {
                     crate::app::SecurityStatus::Unverified => "NOT VERIFIED",
                     crate::app::SecurityStatus::Verifying => "VERIFYING",
@@ -1051,6 +1110,9 @@ impl TuiState {
                 self.status_tone = StatusTone::Error;
                 self.clear_foreground_attention();
                 let detail = sanitize_terminal_text(message);
+                if self.security == "SECURITY FAILED" {
+                    self.security_error = Some(detail.clone());
+                }
                 self.status = if is_attestation_failure(&detail) {
                     "Attestation failed".into()
                 } else {
@@ -1204,7 +1266,26 @@ impl TuiState {
     pub(super) fn invalid_slash_has_completion(&self) -> bool {
         self.input.starts_with('/')
             && slash::parse(&self.input).is_some_and(|command| command.is_err())
-            && !slash::completions(&self.input).is_empty()
+            && !self.available_slash_completions().is_empty()
+    }
+
+    fn available_slash_completions(&self) -> Vec<slash::SlashCompletion> {
+        let mut candidates = slash::completions(&self.input);
+        if self
+            .input
+            .split_once(char::is_whitespace)
+            .is_some_and(|(command, _)| matches!(command, "/thinking" | "/reasoning"))
+            && let Some(model) = self.model_details.get(&self.model)
+        {
+            let supported = crate::agent::supported_thinking_levels(model);
+            candidates.retain(|candidate| {
+                candidate
+                    .label
+                    .parse::<ThinkingLevel>()
+                    .is_ok_and(|level| supported.contains(&level))
+            });
+        }
+        candidates
     }
 
     pub(super) fn slash_candidates(&self) -> Vec<slash::SlashCompletion> {
@@ -1216,12 +1297,11 @@ impl TuiState {
         {
             return cycle.candidates.clone();
         }
-        slash::completions(&self.input)
+        self.available_slash_completions()
     }
 
     pub(super) fn can_navigate_slash(&self) -> bool {
         self.focus == Focus::Composer
-            && !self.running
             && self.input.starts_with('/')
             && self.input.is_cursor_at_end()
             && !self.slash_candidates().is_empty()
@@ -1655,7 +1735,7 @@ impl TuiState {
             return;
         }
 
-        let candidates = slash::completions(&self.input);
+        let candidates = self.available_slash_completions();
         if candidates.is_empty() {
             self.reset_slash_completion();
             self.status = "No completion available".into();

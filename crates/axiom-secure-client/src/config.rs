@@ -35,7 +35,7 @@ impl SecureClientConfig {
             relay_base_url,
             request_timeout: Duration::from_secs(120),
             attestation_timeout: Duration::from_secs(60),
-            catalog_max_stale: Duration::from_secs(24 * 60 * 60),
+            catalog_max_stale: Duration::from_secs(30 * 60),
             verified_session_ttl: Duration::from_secs(240),
             trust_policy_cache_path: None,
             trust_policy_refresh_interval: Duration::from_secs(300),
@@ -106,10 +106,7 @@ impl Default for SecureClientLimits {
         Self {
             model_catalog_bytes: 4 * 1024 * 1024,
             trust_policy_bytes: 128 * 1024,
-            // Phala's independently verified gateway report includes fresh
-            // Intel collateral and NVIDIA verdicts for every eligible worker.
-            // A live 17-worker bundle is currently about 8 MiB, so keep a
-            // dedicated bounded ceiling with enough room for evidence churn.
+            // Bounded provider evidence, independently verified on this device.
             attestation_report_bytes: 16 * 1024 * 1024,
             attestation_quote_bytes: 256 * 1024,
             nvidia_evidence_bytes: 1024 * 1024,
@@ -125,7 +122,7 @@ impl Default for SecureClientLimits {
             relay_response_bytes: 96 * 1024 * 1024,
             relay_sse_event_bytes: 48 * 1024 * 1024,
             relay_stream_bytes: 128 * 1024 * 1024,
-            serialized_relay_request_bytes: 32 * 1024 * 1024,
+            serialized_relay_request_bytes: 64 * 1024 * 1024,
         }
     }
 }

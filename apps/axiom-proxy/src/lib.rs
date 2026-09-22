@@ -22,7 +22,7 @@ use subtle::ConstantTimeEq;
 use tokio::sync::{Semaphore, mpsc};
 use tokio_util::sync::CancellationToken;
 
-const MAX_LOCAL_BODY_BYTES: usize = 32 * 1024 * 1024;
+const MAX_LOCAL_BODY_BYTES: usize = 64 * 1024 * 1024;
 const STREAM_CHANNEL_CAPACITY: usize = 32;
 /// Names the parameters a request carried that were not applied. Clients that
 /// ignore the header are unaffected; the value is always a sanitized ASCII list.

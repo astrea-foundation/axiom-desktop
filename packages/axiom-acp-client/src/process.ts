@@ -281,7 +281,7 @@ export class AcpProcess extends EventEmitter {
     }
     const frame = `${JSON.stringify(message)}\n`;
     if (Buffer.byteLength(frame) > MAX_FRAME_BYTES) {
-      throw new ProtocolError("outgoing ACP frame exceeds the 4 MiB limit");
+      throw new ProtocolError("outgoing ACP frame exceeds the 64 MiB limit");
     }
     await new Promise<void>((resolve, reject) => {
       let settled = false;
@@ -352,7 +352,7 @@ export class AcpProcess extends EventEmitter {
       const end = newline === -1 ? chunk.length : newline;
       const segment = chunk.subarray(start, end);
       if (this.stdoutRemainder.length + segment.length > MAX_FRAME_BYTES) {
-        this.finish(new ProtocolError("incoming ACP frame exceeds the 4 MiB limit"), true);
+        this.finish(new ProtocolError("incoming ACP frame exceeds the 64 MiB limit"), true);
         return;
       }
       if (segment.length > 0) {

@@ -18,7 +18,7 @@ const NONCE_BYTES: usize = 24;
 const TAG_BYTES: usize = 16;
 const WIRE_PREFIX_BYTES: usize = EPHEMERAL_PUBLIC_BYTES + NONCE_BYTES;
 const MINIMUM_WIRE_BYTES: usize = WIRE_PREFIX_BYTES + TAG_BYTES;
-const MAXIMUM_WIRE_BYTES: usize = axiom_inference::MAX_MESSAGE_TEXT_BYTES + MINIMUM_WIRE_BYTES;
+const MAXIMUM_WIRE_BYTES: usize = 20 * 1024 * 1024 + MINIMUM_WIRE_BYTES;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Ed25519PublicKey([u8; 32]);
@@ -98,7 +98,7 @@ impl std::fmt::Debug for ClientIdentity {
 }
 
 pub(crate) fn encrypt_hex(recipient: Ed25519PublicKey, plaintext: &[u8]) -> Result<String> {
-    if plaintext.len() > axiom_inference::MAX_MESSAGE_TEXT_BYTES {
+    if plaintext.len() > MAXIMUM_WIRE_BYTES - MINIMUM_WIRE_BYTES {
         return Err(crypto_error("plaintext exceeds the protocol limit"));
     }
     let recipient_x25519 = X25519PublicKey::from(ed25519_public_to_x25519(&recipient.0)?);
@@ -320,7 +320,7 @@ mod tests {
         assert!(
             encrypt_hex(
                 public,
-                &vec![0; axiom_inference::MAX_MESSAGE_TEXT_BYTES + 1]
+                &vec![0; MAXIMUM_WIRE_BYTES - MINIMUM_WIRE_BYTES + 1]
             )
             .is_err()
         );

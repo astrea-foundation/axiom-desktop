@@ -10,8 +10,8 @@ use std::{
 
 use async_trait::async_trait;
 use axiom_inference::{
-    InferenceRequest, InferenceResponse, ModelInfo, ProviderEvent, ReasoningEffort, ResponseFormat,
-    ThinkingMode, ToolChoice,
+    InferenceRequest, InferenceResponse, ModelInfo, ProviderEvent, ResponseFormat, ThinkingMode,
+    ToolChoice,
 };
 use futures_util::StreamExt as _;
 use rand_core::{OsRng, RngCore as _};
@@ -35,7 +35,6 @@ const REPOSITORY: &str = "tinfoilsh/confidential-model-router";
 const PROTOCOL: &str = "tinfoil-ehbp-v1";
 const ATTESTATION: &str = "tinfoil-snp-sigstore-v1";
 const BASE_URL: &str = "https://inference.tinfoil.sh/v1";
-const MODELS: &[&str] = &["gpt-oss-120b", "glm-5-3", "kimi-k3", "llama3-3-70b"];
 
 pub(crate) struct TinfoilProvider {
     config: SecureClientConfig,
@@ -121,12 +120,30 @@ impl SecureProvider for TinfoilProvider {
                 &model.attestation_protocol,
             )
             || model.provider_base_url.trim_end_matches('/') != BASE_URL
-            || !MODELS.contains(&model.upstream_model.as_str())
-            || model.id != format!("tinfoil-{}", model.upstream_model)
+            || model.upstream_model.is_empty()
+            || !model
+                .upstream_model
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || b"-_.".contains(&c))
         {
             return Err(SecureClientError::capability(
                 "model does not match the compiled Tinfoil contract",
             ));
+        }
+        for (effort, parameters) in &model.reasoning_parameters {
+            if !["low", "medium", "high", "xhigh"].contains(&effort.as_str()) {
+                return Err(SecureClientError::capability("unknown reasoning level"));
+            }
+            validate_controls(parameters)?;
+        }
+        for (mode, parameters) in &model.thinking_parameters {
+            if !["enabled", "disabled"].contains(&mode.as_str()) {
+                return Err(SecureClientError::capability("unknown thinking mode"));
+            }
+            validate_controls(parameters)?;
+        }
+        if model.file_mime_types.len() > axiom_inference::FILE_MIME_TYPES.len() {
+            return Err(SecureClientError::capability("invalid file capabilities"));
         }
         Ok(())
     }
@@ -136,13 +153,10 @@ impl SecureProvider for TinfoilProvider {
     }
 
     fn populate_capabilities(&self, model: &mut ModelInfo) {
-        model.supports_tools = true;
-        // The GPT-OSS deployment selects one call even when asked to batch.
-        model.supports_parallel_tools = model.upstream_model != "gpt-oss-120b";
         model.supports_streaming = true;
-        // Kimi K3 exposes native image input on this same attested whole-body
-        // transport. Other offerings stay text-only until verified separately.
-        model.supports_images = model.upstream_model == "kimi-k3";
+        model
+            .file_mime_types
+            .retain(|mime| axiom_inference::FILE_MIME_TYPES.contains(&mime.as_str()));
     }
 
     async fn establish(
@@ -514,24 +528,32 @@ fn request_body(model: &ModelInfo, request: &InferenceRequest, stream: bool) -> 
     request
         .validate()
         .map_err(|_| invalid_request("inference request validation failed"))?;
-    if request.model != model.id || request.thinking_mode != ThinkingMode::ProviderDefault {
+    if request.model != model.id {
         return Err(invalid_request(
             "request does not match Tinfoil model capabilities",
         ));
     }
-    if request.parallel_tool_calls == Some(true) && model.upstream_model == "gpt-oss-120b" {
-        return Err(invalid_request(
-            "Tinfoil GPT-OSS supports sequential tool calls",
-        ));
+    if request.parallel_tool_calls == Some(true) && !model.supports_parallel_tools {
+        return Err(invalid_request("this model supports sequential tool calls"));
     }
     if request
         .messages
         .iter()
         .any(|message| !message.images.is_empty())
-        && model.upstream_model != "kimi-k3"
+        && !model.supports_images
     {
         return Err(invalid_request(
             "this model does not support encrypted image input",
+        ));
+    }
+    if request
+        .messages
+        .iter()
+        .flat_map(|message| &message.files)
+        .any(|file| !model.file_mime_types.contains(&file.mime_type))
+    {
+        return Err(invalid_request(
+            "this model does not support the attached file format",
         ));
     }
     let max_tokens = request.max_output_tokens;
@@ -540,21 +562,28 @@ fn request_body(model: &ModelInfo, request: &InferenceRequest, stream: bool) -> 
     }
     let mut messages =
         serde_json::to_value(&request.messages).map_err(|_| invalid_request("invalid messages"))?;
-    // GPT-OSS replays reasoning only during a tool roundtrip; other models
-    // advertise whether full reasoning history is accepted.
+    // The provider catalog specifies whether full reasoning history is accepted.
     for message in messages
         .as_array_mut()
         .ok_or_else(|| invalid_request("invalid messages"))?
     {
-        if let Some(images) = message.as_object_mut().unwrap().remove("images") {
-            let images: Vec<axiom_inference::ImageContent> = serde_json::from_value(images)
-                .map_err(|_| invalid_request("invalid image content"))?;
+        let object = message.as_object_mut().unwrap();
+        let images = object.remove("images");
+        let files = object.remove("files");
+        if images.is_some() || files.is_some() {
+            let images: Vec<axiom_inference::ImageContent> =
+                serde_json::from_value(images.unwrap_or_else(|| json!([])))
+                    .map_err(|_| invalid_request("invalid image content"))?;
+            let files: Vec<axiom_inference::FileContent> =
+                serde_json::from_value(files.unwrap_or_else(|| json!([])))
+                    .map_err(|_| invalid_request("invalid file content"))?;
             let mut parts = vec![json!({"type": "text", "text": message["content"]})];
             parts.extend(
                 images.iter().map(
                     |image| json!({"type": "image_url", "image_url": {"url": image.data_url()}}),
                 ),
             );
+            parts.extend(files.iter().map(|file| json!({"type": "file", "file": {"filename": file.name, "file_data": file.data_url()}})));
             message["content"] = Value::Array(parts);
         }
         if !model.reasoning_replay && message.get("tool_calls").is_none() {
@@ -574,29 +603,35 @@ fn request_body(model: &ModelInfo, request: &InferenceRequest, stream: bool) -> 
     if stream {
         body["stream_options"] = json!({"include_usage": true});
     }
-    if !model.supported_reasoning_efforts.is_empty() {
+    if request.thinking_mode != ThinkingMode::ProviderDefault {
+        let mode = match request.thinking_mode {
+            ThinkingMode::Enabled => "enabled",
+            ThinkingMode::Disabled => "disabled",
+            ThinkingMode::ProviderDefault => unreachable!(),
+        };
+        let parameters = model
+            .thinking_parameters
+            .get(mode)
+            .ok_or_else(|| invalid_request("unsupported thinking mode"))?;
+        apply_controls(&mut body, parameters)?;
+    }
+    if request.thinking_mode != ThinkingMode::Disabled
+        && !model.supported_reasoning_efforts.is_empty()
+    {
         if !model
             .supported_reasoning_efforts
             .contains(&request.reasoning_effort)
         {
             return Err(invalid_request("unsupported reasoning effort"));
         }
-        if matches!(model.upstream_model.as_str(), "glm-5-3" | "kimi-k3") {
-            let effort = match request.reasoning_effort {
-                ReasoningEffort::Low => "low",
-                ReasoningEffort::Medium => "high",
-                ReasoningEffort::High => "max",
-                _ => return Err(invalid_request("unsupported reasoning effort")),
-            };
-            // Axiom's three effort levels map to the provider's low/high/max.
-            if model.upstream_model == "glm-5-3" {
-                body["chat_template_kwargs"] = json!({"reasoning_effort": effort});
-            } else {
-                body["reasoning_effort"] = json!(effort);
-            }
-        } else {
-            body["reasoning_effort"] = json!(request.reasoning_effort.as_str());
-        }
+        let parameters = model
+            .reasoning_parameters
+            .get(request.reasoning_effort.as_str())
+            .ok_or_else(|| invalid_request("missing reasoning protocol controls"))?;
+        apply_controls(&mut body, parameters)?;
+    }
+    if !request.tools.is_empty() && !model.supports_tools {
+        return Err(invalid_request("this model does not support tools"));
     }
     if let Some(value) = request.sampling.temperature {
         body["temperature"] = json!(value);
@@ -711,4 +746,68 @@ fn invalid(detail: &'static str) -> SecureClientError {
 }
 fn invalid_request(detail: &'static str) -> SecureClientError {
     SecureClientError::new(axiom_inference::ProviderFailureKind::InvalidRequest, detail)
+}
+
+fn validate_controls(value: &Value) -> Result<()> {
+    let object = value
+        .as_object()
+        .filter(|v| v.len() <= 2)
+        .ok_or_else(|| SecureClientError::capability("invalid reasoning controls"))?;
+    for (key, value) in object {
+        if key == "chat_template_kwargs" {
+            let nested = value
+                .as_object()
+                .filter(|v| v.len() <= 4)
+                .ok_or_else(|| SecureClientError::capability("invalid reasoning controls"))?;
+            for (name, v) in nested {
+                match name.as_str() {
+                    "thinking" | "enable_thinking" | "clear_thinking" if v.is_boolean() => {}
+                    "reasoning_effort" => validate_effort(v)?,
+                    _ => {
+                        return Err(SecureClientError::capability(
+                            "unsupported reasoning control",
+                        ));
+                    }
+                }
+            }
+        } else if key == "reasoning_effort" {
+            validate_effort(value)?;
+        } else {
+            return Err(SecureClientError::capability(
+                "unsupported reasoning control",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_effort(value: &Value) -> Result<()> {
+    if value
+        .as_str()
+        .is_some_and(|v| ["none", "minimal", "low", "medium", "high", "xhigh", "max"].contains(&v))
+    {
+        Ok(())
+    } else {
+        Err(SecureClientError::capability(
+            "invalid reasoning control value",
+        ))
+    }
+}
+
+fn apply_controls(body: &mut Value, parameters: &Value) -> Result<()> {
+    validate_controls(parameters)?;
+    for (key, value) in parameters.as_object().unwrap() {
+        if key == "chat_template_kwargs" {
+            if body.get(key).is_none() {
+                body[key] = json!({});
+            }
+            body[key]
+                .as_object_mut()
+                .unwrap()
+                .extend(value.as_object().unwrap().clone());
+        } else {
+            body[key] = value.clone();
+        }
+    }
+    Ok(())
 }

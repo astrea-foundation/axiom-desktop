@@ -1,0 +1,139 @@
+name: Windows production signing
+
+on:
+  workflow_call:
+    inputs:
+      full-tests:
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Native Windows build (${{ matrix.arch }})
+    if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-2025
+            folder: win-unpacked
+          - arch: arm64
+            runner: windows-11-arm
+            folder: win-arm64-unpacked
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Require promoted stable tag
+        shell: bash
+        run: |
+          git merge-base --is-ancestor HEAD origin/main
+          node apps/desktop/scripts/set-release-version.mjs "${GITHUB_REF_NAME#v}" --check-only
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.1
+      - uses: Swatinem/rust-cache@v2
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter axiom-desktop typecheck
+      - run: pnpm --filter axiom-desktop test
+      - if: inputs.full-tests
+        run: cargo test -p axiom-acp-extension -p axiomcli --all-features
+      - if: inputs.full-tests
+        run: pnpm typecheck && pnpm test
+      - run: cargo build --locked --release -p axiomcli
+      - name: Prepare native unsigned build input (not an installer)
+        run: node apps/desktop/scripts/package-desktop.mjs --win --${{ matrix.arch }} --unsigned --dir
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-input-${{ matrix.arch }}
+          path: apps/desktop/dist/${{ matrix.folder }}/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+
+  sign:
+    name: Sign and package Windows (${{ matrix.arch }})
+    needs: build
+    # Microsoft's signing toolchain runs on x64, even for ARM64 payloads.
+    runs-on: windows-2025
+    timeout-minutes: 45
+    environment: windows-signing
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AXIOM_SIGNING_ENDPOINT: ${{ vars.AXIOM_SIGNING_ENDPOINT }}
+      AXIOM_SIGNING_ACCOUNT: ${{ vars.AXIOM_SIGNING_ACCOUNT }}
+      AXIOM_SIGNING_PROFILE: ${{ vars.AXIOM_SIGNING_PROFILE }}
+      AXIOM_SIGNING_PUBLISHER: ${{ vars.AXIOM_SIGNING_PUBLISHER }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            folder: win-unpacked
+          - arch: arm64
+            folder: win-arm64-unpacked
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Recheck release revision before accessing signing identity
+        shell: bash
+        run: |
+          git merge-base --is-ancestor HEAD origin/main
+          node apps/desktop/scripts/set-release-version.mjs "${GITHUB_REF_NAME#v}" --check-only
+          node apps/desktop/scripts/set-release-version.mjs "${GITHUB_REF_NAME#v}"
+          node -e "require('./apps/desktop/scripts/windows-signing.cjs').signingSettings()"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Install pinned Microsoft signing module
+        shell: pwsh
+        run: Install-Module ArtifactSigning -RequiredVersion 0.1.20 -Repository PSGallery -Scope CurrentUser -Force -ErrorAction Stop
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-input-${{ matrix.arch }}
+          path: apps/desktop/dist/${{ matrix.folder }}
+      - name: Authenticate using the release-only federated identity
+        uses: azure/login@v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Sign payload, NSIS uninstaller, and final installer
+        shell: pwsh
+        run: ./apps/desktop/scripts/package-signed-windows.ps1 -Arch '${{ matrix.arch }}'
+      - name: Generate metadata from final signed installer bytes
+        shell: pwsh
+        run: node scripts/download-manifest.mjs apps/desktop/dist $env:GITHUB_REF_NAME.Substring(1) signed
+      - uses: actions/upload-artifact@v4
+        with:
+          name: axiom-desktop-windows-${{ matrix.arch }}
+          path: |
+            apps/desktop/dist/*.exe
+            apps/desktop/dist/*.blockmap
+            apps/desktop/dist/manifest.json
+            apps/desktop/dist/SHA256SUMS
+          if-no-files-found: error

@@ -51,7 +51,7 @@ const EXTENSION_CAPABILITIES = {
   protocolVersion: "0.2",
   features: {
     threadCatalog: 1,
-    timeline: 1,
+    timeline: 2,
     modelCatalog: 1,
     profilePreferences: 1,
     collections: 1,
@@ -64,7 +64,7 @@ const EXTENSION_CAPABILITIES = {
     webConsent: 1,
     steering: 1,
     messageRevision: 1,
-    attachments: 1,
+    attachments: 2,
     compaction: 1,
     activity: 1,
   },
@@ -219,7 +219,7 @@ export class AxiomAcpClient extends EventEmitter {
     } | undefined;
     validateDesktopExtension(meta);
     this.supportsMessageRevision = (meta?.features?.messageRevision ?? 0) >= 1;
-    this.supportsAttachments = (meta?.features?.attachments ?? 0) >= 1;
+    this.supportsAttachments = (meta?.features?.attachments ?? 0) >= 2;
     this.initialized = true;
     this.state.setConnected(true);
     return result;
@@ -743,11 +743,14 @@ export class AxiomAcpClient extends EventEmitter {
     for (let attempt = 0; attempt < TIMELINE_RESTART_LIMIT; attempt += 1) {
       const pages: GetThreadTimelineResponse[] = [];
       let cursor: number | undefined;
+      let usageCursor: string | undefined;
+      let hasMore: boolean;
       let restart = false;
       do {
         const page = await this.process.request<GetThreadTimelineResponse>("_axiom/thread/timeline", {
           threadId,
           afterSequence: cursor,
+          afterRequestId: usageCursor,
           limit: TIMELINE_PAGE_SIZE,
         });
         this.assertAccountContext(accountContext);
@@ -760,9 +763,18 @@ export class AxiomAcpClient extends EventEmitter {
           restart = true;
           break;
         }
+        if (page.thread.threadId !== threadId
+          || (page.nextCursor != null && (page.nextCursor <= (cursor ?? 0)
+            || page.nextCursor !== page.items.at(-1)?.sequence))
+          || (page.nextRequestUsageCursor != null && (page.nextRequestUsageCursor <= (usageCursor ?? "")
+            || page.nextRequestUsageCursor !== page.requestUsage?.at(-1)?.requestId))) {
+          throw new ProtocolError("AxiomCLI returned a non-progressing timeline cursor");
+        }
         pages.push(page);
-        cursor = page.nextCursor ?? undefined;
-      } while (cursor !== undefined);
+        hasMore = page.nextCursor != null || page.nextRequestUsageCursor != null;
+        cursor = page.nextCursor ?? page.thread.lastTimelineSequence;
+        usageCursor = page.nextRequestUsageCursor ?? page.requestUsage?.at(-1)?.requestId ?? usageCursor;
+      } while (hasMore);
       if (restart) continue;
       if (!this.state.replaceTimeline(pages)) continue;
       return pages.at(-1) ?? (() => { throw new ProtocolError("AxiomCLI returned no timeline page"); })();

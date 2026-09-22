@@ -129,7 +129,7 @@ test("expiry, missing evidence, and provisional replies stay explicit without an
   } finally { await page.close(); }
 });
 
-test("idle proof renews before expiry without opening the dialog or duplicating an in-flight check", async () => {
+test("background proof renews before expiry without opening the dialog or duplicating an in-flight check", async () => {
   const { page, errors } = await open("dark", true);
   try {
     await page.clock.fastForward(239_000);
@@ -151,7 +151,7 @@ test("idle proof renews before expiry without opening the dialog or duplicating 
   } finally { await page.close(); }
 });
 
-test("idle renewal waits for replies, connection, sign-in, and thread resync", async () => {
+test("background renewal waits for replies, connection, sign-in, and thread resync", async () => {
   const { page, errors } = await open("light", true);
   try {
     await page.evaluate(() => (window as any).__privacyTest.update({ running: true }));
@@ -180,7 +180,7 @@ test("idle renewal waits for replies, connection, sign-in, and thread resync", a
   } finally { await page.close(); }
 });
 
-test("failed idle renewal stays failed and backs off, while manual refresh remains available", async () => {
+test("failed background renewal stays failed and backs off, while manual refresh remains available", async () => {
   const { page, errors } = await open("light", true);
   try {
     await page.clock.fastForward(241_000);
@@ -270,6 +270,88 @@ test("initial evidence is automatic while development and an existing preflight 
   } finally { await page.close(); }
 });
 
+test("automatic checks stop at 30 inactive minutes and keyboard activity wakes verification", async () => {
+  const { page, errors } = await open("dark", true);
+  try {
+    // Seven successful background renewals must not count as user activity.
+    for (let index = 0; index < 7; index++) {
+      await page.clock.fastForward(241_000);
+      await page.getByRole("button", { name: "Verifying TEE. View privacy proof", exact: true }).waitFor();
+      await page.evaluate(() => (window as any).__privacyTest.finish());
+      await page.getByRole("button", { name: "TEE verified. View privacy proof", exact: true }).waitFor();
+    }
+    await page.clock.fastForward(112_000);
+    assert.equal(await count(page), 7);
+    assert.equal(await page.getByRole("button", { name: "Idle. View privacy proof", exact: true }).count(), 0);
+    await page.clock.fastForward(1_000);
+    await page.getByRole("button", { name: "Idle. View privacy proof", exact: true }).waitFor();
+    await capture(page, "idle-dark");
+    await page.clock.fastForward(600_000);
+    await page.evaluate(() => window.dispatchEvent(new Event("online")));
+    assert.equal(await count(page), 7, "timers and network recovery do not wake an inactive user");
+    await page.keyboard.press("Shift");
+    await page.getByRole("button", { name: "Verifying TEE. View privacy proof", exact: true }).waitFor();
+    assert.equal(await count(page), 8);
+    await page.evaluate(() => (window as any).__privacyTest.finish());
+    await page.getByRole("button", { name: "TEE verified. View privacy proof", exact: true }).waitFor();
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("user activity resets the 30-minute window even while renewal is unavailable", async () => {
+  const { page, errors } = await open("light", true);
+  try {
+    await page.evaluate(() => (window as any).__privacyTest.setDisabledReason("Reconnect to refresh verification"));
+    await page.clock.fastForward(1_740_000);
+    await page.keyboard.press("Shift");
+    await page.clock.fastForward(61_000);
+    await page.getByRole("button", { name: "TEE proof expired. View privacy proof", exact: true }).waitFor();
+    await page.clock.fastForward(1_739_000);
+    await page.getByRole("button", { name: "Idle. View privacy proof", exact: true }).waitFor();
+    await capture(page, "idle-light");
+    await page.evaluate(() => (window as any).__privacyTest.setDisabledReason(undefined));
+    assert.equal(await count(page), 0);
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await page.getByRole("button", { name: "Verifying TEE. View privacy proof", exact: true }).waitFor();
+    assert.equal(await count(page), 1);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("a late preflight completion cannot wake an idle badge or restart polling", async () => {
+  const { page, errors } = await open("light", true);
+  try {
+    await page.clock.fastForward(241_000);
+    await page.getByRole("button", { name: "Verifying TEE. View privacy proof", exact: true }).waitFor();
+    await page.clock.fastForward(1_559_000);
+    await page.getByRole("button", { name: "Idle. View privacy proof", exact: true }).waitFor();
+    await page.evaluate(() => (window as any).__privacyTest.finish());
+    await page.clock.fastForward(600_000);
+    await page.getByRole("button", { name: "Idle. View privacy proof", exact: true }).waitFor();
+    assert.equal(await count(page), 1);
+    await page.mouse.move(200, 200);
+    await page.getByRole("button", { name: "Verifying TEE. View privacy proof", exact: true }).waitFor();
+    assert.equal(await count(page), 2);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("long running replies stay active and renew as soon as work finishes", async () => {
+  const { page, errors } = await open("light", true);
+  try {
+    await page.evaluate(() => (window as any).__privacyTest.update({ running: true }));
+    await page.clock.fastForward(1_860_000);
+    await page.getByRole("button", { name: "TEE proof expired. View privacy proof", exact: true }).waitFor();
+    assert.equal(await count(page), 0, "renewal does not overlap native session work");
+    await page.evaluate(() => (window as any).__privacyTest.update({ running: false }));
+    await page.getByRole("button", { name: "Verifying TEE. View privacy proof", exact: true }).waitFor();
+    assert.equal(await count(page), 1);
+    await page.evaluate(() => (window as any).__privacyTest.finish());
+    await page.getByRole("button", { name: "TEE verified. View privacy proof", exact: true }).waitFor();
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
 test("dialog stays on screen and contains keyboard focus at narrow sizes", async () => {
   const { page, errors } = await open("dark");
   try {
@@ -296,26 +378,19 @@ test("dialog stays on screen and contains keyboard focus at narrow sizes", async
   } finally { await page.close(); }
 });
 
-test("Phala separates gateway, workers, and receipt policy, with safe clipboard failure", async () => {
+test("NEAR shows hardware and incomplete reply status, with safe clipboard failure", async () => {
   const { page, errors } = await open();
   try {
-    const report = { ...securityEvidence(), providerId: "phala", attestationProtocol: "phala-aci-tdx-v1", e2eeProtocol: "phala-aci-v2",
-      workloadManifest: null, tlsSpkiFingerprint: null,
-      checks: [["Gateway TDX", "UpToDate"], ["Worker TEE", "verified locally"], ["Worker GPU", "verified locally"],
-        ["Encrypted channel", "nonce-bound"], ["Signed receipt", "required"]].map(([name, detail]) => ({ name: name!, detail: detail!, passed: true })),
-      providerClaims: [{ name: "preverified_worker_sessions", value: "2" }, { name: "provider_statement", value: "A provider assertion is not a local verification result." }],
-    };
+    const report = { ...securityEvidence(), attestationProtocol: "near-tdx-nvidia-v2", e2eeProtocol: "near-v3" };
     await page.evaluate((evidence) => (window as any).__privacyTest.update({ securityEvidence: evidence }), report);
     await proofButton(page).click();
-    assert.match(await dialog(page).innerText(), /phala/);
+    assert.match(await dialog(page).innerText(), /NEAR/);
     await page.locator("summary").filter({ hasText: "Hardware evidence" }).click();
-    assert.match(await dialog(page).innerText(), /Gateway TDX/);
-    assert.match(await dialog(page).innerText(), /Worker GPU/);
+    assert.match(await dialog(page).innerText(), /Intel TDX/);
+    assert.match(await dialog(page).innerText(), /NVIDIA GPU/);
     await page.locator("summary").filter({ hasText: "Technical details" }).click();
-    assert.match(await dialog(page).innerText(), /Receipt policy\s+Required for each reply/);
     assert.match(await dialog(page).innerText(), /Latest reply verification\s+No reply yet/);
-    assert.match(await dialog(page).innerText(), /preverified worker sessions/);
-    await capture(page, "phala-details");
+    await capture(page, "near-details");
     await page.evaluate(() => Object.defineProperty(navigator.clipboard, "writeText", { configurable: true, value: async () => { throw new Error("Clipboard denied"); } }));
     await page.getByRole("button", { name: "Copy verification report", exact: true }).click();
     await page.getByRole("alert").waitFor();

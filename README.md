@@ -39,7 +39,7 @@ are a separate CLI/proxy option; Desktop uses the native account session.
 | `apps/desktop/` | Electron presentation, native integration and sidecar supervision |
 | `apps/axiomcli/` | TUI, headless CLI, ACP, tools, account sessions and local storage |
 | `apps/axiom-proxy/` | Authenticated loopback OpenAI-compatible server |
-| `crates/` | Shared inference, attestation/E2EE, Phala verification, wire translation and ACP contracts |
+| `crates/` | Shared inference, attestation/E2EE, wire translation and ACP contracts |
 | `packages/` | Typed ACP client, native branding and release-manifest validation |
 | `docs/` | Current guides, decisions, historical records and scoped test evidence |
 

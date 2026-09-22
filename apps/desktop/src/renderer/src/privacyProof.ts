@@ -1,6 +1,8 @@
 import type { ClientSessionState, SecurityEvidence } from "@axiom/axiom-acp-client";
 
-export type ProofState = "verified" | "verifying" | "failed" | "expired" | "unavailable" | "unverified" | "development";
+export const PROOF_IDLE_AFTER_MS = 30 * 60_000;
+
+export type ProofState = "idle" | "verified" | "verifying" | "failed" | "expired" | "unavailable" | "unverified" | "development";
 
 export function proofState(session: ClientSessionState, modelId: string, now: number): ProofState {
   if (session.securityVerificationPending || session.security?.state === "verifying") return "verifying";
@@ -16,6 +18,7 @@ export function proofState(session: ClientSessionState, modelId: string, now: nu
 }
 
 export const proofLabels: Record<ProofState, string> = {
+  idle: "Idle",
   verified: "TEE verified", verifying: "Verifying TEE", failed: "TEE check failed",
   expired: "TEE proof expired", unavailable: "Proof unavailable", unverified: "Verify TEE", development: "Unattested dev",
 };
@@ -40,23 +43,20 @@ export function proofGroups(evidence: SecurityEvidence) {
       passed: group.names.every((name) => evidence.checks.some((check) => check.name === name && check.passed)),
     }));
   }
-  const phala = evidence.attestationProtocol === "phala-aci-tdx-v1";
   const nearSession = evidence.attestationProtocol === "near-tdx-nvidia-v2";
-  if (!phala && !nearSession && evidence.attestationProtocol !== "near-tdx-nvidia-v1") return [];
+  if (!nearSession && evidence.attestationProtocol !== "near-tdx-nvidia-v1") return [];
   return [
     {
-      title: "Hardware evidence", explanation: phala
-        ? "This device checked the gateway’s hardware proof and the eligible workers’ CPU and GPU evidence."
-        : "This device checked the model environment’s Intel CPU and NVIDIA GPU evidence.",
-      names: phala ? ["Gateway TDX", "Worker TEE", "Worker GPU"] : ["Intel TDX", "NVIDIA GPU"],
+      title: "Hardware evidence", explanation: "This device checked the model environment’s Intel CPU and NVIDIA GPU evidence.",
+      names: ["Intel TDX", "NVIDIA GPU"],
     },
     {
       title: "Encryption key", explanation: "The encryption key is bound to the verified environment before model messages are sent.",
-      names: phala ? ["Encrypted channel"] : ["Model encryption key", "Model identity", nearSession ? "Attested worker TLS key" : "Live TLS endpoint"],
+      names: ["Model encryption key", "Model identity", nearSession ? "Attested worker TLS key" : "Live TLS endpoint"],
     },
     {
       title: "Freshness", explanation: "A fresh challenge prevents replayed evidence. The report is usable only until its expiry.",
-      names: phala ? ["Encrypted channel"] : ["Fresh challenge"],
+      names: ["Fresh challenge"],
     },
   ].map((group) => ({ ...group,
     checks: evidence.checks.filter((check) => group.names.includes(check.name)),

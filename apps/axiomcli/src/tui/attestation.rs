@@ -1,4 +1,4 @@
-//! Attestation exports and workload presentation data.
+//! Provider-neutral verification presentation and report exports.
 
 use std::{
     fs::{self, OpenOptions},
@@ -6,13 +6,75 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-use axiom_secure_client::SecurityEvidence;
+use axiom_secure_client::{SecurityEvidence, SecurityState};
 
 use crate::{AxiomError, Result};
 
-use super::text::{sanitize_terminal_text, truncate_end};
+use super::text::sanitize_terminal_text;
 
 pub(super) const MAX_WORKLOAD_DISPLAY_CHARS: usize = 100_000;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ReportStatus {
+    Idle,
+    Unverified,
+    Verifying,
+    Verified,
+    Failed,
+    Expired,
+    Unavailable,
+}
+
+impl ReportStatus {
+    pub(super) const fn label(self) -> &'static str {
+        match self {
+            Self::Idle => "IDLE",
+            Self::Unverified => "NOT VERIFIED",
+            Self::Verifying => "VERIFYING",
+            Self::Verified => "TEE VERIFIED",
+            Self::Failed => "SECURITY FAILED",
+            Self::Expired => "PROOF EXPIRED",
+            Self::Unavailable => "PROOF UNAVAILABLE",
+        }
+    }
+}
+
+pub(super) fn report_status(
+    security: &str,
+    model: &str,
+    evidence: Option<&SecurityEvidence>,
+    now: u64,
+) -> ReportStatus {
+    match security {
+        "VERIFYING" => return ReportStatus::Verifying,
+        "SECURITY FAILED" => return ReportStatus::Failed,
+        "SECURE" => {}
+        _ => return ReportStatus::Unverified,
+    }
+    let Some(evidence) = evidence.filter(|evidence| evidence.model_id == model) else {
+        return ReportStatus::Unavailable;
+    };
+    match evidence.state {
+        SecurityState::Expired => return ReportStatus::Expired,
+        SecurityState::Rejected => return ReportStatus::Failed,
+        SecurityState::Verified => {}
+        _ => return ReportStatus::Unavailable,
+    }
+    if evidence.checks.iter().any(|check| !check.passed) {
+        return ReportStatus::Failed;
+    }
+    let Some(expires) = evidence.hard_expires_at_unix_seconds else {
+        return ReportStatus::Unavailable;
+    };
+    if evidence.verified_at_unix_seconds > now || expires <= evidence.verified_at_unix_seconds {
+        return ReportStatus::Unavailable;
+    }
+    if expires <= now {
+        ReportStatus::Expired
+    } else {
+        ReportStatus::Verified
+    }
+}
 
 pub(super) fn attestation_export_filename(evidence: &SecurityEvidence) -> String {
     i64::try_from(evidence.verified_at_unix_seconds)
@@ -88,82 +150,7 @@ pub(super) fn write_attestation_export(
     Ok(destination)
 }
 
-#[derive(Debug, Default)]
-pub(super) struct ParsedWorkloadManifest {
-    pub(super) metadata: Vec<(String, String)>,
-    pub(super) compose: Option<String>,
-    pub(super) services: Vec<WorkloadService>,
-}
-
-#[derive(Debug)]
-pub(super) struct WorkloadService {
-    pub(super) name: String,
-    pub(super) image: Option<String>,
-}
-
-pub(super) fn parse_workload_manifest(manifest: &str) -> ParsedWorkloadManifest {
-    let Ok(serde_json::Value::Object(object)) = serde_json::from_str(manifest) else {
-        return ParsedWorkloadManifest {
-            services: parse_compose_services(manifest),
-            ..ParsedWorkloadManifest::default()
-        };
-    };
-    let mut parsed = ParsedWorkloadManifest::default();
-    for (key, value) in object {
-        if key == "docker_compose_file" {
-            if let Some(compose) = value.as_str() {
-                parsed.services = parse_compose_services(compose);
-                parsed.compose = Some(compose.to_owned());
-            }
-            continue;
-        }
-        let value = match value {
-            serde_json::Value::Null => "null".to_owned(),
-            serde_json::Value::String(value) => value,
-            serde_json::Value::Bool(value) => value.to_string(),
-            serde_json::Value::Number(value) => value.to_string(),
-            value => serde_json::to_string(&value).unwrap_or_else(|_| "unavailable".into()),
-        };
-        parsed.metadata.push((key, truncate_end(&value, 160)));
-    }
-    parsed
-}
-
-pub(super) fn parse_compose_services(compose: &str) -> Vec<WorkloadService> {
-    let mut services = Vec::new();
-    let mut in_services = false;
-    for line in compose.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-        let indent = line.len().saturating_sub(line.trim_start().len());
-        if indent == 0 {
-            in_services = trimmed == "services:";
-            continue;
-        }
-        if !in_services {
-            continue;
-        }
-        if indent == 2 && trimmed.ends_with(':') {
-            if services.len() >= 128 {
-                break;
-            }
-            services.push(WorkloadService {
-                name: trimmed.trim_end_matches(':').to_owned(),
-                image: None,
-            });
-        } else if indent == 4
-            && let Some(image) = trimmed.strip_prefix("image:")
-            && let Some(service) = services.last_mut()
-        {
-            service.image = Some(image.trim().trim_matches(['\'', '"']).to_owned());
-        }
-    }
-    services
-}
-
-pub(super) fn humanize_manifest_key(key: &str) -> String {
+pub(super) fn humanize_evidence_key(key: &str) -> String {
     let mut words = key.split('_').filter(|word| !word.is_empty());
     let Some(first) = words.next() else {
         return key.to_owned();

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { formatModelPricing } from "../src/renderer/src/components/modelPricing.js";
 
-test("model picker formats exact NEAR and Phala prices per million tokens", () => {
+test("model picker formats exact NEAR and Tinfoil prices per million tokens", () => {
   assert.equal(formatModelPricing({
     inputPriceMicrousdPerMillionTokens: 440_000,
     outputPriceMicrousdPerMillionTokens: 1_320_000,

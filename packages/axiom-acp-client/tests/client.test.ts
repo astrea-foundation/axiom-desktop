@@ -84,7 +84,7 @@ test("extension negotiation accepts additive families and optional features only
   const required = {
     desktopChat: 1,
     threadCatalog: 1,
-    timeline: 1,
+    timeline: 2,
     modelCatalog: 1,
     profilePreferences: 1,
     collections: 1,
@@ -101,6 +101,10 @@ test("extension negotiation accepts additive families and optional features only
   assert.throws(() => validateDesktopExtension({
     protocolVersion: "1.0",
     features: required,
+  }));
+  assert.throws(() => validateDesktopExtension({
+    protocolVersion: "0.2",
+    features: { ...required, timeline: 1 },
   }));
   const { timeline: _, ...missingTimeline } = required;
   assert.throws(() => validateDesktopExtension({
@@ -1072,7 +1076,7 @@ test("timeline and collections survive a sidecar restart", async () => {
   try {
     await second.initialize();
     const restoredBootstrap = await second.bootstrapDesktop();
-    assert.equal(restoredBootstrap.newThreadSettings.thinkingLevel, "provider_default");
+    assert.equal(restoredBootstrap.newThreadSettings.thinkingLevel, "xhigh");
     await second.initializeDesktopState();
     assert.ok(second.getState().collections.collections.some((collection) =>
       collection.id === collectionId && collection.name === "Renamed research" && collection.threadIds.includes(sessionId),
@@ -1206,7 +1210,7 @@ test("real ACP attachment submission, inspection, reload, and text revision reta
   let { client, workspace } = await fixture();
   try {
     const { sessionId } = await client.newSession(workspace);
-    const attachments = [{ kind: "text" as const, name: "notes.txt", text: "private local attachment\n".repeat(4000) }];
+    const attachments = [{ kind: "file" as const, name: "notes.txt", file: { name: "notes.txt", mimeType: "text/plain", data: Buffer.from("private local attachment\n".repeat(4000)).toString("base64") } }];
     await client.prompt(sessionId, "", "attached-client-id", false, 0, undefined, attachments);
     let session = client.getState().sessions[sessionId]!;
     let user = session.timeline.find((item) => item.clientItemId === "attached-client-id")!;
@@ -1228,4 +1232,37 @@ test("real ACP attachment submission, inspection, reload, and text revision reta
     assert.equal(user.text, "Read the attached notes again");
     assert.deepEqual((await client.getAttachments(sessionId, user.id)).attachments, attachments);
   } finally { await client.close(); }
+});
+
+test("timeline assembly independently drains accounting pages and rejects repeated cursors", async (t) => {
+  const first = timelinePage();
+  const a = { requestId: "a".repeat(32), modelId: "model", providerId: "near" };
+  const b = { ...a, requestId: "b".repeat(32) };
+  first.requestUsage = [a];
+  first.nextRequestUsageCursor = a.requestId;
+  const second = { ...first, items: [], requestUsage: [b], nextRequestUsageCursor: undefined };
+  const client = new AxiomAcpClient({ command: binary, args: ["acp"] });
+  t.after(() => client.close());
+  const internal = client as unknown as {
+    process: { request: (method: string, params: Record<string, unknown>) => Promise<GetThreadTimelineResponse> };
+    state: AxiomStateStore;
+    fetchTimeline: (id: string, context: number) => Promise<GetThreadTimelineResponse>;
+  };
+  let calls = 0;
+  internal.process.request = async (_, params) => {
+    if (calls++ === 0) return first;
+    assert.equal(params.afterSequence, 1);
+    assert.equal(params.afterRequestId, a.requestId);
+    return second;
+  };
+  await internal.fetchTimeline("session", internal.state.accountContextToken());
+  assert.equal(calls, 2);
+  assert.deepEqual(client.getState().sessions.session!.requestUsage, [a, b]);
+  calls = 0;
+  internal.process.request = async () => { calls++; return first; };
+  await assert.rejects(internal.fetchTimeline("session", internal.state.accountContextToken()), /non-progressing/);
+  assert.equal(calls, 2);
+  assert.deepEqual(client.getState().sessions.session!.requestUsage, [a, b]);
+  assert.throws(() => internal.state.replaceTimeline([first, { ...second, requestUsage: [a] }]), /identity/);
+  assert.throws(() => internal.state.replaceTimeline([first, { ...second, thread: { ...first.thread, revision: 2 } }]), /changed/);
 });

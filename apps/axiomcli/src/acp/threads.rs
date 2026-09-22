@@ -133,18 +133,26 @@ pub(super) async fn get_thread_timeline(
     let mut snapshot = respond_or_return!(
         responder,
         account_store
-            .read(|store| { store.thread_snapshot(&thread_id, request.after_sequence, limit) })
+            .read(|store| {
+                store.thread_page(
+                    &thread_id,
+                    request.after_sequence,
+                    request.after_request_id.as_deref(),
+                    limit,
+                )
+            })
             .map_err(agent_error)
     );
-    let ids: Vec<String> = snapshot
-        .request_usage
-        .iter()
-        .filter(|record| {
-            !record.settled && record.state != axiom_inference::InvocationState::Running
-        })
-        .take(100)
-        .map(|record| record.request_id.clone())
-        .collect();
+    let ids = if request.after_sequence.is_none() && request.after_request_id.is_none() {
+        respond_or_return!(
+            responder,
+            account_store
+                .read(|store| store.pending_accounting_ids(&thread_id))
+                .map_err(agent_error)
+        )
+    } else {
+        Vec::new()
+    };
     if !ids.is_empty()
         && let Ok(Ok(records)) = tokio::time::timeout(
             std::time::Duration::from_secs(2),
@@ -156,12 +164,17 @@ pub(super) async fn get_thread_timeline(
         snapshot = respond_or_return!(
             responder,
             account_store
-                .read(|store| store.thread_snapshot(&thread_id, request.after_sequence, limit))
+                .read(|store| store.thread_page(
+                    &thread_id,
+                    request.after_sequence,
+                    request.after_request_id.as_deref(),
+                    limit
+                ))
                 .map_err(agent_error)
         );
     }
     account_store.publish(|| {
-        responder.respond(GetThreadTimelineResponse {
+        let mut response = GetThreadTimelineResponse {
             desktop_agent: if ctx_frontend == FrontendKind::DesktopChat {
                 Some(
                     account_store
@@ -185,7 +198,23 @@ pub(super) async fn get_thread_timeline(
                 .map(extension_timeline_item)
                 .collect(),
             next_cursor: snapshot.next_cursor,
-        })
+            next_request_usage_cursor: snapshot.next_request_usage_cursor,
+        };
+        // Wire-only tool titles can add bytes. Reserve space for the RPC envelope
+        // and shorten the page if needed, preserving the last returned cursor.
+        while serde_json::to_vec(&response)
+            .map_err(|error| agent_client_protocol::util::internal_error(error.to_string()))?
+            .len()
+            > 63 * 1024 * 1024
+        {
+            if response.items.len() <= 1 {
+                return responder
+                    .respond_with_internal_error("timeline item exceeds local frame limit");
+            }
+            response.items.pop();
+            response.next_cursor = response.items.last().map(|item| item.sequence);
+        }
+        responder.respond(response)
     })
 }
 

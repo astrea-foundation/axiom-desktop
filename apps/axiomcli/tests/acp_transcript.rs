@@ -189,7 +189,7 @@ impl AcpProcess {
                     "features": {
                         "desktopChat": 1,
                         "threadCatalog": 1,
-                        "timeline": 1,
+                        "timeline": 2,
                         "modelCatalog": 1,
                         "profilePreferences": 1,
                         "collections": 1,
@@ -284,10 +284,7 @@ async fn desktop_bootstrap_is_local_and_does_not_require_provider_or_auth() {
     assert!(bootstrap.get("error").is_none(), "{bootstrap}");
     assert_eq!(bootstrap["result"]["frontend"], "desktop-chat");
     assert_eq!(bootstrap["result"]["permissionProfile"], "web");
-    assert_eq!(
-        bootstrap["result"]["newThreadSettings"]["model"],
-        "deepseek-v4-flash"
-    );
+    assert_eq!(bootstrap["result"]["newThreadSettings"]["model"], "auto");
     assert_eq!(
         bootstrap["result"]["newThreadSettings"]["thinkingLevel"],
         "medium"
@@ -677,9 +674,11 @@ async fn new_acp_sessions_reconcile_stale_catalog_preferences_before_use() {
     let options = created["result"]["configOptions"]
         .as_array()
         .expect("new-session config options");
-    assert!(options.iter().any(|option| {
-        option["id"] == "model" && option["currentValue"] == "deepseek-v4-flash"
-    }));
+    assert!(
+        options.iter().any(|option| {
+            option["id"] == "model" && option["currentValue"] == "alternate-model"
+        })
+    );
     retired
         .send(&json!({
             "jsonrpc":"2.0","id":3,"method":"_axiom/profile/preferences","params":{}
@@ -688,12 +687,9 @@ async fn new_acp_sessions_reconcile_stale_catalog_preferences_before_use() {
     let corrected = retired.response(3).await;
     assert_eq!(
         corrected["result"]["preferences"]["model"],
-        "deepseek-v4-flash"
+        "alternate-model"
     );
-    assert_eq!(
-        corrected["result"]["preferences"]["thinkingLevel"],
-        "provider_default"
-    );
+    assert_eq!(corrected["result"]["preferences"]["thinkingLevel"], "high");
     retired.close().await;
 
     {
@@ -1003,7 +999,7 @@ async fn resumed_acp_sessions_restore_model_thinking_and_permissions() {
 }
 
 #[tokio::test]
-async fn resumed_acp_sessions_reconcile_retired_models_and_changed_reasoning_support() {
+async fn resumed_acp_sessions_retain_retired_models_and_reconcile_changed_reasoning_support() {
     let workspace = tempfile::tempdir().expect("workspace");
     let state = tempfile::tempdir().expect("shared state");
     let database = state
@@ -1036,7 +1032,7 @@ async fn resumed_acp_sessions_reconcile_retired_models_and_changed_reasoning_sup
     let mut acp = AcpProcess::spawn_with_state("echo", state.path());
     acp.initialize_extension().await;
     for (request_id, session_id, expected_model, expected_thinking) in [
-        (2, &retired_id, "deepseek-v4-flash", None),
+        (2, &retired_id, "retired-model", None),
         (3, &changed_reasoning_id, "medium-only", Some("medium")),
     ] {
         acp.send(&json!({
@@ -1067,17 +1063,17 @@ async fn resumed_acp_sessions_reconcile_retired_models_and_changed_reasoning_sup
     }
     acp.close().await;
 
-    let store = SessionStore::open(&database).expect("reopen corrected state");
+    let store = SessionStore::open(&database).expect("reopen preserved state");
     let retired = store
         .load_recovering(&retired_id)
         .expect("load retired-model correction");
     assert_eq!(
         model_for_resume(&retired.events, "fallback"),
-        "deepseek-v4-flash"
+        "retired-model"
     );
     assert_eq!(
         thinking_for_resume(&retired.events, ThinkingLevel::Medium),
-        ThinkingLevel::ProviderDefault
+        ThinkingLevel::High
     );
     let changed_reasoning = store
         .load_recovering(&changed_reasoning_id)
@@ -1090,6 +1086,19 @@ async fn resumed_acp_sessions_reconcile_retired_models_and_changed_reasoning_sup
         thinking_for_resume(&changed_reasoning.events, ThinkingLevel::ExtraHigh),
         ThinkingLevel::Medium
     );
+    drop(store);
+    let mut replacement = AcpProcess::spawn_with_state("echo", state.path());
+    replacement.initialize_extension().await;
+    replacement
+        .send(&json!({"jsonrpc":"2.0","id":2,"method":"session/load",
+        "params":{"sessionId":retired_id.to_string(),"cwd":workspace.path(),"mcpServers":[]}}))
+        .await;
+    assert!(replacement.response(2).await.get("result").is_some());
+    replacement.send(&json!({"jsonrpc":"2.0","id":3,"method":"session/set_config_option",
+        "params":{"sessionId":retired_id.to_string(),"configId":"model","value":"alternate-model"}})).await;
+    let selected = replacement.response(3).await;
+    assert!(selected.get("error").is_none(), "{selected}");
+    replacement.close().await;
 }
 
 #[tokio::test]
@@ -1429,7 +1438,7 @@ async fn unsupported_structured_questions_close_cleanly_instead_of_sticking() {
                 "features": {
                     "desktopChat": 0,
                     "threadCatalog": 0,
-                    "timeline": 1,
+                    "timeline": 2,
                     "modelCatalog": 0,
                     "profilePreferences": 0,
                     "collections": 0,

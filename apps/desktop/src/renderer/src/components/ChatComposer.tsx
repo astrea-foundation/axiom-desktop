@@ -1,3 +1,4 @@
+import { acceptsAttachment, attachmentAccept } from "../attachments";
 import {
   ArrowUp,
   BrainCog,
@@ -91,11 +92,11 @@ export function ChatComposer({
   const ref = useRef<HTMLTextAreaElement>(null);
   const controlsRef = useRef<HTMLDivElement>(null);
   const [openMenu, setOpenMenu] = useState<OpenMenu>(null);
-  const selectedModel = models.find((model) => model.id === selectedModelId) ?? models[0];
+  const selectedModel = models.find((model) => model.id === selectedModelId) ?? (selectedModelId ? undefined : models[0]);
   const supportedReasoningEfforts = explicitReasoningEfforts(selectedModel?.supportedReasoningEfforts ?? []);
   const showThinkingSelector = supportedReasoningEfforts.length > 0;
   const selectedThinking = reconcileReasoningEffort(reasoningEffort, supportedReasoningEfforts);
-  const imageMismatch = attachments?.items.some((file) => file.kind === "image") && !selectedModel?.supportsImages;
+  const imageMismatch = attachments?.items.some((file) => !acceptsAttachment(selectedModel, file));
   const canSend = (Boolean(value.trim()) || Boolean(attachments?.items.length)) && !attachments?.busy && !imageMismatch && (Boolean(selectedModel) || requiresSignIn);
 
   useEffect(() => {
@@ -146,9 +147,8 @@ export function ChatComposer({
       if (attachments && event.dataTransfer.files.length) { event.preventDefault(); attachments.onAddFiles(Array.from(event.dataTransfer.files)); }
     }}>
       <div className="composer-shell relative flex flex-col rounded-[22px] pl-4 pr-2.5 pb-2 pt-3 backdrop-blur">
-        {attachments ? <><DraftAttachments control={attachments} /><input ref={fileInput} type="file" multiple hidden aria-label="Choose attachments" onChange={(event) => { const files = Array.from(event.target.files ?? []); event.target.value = ""; attachments.onAddFiles(files); }} /></> : null}
-        {imageMismatch ? <p role="alert" className="mb-2 text-xs text-[var(--color-warning)]">Choose a model with image support to send these images.</p> : null}
-        {attachments?.items.some((file) => file.name.toLowerCase().endsWith(".pdf")) ? <p className="mb-2 text-xs text-[var(--color-text-tertiary)]">PDFs send extracted text. To include visual content, attach page images.</p> : null}
+        {attachments ? <><DraftAttachments control={attachments} /><input ref={fileInput} type="file" accept={attachmentAccept(selectedModel)} multiple hidden aria-label="Choose attachments" onChange={(event) => { const files = Array.from(event.target.files ?? []); event.target.value = ""; attachments.onAddFiles(files); }} /></> : null}
+        {imageMismatch ? <p role="alert" className="mb-2 text-xs text-[var(--color-warning)]">Choose a model that supports these files, or remove the unsupported attachments.</p> : null}
         <div className="flex items-start gap-3">
           <Lock size={13} aria-hidden="true" className="mt-[5.5px] shrink-0 text-[var(--color-text-muted)]" />
           <textarea

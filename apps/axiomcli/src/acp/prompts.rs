@@ -161,9 +161,9 @@ pub(super) async fn prompt(
                 send_text(&connection, &session_id, "Open Balance in Desktop to view credit, top up or redeem a gift code. Enter codes only in the redemption form.".into())?;
                 Ok(protocol::StopReason::EndTurn)
             }
-            SlashCommand::Theme(_) | SlashCommand::Web(_) => {
+            SlashCommand::Theme(_) | SlashCommand::Web(_) | SlashCommand::Usage => {
                 Err(agent_client_protocol::Error::invalid_params()
-                    .data("Use the desktop appearance settings and Web control; /theme and /web are terminal-only commands."))
+                    .data("Use the desktop appearance, Web, and usage controls; /theme, /web, and /usage are terminal-only commands."))
             }
             SlashCommand::Help => {
                 send_text(&connection, &session_id, slash_help_text())?;
@@ -877,6 +877,24 @@ pub(super) async fn prompt(
     let preflight: crate::Result<()> = async {
         axiom_inference::validate_prompt(&prompt, &attachments)
             .map_err(|error| crate::AxiomError::Protocol(error.to_string()))?;
+        let mut file_types = attachments.iter().filter_map(|attachment| match attachment {
+            axiom_inference::PromptAttachment::File { file, .. } => Some(file.mime_type.clone()), _ => None,
+        }).collect::<Vec<_>>();
+        if let Some(history) = revision_history.as_ref() {
+            for event in history.iter().rev().take_while(|event| !matches!(event.event, AppEvent::ContextCompacted { .. })) {
+                if let AppEvent::PromptAccepted { attachments, .. } = &event.event {
+                    file_types.extend(attachments.iter().filter_map(|attachment| match attachment {
+                        axiom_inference::PromptAttachment::File { file, .. } => Some(file.mime_type.clone()), _ => None,
+                    }));
+                }
+            }
+        }
+        if !file_types.is_empty() {
+            let models = ctx_runner.available_model_details(work.cancellation.child_token()).await?;
+            if !models.iter().any(|model| model.id == session_model && file_types.iter().all(|mime| model.file_mime_types.contains(mime))) {
+                return Err(crate::AxiomError::Provider("This model does not support these file uploads. Choose a model with the required upload support.".into()));
+            }
+        }
         let history_has_images = revision_history.as_ref().is_some_and(|history| {
             history.iter().rev().take_while(|event| !matches!(event.event, AppEvent::ContextCompacted { .. })).any(|event| {
                 matches!(&event.event, AppEvent::PromptAccepted { attachments, .. } if attachments.iter().any(|attachment| matches!(attachment, axiom_inference::PromptAttachment::Image { .. })))

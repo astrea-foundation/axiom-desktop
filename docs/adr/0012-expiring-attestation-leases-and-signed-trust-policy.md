@@ -1,5 +1,9 @@
 # ADR 0012: Expiring attestation leases and signed trust policy
 
+> September 21, 2026: Phala is retired. Current providers and dynamic discovery
+> are documented in [provider catalogs](../provider-catalogs.md); Phala details
+> below describe the historical decision only.
+
 > Partially superseded. [ADR 0013](0013-near-worker-sessions.md) replaces NEAR
 > model-wide establishment with challenged worker sessions. Tinfoil has no relay
 > lease generation. Phala verifies exact measured-workflow provenance and the

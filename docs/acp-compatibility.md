@@ -33,8 +33,9 @@ non-Desktop consumers.
 | Plans, tools and diffs | Standard plan updates, stable tool IDs/states, bounded output and before/after diffs |
 | Session info/commands | Local title updates and slash-command discovery |
 
-Prompt images and embedded text resources are supported and advertised. Image
-inputs still require a model/protocol with encrypted image support. Audio, binary
+Prompt images are supported and advertised. Image inputs require a model/protocol
+with encrypted image support. Embedded text resources are no longer advertised;
+use direct file metadata instead of extracting content. Audio, binary
 embedded documents, client-owned terminals/filesystems and per-session MCP
 injection are not advertised. Tools execute behind AxiomCLI policy. Unknown
 standard methods receive normal JSON-RPC method errors.
@@ -48,10 +49,11 @@ family; each named feature negotiates its own version. Missing/zero versions
 mean unsupported. Desktop checks its required feature set and negotiates optional
 features separately.
 
-`account` is version **2** and `billing` is version **3**. Current other advertised features are version **1**:
-`desktopChat`, `desktopAgent`, `threadCatalog`, `timeline`, `modelCatalog`,
+`account`, `timeline`, and `attachments` are version **2**; `billing` is version **3**.
+Other advertised features are version **1**:
+`desktopChat`, `desktopAgent`, `threadCatalog`, `modelCatalog`,
 `profilePreferences`, `collections`, `usage`, `securityEvidence`,
-`webConsent`, `steering`, `messageRevision`, `attachments`, `compaction`, and `activity`.
+`webConsent`, `steering`, `messageRevision`, `compaction`, and `activity`.
 The source `FeatureVersions` and generated schema are authoritative.
 
 ## Methods and ownership
@@ -123,16 +125,19 @@ Identical IDs/text join an existing submission; conflicting ID reuse fails.
 The response acknowledges application to the local transcript, not completion of
 the whole turn. Uncertain delivery requires timeline reconciliation before retry.
 
-`attachments@1` adds `_meta.axiom.attachments` to prompt submissions: text files
-carry `{kind: "text", name, text}`, and images carry
-`{kind: "image", name, image: {mimeType, data}}` with inline base64 bytes.
-The native runtime validates count, byte limits, MIME and image signatures.
-Desktop refuses to send attachments to a sidecar that did not advertise this
-feature. Standard ACP image/text-resource blocks use the same native validation.
-Timeline metadata carries only file summaries; `thread/attachments` fetches full
-local inputs on demand with `{threadId, userItemId}`, under the active account guard.
-Message revisions preserve the original attachments and change the prompt text.
-The generated schema defines all shapes and defaults for older stored messages.
+`attachments@2` adds original inline file bytes to `_meta.axiom.attachments`:
+`{kind: "file", name, file: {name, mimeType, data}}`. Images retain
+`{kind: "image", name, image: {mimeType, data}}`. Data is canonical base64;
+outer/inner names must agree. Count, size, format, role and model capabilities are
+validated before committing a new prompt. New extracted-text uploads are rejected;
+legacy text attachments remain readable in local history. Standard ACP embedded
+resources are not advertised or converted to text.
+
+Desktop requires attachment version 2 from its sidecar. This prevents a new
+renderer from sending a file shape to an older process. Timeline metadata contains
+only summaries; `thread/attachments` reads original inputs under the active account
+guard. Revisions preserve attachments and recheck model support. Model discovery
+adds `fileMimeTypes`; `supportsImages` remains separate. See [direct uploads](desktop.md#images-and-files).
 
 ## Accounts, billing and public evidence
 
@@ -156,7 +161,7 @@ serve `billing/status` to negotiated version 2 clients, but reject redemption un
 version 3 is negotiated. See [ADR 0017](adr/0017-gift-credit-controls.md).
 
 Security projections require the registered provider identity, accepted key
-fingerprints and hard expiry. NEAR/Phala require positive lease generation;
+fingerprints and hard expiry. NEAR require positive lease generation;
 Tinfoil intentionally omits it. The projection must preserve router-versus-worker
 and observed-versus-approved distinctions from [security](threat-model.md).
 
@@ -178,3 +183,18 @@ The generator exports Rust DTOs to JSON Schema and TypeScript; never hand-edit
 generated TypeScript. Build `cargo build --locked -p axiomcli` first for real-process
 client tests. The Rust schema-drift and ACP transcript tests, Node client/state tests
 and Desktop IPC/browser tests cover the same semantic contract.
+
+## Local history pagination
+
+Timeline v2 accepts independent `afterSequence` and `afterRequestId` cursors and
+returns `nextCursor` and `nextRequestUsageCursor`. Continue until both are absent,
+keeping each finished stream's last cursor while reading the other. Request usage
+is ordered by request ID, limited to 100 records and 512 KiB per page. Timeline
+items are limited by row count and 32 MiB of serialized JSON (including escaping);
+the final wire response is also checked below the 64 MiB transport ceiling.
+Oversized individual records fail explicitly without truncating stored content.
+Only the active turn is queried for a wire page. Accounting recovery runs before
+the first page, at most 100 pending requests per refresh, to avoid changing the
+snapshot revision during pagination. Desktop validates cursor progress and
+assembles both streams atomically at one revision and account generation.
+These exchanges use the native local pipe and never upload conversation history.

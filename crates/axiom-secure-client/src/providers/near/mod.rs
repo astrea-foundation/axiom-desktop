@@ -84,9 +84,11 @@ impl SecureProvider for NearProvider {
     }
 
     fn populate_capabilities(&self, model: &mut ModelInfo) {
-        model.supports_tools = true;
-        model.supports_parallel_tools = true;
         model.supports_streaming = true;
+        // NEAR advertises native image parts, but no general document format.
+        model.file_mime_types.clear();
+        model.reasoning_parameters.clear();
+        model.thinking_parameters.clear();
     }
 
     async fn establish(

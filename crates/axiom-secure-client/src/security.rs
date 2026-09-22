@@ -73,8 +73,8 @@ struct SignedPolicyDocument {
     require_live_tls_binding: bool,
     nvidia_anchor_sha256: Vec<String>,
     approved_near_workload_measurements: Vec<String>,
-    // Retain legacy fields only to verify existing v1 document signatures.
-    // Phala source updates are governed by quote-bound provenance, not these lists.
+    // Preserve the original signed-v1 field order when verifying deployed policy
+    // signatures. These historical claims do not register or enable a provider.
     approved_phala_gateway_repositories: Vec<String>,
     approved_phala_gateway_commits: Vec<String>,
     workload_enforcement: WorkloadEnforcement,
@@ -220,9 +220,11 @@ pub struct SecurityEvidence {
     pub tls_spki_fingerprint: Option<String>,
     pub checks: Vec<EvidenceCheck>,
     pub provider_claims: Vec<EvidenceClaim>,
-    /// Exact provider-supplied workload manifest whose digest was verified
-    /// against the hardware quote. This is public attestation evidence, not a
-    /// secret, but callers should still sanitize it before terminal display.
+    /// Optional retained workload/provenance document. Its format and verified
+    /// bindings are provider-specific: for example, a quote-bound manifest or
+    /// a verified router report. Absence does not mean verification failed;
+    /// checks and provider claims may contain all retained evidence. This is
+    /// public data, but callers must sanitize it before terminal display.
     #[serde(default)]
     pub workload_manifest: Option<String>,
     /// Whether this verification policy had an explicit workload allowlist.

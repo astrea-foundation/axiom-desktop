@@ -1,4 +1,4 @@
-import { Check, Search } from "lucide-react";
+import { Check, Search, Image, FileText } from "lucide-react";
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ProviderModel } from "../types";
 import { ModelBrandIcon, ProviderBrandIcon } from "./ModelBrandIcon";
@@ -187,7 +187,11 @@ export function ModelPicker({ models, selectedModelId, onSelect }: ModelPickerPr
                 </span>
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-[12.5px] font-medium text-[var(--color-text-primary)]">
-                    {model.label}{model.supportsImages ? " · Images" : ""}
+                    {model.label}
+                    <span className="ml-1.5 inline-flex gap-1 align-middle text-[var(--color-text-tertiary)]">
+                      {model.supportsImages ? <span role="img" aria-label="Image uploads" title="Image uploads"><Image size={13} aria-hidden="true" /></span> : null}
+                      {model.fileMimeTypes?.length ? <span role="img" aria-label="File uploads" title="File uploads"><FileText size={13} aria-hidden="true" /></span> : null}
+                    </span>
                   </span>
                   <span className="mt-0.5 block truncate font-mono text-[10px] text-[var(--color-text-muted)]">
                     {model.model}

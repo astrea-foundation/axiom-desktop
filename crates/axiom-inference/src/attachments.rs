@@ -10,7 +10,56 @@ use crate::{ChatMessage, ChatRole, MAX_MESSAGE_TEXT_BYTES, ValidationError};
 
 pub const MAX_ATTACHMENTS: usize = 8;
 pub const MAX_IMAGE_BYTES: usize = 5 * 1024 * 1024;
+pub const MAX_FILE_BYTES: usize = 10 * 1024 * 1024;
 pub const MAX_ATTACHMENT_BYTES: usize = 16 * 1024 * 1024;
+
+pub const FILE_MIME_TYPES: &[&str] = &[
+    "text/plain",
+    "text/markdown",
+    "text/csv",
+    "text/html",
+    "application/json",
+    "application/xml",
+    "application/pdf",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+];
+
+/// Original file bytes. Extraction belongs to the attested provider, not Axiom.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FileContent {
+    pub name: String,
+    pub mime_type: String,
+    pub data: String,
+}
+
+impl FileContent {
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        if self.name.is_empty()
+            || self.name.len() > 512
+            || self.name.chars().any(char::is_control)
+            || !FILE_MIME_TYPES.contains(&self.mime_type.as_str())
+            || self.data.is_empty()
+            || self.data.len() > MAX_FILE_BYTES.div_ceil(3) * 4
+        {
+            return Err(ValidationError::invalid("file.content"));
+        }
+        let bytes = STANDARD
+            .decode(&self.data)
+            .map_err(|_| ValidationError::invalid("file.base64"))?;
+        if bytes.len() > MAX_FILE_BYTES || STANDARD.encode(&bytes) != self.data {
+            return Err(ValidationError::invalid("file.size"));
+        }
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn data_url(&self) -> String {
+        format!("data:{};base64,{}", self.mime_type, self.data)
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -63,15 +112,17 @@ impl ImageContent {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PromptAttachment {
+    // Readable only in historical local data. Never accepted as a new upload.
     Text { name: String, text: String },
     Image { name: String, image: ImageContent },
+    File { name: String, file: FileContent },
 }
 
 impl PromptAttachment {
     #[must_use]
     pub fn name(&self) -> &str {
         match self {
-            Self::Text { name, .. } | Self::Image { name, .. } => name,
+            Self::Text { name, .. } | Self::Image { name, .. } | Self::File { name, .. } => name,
         }
     }
 
@@ -80,6 +131,7 @@ impl PromptAttachment {
         match self {
             Self::Text { text, .. } => text.len(),
             Self::Image { image, .. } => image.data.len(),
+            Self::File { file, .. } => file.data.len(),
         }
     }
 
@@ -100,17 +152,36 @@ impl PromptAttachment {
             }
             Self::Text { .. } => Ok(()),
             Self::Image { image, .. } => image.validate(),
+            Self::File { name, file } => {
+                if name != &file.name {
+                    return Err(ValidationError::invalid("file.name"));
+                }
+                file.validate()
+            }
         }
     }
 
     /// Small transcript projection. Original content stays in the local attachment table.
     #[must_use]
     pub fn summary(&self) -> serde_json::Value {
-        serde_json::json!({"name": self.name(), "kind": match self { Self::Text { .. } => "text", Self::Image { .. } => "image" }, "bytes": self.bytes()})
+        serde_json::json!({"name": self.name(), "kind": match self { Self::Text { .. } => "text", Self::Image { .. } => "image", Self::File { .. } => "file" }, "bytes": self.bytes()})
     }
 }
 
 pub fn validate_prompt(
+    text: &str,
+    attachments: &[PromptAttachment],
+) -> Result<(), ValidationError> {
+    if attachments
+        .iter()
+        .any(|attachment| matches!(attachment, PromptAttachment::Text { .. }))
+    {
+        return Err(ValidationError::unsupported("attachment.extracted_text"));
+    }
+    validate_stored_prompt(text, attachments)
+}
+
+pub fn validate_stored_prompt(
     text: &str,
     attachments: &[PromptAttachment],
 ) -> Result<(), ValidationError> {
@@ -151,6 +222,7 @@ pub fn user_message(text: &str, attachments: &[PromptAttachment]) -> ChatMessage
                 let _ = write!(message.content, "\n[Attached image {name}]");
                 message.images.push(image.clone());
             }
+            PromptAttachment::File { file, .. } => message.files.push(file.clone()),
         }
     }
     message
@@ -187,7 +259,8 @@ mod tests {
             name: "notes.md".into(),
             text: "important fact".into(),
         }];
-        assert!(validate_prompt("", &attachments).is_ok());
+        assert!(validate_prompt("", &attachments).is_err());
+        assert!(validate_stored_prompt("", &attachments).is_ok());
         assert!(
             user_message("Question", &attachments)
                 .content

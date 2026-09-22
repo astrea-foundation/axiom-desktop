@@ -6,7 +6,6 @@ members = [
     "crates/axiom-acp-extension",
     "crates/axiom-inference",
     "crates/axiom-openai-compat",
-    "crates/axiom-phala-core",
     "crates/axiom-secure-client",
 ]
 exclude = ["vendor/agent-client-protocol-2.0.0"]
@@ -16,7 +15,6 @@ default-members = [
     "crates/axiom-acp-extension",
     "crates/axiom-inference",
     "crates/axiom-openai-compat",
-    "crates/axiom-phala-core",
     "crates/axiom-secure-client",
 ]
 

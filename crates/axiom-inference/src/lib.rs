@@ -11,8 +11,9 @@ mod accounting;
 mod attachments;
 pub use accounting::{InvocationPurpose, InvocationState, RequestUsage, UsageCompleteness};
 pub use attachments::{
-    ImageContent, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS, MAX_IMAGE_BYTES, PromptAttachment,
-    user_message, validate_prompt,
+    FILE_MIME_TYPES, FileContent, ImageContent, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS,
+    MAX_FILE_BYTES, MAX_IMAGE_BYTES, PromptAttachment, user_message, validate_prompt,
+    validate_stored_prompt,
 };
 
 pub const MAX_TOOLS: usize = 128;
@@ -41,6 +42,8 @@ pub struct ChatMessage {
     pub content: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<ImageContent>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<FileContent>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -60,6 +63,7 @@ impl ChatMessage {
             role,
             content: content.into(),
             images: Vec::new(),
+            files: Vec::new(),
             reasoning_content: None,
             name: None,
             refusal: None,
@@ -220,6 +224,23 @@ impl InferenceRequest {
             return Err(ValidationError::count("tools"));
         }
         for message in &self.messages {
+            if !message.files.is_empty()
+                && (message.role != ChatRole::User
+                    || message.files.len() + message.images.len() > MAX_ATTACHMENTS)
+            {
+                return Err(ValidationError::invalid("message.files"));
+            }
+            let mut attachment_bytes = message.content.len();
+            for file in &message.files {
+                file.validate()?;
+                attachment_bytes = attachment_bytes.saturating_add(file.data.len());
+            }
+            for image in &message.images {
+                attachment_bytes = attachment_bytes.saturating_add(image.data.len());
+            }
+            if attachment_bytes > MAX_ATTACHMENT_BYTES {
+                return Err(ValidationError::invalid("message.attachments"));
+            }
             if !message.images.is_empty()
                 && (message.role != ChatRole::User || message.images.len() > MAX_ATTACHMENTS)
             {
@@ -636,6 +657,12 @@ pub struct ModelInfo {
     pub supports_streaming: bool,
     #[serde(default)]
     pub supports_images: bool,
+    #[serde(default)]
+    pub file_mime_types: Vec<String>,
+    #[serde(default)]
+    pub reasoning_parameters: std::collections::BTreeMap<String, serde_json::Value>,
+    #[serde(default)]
+    pub thinking_parameters: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 pub const AUTO_COMPACT_CONTEXT_PERCENT: u32 = 85;

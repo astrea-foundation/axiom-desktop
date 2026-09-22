@@ -338,13 +338,15 @@ impl WireMessage {
             "tool" => ChatRole::Tool,
             _ => return Err(CompatError::new("message role is not supported")),
         };
-        let (content, images) = self
-            .content
-            .map_or_else(|| Ok((String::new(), Vec::new())), WireContent::into_parts)?;
+        let (content, images, files) = self.content.map_or_else(
+            || Ok((String::new(), Vec::new(), Vec::new())),
+            WireContent::into_parts,
+        )?;
         Ok(ChatMessage {
             role,
             content,
             images,
+            files,
             reasoning_content: self.reasoning_content,
             name: self.name,
             refusal: self.refusal,
@@ -368,18 +370,37 @@ pub enum WireContent {
 }
 
 impl WireContent {
-    fn into_parts(self) -> Result<(String, Vec<axiom_inference::ImageContent>)> {
+    fn into_parts(self) -> Result<ContentParts> {
         match self {
-            Self::Text(text) => Ok((text, Vec::new())),
+            Self::Text(text) => Ok((text, Vec::new(), Vec::new())),
             Self::Parts(parts) => {
                 let mut texts = Vec::with_capacity(parts.len());
                 let mut images = Vec::new();
+                let mut files = Vec::new();
                 for part in parts {
                     match part {
                         WireContentPart::Text { text, .. } => texts.push(text),
                         WireContentPart::ImageUrl { image_url, .. } => {
                             images.push(axiom_inference::ImageContent::from_data_url(&image_url.url)
                                 .map_err(|_| CompatError::new("images must be valid inline PNG, JPEG, WebP, or GIF data URLs (up to 5 MiB each)"))?);
+                        }
+                        WireContentPart::File { file } => {
+                            let (mime_type, data) = file
+                                .file_data
+                                .strip_prefix("data:")
+                                .and_then(|s| s.split_once(";base64,"))
+                                .ok_or_else(|| {
+                                    CompatError::new("files require inline base64 data URLs")
+                                })?;
+                            let content = axiom_inference::FileContent {
+                                name: file.filename,
+                                mime_type: mime_type.into(),
+                                data: data.into(),
+                            };
+                            content
+                                .validate()
+                                .map_err(|_| CompatError::new("invalid file upload"))?;
+                            files.push(content);
                         }
                         WireContentPart::Unsupported => {
                             return Err(CompatError::new(
@@ -388,7 +409,7 @@ impl WireContent {
                         }
                     }
                 }
-                Ok((texts.join("\n"), images))
+                Ok((texts.join("\n"), images, files))
             }
         }
     }
@@ -415,6 +436,19 @@ impl WireContent {
     }
 }
 
+type ContentParts = (
+    String,
+    Vec<axiom_inference::ImageContent>,
+    Vec<axiom_inference::FileContent>,
+);
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WireFile {
+    pub filename: String,
+    pub file_data: String,
+}
+
 /// A single content part.
 ///
 /// Text and inline image bytes are representable. Provider adapters enforce
@@ -422,6 +456,9 @@ impl WireContent {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WireContentPart {
+    File {
+        file: WireFile,
+    },
     Text {
         text: String,
         #[serde(flatten)]
@@ -1042,6 +1079,28 @@ pub const fn error_envelope(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn direct_files_preserve_bytes_and_reject_remote_or_non_user_inputs() {
+        let raw = serde_json::json!({"model":"new-model","messages":[{"role":"user","content":[
+            {"type":"file","file":{"filename":"notes.txt","file_data":"data:text/plain;base64,aGVsbG8="}}
+        ]}]});
+        let parsed: ChatCompletionRequest = serde_json::from_value(raw.clone()).unwrap();
+        let translated = parsed.into_domain(CompatMode::Strict).unwrap();
+        assert!(translated.request.messages[0].content.is_empty());
+        assert_eq!(translated.request.messages[0].files[0].data, "aGVsbG8=");
+        for role in ["assistant", "system", "tool"] {
+            let mut invalid = raw.clone();
+            invalid["messages"][0]["role"] = serde_json::json!(role);
+            let parsed: ChatCompletionRequest = serde_json::from_value(invalid).unwrap();
+            assert!(parsed.into_domain(CompatMode::Strict).is_err());
+        }
+        let mut invalid = raw;
+        invalid["messages"][0]["content"][0]["file"]["file_data"] =
+            serde_json::json!("https://example.com/a.pdf");
+        let parsed: ChatCompletionRequest = serde_json::from_value(invalid).unwrap();
+        assert!(parsed.into_domain(CompatMode::Lenient).is_err());
+    }
 
     #[test]
     fn translates_messages_tools_choice_reasoning_and_response_format_losslessly() {

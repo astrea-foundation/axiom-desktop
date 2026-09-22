@@ -92,7 +92,7 @@ impl FeatureVersions {
             desktop_chat: 1,
             desktop_agent: 1,
             thread_catalog: 1,
-            timeline: 1,
+            timeline: 2,
             model_catalog: 1,
             profile_preferences: 1,
             collections: 1,
@@ -103,7 +103,7 @@ impl FeatureVersions {
             web_consent: 1,
             steering: 1,
             message_revision: 1,
-            attachments: 1,
+            attachments: 2,
             compaction: 1,
             activity: 1,
         }
@@ -398,6 +398,8 @@ pub struct ModelInfo {
     pub max_output_tokens: u32,
     #[serde(default)]
     pub supports_images: bool,
+    #[serde(default)]
+    pub file_mime_types: Vec<String>,
     pub auto_compact_threshold_tokens: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_price_microusd_per_million_tokens: Option<u64>,
@@ -704,6 +706,8 @@ pub struct GetThreadTimelineRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub after_sequence: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after_request_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<u32>,
 }
 
@@ -723,6 +727,8 @@ pub struct GetThreadTimelineResponse {
     pub items: Vec<TimelineItem>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_request_usage_cursor: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcRequest)]
