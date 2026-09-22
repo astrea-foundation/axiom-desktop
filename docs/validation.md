@@ -197,3 +197,19 @@ appeared, and the complete browser suite remains non-green.
 This is development-branch integration evidence. Paid provider inference,
 deployment, real Azure OIDC signing and interactive native OS acceptance were
 not performed. Pushes and pull requests targeting `dev` do not trigger Actions.
+
+## Desktop copy cleanup (2026-09-22)
+
+The copy cleanup shortens routine account, gift, Web and update messages,
+removes display-only dot separators, and moves usage accounting and installation
+metadata into expandable details. The spending empty-state explanation remains.
+Privacy disclosures, deletion warnings and protocol delimiter parsing are retained.
+
+Desktop typechecking, the production build and 189 unit/contract tests passed;
+one signing test was skipped because PowerShell was unavailable. The full browser suite passed 134
+of 137 checks, including keyboard access to usage details, Web consent and
+installation details. The same three billing failures listed above reproduced
+on the unchanged tree shared by `a30b4a8` and merged `dev` revision `5fb9f01`.
+No additional browser failures appeared. Light/dark update screens, the usage
+panel and Web disclosure were visually checked with deterministic browser
+fixtures; native OS interaction and live inference were not exercised.

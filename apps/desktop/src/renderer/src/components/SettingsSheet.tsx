@@ -152,7 +152,7 @@ export function SettingsSheet({
                 </div>
                 {signedIn && linkedMethods.length > 0 ? (
                   <div className="mt-1 text-[11px] text-[var(--color-text-muted)]">
-                    {linkedMethods.join(" · ")}
+                    {linkedMethods.join(", ")}
                   </div>
                 ) : null}
               </div>

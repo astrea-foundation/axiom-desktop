@@ -28,7 +28,7 @@ export function GiftCodePanel({ accountId, connected }: { accountId: string; con
       setCode("");
       const amount = usdFromMicrousd(receipt.creditedMicrousd, 2);
       setMessage(receipt.alreadyRedeemed
-        ? `This code already added ${amount} to your account. Your balance is up to date.`
+        ? `Already redeemed for ${amount}.`
         : `${amount} added to your account.`);
     } catch (failure) {
       if (current !== generation.current) return;
@@ -40,7 +40,6 @@ export function GiftCodePanel({ accountId, connected }: { accountId: string; con
 
   return <section aria-label="Gift credit" className="mt-5 border-t border-[var(--color-border)] pt-5 text-[13px]">
     <h3 className="font-medium text-[var(--color-text-primary)]">Redeem a gift code</h3>
-    <p className="mt-1 text-[12px] text-[var(--color-text-secondary)]">Add the code’s dollar value to this account’s inference credit.</p>
     <form className="mt-3 flex flex-wrap items-end gap-2" onSubmit={(event) => { event.preventDefault(); void redeem(); }}>
       <label className="min-w-0 flex-1 text-[12px] text-[var(--color-text-secondary)]">Gift code
         <input type="password" name="gift-code" autoComplete="off" spellCheck={false} maxLength={64}

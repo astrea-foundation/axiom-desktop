@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { Cpu, EyeOff, LogIn, RefreshCw, ShieldAlert, ShieldCheck } from "lucide-react";
+import { LogIn, RefreshCw, ShieldAlert, ShieldCheck } from "lucide-react";
 import { AxiomMark } from "../brand/AxiomLogo";
 import { GreetingHeadline } from "../brand/GreetingHeadline";
 import type { AccountPresentation } from "../signInFlow";
@@ -123,18 +123,10 @@ export function WelcomeView({
             onReasoningEffortChange={onReasoningEffortChange}
           />
         </div>
-        <div className="mt-3.5 flex flex-wrap items-center justify-center gap-[18px] text-[11.5px] text-[var(--color-text-tertiary)]">
-          <span className="inline-flex items-center gap-1.5">
+        <div className="mt-3.5 flex items-center justify-center text-[11.5px] text-[var(--color-text-tertiary)]">
+          <span className="inline-flex items-center gap-1.5" title="Enabling Web shares search queries with an external search service.">
             <ShieldCheck size={12} className="shrink-0 text-[var(--color-text-muted)]" />
-            Sealed on your machine
-          </span>
-          <span className="inline-flex items-center gap-1.5">
-            <Cpu size={12} className="shrink-0 text-[var(--color-text-muted)]" />
-            Attested enclave
-          </span>
-          <span className="inline-flex items-center gap-1.5" title="Model traffic is end-to-end encrypted. Enabling Web shares search queries with external search services.">
-            <EyeOff size={12} className="shrink-0 text-[var(--color-text-muted)]" />
-            Model traffic encrypted
+            Model conversations are end-to-end encrypted
           </span>
         </div>
       </div>

@@ -62,7 +62,7 @@ export function DepositPanel({ payment, connected, quote }: {
       </div> : null}
     </header>
     {payment.review_required ? <p role="alert" className="mb-4 text-[var(--color-warning-strong)]">A deposit is under review.</p> : null}
-    {!connected ? <p role="status" className="mb-4 text-[var(--color-text-secondary)]">Offline · Deposit updates paused</p> : null}
+    {!connected ? <p role="status" className="mb-4 text-[var(--color-text-secondary)]">Deposit updates paused while offline</p> : null}
     {address && uri ? <div className="grid items-center gap-5 min-[600px]:grid-cols-[192px_minmax(0,1fr)] min-[600px]:gap-6">
       <div className="justify-self-center overflow-hidden rounded-[12px]">
         <QRCodeSVG value={uri} size={192} marginSize={4} level="M" title="Mainnet Zcash deposit payment URI" />
@@ -110,7 +110,7 @@ export function DepositPanel({ payment, connected, quote }: {
                       ? <LoaderCircle size={13} aria-hidden="true" className="shrink-0 animate-spin motion-reduce:animate-none" />
                       : status === "Confirmed" ? <Check size={13} aria-hidden="true" className="shrink-0 text-[var(--color-success)]" /> : null}
                     <span>{status}</span>
-                    <span className="tabular-nums">· {confirmations}/{deposit.required_confirmations} confirmations</span>
+                    <span className="tabular-nums">{confirmations}/{deposit.required_confirmations} confirmations</span>
                   </span>
                 </div>
                 <span className="flex shrink-0 items-center gap-2 text-[11.5px] text-[var(--color-text-tertiary)]">
@@ -119,9 +119,9 @@ export function DepositPanel({ payment, connected, quote }: {
                 </span>
               </summary>
               <div className="mt-2 space-y-1 text-[12px] leading-5 text-[var(--color-text-secondary)]">
-                <p>{zecFromZatoshis(deposit.amount_zatoshis)} ZEC · {deposit.confirmations}/{deposit.required_confirmations} confirmations</p>
-                {valued ? <p>{usdFromMicrousd(Number(deposit.credit_microusd), 2)} credit {deposit.valuation_status === "credited" ? "added" : "reversed"}
-                  {deposit.price_microusd_per_zec && deposit.price_source ? ` · ${usdFromMicrousd(Number(deposit.price_microusd_per_zec), 2)}/ZEC` : null}</p> : null}
+                <p className="flex flex-wrap gap-x-3"><span>{zecFromZatoshis(deposit.amount_zatoshis)} ZEC</span><span>{deposit.confirmations}/{deposit.required_confirmations} confirmations</span></p>
+                {valued ? <p className="flex flex-wrap gap-x-3"><span>{usdFromMicrousd(Number(deposit.credit_microusd), 2)} credit {deposit.valuation_status === "credited" ? "added" : "reversed"}</span>
+                  {deposit.price_microusd_per_zec && deposit.price_source ? <span>{usdFromMicrousd(Number(deposit.price_microusd_per_zec), 2)}/ZEC</span> : null}</p> : null}
                 {status === "Calculating credit" ? <p>Payment received. Credit calculation will retry automatically.</p> : null}
                 <p className="text-[var(--color-text-tertiary)]">{new Date(deposit.observed_at).toLocaleString()}</p>
               </div>

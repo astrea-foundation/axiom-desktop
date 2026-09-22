@@ -271,7 +271,7 @@ export function ChatComposer({
               aria-pressed={webEnabled}
               disabled={isStreaming || webDisabled || !onWebToggle}
               onClick={() => { setOpenMenu(null); onWebToggle?.(); }}
-              title={isStreaming ? "Web access is fixed for the current response" : webEnabled ? "Web is on — click to turn off" : "Web is off — click to enable external searches"}
+              title={isStreaming ? "Web access is fixed for the current response" : webEnabled ? "Turn off Web" : "Turn on Web"}
               className={`flex h-7 shrink-0 items-center gap-1.5 rounded-[7px] px-2.5 text-[12px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${webEnabled ? "bg-[var(--color-cherry)] text-on-accent" : "text-[var(--color-text-tertiary)] hover:bg-[var(--wash-chip-hover)] hover:text-[var(--color-text-primary)]"}`}
             >
               <Globe2 size={13} aria-hidden="true" />

@@ -44,7 +44,7 @@ test("provisioning and review never show a payable stale QR", () => {
   }));
   assert.match(html, /Preparing your address/);
   assert.match(html, /under review/);
-  assert.match(html, /Offline/);
+  assert.match(html, /Deposit updates paused while offline/);
   assert.doesNotMatch(html, /Mainnet Zcash deposit payment URI|Copy address/);
 });
 

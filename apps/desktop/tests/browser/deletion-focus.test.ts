@@ -1044,7 +1044,7 @@ for (const platform of ["linux", "win32", "darwin"]) {
       await web.click();
       const warning = page.getByRole("alertdialog", { name: "Turn on Web?" });
       await warning.waitFor();
-      assert.match(await warning.innerText(), /Web searches run outside Axiom’s verified private environment/);
+      assert.match(await warning.innerText(), /Search queries may include details from your messages and are shared with an external search service/);
       assert.doesNotMatch(await warning.innerText(), /Decodo|SearXNG/i);
       if (platform === "linux") {
         await page.emulateMedia({ colorScheme: "dark" });
@@ -1063,7 +1063,7 @@ for (const platform of ["linux", "win32", "darwin"]) {
       await warning.waitFor({ state: "detached" });
       assert.equal(await web.getAttribute("aria-pressed"), "false");
       await web.click();
-      await page.getByRole("button", { name: "Yes, I understand", exact: true }).click();
+      await page.getByRole("button", { name: "Turn on Web", exact: true }).click();
       assert.equal(await web.getAttribute("aria-pressed"), "true");
       await page.getByRole("button", { name: "Send", exact: true }).click();
       await page.waitForFunction(() => (window as unknown as { __deletionTest: { calls: { method: string }[] } }).__deletionTest.calls.some((call) => call.method === "prompt"));
@@ -1079,7 +1079,7 @@ for (const platform of ["linux", "win32", "darwin"]) {
       await web.click();
       await warning.waitFor(); // Not remembered: every off -> on asks again.
       await page.getByRole("checkbox", { name: "Don’t show this warning again" }).check();
-      await page.getByRole("button", { name: "Yes, I understand", exact: true }).click();
+      await page.getByRole("button", { name: "Turn on Web", exact: true }).click();
       await page.getByRole("button", { name: "New thread", exact: true }).click();
       assert.equal(await web.getAttribute("aria-pressed"), "false", "new chat always starts off");
       await web.click();
@@ -1131,7 +1131,7 @@ for (const platform of ["linux", "win32", "darwin"]) {
       await openThread();
       await expectWeb(false);
       await web.click();
-      await page.getByRole("button", { name: "Yes, I understand", exact: true }).click();
+      await page.getByRole("button", { name: "Turn on Web", exact: true }).click();
       await expectWeb(true);
       assert.equal((await calls(page)).filter((call) => call.method === "prompt").length, 0, "toggle saves without a message");
 
@@ -1177,7 +1177,7 @@ test("saved Web choices from the welcome draft stay with its new thread and are 
   try {
     const web = page.getByRole("button", { name: "Web", exact: true });
     await web.click();
-    await page.getByRole("button", { name: "Yes, I understand", exact: true }).click();
+    await page.getByRole("button", { name: "Turn on Web", exact: true }).click();
     await page.locator("textarea").fill("Create with Web on");
     await page.getByRole("button", { name: "Send", exact: true }).click();
     await page.waitForFunction(() => (window as any).__deletionTest.calls.some((call: any) => call.method === "prompt"));
@@ -1207,12 +1207,12 @@ test("Web storage failures never silently enable Web or claim an opt-out was sav
       Storage.prototype.setItem = () => { throw new Error("Storage full"); };
     });
     await web.click();
-    await page.getByRole("button", { name: "Yes, I understand", exact: true }).click();
+    await page.getByRole("button", { name: "Turn on Web", exact: true }).click();
     await page.getByText("Web could not be saved and remains off. Please try again.", { exact: true }).waitFor();
     assert.equal(await web.getAttribute("aria-pressed"), "false");
     await page.evaluate(() => (window as any).__restoreWebStorage());
     await web.click();
-    await page.getByRole("button", { name: "Yes, I understand", exact: true }).click();
+    await page.getByRole("button", { name: "Turn on Web", exact: true }).click();
     assert.equal(await web.getAttribute("aria-pressed"), "true");
     await page.evaluate(() => { Storage.prototype.setItem = () => { throw new Error("Storage full"); }; });
     await web.click();
@@ -1241,15 +1241,30 @@ test("usage distinguishes a failed partial request, exact turn totals, and auxil
       ]);
     });
     await page.locator("[data-context-usage]").hover();
-    const tooltip = page.getByRole("tooltip");
+    const tooltip = page.getByRole("dialog", { name: "Usage", exact: true });
     await tooltip.waitFor();
+    assert.doesNotMatch(await tooltip.innerText(), /This turn|158,499|Titles:/);
+    const trigger = page.getByRole("button", { name: "Usage", exact: true });
+    await trigger.focus();
+    await page.keyboard.press("Tab");
+    const details = tooltip.getByText("Usage details", { exact: true });
+    assert.equal(await details.evaluate(element => element === document.activeElement), true);
+    await page.keyboard.press("Enter");
     const text = await tooltip.innerText();
     assert.match(text, /Partial request usage/);
     assert.match(text, /84,668 tokens/);
-    assert.match(text, /158,499 input · 3,761 output/);
-    assert.match(text, /This turn · 2 model requests/);
+    assert.match(text, /158,499 input, 3,761 output/);
+    assert.match(text, /This turn \(2 model requests\)/);
     assert.match(text, /\$0\.010285 settled/);
-    assert.match(text, /Titles · \$0\.000100 settled/);
+    assert.match(text, /Titles: \$0\.000100 settled/);
+    await page.keyboard.press("Escape");
+    await tooltip.waitFor({ state: "detached" });
+    assert.equal(await trigger.evaluate(element => element === document.activeElement), true);
+    await trigger.click();
+    await tooltip.waitFor();
+    assert.doesNotMatch(await tooltip.innerText(), /This turn|158,499|Titles:/);
+    await page.locator("textarea").click();
+    await tooltip.waitFor({ state: "detached" });
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
 });
@@ -1272,13 +1287,13 @@ for (const platform of ["linux", "win32", "darwin"]) {
       await setUsage(76_000);
       await page.waitForFunction(() => document.querySelector("[data-context-usage]")?.getAttribute("aria-valuenow") === "76");
       await indicator.hover();
-      const tooltip = page.getByRole("tooltip");
+      const tooltip = page.getByRole("dialog", { name: "Usage", exact: true });
       await tooltip.waitFor();
       assert.equal(await indicator.getAttribute("aria-label"), "Usage");
       assert.equal(await tooltip.getByText("Usage", { exact: true }).count(), 1);
       assert.doesNotMatch(await tooltip.innerText(), /Last reported usage|Provider counts from|Edits and compaction/);
       assert.match(await tooltip.innerText(), /76,000 tokens/);
-      assert.match(await tooltip.innerText(), /75,000 input · 1,000 output/);
+      assert.doesNotMatch(await tooltip.innerText(), /75,000 input|1,000 output/);
       assert.doesNotMatch(await tooltip.innerText(), /About |Estimated/);
       assert.match(await tooltip.innerText(), /100,000 token context window/);
       assert.match(await tooltip.innerText(), /76% used/);
@@ -1290,12 +1305,12 @@ for (const platform of ["linux", "win32", "darwin"]) {
       assert.equal(await tooltip.isVisible(), true);
       await page.locator("textarea").hover();
       await tooltip.waitFor({ state: "detached" });
-      await indicator.focus();
+      await page.getByRole("button", { name: "Usage", exact: true }).focus();
       await tooltip.waitFor();
-      await indicator.press("Escape");
+      await page.getByRole("button", { name: "Usage", exact: true }).press("Escape");
       await tooltip.waitFor({ state: "detached" });
-      await indicator.blur();
-      await indicator.focus();
+      await page.getByRole("button", { name: "Usage", exact: true }).blur();
+      await page.getByRole("button", { name: "Usage", exact: true }).focus();
       await page.locator("textarea").fill("Unsent changes");
       await page.evaluate(() => (window as any).__deletionTest.setTimeline([{ id: "compact", kind: "activity", text: "Context compacted" }], true));
       assert.equal(await indicator.getAttribute("aria-valuenow"), "76");
@@ -1348,9 +1363,9 @@ for (const platform of ["linux", "win32", "darwin"]) {
       const setTimeline = (items: ClientTimelineItem[]) => page.evaluate((items) => (window as any).__deletionTest.setTimeline(items), items);
       await setTimeline(timeline);
       await page.getByText("Fetched en.wikipedia.org/wiki/UTC", { exact: true }).waitFor();
-      await page.getByText("Blocked by website · www.timeanddate.com/time/time-zones-interesting.html", { exact: true }).waitFor();
-      await page.getByText("Page not found · example.com/missing", { exact: true }).waitFor();
-      await page.getByText("Request timed out · example.com/slow", { exact: true }).waitFor();
+      await page.getByText("Blocked by website: www.timeanddate.com/time/time-zones-interesting.html", { exact: true }).waitFor();
+      await page.getByText("Page not found: example.com/missing", { exact: true }).waitFor();
+      await page.getByText("Request timed out: example.com/slow", { exact: true }).waitFor();
       for (const id of ["ok", "blocked", "missing", "timeout"]) {
         const row = page.locator(`[data-tool-call-id="${id}"]`);
         assert.equal(await row.locator("button, pre, [aria-expanded]").count(), 0);
@@ -1365,7 +1380,7 @@ for (const platform of ["linux", "win32", "darwin"]) {
       timeline[4]!.tool!.status = "failed";
       timeline[4]!.tool!.content = [{ type: "text", text: "Search limit reached (60 per minute per account). Retry after 20 seconds." }];
       await setTimeline(timeline);
-      await page.getByText("Search limit reached · Web search for “time zones”", { exact: true }).waitFor();
+      await page.getByText("Search limit reached: Web search for “time zones”", { exact: true }).waitFor();
       assert.equal(await page.locator(".chat-timeline button, .chat-timeline pre, .chat-timeline [aria-expanded]").count(), 0);
       if (platform === "linux") {
         await page.emulateMedia({ colorScheme: "dark" });
@@ -2062,7 +2077,7 @@ test("deposit progress keeps ZEC primary and changes estimated USD to credited U
     await page.emulateMedia({ reducedMotion: "reduce" });
     assert.equal(await row.locator("svg.lucide-loader-circle").evaluate((el) => getComputedStyle(el).animationName), "none");
     await showDeposit("7");
-    await row.getByText("· 7/10 confirmations", { exact: true }).waitFor();
+    await row.getByText("7/10 confirmations", { exact: true }).waitFor();
     await page.setViewportSize({ width: 560, height: 650 });
     await row.scrollIntoViewIfNeeded();
     const panel = page.getByRole("region", { name: "Balance and payments", exact: true });

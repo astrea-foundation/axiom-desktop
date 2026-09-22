@@ -61,7 +61,7 @@ export function UsagePanel({ accountId, connected, onLogin }: {
   return <div data-usage-panel>
     <div className="flex items-start justify-between gap-4">
       <div>
-        <p className="text-[12px] text-[var(--color-text-tertiary)]">Total spent <span aria-hidden="true">·</span> All time</p>
+        <p className="text-[12px] text-[var(--color-text-tertiary)]">All-time spending</p>
         <p data-usage-total className="mt-2 break-all text-[36px] font-medium leading-tight tracking-[-0.04em] text-[var(--color-text-primary)] tabular-nums">{formatSpend(total)}</p>
       </div>
       <button type="button" onClick={() => setRefresh(value => value + 1)} aria-label="Refresh usage" className={`${buttonClass} !p-2`}><RefreshCw size={15} /></button>
@@ -96,6 +96,5 @@ export function UsagePanel({ accountId, connected, onLogin }: {
         </ul>
       </div>
     </div>}
-    <p className="mt-4 text-[12px] leading-5 text-[var(--color-text-tertiary)]">Posted inference charges, including credit used.</p>
   </div>;
 }

@@ -145,6 +145,12 @@ option to ask for continuation. The usage meter is not a draft estimate or cumul
 survive reload, and model switches do not rescale old counts against a new model.
 No report is shown as unknown, rather than fabricated zero usage.
 
+Hover, focus or click the meter to see context use and the compaction threshold.
+Expand **Usage details** for input/output counts, turn totals, cache and reasoning
+subsets, settlement state, elapsed time and other thread charges. Tab reaches the
+disclosure; Escape closes the panel and returns focus to the meter. Partial or
+unavailable usage and reports from a different model remain visible above it.
+
 Click the TEE badge for the last local verification report; Refresh requests
 fresh evidence when allowed. While active and connected, the badge automatically
 renews within 60 seconds of expiry, between replies. Checks are deduplicated and retries back off
@@ -192,8 +198,11 @@ automatic following; Scroll to latest resumes it. Theme is light, dark or system
 The Proxy screen starts the optional authenticated local integration explicitly.
 See [Local proxy](proxy.md) for its separate credential and lifecycle. Updates
 use one release feed with AxiomCLI and are downloaded and checked before user
-installation. Desktop requires its CLI to report the exact same product version
-at ACP initialization; a mismatch blocks bootstrap with reinstall/rebuild guidance.
+installation. The Updates panel shows the installed version, with platform,
+architecture and package format under **Installation details**. Quit Axiom and
+AxiomCLI before installing. Desktop requires its CLI to report the exact same
+product version at ACP initialization; a mismatch blocks bootstrap with
+reinstall/rebuild guidance.
 See
 [Install and update](installing-desktop.md#install-a-newer-version).
 

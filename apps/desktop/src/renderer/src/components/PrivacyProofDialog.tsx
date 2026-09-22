@@ -9,7 +9,7 @@ const explanation: Record<ProofState, string> = {
   verified: "Model messages are encrypted on your device to a key verified through hardware attestation.",
   verifying: "Checking the model’s confidential-computing evidence on this device.",
   failed: "Verification failed. Model traffic requires valid evidence before it can be sent.",
-  expired: "This report has expired. Verification refreshes automatically while you’re active, connected, and between replies. You can also refresh it now.",
+  expired: "Report expired. Refresh to check again.",
   unavailable: "A current verification report isn’t available. Refresh to inspect the model’s proof.",
   unverified: "Check the model’s hardware evidence and encryption key before sending model messages.",
   development: "This development session has no production TEE proof.",
@@ -119,7 +119,7 @@ export function PrivacyProofDialog({ session, model, modelId, state, now, webEna
           </div>
           <div className="min-w-0">
             <p role="status" className="text-[15px] font-medium">{proofLabels[state]}</p>
-            <p className="mt-0.5 text-[12px] text-[var(--color-text-secondary)] [overflow-wrap:anywhere]">{model?.shortLabel ?? modelId}{providerLabel ? ` · ${providerLabel}` : ""}</p>
+            <p className="mt-0.5 flex flex-wrap gap-x-3 text-[12px] text-[var(--color-text-secondary)] [overflow-wrap:anywhere]"><span>{model?.shortLabel ?? modelId}</span>{providerLabel ? <span>{providerLabel}</span> : null}</p>
           </div>
         </div>
         <p id={`${id}-description`} className="mb-2 mt-4 text-[13px] leading-[21px] text-[var(--color-text-secondary)]">{explanation[state]}</p>
@@ -147,7 +147,7 @@ export function PrivacyProofDialog({ session, model, modelId, state, now, webEna
               <Fact label="Model" mono>{evidence.modelId}</Fact>
               <Fact label="Provider">{evidence.providerId}</Fact>
               <Fact label="Attestation" mono>{evidence.attestationProtocol}</Fact>
-              <Fact label="Encryption" mono>{evidence.e2eeProtocol} · v{evidence.e2eeEncryptionVersion}</Fact>
+              <Fact label="Encryption" mono>{evidence.e2eeProtocol} (v{evidence.e2eeEncryptionVersion})</Fact>
               <Fact label="Trust policy" mono>{evidence.trustPolicyVersion}</Fact>
               {evidence.attestationGeneration != null ? <Fact label="Generation" mono>{evidence.attestationGeneration}</Fact> : null}
               <Fact label="Checked">{new Date(evidence.verifiedAtUnixSeconds * 1000).toLocaleString()}</Fact>

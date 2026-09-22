@@ -13,7 +13,7 @@ export function AttachmentPreview({ attachment }: { attachment: PromptAttachment
   return attachment.kind === "image"
     ? <img src={`data:${attachment.image.mimeType};base64,${attachment.image.data}`} alt={attachment.name} className="my-2 max-h-72 max-w-full rounded-lg object-contain" />
     : attachment.kind === "file" ? <div className="my-2 flex items-center gap-2 text-xs"><FileText size={14} />{attachment.name}</div>
-    : <details className="my-2 text-xs"><summary className="cursor-pointer">{attachment.name} · extracted text</summary><pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words">{attachment.text}</pre></details>;
+    : <details className="my-2 text-xs"><summary className="cursor-pointer">{attachment.name}</summary><pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words">{attachment.text}</pre></details>;
 }
 
 export function DraftAttachments({ control }: { control: AttachmentControl }) {
@@ -40,7 +40,7 @@ export function StoredAttachments({ threadId, userItemId, names }: { threadId: s
       if (!api?.getAttachments) { setError("Restart Axiom to view attachments."); return; }
       setBusy(true); setError("");
       void api.getAttachments(threadId, userItemId).then((result) => { setFiles(result.attachments); setOpen(true); }).catch((error: unknown) => setError(error instanceof Error ? error.message : "Attachments could not be opened.")).finally(() => setBusy(false));
-    }}><Paperclip size={13} /><span className="break-all">{names.join(", ")}</span>{busy ? " · Loading…" : ""}</button>
+    }}><Paperclip size={13} /><span className="break-all">{names.join(", ")}</span>{busy ? <span role="status">Loading…</span> : null}</button>
     {open ? files?.map((file, index) => <AttachmentPreview key={index} attachment={file} />) : null}
     {error ? <p role="alert" className="mt-2">{error}</p> : null}
   </div>;

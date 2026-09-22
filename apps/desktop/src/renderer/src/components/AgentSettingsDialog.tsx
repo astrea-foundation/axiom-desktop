@@ -117,11 +117,11 @@ export function AgentSettingsDialog({ options, onClose }: { options: AgentContro
             <input id={`${id}-directory`} value={draft.workingDirectory ?? ""} disabled={blocked}
               onChange={(event) => { setDraft((value) => ({ ...value, workingDirectory: event.target.value || null })); setError(null); }}
               placeholder={options.defaultDirectory || "Default thread folder"} title={draft.workingDirectory || options.defaultDirectory}
-              aria-describedby={`${id}-directory-help`} aria-invalid={!!error}
+              aria-describedby={draft.workingDirectory ? undefined : `${id}-directory-help`} aria-invalid={!!error}
               className="min-w-0 flex-1 bg-transparent py-1.5 text-[12px] text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-tertiary)] disabled:opacity-50" />
             <button type="button" disabled={blocked} onClick={() => void choose()} aria-label="Choose working directory" className="shrink-0 rounded-[7px] bg-[var(--wash-chip)] px-2.5 py-1.5 text-[12px] text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--wash-chip-hover)] disabled:opacity-40">{busy === "choosing" ? "Opening…" : "Browse"}</button>
           </div>
-          <p id={`${id}-directory-help`} className="mt-2 text-[12px] leading-[18px] text-[var(--color-text-tertiary)]">{draft.workingDirectory ? "Use your own project folder for this thread." : "A separate folder for this thread in Axiom’s local data."}</p>
+          {!draft.workingDirectory ? <p id={`${id}-directory-help`} className="mt-2 text-[12px] leading-[18px] text-[var(--color-text-tertiary)]">A separate folder for this thread in Axiom’s local data.</p> : null}
           {draft.workingDirectory ? <button type="button" disabled={blocked} onClick={() => { setDraft((value) => ({ ...value, workingDirectory: null })); setError(null); }} className="mt-1 text-[12px] text-[var(--color-text-secondary)] underline decoration-[var(--color-border-accent)] underline-offset-4 hover:text-[var(--color-text-primary)] disabled:opacity-40">Use default thread folder</button> : null}
         </section>
 

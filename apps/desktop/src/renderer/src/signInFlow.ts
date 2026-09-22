@@ -22,8 +22,8 @@ export function accountPresentation(
   if (!connected || !desktopReady) {
     return {
       kind: "starting",
-      title: "AxiomCLI is starting",
-      detail: "Your local agent is connecting…",
+      title: "Starting Axiom…",
+      detail: "",
     };
   }
   if (account?.state === "valid" && account.account) {
@@ -52,8 +52,8 @@ export function accountPresentation(
   if (account?.state === "starting") {
     return {
       kind: "starting",
-      title: "Checking your Axiom account",
-      detail: account.detail?.trim() || "Your local agent is restoring its secure session…",
+      title: "Checking your account…",
+      detail: "",
     };
   }
   return {

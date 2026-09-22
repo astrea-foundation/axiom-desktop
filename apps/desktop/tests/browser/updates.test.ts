@@ -89,7 +89,12 @@ for (const theme of ['light','dark']) test(`update notice opens integrated Setti
     await notice.click();
     await page.waitForFunction(() => document.activeElement?.getAttribute('data-category') === 'updates');
     assert.equal(await settings(page).getByRole('tab',{name:'Updates',exact:true}).getAttribute('aria-selected'),'true');
-    assert.match(await settings(page).innerText(),/Installed · Axiom 0.1.0 · Linux · x64 · AppImage/);
+    assert.match(await settings(page).innerText(),/Installed version: 0.1.0/);
+    const installation = settings(page).locator('details').filter({has:page.getByText('Installation details',{exact:true})});
+    assert.equal(await installation.locator('dd').first().isVisible(),false);
+    await installation.locator('summary').click();
+    assert.deepEqual(await installation.locator('dd').allTextContents(),['Linux','x64','AppImage']);
+    await installation.locator('summary').click();
     assert.equal(await page.getByRole('combobox').count(),0);
     assert.equal(await page.getByText('SHA-256',{exact:true}).isVisible(),false);
     await capture(page,`${theme}-available`);
@@ -105,7 +110,7 @@ for (const theme of ['light','dark']) test(`update notice opens integrated Setti
     assert.equal(await page.getByRole('progressbar').getAttribute('aria-valuenow'),'50','download survives closing Settings');
     await page.evaluate(() => (window as any).__updatesTest.finish());
     await page.getByText('Your update is ready',{exact:true}).waitFor();
-    assert.match(await settings(page).innerText(), /Quit Axiom and all AxiomCLI sessions/);
+    assert.match(await settings(page).innerText(), /Quit Axiom and AxiomCLI before installing/);
     assert.equal(await settings(page).getByRole('link', {name:'Release catalog'}).getAttribute('href'), 'https://axiom.stream/api/releases');
     await page.getByRole('button',{name:'Show in folder'}).click();
     assert.equal(await page.evaluate(() => (window as any).__updatesTest.revealed()),1);
