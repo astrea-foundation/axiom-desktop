@@ -148,6 +148,9 @@ to the release public key, and run `node scripts/publish-github-release.mjs DIRE
 from the promoted native checkout. Follow the platform publication guide to
 verify both mirrors and promote the catalog. Do not rebuild installers merely to
 retry publication, and do not copy a broad personal token into Actions.
+New drafts are resolved through the authenticated release listing, since GitHub's
+release-by-tag endpoint resolves published releases. Retries resume the same draft
+and preserve the immutable artifact checks.
 
 Branch checks use Ubuntu 24.04 with Python 3.12 and permit Bubblewrap user
 namespaces on the disposable runner. Release binaries retain Ubuntu 22.04 for
