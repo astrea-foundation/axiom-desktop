@@ -97,6 +97,9 @@ startup, resize, prompt submission, and terminal restoration through that path.
 Credential tests use the production three-second operation deadline; deliberately
 stalled stores derive their delay from that deadline. A shorter test-only limit
 can reject ordinary Windows identity-file and ACL setup on a loaded machine.
+Windows test environments include Git's `usr/bin` directory on `PATH` for the
+`sh`, `printf`, and `env` process fixtures. MCP fixtures resolve `env` through the
+same sanitized path as other processes, without a Unix-only absolute path.
 
 Browser proof-renewal tests pause their mock clock before loading the fixture,
 then advance it explicitly; page startup time must not shift expiry boundaries.
