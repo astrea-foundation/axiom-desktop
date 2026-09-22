@@ -874,6 +874,54 @@ for (const platform of ["linux", "win32", "darwin"]) {
     } finally { await page.close(); }
   });
 
+  test(`unexpected stream endings show one notice with optional details (${platform})`, async () => {
+    const { page, errors } = await openApp(platform);
+    try {
+      await page.getByRole("button", { name: "Viewed Existing thread", exact: true }).click();
+      const transcript = page.getByRole("region", { name: "Chat messages" });
+      const detail = "Tinfoil stream ended without authenticated completion";
+      await page.evaluate((detail) => (window as any).__deletionTest.setTimeline([
+        { id: "prompt", turnId: "failed-turn", kind: "user", text: "Tell me more.", status: "completed" },
+        { id: "partial", turnId: "failed-turn", kind: "assistant", text: "Here is the beginning of the reply.", status: "failed", terminalVerified: false },
+        { id: "failure", turnId: "failed-turn", kind: "error", text: detail },
+      ], false), detail);
+      const notice = transcript.getByRole("status");
+      await notice.getByText("The reply ended early. Try again.", { exact: true }).waitFor();
+      assert.equal(await notice.count(), 1);
+      assert.equal(await transcript.getByRole("alert").count(), 0);
+      assert.doesNotMatch(await transcript.innerText(), /final response could not be verified|authenticated completion|E2EE/);
+      assert.equal(await transcript.getByRole("button", { name: "Copy", exact: true }).isDisabled(), true);
+      const disclosure = notice.locator("summary");
+      await disclosure.focus();
+      await disclosure.press("Enter");
+      await notice.getByText(detail, { exact: true }).waitFor();
+      await disclosure.press("Enter");
+      assert.equal(await notice.getByText(detail, { exact: true }).isVisible(), false);
+      if (platform === "linux" && process.env.AXIOM_REPLY_ERROR_SCREENSHOT) {
+        await page.setViewportSize({ width: 865, height: 650 });
+        for (const theme of ["light", "dark"] as const) {
+          await page.emulateMedia({ colorScheme: theme });
+          await page.waitForFunction((theme) => document.documentElement.dataset.theme === theme, theme);
+          await page.screenshot({ path: `${process.env.AXIOM_REPLY_ERROR_SCREENSHOT}-${theme}.png`, animations: "disabled" });
+        }
+      }
+      const status = await page.evaluate(async () => {
+        const state = await (window as any).axiomDesktop.agent.getState();
+        return state.sessions["old-thread"].timeline.find((item: ClientTimelineItem) => item.id === "partial");
+      });
+      assert.equal(status.status, "failed");
+      assert.equal(status.terminalVerified, false);
+      await transcript.getByRole("button", { name: "Regenerate", exact: true }).click();
+      await transcript.getByRole("button", { name: "Regenerate from here", exact: true }).click();
+      await page.waitForFunction(() => (window as any).__deletionTest.calls.some((call: any) => call.method === "revise"));
+      const revisions = await page.evaluate(() => (window as any).__deletionTest.calls.filter((call: any) => call.method === "revise"));
+      assert.equal(revisions.length, 1);
+      assert.equal(revisions[0].userItemId, "prompt");
+      assert.equal(revisions[0].text, "Tell me more.");
+      assert.deepEqual(errors, []);
+    } finally { await page.close(); }
+  });
+
   test(`Send now stops the reply and sends the selected queued message first (${platform})`, async () => {
     const { page, errors } = await openApp(platform);
     try {

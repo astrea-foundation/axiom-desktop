@@ -1,6 +1,7 @@
 import { AlertTriangle, CheckCircle2, ListChecks } from "lucide-react";
 import type { ClientSessionState, ClientTimelineItem } from "@axiom/axiom-acp-client";
 import type { PendingUserMessage } from "../types";
+import { replyErrorPresentation } from "../replyErrors";
 import { StoredAttachments, attachmentNames } from "./Attachments";
 import { MessageBubble } from "./MessageBubble";
 import { ToolCallCard } from "./ToolCallCard";
@@ -9,8 +10,21 @@ import { hasActiveResponse, messageRevisionSources, presentTimeline } from "./ti
 
 function ActivityRow({ item }: { item: ClientTimelineItem }) {
   const error = item.kind === "error";
+  const failure = error ? replyErrorPresentation(item.text) : null;
+  if (failure) return (
+    <div role={failure.interrupted ? "status" : "alert"} className={`flex items-start gap-2 rounded-lg px-3 py-2 text-[12.5px] ${failure.interrupted ? "bg-[var(--wash-row)] text-[var(--color-text-secondary)]" : "bg-[var(--color-danger-soft)] text-[var(--color-danger-strong)]"}`}>
+      <AlertTriangle size={14} aria-hidden="true" className="mt-0.5 shrink-0" />
+      <div className="min-w-0">
+        <p>{failure.message}</p>
+        <details data-preserve-follow className="mt-1 text-[12px] text-[var(--color-text-tertiary)]">
+          <summary className="w-fit cursor-pointer rounded-sm hover:text-[var(--color-text-secondary)]">Details</summary>
+          <p className="mt-1 break-words">{item.text}</p>
+        </details>
+      </div>
+    </div>
+  );
   return (
-    <div className={`flex items-start gap-2 rounded-lg px-3 py-2 text-[12.5px] ${error ? "bg-[var(--color-danger-soft)] text-[var(--color-danger-strong)]" : "bg-[var(--wash-row)] text-[var(--color-text-tertiary)]"}`}>
+    <div role={error ? "alert" : undefined} className={`flex items-start gap-2 rounded-lg px-3 py-2 text-[12.5px] ${error ? "bg-[var(--color-danger-soft)] text-[var(--color-danger-strong)]" : "bg-[var(--wash-row)] text-[var(--color-text-tertiary)]"}`}>
       {error ? <AlertTriangle size={14} className="mt-0.5 shrink-0" /> : item.kind === "plan" ? <ListChecks size={14} className="mt-0.5 shrink-0" /> : <CheckCircle2 size={14} className="mt-0.5 shrink-0" />}
       <span>{item.text}</span>
     </div>
@@ -28,12 +42,16 @@ export function TimelineView({
 }) {
   const presentation = presentTimeline(session.timeline);
   const sources = messageRevisionSources(session.timeline);
+  const turnsByItem = new Map(session.timeline.map((item) => [item.id, item.turnId]));
+  const turnsWithErrors = new Set(session.timeline.filter((item) => item.kind === "error" && item.turnId).map((item) => item.turnId));
   const rows = presentation.map((row) => {
     if (row.kind === "message") {
       const source = sources.get(row.message.id);
+      const turnId = turnsByItem.get(row.message.id);
       return <div key={row.key} data-timeline-kind={row.message.role}>
         {row.message.role === "user" ? <StoredAttachments threadId={session.sessionId} userItemId={row.message.id} names={attachmentNames(source?.raw)} /> : null}
         <MessageBubble message={row.message} revisionHasAttachments={Boolean(attachmentNames(source?.raw).length)}
+        showFailureNotice={!turnId || !turnsWithErrors.has(turnId)}
         revisionText={source?.text} onRevise={source && onRevise ? (text) => onRevise(source.id, text) : undefined} /></div>;
     }
     if (row.kind === "tool" && row.item.tool) {

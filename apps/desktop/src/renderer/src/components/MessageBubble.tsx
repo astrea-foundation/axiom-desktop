@@ -9,8 +9,9 @@ function thoughtLabel(durationMs?: number): string {
   return `Thought for ${seconds} ${seconds === 1 ? "second" : "seconds"}`;
 }
 
-export function MessageBubble({ message, onRevise, revisionText, revisionHasAttachments = false }: {
+export function MessageBubble({ message, onRevise, revisionText, revisionHasAttachments = false, showFailureNotice = true }: {
   message: Message; onRevise?: (text: string) => Promise<void>; revisionText?: string; revisionHasAttachments?: boolean;
+  showFailureNotice?: boolean;
 }) {
   const [copied, setCopied] = useState(false);
   const [revisionMode, setRevisionMode] = useState<"edit" | "regenerate" | null>(null);
@@ -30,7 +31,7 @@ export function MessageBubble({ message, onRevise, revisionText, revisionHasAtta
   const isStreaming = message.status === "streaming" || message.status === "pending";
   // Stopping a reply is not a presentation error: keep its text and allow
   // copying, without changing its stored status or claiming a final receipt.
-  const terminalFailure = message.status === "failed" ? "Response interrupted" : null;
+  const terminalFailure = message.status === "failed";
   const reasoning = message.reasoningContent?.trim();
 
   const copyMessage = async () => {
@@ -114,10 +115,10 @@ export function MessageBubble({ message, onRevise, revisionText, revisionHasAtta
             </div>
           ) : null}
           {message.finishReason === "length" && message.terminalVerified ? <div className="mt-2 text-[12px] text-[var(--color-text-tertiary)]">The model reached its output limit. You can ask it to continue.</div> : null}
-          {terminalFailure ? (
-            <div className="mt-3 flex items-center gap-2 rounded-[8px] border border-[var(--color-danger-border)] bg-[var(--color-danger-soft)] px-3 py-2 text-[12px] leading-5 text-[var(--color-danger-strong)]">
+          {terminalFailure && showFailureNotice ? (
+            <div role="alert" className="mt-3 flex items-center gap-2 rounded-[8px] border border-[var(--color-danger-border)] bg-[var(--color-danger-soft)] px-3 py-2 text-[12px] leading-5 text-[var(--color-danger-strong)]">
               <AlertTriangle size={13} className="shrink-0 text-[var(--color-danger)]" />
-              <span>{terminalFailure}. The final response could not be verified.</span>
+              <span>This reply couldn't be verified. Try again.</span>
             </div>
           ) : null}
         </div>

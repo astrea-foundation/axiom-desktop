@@ -276,3 +276,17 @@ visible and all content to fit the panel width. Light/dark screenshots were
 visually checked. All 198 Desktop unit/contract tests, Desktop TypeScript checks
 and the production build passed; one PowerShell-dependent test was skipped.
 These checks used local fixtures and did not submit payments or redeem live codes.
+
+## Interrupted-reply notices (2026-09-22)
+
+Desktop shows one notice per failed turn when the timeline includes its error.
+Known stream endings and timeouts use short messages with a collapsed technical
+detail. Ambiguous authentication/transport failures remain errors; presentation
+never changes the stored status, terminal verification or native checks.
+
+All 26 timeline unit tests and seven focused browser checks passed. Coverage
+includes partial text/reasoning, failures in separate turns, retained verification
+failures, deliberate cancellation, keyboard-operated details and regeneration
+through the existing native revision flow. Desktop TypeScript checks and the
+production build passed. Light/dark screenshots were visually checked; provider
+traffic and native cryptographic verification were unchanged and not rerun.

@@ -177,6 +177,10 @@ verification, and NEAR v3 identifies an attested
 worker TLS key rather than claiming the client observed the backend's socket.
 Provisional streamed text becomes verified only after authenticated completion;
 cancelled/incomplete output retains that status even if billing later settles.
+Unexpected stream endings show one short notice, with the technical reason under
+**Details**. A turn's error notice replaces the duplicate warning below its reply.
+Stopping a reply yourself does not show an error banner. These presentation
+choices do not change completion verification or mark partial replies successful.
 See [security](threat-model.md).
 
 ## Account credit and usage
