@@ -12,6 +12,11 @@ import { hasActiveResponse, messageRevisionSources, presentTimeline } from "./ti
 
 function ActivityRow({ item }: { item: ClientTimelineItem }) {
   const error = item.kind === "error";
+  if (error && item.text.includes("Intel TDX environment is OutOfDate")) return <div role="status" data-timeline-kind="activity"
+    className="flex items-start gap-2 rounded-lg bg-amber-500/10 px-3 py-2 text-[12.5px] text-[var(--color-warning)]">
+    <AlertTriangle size={14} aria-hidden="true" className="mt-0.5 shrink-0" />
+    <span>Generation paused because the provider’s TEE needs security updates.</span>
+  </div>;
   const failure = error ? replyErrorPresentation(item.text) : null;
   if (failure) return (
     <DismissibleNotice data-timeline-kind="activity" role={failure.interrupted ? "status" : "alert"} className={`flex items-start gap-2 rounded-lg px-3 py-2 text-[12.5px] ${failure.interrupted ? "bg-[var(--wash-row)] text-[var(--color-text-secondary)]" : "bg-[var(--color-danger-soft)] text-[var(--color-danger-strong)]"}`}>

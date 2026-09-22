@@ -219,6 +219,17 @@ pub(super) fn start_security_preflight(
     cancellation: &mut Option<CancellationToken>,
     generation: &mut u64,
 ) {
+    start_security_preflight_with_consent(state, runner, ui_tx, cancellation, generation, false);
+}
+
+fn start_security_preflight_with_consent(
+    state: &mut TuiState,
+    runner: &Arc<dyn TurnRunner>,
+    ui_tx: &mpsc::Sender<UiMessage>,
+    cancellation: &mut Option<CancellationToken>,
+    generation: &mut u64,
+    accept_outdated: bool,
+) {
     if let Some(previous) = cancellation.take() {
         previous.cancel();
     }
@@ -235,7 +246,11 @@ pub(super) fn start_security_preflight(
     let model = state.model.clone();
     let result_tx = ui_tx.clone();
     tokio::spawn(async move {
-        let result = task_runner.verify_security(&model, token.clone()).await;
+        let result = if accept_outdated {
+            task_runner.accept_outdated_tee(&model, token.clone()).await
+        } else {
+            task_runner.verify_security(&model, token.clone()).await
+        };
         let result = if token.is_cancelled() {
             Err(AxiomError::Cancelled)
         } else {
@@ -1941,6 +1956,13 @@ pub async fn run(
                                                         .await;
                                                 });
                                             }
+                                            Ok(SlashCommand::AcceptOutdatedTee) => {
+                                                if auth.has_credential() {
+                                                    start_security_preflight_with_consent(&mut state, &runner, &ui_tx, &mut security_cancellation, &mut security_generation, true);
+                                                    state.status = "Checking TEE with your outdated-provider consent…".into();
+                                                    state.status_tone = StatusTone::Waiting;
+                                                } else { state.open_login(Some("Sign in before accepting a provider warning.".into())); }
+                                            }
                                             Ok(SlashCommand::Security) => {
                                                 state.open_security();
                                                 if !state.running
@@ -2270,12 +2292,13 @@ pub async fn run(
                     {
                         security_cancellation = None;
                         state.proof_refresh.completed(Instant::now(), matches!(&result,
-                            Ok(SecurityVerification { status: crate::app::SecurityStatus::Verified, .. })
+                            Ok(SecurityVerification { status: crate::app::SecurityStatus::Verified | crate::app::SecurityStatus::Degraded, .. })
                         ));
                         match result {
                             Ok(SecurityVerification {
                                 status:
                                     security @ (crate::app::SecurityStatus::Verified
+                                    | crate::app::SecurityStatus::Degraded
                                     | crate::app::SecurityStatus::UnattestedDevelopment),
                                 evidence,
                             }) => {
@@ -2283,7 +2306,10 @@ pub async fn run(
                                     state.status == "Refreshing attestation…";
                                 state.security_evidence = evidence;
                                 state.apply(&AppEvent::SecurityStatusChanged { state: security });
-                                if manually_refreshed {
+                                if security == crate::app::SecurityStatus::Degraded {
+                                    state.status = "TEE security updates needed · Accepted for this provider until restart".into();
+                                    state.status_tone = StatusTone::Waiting;
+                                } else if manually_refreshed {
                                     state.status = "Attestation refreshed".into();
                                     state.status_tone = StatusTone::Success;
                                 } else if state.status == "Please wait…"
@@ -2300,6 +2326,12 @@ pub async fn run(
                                 state.status_tone = StatusTone::Error;
                             }
                             Err(AxiomError::Cancelled) => { state.reset_security(); }
+                            Err(AxiomError::SecureProvider { code: "PROVIDER_TDX_OUT_OF_DATE", .. }) => {
+                                state.security_evidence = None;
+                                state.apply(&AppEvent::SecurityStatusChanged { state: crate::app::SecurityStatus::Outdated });
+                                state.status = "TEE security updates needed · To accept this provider until restart: /security accept-outdated".into();
+                                state.status_tone = StatusTone::Waiting;
+                            }
                             Err(error) => {
                                 let detail = sanitize_terminal_text(&error.to_string());
                                 state.fail_security(&detail);

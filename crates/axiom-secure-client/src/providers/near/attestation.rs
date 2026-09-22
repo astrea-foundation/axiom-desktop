@@ -153,6 +153,42 @@ struct WorkerSessionEnvelope {
     evidence: Value,
 }
 
+fn accept_intel_status(
+    status: &str,
+    policy: &TrustPolicy,
+    config: &SecureClientConfig,
+) -> Result<bool> {
+    if status == "UpToDate"
+        && policy
+            .accepted_intel_statuses
+            .iter()
+            .any(|accepted| accepted == status)
+    {
+        return Ok(false);
+    }
+    if status == "OutOfDate" {
+        if config.accepts_outdated_tcb(super::PROVIDER_ID) {
+            return Ok(true);
+        }
+        return Err(SecureClientError::with_code(
+            axiom_inference::ProviderFailureKind::AttestationRejected,
+            crate::SecureErrorCode::OutdatedTee,
+            "The provider's Intel TDX environment is OutOfDate and requires security updates.",
+            false,
+        ));
+    }
+    Err(SecureClientError::attestation(match status {
+        "OutOfDateConfigurationNeeded" => "Intel TDX status is OutOfDateConfigurationNeeded",
+        "ConfigurationNeeded" => "Intel TDX status is ConfigurationNeeded",
+        "SWHardeningNeeded" => "Intel TDX status is SWHardeningNeeded",
+        "ConfigurationAndSWHardeningNeeded" => {
+            "Intel TDX status is ConfigurationAndSWHardeningNeeded"
+        }
+        "Revoked" => "Intel TDX status is Revoked",
+        _ => "Intel TDX status is rejected by policy; see verification diagnostics",
+    }))
+}
+
 pub(crate) async fn verify_model(
     config: &SecureClientConfig,
     credential: &crate::ApiCredential,
@@ -237,28 +273,9 @@ pub(crate) async fn verify_model(
             )
         } => result?,
     };
-    if !policy
-        .accepted_intel_statuses
-        .iter()
-        .any(|status| status == &intel.status)
-    {
+    let outdated_accepted = accept_intel_status(&intel.status, policy, config).inspect_err(|_| {
         tracing::warn!(status = %intel.status, advisory_ids = ?intel.advisory_ids, "NEAR Intel TDX rejected by policy");
-        return Err(SecureClientError::attestation(
-            match intel.status.as_str() {
-                "OutOfDate" => "Intel TDX status is OutOfDate",
-                "OutOfDateConfigurationNeeded" => {
-                    "Intel TDX status is OutOfDateConfigurationNeeded"
-                }
-                "ConfigurationNeeded" => "Intel TDX status is ConfigurationNeeded",
-                "SWHardeningNeeded" => "Intel TDX status is SWHardeningNeeded",
-                "ConfigurationAndSWHardeningNeeded" => {
-                    "Intel TDX status is ConfigurationAndSWHardeningNeeded"
-                }
-                "Revoked" => "Intel TDX status is Revoked",
-                _ => "Intel TDX status is rejected by policy; see verification diagnostics",
-            },
-        ));
-    }
+    })?;
     if !policy.require_nvidia_verified {
         return Err(SecureClientError::configuration(
             "near-v3 requires NVIDIA verification",
@@ -272,6 +289,20 @@ pub(crate) async fn verify_model(
         &intel,
         manifest,
     );
+    if outdated_accepted {
+        evidence.state = SecurityState::Degraded;
+        if let Some(check) = evidence
+            .checks
+            .iter_mut()
+            .find(|check| check.id == "intel_tdx")
+        {
+            check.passed = false;
+        }
+        evidence.provider_claims.push(EvidenceClaim {
+            name: "outdated_tcb_accepted".into(),
+            value: "Accepted by user for this provider until restart".into(),
+        });
+    }
     evidence.checks.push(check(
         "response_signature",
         "Provider response signature",
@@ -822,6 +853,45 @@ impl HttpClient for BoundedCollateralHttp {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn outdated_consent_is_runtime_scoped_and_cannot_accept_other_tcb_failures() {
+        let config = crate::SecureClientConfig::new("https://relay.example").unwrap();
+        let policy = crate::TrustPolicy::default();
+        assert!(!super::accept_intel_status("UpToDate", &policy, &config).unwrap());
+        assert_eq!(
+            super::accept_intel_status("OutOfDate", &policy, &config)
+                .unwrap_err()
+                .code(),
+            crate::SecureErrorCode::OutdatedTee
+        );
+        assert!(config.accept_outdated_tee_for_provider("tinfoil").is_err());
+        assert!(config.accept_outdated_tee_for_provider("*").is_err());
+        let sibling = config.clone();
+        config.accept_outdated_tee_for_provider("near").unwrap();
+        assert!(super::accept_intel_status("OutOfDate", &policy, &sibling).unwrap());
+        for status in [
+            "Revoked",
+            "OutOfDateConfigurationNeeded",
+            "ConfigurationNeeded",
+            "SWHardeningNeeded",
+            "ConfigurationAndSWHardeningNeeded",
+            "unknown",
+            "",
+        ] {
+            assert!(
+                super::accept_intel_status(status, &policy, &config).is_err(),
+                "{status}"
+            );
+        }
+        assert_eq!(
+            policy.accepted_intel_statuses,
+            ["UpToDate"],
+            "consent never rewrites signed policy"
+        );
+        let restarted = crate::SecureClientConfig::new("https://relay.example").unwrap();
+        assert!(super::accept_intel_status("OutOfDate", &policy, &restarted).is_err());
+    }
+
     use base64::Engine;
     use p384::{
         ecdsa::{Signature, SigningKey, signature::Signer},

@@ -9,6 +9,8 @@ import type { AgentControlOptions } from "./AgentModeControl";
 import { TimelineView } from "./TimelineView";
 import { PreparingThreadView } from "./PreparingThreadView";
 import { useChatAutoScroll } from "../useChatAutoScroll";
+import { OutdatedTeeNotice } from "./OutdatedTeeNotice";
+import { outdatedTeeState } from "../privacyProof";
 
 interface ChatViewProps {
   attachments?: AttachmentControl;
@@ -33,6 +35,7 @@ interface ChatViewProps {
   onReasoningEffortChange: (effort: ReasoningEffort) => void;
   pendingUserMessage?: PendingUserMessage | null;
   onVerifySecurity: () => void | Promise<unknown>;
+  onAcceptOutdatedTee?: () => Promise<void>;
   securityScope?: string;
   securityRefreshDisabledReason?: string;
   webEnabled: boolean;
@@ -63,6 +66,7 @@ export function ChatView({
   onReasoningEffortChange,
   pendingUserMessage,
   onVerifySecurity,
+  onAcceptOutdatedTee,
   securityScope,
   securityRefreshDisabledReason,
   webEnabled,
@@ -105,6 +109,8 @@ export function ChatView({
 
       <div className="shrink-0 px-6 pb-5 pt-2">
         <div className="mx-auto w-full max-w-[760px]">
+          {!preparation && onAcceptOutdatedTee ? <OutdatedTeeNotice key={`${securityScope}:${session?.sessionId}:${selectedModelId}`} state={outdatedTeeState(session, selectedModelId)}
+            disabled={isStreaming || !!securityRefreshDisabledReason} onContinue={onAcceptOutdatedTee} /> : null}
           {!preparation && queue}
           <ChatComposer
             preparing={!!preparation}

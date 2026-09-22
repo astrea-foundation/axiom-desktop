@@ -268,6 +268,32 @@ export function useConversations(agentState: ClientState, navigation: ReturnType
     }
   };
 
+  const acceptOutdatedTee = async (expectedModelId: string) => {
+    const api = window.axiomDesktop?.agent;
+    const threadId = activeThreadId;
+    const modelId = activeSession?.settings?.model;
+    const owner = billingAccountId;
+    const runtime = agentState.runtimeInstanceId;
+    if (!api || !threadId || !modelId || modelId !== expectedModelId || activeSession?.security?.state !== "outdated" || activeSession.running) return;
+    await api.verifySecurity(threadId, true, modelId);
+    const current = await api.getState();
+    const session = current.sessions[threadId];
+    if (current.runtimeInstanceId !== runtime || current.account?.account?.id !== owner
+      || activeThreadIdRef.current !== threadId || session?.settings?.model !== modelId || session.running) return;
+    if (session.security?.state !== "verified" && session.security?.state !== "degraded") return;
+    setUiError(null);
+    const queuedMessages = messageQueue.current!.list(threadId, owner);
+    const queued = queuedMessages.find((item) => item.status === "queued" && item.error?.includes("OutOfDate"));
+    if (queued) { messageQueue.current!.sendNow(queued.id); return; }
+    if (queuedMessages.length) return;
+    // Retry through local edit/regenerate, preserving the original attachments.
+    const last = session.timeline.at(-1);
+    const user = [...session.timeline].reverse().find((item) => item.kind === "user");
+    if (last?.kind === "error" && last.text.includes("OutOfDate") && user && user.turnId === last.turnId) {
+      await api.revisePrompt(threadId, user.text, user.id, session.threadRevision, webAccess.enabled, session.desktopAgent?.revision ?? 0);
+    }
+  };
+
   const submitDraft = async () => {
     const text = draft.trim();
     const api = window.axiomDesktop?.agent;
@@ -422,5 +448,5 @@ export function useConversations(agentState: ClientState, navigation: ReturnType
     }
   };
 
-  return { reviewPreparation, attachmentDraft, attachmentPreviews, draft, setDraft, writeDraft, threadPreparation, pendingUserMessage, threadLoadError, deleteTarget, setDeleteTarget, renameTarget, setRenameTarget, billingAccountId, webAccess, threads, folders, activeThread, activeSession, agentAccountScope, agentControl, isStreaming, ensureThreadLoaded, loadThread, showWelcome, reviseMessage, submitDraft, stopStream, deleteThread, messageQueue: messageQueue.current, threadLoads: threadLoads.current };
+  return { acceptOutdatedTee, reviewPreparation, attachmentDraft, attachmentPreviews, draft, setDraft, writeDraft, threadPreparation, pendingUserMessage, threadLoadError, deleteTarget, setDeleteTarget, renameTarget, setRenameTarget, billingAccountId, webAccess, threads, folders, activeThread, activeSession, agentAccountScope, agentControl, isStreaming, ensureThreadLoaded, loadThread, showWelcome, reviseMessage, submitDraft, stopStream, deleteThread, messageQueue: messageQueue.current, threadLoads: threadLoads.current };
 }

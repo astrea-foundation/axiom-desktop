@@ -604,6 +604,8 @@ pub enum SecurityStatus {
     Verifying,
     UnattestedDevelopment,
     Verified,
+    Degraded,
+    Outdated,
     Failed,
 }
 

@@ -132,6 +132,14 @@ impl<'a> RelayClient<'a> {
                 ("e2ee_protocol", e2ee_protocol),
                 ("encryption_version", encryption_version.as_str()),
                 ("attestation_protocol", attestation_protocol),
+                (
+                    "allow_outdated_tcb",
+                    if e2ee_protocol == "near-v3" && self.config.accepts_outdated_tcb("near") {
+                        "true"
+                    } else {
+                        "false"
+                    },
+                ),
             ],
             self.config.limits.attestation_report_bytes,
             cancellation,
@@ -334,8 +342,11 @@ pub(crate) fn error_for_status_body(status: StatusCode, body: &[u8]) -> SecureCl
                 true,
             )
         }
-        Some("PROVIDER_TDX_OUT_OF_DATE") => SecureClientError::attestation(
+        Some("PROVIDER_TDX_OUT_OF_DATE") => SecureClientError::with_code(
+            axiom_inference::ProviderFailureKind::AttestationRejected,
+            crate::SecureErrorCode::OutdatedTee,
             "The provider's Intel TDX environment is OutOfDate and requires security updates.",
+            false,
         ),
         Some(
             "PROVIDER_TDX_REJECTED"

@@ -45,6 +45,30 @@ const dialog = (page: Page) => page.getByRole("dialog", { name: "Privacy proof",
 const count = (page: Page) => page.evaluate(() => (window as any).__privacyTest.calls());
 const capture = async (page: Page, name: string) => { if (captures) await page.screenshot({ path: `${captures}/${name}.png` }); };
 
+for (const theme of ["light", "dark"]) test(`outdated TEE requires a click and keeps a warning after consent (${theme})`, async () => {
+  const { page, errors } = await open(theme);
+  try {
+    await page.evaluate(() => (window as any).__privacyTest.update({ security: { state: "outdated" }, securityEvidence: null }));
+    const notice = page.locator("[data-outdated-tee-warning]");
+    await notice.getByRole("button", { name: "Continue generation" }).waitFor();
+    assert.equal(await page.evaluate(() => (window as any).__privacyTest.acceptances()), 0);
+    assert.match(await notice.innerText(), /until Axiom restarts/);
+    await capture(page, `${theme}-outdated-consent`);
+    await notice.getByRole("button", { name: "Continue generation" }).click();
+    await page.getByRole("button", { name: "TEE updates needed. View privacy proof", exact: true }).waitFor();
+    assert.equal(await page.evaluate(() => (window as any).__privacyTest.acceptances()), 1);
+    assert.equal(await notice.getByRole("button").count(), 0);
+    assert.match(await notice.innerText(), /You chose to continue/);
+    await capture(page, `${theme}-outdated-accepted`);
+    await page.evaluate(() => (window as any).__privacyTest.update({ security: { state: "verifying" }, securityVerificationPending: true }));
+    await page.getByRole("button", { name: "TEE updates needed. View privacy proof", exact: true }).waitFor();
+    assert.match(await notice.innerText(), /You chose to continue/);
+    await page.evaluate(() => (window as any).__privacyTest.update({ security: { state: "failed" }, securityVerificationPending: false }));
+    await notice.waitFor({ state: "detached" });
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
 for (const theme of ["light", "dark"]) test(`privacy proof matches the composer and disclosures work (${theme})`, async () => {
   const { page, errors } = await open(theme);
   try {

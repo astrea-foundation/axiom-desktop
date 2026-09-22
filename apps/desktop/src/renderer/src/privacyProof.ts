@@ -2,23 +2,33 @@ import type { ClientSessionState, SecurityEvidence } from "@axiom/axiom-acp-clie
 
 export const PROOF_IDLE_AFTER_MS = 30 * 60_000;
 
-export type ProofState = "idle" | "verified" | "verifying" | "failed" | "expired" | "unavailable" | "unverified" | "development";
+export type ProofState = "idle" | "verified" | "degraded" | "outdated" | "verifying" | "failed" | "expired" | "unavailable" | "unverified" | "development";
+
+export function outdatedTeeState(session: ClientSessionState | null, modelId: string): "outdated" | "degraded" | undefined {
+  const state = session?.security?.state;
+  if (state === "outdated" || state === "degraded") return state;
+  if (state === "verifying" && session?.securityEvidence?.modelId === modelId
+    && session.securityEvidence.status.state === "degraded") return "degraded";
+  return undefined;
+}
 
 export function proofState(session: ClientSessionState, modelId: string, now: number): ProofState {
   if (session.securityVerificationPending || session.security?.state === "verifying") return "verifying";
   if (session.security?.state === "failed") return "failed";
+  if (session.security?.state === "outdated") return "outdated";
   if (session.security?.state === "unattested_development") return "development";
   if (session.needsResync) return "unavailable";
   if (session.securityVerificationError) return "unavailable";
   const evidence = session.securityEvidence;
-  if (session.security?.state !== "verified") return "unverified";
-  if (!evidence || evidence.modelId !== modelId || evidence.status.state !== "verified") return "unavailable";
+  if (session.security?.state !== "verified" && session.security?.state !== "degraded") return "unverified";
+  if (!evidence || evidence.modelId !== modelId || evidence.status.state !== session.security.state) return "unavailable";
   if (!Number.isFinite(evidence.hardExpiresAtUnixSeconds) || evidence.hardExpiresAtUnixSeconds * 1000 <= now) return "expired";
-  return "verified";
+  return session.security.state;
 }
 
 export const proofLabels: Record<ProofState, string> = {
   idle: "Idle",
+  degraded: "TEE updates needed", outdated: "TEE updates required",
   verified: "TEE verified", verifying: "Verifying TEE", failed: "TEE check failed",
   expired: "Report needs refresh", unavailable: "Proof unavailable", unverified: "Verify TEE", development: "Unattested dev",
 };
@@ -95,6 +105,8 @@ export function replyProof(session: ClientSessionState): ReplyProof {
 
 /** The composer summarizes the reply; report freshness remains independently inspectable. */
 export function proofBadge(session: ClientSessionState, reportState: ProofState): { label: string; tone: "success" | "danger" | "warning" | "muted" } {
+  if (outdatedTeeState(session, session.settings?.model ?? session.securityEvidence?.modelId ?? "") === "degraded") return { label: proofLabels.degraded, tone: "warning" };
+  if (reportState === "outdated") return { label: proofLabels.outdated, tone: "warning" };
   const reply = replyProof(session);
   if (reportState !== "idle" && reportState !== "development") {
     switch (reply.state) {

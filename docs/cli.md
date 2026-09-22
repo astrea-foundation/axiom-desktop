@@ -89,6 +89,7 @@ reconciled against the live catalog before the new session is persisted.
 | `/topup` | Show the mainnet Zcash deposit address |
 | `/redeem` | Open masked gift-code entry; takes no code argument |
 | `/security`, `/refresh` | Inspect cached public evidence or request fresh local verification |
+| `/security accept-outdated` | Explicitly accept NEAR’s Intel `OutOfDate` posture until restart, then verify again |
 | `/usage` | Inspect the last reported request's usage, context capacity and compaction threshold |
 | `/theme dark\|light\|terminal` | Set the session appearance |
 | `/help` | Show the complete command reference |
@@ -248,3 +249,9 @@ Command authority: [main.rs](../apps/axiomcli/src/main.rs),
 [slash.rs](../apps/axiomcli/src/slash.rs),
 [TUI](../apps/axiomcli/src/tui.rs), and
 [agent runtime](../apps/axiomcli/src/agent.rs).
+
+Outdated-provider consent is held in memory for the current native runtime and
+provider. The TUI keeps a yellow TEE warning after acceptance. Submit the prompt
+again after the fresh check succeeds. No other failed check becomes acceptable;
+headless and local-proxy processes remain strict unless explicitly controlled
+through a supported interactive consent operation.
