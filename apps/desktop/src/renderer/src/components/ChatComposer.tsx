@@ -277,7 +277,7 @@ export function ChatComposer({
               disabled={isStreaming || webDisabled || !onWebToggle}
               onClick={() => { setOpenMenu(null); onWebToggle?.(); }}
               title={isStreaming ? "Web access is fixed for the current response" : webEnabled ? "Turn off Web" : "Turn on Web"}
-              className={`flex h-7 shrink-0 items-center gap-1.5 rounded-[7px] px-2.5 text-[12px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${webEnabled ? "bg-brand text-on-brand enabled:hover:bg-brand-hover" : "text-[var(--color-text-tertiary)] hover:bg-[var(--wash-chip-hover)] hover:text-[var(--color-text-primary)]"}`}
+              className={`flex h-7 shrink-0 items-center gap-1.5 rounded-[7px] px-2.5 text-[12px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${webEnabled ? "bg-brand text-on-brand enabled:hover:bg-brand-hover dark:bg-[var(--color-cherry)] dark:text-on-accent dark:enabled:hover:bg-[var(--color-cherry)]" : "text-[var(--color-text-tertiary)] hover:bg-[var(--wash-chip-hover)] hover:text-[var(--color-text-primary)]"}`}
             >
               <Globe2 size={13} aria-hidden="true" />
               Web
@@ -305,7 +305,7 @@ export function ChatComposer({
               <button
                 type="button"
                 onClick={onStop}
-                className="flex h-[34px] w-[34px] items-center justify-center rounded-full bg-brand text-on-brand shadow-[0_1px_3px_var(--shade-button)] transition-[background-color,transform] hover:bg-brand-hover active:scale-[0.94] disabled:cursor-not-allowed disabled:opacity-40"
+                className="flex h-[34px] w-[34px] items-center justify-center rounded-full bg-brand text-on-brand dark:bg-[var(--color-cherry)] dark:text-on-accent shadow-[0_1px_3px_var(--shade-button)] transition-[background-color,transform] hover:bg-brand-hover dark:hover:bg-[var(--color-cherry-bright)] active:scale-[0.94] disabled:cursor-not-allowed disabled:opacity-40"
                 aria-label="Stop generating"
               >
                 <Square size={12} fill="currentColor" strokeWidth={2.5} />
@@ -316,7 +316,7 @@ export function ChatComposer({
                 type="button"
                 onClick={submit}
                 disabled={!canSend}
-                className="flex h-[34px] w-[34px] items-center justify-center rounded-full bg-brand text-on-brand shadow-[0_1px_3px_var(--shade-button)] transition-[background-color,transform] hover:bg-brand-hover active:scale-[0.94] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-brand disabled:active:scale-100"
+                className="flex h-[34px] w-[34px] items-center justify-center rounded-full bg-brand text-on-brand dark:bg-[var(--color-cherry)] dark:text-on-accent shadow-[0_1px_3px_var(--shade-button)] transition-[background-color,transform] hover:bg-brand-hover dark:hover:bg-[var(--color-cherry-bright)] active:scale-[0.94] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-brand dark:disabled:hover:bg-[var(--color-cherry)] disabled:active:scale-100"
                 aria-label={requiresSignIn ? "Sign in to send" : isStreaming ? "Queue message" : "Send"}
               >
                 <ArrowUp size={15} strokeWidth={2.5} />
