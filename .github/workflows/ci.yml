@@ -13,9 +13,13 @@ concurrency:
 permissions:
   contents: read
 
+# Keep short test-only credential deadlines reliable on shared native runners.
+env:
+  RUST_TEST_THREADS: 2
+
 jobs:
   rust:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
