@@ -133,9 +133,11 @@ evaluation and three host-performance benchmarks are opt-in with
 Small persistence, cancellation, process cleanup, protocol and security tests
 stay required. Clippy already checks all Linux targets, and native tests compile
 their targets, so CI does not precede either with a duplicate `cargo check`.
-CI omits development/test debug symbols, retains assertions, caches the pinned
-`cargo-deny` executable, and limits a dispatched native matrix to two concurrent
+CI omits development/test debug symbols, retains assertions, downloads the pinned
+`cargo-deny` executable with checksum verification, and limits a dispatched native matrix to two concurrent
 jobs. Release build profiles and signing checks are unchanged.
+The audit installer action is pinned to a commit and disables source-build
+fallbacks, so a fresh PR does not spend minutes compiling the audit tool itself.
 
 The release build retains the complete signed `axiom-signed-release` artifact for seven days
 before cross-repository publication. If the narrow upload or dispatch credentials

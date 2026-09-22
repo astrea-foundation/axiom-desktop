@@ -5,7 +5,9 @@ const mode = process.argv[2] ?? "passive";
 // Keep the process and stdout alive after closing the ACP input pipe. This
 // deterministically exercises the parent's write-error path instead of the
 // ordinary child-exit path.
-closeSync(0);
+// Windows libuv intentionally does not close descriptors 0-2. On Windows the
+// harness closes the parent's writable pipe after the ready notification.
+if (process.platform !== "win32") closeSync(0);
 process.stdout.write(`${JSON.stringify({
   jsonrpc: "2.0",
   method: "fixture/ready",

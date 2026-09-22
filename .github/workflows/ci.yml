@@ -49,16 +49,16 @@ jobs:
       - run: python3 -m unittest discover -s scripts/tests -p test_release_ci.py
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-      - name: Cache pinned cargo-deny executable
-        uses: actions/cache@v4
-        id: cargo-deny
-        with:
-          path: ~/.cargo/bin/cargo-deny
-          key: cargo-deny-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.cargo-deny-version') }}
-      - name: Install pinned cargo-deny
-        if: steps.cargo-deny.outputs.cache-hit != 'true'
+      - name: Read pinned audit tool version
+        id: audit-tool
         shell: bash
-        run: cargo install cargo-deny --version "=$(tr -d '\r\n' < .cargo-deny-version)" --locked
+        run: echo "version=$(tr -d '\r\n' < .cargo-deny-version)" >> "$GITHUB_OUTPUT"
+      - name: Install verified prebuilt cargo-deny
+        uses: taiki-e/install-action@dfae9bf3d6f6c6f20ef4ebb3486c01a51341ff12 # v2.87.18
+        with:
+          tool: cargo-deny@${{ steps.audit-tool.outputs.version }}
+          checksum: true
+          fallback: none
       - run: cargo test --workspace --all-features --locked --no-fail-fast
       - run: cargo test --target-dir target/acp-sdk-vendor --locked --manifest-path vendor/agent-client-protocol-2.0.0/Cargo.toml --test jsonrpc_deep_chain_stack
       - run: cargo deny check

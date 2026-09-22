@@ -53,6 +53,14 @@ pnpm --filter axiom-desktop test:browser
 regression. ACP client tests need the debug AxiomCLI binary built first. Protocol
 generation must leave the committed schema and TypeScript DTOs unchanged unless
 an intentional contract change is part of the patch.
+The generator's banner argument uses double quotes so package scripts preserve
+it as one argument in both Windows `cmd.exe` and Unix shells.
+Broken-pipe fixtures close the child's read end on Unix and the parent's writable
+pipe on Windows, where [libuv deliberately leaves descriptors 0-2 open](https://github.com/nodejs/node/blob/v22.23.2/deps/uv/src/win/fs.c#L633). Both
+paths assert request/notification rejection, safe permission-response shutdown,
+and child cleanup; they do not skip the error-handling assertions on Windows.
+The failing-request fixture has a five-second RPC deadline instead of retaining
+the normal two-minute timeout after a test has already failed.
 
 The [evaluation guide](evaluations.md) owns the opt-in repeated deterministic
 and performance lane (`scripts/axiomcli-eval deterministic`) and budgeted
