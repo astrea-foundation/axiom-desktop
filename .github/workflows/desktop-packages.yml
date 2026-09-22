@@ -11,7 +11,7 @@ on:
         description: Release platforms to package
         type: choice
         default: all
-        options: [all, windows]
+        options: [all, linux, windows]
 
 permissions:
   contents: read
@@ -32,7 +32,7 @@ jobs:
           node apps/desktop/scripts/set-release-version.mjs "${GITHUB_REF_NAME#v}" --check-only
 
   signed-windows:
-    if: inputs.unsigned == false
+    if: inputs.unsigned == false && inputs.platform != 'linux'
     needs: release-ref
     permissions:
       contents: read
@@ -40,7 +40,7 @@ jobs:
     uses: ./.github/workflows/windows-signed.yml
 
   package:
-    if: inputs.unsigned || inputs.platform == 'all'
+    if: inputs.unsigned || inputs.platform != 'windows'
     name: package (${{ matrix.platform }} ${{ matrix.arch }})
     needs: release-ref
     runs-on: ${{ matrix.runner }}
@@ -50,7 +50,8 @@ jobs:
       fail-fast: false
       matrix:
         include: >-
-          ${{ fromJSON(!inputs.unsigned &&
+          ${{ fromJSON(inputs.platform == 'linux' &&
+            '[{"platform":"linux","arch":"x64","runner":"ubuntu-22.04"}]' || !inputs.unsigned &&
             '[{"platform":"linux","arch":"x64","runner":"ubuntu-22.04"},{"platform":"mac","arch":"x64","runner":"macos-15-intel"},{"platform":"mac","arch":"arm64","runner":"macos-15"}]' || inputs.platform == 'windows' &&
             '[{"platform":"win","arch":"x64","runner":"windows-latest"},{"platform":"win","arch":"arm64","runner":"windows-11-arm"}]' ||
             '[{"platform":"linux","arch":"x64","runner":"ubuntu-22.04"},{"platform":"mac","arch":"x64","runner":"macos-15-intel"},{"platform":"mac","arch":"arm64","runner":"macos-15"},{"platform":"win","arch":"x64","runner":"windows-latest"},{"platform":"win","arch":"arm64","runner":"windows-11-arm"}]') }}
