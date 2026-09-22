@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 env:
   RUST_TEST_THREADS: 2
@@ -29,6 +30,10 @@ jobs:
         run: |
           git merge-base --is-ancestor HEAD origin/main
           node apps/desktop/scripts/set-release-version.mjs "${GITHUB_REF_NAME#v}" --check-only
+      - name: Require completed CI for this exact revision
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/verify-release-ci.py "$GITHUB_SHA"
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.97.1
@@ -117,8 +122,6 @@ jobs:
       - name: Set Desktop version from the release tag
         shell: bash
         run: node apps/desktop/scripts/set-release-version.mjs "${GITHUB_REF_NAME#v}"
-      - run: cargo test -p axiom-acp-extension -p axiomcli --all-features
-      - run: pnpm typecheck && pnpm test
       - run: cargo build --release -p axiomcli
       - name: Build, sign, and notarize Desktop
         env:
@@ -207,5 +210,3 @@ jobs:
       contents: read
       id-token: write
     uses: ./.github/workflows/windows-signed.yml
-    with:
-      full-tests: true

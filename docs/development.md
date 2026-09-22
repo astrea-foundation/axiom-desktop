@@ -60,9 +60,11 @@ The [evaluation guide](evaluations.md) owns deterministic and budgeted
 live-provider instructions. Live inference always uses registered, locally
 verified provider E2EE; it is not a prerequisite for a documentation edit.
 
-The [main CI workflow](../.github/workflows/ci.yml) has Rust/security, browser UI,
-and macOS/Windows portability jobs. Portability runners cover both
-macOS architectures and Windows x64/ARM64. These jobs do not package applications
+The [CI workflow](../.github/workflows/ci.yml) runs Rust/security and browser UI
+checks on pull requests, without repeating them on merge. Manual dispatch accepts
+`target=all`, `linux`, `desktop`, `macos-intel`, `macos-arm64`, `windows-x64`, or
+`windows-arm64` so native validation and failure retries can be targeted. Run all
+required platforms before release packaging. These jobs do not package applications
 or establish interactive OS acceptance. [Release workflows](releasing.md) do the
 packaging and require separate release evidence.
 

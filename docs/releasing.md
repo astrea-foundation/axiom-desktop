@@ -65,14 +65,29 @@ paths on each platform. No plaintext credential-file fallback is supported.
 
 ## Desktop and terminal CLI installers
 
-Pushes to `main` and pull requests targeting `main` run checks and tests without
-producing release archives or packaged Desktop applications. Development branches
-need local checks; see [development](development.md#checks). Release packaging
-and upload happen only in the release workflows. Linux Rust checks use Ubuntu 24.04 for Python 3.12 and its `tomllib` evaluation
+Pull requests targeting `main` run Linux Rust and Desktop UI checks. Merging does
+not repeat those checks automatically. Native macOS/Windows validation is an
+explicit `ci.yml` dispatch, either `target=all` or one of `macos-intel`,
+`macos-arm64`, `windows-x64`, and `windows-arm64`; `linux` and `desktop` rerun only
+those checks. Validate the complete release candidate before pushing its tag.
+When one platform fails, fix locally and dispatch only that platform first.
+The release workflows require successful Rust, UI, and all four native CI jobs
+for the exact tagged SHA, combining targeted dispatches when necessary. They
+reuse that validation instead of repeating full suites during packaging. Reuse
+successful build artifacts when retrying a failed packaging job. Do not launch overlapping
+full matrices for a PR, its merge, and its tag. Development branches need local
+checks; see [development](development.md#checks). Release packaging and upload
+happen only in the release workflows. Validate a candidate on `dev`, merge it to
+`main`, verify that the promoted tree matches, then tag that validated candidate
+commit (which is now an ancestor of `main`). This preserves exact-SHA evidence
+without repeating checks solely for the merge commit.
+
+Linux Rust checks use Ubuntu 24.04 for Python 3.12 and its `tomllib` evaluation
 dependency. The disposable CI runner disables AppArmor's unprivileged-user-namespace
 restriction so Bubblewrap isolation tests can create their network namespace;
 this does not change application sandboxing or production host settings. Linux
-release builds retain Ubuntu 22.04 for the glibc 2.35 baseline. All CI and release workflows limit Rust test concurrency to two; test-only
+release builds retain Ubuntu 22.04 for the glibc 2.35 baseline. All CI and release
+workflows limit Rust test concurrency to two; test-only
 credential deadlines allow one second of scheduling headroom while stalled-store
 fixtures still exceed that deadline. Production credential deadlines remain three
 seconds. Git attributes retain LF line endings across checkouts so generated

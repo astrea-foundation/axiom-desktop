@@ -15,6 +15,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 env:
   RUST_TEST_THREADS: 2
@@ -33,6 +34,10 @@ jobs:
         run: |
           git merge-base --is-ancestor HEAD origin/main
           node apps/desktop/scripts/set-release-version.mjs "${GITHUB_REF_NAME#v}" --check-only
+      - name: Require completed CI for this exact revision
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/verify-release-ci.py "$GITHUB_SHA"
 
   signed-windows:
     if: inputs.unsigned == false && inputs.platform != 'linux'

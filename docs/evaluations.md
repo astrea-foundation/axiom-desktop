@@ -79,3 +79,7 @@ The 5,000-checkpoint persistence soak reports timing before checking its budget:
 10 seconds on Linux, 30 seconds on macOS and Windows to account for durable-write
 latency on shared runners. The 16 MiB database and 512 KiB export bounds remain
 the same on every platform. Path-display fixtures use native absolute paths.
+
+PTY interactions wait for persisted turn completion before sending idle-only
+commands. Fixed sleeps do not establish completion on a loaded runner; the
+harness retains bounded waits and still checks terminal behavior over the PTY.
