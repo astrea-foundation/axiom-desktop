@@ -1,6 +1,7 @@
 import { ArrowDown } from "lucide-react";
 import type { ReactNode } from "react";
-import type { ClientSessionState } from "@axiom/axiom-acp-client";
+import type { ClientSessionState, PromptAttachment } from "@axiom/axiom-acp-client";
+import type { AttachmentPreviews } from "../attachmentPreviews";
 import type { PendingUserMessage, ProviderModel, ReasoningEffort } from "../types";
 import type { AttachmentControl } from "./Attachments";
 import { ChatComposer } from "./ChatComposer";
@@ -14,7 +15,8 @@ interface ChatViewProps {
   agentControl?: AgentControlOptions;
   queue?: ReactNode;
   session: ClientSessionState | null;
-  preparation?: { id: string; text: string } | null;
+  preparation?: { id: string; text: string; attachments: PromptAttachment[] } | null;
+  attachmentPreviews?: AttachmentPreviews;
   draft: string;
   onDraftChange: (value: string) => void;
   onSubmit: () => void;
@@ -44,6 +46,7 @@ export function ChatView({
   queue,
   session,
   preparation,
+  attachmentPreviews,
   draft,
   onDraftChange,
   onSubmit,
@@ -71,7 +74,7 @@ export function ChatView({
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
-      {preparation ? <PreparingThreadView id={preparation.id} text={preparation.text} /> : session ? <>
+      {preparation ? <PreparingThreadView {...preparation} /> : session ? <>
       <div
         ref={autoScroll.viewportRef}
         data-chat-scroll
@@ -83,7 +86,7 @@ export function ChatView({
         {...autoScroll.handlers}
       >
         <div ref={autoScroll.contentRef} className="mx-auto flex w-full max-w-[760px] flex-col pb-8 pt-[88px]">
-          <TimelineView session={session} pendingUserMessage={pendingUserMessage} onRevise={onRevise} />
+          <TimelineView key={securityScope} session={session} pendingUserMessage={pendingUserMessage} onRevise={onRevise} attachmentPreviews={attachmentPreviews} />
         </div>
       </div>
 

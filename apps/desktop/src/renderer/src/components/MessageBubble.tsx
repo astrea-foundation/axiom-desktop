@@ -46,9 +46,9 @@ export function MessageBubble({ message, onRevise, revisionText, revisionHasAtta
     return (
       <div className={`group flex min-w-0 justify-end${message.status === "pending" ? "" : " animate-fade-in-up"}`}>
         <div className="flex min-w-0 max-w-[min(80%,48rem)] flex-col items-end gap-1">
-          <div className="shadow-glass-tile min-w-0 max-w-full overflow-hidden rounded-[19px] rounded-br-[8px] bg-[var(--surface-bubble-user)] px-4 py-2.5 text-[15px] leading-6 text-[var(--color-text-primary)]">
+          {message.content ? <div className="shadow-glass-tile min-w-0 max-w-full overflow-hidden rounded-[19px] rounded-br-[8px] bg-[var(--surface-bubble-user)] px-4 py-2.5 text-[15px] leading-6 text-[var(--color-text-primary)]">
             <ChatMarkdown text={message.content} />
-          </div>
+          </div> : null}
           {message.status === "pending" ? (
             <div role="status" aria-label="Sending message" className="flex items-center gap-1.5 px-1 py-1 text-[11px] text-[var(--color-text-tertiary)]">
               <LoaderCircle size={12} className="animate-spin motion-reduce:animate-none" aria-hidden="true" />
