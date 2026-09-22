@@ -6,13 +6,15 @@ import type { AttachmentControl } from "./Attachments";
 import { ChatComposer } from "./ChatComposer";
 import type { AgentControlOptions } from "./AgentModeControl";
 import { TimelineView } from "./TimelineView";
+import { PreparingThreadView } from "./PreparingThreadView";
 import { useChatAutoScroll } from "../useChatAutoScroll";
 
 interface ChatViewProps {
   attachments?: AttachmentControl;
   agentControl?: AgentControlOptions;
   queue?: ReactNode;
-  session: ClientSessionState;
+  session: ClientSessionState | null;
+  preparation?: { id: string; text: string } | null;
   draft: string;
   onDraftChange: (value: string) => void;
   onSubmit: () => void;
@@ -41,6 +43,7 @@ export function ChatView({
   agentControl,
   queue,
   session,
+  preparation,
   draft,
   onDraftChange,
   onSubmit,
@@ -63,11 +66,12 @@ export function ChatView({
   webDisabled,
   onWebToggle,
 }: ChatViewProps) {
-  const autoScroll = useChatAutoScroll(session.sessionId);
+  const autoScroll = useChatAutoScroll(preparation?.id ?? session?.sessionId ?? "");
 
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
+      {preparation ? <PreparingThreadView id={preparation.id} text={preparation.text} /> : session ? <>
       <div
         ref={autoScroll.viewportRef}
         data-chat-scroll
@@ -93,12 +97,14 @@ export function ChatView({
           <ArrowDown size={16} />
         </button>
       ) : null}
+      </> : null}
       </div>
 
       <div className="shrink-0 px-6 pb-5 pt-2">
         <div className="mx-auto w-full max-w-[760px]">
-          {queue}
+          {!preparation && queue}
           <ChatComposer
+            preparing={!!preparation}
             attachments={attachments}
             agentControl={agentControl}
             webEnabled={webEnabled}
@@ -117,12 +123,12 @@ export function ChatView({
             onSignIn={onSignIn}
             reasoningEffort={reasoningEffort}
             onReasoningEffortChange={onReasoningEffortChange}
-            security={session}
+            security={preparation ? undefined : session ?? undefined}
             securityScope={securityScope}
             securityRefreshDisabledReason={securityRefreshDisabledReason}
-            contextUsage={session.contextUsage ?? null}
-            requestUsage={session.requestUsage}
-            activeTurnId={session.activeTurnId}
+            contextUsage={session?.contextUsage ?? null}
+            requestUsage={session?.requestUsage}
+            activeTurnId={session?.activeTurnId}
             onVerifySecurity={onVerifySecurity}
           />
         </div>

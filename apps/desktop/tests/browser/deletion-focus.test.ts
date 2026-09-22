@@ -395,7 +395,20 @@ for (const platform of ["linux", "win32", "darwin"]) {
       assert.equal(await messages.locator('[data-timeline-kind="user"]').count(), 1);
       assert.match(await messages.innerText(), /Work on my project/);
       assert.equal(await messages.locator('[data-timeline-kind="user"] > .group').evaluate((element) => getComputedStyle(element).opacity), "1");
-      assert.equal(await page.locator("textarea[data-chat-input]").count(), 0);
+      const composer = page.locator("textarea[data-chat-input]");
+      assert.equal(await composer.count(), 1, "the composer stays visible while creating the thread");
+      const preparedInput = await composer.elementHandle();
+      const checkPreparingComposer = async () => {
+        assert.equal(await composer.isVisible(), true);
+        assert.equal(await composer.isDisabled(), true, "wait for a thread before accepting another draft");
+        const bounds = await composer.boundingBox();
+        assert.ok(bounds && bounds.y > 0 && bounds.y + bounds.height <= page.viewportSize()!.height,
+          "the composer is inside the window, below the transcript");
+        for (const name of ["Attach files", "Web", "Agent", "Send"]) {
+          assert.equal(await page.getByRole("button", { name, exact: true }).isDisabled(), true);
+        }
+      };
+      await checkPreparingComposer();
       await page.keyboard.press("Enter");
       assert.equal((await calls(page)).filter((call) => call.method === "new").length, 1);
       assert.equal((await calls(page)).some((call) => call.method === "prompt"), false);
@@ -408,13 +421,19 @@ for (const platform of ["linux", "win32", "darwin"]) {
       await page.evaluate(() => (window as any).__deletionTest.releaseSetup("new"));
       await page.waitForFunction(() => (window as any).__deletionTest.settingsCalls.length === 1);
       assert.equal(await messages.getByRole("status").innerText(), "Sending…");
+      await checkPreparingComposer();
       await page.evaluate(() => (window as any).__deletionTest.releaseSetup("settings"));
       await page.waitForFunction(() => (window as any).__deletionTest.calls.some((call: any) => call.method === "configureAgent"));
       assert.equal(await messages.getByRole("status").innerText(), "Sending…");
+      await checkPreparingComposer();
       assert.equal((await calls(page)).some((call) => call.method === "prompt"), false);
       await page.evaluate(() => (window as any).__deletionTest.releaseSetup("agent"));
       await page.waitForFunction(() => (window as any).__deletionTest.calls.some((call: any) => call.method === "prompt"));
       await page.locator("textarea[data-chat-input]").waitFor();
+      assert.equal(await preparedInput!.evaluate((element) => element === document.querySelector("textarea[data-chat-input]")), true,
+        "setup completes without replacing the composer");
+      assert.equal(await composer.isEnabled(), true, "typing resumes before the provider finishes");
+      await composer.fill("My next message");
       assert.equal(await messages.locator('[data-timeline-kind="user"]').count(), 1);
       assert.equal(await page.getByRole("status", { name: "Sending message" }).count(), 1);
       assert.equal(await page.getByRole("region", { name: "Message queue" }).count(), 0);
@@ -423,7 +442,7 @@ for (const platform of ["linux", "win32", "darwin"]) {
       await page.getByRole("status", { name: "Sending message" }).waitFor({ state: "hidden" });
       assert.equal(await messages.locator('[data-timeline-kind="user"]').count(), 1);
       assert.equal((await calls(page)).filter((call) => call.method === "prompt").length, 1);
-      assert.equal(await page.locator("textarea[data-chat-input]").inputValue(), "");
+      assert.equal(await composer.inputValue(), "My next message", "finishing delivery preserves the next draft");
       assert.deepEqual(errors, []);
     } finally { await page.close(); }
   });

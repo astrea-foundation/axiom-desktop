@@ -5,7 +5,6 @@ import { ChatView } from "./components/ChatView";
 import { DeleteConfirmationDialog } from "./components/DeleteConfirmationDialog";
 import { MessageQueue } from "./components/MessageQueue";
 import { OverflowTitle } from "./components/OverflowTitle";
-import { PreparingThreadView } from "./components/PreparingThreadView";
 import { ProxyView } from "./components/ProxyView";
 import { RenameDialog } from "./components/RenameDialog";
 import type { SettingsCategory } from "./components/SettingsPanel";
@@ -56,6 +55,8 @@ export function App() {
     threads, folders, activeThread, activeSession, agentAccountScope, agentControl, isStreaming,
     ensureThreadLoaded, loadThread, showWelcome, reviseMessage, submitDraft, stopStream, deleteThread,
     messageQueue, threadLoads } = conversations;
+  const preparation = threadPreparation?.accountId === billingAccountId
+    && threadPreparation?.runtimeId === agentState.runtimeInstanceId ? threadPreparation : null;
 
   const showProxy = useCallback(() => {
     cancelThreadPreparation();
@@ -253,10 +254,9 @@ export function App() {
           ) : null}
 
           <div className="relative min-h-0 flex-1">
-            {surface === "proxy" ? <ProxyView accountId={agentState.connected ? billingAccountId : null} runtimeId={agentState.runtimeInstanceId} onInspecting={setProxyInspecting} /> : surface === "thread" && threadPreparation && threadPreparation.accountId === billingAccountId && threadPreparation.runtimeId === agentState.runtimeInstanceId ? (
-              <PreparingThreadView id={threadPreparation.id} text={threadPreparation.text} />
-            ) : surface === "thread" && activeSession ? (
+            {surface === "proxy" ? <ProxyView accountId={agentState.connected ? billingAccountId : null} runtimeId={agentState.runtimeInstanceId} onInspecting={setProxyInspecting} /> : surface === "thread" && (preparation || activeSession) ? (
               <ChatView
+                preparation={preparation}
                 onRevise={!activeSession?.running && agentState.account?.state === "valid" ? reviseMessage : undefined}
                 agentControl={agentControl}
                 queue={<MessageQueue messages={messageQueue.list(activeThreadId, billingAccountId).filter((message) => message.id !== pendingUserMessage?.id || message.status !== "sending")}

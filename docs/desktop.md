@@ -75,6 +75,11 @@ networking by approved local programs.
 
 ## Sending and queues
 
+The first message appears immediately while its thread is created and configured.
+The composer stays visible at the bottom during setup, with input and controls
+temporarily disabled until the thread is ready. It becomes usable as soon as the
+message is dispatched, without waiting for the provider's reply.
+
 Enter sends when idle. During a response, it adds input to a FIFO queue.
 **Send now** stops the current reply, waits for its cleanup, then sends the
 selected message as a new turn. Its text, attachments, Web choice and Agent

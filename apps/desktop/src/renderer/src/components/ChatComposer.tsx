@@ -38,6 +38,7 @@ interface ChatComposerProps {
   onStop?: () => void;
   placeholder?: string;
   autoFocus?: boolean;
+  preparing?: boolean;
   isStreaming?: boolean;
   models: ProviderModel[];
   selectedModelId: string;
@@ -68,6 +69,7 @@ export function ChatComposer({
   onStop,
   placeholder = "Ask anything",
   autoFocus = false,
+  preparing = false,
   isStreaming = false,
   models,
   selectedModelId,
@@ -97,7 +99,7 @@ export function ChatComposer({
   const showThinkingSelector = supportedReasoningEfforts.length > 0;
   const selectedThinking = reconcileReasoningEffort(reasoningEffort, supportedReasoningEfforts);
   const imageMismatch = attachments?.items.some((file) => !acceptsAttachment(selectedModel, file));
-  const canSend = (Boolean(value.trim()) || Boolean(attachments?.items.length)) && !attachments?.busy && !imageMismatch && (Boolean(selectedModel) || requiresSignIn);
+  const canSend = !preparing && (Boolean(value.trim()) || Boolean(attachments?.items.length)) && !attachments?.busy && !imageMismatch && (Boolean(selectedModel) || requiresSignIn);
 
   useEffect(() => {
     const el = ref.current;
@@ -144,9 +146,9 @@ export function ChatComposer({
 
   return (
     <div className="group relative w-full" onDragOver={(event) => { if (attachments && event.dataTransfer.types.includes("Files")) event.preventDefault(); }} onDrop={(event) => {
-      if (attachments && event.dataTransfer.files.length) { event.preventDefault(); attachments.onAddFiles(Array.from(event.dataTransfer.files)); }
+      if (attachments && event.dataTransfer.files.length) { event.preventDefault(); if (!preparing) attachments.onAddFiles(Array.from(event.dataTransfer.files)); }
     }}>
-      <div className="composer-shell relative flex flex-col rounded-[22px] pl-4 pr-2.5 pb-2 pt-3 backdrop-blur">
+      <fieldset disabled={preparing} aria-busy={preparing || undefined} className="composer-shell relative flex min-w-0 flex-col rounded-[22px] pl-4 pr-2.5 pb-2 pt-3 backdrop-blur">
         {attachments ? <><DraftAttachments control={attachments} /><input ref={fileInput} type="file" accept={attachmentAccept(selectedModel)} multiple hidden aria-label="Choose attachments" onChange={(event) => { const files = Array.from(event.target.files ?? []); event.target.value = ""; attachments.onAddFiles(files); }} /></> : null}
         {imageMismatch ? <p role="alert" className="mb-2 text-xs text-[var(--color-warning)]">Choose a model that supports these files, or remove the unsupported attachments.</p> : null}
         <div className="flex items-start gap-3">
@@ -319,7 +321,7 @@ export function ChatComposer({
             ) : null}
           </div>
         </div>
-      </div>
+      </fieldset>
     </div>
   );
 }
