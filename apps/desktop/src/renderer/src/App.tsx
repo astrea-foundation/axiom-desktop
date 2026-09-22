@@ -274,7 +274,7 @@ export function App() {
               <ChatView
                 preparation={preparation}
                 attachmentPreviews={conversations.attachmentPreviews}
-                onRevise={!activeSession?.running && agentState.account?.state === "valid" ? reviseMessage : undefined}
+                onRevise={!isStreaming && agentState.account?.state === "valid" ? reviseMessage : undefined}
                 agentControl={agentControl}
                 queue={<MessageQueue messages={messageQueue.list(activeThreadId, billingAccountId).filter((message) => message.id !== pendingUserMessage?.id || message.status !== "sending")}
                   paused={!!activeThreadId && messageQueue.isPaused(activeThreadId)}

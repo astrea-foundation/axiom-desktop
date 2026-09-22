@@ -532,9 +532,52 @@ test("a long draft keeps its sending indicator in view during thread preparation
   } finally { await page.close(); }
 });
 
-test("an unconfirmed first message leaves sending state and remains queued for an explicit retry", async () => {
+test("an idle existing chat shows its dispatched message in the transcript while later input waits in the queue", async () => {
   const { page, errors } = await openApp();
   try {
+    await page.getByRole("button", { name: "Viewed Existing thread", exact: true }).click();
+    await page.evaluate(() => (window as any).__deletionTest.holdSetup("prompt"));
+    const input = page.locator("textarea[data-chat-input]");
+    const transcript = page.getByRole("region", { name: "Chat messages", exact: true });
+    const queue = page.getByRole("region", { name: "Message queue", exact: true });
+    await input.fill("Send this immediately");
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    await page.waitForFunction(() => (window as any).__deletionTest.calls.some((call: any) => call.method === "prompt"));
+    await transcript.getByRole("status", { name: "Sending message", exact: true }).waitFor();
+    assert.equal(await transcript.getByText("Send this immediately", { exact: true }).count(), 1);
+    assert.equal(await queue.count(), 0, "an active send is not a queued follow-up");
+    assert.equal(await input.inputValue(), "");
+    await page.getByRole("button", { name: "Stop generating", exact: true }).waitFor();
+    if (process.env.AXIOM_IDLE_SEND_CAPTURE) {
+      await page.screenshot({ path: process.env.AXIOM_IDLE_SEND_CAPTURE, animations: "disabled" });
+      await page.emulateMedia({ colorScheme: "dark" });
+      await page.waitForFunction(() => document.documentElement.dataset.theme === "dark");
+      await page.screenshot({ path: `${process.env.AXIOM_IDLE_SEND_CAPTURE}.dark.png`, animations: "disabled" });
+    }
+    await page.getByRole("button", { name: "New thread", exact: true }).click();
+    assert.equal(await page.getByRole("status", { name: "Sending message", exact: true }).count(), 0);
+    await page.getByRole("button", { name: "Viewed Existing thread", exact: true }).click();
+    await transcript.getByRole("status", { name: "Sending message", exact: true }).waitFor();
+    assert.equal(await queue.count(), 0, "returning to the chat preserves the active send");
+    await input.fill("Wait until that finishes");
+    await page.getByRole("button", { name: "Queue message", exact: true }).click();
+    await queue.getByText("Wait until that finishes", { exact: true }).waitFor();
+    assert.equal(await queue.locator("[data-queued-message]").count(), 1);
+    assert.equal((await calls(page)).filter((call) => call.method === "prompt").length, 1);
+    await page.evaluate(() => (window as any).__deletionTest.releaseSetup("prompt"));
+    await queue.waitFor({ state: "hidden" });
+    await transcript.getByRole("status", { name: "Sending message", exact: true }).waitFor({ state: "hidden" });
+    assert.deepEqual((await calls(page)).filter((call) => call.method === "prompt").map((call) => call.text), ["Send this immediately", "Wait until that finishes"]);
+    assert.equal(await transcript.getByText("Send this immediately", { exact: true }).count(), 1);
+    assert.equal(await transcript.getByText("Wait until that finishes", { exact: true }).count(), 1);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+for (const existing of [false, true]) test(`an unconfirmed message leaves sending state and remains queued for an explicit retry (${existing ? "existing" : "new"} thread)`, async () => {
+  const { page, errors } = await openApp();
+  try {
+    if (existing) await page.getByRole("button", { name: "Viewed Existing thread", exact: true }).click();
     await page.evaluate(() => (window as any).__deletionTest.holdSetup("prompt"));
     await page.locator("textarea[data-chat-input]").fill("Do not lose this message");
     await page.locator("textarea[data-chat-input]").press("Enter");
@@ -546,9 +589,13 @@ test("an unconfirmed first message leaves sending state and remains queued for a
     await page.getByRole("status", { name: "Sending message" }).waitFor({ state: "hidden" });
     assert.match(await queue.innerText(), /Do not lose this message/);
     assert.equal(await page.locator('[data-timeline-kind="user"]').count(), 0);
+    await page.evaluate(() => (window as any).__deletionTest.holdSetup("prompt"));
     await queue.getByRole("button", { name: "Send now", exact: true }).click();
     await page.waitForFunction(() => (window as any).__deletionTest.calls.filter((call: any) => call.method === "prompt").length === 2);
+    await page.getByRole("status", { name: "Sending message", exact: true }).waitFor();
     await queue.waitFor({ state: "hidden" });
+    await page.evaluate(() => (window as any).__deletionTest.releaseSetup("prompt"));
+    await page.getByRole("status", { name: "Sending message", exact: true }).waitFor({ state: "hidden" });
     assert.equal(await page.locator('[data-timeline-kind="user"]').count(), 1);
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
@@ -973,6 +1020,9 @@ for (const platform of ["linux", "win32", "darwin"]) {
       await page.evaluate(() => (window as any).__deletionTest.releaseSetup("cancel"));
       await page.waitForFunction(() => (window as any).__deletionTest.calls.some((call: any) => call.method === "prompt"));
       assert.deepEqual((await calls(page)).filter((call) => call.method === "prompt").map((call) => call.text), ["Use the revised requirements instead."]);
+      await transcript.getByRole("status", { name: "Sending message", exact: true }).waitFor();
+      assert.equal(await transcript.getByText("Use the revised requirements instead.", { exact: true }).count(), 1);
+      assert.equal(await queue.locator("[data-queued-message]").count(), 1, "only the waiting follow-up remains queued");
       await page.evaluate(() => (window as any).__deletionTest.releaseSetup("prompt"));
       await queue.waitFor({ state: "hidden" });
       assert.deepEqual((await calls(page)).filter((call) => call.method === "prompt").map((call) => call.text), [

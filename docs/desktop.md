@@ -80,7 +80,13 @@ The composer stays visible at the bottom during setup, with input and controls
 temporarily disabled until the thread is ready. It becomes usable as soon as the
 message is dispatched, without waiting for the provider's reply.
 
-Enter sends when idle. During a response, it adds input to a FIFO queue.
+Enter sends when idle. A dispatched message appears in the conversation with
+**Sending…** until the native transcript acknowledges it, including while
+attestation checks finish. It is not displayed as a queued follow-up. Stop is
+available during this wait, and another message waits in the FIFO queue until
+the active request finishes. This applies to existing chats, first messages,
+retries and queued messages when their turn arrives.
+During a response, Enter adds input to the same FIFO queue.
 **Send now** stops the current reply, waits for its cleanup, then sends the
 selected message as a new turn. Its text, attachments, Web choice and Agent
 settings are preserved. Other queued messages retain their order. The cancel

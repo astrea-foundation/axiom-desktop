@@ -41,7 +41,6 @@ export function useConversations(agentState: ClientState, navigation: ReturnType
 
   if (!messageQueue.current) messageQueue.current = new MessageQueueController(browserConsentStorage(), () => setQueueRevision((value) => value + 1), setUiError);
 
-  const [pendingUserMessage, setPendingUserMessage] = useState<PendingUserMessage | null>(null);
   const threadLoads = useRef(new ThreadLoadTracker());
   const [threadLoadError, setThreadLoadError] = useState<{ id: string; detail: string; } | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<{ kind: "thread" | "folder"; id: string; title: string; } | null>(null);
@@ -122,6 +121,14 @@ export function useConversations(agentState: ClientState, navigation: ReturnType
   const folders = useMemo(() => orderFoldersByMessages(unsortedFolders, threads), [unsortedFolders, threads]);
   const activeThread = threads.find((thread) => thread.id === activeThreadId) ?? null;
   const activeSession = activeThreadId ? agentState.sessions[activeThreadId] ?? null : null;
+  // An outbox entry that is already dispatched belongs in the transcript. This
+  // also covers existing chats, retries and queued work as it starts sending.
+  const pendingUserMessage = useMemo<PendingUserMessage | null>(() => {
+    if (!agentState.connected || !activeSession) return null;
+    const sending = messageQueue.current!.list(activeThreadId, billingAccountId).find((item) => item.status === "sending"
+      && !activeSession.timeline.some((row) => row.clientItemId === item.id));
+    return sending ? { id: sending.id, sessionId: sending.threadId, text: sending.text, attachments: sending.attachments } : null;
+  }, [agentState.connected, activeSession, activeThreadId, billingAccountId, queueRevision]);
   const agentAccountScope = JSON.stringify([billingAccountId, agentState.runtimeInstanceId]);
   const attachmentPreviews = useMemo(() => new AttachmentPreviews(), [agentAccountScope]);
   // Restored queued messages also hand their local bytes to the transcript.
@@ -165,11 +172,10 @@ export function useConversations(agentState: ClientState, navigation: ReturnType
     },
   };
 
-  const isStreaming = activeSession?.running ?? false;
+  const isStreaming = !!activeSession?.running || !!pendingUserMessage;
 
   useEffect(() => {
     threadLoads.current.reset();
-    setPendingUserMessage(null);
     setThreadLoadError(null);
     setDeleteTarget(null);
     setRenameTarget(null);
@@ -220,16 +226,6 @@ export function useConversations(agentState: ClientState, navigation: ReturnType
       void ensureThreadLoaded(activeThreadId);
     }
   }, [activeThreadId, activeThread, surface, desktopReady, agentState.connected, agentState.sessions, ensureThreadLoaded]);
-
-  useEffect(() => {
-    if (!pendingUserMessage) return;
-    const session = agentState.sessions[pendingUserMessage.sessionId];
-    if (!session) return;
-    const queued = messageQueue.current!.list(pendingUserMessage.sessionId, billingAccountId).find((item) => item.id === pendingUserMessage.id);
-    if (session.timeline.some((item) => item.clientItemId === pendingUserMessage.id) || !queued || queued.status !== "sending") {
-      setPendingUserMessage(null);
-    }
-  }, [agentState.sessions, pendingUserMessage, queueRevision, billingAccountId]);
 
   const showWelcome = useCallback(() => {
     cancelThreadPreparation();
@@ -361,11 +357,9 @@ export function useConversations(agentState: ClientState, navigation: ReturnType
       if (creatingThread) webAccess.adoptThread(sessionId, webEnabled, stillSelected());
       messageQueue.current!.sync(current, api);
       messageQueue.current!.ready(submissionId, sessionId);
-      const messageId = submissionId;
       if (creatingThread && stillSelected()) {
         activeThreadIdRef.current = sessionId;
         setActiveThreadId(sessionId);
-        setPendingUserMessage({ id: messageId, sessionId, text, attachments: files });
         setNewAgentDraft(null);
         setThreadPreparation(null);
       }
@@ -417,7 +411,6 @@ export function useConversations(agentState: ClientState, navigation: ReturnType
     // sidecar publishes removal before deleteConfirm finishes its refresh.
     threadLoads.current.block(id);
     if (activeThreadIdRef.current === id) showWelcome();
-    setPendingUserMessage((current) => current?.sessionId === id ? null : current);
     try {
       const preview = await api.deletePreview([id]);
       await api.deleteConfirm(preview.confirmationToken, [id]);
