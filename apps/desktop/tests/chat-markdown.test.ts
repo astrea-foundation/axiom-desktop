@@ -48,7 +48,7 @@ $$`);
 test("code examples and escaped currency stay literal; math fences render", () => {
   const html = render('`$x^2$`\n\n```tex\n$x^2$\n```\n\nCost: \\$5 and \\$10.\n\n```math\nx^2\n```');
   assert.match(html, /<code>\$x\^2\$<\/code>/);
-  assert.match(html, /<code class="language-tex">\$x\^2\$/);
+  assert.match(html, /<code class="[^"]*language-tex[^"]*">\$x\^2\$/);
   assert.match(html, /Cost: \$5 and \$10/);
   assert.equal(html.match(/class="katex-display"/g)?.length, 1);
 });
@@ -78,4 +78,57 @@ test("recursive macros are bounded and cannot leak definitions to later messages
   const later = render(String.raw`$\messageOnly$`);
   assert.match(later, /\\messageOnly/);
   assert.doesNotMatch(later, /private/);
+});
+
+test("Python fences and aliases colour keywords, strings, numbers and comments", () => {
+  for (const language of ["python", "py"]) {
+    const html = render(`\`\`\`${language}\n# precision\ndef pi(digits: int = 100):\n    return "3.14"\n\`\`\``);
+    for (const token of ["comment", "keyword", "number", "string"]) {
+      assert.match(html, new RegExp(`class="hljs-${token}"`));
+    }
+    assert.match(html, /hljs-title function_/);
+  }
+});
+
+test("unlabelled Python is detected, while explicit text and unknown languages stay literal", () => {
+  const source = '#!/usr/bin/env python3\ndef pi(digits: int = 100):\n    return "3.14"\n';
+  assert.match(render(`\`\`\`\n${source}\`\`\``), /language-python/);
+  for (const language of ["text", "txt", "plaintext", "log", "output", "unknown-language"]) {
+    const html = render(`\`\`\`${language}\n${source}\`\`\``);
+    assert.doesNotMatch(html, /<span class="hljs-/);
+    assert.match(html, /def pi\(digits: int = 100\):/);
+  }
+  assert.equal(render('`return "literal"`'), '<div class="markdown-prose"><p><code>return &quot;literal&quot;</code></p></div>');
+});
+
+test("common fenced languages highlight without requiring remote grammars", () => {
+  for (const [language, source] of [
+    ["js", 'const value = "hello";'],
+    ["typescript", 'const value: string = "hello";'],
+    ["json", '{"value": 100}'],
+    ["bash", 'echo "hello"'],
+    ["rust", 'fn main() { let value = 100; }'],
+    ["sql", 'SELECT * FROM messages WHERE id = 100;'],
+  ]) {
+    assert.match(render(`\`\`\`${language}\n${source}\n\`\`\``), /<span class="hljs-/);
+  }
+});
+
+test("highlighted HTML stays escaped and incomplete streamed fences remain readable", () => {
+  const html = render('```html\n<script>alert("hello")</script>\n<img src=x onerror=alert(1)>\n```');
+  assert.doesNotMatch(html, /<script|<img|<iframe/);
+  assert.match(html, /&lt;/);
+  assert.match(html, /hljs-tag/);
+  const partial = render('```python\ndef pi():\n    return "unfinished');
+  assert.match(partial, /hljs-keyword/);
+  assert.match(partial, /unfinished/);
+});
+
+test("oversized code stays complete without spending time on token highlighting", () => {
+  for (const language of ["python", ""]) {
+    const source = '# long example\n'.repeat(4000);
+    const html = render(`\`\`\`${language}\n${source}\`\`\``);
+    assert.doesNotMatch(html, /<span class="hljs-/);
+    assert.equal(html.match(/# long example\n/g)?.length, 4000);
+  }
 });
