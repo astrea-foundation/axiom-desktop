@@ -69,31 +69,39 @@ authorize replay of a possibly billable inference.
 ## Trust-policy operations
 
 The signed envelope is bundled at
-[axiom-production-v1.json](../crates/axiom-secure-client/policy/axiom-production-v1.json)
+[axiom-production-v2.json](../crates/axiom-secure-client/policy/axiom-production-v2.json)
 and distributed by the authenticated relay. [security.rs](../crates/axiom-secure-client/src/security.rs)
 validates the signature, bounded validity, mandatory vendor rules, sequence and
-workload-policy fields. CLI/Desktop share an atomic rollback journal. A transport
-outage may use the still-valid last-known-good policy; bad signatures, rollback,
-equivocation and expiry fail closed.
+certificate anchors. CLI/Desktop share an atomic rollback journal. A failed
+refresh leaves the still-valid last-known-good policy in use. Invalid signatures,
+rollback and equivocation cannot replace that policy; an expired policy cannot
+authorize inference.
 
 NEAR uses the verified policy's NVIDIA intermediate fingerprints. Empty,
 malformed or unlisted anchors are rejected; signed overlap permits rotation.
 Certificate validity/signatures, verdict nonce, TDX and protocol-specific response
 authentication remain required.
 
-The bundled NEAR workload policy is observational. UI must distinguish observation
-from approved workload identity. Legacy Phala fields remain in the signed v1
-format for compatibility; they are inert signature-format fields and cannot register a provider.
+The current envelope uses schema 2 and sequence 3 with a new Ed25519 verification
+key. Its payload contains vendor requirements, certificate anchors and validity
+metadata. Publish the matching native and backend artifacts together. The bundled
+sequence supersedes older rollback-journal entries without parsing their policy;
+an equal or higher cached sequence must still verify. A higher sequence must be
+preserved during future signing-key changes.
+
+Clients released with schema 1 reject schema 2 refreshes and retain their existing
+policy until it expires. Release the paired native update to move those clients
+to the current policy. The new signing key must remain in controlled release
+storage outside either repository; the relay receives only the signed envelope.
 
 For a policy update:
 
 1. Increase the sequence and set a bounded validity window with rollout overlap.
 2. Preserve mandatory vendor/freshness/key checks. Overlap old/new NVIDIA anchors
    during certificate rotation; an unauthenticated JWKS change cannot add trust.
-3. Check workload rules against the registered provider contracts.
-4. Sign using the controlled offline/HSM-backed release signer. Copy the same
+3. Sign using the controlled offline/HSM-backed release signer. Copy the same
    envelope to the native/backend repositories and run signature/rollback/tamper tests.
-5. Publish through the backend release process, then release compatible clients;
+4. Publish through the backend release process, then release compatible clients;
    verify the new sequence and persisted rollback state with an attested canary.
 
 Never store the private signer in source, runtime configuration or logs. A signer

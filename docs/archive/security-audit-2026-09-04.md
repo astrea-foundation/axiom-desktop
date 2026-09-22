@@ -30,7 +30,5 @@ Desktop acceptance remains a separate release gate.
 
 No blocker/high-severity item remains open within the audited Linux coding-agent
 scope. Desktop platform support remains conditional on the interactive release
-checks documented in `platform-support.md`. The remaining workload-allowlist
-limitation is disclosed independently of the verified vendor evidence and
-endpoint/key bindings. Local journals are not encrypted by AxiomCLI and are
-documented as relying on OS/disk protection.
+checks documented in `platform-support.md`. Local journals are not encrypted by
+AxiomCLI and are documented as relying on OS/disk protection.

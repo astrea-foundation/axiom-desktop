@@ -30,9 +30,7 @@ export function publicSecurityEvidence(result: VerifySecurityResponse, modelId: 
     || !Array.isArray(evidence.providerClaims) || evidence.providerClaims.length > 128
     || evidence.providerClaims.some((claim) => !text(claim.name) || typeof claim.value !== "string" || claim.value.length > 8192)
     || (evidence.workloadManifest != null && (typeof evidence.workloadManifest !== "string"
-      || new TextEncoder().encode(evidence.workloadManifest).byteLength > MAX_WORKLOAD_MANIFEST_BYTES))
-    || typeof evidence.workloadIdentityAllowlistConfigured !== "boolean"
-    || typeof evidence.approvedWorkloadIdentity !== "boolean") {
+      || new TextEncoder().encode(evidence.workloadManifest).byteLength > MAX_WORKLOAD_MANIFEST_BYTES))) {
     throw new ProtocolError("AxiomCLI returned an incomplete or mismatched verification report");
   }
   return {
@@ -51,7 +49,5 @@ export function publicSecurityEvidence(result: VerifySecurityResponse, modelId: 
     checks: evidence.checks.map(({ name, passed, detail }) => ({ name, passed, detail })),
     providerClaims: evidence.providerClaims.map(({ name, value }) => ({ name, value })),
     workloadManifest: evidence.workloadManifest ?? null,
-    workloadIdentityAllowlistConfigured: evidence.workloadIdentityAllowlistConfigured,
-    approvedWorkloadIdentity: evidence.approvedWorkloadIdentity,
   };
 }

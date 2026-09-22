@@ -60,7 +60,7 @@ const EXTENSION_CAPABILITIES = {
     account: 2,
     billing: 3,
     usage: 1,
-    securityEvidence: 1,
+    securityEvidence: 2,
     webConsent: 1,
     steering: 1,
     messageRevision: 1,

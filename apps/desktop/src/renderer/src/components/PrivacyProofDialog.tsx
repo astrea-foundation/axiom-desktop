@@ -154,7 +154,6 @@ export function PrivacyProofDialog({ session, model, modelId, state, now, webEna
               <Fact label="Expires">{new Date(evidence.hardExpiresAtUnixSeconds * 1000).toLocaleString()}</Fact>
               <Fact label="Key fingerprint" mono>{evidence.modelKeyFingerprint}</Fact>
               {evidence.tlsSpkiFingerprint ? <Fact label="TLS fingerprint" mono>{evidence.tlsSpkiFingerprint}</Fact> : null}
-              <Fact label="Software policy">{evidence.approvedWorkloadIdentity ? "Approved identity" : evidence.workloadIdentityAllowlistConfigured ? "Not approved" : "No approved list configured"}</Fact>
             </dl>
             <section><h3 className="mb-1 font-medium">Local check results</h3>
               <dl>{evidence.checks.map((check, index) => <Fact key={index} label={check.name === "Signed receipt" ? "Receipt policy" : check.name}>{check.name === "Signed receipt" && check.detail === "required" ? "Required for each reply" : check.detail}</Fact>)}</dl>

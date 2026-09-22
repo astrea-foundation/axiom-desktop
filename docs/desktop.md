@@ -160,7 +160,8 @@ After 30 minutes without user interaction or a running reply, it shows neutral
 window resumes verification. Background checks and network events do not reset
 inactivity. A failed or blocked refresh cannot extend a report or mark it verified;
 native inference always enforces fresh proof independently of this display.
-Reports describe the provider-specific verified claims. Tinfoil reports router
+Reports show hardware, encryption-key, freshness and source-provenance checks
+for the selected provider. Tinfoil reports router
 verification, and NEAR v3 identifies an attested
 worker TLS key rather than claiming the client observed the backend's socket.
 Provisional streamed text becomes verified only after authenticated completion;

@@ -500,8 +500,6 @@ fn extension_security_evidence(
         workload_manifest: evidence.workload_manifest.map(|manifest| {
             bounded_extension_text(manifest, extension::MAX_WORKLOAD_MANIFEST_BYTES)
         }),
-        workload_identity_allowlist_configured: evidence.workload_identity_allowlist_configured,
-        approved_workload_identity: evidence.approved_workload_identity,
     })
 }
 
@@ -1545,7 +1543,7 @@ impl ExtensionState {
         if features.usage >= 1 {
             mask |= ExtensionFeature::Usage as u64;
         }
-        if features.security_evidence >= 1 {
+        if features.security_evidence >= 2 {
             mask |= ExtensionFeature::SecurityEvidence as u64;
         }
         if features.compaction >= 1 {
@@ -2536,8 +2534,6 @@ mod tests {
             checks: Vec::new(),
             provider_claims: Vec::new(),
             workload_manifest: None,
-            workload_identity_allowlist_configured: false,
-            approved_workload_identity: false,
         };
         assert!(
             extension_security_evidence(crate::app::SecurityStatus::Verified, evidence).is_err()
@@ -2562,8 +2558,6 @@ mod tests {
             checks: Vec::new(),
             provider_claims: Vec::new(),
             workload_manifest: None,
-            workload_identity_allowlist_configured: false,
-            approved_workload_identity: false,
         };
         let projected =
             extension_security_evidence(crate::app::SecurityStatus::Verified, evidence.clone())

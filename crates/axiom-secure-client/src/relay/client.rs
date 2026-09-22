@@ -346,12 +346,6 @@ pub(crate) fn error_for_status_body(status: StatusCode, body: &[u8]) -> SecureCl
         ) => SecureClientError::attestation(
             "The provider's security evidence failed verification. See verification diagnostics.",
         ),
-        Some("WORKLOAD_NOT_APPROVED") => SecureClientError::with_code(
-            axiom_inference::ProviderFailureKind::AttestationRejected,
-            crate::SecureErrorCode::WorkloadNotApproved,
-            "provider workload is not approved",
-            false,
-        ),
         Some("PROTOCOL_UNSUPPORTED") => SecureClientError::with_code(
             axiom_inference::ProviderFailureKind::CapabilityMismatch,
             crate::SecureErrorCode::ProtocolUnsupported,

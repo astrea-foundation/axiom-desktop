@@ -90,7 +90,7 @@ test("extension negotiation accepts additive families and optional features only
     collections: 1,
     account: 2,
     billing: 3,
-    securityEvidence: 1,
+    securityEvidence: 2,
     webConsent: 1,
     futureFeature: 7,
   };
@@ -106,6 +106,10 @@ test("extension negotiation accepts additive families and optional features only
     protocolVersion: "0.2",
     features: { ...required, timeline: 1 },
   }));
+  assert.throws(() => validateDesktopExtension({
+    protocolVersion: "0.2",
+    features: { ...required, securityEvidence: 1 },
+  }), /securityEvidence/);
   const { timeline: _, ...missingTimeline } = required;
   assert.throws(() => validateDesktopExtension({
     protocolVersion: "0.2",

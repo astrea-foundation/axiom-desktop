@@ -127,8 +127,8 @@ impl SecureClient {
 
     /// Resolve the newest valid signed trust policy without making policy
     /// availability a single point of failure. A valid local policy remains
-    /// usable during relay outages; rollback, expiry, equivocation, and an
-    /// unpersistable sequence upgrade fail closed.
+    /// usable after a refresh failure. Invalid candidates cannot replace it,
+    /// sequence upgrades must persist, and expired policies cannot be used.
     pub async fn trust_policy(&self, cancellation: CancellationToken) -> Result<TrustPolicy> {
         let now = now_unix();
         {
@@ -418,6 +418,36 @@ mod tests {
         assert!(SecureClient::new(config.clone(), ApiCredential::new("")).is_err());
         let client = SecureClient::new(config, ApiCredential::new("axm_not_for_logs")).unwrap();
         assert!(!format!("{client:?}").contains("axm_not_for_logs"));
+    }
+
+    #[test]
+    fn bundled_policy_replaces_an_older_journal_without_loading_old_rules() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("trust-policy.json");
+        let mut config = SecureClientConfig::new("https://api.axiom.stream").unwrap();
+        config.trust_policy_cache_path = Some(path.clone());
+        let policy = TrustPolicy::production().unwrap();
+        let old = PersistedTrustPolicy {
+            highest_sequence: policy.sequence - 1,
+            signed_policy: "superseded policy format".into(),
+        };
+        fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+        assert_eq!(load_initial_policy(&config).unwrap(), policy);
+        persist_policy(
+            &path,
+            crate::security::bundled_signed_policy(),
+            &policy,
+            config.limits.trust_policy_bytes,
+        )
+        .unwrap();
+        assert_eq!(load_initial_policy(&config).unwrap(), policy);
+        assert_eq!(
+            read_persisted(&path, config.limits.trust_policy_bytes)
+                .unwrap()
+                .unwrap()
+                .highest_sequence,
+            policy.sequence
+        );
     }
 
     #[test]

@@ -115,7 +115,7 @@ fn security_evidence() -> SecurityEvidence {
         attestation_protocol: "near-tdx-nvidia-v2".into(),
         e2ee_protocol: "near-v3".into(),
         e2ee_encryption_version: 2,
-        trust_policy_version: "axiom-production-v1".into(),
+        trust_policy_version: "test-policy".into(),
         verified_at_unix_seconds: now - 1,
         attestation_generation: Some(4),
         hard_expires_at_unix_seconds: Some(now + 240),
@@ -147,8 +147,6 @@ fn security_evidence() -> SecurityEvidence {
             })
             .to_string(),
         ),
-        workload_identity_allowlist_configured: false,
-        approved_workload_identity: false,
     }
 }
 
@@ -169,7 +167,6 @@ fn security_inspector_shows_current_summary_provider_evidence_and_raw_report() {
     assert!(summary.contains("Intel TDX"));
     assert!(summary.contains("Expires"));
     assert!(!summary.contains("Axiom approval"));
-    assert!(!summary.contains("allowlist configured"));
 
     state.cycle_security_view();
     let workload = render_symbols(120, 42, &state);

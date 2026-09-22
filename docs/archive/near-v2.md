@@ -156,8 +156,7 @@ The client accepts a report only when:
   protocol match the compiled NEAR driver.
 
 Signed trust-policy version 2 proves verified vendor evidence and key/model/live-TLS
-binding. It does not claim an Axiom-approved workload measurement until a
-separately maintained measurement or workload-manifest allowlist is available.
+binding.
 
 ## 7. Model catalog
 

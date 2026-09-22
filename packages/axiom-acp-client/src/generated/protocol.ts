@@ -781,8 +781,6 @@ export interface SecurityEvidence {
   checks: EvidenceCheck[];
   providerClaims: EvidenceClaim[];
   workloadManifest?: string | null;
-  workloadIdentityAllowlistConfigured: boolean;
-  approvedWorkloadIdentity: boolean;
   [k: string]: unknown;
 }
 export interface SecurityStatus {

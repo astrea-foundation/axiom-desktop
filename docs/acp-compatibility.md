@@ -49,12 +49,16 @@ family; each named feature negotiates its own version. Missing/zero versions
 mean unsupported. Desktop checks its required feature set and negotiates optional
 features separately.
 
-`account`, `timeline`, and `attachments` are version **2**; `billing` is version **3**.
+`account`, `timeline`, `attachments`, and `securityEvidence` are version **2**;
+`billing` is version **3**.
 Other advertised features are version **1**:
 `desktopChat`, `desktopAgent`, `threadCatalog`, `modelCatalog`,
-`profilePreferences`, `collections`, `usage`, `securityEvidence`,
+`profilePreferences`, `collections`, `usage`,
 `webConsent`, `steering`, `messageRevision`, `compaction`, and `activity`.
 The source `FeatureVersions` and generated schema are authoritative.
+
+`securityEvidence@2` carries verified hardware, key, freshness and provenance
+evidence. Desktop requires this version before accepting verification reports.
 
 ## Methods and ownership
 

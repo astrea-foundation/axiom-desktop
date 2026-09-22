@@ -13,6 +13,5 @@ export function securityEvidence(now = Date.now()): SecurityEvidence {
     ].map(([name, detail]) => ({ name: name!, detail: detail!, passed: true })),
     providerClaims: [{ name: "workload_manifest_sha256", value: "c3d4e5f6".repeat(8) }],
     workloadManifest: JSON.stringify({ name: "Synthetic UI fixture", services: { model: { image: "example.invalid/model@sha256:" + "c3d4e5f6".repeat(8) } } }, null, 2),
-    workloadIdentityAllowlistConfigured: true, approvedWorkloadIdentity: true,
   };
 }
