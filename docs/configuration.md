@@ -65,8 +65,7 @@ separate. See [ADR 0014](adr/0014-clean-storage-and-deposit-billing.md).
 ```toml
 base_url = "https://api.axiom.stream"
 permission_profile = "confirm"
-web_search_provider = "axiom" # alternatively: searxng
-searxng_url = "http://127.0.0.1:8888"
+web_search_provider = "axiom" # the only supported search provider
 max_context_bytes = 16777216
 max_context_tokens = 4194304
 max_tool_output_bytes = 131072
@@ -145,6 +144,11 @@ capacity, capped by local limits. Unsupported reasoning levels fail locally.
 `minimal`, `low`, `medium`, `high`, and `xhigh` are the application enum; a model
 may expose only a subset. See [CLI](cli.md) for remembered model/thinking settings.
 
+Web search uses the authenticated Axiom account endpoint. An unsupported
+`web_search_provider` value fails startup instead of silently choosing a
+different search destination. Search queries are not inference E2EE; see
+[privacy](privacy.md).
+
 ## Environment
 
 | Variable | Meaning |
@@ -153,8 +157,7 @@ may expose only a subset. See [CLI](cli.md) for remembered model/thinking settin
 | `AXIOM_BASE_URL` | Relay origin, default `https://api.axiom.stream` |
 | `AXIOM_AUTH_URL` | Hosted account origin, default `https://auth.axiom.stream` |
 | `AXIOM_MODEL` | Discovered model ID override |
-| `AXIOM_WEB_SEARCH_PROVIDER` | `axiom` (default) or `searxng` |
-| `AXIOM_SEARXNG_URL` | Explicit SearXNG endpoint |
+| `AXIOM_WEB_SEARCH_PROVIDER` | `axiom` (default and only supported value) |
 | `AXIOM_PERMISSION_PROFILE` | Trusted startup tool profile |
 | `AXIOMCLI_CREDENTIAL_STORE` | Optional `keyring`; plaintext-file stores are rejected |
 | `AXIOMCLI_THEME` | `dark` (default), `light`, or `terminal` |

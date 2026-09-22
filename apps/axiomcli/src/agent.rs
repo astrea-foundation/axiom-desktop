@@ -5406,8 +5406,7 @@ mod engine_tests {
                 tool_calls: Vec::new(),
             },
         ]));
-        let registry =
-            crate::tools::default_registry(4096, "http://127.0.0.1:8888").expect("registry");
+        let registry = crate::tools::test_registry(4096).expect("registry");
         let engine = AgentEngine::new(provider, Arc::new(registry), "test", 2);
         let mut turn_context = context();
         turn_context.cwd = tempfile::tempdir().expect("workspace").keep();
@@ -6412,7 +6411,7 @@ mod engine_tests {
     async fn structured_questions_need_no_permission_before_the_question() {
         let engine = AgentEngine::new(
             Arc::new(ScriptedProvider::new(vec![])),
-            Arc::new(crate::tools::default_registry(4096, "http://127.0.0.1:8888").unwrap()),
+            Arc::new(crate::tools::test_registry(4096).unwrap()),
             "test",
             4,
         );

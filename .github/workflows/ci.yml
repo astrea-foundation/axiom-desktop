@@ -94,14 +94,3 @@ jobs:
       - run: pnpm test
       # Release archives and Desktop bundles are built only by the release
       # workflows. Keep branch and PR CI focused on checks and tests.
-
-  real-searxng:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: 1.97.1
-      - uses: astral-sh/setup-uv@v6
-      - uses: Swatinem/rust-cache@v2
-      - run: scripts/searxng-dev integration-test

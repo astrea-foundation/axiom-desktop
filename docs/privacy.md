@@ -30,10 +30,9 @@ for the separate reply and report displays.
 ## Web tools and local integrations
 
 Web starts off for a new conversation. Opting in permits search queries and URL
-fetches to leave the device outside provider E2EE. Default hosted search sends
+fetches to leave the device outside provider E2EE. Hosted search sends
 only a bounded query to Axiom's authenticated search endpoint and Decodo. The
-hosted contract prohibits retaining/logging query or result text. Explicit
-SearXNG configuration sends searches to that service instead. Page fetching
+hosted contract prohibits retaining/logging query or result text. Page fetching
 runs in the native client with public-address/redirect checks. Results are
 locally encrypted when included in later inference.
 

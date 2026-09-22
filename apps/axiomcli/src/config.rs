@@ -47,7 +47,6 @@ pub struct Config {
     pub model: String,
     pub base_url: String,
     pub permission_profile: PermissionProfile,
-    pub searxng_url: String,
     pub web_search_provider: String,
     pub max_agent_steps: Option<usize>,
     pub max_context_bytes: usize,
@@ -90,7 +89,6 @@ struct ConfigLayer {
     model: Option<String>,
     base_url: Option<String>,
     permission_profile: Option<PermissionProfile>,
-    searxng_url: Option<String>,
     web_search_provider: Option<String>,
     max_agent_steps: Option<usize>,
     max_context_bytes: Option<usize>,
@@ -113,9 +111,6 @@ impl ConfigLayer {
         }
         if let Some(value) = self.permission_profile {
             config.permission_profile = value;
-        }
-        if let Some(value) = self.searxng_url {
-            config.searxng_url = value;
         }
         if let Some(value) = self.web_search_provider {
             config.web_search_provider = value;
@@ -160,7 +155,6 @@ impl ConfigLayer {
 
     fn apply_project(self, config: &mut Config) -> Result<()> {
         if self.base_url.is_some()
-            || self.searxng_url.is_some()
             || self.web_search_provider.is_some()
             || self.mcp_servers.is_some()
         {
@@ -242,7 +236,6 @@ impl Default for Config {
             model: "auto".into(),
             base_url: "https://api.axiom.stream".into(),
             permission_profile: PermissionProfile::Confirm,
-            searxng_url: "http://127.0.0.1:8888".into(),
             web_search_provider: "axiom".into(),
             max_agent_steps: None,
             // Provider model metadata owns the normal context/compaction
@@ -386,16 +379,15 @@ impl Config {
         }
         let base_url = reqwest::Url::parse(&self.base_url)
             .map_err(|error| AxiomError::Config(format!("invalid base_url: {error}")))?;
-        let searxng_url = reqwest::Url::parse(&self.searxng_url)
-            .map_err(|error| AxiomError::Config(format!("invalid searxng_url: {error}")))?;
-        if !matches!(self.web_search_provider.as_str(), "axiom" | "searxng") {
+        if self.web_search_provider != "axiom" {
             return Err(AxiomError::Config(
-                "web_search_provider must be axiom or searxng".into(),
+                "web_search_provider must be axiom; other search providers are not supported"
+                    .into(),
             ));
         }
-        if !valid_endpoint(&base_url) || !valid_endpoint(&searxng_url) {
+        if !valid_endpoint(&base_url) {
             return Err(AxiomError::Config(
-                "provider and SearXNG URLs must use http(s), include a host, and contain no embedded credentials"
+                "base_url must use http(s), include a host, and contain no embedded credentials"
                     .into(),
             ));
         }
@@ -527,9 +519,6 @@ fn apply_environment(config: &mut Config) -> Result<()> {
     if let Ok(value) = std::env::var("AXIOM_MODEL") {
         config.model = value;
     }
-    if let Ok(value) = std::env::var("AXIOM_SEARXNG_URL") {
-        config.searxng_url = value;
-    }
     if let Ok(value) = std::env::var("AXIOM_WEB_SEARCH_PROVIDER") {
         config.web_search_provider = value;
     }
@@ -558,7 +547,6 @@ fn warn_about_unknown_config_fields(path: &Path, content: &str) -> Result<()> {
         "model",
         "base_url",
         "permission_profile",
-        "searxng_url",
         "web_search_provider",
         "max_agent_steps",
         "max_context_bytes",
@@ -697,6 +685,23 @@ mod tests {
     }
 
     #[test]
+    fn unsupported_search_providers_fail_instead_of_changing_the_destination() {
+        assert!(Config::default().validate().is_ok());
+        for provider in ["retired-provider", "", "AXIOM"] {
+            let mut config = Config::default();
+            let layer: ConfigLayer = toml::from_str(&format!("web_search_provider = {provider:?}"))
+                .expect("provider config");
+            layer.apply_trusted(&mut config);
+            let error = config.validate().expect_err("unsupported provider");
+            assert!(
+                error
+                    .to_string()
+                    .contains("web_search_provider must be axiom")
+            );
+        }
+    }
+
+    #[test]
     fn release_resource_limits_are_bounded() {
         for config in [
             Config {
@@ -735,7 +740,7 @@ mod tests {
         layer.apply_trusted(&mut config);
         assert_eq!(config.model, "cherry");
         assert_eq!(config.permission_profile, PermissionProfile::Confirm);
-        assert_eq!(config.searxng_url, "http://127.0.0.1:8888");
+        assert_eq!(config.web_search_provider, "axiom");
     }
 
     #[test]

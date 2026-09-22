@@ -1,8 +1,8 @@
 # Evaluations and performance
 
 [The development guide](development.md#checks) owns general checks. This guide
-covers behavioral evaluation, real search integration and historical performance
-observations. [scripts/axiomcli-eval](../scripts/axiomcli-eval) defines the lanes.
+covers behavioral evaluation and historical performance observations.
+[scripts/axiomcli-eval](../scripts/axiomcli-eval) defines the lanes.
 
 ## Deterministic lane
 
@@ -51,33 +51,9 @@ a 15-minute job limit and required endpoint/model/key secrets. The manually
 dispatched Desktop installer workflow is a separate packaging lane; passing it
 is not evidence of a live-provider test.
 
-## Real SearXNG integration
-
-The default search provider is authenticated hosted Axiom search. Selecting
-`web_search_provider = "searxng"` explicitly enables the alternative; see
-[configuration](configuration.md). To work with a real local service:
-
-```sh
-scripts/searxng-dev bootstrap
-scripts/searxng-dev start
-scripts/searxng-dev query 'Rust programming language'
-scripts/searxng-dev integration-test
-scripts/searxng-dev upstream-test
-scripts/searxng-dev stop
-```
-
-The script clones pinned upstream source into `.cache/searxng`, creates a Python
-3.13 environment with `uv`, and uses `127.0.0.1:8888` for the development server.
-Integration tests own ephemeral loopback instances and clean them up. They
-exercise the real service and JSON engine against an isolated HTTP upstream,
-including citations, URL normalization, and empty, disabled, delayed and shutdown
-responses. This required CI lane does not depend on public search engines accepting
-shared runner IPs. `upstream-test` separately checks live DuckDuckGo/Wikipedia
-availability and fails when upstream throttling or network failures prevent results.
-Fixture secrets are only for local development.
-
-`scripts/axiomcli-eval full` runs deterministic tests, real SearXNG integration,
-and then the live provider test; it therefore needs the live variables too.
+`scripts/axiomcli-eval full` runs the deterministic lane and then the live
+provider test; it requires the live variables described above. Hosted-search
+client tests use a local authenticated fixture, without paid search requests.
 
 ## Historical measurements
 

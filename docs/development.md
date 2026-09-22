@@ -56,20 +56,19 @@ regression. ACP client tests need the debug AxiomCLI binary built first. Protoco
 generation must leave the committed schema and TypeScript DTOs unchanged unless
 an intentional contract change is part of the patch.
 
-The [evaluation guide](evaluations.md) owns deterministic, real SearXNG and
-budgeted live-provider instructions. Live inference always uses registered,
-locally verified provider E2EE; it is not a prerequisite for a documentation edit.
+The [evaluation guide](evaluations.md) owns deterministic and budgeted
+live-provider instructions. Live inference always uses registered, locally
+verified provider E2EE; it is not a prerequisite for a documentation edit.
 
 The [main CI workflow](../.github/workflows/ci.yml) has Rust/security, browser UI,
-macOS/Windows portability, and real-SearXNG jobs. Portability runners cover both
+and macOS/Windows portability jobs. Portability runners cover both
 macOS architectures and Windows x64/ARM64. These jobs do not package applications
 or establish interactive OS acceptance. [Release workflows](releasing.md) do the
 packaging and require separate release evidence.
 
 Portability fixtures compare canonical working directories and keep differently
 cased Desktop resource layouts in separate directories, including on macOS's
-case-insensitive filesystem. The real SearXNG CI job uses a local HTTP upstream;
-public-engine availability has a separate opt-in check in the evaluation guide.
+case-insensitive filesystem.
 
 ## Desktop UI and captures
 

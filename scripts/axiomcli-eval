@@ -35,8 +35,6 @@ case "$mode" in
     ;;
   full)
     run_deterministic
-    scripts/searxng-dev integration-test
-    scripts/searxng-dev upstream-test
     run_live_model
     ;;
   *)

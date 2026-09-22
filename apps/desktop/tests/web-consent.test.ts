@@ -13,7 +13,7 @@ test("warning is vendor-neutral and clearly separates web disclosure from privat
   assert.match(html, /No thanks/);
   assert.match(html, />Yes, I understand<\/button>/);
   assert.match(html, /Don’t show this warning again/);
-  assert.doesNotMatch(html, /Decodo|SearXNG|window\.confirm|checked=""/i);
+  assert.doesNotMatch(html, /Decodo|window\.confirm|checked=""/i);
 });
 
 test("warning preference is per-account, exact, and fail-closed when storage is unavailable", () => {

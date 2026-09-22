@@ -1,3 +1,7 @@
+#[path = "support/search.rs"]
+mod search;
+use search::test_registry;
+
 use std::{
     collections::VecDeque,
     path::Path,
@@ -14,7 +18,6 @@ use axiomcli::{
         AssistantTurn, FunctionCall, InferenceProvider, InferenceRequest, ProviderEvent,
         SecureAxiomProvider, ToolCall,
     },
-    tools::default_registry,
     workspace::Workspace,
 };
 use serde::Serialize;
@@ -140,7 +143,7 @@ async fn run_agent(
     });
     let engine = AgentEngine::with_limits(
         provider.clone(),
-        Arc::new(default_registry(32 * 1024, "http://127.0.0.1:9").expect("tools")),
+        Arc::new(test_registry(32 * 1024).expect("tools")),
         "deterministic-evaluation",
         AgentLimits {
             max_steps: Some(12),
@@ -467,7 +470,7 @@ async fn live_model_investigation_baseline_is_budgeted_and_non_mutating() {
         );
         let engine = AgentEngine::with_limits(
             provider,
-            Arc::new(default_registry(32 * 1024, "http://127.0.0.1:9").expect("tools")),
+            Arc::new(test_registry(32 * 1024).expect("tools")),
             model.clone(),
             AgentLimits {
                 max_steps: Some(6),
