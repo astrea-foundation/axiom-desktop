@@ -1,6 +1,8 @@
 @import "@axiom/brand/fonts.css";
 @import "tailwindcss";
 
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
 /* A tool is an inline step in a response, not another full message. */
 .chat-timeline > [data-timeline-kind] + [data-timeline-kind] {
   margin-top: 12px;
