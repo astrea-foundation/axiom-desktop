@@ -81,6 +81,12 @@ relevant credentials. This does not change the signed defaults in
 `electron-builder.yml` or the mandatory signing in the pushed-tag workflow.
 The manual lane does not run the signed workflow's live-provider gate.
 
+The manual packaging job uses the protected `release` environment, including for
+unsigned builds. Allow the intended `v*` release tags in that environment's
+deployment rules. Signed macOS builds read the five Apple secrets listed below
+from `release`; Apple credentials are passed only to signed macOS packaging.
+Signed Windows builds use the separate `windows-signing` environment.
+
 Every desktop package includes the complete matching AxiomCLI binary. The
 packaging script checks its architecture and version before packaging.
 User-facing steps are in [Install Axiom Desktop and AxiomCLI](installing-desktop.md).
@@ -201,11 +207,18 @@ The workflow needs a protected `release` environment with these secrets:
 | `AXIOM_EVAL_MODEL` | live evaluation model ID |
 | `AXIOMCLI_RELEASE_GPG_KEY_BASE64` | base64-encoded Linux archive signing key |
 | `AXIOMCLI_RELEASE_GPG_FINGERPRINT` | full authorized Linux signing-key fingerprint |
-| `MACOS_CERTIFICATE_BASE64` | base64-encoded Apple signing certificate |
-| `MACOS_CERTIFICATE_PASSWORD` | Apple signing-certificate password |
+| `MACOS_CERTIFICATE_BASE64` | base64-encoded PKCS#12 (`.p12`) bundle containing Developer ID Application and Installer certificates with their matching private keys |
+| `MACOS_CERTIFICATE_PASSWORD` | password protecting that PKCS#12 bundle |
 | `APPLE_ID` | notarization account |
 | `APPLE_APP_SPECIFIC_PASSWORD` | notarization app password |
 | `APPLE_TEAM_ID` | Apple developer team |
+
+The downloaded `.cer` files contain public certificates; the PKCS#12 bundle must
+also include the private keys that generated their signing requests. `APPLE_ID`
+and `APPLE_APP_SPECIFIC_PASSWORD` must belong to the same Apple Account, with
+Account Holder, Admin, App Manager, or Developer access to the selected team.
+Generate an app-specific password for notarization through
+[Apple Account settings](https://support.apple.com/102654).
 
 Windows signing uses the separate `windows-signing` environment described below,
 not uploaded PFX certificates or a long-lived Azure client secret.

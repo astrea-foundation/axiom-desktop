@@ -44,6 +44,7 @@ jobs:
     name: package (${{ matrix.platform }} ${{ matrix.arch }})
     needs: release-ref
     runs-on: ${{ matrix.runner }}
+    environment: release
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -97,9 +98,9 @@ jobs:
           UNSIGNED: ${{ inputs.unsigned }}
           CSC_LINK: ${{ !inputs.unsigned && runner.os == 'macOS' && secrets.MACOS_CERTIFICATE_BASE64 || '' }}
           CSC_KEY_PASSWORD: ${{ !inputs.unsigned && runner.os == 'macOS' && secrets.MACOS_CERTIFICATE_PASSWORD || '' }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_ID: ${{ !inputs.unsigned && runner.os == 'macOS' && secrets.APPLE_ID || '' }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ !inputs.unsigned && runner.os == 'macOS' && secrets.APPLE_APP_SPECIFIC_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ !inputs.unsigned && runner.os == 'macOS' && secrets.APPLE_TEAM_ID || '' }}
         run: |
           args=(--${{ matrix.platform }} --${{ matrix.arch }})
           if [[ "$UNSIGNED" == true ]]; then args+=(--unsigned); fi
