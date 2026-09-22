@@ -770,8 +770,10 @@ fn durable_tui_session_resumes_in_the_same_workspace() {
         .expect("list sessions");
     assert!(listed.status.success());
     let stdout = String::from_utf8(listed.stdout).expect("session list utf8");
+    // Background title generation may finish before the first TUI exits. Both
+    // the prompt-derived title and the fixture's generated title are valid.
     assert!(
-        stdout.contains("probe"),
+        stdout.contains("\tprobe\t") || stdout.contains("\tGenerated conversation title\t"),
         "initial title was not persisted: {stdout}"
     );
     let id = stdout
