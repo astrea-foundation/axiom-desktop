@@ -6,6 +6,10 @@
 Status: complete. Initial baseline: `0eec7cd` on `refactor/clean-baseline`.
 Final branch: `refactor/native-maintenance`, targeting `dev`.
 
+September 22 update: the local-only title decision below is historical. Background
+titles are restored with account binding, reasoning-aware budgets, usage
+accounting and rename protection; see [Desktop](desktop.md).
+
 This work completes the cleanup identified by the source audit. It began on the
 native cleanup branch; PR #3 was merged into `dev` during implementation, including
 this plan’s initial commit. The remaining changes continue in a follow-up PR to

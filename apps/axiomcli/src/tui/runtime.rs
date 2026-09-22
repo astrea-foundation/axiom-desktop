@@ -170,6 +170,10 @@ pub(super) fn account_status_text(account: &AccountStatus) -> String {
 
 pub(super) enum UiMessage {
     UpdateAvailable(String),
+    TitleFinished {
+        session_id: SessionId,
+        account_generation: u64,
+    },
     BillingFinished {
         generation: u64,
         account_generation: u64,
@@ -894,6 +898,9 @@ pub async fn run(
     let mut billing_ticks = tokio::time::interval(Duration::from_secs(5));
     billing_ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut cancellation: Option<CancellationToken> = None;
+    let title_lifetime = CancellationToken::new();
+    let _title_cancel_on_exit = title_lifetime.clone().drop_guard();
+    let mut title_tasks = tokio::task::JoinSet::new();
     let mut auth_cancellation: Option<CancellationToken> = None;
     let mut security_cancellation: Option<CancellationToken> = None;
     let mut security_generation = 0_u64;
@@ -2030,6 +2037,7 @@ pub async fn run(
                                         continue;
                                     }
                                     let turn_id = runtime.turn_id();
+                                    let token = CancellationToken::new();
                                     let should_generate_title = !state.has_prompt
                                         && store.as_ref().is_some_and(SessionStore::is_active);
                                     let submitted = runtime.dispatch(AppCommand::SubmitPrompt {attachments: Vec::new(),
@@ -2042,16 +2050,36 @@ pub async fn run(
                                         store.set_last_used_model(&state.model)?;
                                         store.set_last_used_thinking(state.thinking)?;
                                         if should_generate_title {
-                                            let title = crate::session_title::session_title(&prompt);
-                                            if let Err(error) = store.set_title_if_absent(&session_id, &title) {
-                                                tracing::warn!(%session_id, %error, "could not persist session title");
+                                            match crate::session_title::TitleGeneration::prepare(store, &session_id, &prompt, &state.model) {
+                                                Ok(Some(job)) => {
+                                                    let title_runner = runner.clone();
+                                                    let title_token = token.child_token();
+                                                    let lifetime = title_lifetime.clone();
+                                                    let title_tx = ui_tx.clone();
+                                                    let owner = session_id.clone();
+                                                    let account_generation = auth.generation();
+                                                    title_tasks.spawn(async move {
+                                                        let request = job.run(title_runner.as_ref(), title_token.clone());
+                                                        tokio::pin!(request);
+                                                        let result = tokio::select! {
+                                                            result = &mut request => result,
+                                                            () = lifetime.cancelled() => { title_token.cancel(); request.await }
+                                                        };
+                                                        if let Err(error) = result { tracing::debug!(%error, "background title kept its local fallback"); }
+                                                        tokio::select! {
+                                                            _ = title_tx.send(UiMessage::TitleFinished { session_id: owner, account_generation }) => {},
+                                                            () = lifetime.cancelled() => {},
+                                                        }
+                                                    });
+                                                }
+                                                Ok(None) => {},
+                                                Err(error) => tracing::warn!(%session_id, %error, "could not persist session title"),
                                             }
                                         }
                                     }
                                     for event in submitted {
                                         state.apply(&event.event);
                                     }
-                                    let token = CancellationToken::new();
                                     cancellation = Some(token.clone());
                                     active_turn = Some(turn_id.clone());
                                     let steering = Arc::new(crate::steering::TurnSteering::new(turn_id.clone()));
@@ -2183,6 +2211,20 @@ pub async fn run(
                     UiMessage::UpdateAvailable(notice) => {
                         // UI-only information: never model input or persisted conversation history.
                         state.push_entry(EntryKind::System, notice, false);
+                    }
+                    UiMessage::TitleFinished { session_id: owner, account_generation } => {
+                        if owner == session_id && account_generation == auth.generation()
+                            && let Some(store) = store.as_ref().filter(|store| store.is_active())
+                            && let Ok(snapshot) = store.thread_snapshot(&owner, None, 1)
+                        {
+                            for usage in snapshot.request_usage.into_iter().filter(|usage| usage.purpose == axiom_inference::InvocationPurpose::Title) {
+                                state.apply(&AppEvent::RequestUsageUpdated { usage });
+                            }
+                            if let Some(Overlay::ResumePicker { sessions, .. } | Overlay::DeletePicker { sessions, .. }) = &mut state.overlay
+                                && let Some(session) = sessions.iter_mut().find(|session| session.id == owner.to_string()) {
+                                session.title = snapshot.thread.title;
+                            }
+                        }
                     }
                     UiMessage::BillingFinished { generation, account_generation, result } => {
                         billing_flow.finish(&mut state, generation, account_generation, result);
@@ -2650,6 +2692,8 @@ pub async fn run(
         }
     }
 
+    title_lifetime.cancel();
+    while title_tasks.join_next().await.is_some() {}
     if let Some(token) = security_cancellation.take() {
         token.cancel();
     }
