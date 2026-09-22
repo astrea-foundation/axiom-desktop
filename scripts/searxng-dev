@@ -112,10 +112,15 @@ case "${1:-}" in
   integration-test)
     [[ -x "${venv_dir}/bin/searxng-run" ]] || bootstrap
     cargo test --manifest-path "${project_dir}/Cargo.toml" \
-      --test searxng_integration -- --ignored --nocapture
+      --test searxng_integration real_service_lifecycle_failure_modes_and_agent_citations -- --ignored --nocapture
+    ;;
+  upstream-test)
+    [[ -x "${venv_dir}/bin/searxng-run" ]] || bootstrap
+    cargo test --manifest-path "${project_dir}/Cargo.toml" \
+      --test searxng_integration live_upstream_search_returns_results -- --ignored --nocapture
     ;;
   *)
-    echo "usage: $0 {bootstrap|run|start|stop|status|query SEARCH TERMS|integration-test}" >&2
+    echo "usage: $0 {bootstrap|run|start|stop|status|query SEARCH TERMS|integration-test|upstream-test}" >&2
     exit 2
     ;;
 esac

@@ -66,6 +66,11 @@ macOS architectures and Windows x64/ARM64. These jobs do not package application
 or establish interactive OS acceptance. [Release workflows](releasing.md) do the
 packaging and require separate release evidence.
 
+Portability fixtures compare canonical working directories and keep differently
+cased Desktop resource layouts in separate directories, including on macOS's
+case-insensitive filesystem. The real SearXNG CI job uses a local HTTP upstream;
+public-engine availability has a separate opt-in check in the evaluation guide.
+
 ## Desktop UI and captures
 
 The renderer lives in `apps/desktop/src/renderer`; Electron lifecycle, origins,

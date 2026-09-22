@@ -62,16 +62,19 @@ scripts/searxng-dev bootstrap
 scripts/searxng-dev start
 scripts/searxng-dev query 'Rust programming language'
 scripts/searxng-dev integration-test
+scripts/searxng-dev upstream-test
 scripts/searxng-dev stop
 ```
 
 The script clones pinned upstream source into `.cache/searxng`, creates a Python
 3.13 environment with `uv`, and uses `127.0.0.1:8888` for the development server.
 Integration tests own ephemeral loopback instances and clean them up. They
-exercise real upstream search plus empty, disabled, timeout and shutdown
-configurations, citations, URL normalization and local-target denial. Upstream
-throttling/network failures can still affect results. Fixture secrets are only
-for local development.
+exercise the real service and JSON engine against an isolated HTTP upstream,
+including citations, URL normalization, and empty, disabled, delayed and shutdown
+responses. This required CI lane does not depend on public search engines accepting
+shared runner IPs. `upstream-test` separately checks live DuckDuckGo/Wikipedia
+availability and fails when upstream throttling or network failures prevent results.
+Fixture secrets are only for local development.
 
 `scripts/axiomcli-eval full` runs deterministic tests, real SearXNG integration,
 and then the live provider test; it therefore needs the live variables too.

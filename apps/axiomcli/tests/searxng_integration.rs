@@ -27,6 +27,88 @@ struct SearxngService {
     endpoint: String,
 }
 
+struct SearchUpstream {
+    state: tempfile::TempDir,
+    server: tokio::task::JoinHandle<()>,
+}
+
+impl SearchUpstream {
+    async fn start() -> Self {
+        use axum::{Json, Router, routing::get};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let results = || async {
+            Json(serde_json::json!({"results": [
+                {"url":"https://www.rust-lang.org/", "title":"Rust", "content":"The Rust programming language"},
+                {"url":"https://doc.rust-lang.org/book/", "title":"Rust Book", "content":"Learn Rust"}
+            ]}))
+        };
+        let app = Router::new().route("/search", get(results)).route(
+            "/slow",
+            get(|| async {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                Json(serde_json::json!({"results": []}))
+            }),
+        );
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let state = tempfile::tempdir().unwrap();
+        for (name, path, timeout) in [("normal", "search", 5.0), ("timeout", "slow", 0.1)] {
+            std::fs::write(
+                state.path().join(format!("{name}.yml")),
+                format!(
+                    r#"
+use_default_settings:
+  engines:
+    keep_only: [axiom test upstream]
+general:
+  debug: false
+  enable_metrics: false
+search:
+  formats: [html, json]
+server:
+  bind_address: "127.0.0.1"
+  secret_key: "axiom-local-test-only"
+  limiter: false
+  public_instance: false
+outgoing:
+  request_timeout: {timeout}
+  max_request_timeout: {timeout}
+engines:
+  - name: axiom test upstream
+    engine: json_engine
+    enable_http: true
+    shortcut: axtest
+    disabled: false
+    search_url: "http://{address}/{path}?q={{query}}"
+    results_query: results
+    url_query: url
+    title_query: title
+    content_query: content
+    timeout: {timeout}
+"#
+                ),
+            )
+            .unwrap();
+        }
+        Self { state, server }
+    }
+
+    fn settings(&self, name: &str) -> String {
+        self.state
+            .path()
+            .join(format!("{name}.yml"))
+            .to_str()
+            .unwrap()
+            .to_owned()
+    }
+}
+
+impl Drop for SearchUpstream {
+    fn drop(&mut self) {
+        self.server.abort();
+    }
+}
+
 impl SearxngService {
     async fn start(settings: &str) -> Self {
         let project = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -46,8 +128,8 @@ impl SearxngService {
             .env("AXIOMCLI_SEARXNG_PORT", port.to_string())
             .env("AXIOMCLI_SEARXNG_URL", &endpoint)
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
             .spawn()
             .expect("start real SearXNG");
         let mut service = Self {
@@ -153,17 +235,19 @@ impl InferenceProvider for CitationProvider {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "starts the pinned real SearXNG development service and uses real upstream engines"]
+#[ignore = "starts the pinned real SearXNG service with an isolated HTTP upstream"]
 async fn real_service_lifecycle_failure_modes_and_agent_citations() {
-    let mut normal = SearxngService::start("settings.yml").await;
+    let upstream = SearchUpstream::start().await;
+    let mut normal = SearxngService::start(&upstream.settings("normal")).await;
     let report = normal
         .client()
         .search("Rust programming language", CancellationToken::new())
         .await
-        .expect("real upstream search");
+        .expect("search through the real SearXNG service");
     assert!(
         !report.results.is_empty(),
-        "real engines returned no results"
+        "the SearXNG JSON engine returned no fixture results; warnings: {:?}",
+        report.warnings
     );
     let mut normalized = HashSet::new();
     for result in &report.results {
@@ -248,7 +332,7 @@ async fn real_service_lifecycle_failure_modes_and_agent_citations() {
     assert!(!report.warnings.is_empty());
     drop(disabled);
 
-    let timeout = SearxngService::start("settings-timeout.yml").await;
+    let timeout = SearxngService::start(&upstream.settings("timeout")).await;
     let report = timeout
         .client()
         .search("timeout engine", CancellationToken::new())
@@ -261,6 +345,22 @@ async fn real_service_lifecycle_failure_modes_and_agent_citations() {
             .iter()
             .any(|warning| warning.to_ascii_lowercase().contains("timeout")),
         "warnings: {:?}",
+        report.warnings
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires live upstream search-engine availability"]
+async fn live_upstream_search_returns_results() {
+    let service = SearxngService::start("settings.yml").await;
+    let report = service
+        .client()
+        .search("Rust programming language", CancellationToken::new())
+        .await
+        .expect("live upstream search");
+    assert!(
+        !report.results.is_empty(),
+        "real engines returned no results; warnings: {:?}",
         report.warnings
     );
 }
