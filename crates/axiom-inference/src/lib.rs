@@ -588,6 +588,8 @@ pub enum ProviderSecurityState {
     Unverified,
     Verifying,
     Verified,
+    Degraded,
+    Outdated,
     Failed,
     UnattestedDevelopment,
 }

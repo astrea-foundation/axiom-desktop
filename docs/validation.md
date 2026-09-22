@@ -298,3 +298,10 @@ rapid connection recovery and failure, preserved native errors and failed reply
 status, and removal of the notice without an empty timeline row. The 26 timeline
 unit tests, Desktop TypeScript checks and production build passed. Light/dark
 screenshots were checked with the dismissal controls visible.
+
+Outdated-TEE consent regression coverage: native status/consent/restart checks in
+`crates/axiom-secure-client/src/providers/near/attestation.rs`, report validation
+and model-change protection in the ACP client security tests, and light/dark
+warning/acceptance screenshots in the Desktop privacy-proof browser suite. The
+companion backend tests explicit session consent and preserves rejection of
+invalid quote signatures, nonce/key/TLS/workload bindings and other TCB statuses.

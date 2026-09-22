@@ -268,6 +268,7 @@ async function openApp(platform = "linux", failDelete = false, thinkingLevels: s
         setAccountState: (account: AccountStatus) => { state.account = account; state.sessions = {}; state.catalog = []; emit(); },
         setBilling: (billing: BillingStatus) => { state.billing = billing; emit(); },
         setError: (error: string | null) => { state.error = error; emit(); },
+        setSecurity: (security: string) => { state.sessions["old-thread"]!.security = { state: security }; emit(); },
         failBalance: (fail: boolean) => { failBalance = fail; },
         setRuntime: (id: string, connected = true) => { state.runtimeInstanceId = id; state.connected = connected; emit(); },
         finishTurn: () => { state.sessions["old-thread"]!.running = false; state.sessions["old-thread"]!.activeTurnId = null; emit(); },
@@ -330,6 +331,40 @@ async function openApp(platform = "linux", failDelete = false, thinkingLevels: s
   }
   return { page, errors, nativeDialogs };
 }
+
+test("outdated TEE consent retries the paused turn through attachment-preserving revision", async () => {
+  const { page, errors } = await openApp();
+  try {
+    await page.getByRole("button", { name: "Viewed Existing thread", exact: true }).click();
+    await page.evaluate(() => {
+      const bridge = (window as any).__deletionTest;
+      bridge.setTimeline([
+        { id: "question", turnId: "paused-turn", kind: "user", text: "Explain this diagram", status: "completed",
+          raw: { metadata: { attachments: [{ name: "diagram.png", kind: "image" }] } } },
+        { id: "error", turnId: "paused-turn", kind: "error", text: "The provider's Intel TDX environment is OutOfDate and requires security updates.", status: "failed" },
+      ]);
+      bridge.setSecurity("outdated");
+      (window as any).axiomDesktop.agent.verifySecurity = async (id: string, accept: boolean, modelId: string) => {
+        bridge.calls.push({ method: "verify", id, text: JSON.stringify({ accept, modelId }) });
+        bridge.setSecurity("degraded");
+        return { status: { state: "degraded" } };
+      };
+    });
+    await page.getByRole("button", { name: "Continue generation", exact: true }).click();
+    await page.waitForFunction(() => (window as any).__deletionTest.calls.some((call: any) => call.method === "revise"));
+    const requests = await page.evaluate(() => (window as any).__deletionTest.calls);
+    assert.deepEqual(requests.filter((call: any) => call.method === "verify"), [
+      { method: "verify", id: "old-thread", text: JSON.stringify({ accept: true, modelId: "test-model" }) },
+    ]);
+    assert.deepEqual(requests.filter((call: any) => call.method === "revise"), [
+      { method: "revise", id: "old-thread", text: "Explain this diagram", userItemId: "question", expectedRevision: 1, webEnabled: false },
+    ]);
+    assert.equal(requests.filter((call: any) => call.method === "prompt" || call.method === "attachments").length, 0);
+    assert.equal(await page.getByText("diagram.png", { exact: true }).isVisible(), true);
+    assert.match(await page.locator("[data-outdated-tee-warning]").innerText(), /You chose to continue/);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
 
 for (const platform of ["linux", "win32", "darwin"]) {
   test(`stale thinking preferences become an offered value and persist after sending (${platform})`, async () => {

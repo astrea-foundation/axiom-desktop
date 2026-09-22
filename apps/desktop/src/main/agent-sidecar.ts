@@ -340,8 +340,8 @@ export class AgentSidecar {
     return this.requireClient().logout();
   }
 
-  verifySecurity(sessionId: string) {
-    return this.requireClient().verifySecurity(sessionId);
+  verifySecurity(sessionId: string, acceptOutdatedTee = false, modelId?: string) {
+    return this.requireClient().verifySecurity(sessionId, acceptOutdatedTee, modelId);
   }
 
   compact(sessionId: string, focus?: string) {

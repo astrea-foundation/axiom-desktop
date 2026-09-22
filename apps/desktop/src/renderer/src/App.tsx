@@ -305,6 +305,7 @@ export function App() {
                   if (!activeThreadId || !window.axiomDesktop?.agent) throw new Error("No active thread");
                   await window.axiomDesktop.agent.verifySecurity(activeThreadId);
                 }}
+                onAcceptOutdatedTee={() => conversations.acceptOutdatedTee(modelId)}
               />
             ) : surface === "thread" ? (
               <div className="flex h-full flex-col items-center justify-center gap-3 text-[13px] text-[var(--color-text-tertiary)]">

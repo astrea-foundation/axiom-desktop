@@ -1,4 +1,12 @@
-use std::{net::IpAddr, path::PathBuf, time::Duration};
+use std::{
+    net::IpAddr,
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 use url::Url;
 
@@ -6,6 +14,8 @@ use crate::{Result, SecureClientError};
 
 #[derive(Clone, Debug)]
 pub struct SecureClientConfig {
+    // Shared by this runtime's client clones, never serialized or written to disk.
+    accept_outdated_near_tcb: Arc<AtomicBool>,
     pub relay_base_url: Url,
     pub request_timeout: Duration,
     pub attestation_timeout: Duration,
@@ -32,6 +42,7 @@ impl SecureClientConfig {
             ));
         }
         Ok(Self {
+            accept_outdated_near_tcb: Arc::new(AtomicBool::new(false)),
             relay_base_url,
             request_timeout: Duration::from_secs(120),
             attestation_timeout: Duration::from_secs(60),
@@ -61,6 +72,7 @@ impl SecureClientConfig {
             ));
         }
         Ok(Self {
+            accept_outdated_near_tcb: Arc::new(AtomicBool::new(false)),
             relay_base_url,
             request_timeout: Duration::from_secs(15),
             attestation_timeout: Duration::from_secs(10),
@@ -81,6 +93,22 @@ impl SecureClientConfig {
     #[cfg(feature = "test-fixture")]
     pub(crate) const fn uses_test_fixture(&self) -> bool {
         self.test_fixture
+    }
+
+    /// Explicit local-user consent for missing Intel updates, for this runtime only.
+    /// This cannot relax any cryptographic, identity, freshness or GPU check.
+    pub fn accept_outdated_tee_for_provider(&self, provider: &str) -> Result<()> {
+        if provider != "near" {
+            return Err(SecureClientError::configuration(
+                "this provider has no supported outdated-TEE exception",
+            ));
+        }
+        self.accept_outdated_near_tcb.store(true, Ordering::SeqCst);
+        Ok(())
+    }
+
+    pub(crate) fn accepts_outdated_tcb(&self, provider: &str) -> bool {
+        provider == "near" && self.accept_outdated_near_tcb.load(Ordering::SeqCst)
     }
 }
 

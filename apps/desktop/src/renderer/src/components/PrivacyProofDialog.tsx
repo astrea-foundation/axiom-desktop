@@ -7,6 +7,8 @@ import { proofGroups, proofLabels, replyProof, verificationAge, type ProofState 
 const explanation: Record<ProofState, string> = {
   idle: "Verification is paused after 30 minutes without activity. It resumes when you return; model traffic still requires fresh evidence.",
   verified: "Model messages are encrypted on your device to a key verified through hardware attestation.",
+  outdated: "The provider’s TEE is missing security updates. Generation is paused until you accept this warning or choose another provider.",
+  degraded: "You accepted this provider’s outdated TEE until Axiom restarts. Messages are still encrypted and authenticated, but the environment is missing security updates and may be vulnerable.",
   verifying: "Checking the model’s confidential-computing evidence on this device.",
   failed: "Verification failed. Model traffic requires valid evidence before it can be sent.",
   expired: "This cached report has expired. Axiom requires fresh evidence for new model requests. Ongoing replies still require authentication against the evidence accepted when each request started.",
@@ -169,7 +171,7 @@ export function PrivacyProofDialog({ session, model, modelId, state, now, webEna
         </div>
         <p id={`${id}-description`} className="mb-2 mt-4 text-[13px] leading-[21px] text-[var(--color-text-secondary)]">{explanation[state]}</p>
         {evidence ? <p className="mb-4 text-[11.5px] text-[var(--color-text-tertiary)]">
-          {verified ? "Report checked locally" : "Previous report checked"}{" "}
+          {verified || state === "degraded" ? "Report checked locally" : "Previous report checked"}{" "}
           <time dateTime={new Date(evidence.verifiedAtUnixSeconds * 1000).toISOString()} title={new Date(evidence.verifiedAtUnixSeconds * 1000).toLocaleString()}>{verificationAge(evidence.verifiedAtUnixSeconds, now)}</time>
         </p> : null}
         {evidence ? <div className="-mx-3">

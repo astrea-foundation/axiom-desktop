@@ -212,6 +212,8 @@ impl From<ProviderSecurityVerification> for SecurityVerification {
                 axiom_inference::ProviderSecurityState::Unverified => SecurityStatus::Unverified,
                 axiom_inference::ProviderSecurityState::Verifying => SecurityStatus::Verifying,
                 axiom_inference::ProviderSecurityState::Verified => SecurityStatus::Verified,
+                axiom_inference::ProviderSecurityState::Degraded => SecurityStatus::Degraded,
+                axiom_inference::ProviderSecurityState::Outdated => SecurityStatus::Outdated,
                 axiom_inference::ProviderSecurityState::Failed => SecurityStatus::Failed,
                 axiom_inference::ProviderSecurityState::UnattestedDevelopment => {
                     SecurityStatus::UnattestedDevelopment
@@ -254,6 +256,15 @@ pub trait QuestionHandler: Send + Sync {
 /// Adapter-independent execution of one already-accepted turn.
 #[async_trait]
 pub trait TurnRunner: Send + Sync {
+    async fn accept_outdated_tee(
+        &self,
+        _model: &str,
+        _cancellation: CancellationToken,
+    ) -> Result<SecurityVerification> {
+        Err(AxiomError::Provider(
+            "this runner does not support outdated-TEE consent".into(),
+        ))
+    }
     /// Release process-backed tools while the embedding runtime is still
     /// available. Stateless runners inherit the no-op implementation.
     async fn shutdown(&self) {}
@@ -1651,6 +1662,16 @@ impl AgentEngine {
 
 #[async_trait]
 impl TurnRunner for AgentEngine {
+    async fn accept_outdated_tee(
+        &self,
+        model: &str,
+        cancellation: CancellationToken,
+    ) -> Result<SecurityVerification> {
+        self.provider
+            .accept_outdated_tee(model, cancellation)
+            .await
+            .map(Into::into)
+    }
     async fn generate_title(
         &self,
         model_id: &str,
@@ -3220,6 +3241,8 @@ async fn forward_provider_event(
                 axiom_inference::ProviderSecurityState::Unverified => SecurityStatus::Unverified,
                 axiom_inference::ProviderSecurityState::Verifying => SecurityStatus::Verifying,
                 axiom_inference::ProviderSecurityState::Verified => SecurityStatus::Verified,
+                axiom_inference::ProviderSecurityState::Degraded => SecurityStatus::Degraded,
+                axiom_inference::ProviderSecurityState::Outdated => SecurityStatus::Outdated,
                 axiom_inference::ProviderSecurityState::Failed => SecurityStatus::Failed,
                 axiom_inference::ProviderSecurityState::UnattestedDevelopment => {
                     SecurityStatus::UnattestedDevelopment
@@ -3268,6 +3291,8 @@ async fn forward_compaction_provider_event(
                 axiom_inference::ProviderSecurityState::Unverified => SecurityStatus::Unverified,
                 axiom_inference::ProviderSecurityState::Verifying => SecurityStatus::Verifying,
                 axiom_inference::ProviderSecurityState::Verified => SecurityStatus::Verified,
+                axiom_inference::ProviderSecurityState::Degraded => SecurityStatus::Degraded,
+                axiom_inference::ProviderSecurityState::Outdated => SecurityStatus::Outdated,
                 axiom_inference::ProviderSecurityState::Failed => SecurityStatus::Failed,
                 axiom_inference::ProviderSecurityState::UnattestedDevelopment => {
                     SecurityStatus::UnattestedDevelopment

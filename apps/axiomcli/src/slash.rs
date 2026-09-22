@@ -25,6 +25,7 @@ pub enum SlashCommand {
     Topup,
     Redeem,
     Security,
+    AcceptOutdatedTee,
     Refresh,
     Theme(crate::tui::Appearance),
     Web(bool),
@@ -104,7 +105,7 @@ pub const COMMANDS: &[SlashCommandSpec] = &[
     },
     SlashCommandSpec {
         name: "security",
-        usage: "/security",
+        usage: "/security [accept-outdated]",
         description: "Inspect attestation, encryption, and workload evidence",
         aliases: &["attestation"],
     },
@@ -220,6 +221,7 @@ pub fn parse(input: &str) -> Option<Result<SlashCommand, SlashCommandError>> {
         Some("login") => no_arguments(arguments, SlashCommand::Login, COMMANDS[6].usage),
         Some("logout") => no_arguments(arguments, SlashCommand::Logout, COMMANDS[7].usage),
         Some("account") => no_arguments(arguments, SlashCommand::Account, COMMANDS[8].usage),
+        Some("security") if arguments == "accept-outdated" => Ok(SlashCommand::AcceptOutdatedTee),
         Some("security") => no_arguments(arguments, SlashCommand::Security, COMMANDS[9].usage),
         Some("refresh") => no_arguments(arguments, SlashCommand::Refresh, COMMANDS[10].usage),
         Some("theme") => crate::tui::Appearance::parse(arguments)

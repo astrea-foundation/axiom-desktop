@@ -279,3 +279,16 @@ Source and regression evidence:
 [ordering](../apps/desktop/tests/thread-ordering.test.ts),
 [context reports](../apps/desktop/tests/context-usage.test.ts), and
 [deposit validation](../apps/axiomcli/src/billing.rs).
+
+## Outdated provider security updates
+
+A provider with Intel TDX `OutOfDate` evidence shows a yellow warning and
+**Continue generation**. Accepting remembers the choice for that provider until
+Axiom restarts, rechecks its evidence, and retries the blocked message through
+the normal local edit/regenerate flow, preserving attachments. Switching model,
+thread, account or runtime while the check runs prevents an unintended retry.
+A yellow **TEE updates needed** badge remains after acceptance; messages are
+still encrypted and replies authenticated, but the missing security updates
+may leave the environment vulnerable. Other attestation failures cannot be
+accepted. The backend must also support the explicit consent parameter; an
+older backend continues blocking the request.

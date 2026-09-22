@@ -556,6 +556,16 @@ pub(super) async fn prompt(
                 send_text(&connection, &session_id, text)?;
                 Ok(protocol::StopReason::EndTurn)
             }
+            SlashCommand::AcceptOutdatedTee => {
+                let verification = await_session_future(&request_cancellation, &work,
+                    ctx_runner.accept_outdated_tee(&session_model, work.cancellation.clone())).await?.map_err(agent_error)?;
+                strict_extension_security_verification(verification.clone()).map_err(agent_error)?;
+                send_extension_activity(&connection, &ctx_extension_state, Some(&session_id), ActivityEvent::SecurityChanged {
+                    status: extension_security_status(verification.status),
+                })?;
+                send_text(&connection, &session_id, "Outdated TEE accepted for this provider until restart. All other verification checks remain required.".into())?;
+                Ok(protocol::StopReason::EndTurn)
+            }
             SlashCommand::Security => {
                 let verification = await_session_future(
                     &request_cancellation,
@@ -676,13 +686,20 @@ pub(super) async fn prompt(
                         );
                     }
                     Ok(Err(error)) => {
+                        let status = if matches!(&error, crate::AxiomError::SecureProvider {
+                            code: "PROVIDER_TDX_OUT_OF_DATE", ..
+                        }) {
+                            crate::app::SecurityStatus::Outdated
+                        } else {
+                            crate::app::SecurityStatus::Failed
+                        };
                         if set_session_security_if_work(
                             &ctx_sessions,
                             &session_id,
                             &internal_id,
                             &work,
                             &session_model,
-                            crate::app::SecurityStatus::Failed,
+                            status,
                         )
                         .await
                         {
@@ -692,7 +709,7 @@ pub(super) async fn prompt(
                                 Some(&session_id),
                                 ActivityEvent::SecurityChanged {
                                     status: ExtensionSecurityStatus {
-                                        state: ExtensionSecurityState::Failed,
+                                        state: extension_security_state(status),
                                         detail: Some(error.to_string()),
                                     },
                                 },

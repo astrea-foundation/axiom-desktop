@@ -21,6 +21,7 @@ erasing the original decision.
 | [0015: Persistence modules](0015-persistence-modules.md) | Native storage boundaries and SQL baseline organization |
 | [0016: Bounded local history](0016-bounded-local-history.md) | Local byte-bounded timeline and usage pagination |
 | [0017: Gift credit controls](0017-gift-credit-controls.md) | Private redemption, native billing and `billing@3` |
+| [0018: Outdated TEE consent](0018-outdated-tee-consent.md) | Explicit provider consent until restart and `securityEvidence@3` |
 
 Numbering gaps reflect repository history; no missing numbered ADR is required
 to follow the current implementation.

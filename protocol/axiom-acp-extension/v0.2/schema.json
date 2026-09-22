@@ -2407,6 +2407,16 @@
       "properties": {
         "threadId": {
           "type": "string"
+        },
+        "acceptOutdatedTee": {
+          "type": "boolean",
+          "default": false
+        },
+        "modelId": {
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
@@ -2547,6 +2557,8 @@
         "verifying",
         "unattested_development",
         "verified",
+        "degraded",
+        "outdated",
         "failed"
       ]
     },

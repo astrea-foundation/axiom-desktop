@@ -68,7 +68,7 @@ export function TeeVerificationBadge({ session, model, modelId, webEnabled, disa
   }, []);
   const currentProofState = refreshing ? "verifying" : proofState(session, modelId, now);
   const idle = !session.running && now - lastActivityAt.current >= PROOF_IDLE_AFTER_MS;
-  const state = idle && currentProofState !== "development" ? "idle" : currentProofState;
+  const state = idle && !["development", "outdated", "degraded"].includes(currentProofState) ? "idle" : currentProofState;
   const badge = proofBadge(session, state);
   const verifying = currentProofState === "verifying";
   const reason = disabledReason || (session.needsResync ? "Wait for the thread to reconnect" : session.running ? "Wait for the current reply to finish" : verifying ? "Verification in progress" : undefined);
@@ -90,10 +90,10 @@ export function TeeVerificationBadge({ session, model, modelId, webEnabled, disa
     }
   }, [onVerify, reason]);
   useEffect(() => {
-    if (idle || !modelId || reason || state === "development" || now < nextAutomaticAttemptAt.current) return;
+    if (idle || !modelId || reason || state === "development" || state === "outdated" || now < nextAutomaticAttemptAt.current) return;
     const evidence = session.securityEvidence;
     const expiresAt = evidence?.hardExpiresAtUnixSeconds;
-    if (state === "verified" && evidence?.modelId === modelId && typeof expiresAt === "number" && Number.isFinite(expiresAt)
+    if ((state === "verified" || state === "degraded") && evidence?.modelId === modelId && typeof expiresAt === "number" && Number.isFinite(expiresAt)
       && expiresAt * 1000 - now > REFRESH_BEFORE_EXPIRY_MS) return;
     // Uses the same native verifier as the button. Only a returned report can
     // renew the report; the timer never extends evidence or marks it verified.

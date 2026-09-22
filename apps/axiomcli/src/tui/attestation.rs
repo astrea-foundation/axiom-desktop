@@ -20,6 +20,8 @@ pub(super) enum ReportStatus {
     Unverified,
     Verifying,
     Verified,
+    Degraded,
+    Outdated,
     Failed,
     Expired,
     Unavailable,
@@ -32,6 +34,8 @@ impl ReportStatus {
             Self::Unverified => "NOT VERIFIED",
             Self::Verifying => "VERIFYING",
             Self::Verified => "TEE VERIFIED",
+            Self::Degraded => "TEE UPDATES NEEDED",
+            Self::Outdated => "TEE UPDATES REQUIRED",
             Self::Failed => "SECURITY FAILED",
             Self::Expired => "PROOF EXPIRED",
             Self::Unavailable => "PROOF UNAVAILABLE",
@@ -48,7 +52,8 @@ pub(super) fn report_status(
     match security {
         "VERIFYING" => return ReportStatus::Verifying,
         "SECURITY FAILED" => return ReportStatus::Failed,
-        "SECURE" => {}
+        "TEE OUTDATED" => return ReportStatus::Outdated,
+        "SECURE" | "TEE WARNING" => {}
         _ => return ReportStatus::Unverified,
     }
     let Some(evidence) = evidence.filter(|evidence| evidence.model_id == model) else {
@@ -57,10 +62,13 @@ pub(super) fn report_status(
     match evidence.state {
         SecurityState::Expired => return ReportStatus::Expired,
         SecurityState::Rejected => return ReportStatus::Failed,
-        SecurityState::Verified => {}
+        SecurityState::Verified | SecurityState::Degraded => {}
         _ => return ReportStatus::Unavailable,
     }
-    if evidence.checks.iter().any(|check| !check.passed) {
+    let degraded = evidence.state == SecurityState::Degraded && evidence.provider_id == "near";
+    if evidence.checks.iter().any(|check| {
+        !(check.passed || degraded && check.id == "intel_tdx" && check.status == "OutOfDate")
+    }) {
         return ReportStatus::Failed;
     }
     let Some(expires) = evidence.hard_expires_at_unix_seconds else {
@@ -71,6 +79,8 @@ pub(super) fn report_status(
     }
     if expires <= now {
         ReportStatus::Expired
+    } else if degraded {
+        ReportStatus::Degraded
     } else {
         ReportStatus::Verified
     }

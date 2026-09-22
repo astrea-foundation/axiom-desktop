@@ -66,7 +66,7 @@ export interface AgentApi {
   nativeLoginCancel: (loginId: string) => Promise<AccountStatusResponse>;
   openAccountPortal: () => Promise<void>;
   logout: () => Promise<AccountStatusResponse>;
-  verifySecurity: (sessionId: string) => Promise<VerifySecurityResponse>;
+  verifySecurity: (sessionId: string, acceptOutdatedTee?: boolean, modelId?: string) => Promise<VerifySecurityResponse>;
   compact: (sessionId: string, focus?: string) => Promise<CompactResponse>;
   deletePreview: (sessionIds: string[]) => Promise<DeletePreviewResponse>;
   deleteConfirm: (confirmationToken: string, sessionIds: string[]) => Promise<DeleteConfirmResponse>;
@@ -117,7 +117,7 @@ export const agentApi: AgentApi = {
   nativeLoginCancel: (loginId) => invoke("native-login-cancel", loginId),
   openAccountPortal: () => invoke("account-open"),
   logout: () => invoke("logout"),
-  verifySecurity: (sessionId) => invoke("security-verify", sessionId),
+  verifySecurity: (sessionId, acceptOutdatedTee, modelId) => invoke("security-verify", sessionId, acceptOutdatedTee, modelId),
   compact: (sessionId, focus) => invoke("compact", sessionId, focus),
   deletePreview: (sessionIds) => invoke("delete-preview", sessionIds),
   deleteConfirm: (confirmationToken, sessionIds) => invoke("delete-confirm", confirmationToken, sessionIds),

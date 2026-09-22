@@ -1,12 +1,31 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ClientSessionState } from "@axiom/axiom-acp-client";
-import { proofBadge, proofGroups, proofState, replyProof } from "../src/renderer/src/privacyProof";
+import { outdatedTeeState, proofBadge, proofGroups, proofState, replyProof } from "../src/renderer/src/privacyProof";
 import { securityEvidence } from "../../../fixtures/desktop-security.mts";
 const session = (): ClientSessionState => ({
   sessionId: "thread", title: null, cwd: "", settings: null, security: { state: "verified" },
   securityEvidence: securityEvidence(), timeline: [], modes: [], currentModeId: null,
   configOptions: [], interactions: [], running: false, needsResync: false, threadRevision: 0, lastTimelineSequence: 0,
+});
+
+test("outdated and accepted degraded environments stay yellow even with an authenticated reply", () => {
+  const current = session();
+  current.security = { state: "outdated" };
+  assert.equal(proofState(current, "test-model", Date.now()), "outdated");
+  assert.equal(proofBadge(current, "outdated").tone, "warning");
+  current.security = { state: "degraded" };
+  current.securityEvidence!.status.state = "degraded";
+  current.timeline = [{ id: "answer", turnId: "turn", kind: "assistant", text: "Authenticated answer", status: "completed", terminalVerified: true }];
+  assert.equal(proofState(current, "test-model", Date.now()), "degraded");
+  assert.deepEqual(proofBadge(current, "degraded"), { label: "TEE updates needed", tone: "warning" });
+  assert.equal(proofState(current, "test-model", current.securityEvidence!.hardExpiresAtUnixSeconds * 1000), "expired");
+  current.security = { state: "verifying" };
+  assert.equal(outdatedTeeState(current, "test-model"), "degraded");
+  assert.equal(outdatedTeeState(current, "another-model"), undefined);
+  assert.equal(proofBadge(current, "verifying").tone, "warning");
+  current.security = { state: "failed" };
+  assert.equal(outdatedTeeState(current, "test-model"), undefined);
 });
 
 test("report verification requires a matching, unexpired report and no pending/error state", () => {

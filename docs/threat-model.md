@@ -22,6 +22,15 @@ conversation content between native runtime and UI; hosted APIs do not.
 
 ## Provider contracts
 
+Intel `OutOfDate` is blocked by default. A user can explicitly accept this single
+TCB posture for NEAR until the native process restarts. Consent is held in memory,
+shared across that provider's models, and sent explicitly when establishing each
+relay worker session. It does not alter signed policy or carry into the separate
+local proxy. The UI labels accepted evidence **degraded**, retains its advisories,
+and shows a yellow warning even after an authenticated reply. No other rejected
+TCB status, stale proof, binding failure, GPU failure or response-authentication
+failure is overridable. See the [NEAR contract](protocols/near-v3.md).
+
 The [compiled registry](../crates/axiom-secure-client/src/provider.rs) selects
 these exact contracts. Unknown provider offerings can be quarantined; a catalog
 cannot authorize an unsupported protocol or unverified public key.

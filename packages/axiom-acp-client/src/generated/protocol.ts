@@ -23,7 +23,8 @@ export type TimelineItemKind = "user_message" | "assistant_message" | "reasoning
 export type TimelineItemStatus = "pending" | "in_progress" | "completed" | "cancelled" | "failed" | "interrupted";
 export type AccountState = "starting" | "signed_out" | "valid" | "expired" | "unavailable";
 export type LoginMethod = "passkey" | "google" | "password" | "ethereum_wallet";
-export type SecurityState = "unverified" | "verifying" | "unattested_development" | "verified" | "failed";
+export type SecurityState =
+  "unverified" | "verifying" | "unattested_development" | "verified" | "degraded" | "outdated" | "failed";
 export type ActivityEvent =
   | {
       turnId?: string | null;
@@ -755,6 +756,8 @@ export interface ApiKeyRevokeResponse {
 }
 export interface VerifySecurityRequest {
   threadId: string;
+  acceptOutdatedTee?: boolean;
+  modelId?: string | null;
   [k: string]: unknown;
 }
 export interface VerifySecurityResponse {

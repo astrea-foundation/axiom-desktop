@@ -25,6 +25,7 @@ that a particular installer is published or that a live deployment has passed ac
 | [ACP contract](acp-compatibility.md) | Standard ACP, negotiated features, recovery and DTO generation |
 | [Gift credit controls](adr/0017-gift-credit-controls.md) | Private redemption, TUI funding and `billing@3` |
 | [Security and trust operations](threat-model.md) | Trust boundaries, provider verification and signed-policy handling |
+| [Outdated TEE consent](adr/0018-outdated-tee-consent.md) | Runtime consent, degraded warnings and the strict verification boundary |
 | [Provider discovery and uploads](provider-catalogs.md) | Refreshed models, direct encrypted attachments and provider retirement |
 | [NEAR v3](protocols/near-v3.md) | Worker sessions, Ed25519 receipts and relay routing |
 | [Tinfoil EHBP](protocols/tinfoil-ehbp-v1.md) | Router verification and authenticated encrypted completion |

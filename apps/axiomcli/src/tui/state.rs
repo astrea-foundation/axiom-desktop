@@ -368,7 +368,7 @@ impl TuiState {
             self.security_evidence.as_ref(),
             unix_seconds,
         );
-        report != ReportStatus::Verified
+        !matches!(report, ReportStatus::Verified | ReportStatus::Degraded)
             || self.security_evidence.as_ref().is_some_and(|evidence| {
                 evidence
                     .hard_expires_at_unix_seconds
@@ -1065,6 +1065,8 @@ impl TuiState {
                     crate::app::SecurityStatus::Unverified => "NOT VERIFIED",
                     crate::app::SecurityStatus::Verifying => "VERIFYING",
                     crate::app::SecurityStatus::Verified => "SECURE",
+                    crate::app::SecurityStatus::Degraded => "TEE WARNING",
+                    crate::app::SecurityStatus::Outdated => "TEE OUTDATED",
                     crate::app::SecurityStatus::UnattestedDevelopment
                     | crate::app::SecurityStatus::Failed => "SECURITY FAILED",
                 };

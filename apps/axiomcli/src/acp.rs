@@ -431,6 +431,8 @@ fn extension_security_state(state: crate::app::SecurityStatus) -> ExtensionSecur
             ExtensionSecurityState::UnattestedDevelopment
         }
         crate::app::SecurityStatus::Verified => ExtensionSecurityState::Verified,
+        crate::app::SecurityStatus::Degraded => ExtensionSecurityState::Degraded,
+        crate::app::SecurityStatus::Outdated => ExtensionSecurityState::Outdated,
         crate::app::SecurityStatus::Failed => ExtensionSecurityState::Failed,
     }
 }
@@ -514,7 +516,11 @@ fn strict_extension_security_verification(
         .evidence
         .map(|evidence| extension_security_evidence(status, evidence))
         .transpose()?;
-    if status == crate::app::SecurityStatus::Verified && evidence.is_none() {
+    if matches!(
+        status,
+        crate::app::SecurityStatus::Verified | crate::app::SecurityStatus::Degraded
+    ) && evidence.is_none()
+    {
         return Err(crate::AxiomError::Protocol(
             "verified provider returned no attestation evidence".into(),
         ));
@@ -1543,7 +1549,7 @@ impl ExtensionState {
         if features.usage >= 1 {
             mask |= ExtensionFeature::Usage as u64;
         }
-        if features.security_evidence >= 2 {
+        if features.security_evidence >= 3 {
             mask |= ExtensionFeature::SecurityEvidence as u64;
         }
         if features.compaction >= 1 {
@@ -2177,6 +2183,11 @@ fn send_text(
 
 fn agent_error(error: crate::AxiomError) -> agent_client_protocol::Error {
     match error {
+        crate::AxiomError::SecureProvider {
+            code: "PROVIDER_TDX_OUT_OF_DATE",
+            message,
+            ..
+        } => agent_client_protocol::Error::new(-32010, message),
         crate::AxiomError::Cancelled => agent_client_protocol::Error::request_cancelled(),
         crate::AxiomError::SecureProvider {
             kind:

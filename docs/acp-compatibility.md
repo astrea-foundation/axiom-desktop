@@ -49,16 +49,21 @@ family; each named feature negotiates its own version. Missing/zero versions
 mean unsupported. Desktop checks its required feature set and negotiates optional
 features separately.
 
-`account`, `timeline`, `attachments`, and `securityEvidence` are version **2**;
-`billing` is version **3**.
+`account`, `timeline`, and `attachments` are version **2**;
+`billing` and `securityEvidence` are version **3**.
 Other advertised features are version **1**:
 `desktopChat`, `desktopAgent`, `threadCatalog`, `modelCatalog`,
 `profilePreferences`, `collections`, `usage`,
 `webConsent`, `steering`, `messageRevision`, `compaction`, and `activity`.
 The source `FeatureVersions` and generated schema are authoritative.
 
-`securityEvidence@2` carries verified hardware, key, freshness and provenance
-evidence. Desktop requires this version before accepting verification reports.
+`securityEvidence@3` carries verified hardware, key, freshness and provenance
+evidence plus `outdated` (awaiting consent) and `degraded` (explicitly accepted)
+states. Desktop requires this version before accepting verification reports.
+`security/verify` accepts `acceptOutdatedTee: true` only with the current `modelId`;
+the native runtime resolves the provider and remembers consent until restart.
+Normal verification requests never grant consent. Degraded reports retain the
+failed Intel `OutOfDate` posture check; other checks must still pass.
 
 ## Methods and ownership
 

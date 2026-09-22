@@ -60,7 +60,7 @@ const EXTENSION_CAPABILITIES = {
     account: 2,
     billing: 3,
     usage: 1,
-    securityEvidence: 2,
+    securityEvidence: 3,
     webConsent: 1,
     steering: 1,
     messageRevision: 1,
@@ -620,22 +620,29 @@ export class AxiomAcpClient extends EventEmitter {
     return result;
   }
 
-  verifySecurity(threadId: string): Promise<VerifySecurityResponse> {
+  verifySecurity(threadId: string, acceptOutdatedTee = false, expectedModelId?: string): Promise<VerifySecurityResponse> {
     const context = this.state.securityContextToken(threadId);
     const accountContext = this.state.accountContextToken();
     const session = this.state.snapshot().sessions[threadId];
     const modelId = session?.settings?.model;
     if (!context || !modelId) return Promise.reject(new ProtocolError("Load this thread before verifying its model"));
-    const existing = this.securityVerifications.get(threadId);
-    if (existing?.context === context) return existing.promise;
-    if (session.running) return Promise.reject(new ProtocolError("Wait for the current reply before refreshing verification"));
+    if (acceptOutdatedTee && expectedModelId !== modelId) return Promise.reject(new ProtocolError("The selected model changed; review its warning before continuing."));
     const current = () => this.state.accountContextToken() === accountContext
       && this.state.securityContextToken(threadId) === context;
+    const existing = this.securityVerifications.get(threadId);
+    if (existing?.context === context) return acceptOutdatedTee
+      ? existing.promise.catch(() => undefined).then(() => {
+        if (!current()) throw new ProtocolError("The verification context changed; review its warning before continuing.");
+        return this.verifySecurity(threadId, true, expectedModelId);
+      })
+      : existing.promise;
+    if (session.running) return Promise.reject(new ProtocolError("Wait for the current reply before refreshing verification"));
     this.state.setSecurityVerification(threadId, { pending: true });
     // Defer dispatch until the map entry exists, including synchronous bridges.
     const promise = Promise.resolve().then(async () => {
       try {
-        const result = await this.process.request<VerifySecurityResponse>("_axiom/security/verify", { threadId }, 0);
+        if (!current()) throw new ProtocolError("The verification context changed; review its warning before continuing.");
+        const result = await this.process.request<VerifySecurityResponse>("_axiom/security/verify", { threadId, ...(acceptOutdatedTee ? { acceptOutdatedTee: true, modelId } : {}) }, 0);
         if (!current()) throw new ProtocolError("The verification context changed; refresh the selected model");
         const evidence = publicSecurityEvidence(result, modelId);
         this.state.setSecurityVerification(threadId, { pending: false, evidence });
