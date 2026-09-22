@@ -121,7 +121,7 @@ runs when needed. Packaging reuses those results instead of repeating the suites
 Retry only failed validation targets or packaging jobs. These checks do not
 replace signed OS installation acceptance.
 
-The release build retains the complete signed `axiom-signed-release` artifact
+The release build retains the complete signed `axiom-signed-release` artifact for seven days
 before cross-repository publication. If the narrow upload or dispatch credentials
 are not configured, the job summary records that operator publication is still
 required; a successful build alone does not mean the release is public. An

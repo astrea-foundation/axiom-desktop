@@ -25,7 +25,7 @@ non-Desktop consumers.
 | `initialize` | ACP v1, metadata, load-session support and optional Axiom negotiation |
 | `session/new`, `session/load` | Canonical workspace, durable state and restored model/thinking/profile |
 | `session/prompt` | Text/resource links, ordered user/assistant/reasoning chunks, tools and stop reason |
-| `session/cancel`, `$/cancel_request` | Cooperative cancellation; supported long-running extension requests also cancel |
+| `session/cancel`, `$/cancel_request` | Cooperative cancellation; supported long-running extension requests also cancel. A cancelled permission response also cancels its prompt, even if it arrives before the cancellation notification. |
 | `session/set_mode` | CLI permission profile; Desktop Agent changes use the dedicated revisioned method |
 | `session/set_config_option` | Model/thinking selection validated by native policy and the catalog |
 | Permission requests | Only offered deny/once/eligible session-grant choices are valid |

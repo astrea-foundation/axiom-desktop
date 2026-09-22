@@ -1801,6 +1801,32 @@ async fn malformed_unknown_and_duplicate_ids_are_bounded() {
 }
 
 #[tokio::test]
+async fn cancelled_permission_response_cancels_the_prompt_without_a_notification() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let mut acp = AcpProcess::spawn("approval");
+    acp.initialize().await;
+    let session = acp.new_session(2, workspace.path()).await;
+    acp.send(&json!({
+        "jsonrpc":"2.0","id":3,"method":"session/prompt",
+        "params":{"sessionId":session,"prompt":[{"type":"text","text":"wait for approval"}]}
+    }))
+    .await;
+    loop {
+        let value = acp.read().await;
+        if value["method"] == "session/request_permission" {
+            acp.send(&json!({
+                "jsonrpc":"2.0","id":value["id"],
+                "result":{"outcome":{"outcome":"cancelled"}}
+            }))
+            .await;
+            break;
+        }
+    }
+    assert_eq!(acp.response(3).await["result"]["stopReason"], "cancelled");
+    acp.close().await;
+}
+
+#[tokio::test]
 async fn cancellation_finishes_the_active_prompt_once() {
     let workspace = tempfile::tempdir().expect("workspace");
     let mut acp = AcpProcess::spawn("blocking");

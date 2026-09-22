@@ -1627,6 +1627,9 @@ impl ApprovalHandler for AcpApproval {
                 .block_task() => response.map_err(|error| crate::AxiomError::Protocol(error.to_string()))?,
         };
         let choice = match response.outcome {
+            protocol::RequestPermissionOutcome::Cancelled => {
+                return Err(crate::AxiomError::Cancelled);
+            }
             protocol::RequestPermissionOutcome::Selected(selected) => {
                 match selected.option_id.0.as_ref() {
                     "allow_once" => ApprovalChoice::AllowOnce,

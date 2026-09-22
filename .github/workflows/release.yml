@@ -85,6 +85,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: axiom-release-linux-x64
+          retention-days: 7
           path: |
             apps/desktop/dist/*.AppImage
             apps/desktop/dist/*.deb
@@ -159,6 +160,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: axiom-release-mac-${{ matrix.arch }}
+          retention-days: 7
           path: apps/desktop/dist/*.pkg
           if-no-files-found: error
 
@@ -198,6 +200,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: axiom-signed-release
+          retention-days: 7
           path: release/
           if-no-files-found: error
       - name: Create or verify immutable GitHub draft assets
