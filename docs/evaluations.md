@@ -10,6 +10,11 @@ covers behavioral evaluation and historical performance observations.
 scripts/axiomcli-eval deterministic
 ```
 
+The repeated deterministic suites use the same workspace/all-features selection
+as the preceding CI test pass. This reuses its compiled artifacts instead of
+building a second dependency graph with a different feature selection, which
+can exhaust a hosted runner's disk before evaluation starts.
+
 The runner repeats the autonomous agent, multi-language fixture, soak, ACP
 transcript, TUI PTY and MCP integration suites twice. Fixtures are created in
 fresh temporary directories. They cover edits followed by real tests, repair of
