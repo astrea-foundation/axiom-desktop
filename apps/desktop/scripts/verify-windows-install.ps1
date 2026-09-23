@@ -54,4 +54,18 @@ foreach ($product in @('Axiom','AxiomCLI')) {
     if (Test-Path (Join-Path $destination 'Axiom.exe')) { throw 'Desktop uninstall left its executable behind' }
     Write-Host "PASS installed native $product $Version on $Arch and uninstalled it"
 }
-Remove-Item -LiteralPath $temporary -Recurse -Force
+# The ARM64 emulation host can briefly retain the uninstaller's image mapping
+# after process exit. Keep cleanup bounded without weakening installation checks.
+for ($attempt = 0; $attempt -lt 40; $attempt++) {
+    if (-not (Test-Path -LiteralPath $temporary)) { break }
+    try {
+        Remove-Item -LiteralPath $temporary -Recurse -Force
+        break
+    } catch {
+        if ($attempt -eq 39) {
+            Write-Warning "Verified installers; temporary cleanup remains locked: $($_.Exception.Message)"
+            break
+        }
+        Start-Sleep -Milliseconds 250
+    }
+}

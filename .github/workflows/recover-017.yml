@@ -1,4 +1,4 @@
-name: Complete v0.1.7 Windows signing
+name: Complete v0.1.7 installation verification
 
 on:
   workflow_dispatch:
@@ -7,103 +7,10 @@ permissions:
   contents: read
   actions: read
 
-# One-time packaging repair. Product sources and the immutable tag stay at the
-# original validated revision. Only the promoted signing hook is overlaid.
+# One-time verification of retained signed artifacts. No compilation or signing
+# repeats; the promoted test fix only handles temporary Windows file locks.
 jobs:
-  sign:
-    runs-on: windows-2025
-    timeout-minutes: 45
-    environment: windows-signing
-    permissions:
-      contents: read
-      actions: read
-      id-token: write
-    env:
-      AXIOM_UPDATE_PUBLIC_KEYS: ${{ vars.AXIOM_UPDATE_PUBLIC_KEYS }}
-      AXIOM_SIGNING_ENDPOINT: ${{ vars.AXIOM_SIGNING_ENDPOINT }}
-      AXIOM_SIGNING_ACCOUNT: ${{ vars.AXIOM_SIGNING_ACCOUNT }}
-      AXIOM_SIGNING_PROFILE: ${{ vars.AXIOM_SIGNING_PROFILE }}
-      AXIOM_SIGNING_PUBLISHER: ${{ vars.AXIOM_SIGNING_PUBLISHER }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Verify promoted packaging repair and retained native provenance
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          test "$GITHUB_REF" = refs/tags/v0.1.7-packaging.2
-          git merge-base --is-ancestor HEAD origin/main
-          test "$(git rev-parse v0.1.7^{commit})" = 5239e315f86809e1a95b4954eae4a27a34c0fa8b
-          git merge-base --is-ancestor v0.1.7 HEAD
-          python - <<'PYTHON'
-          import json, subprocess
-          allowed = {'apps/desktop/scripts/after-pack.cjs', 'apps/desktop/tests/windows-signing.test.ts', '.github/workflows/recover-017.yml', '.github/workflows/release.yml', 'docs/releasing.md'}
-          changed = set(subprocess.check_output(['git','diff','--name-only','v0.1.7','HEAD'], text=True).splitlines())
-          if not changed <= allowed: raise SystemExit(f'Product source changed: {changed - allowed}')
-          run = json.loads(subprocess.check_output(['gh','api','repos/astrea-foundation/axiomai/actions/runs/35803134333'], text=True))
-          if run['head_sha'] != '5239e315f86809e1a95b4954eae4a27a34c0fa8b' or run['path'] != '.github/workflows/release.yml': raise SystemExit('Unexpected artifact source')
-          PYTHON
-          cp apps/desktop/scripts/after-pack.cjs "$RUNNER_TEMP/after-pack.cjs"
-          git checkout --detach v0.1.7
-          cp "$RUNNER_TEMP/after-pack.cjs" apps/desktop/scripts/after-pack.cjs
-          test "$(git diff --name-only)" = apps/desktop/scripts/after-pack.cjs
-          echo "Product revision: $(git rev-parse HEAD); packaging repair: $GITHUB_SHA; input run: 35803134333" >> "$GITHUB_STEP_SUMMARY"
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '8.0.x'
-      - shell: pwsh
-        run: Install-Module ArtifactSigning -RequiredVersion 0.1.20 -Repository PSGallery -Scope CurrentUser -Force -ErrorAction Stop
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: 1.97.1
-      - uses: actions/download-artifact@v4
-        with:
-          name: windows-native-x64
-          path: target/release/x64
-          run-id: 35803134333
-          github-token: ${{ github.token }}
-      - uses: actions/download-artifact@v4
-        with:
-          name: windows-native-arm64
-          path: target/release/arm64
-          run-id: 35803134333
-          github-token: ${{ github.token }}
-      - uses: azure/login@v3
-        with:
-          client-id: ${{ vars.AZURE_CLIENT_ID }}
-          tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-      - name: Package and sign retained native inputs
-        shell: pwsh
-        run: |
-          choco install nsis --version=3.11 --no-progress -y
-          node apps/desktop/scripts/package-desktop.mjs --win --universal
-          if ($LASTEXITCODE -ne 0) { throw 'Desktop packaging failed' }
-          node scripts/package-cli.mjs --win --universal
-          if ($LASTEXITCODE -ne 0) { throw 'CLI packaging failed' }
-      - name: Install and verify x64 packages
-        shell: pwsh
-        run: ./apps/desktop/scripts/verify-windows-install.ps1 -Installers apps/desktop/dist -Version 0.1.7 -Arch x64 -Publisher $env:AXIOM_SIGNING_PUBLISHER
-      - uses: actions/upload-artifact@v4
-        with:
-          name: axiom-release-win-universal
-          path: apps/desktop/dist/*.exe
-          retention-days: 7
-          if-no-files-found: error
-
   verify-arm64:
-    needs: sign
     runs-on: windows-11-arm
     timeout-minutes: 10
     environment: windows-signing
@@ -113,7 +20,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: v0.1.7
+          fetch-depth: 0
+      - name: Require promoted verification repair and signed input provenance
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/tags/v0.1.7-packaging.3
+          git merge-base --is-ancestor HEAD origin/main
+          test "$(git rev-parse v0.1.7^{commit})" = 5239e315f86809e1a95b4954eae4a27a34c0fa8b
+          python - <<'PYTHON'
+          import json, subprocess
+          allowed = {'apps/desktop/scripts/after-pack.cjs', 'apps/desktop/tests/windows-signing.test.ts', 'apps/desktop/scripts/verify-windows-install.ps1', '.github/workflows/recover-017.yml', '.github/workflows/release.yml', 'docs/releasing.md'}
+          changed = set(subprocess.check_output(['git','diff','--name-only','v0.1.7','HEAD'], text=True).splitlines())
+          if not changed <= allowed: raise SystemExit(f'Product source changed: {changed - allowed}')
+          run = json.loads(subprocess.check_output(['gh','api','repos/astrea-foundation/axiomai/actions/runs/35807400501'], text=True))
+          if run['head_sha'] != '51837f25a80cdf60074aff9f263b6f3fcb92ceca' or run['path'] != '.github/workflows/recover-017.yml': raise SystemExit('Unexpected signed artifact source')
+          jobs = json.loads(subprocess.check_output(['gh','api','repos/astrea-foundation/axiomai/actions/runs/35807400501/jobs'], text=True))['jobs']
+          if not any(job['name'] == 'sign' and job['conclusion'] == 'success' for job in jobs): raise SystemExit('Signed x64 installation checks did not pass')
+          PYTHON
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -121,6 +47,8 @@ jobs:
         with:
           name: axiom-release-win-universal
           path: installers
+          run-id: 35807400501
+          github-token: ${{ github.token }}
       - shell: pwsh
         run: ./apps/desktop/scripts/verify-windows-install.ps1 -Installers installers -Version 0.1.7 -Arch arm64 -Publisher $env:AXIOM_SIGNING_PUBLISHER
 
@@ -153,6 +81,8 @@ jobs:
         with:
           name: axiom-release-win-universal
           path: release
+          run-id: 35807400501
+          github-token: ${{ github.token }}
       - name: Sign the complete final-byte inventory
         env:
           AXIOM_UPDATE_SIGNING_KEY: ${{ secrets.AXIOM_UPDATE_SIGNING_KEY }}
