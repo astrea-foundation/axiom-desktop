@@ -24,7 +24,7 @@ module.exports = async function afterPack(context) {
       const {readdir} = require('node:fs/promises');
       for (const folder of ['bin','launchers']) {
         for (const file of await readdir(path.join(resources,folder))) {
-          if (/\.(dll|ps1)$/.test(file)) await context.packager.sign(path.join(resources,folder,file));
+          if (/\.(dll|ps1)$/.test(file)) await require('./windows-signing.cjs').sign({path:path.join(resources,folder,file), hash:'sha256', isNest:false});
         }
       }
     }
