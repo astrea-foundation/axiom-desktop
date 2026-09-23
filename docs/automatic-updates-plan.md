@@ -4,7 +4,7 @@ Updated 2026-09-22. Implementation targets `dev` in `axiomai` and
 `axiom-platform`. No promotion, production deployment, release tag, signing-key
 provisioning, or live-feed activation is part of this development change.
 
-There are **zero users to migrate**. The first release uses one signed schema-2
+There are **zero users to migrate**. The first release uses one signed schema-3
 inventory and installation markers. There is no legacy-client adapter, bootstrap
 release, format guessing, or account/storage migration in this feature.
 
@@ -41,7 +41,7 @@ macOS uses signed, notarized PKG installers and the OS authorization dialog.
 
 ## Trust and publication
 
-The schema-2 inventory records product, platform, architecture, format, byte
+The schema-3 inventory records product, platform, architecture, format, byte
 length, SHA-256, immutable CDN/GitHub URLs, native revision, version, and a
 monotonic sequence. An Ed25519 signature covers the canonical inventory. Public
 keys are compiled into the native client with `AXIOM_UPDATE_PUBLIC_KEYS`; the
@@ -61,7 +61,7 @@ assets and release metadata, not a copy of either source checkout. Provisioning
 that repository and release credentials belongs to release setup, not this dev
 change. The signed inventory identifies the private native source revision.
 
-Native release jobs build all 12 installers, sign their final-byte inventory,
+Native release jobs build all 8 installers, sign their final-byte inventory,
 and upload a draft release. The platform publisher validates the native tag's
 `main` ancestry and signatures, stages immutable CDN objects, verifies both
 mirrors, publishes the GitHub release, then deploys the download page and native

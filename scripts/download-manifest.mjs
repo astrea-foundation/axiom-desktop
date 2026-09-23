@@ -19,11 +19,11 @@ for (const name of (await readdir(directory)).sort()) {
   const hash = createHash('sha256'); for await (const chunk of createReadStream(file)) hash.update(chunk);
   const product = name.startsWith('AxiomCLI-') ? 'cli' : 'desktop';
   const platform = format === 'pkg' ? 'mac' : format === 'exe' ? 'win' : 'linux';
-  const arch = /-arm64[.-]/.test(name) ? 'arm64' : /-(?:x64|x86_64|amd64)[.-]/.test(name) ? 'x64' : null;
+  const arch = /-universal[.-]/.test(name) ? 'universal' : /-arm64[.-]/.test(name) ? 'arm64' : /-(?:x64|x86_64|amd64)[.-]/.test(name) ? 'x64' : null;
   (product === 'cli' ? cliDownloads : downloads).push({name, product, platform, arch, format, bytes:metadata.size, sha256:hash.digest('hex'),
     url:`https://cdn.axiom.stream/downloads/${version}/${name}`, githubUrl:`https://github.com/astrea-foundation/axiom-releases/releases/download/v${version}/${name}`});
 }
-let release = parseRelease({schemaVersion:2, version, revision, sequence, signing:'unsigned', downloads, cliDownloads});
+let release = parseRelease({schemaVersion:signing === 'signed' || [...downloads,...cliDownloads].some(file=>file.arch === 'universal') ? 3 : 2, version, revision, sequence, signing:'unsigned', downloads, cliDownloads});
 if (signing === 'signed') {
   requireCompleteRelease(release);
   const privateKey = process.env.AXIOM_UPDATE_SIGNING_KEY;

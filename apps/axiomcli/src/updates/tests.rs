@@ -2,6 +2,31 @@ use super::*;
 use std::fs;
 
 #[test]
+fn combined_installers_match_both_native_architectures() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../packages/desktop-releases/universal-fixture.json"
+    ))
+    .unwrap();
+    let release = parse_release(&serde_json::to_vec(&fixture["release"]).unwrap()).unwrap();
+    verify_release(&release, fixture["publicKey"].as_str().unwrap()).unwrap();
+    assert_eq!(release.downloads.len() + release.cli_downloads.len(), 8);
+    for file in release.downloads.iter().chain(&release.cli_downloads) {
+        if file.platform == "linux" {
+            assert!(matches_target(file, "linux", "x64"));
+            assert!(!matches_target(file, "linux", "arm64"));
+        } else {
+            assert!(matches_target(file, &file.platform, "x64"));
+            assert!(matches_target(file, &file.platform, "arm64"));
+            assert!(!matches_target(file, &file.platform, "unsupported"));
+            assert!(!matches_target(file, "linux", "x64"));
+        }
+    }
+    let mut changed = release;
+    changed.downloads[0].arch = "x64".into();
+    assert!(parse_release(&serde_json::to_vec(&changed).unwrap()).is_err());
+}
+
+#[test]
 fn shared_release_contract() {
     let contract: serde_json::Value = serde_json::from_str(include_str!(
         "../../../../packages/desktop-releases/contract-fixtures.json"

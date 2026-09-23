@@ -67,7 +67,10 @@ test('signed release uses the protected native-build/sign workflow', () => {
   assert.doesNotMatch(workflow, /test-windows-install|windows-signed-candidate/);
   assert.match(read('release.yml'), /Sign the complete final-byte inventory/);
   assert.match(workflow, /package-cli.mjs/);
-  assert.match(workflow, /--unsigned --dir/);
+  assert.match(workflow, /native-input.mjs win/);
+  assert.match(workflow, /package-desktop.mjs --win --universal/);
+  assert.match(workflow, /package-cli.mjs --win --universal/);
+  assert.doesNotMatch(workflow.split('  sign:')[1], /matrix:/);
 });
 
 const pwsh = process.env.AXIOM_TEST_PWSH || 'pwsh';

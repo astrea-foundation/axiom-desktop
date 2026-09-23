@@ -32,7 +32,7 @@ mac:
   target:
     - target: pkg
   extraResources:
-    - from: ../../target/release/axiomcli
+    - from: ../../target/release/${arch}/axiomcli
       to: bin/axiomcli
 
 pkg:
@@ -70,7 +70,7 @@ win:
   target:
     - target: nsis
   extraResources:
-    - from: ../../target/release/axiomcli.exe
+    - from: ../../target/release/${arch}/axiomcli.exe
       to: bin/axiomcli.exe
     - from: build/windows-cli-path.ps1
       to: installer/windows-cli-path.ps1

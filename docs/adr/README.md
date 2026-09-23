@@ -22,6 +22,7 @@ erasing the original decision.
 | [0016: Bounded local history](0016-bounded-local-history.md) | Local byte-bounded timeline and usage pagination |
 | [0017: Gift credit controls](0017-gift-credit-controls.md) | Private redemption, native billing and `billing@3` |
 | [0018: Outdated TEE consent](0018-outdated-tee-consent.md) | Explicit provider consent until restart and `securityEvidence@3` |
+| [0019: Combined installers](0019-combined-installers.md) | Universal macOS and combined Windows packages, schema-3 release inventory |
 
 Numbering gaps reflect repository history; no missing numbered ADR is required
 to follow the current implementation.

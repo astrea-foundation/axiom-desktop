@@ -31,6 +31,18 @@ const {generateKeyPairSync} = await import('node:crypto');
 const {publicKeyHex, signRelease, verifyRelease} = await import('./signing.mjs');
 const {requireCompleteRelease} = await import('./manifest.mjs');
 const signed = JSON.parse(readFileSync(new URL('./signed-fixture.json',import.meta.url),'utf8'));
+const universal = JSON.parse(readFileSync(new URL('./universal-fixture.json',import.meta.url),'utf8'));
+test('combined release has eight signed installers and rejects mixed architecture inventories', () => {
+  const {release,publicKey} = universal;
+  verifyRelease(release,publicKey);
+  requireCompleteRelease(release);
+  assert.equal(release.downloads.length,5);
+  assert.equal(release.cliDownloads.length,3);
+  for (const mutate of [r=>r.cliDownloads.pop(),r=>r.schemaVersion=2,r=>r.downloads[0].arch='x64']) {
+    const changed=structuredClone(release);mutate(changed);
+    assert.throws(()=>requireCompleteRelease(parseRelease(changed)));
+  }
+});
 test('Node signature matches the native shared vector and rejects altered metadata or keys', () => {
   verifyRelease(signed.release,signed.publicKey);
   for (const mutate of [r=>r.downloads[0].sha256='f'.repeat(64),r=>r.sequence++,r=>r.revision='b'.repeat(40),r=>r.cliDownloads.pop()]) {

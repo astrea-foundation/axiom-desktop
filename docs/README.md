@@ -31,6 +31,7 @@ that a particular installer is published or that a live deployment has passed ac
 | [Tinfoil EHBP](protocols/tinfoil-ehbp-v1.md) | Router verification and authenticated encrypted completion |
 | [Development](development.md) | Build/check commands, Desktop development and visual assets |
 | [Evaluations](evaluations.md) | Deterministic and live-provider evaluation lanes |
+| [Combined installer decision](adr/0019-combined-installers.md) | Universal Mac and combined Windows distribution |
 | [Release procedure](releasing.md) | Target matrix, signing, packaging and publication handoff |
 | [Automatic updates plan](automatic-updates-plan.md) | Implemented update design, dev scope and remaining installer qualification |
 | [Versioning](versioning.md) | Product, storage and protocol compatibility |
