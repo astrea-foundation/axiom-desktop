@@ -255,8 +255,13 @@ Future tags use the corrected normal release workflow.
 Run `35807400501` completed Windows signing and x64 installation checks. Both
 ARM64 packages also passed architecture, signature, version, trust-key and
 uninstall checks, but final temporary-directory removal raced an uninstaller
-image lock. The cleanup now retries for at most ten seconds; functional and
-signature failures still fail immediately. A Windows VM test held a real file
+image lock. The cleanup now retries for at most ten seconds, then warns without failing a
+verified release; functional and signature failures still fail immediately. A Windows VM test held a real file
 lock and verified successful cleanup after it released. The final verification
 workflow authenticates the retained signed run and its successful x64 job,
 retests ARM64 with the fixed cleanup, and publishes the same signed bytes.
+
+The release operator may sign and publish the complete inventory from retained
+artifacts once the functional/signature checks above have passed; temporary-file
+cleanup is not a publication gate. Keep the original product revision in the
+signed inventory and record the separate packaging revision and input run IDs.

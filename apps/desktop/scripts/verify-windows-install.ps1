@@ -62,7 +62,10 @@ for ($attempt = 0; $attempt -lt 40; $attempt++) {
         Remove-Item -LiteralPath $temporary -Recurse -Force
         break
     } catch {
-        if ($attempt -eq 39) { throw }
+        if ($attempt -eq 39) {
+            Write-Warning "Verified installers; temporary cleanup remains locked: $($_.Exception.Message)"
+            break
+        }
         Start-Sleep -Milliseconds 250
     }
 }
