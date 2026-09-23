@@ -240,7 +240,7 @@ hook now explicitly signs executables, runtime DLLs and PowerShell scripts in
 all three owned resource directories. Regression checks exercise that complete
 resource inventory and signing failure propagation.
 
-The one-time `recover-017.yml` dispatch runs from `v0.1.7-packaging.2`, pointing
+The one-time `recover-017.yml` dispatch runs from `v0.1.7-packaging.2` (signing), followed by `v0.1.7-packaging.3` (verification only), pointing
 to the promoted repair on `main`, as required by the existing tag-only signing
 environments. Packaging tags do not trigger a full native rebuild. It verifies
 the immutable v0.1.7 revision and original artifact run, rejects changes outside
@@ -251,3 +251,12 @@ run records the product and packaging-repair revisions separately. No native
 binary or successful Mac/Linux installer is rebuilt or relabeled. Signed Windows
 x64/ARM64 install checks still gate the complete manifest and source Release.
 Future tags use the corrected normal release workflow.
+
+Run `35807400501` completed Windows signing and x64 installation checks. Both
+ARM64 packages also passed architecture, signature, version, trust-key and
+uninstall checks, but final temporary-directory removal raced an uninstaller
+image lock. The cleanup now retries for at most ten seconds; functional and
+signature failures still fail immediately. A Windows VM test held a real file
+lock and verified successful cleanup after it released. The final verification
+workflow authenticates the retained signed run and its successful x64 job,
+retests ARM64 with the fixed cleanup, and publishes the same signed bytes.
