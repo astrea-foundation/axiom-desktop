@@ -17,7 +17,17 @@ module.exports = async function afterPack(context) {
     // 7-Zip's automatic BCJ2/ARM64 filters and silently skips executable files.
     // https://github.com/electron-userland/electron-builder/issues/9983
     process.env.ELECTRON_BUILDER_7Z_FILTER = 'BCJ';
-    await require('./bundle-windows-runtime.cjs')(resources);
+    await require('./bundle-windows-runtime.cjs')(resources, process.env.AXIOM_NATIVE_INPUT);
+    if (context.packager.config.forceCodeSigning) {
+      // Files added in afterPack are outside electron-builder's extraResources
+      // signing transform. Sign these before NSIS compresses either payload.
+      const {readdir} = require('node:fs/promises');
+      for (const folder of ['bin','launchers']) {
+        for (const file of await readdir(path.join(resources,folder))) {
+          if (/\.(dll|ps1)$/.test(file)) await context.packager.sign(path.join(resources,folder,file));
+        }
+      }
+    }
   }
   if (context.electronPlatformName === 'linux') {
     // electron-builder copies appOutDir into the AppImage after creating AppRun.

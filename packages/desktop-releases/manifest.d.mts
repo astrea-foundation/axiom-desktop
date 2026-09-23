@@ -1,9 +1,9 @@
 export type ReleasePlatform = 'mac' | 'win' | 'linux';
-export type ReleaseArch = 'x64' | 'arm64';
+export type ReleaseArch = 'x64' | 'arm64' | 'universal';
 export type PackageFormat = 'pkg' | 'exe' | 'AppImage' | 'deb' | 'pacman';
 export type ReleaseDownload = { name: string; product: 'desktop'; platform: ReleasePlatform; arch: ReleaseArch; format: PackageFormat; bytes: number; sha256: string; url: string; githubUrl: string };
 export type CliDownload = Omit<ReleaseDownload, 'product' | 'format'> & { product: 'cli'; format: 'exe' | 'pkg' | 'sh' };
-export type Release = { schemaVersion: 2; version: string; revision: string; sequence: number; signing: 'signed' | 'unsigned'; downloads: ReleaseDownload[]; cliDownloads: CliDownload[]; signature?: {keyId: string; value: string} };
+export type Release = { schemaVersion: 2 | 3; version: string; revision: string; sequence: number; signing: 'signed' | 'unsigned'; downloads: ReleaseDownload[]; cliDownloads: CliDownload[]; signature?: {keyId: string; value: string} };
 export const RELEASE_API: string;
 export const GITHUB_RELEASES: string;
 export const VERSION_PATTERN: RegExp;

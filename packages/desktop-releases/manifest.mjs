@@ -22,7 +22,7 @@ export function canonicalJson(value) {
 }
 export function unsignedManifest(value) { const {signature, ...manifest} = value; return manifest; }
 export function parseRelease(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value) || typeof value.version !== 'string' || typeof value.revision !== 'string' || value.schemaVersion !== 2 || !VERSION_PATTERN.test(value.version ?? '')
+  if (!value || typeof value !== 'object' || Array.isArray(value) || typeof value.version !== 'string' || typeof value.revision !== 'string' || ![2, 3].includes(value.schemaVersion) || !VERSION_PATTERN.test(value.version ?? '')
     || !/^[a-f0-9]{40}$/.test(value.revision ?? '') || !['signed', 'unsigned'].includes(value.signing)
     || !Number.isSafeInteger(value.sequence) || value.sequence < 1
     || !Array.isArray(value.downloads) || !Array.isArray(value.cliDownloads)
@@ -37,11 +37,11 @@ export function parseRelease(value) {
     for (const file of files) {
       if (!file || typeof file !== 'object' || Array.isArray(file) || ['name','product','platform','arch','format','sha256','url','githubUrl'].some(key => typeof file[key] !== 'string')) throw new Error('Invalid release artifact');
       const format = artifactFormat(file.name ?? '');
-      const namedArch = /-arm64[.-]/.test(file.name) ? 'arm64' : /-(x64|x86_64|amd64)[.-]/.test(file.name) ? 'x64' : null;
+      const namedArch = /-universal[.-]/.test(file.name) ? 'universal' : /-arm64[.-]/.test(file.name) ? 'arm64' : /-(x64|x86_64|amd64)[.-]/.test(file.name) ? 'x64' : null;
       const key = `${product}:${file.platform}:${file.arch}:${format}`;
       if (Object.keys(file).sort().join() !== 'arch,bytes,format,githubUrl,name,platform,product,sha256,url'
         || file.product !== product || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(file.name ?? '')
-        || !file.name.includes(`-${value.version}-`) || !['x64', 'arm64'].includes(file.arch)
+        || !file.name.includes(`-${value.version}-`) || !(value.schemaVersion === 3 ? (file.platform === 'linux' ? ['x64'] : ['universal']) : ['x64', 'arm64']).includes(file.arch)
         || !Object.hasOwn(formats, file.platform) || !formats[file.platform].includes(format)
         || file.format !== format || namedArch !== file.arch || seen.has(key)
         || !Number.isSafeInteger(file.bytes) || file.bytes < 1 || file.bytes > 2 * 1024 ** 3
@@ -57,7 +57,7 @@ export function parseRelease(value) {
 export function requireCompleteRelease(value) {
   const release = parseRelease(value);
   const expected = new Set([
-    ...['desktop','cli'].flatMap(product => ['mac','win'].flatMap(platform => ['x64','arm64'].map(arch=>`${product}:${platform}:${arch}:${platform === 'mac' ? 'pkg' : 'exe'}`))),
+    ...['desktop','cli'].flatMap(product => ['mac','win'].flatMap(platform => (release.schemaVersion === 3 ? ['universal'] : ['x64','arm64']).map(arch=>`${product}:${platform}:${arch}:${platform === 'mac' ? 'pkg' : 'exe'}`))),
     ...['AppImage','deb','pacman'].map(format=>`desktop:linux:x64:${format}`), 'cli:linux:x64:sh',
   ]);
   for (const file of [...release.downloads,...release.cliDownloads]) {
