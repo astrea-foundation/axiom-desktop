@@ -34,13 +34,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          test "$GITHUB_REF" = refs/heads/main
+          test "$GITHUB_REF" = refs/tags/v0.1.7-packaging.1
           git merge-base --is-ancestor HEAD origin/main
           test "$(git rev-parse v0.1.7^{commit})" = 5239e315f86809e1a95b4954eae4a27a34c0fa8b
           git merge-base --is-ancestor v0.1.7 HEAD
           python - <<'PYTHON'
           import json, subprocess
-          allowed = {'apps/desktop/scripts/after-pack.cjs', 'apps/desktop/tests/windows-signing.test.ts', '.github/workflows/recover-017.yml', 'docs/releasing.md'}
+          allowed = {'apps/desktop/scripts/after-pack.cjs', 'apps/desktop/tests/windows-signing.test.ts', '.github/workflows/recover-017.yml', '.github/workflows/release.yml', 'docs/releasing.md'}
           changed = set(subprocess.check_output(['git','diff','--name-only','v0.1.7','HEAD'], text=True).splitlines())
           if not changed <= allowed: raise SystemExit(f'Product source changed: {changed - allowed}')
           run = json.loads(subprocess.check_output(['gh','api','repos/astrea-foundation/axiomai/actions/runs/35803134333'], text=True))

@@ -237,9 +237,11 @@ Mac/Linux packaging, but Windows afterPack called an unavailable internal
 `WinPackager.sign` method. The hook now uses Axiom's configured SHA-256 signer
 directly; a regression check exercises added-file signing and failure propagation.
 
-The one-time `recover-017.yml` dispatch runs only from promoted `main`. It verifies
+The one-time `recover-017.yml` dispatch runs from `v0.1.7-packaging.1`, pointing
+to the promoted repair on `main`, as required by the existing tag-only signing
+environments. Packaging tags do not trigger a full native rebuild. It verifies
 the immutable v0.1.7 revision and original artifact run, rejects changes outside
-the signing hook, its test, this documentation and the recovery workflow, then
+the signing hook, its test, this documentation and the two release workflows, then
 overlays only the fixed hook on the tagged source. Receipt hashes, version and
 update-key checks still authenticate both retained Windows native inputs. The
 run records the product and packaging-repair revisions separately. No native
