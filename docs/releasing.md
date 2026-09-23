@@ -229,3 +229,20 @@ inventory verification, even when cross-repository publication needs an operator
 checks every existing asset and publishes only a complete draft. Failed or
 superseded build tags are not advertised as releases. Public website/feed
 activation remains the platform publisher's responsibility.
+
+### v0.1.7 packaging repair
+
+The first combined release run `35803134333` completed all native builds and
+Mac/Linux packaging, but Windows afterPack called an unavailable internal
+`WinPackager.sign` method. The hook now uses Axiom's configured SHA-256 signer
+directly; a regression check exercises added-file signing and failure propagation.
+
+The one-time `recover-017.yml` dispatch runs only from promoted `main`. It verifies
+the immutable v0.1.7 revision and original artifact run, rejects changes outside
+the signing hook, its test, this documentation and the recovery workflow, then
+overlays only the fixed hook on the tagged source. Receipt hashes, version and
+update-key checks still authenticate both retained Windows native inputs. The
+run records the product and packaging-repair revisions separately. No native
+binary or successful Mac/Linux installer is rebuilt or relabeled. Signed Windows
+x64/ARM64 install checks still gate the complete manifest and source Release.
+Future tags use the corrected normal release workflow.

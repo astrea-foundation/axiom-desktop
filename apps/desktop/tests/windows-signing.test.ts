@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
@@ -42,6 +44,36 @@ test('electron-builder config loads its real SHA256 signing hook and fails witho
   assert.deepEqual(JSON.parse(result.stdout), { force: true, publisher: 'Astrea Labs, Inc.', hashes: ['sha256'], hook: 'function' });
   const missing = spawnSync(process.execPath, ['-e', code], { cwd: desktop, env: unsignedEnvironment(process.env), encoding: 'utf8' });
   assert.notEqual(missing.status, 0);
+});
+
+test('afterPack signs added Windows runtime and launcher files and propagates signing failure', async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'axiom signing '));
+  const modules = ['../../../scripts/package-licenses.cjs', '../scripts/bundle-windows-runtime.cjs'];
+  const saved = modules.map(name => { const id=require.resolve(name); require(id); return [id, require.cache[id]!.exports] as const; });
+  const signer = require('../scripts/windows-signing.cjs');
+  const originalSign = signer.sign;
+  try {
+    for (const [id] of saved) require.cache[id]!.exports = async () => {};
+    mkdirSync(path.join(directory,'bin'), {recursive:true});
+    writeFileSync(path.join(directory,'bin/vcruntime140.dll'),'runtime fixture');
+    writeFileSync(path.join(directory,'bin/axiomcli.exe'),'already signed extraResource');
+    const calls: Array<{path:string;hash:string;isNest:boolean}> = [];
+    signer.sign = (configuration: {path:string;hash:string;isNest:boolean}) => calls.push(configuration);
+    // Deliberately has no private electron-builder signing methods.
+    const context = {electronPlatformName:'win32', appOutDir:directory, packager:{projectDir:desktop, getResourcesDir:()=>directory, config:{forceCodeSigning:true, extraMetadata:{axiomUpdateFormat:'exe'}}}};
+    const afterPack = require('../scripts/after-pack.cjs');
+    await afterPack(context);
+    assert.deepEqual(calls.map(call=>path.basename(call.path)).sort(), ['axiomcli.ps1','vcruntime140.dll']);
+    assert.ok(calls.every(call=>call.hash==='sha256' && call.isNest===false));
+    signer.sign = () => { throw new Error('signing service rejected'); };
+    await assert.rejects(afterPack(context), /signing service rejected/);
+    context.packager.config.forceCodeSigning=false;
+    await afterPack(context);
+  } finally {
+    signer.sign=originalSign;
+    for (const [id, exports] of saved) require.cache[id]!.exports=exports;
+    rmSync(directory,{recursive:true,force:true});
+  }
 });
 
 test('unpacked build input is restricted to the explicit unsigned Windows path', () => {
