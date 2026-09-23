@@ -1,6 +1,7 @@
 Unicode true
 !include "MUI2.nsh"
 !include "LogicLib.nsh"
+!include "x64.nsh"
 Name "AxiomCLI"
 VIProductVersion "${VERSION}.0"
 VIAddVersionKey "ProductName" "AxiomCLI"
@@ -28,14 +29,28 @@ SetCompressor /SOLID lzma
   IfFileExists "$WINDIR\sysnative\WindowsPowerShell\v1.0\powershell.exe" 0 +2
     StrCpy $R3 "$WINDIR\sysnative\WindowsPowerShell\v1.0\powershell.exe"
 !macroend
+Function .onInit
+  ${IfNot} ${RunningX64}
+    MessageBox MB_OK|MB_ICONSTOP "AxiomCLI requires 64-bit Windows (x64 or ARM64)."
+    Abort
+  ${EndIf}
+FunctionEnd
 Section
   SetOutPath "$INSTDIR"
+!ifdef INPUT_ARM64
+  ${If} ${IsNativeARM64}
+    File /r "${INPUT_ARM64}\*"
+  ${Else}
+    File /r "${INPUT_X64}\*"
+  ${EndIf}
+!else
   File /r "${INPUT}\*"
+!endif
   WriteUninstaller "$INSTDIR\Uninstall.exe"
   WriteRegStr HKCU "Software\AxiomCLI" "InstallDir" "$INSTDIR"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\AxiomCLI" "DisplayName" "AxiomCLI"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\AxiomCLI" "DisplayVersion" "${VERSION}"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\AxiomCLI" "UninstallString" '$"$INSTDIR\Uninstall.exe$"'
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\AxiomCLI" "UninstallString" '"$INSTDIR\Uninstall.exe"'
   !insertmacro NativePowerShell
   nsExec::ExecToStack /TIMEOUT=30000 '"$R3" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\windows-cli-path.ps1" -Action Install -BinPath "$INSTDIR\launchers" -Scope User'
   Pop $0

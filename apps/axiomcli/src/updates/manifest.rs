@@ -72,7 +72,7 @@ pub fn parse_release(bytes: &[u8]) -> anyhow::Result<Release> {
     ensure!(bytes.len() <= MAX_FEED_BYTES, "Release feed is too large");
     let release: Release = serde_json::from_slice(bytes)?;
     ensure!(
-        release.schema_version == 2
+        matches!(release.schema_version, 2 | 3)
             && release.sequence > 0
             && release.sequence <= 9_007_199_254_740_991
             && lower_hex(&release.revision, 40)
@@ -114,7 +114,9 @@ pub fn parse_release(bytes: &[u8]) -> anyhow::Result<Release> {
             let marker = |a: &str| {
                 file.name.contains(&format!("-{a}.")) || file.name.contains(&format!("-{a}-"))
             };
-            let arch = if marker("arm64") {
+            let arch = if marker("universal") {
+                "universal"
+            } else if marker("arm64") {
                 "arm64"
             } else if ["x64", "x86_64", "amd64"].iter().any(|a| marker(a)) {
                 "x64"
@@ -134,7 +136,11 @@ pub fn parse_release(bytes: &[u8]) -> anyhow::Result<Release> {
                         .bytes()
                         .all(|c| c.is_ascii_alphanumeric() || b"._-".contains(&c))
                     && file.name.contains(&format!("-{}-", release.version))
-                    && matches!(file.arch.as_str(), "x64" | "arm64")
+                    && match (release.schema_version, file.platform.as_str()) {
+                        (3, "linux") => file.arch == "x64",
+                        (3, _) => file.arch == "universal",
+                        _ => matches!(file.arch.as_str(), "x64" | "arm64"),
+                    }
                     && arch == file.arch
                     && allowed.contains(&format)
                     && file.format == format

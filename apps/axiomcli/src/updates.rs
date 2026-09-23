@@ -180,6 +180,12 @@ fn host_arch() -> &'static str {
     }
 }
 
+fn matches_target(file: &Artifact, platform: &str, arch: &str) -> bool {
+    file.platform == platform
+        && matches!(arch, "x64" | "arm64")
+        && (file.arch == arch || (matches!(platform, "mac" | "win") && file.arch == "universal"))
+}
+
 fn select<'a>(release: &'a Release, installation: &Installation) -> anyhow::Result<&'a Artifact> {
     let files = if installation.product == "desktop" {
         &release.downloads
@@ -189,9 +195,7 @@ fn select<'a>(release: &'a Release, installation: &Installation) -> anyhow::Resu
     files
         .iter()
         .find(|f| {
-            f.platform == host_platform()
-                && f.arch == host_arch()
-                && f.format == installation.format
+            matches_target(f, host_platform(), host_arch()) && f.format == installation.format
         })
         .context("No update has been published for this installation")
 }

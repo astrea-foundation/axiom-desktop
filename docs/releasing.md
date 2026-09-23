@@ -14,9 +14,20 @@ implemented code from outstanding signed OS acceptance.
 
 | Target | Desktop installer | Standalone CLI + proxy installer |
 |---|---|---|
-| Windows x64 / ARM64 | NSIS EXE | NSIS EXE, per-user |
-| macOS Intel / Apple Silicon | PKG | PKG |
+| Windows x64 / ARM64 | Combined NSIS EXE | Combined NSIS EXE, per-user |
+| macOS Intel / Apple Silicon | Universal PKG | Universal PKG |
 | Linux x64, glibc 2.35+ | DEB, Pacman, AppImage | Self-extracting SH, per-user |
+
+Each Mac PKG contains universal Mach-O binaries for Intel and Apple Silicon.
+Each Windows EXE contains x64 and ARM64 payloads and selects the native one at
+installation. There is one download per product for each of these operating
+systems; Linux keeps its three Desktop formats and standalone SH installer.
+
+Native jobs record version, source revision, update key and hashes before
+uploading inputs. Windows inputs also carry their native Visual C++ runtime.
+Packaging verifies both receipts before combining or signing anything. Failed
+packaging can reuse the retained native inputs for seven days. It does not
+rebuild Rust or repeat successful validation jobs.
 
 All Desktop packages contain their matching CLI. No bundled CLI is updated
 independently. Linux ARM and musl are not public targets. AppImage requires FUSE;
@@ -69,7 +80,7 @@ code and PKGs, submits notarization and staples/verifies tickets. Desktop's
 packaging script disables electron-builder's separate app notarization and
 submits the final PKG once, including its signed app payload. This follows
 [Apple's outermost-container guidance](https://developer.apple.com/documentation/xcode/packaging-mac-software-for-distribution)
-and avoids an extra notarization queue wait for each architecture. The standalone
+and avoids an extra notarization queue wait for each product. The standalone
 CLI's separate PKG still requires its own notarization and stapled ticket.
 
 Windows uses the existing protected `windows-signing` environment and Azure OIDC:
@@ -79,6 +90,10 @@ Windows uses the existing protected `windows-signing` environment and Azure OIDC
 `ArtifactSigning` 0.1.20; ARM64 binaries are built on a native ARM64 runner first.
 All payload code, uninstallers and final NSIS installers require valid timestamped
 Authenticode signatures from the expected publisher. No unsigned fallback exists.
+The signing host installs and uninstalls both combined packages on x64. A short
+ARM64 job repeats installation, checks native PE architecture and executes the
+installed CLI to verify version and update trust. These jobs reuse signed bytes;
+they do not compile Rust or repeat the functional suites.
 
 ## Build and publish
 
@@ -86,11 +101,12 @@ The tag-triggered [release workflow](../.github/workflows/release.yml):
 
 1. Checks `main` ancestry, stable version, completed CI for the tagged revision,
    and the existing budgeted live E2EE gate.
-2. Builds Linux Desktop/CLI, native macOS x64/ARM64 PKGs, and native Windows
-   x64/ARM64 inputs followed by the protected Windows signing job.
-3. Collects the complete 12-installer matrix. `download-manifest.mjs` hashes
+2. Builds Linux Desktop/CLI and native macOS/Windows x64/ARM64 inputs. One
+   signing job per OS combines the two architectures into Desktop and CLI installers.
+3. Collects the complete 8-installer matrix. `download-manifest.mjs` hashes
    final signed/notarized bytes, writes `SHA256SUMS`, and signs `manifest.json`.
-4. Creates or verifies immutable assets on a draft distribution release.
+4. Publishes signed installers and checksums in `axiomai`’s Releases tab using
+   the workflow token, then creates or verifies the public distribution draft.
 5. Dispatches the platform publisher on its `main` branch with native version
    and revision. Its separate run owns CDN verification and channel activation.
 
@@ -100,8 +116,13 @@ available to the generator. `revision` defaults to `git rev-parse HEAD`.
 Equal version or sequence with changed metadata is rejected by clients. Use a
 new version for any artifact correction; never rebuild over an existing release.
 
-Both products consume `https://axiom.stream/api/releases/latest`. The schema-2
+Both products consume `https://axiom.stream/api/releases/latest`. The schema-3
 manifest uses `downloads` for Desktop and `cliDownloads` for standalone installers.
+Mac and Windows records use `arch: "universal"`; Linux uses `arch: "x64"`.
+The current updater selects a universal installer on either supported native
+architecture. There is one feed, with no bridge release or compatibility aliases.
+Schema-2 parsing remains solely for already-published signed release records.
+See [the installer decision](adr/0019-combined-installers.md).
 Each record contains product, platform, architecture, format, name, length,
 SHA-256, and exact CDN and public GitHub asset URLs. Canonical signing recursively
 sorts object keys and uses compact UTF-8 JSON without the `signature` field.
@@ -201,3 +222,10 @@ verified installer to repair files. Linux standalone retains old version slots;
 never manually reactivate an older version against incompatible account data.
 The old developer archive scripts remain available for reproducibility work but
 are not release downloads or automatic-update installation owners.
+
+The source repository's Releases tab is populated after successful signing and
+inventory verification, even when cross-repository publication needs an operator.
+`node scripts/publish-github-release.mjs DIRECTORY --source` resumes this step,
+checks every existing asset and publishes only a complete draft. Failed or
+superseded build tags are not advertised as releases. Public website/feed
+activation remains the platform publisher's responsibility.

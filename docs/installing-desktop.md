@@ -2,14 +2,14 @@
 
 Each desktop download includes the matching command-line program, `axiomcli`.
 You do not need Rust, Node.js, or a separate CLI download. Choose the build for
-your operating system and processor from the published download catalog.
-These filenames illustrate version 0.1.0; they do not assert its current
+your operating system from the published download catalog.
+These filenames illustrate version 0.1.7; they do not assert its current
 availability. [Supported build targets](releasing.md#supported-platforms) and
 [Desktop behavior](desktop.md) are documented separately.
 
 ## Windows
 
-Run `Axiom-0.1.0-win-x64.exe`, or the `arm64.exe` build on Windows on ARM,
+Run `Axiom-0.1.7-win-universal.exe`. It selects the native x64 or ARM64 payload,
 and complete the installation wizard. Open Axiom from the Start menu. Open a
 new terminal window and run:
 
@@ -29,12 +29,11 @@ See [Microsoft's SmartScreen documentation](https://learn.microsoft.com/en-us/wi
 
 ## macOS
 
-Requires macOS 11 (Big Sur) or newer. Intel and Apple Silicon have separate
-downloads; the app includes its runtime and needs no Homebrew installation.
+Requires macOS 11 (Big Sur) or newer. One universal download supports Intel and
+Apple Silicon; the app includes its runtime and needs no Homebrew installation.
 
 The **PKG** is the easiest way to install both programs. Choose
-`Axiom-0.1.0-mac-arm64.pkg` for Apple Silicon or
-`Axiom-0.1.0-mac-x64.pkg` for Intel. Run the installer and approve its normal
+`Axiom-0.1.7-mac-universal.pkg` for either processor. Run the installer and approve its normal
 administrator prompt. It installs `/Applications/Axiom.app` and makes
 `axiomcli` available from Terminal through `/usr/local/bin/axiomcli`.
 
@@ -52,7 +51,7 @@ format for your distribution so its package manager installs the dependencies.
 Ubuntu/Debian:
 
 ```sh
-sudo apt install ./Axiom-0.1.0-linux-amd64.deb
+sudo apt install ./Axiom-0.1.7-linux-amd64.deb
 axiomcli --version
 ```
 
@@ -70,14 +69,14 @@ For an installation under your home directory, run the **AppImage** installer
 as your normal user:
 
 ```sh
-chmod +x Axiom-0.1.0-linux-x86_64.AppImage
-./Axiom-0.1.0-linux-x86_64.AppImage --install
+chmod +x Axiom-0.1.7-linux-x86_64.AppImage
+./Axiom-0.1.7-linux-x86_64.AppImage --install
 ```
 
 Open a new terminal to use `axiomcli`. The installed app and CLI use a durable
 copy under `~/.local/share/axiom-desktop`; you can then remove the original
 download. Running the AppImage without `--install` opens it portably. Use
-`./Axiom-0.1.0-linux-x86_64.AppImage --axiom-cli --help` for the portable CLI.
+`./Axiom-0.1.7-linux-x86_64.AppImage --axiom-cli --help` for the portable CLI.
 
 AppImages require working FUSE support and the desktop's system libraries.
 If mounting fails, use your distribution's package above or follow the
