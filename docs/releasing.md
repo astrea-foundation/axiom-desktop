@@ -235,9 +235,12 @@ activation remains the platform publisher's responsibility.
 The first combined release run `35803134333` completed all native builds and
 Mac/Linux packaging, but Windows afterPack called an unavailable internal
 `WinPackager.sign` method. The hook now uses Axiom's configured SHA-256 signer
-directly; a regression check exercises added-file signing and failure propagation.
+directly. The first retry then correctly rejected an unsigned copied CLI. The
+hook now explicitly signs executables, runtime DLLs and PowerShell scripts in
+all three owned resource directories. Regression checks exercise that complete
+resource inventory and signing failure propagation.
 
-The one-time `recover-017.yml` dispatch runs from `v0.1.7-packaging.1`, pointing
+The one-time `recover-017.yml` dispatch runs from `v0.1.7-packaging.2`, pointing
 to the promoted repair on `main`, as required by the existing tag-only signing
 environments. Packaging tags do not trigger a full native rebuild. It verifies
 the immutable v0.1.7 revision and original artifact run, rejects changes outside

@@ -56,14 +56,16 @@ test('afterPack signs added Windows runtime and launcher files and propagates si
     for (const [id] of saved) require.cache[id]!.exports = async () => {};
     mkdirSync(path.join(directory,'bin'), {recursive:true});
     writeFileSync(path.join(directory,'bin/vcruntime140.dll'),'runtime fixture');
-    writeFileSync(path.join(directory,'bin/axiomcli.exe'),'already signed extraResource');
+    writeFileSync(path.join(directory,'bin/axiomcli.exe'),'native executable fixture');
+    mkdirSync(path.join(directory,'installer'), {recursive:true});
+    writeFileSync(path.join(directory,'installer/windows-cli-path.ps1'),'installer fixture');
     const calls: Array<{path:string;hash:string;isNest:boolean}> = [];
     signer.sign = (configuration: {path:string;hash:string;isNest:boolean}) => calls.push(configuration);
     // Deliberately has no private electron-builder signing methods.
     const context = {electronPlatformName:'win32', appOutDir:directory, packager:{projectDir:desktop, getResourcesDir:()=>directory, config:{forceCodeSigning:true, extraMetadata:{axiomUpdateFormat:'exe'}}}};
     const afterPack = require('../scripts/after-pack.cjs');
     await afterPack(context);
-    assert.deepEqual(calls.map(call=>path.basename(call.path)).sort(), ['axiomcli.ps1','vcruntime140.dll']);
+    assert.deepEqual(calls.map(call=>path.basename(call.path)).sort(), ['axiomcli.exe','axiomcli.ps1','vcruntime140.dll','windows-cli-path.ps1']);
     assert.ok(calls.every(call=>call.hash==='sha256' && call.isNest===false));
     signer.sign = () => { throw new Error('signing service rejected'); };
     await assert.rejects(afterPack(context), /signing service rejected/);
