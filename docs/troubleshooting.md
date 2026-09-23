@@ -13,6 +13,24 @@ vault; a locked or denied vault cannot fall back to a plaintext token file.
 If a loopback callback is blocked, the pending native flow can still complete
 through PKCE polling. Keep the login flow open until completion or cancellation.
 
+Desktop preserves the native sign-in failure reason in its error banner, including
+TLS connection causes. Version 0.1.7 can hide failures while starting sign-in behind
+the generic `Internal error` message. A failed start can happen before a request
+reaches the account service, so server logs alone cannot identify it.
+
+If sign-in and the update check both fail to connect, compare the same check on
+another network (for example, a phone hotspot). On macOS, run the bundled native
+client from Terminal to check the same updater without installing anything:
+
+```sh
+/Applications/Axiom.app/Contents/Resources/bin/axiomcli update --check
+```
+
+`InvalidContentType` in the TLS error means the client encountered an invalid TLS
+record type, before receiving the release HTTP response. Check proxy, VPN and
+network-filter settings; that error alone does not identify which component sent
+the invalid data. Keep certificate verification enabled.
+
 `AXIOM_API_KEY` selects automation credentials in CLI/proxy modes and prevents
 native `/login` until unset. Desktop removes this override from its sidecar.
 `axiomcli models` checks model discovery separately from inference.

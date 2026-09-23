@@ -985,7 +985,12 @@ impl AuthManager {
             })
             .send()
             .await
-            .map_err(|error| AxiomError::Provider(format!("could not start login: {error}")))?;
+            .map_err(|error| {
+                // Keep transport causes (including TLS errors) visible across ACP,
+                // without reflecting request URLs into Desktop's error banner.
+                let error = anyhow::Error::new(error.without_url());
+                AxiomError::Provider(format!("could not start login: {error:#}"))
+            })?;
         if !response.status().is_success() {
             return Err(AxiomError::Provider(format!(
                 "Axiom rejected the login request with HTTP {}",
@@ -3114,6 +3119,39 @@ mod tests {
         .expect("complete desktop login");
         assert_eq!(account.account.id, "acct_test-123");
         assert!(store.load().expect("load").is_some());
+    }
+
+    #[tokio::test]
+    async fn native_login_preserves_tls_failure_cause_without_request_url() {
+        let (mut auth, _, store) = manager().await;
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+        let base = format!("https://{}", listener.local_addr().expect("address"));
+        auth.api_base_url = Url::parse(&base).expect("API URL");
+        auth.client = Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .expect("client");
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("connection");
+            let mut hello = [0; 8192];
+            assert!(socket.read(&mut hello).await.expect("TLS client hello") > 0);
+            // Reproduce a network intermediary answering TLS with plaintext.
+            socket
+                .write_all(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
+                .await
+                .expect("plaintext reply");
+        });
+        let error = auth
+            .start_native_login(None)
+            .await
+            .expect_err("plaintext is not a TLS response")
+            .to_string();
+        server.await.expect("server task");
+        assert!(error.contains("could not start login"), "{error}");
+        assert!(error.contains("InvalidContentType"), "{error}");
+        assert!(!error.contains(&base), "request URL must not be reflected");
+        assert!(store.load().expect("load").is_none());
     }
 
     #[tokio::test]

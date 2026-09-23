@@ -307,7 +307,9 @@ export class AgentSidecar {
   }
 
   async nativeLoginStart(methodHint?: LoginMethod) {
-    const result = await this.requireClient().nativeLoginStart(methodHint);
+    const result = await this.requireClient().nativeLoginStart(methodHint).catch((error: unknown) => {
+      throw actionableAcpError(error);
+    });
     const authorizationUrl = trustedNativeAuthorizationUrl(
       result.login.authorizationUrl,
       this.origins.auth,
