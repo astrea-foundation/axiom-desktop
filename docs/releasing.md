@@ -90,6 +90,10 @@ Windows uses the existing protected `windows-signing` environment and Azure OIDC
 `ArtifactSigning` 0.1.20; ARM64 binaries are built on a native ARM64 runner first.
 All payload code, uninstallers and final NSIS installers require valid timestamped
 Authenticode signatures from the expected publisher. No unsigned fallback exists.
+The signing host installs and uninstalls both combined packages on x64. A short
+ARM64 job repeats installation, checks native PE architecture and executes the
+installed CLI to verify version and update trust. These jobs reuse signed bytes;
+they do not compile Rust or repeat the functional suites.
 
 ## Build and publish
 

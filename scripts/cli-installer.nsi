@@ -50,7 +50,7 @@ Section
   WriteRegStr HKCU "Software\AxiomCLI" "InstallDir" "$INSTDIR"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\AxiomCLI" "DisplayName" "AxiomCLI"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\AxiomCLI" "DisplayVersion" "${VERSION}"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\AxiomCLI" "UninstallString" '$"$INSTDIR\Uninstall.exe$"'
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\AxiomCLI" "UninstallString" '"$INSTDIR\Uninstall.exe"'
   !insertmacro NativePowerShell
   nsExec::ExecToStack /TIMEOUT=30000 '"$R3" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\windows-cli-path.ps1" -Action Install -BinPath "$INSTDIR\launchers" -Scope User'
   Pop $0
