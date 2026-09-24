@@ -1,5 +1,5 @@
 import { compareVersions, parseRelease, VERSION_PATTERN } from '../../../../packages/desktop-releases/manifest.mjs';
-import type { UpdateIdentity, UpdateState } from '../shared/updates';
+import { matchesUpdateTarget, type UpdateIdentity, type UpdateState } from '../shared/updates';
 
 export type NativeUpdateEvent = {event: string; lastError?: string | null; release?: unknown; installation?: {product: string; format: string}; name?: string; received?: number; total?: number; job?: string; message?: string};
 type Dependencies = {
@@ -52,7 +52,7 @@ export class UpdateService {
           checked = true;
           this.set({release, checkedAt: Date.now(), error: event.lastError ?? null, status: compareVersions(release.version, this.state.currentVersion) > 0 ? 'available' : 'current'});
         } else if (event.event === 'progress') {
-          const file = this.state.release?.downloads.find(file => file.name === event.name && file.platform === this.state.platform && file.arch === this.state.arch && file.format === this.state.format);
+          const file = this.state.release?.downloads.find(file => file.name === event.name && matchesUpdateTarget(file, this.state));
           if (!checked || !file || event.total !== file.bytes || !Number.isSafeInteger(event.received) || event.received! < 0 || event.received! > file.bytes) throw new Error('Invalid update progress');
           this.set({status: 'downloading', download: {name: file.name, received: event.received!, total: file.bytes}});
         } else if (event.event === 'ready') {

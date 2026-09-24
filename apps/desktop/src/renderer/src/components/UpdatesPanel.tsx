@@ -1,5 +1,6 @@
 import { ArrowDownToLine, ArrowUpRight, Check, LoaderCircle, RefreshCw, X } from 'lucide-react';
 import type { DesktopUpdates } from '../useDesktopUpdates';
+import { matchesUpdateTarget } from '../../../shared/updates';
 
 const mb = (bytes: number) => `${Math.round(bytes / 1024 / 1024)} MB`;
 const button = 'inline-flex items-center justify-center gap-2 rounded-lg border border-[var(--color-border)] bg-[var(--surface-button-secondary)] px-3 py-2 text-[12.5px] font-medium text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--surface-button-secondary-hover)] hover:text-[var(--color-text-primary)] disabled:cursor-default disabled:opacity-45';
@@ -10,7 +11,7 @@ export function UpdatesPanel({ updates }: { updates?: DesktopUpdates }) {
   const {status, release} = state;
   const busy = ['checking', 'downloading', 'waiting', 'installing'].includes(status);
   const available = release && ['available', 'downloading', 'waiting', 'installing', 'error'].includes(status);
-  const file = release?.downloads.find(file => file.platform === state.platform && file.arch === state.arch && file.format === state.format);
+  const file = release?.downloads.find(file => matchesUpdateTarget(file, state));
   const heading = status === 'installing' ? 'Installing update…'
     : status === 'waiting' ? 'Ready to restart'
     : status === 'downloading' ? `Downloading Axiom ${release?.version}`

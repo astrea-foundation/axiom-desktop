@@ -2,6 +2,7 @@
 mod apply;
 mod installation;
 mod manifest;
+mod staging;
 
 use anyhow::{Context as _, ensure};
 use fs2::FileExt as _;
@@ -270,9 +271,12 @@ async fn prepare(
         "Already up to date"
     );
     let file = select(&release, &installation)?;
+    let root = cache(&installation)?;
+    staging::prune(&root);
     let directory = tempfile::Builder::new()
         .prefix("pending-")
-        .tempdir_in(cache(&installation)?)?;
+        .tempdir_in(root)?;
+    let _lease = staging::lock(directory.path())?;
     download(file, &directory.path().join(&file.name), machine).await?;
     let helper = directory.path().join(if cfg!(windows) {
         "update-helper.exe"
@@ -406,6 +410,7 @@ pub async fn command(arguments: Arguments) -> anyhow::Result<()> {
     }
     let installation = discover()
         .context("Use an installed Axiom package to update; source builds must be rebuilt")?;
+    staging::prune(&cache(&installation)?);
     let release = latest_release().await?;
     accept_sequence(&installation, &release)?;
     let newer = version_parts(&release.version)? > version_parts(env!("CARGO_PKG_VERSION"))?;
@@ -457,6 +462,7 @@ pub async fn startup_notice() -> anyhow::Result<Option<String>> {
     let Ok(installation) = discover() else {
         return Ok(None);
     };
+    staging::prune(&cache(&installation)?);
     if let Some(error) = last_error(&installation) {
         return Ok(Some(format!(
             "Previous update failed: {error}. Use /update to retry."

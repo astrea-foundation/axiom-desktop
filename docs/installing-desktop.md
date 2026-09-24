@@ -123,6 +123,13 @@ signature verified by a key compiled into the client, and every download must
 match its signed size and SHA-256. There are no account credentials in update
 requests. Source builds and unsigned previews do not receive stable updates.
 
+Desktop recognizes the combined macOS and Windows installers on both x64 and
+ARM64. Installer downloads and copied helpers are removed after an installation
+attempt; the last result and signed feed remain available. Files still in use by
+Windows are retried on the next update check. Abandoned downloads are pruned
+after seven days on a check or a new download, while active downloads/installers
+hold a lock that prevents pruning.
+
 A failed download or verification leaves installed programs untouched. For an
 installer failure, retry the same package from the signed release. Programs keep
 account data separately from installation files. Keep the same package format;
