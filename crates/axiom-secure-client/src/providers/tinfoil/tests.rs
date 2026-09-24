@@ -46,6 +46,145 @@ fn parse(chunks: &[Vec<u8>]) -> Result<InferenceResponse> {
     parser.finish()
 }
 
+fn complete_with_fields(fields: &Value) -> Result<InferenceResponse> {
+    let mut value = json!({"id":"request-a","model":"deployment-alias","choices":[{
+        "index":0,"message":{"role":"assistant","content":"42"},"finish_reason":"stop"}],
+        "usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}});
+    value["choices"][0]["message"]
+        .as_object_mut()
+        .unwrap()
+        .extend(fields.as_object().unwrap().clone());
+    response::complete(&serde_json::to_vec(&value).unwrap(), "deepseek-v4-1-flash")
+}
+
+#[test]
+fn streamed_reasoning_reaches_events_and_completed_turn() {
+    for field in ["reasoning", "reasoning_content"] {
+        let chunks = [
+            chunk(json!({"role":"assistant",field:"Let’s "}), Value::Null),
+            chunk(json!({field:"think."}), Value::Null),
+            chunk(json!({"content":"42"}), json!("stop")),
+            usage(),
+            b"data: [DONE]\n\n".to_vec(),
+        ];
+        let mut parser = response::StreamParser::new("deepseek-v4-1-flash", 4096);
+        let mut events = Vec::new();
+        // Fragment inside both SSE records and the UTF-8 reasoning text.
+        for byte in chunks.concat() {
+            events.extend(parser.push(&[byte]).unwrap());
+        }
+        assert_eq!(
+            events,
+            vec![
+                ProviderEvent::ReasoningDelta("Let’s ".into()),
+                ProviderEvent::ReasoningDelta("think.".into()),
+                ProviderEvent::TextDelta("42".into()),
+            ],
+            "{field}"
+        );
+        let output = parser.finish().unwrap();
+        assert_eq!(output.reasoning.as_deref(), Some("Let’s think."));
+        assert_eq!(output.assistant.reasoning, output.reasoning);
+        assert_eq!(output.assistant.text, "42");
+    }
+}
+
+#[test]
+fn reasoning_aliases_are_selected_once_for_streams_and_completions() {
+    for (fields, expected) in [
+        (json!({}), None),
+        (json!({"reasoning":null,"reasoning_content":null}), None),
+        (json!({"reasoning":""}), None),
+        (json!({"reasoning_content":""}), None),
+        (json!({"reasoning":"trace"}), Some("trace")),
+        (json!({"reasoning_content":"trace"}), Some("trace")),
+        (
+            json!({"reasoning":"trace","reasoning_content":"trace"}),
+            Some("trace"),
+        ),
+        (
+            json!({"reasoning":"current","reasoning_content":"compatibility"}),
+            Some("current"),
+        ),
+        (
+            json!({"reasoning":null,"reasoning_content":"trace"}),
+            Some("trace"),
+        ),
+        (
+            json!({"reasoning":"","reasoning_content":"trace"}),
+            Some("trace"),
+        ),
+        (
+            json!({"reasoning":"trace","reasoning_content":null}),
+            Some("trace"),
+        ),
+        (
+            json!({"reasoning":"trace","reasoning_content":""}),
+            Some("trace"),
+        ),
+    ] {
+        let mut parser = response::StreamParser::new("deepseek-v4-1-flash", 4096);
+        let events = parser.push(&chunk(fields.clone(), Value::Null)).unwrap();
+        let expected_events: Vec<_> = expected
+            .map(|text| ProviderEvent::ReasoningDelta(text.into()))
+            .into_iter()
+            .collect();
+        assert_eq!(events, expected_events, "{fields}");
+        for bytes in stream() {
+            parser.push(&bytes).unwrap();
+        }
+        for output in [
+            parser.finish().unwrap(),
+            complete_with_fields(&fields).unwrap(),
+        ] {
+            assert_eq!(
+                output.reasoning.as_deref().filter(|s| !s.is_empty()),
+                expected,
+                "{fields}"
+            );
+            assert_eq!(output.assistant.reasoning, output.reasoning);
+        }
+    }
+}
+
+#[test]
+fn malformed_reasoning_is_rejected_for_both_response_formats() {
+    for field in ["reasoning", "reasoning_content"] {
+        for invalid in [json!(42), json!(true), json!([]), json!({})] {
+            // Validate either alias even when the other contains usable text.
+            for mut fields in [
+                json!({}),
+                json!({"reasoning":"trace","reasoning_content":"trace"}),
+            ] {
+                fields[field] = invalid.clone();
+                let mut parser = response::StreamParser::new("deepseek-v4-1-flash", 4096);
+                assert!(
+                    parser.push(&chunk(fields.clone(), Value::Null)).is_err(),
+                    "{fields}"
+                );
+                assert!(complete_with_fields(&fields).is_err(), "{fields}");
+            }
+        }
+    }
+}
+
+#[test]
+fn reasoning_aliases_preserve_message_size_limits() {
+    for field in ["reasoning", "reasoning_content"] {
+        let at_limit = json!({field:"x".repeat(axiom_inference::MAX_MESSAGE_TEXT_BYTES)});
+        assert!(complete_with_fields(&at_limit).is_ok());
+        let mut parser = response::StreamParser::new("deepseek-v4-1-flash", usize::MAX);
+        parser.push(&chunk(at_limit, Value::Null)).unwrap();
+        assert!(
+            parser
+                .push(&chunk(json!({field:"x"}), Value::Null))
+                .is_err()
+        );
+        let oversized = json!({field:"x".repeat(axiom_inference::MAX_MESSAGE_TEXT_BYTES + 1)});
+        assert!(complete_with_fields(&oversized).is_err());
+    }
+}
+
 #[test]
 fn encrypted_terminal_is_mandatory_even_at_valid_frame_boundaries() {
     let chunks = stream();
@@ -167,7 +306,13 @@ fn open(
 fn aead_binds_order_completion_and_request_context() {
     let token = SessionRecoveryToken::new(vec![1; 32], vec![2; 32]).unwrap();
     let nonce = [3; 32];
-    let frames = encrypted_frames(&stream(), &token, &nonce);
+    let mut chunks = stream();
+    chunks.insert(0, chunk(json!({"reasoning":"private trace"}), Value::Null));
+    let frames = encrypted_frames(&chunks, &token, &nonce);
+    assert_eq!(
+        open(&frames, &token, &nonce).unwrap().reasoning.as_deref(),
+        Some("private trace")
+    );
     assert_eq!(
         open(&frames, &token, &nonce).unwrap().assistant.text,
         "héllo"
