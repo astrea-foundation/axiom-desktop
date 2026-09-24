@@ -353,6 +353,15 @@ pub trait TurnRunner: Send + Sync {
         ))
     }
 
+    /// Prepare attested keys without invalidating still-valid verification.
+    async fn prewarm_security(
+        &self,
+        model: &str,
+        cancellation: CancellationToken,
+    ) -> Result<SecurityVerification> {
+        self.verify_security(model, cancellation).await
+    }
+
     async fn recover_accounting(
         &self,
         _ids: &[String],
@@ -1756,6 +1765,17 @@ impl TurnRunner for AgentEngine {
     ) -> Result<SecurityVerification> {
         self.provider
             .verify_security(model, cancellation)
+            .await
+            .map(Into::into)
+    }
+
+    async fn prewarm_security(
+        &self,
+        model: &str,
+        cancellation: CancellationToken,
+    ) -> Result<SecurityVerification> {
+        self.provider
+            .prewarm_security(model, cancellation)
             .await
             .map(Into::into)
     }

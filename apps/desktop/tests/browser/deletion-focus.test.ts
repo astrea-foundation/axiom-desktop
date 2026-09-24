@@ -110,6 +110,10 @@ async function openApp(platform = "linux", failDelete = false, thinkingLevels: s
     };
     const agent = {
       onState: (listener: (state: unknown) => void) => { listeners.add(listener); return () => listeners.delete(listener); },
+      prewarmSecurity: async (modelId: string) => {
+        calls.push({ method: "prewarm", id: modelId });
+        return { status: { state: "unverified" }, evidence: null };
+      },
       getState: async () => structuredClone(state),
       desktopBootstrap: async () => ({ newThreadSettings: { model: rememberedModel, thinkingLevel: savedThinking() } }),
       listModels: async () => modelCatalog ?? ({ models: [{
@@ -3398,6 +3402,52 @@ test("usage period tabs update totals and charts, discard stale replies, and sup
     // StrictMode can issue the initial request twice; switching must send each selected period.
     assert.deepEqual(requests.slice(-6).map((r: { period: string }) => r.period), ["week", "month", "week", "week", "month", "all_time"]);
     assert.ok(requests.every((r: { accountId: string; timezone: string }) => r.accountId === "test-account" && typeof r.timezone === "string" && r.timezone.length > 0));
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+for (const platform of ["darwin", "win32"]) {
+  test(`profile menu stays open through real streaming autoscroll (${platform})`, async () => {
+    const { page, errors } = await openApp(platform);
+    try {
+      await page.getByRole("button", { name: "Viewed Existing thread", exact: true }).click();
+      const feed = (count: number) => page.evaluate((count) => {
+        (window as any).__deletionTest.setTimeline([{
+          id: "menu-stream", kind: "assistant", turnId: "menu-turn", status: "streaming",
+          text: Array.from({ length: count }, (_, index) => `Paragraph ${index}: streamed content.`).join("\n\n"),
+        }], true);
+      }, count);
+      await feed(25);
+      await page.getByRole("button", { name: "Account menu", exact: true }).click();
+      const menu = page.getByRole("menu", { name: "Account actions", exact: true });
+      for (const count of [30, 40, 50]) {
+        await feed(count);
+        await page.waitForFunction(() => {
+          const el = document.querySelector<HTMLElement>("[data-chat-scroll]")!;
+          return el.scrollHeight - el.clientHeight - el.scrollTop <= 2;
+        });
+        assert.equal(await menu.isVisible(), true);
+      }
+      await menu.getByRole("menuitem", { name: "Settings", exact: true }).click();
+      await page.getByRole("region", { name: "Settings", exact: true }).waitFor();
+      assert.deepEqual(errors, []);
+    } finally { await page.close(); }
+  });
+}
+
+test("only editing the signed-in composer starts model-only verification, including before thread creation", async () => {
+  const { page, errors } = await openApp("darwin");
+  try {
+    const warmups = () => page.evaluate(() => (window as any).__deletionTest.calls.filter((call: any) => call.method === "prewarm"));
+    assert.deepEqual(await warmups(), []);
+    await page.locator("textarea").fill("This draft must stay on this device");
+    await page.waitForFunction(() => (window as any).__deletionTest.calls.some((call: any) => call.method === "prewarm"));
+    assert.deepEqual(await warmups(), [{ method: "prewarm", id: "test-model" }]);
+    assert.equal((await calls(page)).filter((call) => call.method === "new" || call.method === "prompt").length, 0);
+    await page.getByRole("button", { name: "Viewed Existing thread", exact: true }).click();
+    assert.equal((await warmups()).length, 1, "loading a thread does not verify");
+    await page.locator("textarea").fill("Follow-up draft");
+    assert.equal((await warmups()).length, 2);
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
 });

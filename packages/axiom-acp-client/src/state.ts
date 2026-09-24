@@ -309,13 +309,14 @@ export class AxiomStateStore extends EventEmitter {
   }
 
   setSecurityVerification(sessionId: string, update: {
-    pending: boolean; evidence?: SecurityEvidence | null; error?: string | null;
+    pending: boolean; evidence?: SecurityEvidence | null; error?: string | null; status?: SecurityStatus;
   }): void {
     const session = this.value.sessions[sessionId];
     if (!session) return;
     session.securityVerificationPending = update.pending;
     session.securityVerificationError = update.error ?? null;
     if (update.evidence !== undefined) session.securityEvidence = update.evidence;
+    if (update.status) session.security = update.status;
     this.changed();
   }
 

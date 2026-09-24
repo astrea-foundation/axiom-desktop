@@ -61,7 +61,7 @@ const EXTENSION_CAPABILITIES = {
     account: 2,
     billing: 3,
     usage: 1,
-    securityEvidence: 3,
+    securityEvidence: 4,
     webConsent: 1,
     steering: 1,
     messageRevision: 1,
@@ -142,7 +142,9 @@ export class AxiomAcpClient extends EventEmitter {
   private readonly interactions = new Map<string, InteractionResolver>();
   private readonly background = new Set<Promise<void>>();
   private readonly refreshingThreads = new Map<string, Promise<GetThreadTimelineResponse>>();
-  private readonly securityPreflights = new Map<string, Promise<void>>();
+  private readonly securityWarmups = new Map<string, {
+    context: number; promise: Promise<VerifySecurityResponse>; pending: boolean; validUntil: number; retryAt: number; failures: number;
+  }>();
   private readonly securityVerifications = new Map<string, { context: object; promise: Promise<VerifySecurityResponse> }>();
   private readonly pendingPrompts = new Set<{ threadId: string; cancelled: boolean }>();
   private fullResync: Promise<void> | null = null;
@@ -162,7 +164,7 @@ export class AxiomAcpClient extends EventEmitter {
     this.process.on("request", (request: IncomingRequest) => this.onRequest(request));
     this.process.on("diagnostic", (diagnostic: string) => this.state.setDiagnostic(diagnostic));
     this.process.on("exit", (error: Error) => this.state.setConnected(false, error.message));
-    this.state.on("change", (state: ClientState) => { this.emit("state", state); this.scheduleAccountingRecovery(state); });
+    this.state.on("change", (state: ClientState) => { if (!state.connected) this.securityWarmups.clear(); this.emit("state", state); this.scheduleAccountingRecovery(state); });
   }
 
   private scheduleAccountingRecovery(state: ClientState): void {
@@ -301,7 +303,6 @@ export class AxiomAcpClient extends EventEmitter {
     if (result.modes) this.state.setModes(result.sessionId, result.modes.currentModeId, result.modes.availableModes);
     if (result.configOptions) this.state.setConfig(result.sessionId, result.configOptions);
     await this.refreshThread(result.sessionId);
-    this.startSecurityPreflight(result.sessionId);
     return result;
   }
 
@@ -314,7 +315,6 @@ export class AxiomAcpClient extends EventEmitter {
     if (result.modes) this.state.setModes(threadId, result.modes.currentModeId, result.modes.availableModes);
     if (result.configOptions) this.state.setConfig(threadId, result.configOptions);
     await this.refreshThread(threadId);
-    this.startSecurityPreflight(threadId);
     return { ...result, sessionId: threadId };
   }
 
@@ -417,7 +417,6 @@ export class AxiomAcpClient extends EventEmitter {
 
   async setSettings(request: ThreadSettingsRequest): Promise<ThreadSettingsResult> {
     if (!request.model && !request.thinkingLevel) throw new ProtocolError("no settings were provided");
-    const previousModel = this.state.snapshot().sessions[request.threadId]?.settings?.model;
     let configOptions = request.model
       ? await this.setConfig(request.threadId, "model", request.model)
       : null;
@@ -438,7 +437,6 @@ export class AxiomAcpClient extends EventEmitter {
     if (!session?.settings?.model) {
       throw new ProtocolError("AxiomCLI returned no authoritative active-thread settings");
     }
-    if (request.model && previousModel !== session.settings.model) this.startSecurityPreflight(request.threadId);
     return {
       ...preferences,
       threadId: request.threadId,
@@ -624,6 +622,55 @@ export class AxiomAcpClient extends EventEmitter {
     return result;
   }
 
+  /** Called only by composition. Native code still enforces freshness at send. */
+  prewarmSecurity(modelId: string): Promise<VerifySecurityResponse> {
+    const accountContext = this.state.accountContextToken();
+    const cached = this.securityWarmups.get(modelId);
+    const previous = cached?.context === accountContext ? cached : undefined;
+    const now = Date.now();
+    // Keystrokes with reusable work need no RPC or full conversation snapshot.
+    // Account/runtime transitions invalidate the context; disconnect clears the map.
+    if (previous && (previous.pending || now < previous.validUntil || now < previous.retryAt)) return previous.promise;
+    const snapshot = this.state.snapshot();
+    if (!snapshot.connected || !modelId || modelId.length > 512 || snapshot.account?.state !== "valid") {
+      return Promise.reject(new ProtocolError("Sign in and select a model before verifying"));
+    }
+    for (const [threadId, verification] of this.securityVerifications) {
+      if (snapshot.sessions[threadId]?.settings?.model === modelId
+        && this.state.securityContextToken(threadId) === verification.context) return verification.promise;
+    }
+    const contexts = Object.values(snapshot.sessions)
+      .filter((session) => session.settings?.model === modelId && !session.running)
+      .map((session) => [session.sessionId, this.state.securityContextToken(session.sessionId)] as const);
+    const entry = { context: accountContext, promise: null! as Promise<VerifySecurityResponse>, pending: true, validUntil: 0, retryAt: 0, failures: previous?.failures ?? 0 };
+    entry.promise = Promise.resolve().then(async () => {
+      try {
+        const result = await this.process.request<VerifySecurityResponse>("_axiom/security/prewarm", { modelId }, 0);
+        this.assertAccountContext(accountContext);
+        if (this.securityWarmups.get(modelId) !== entry) throw new ProtocolError("Verification context changed");
+        const evidence = publicSecurityEvidence(result, modelId);
+        if (!evidence || evidence.hardExpiresAtUnixSeconds * 1000 <= Date.now()) throw new ProtocolError("Verification returned no fresh evidence");
+        entry.validUntil = evidence.hardExpiresAtUnixSeconds * 1000;
+        entry.failures = 0;
+        for (const [threadId, context] of contexts) {
+          const session = this.state.snapshot().sessions[threadId];
+          if (session && !session.running && !this.securityVerifications.has(threadId)
+            && this.state.securityContextToken(threadId) === context) {
+            this.state.setSecurityVerification(threadId, { pending: false, evidence, status: result.status });
+          }
+        }
+        return { status: result.status, evidence };
+      } catch (error) {
+        entry.failures = Math.min(entry.failures + 1, 5);
+        entry.retryAt = Date.now() + Math.min(300_000, 30_000 * 2 ** (entry.failures - 1));
+        throw error;
+      } finally { entry.pending = false; }
+    });
+    this.securityWarmups.set(modelId, entry);
+    this.runBackground(entry.promise);
+    return entry.promise;
+  }
+
   verifySecurity(threadId: string, acceptOutdatedTee = false, expectedModelId?: string): Promise<VerifySecurityResponse> {
     const context = this.state.securityContextToken(threadId);
     const accountContext = this.state.accountContextToken();
@@ -641,6 +688,7 @@ export class AxiomAcpClient extends EventEmitter {
       })
       : existing.promise;
     if (session.running) return Promise.reject(new ProtocolError("Wait for the current reply before refreshing verification"));
+    this.securityWarmups.delete(modelId);
     this.state.setSecurityVerification(threadId, { pending: true });
     // Defer dispatch until the map entry exists, including synchronous bridges.
     const promise = Promise.resolve().then(async () => {
@@ -883,7 +931,7 @@ export class AxiomAcpClient extends EventEmitter {
   private resetClientAccountContext(): void {
     this.desktopBootstrap = null;
     this.refreshingThreads.clear();
-    this.securityPreflights.clear();
+    this.securityWarmups.clear();
     this.securityVerifications.clear();
     this.fullResync = null;
     this.fullResyncRequired = false;
@@ -903,21 +951,9 @@ export class AxiomAcpClient extends EventEmitter {
     this.background.add(tracked);
   }
 
-  private startSecurityPreflight(threadId: string): void {
-    let task: Promise<void>;
-    task = this.verifySecurity(threadId)
-      .then(() => undefined, () => undefined)
-      .finally(() => {
-        if (this.securityPreflights.get(threadId) === task) {
-          this.securityPreflights.delete(threadId);
-        }
-      });
-    this.securityPreflights.set(threadId, task);
-    this.runBackground(task);
-  }
-
   private async waitForSecurityPreflight(threadId: string): Promise<void> {
-    await this.securityPreflights.get(threadId);
+    const model = this.state.snapshot().sessions[threadId]?.settings?.model;
+    if (model) await this.securityWarmups.get(model)?.promise.catch(() => undefined);
     await this.securityVerifications.get(threadId)?.promise.catch(() => undefined);
   }
 

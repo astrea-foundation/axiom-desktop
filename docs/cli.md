@@ -146,18 +146,16 @@ cancelled, failed or unauthenticated output does not gain this completion notice
 
 The header describes the current model's retained TEE report. Expired, missing,
 mismatched or failed reports are never displayed as current verified proof.
-While active and signed in, the TUI renews proof within 60 seconds of expiry,
-between tasks and without opening the inspector. Only a new locally verified
-report renews the proof; a timer never extends its validity. Checks are singleflight
-and retries back off from 30 seconds to at most five minutes, including a minimum
-30-second interval when the provider returns the same short lease. Failed or
-blocked renewals remain visibly unverified/expired.
+While signed in, editing a nonempty message starts verification if the selected
+model has no valid proof and no check is already running. Pasting also counts;
+startup, sign-in, switching threads, navigation and timers do not trigger checks.
+Valid proof is reused until expiry. Failed checks back off from 30 seconds to
+five minutes, and another edit is required to retry. Enter reuses native cached
+keys or joins verification in progress without requiring a second submission.
 
 After 30 minutes without user input or running work, the header becomes neutral
-`IDLE` and automatic checks pause. Input wakes verification again. Background
-checks and accounting updates do not reset inactivity. A running task or
-compaction remains active; renewal waits for it to finish. These transitions also
-work with reduced motion. Opening `/security`
+`IDLE`. Input wakes the display; only composition or an explicit refresh starts
+verification. Background accounting does not reset inactivity. Opening `/security`
 requests fresh evidence between tasks when the current report is unavailable or expired;
 `/refresh` or `R` in the inspector explicitly verifies again. Inference continues
 to enforce fresh attestation and authenticated completion in the native provider

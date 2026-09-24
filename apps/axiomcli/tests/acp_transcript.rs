@@ -196,7 +196,7 @@ impl AcpProcess {
                         "account": 2,
                         "billing": 2,
                         "usage": 1,
-                        "securityEvidence": 3,
+                        "securityEvidence": 4,
                         "compaction": 1,
                         "activity": 1
                     }
@@ -335,6 +335,41 @@ async fn blocked_external_request_does_not_block_local_requests_and_is_cancellab
     let cancelled = acp.response(2).await;
     assert!(cancelled.get("error").is_some(), "{cancelled}");
     assert_eq!(cancelled["error"]["code"], -32800, "{cancelled}");
+    acp.close().await;
+}
+
+#[tokio::test]
+async fn security_warmup_requires_negotiation_and_never_creates_a_thread() {
+    let mut unnegotiated = AcpProcess::spawn("echo");
+    unnegotiated.initialize().await;
+    unnegotiated
+        .send(
+            &json!({"jsonrpc":"2.0","id":2,"method":"_axiom/security/prewarm",
+        "params":{"modelId":"test-model"}}),
+        )
+        .await;
+    assert!(unnegotiated.response(2).await.get("error").is_some());
+    unnegotiated.close().await;
+
+    let mut acp = AcpProcess::spawn("echo");
+    acp.initialize_extension().await;
+    acp.send(
+        &json!({"jsonrpc":"2.0","id":2,"method":"_axiom/security/prewarm",
+        "params":{"modelId":"test-model"}}),
+    )
+    .await;
+    let response = acp.response(2).await;
+    assert_eq!(
+        response["result"]["status"]["state"], "unattested_development",
+        "{response}"
+    );
+    assert!(
+        response["result"]["evidence"].is_null(),
+        "test transport cannot manufacture verified evidence"
+    );
+    acp.send(&json!({"jsonrpc":"2.0","id":3,"method":"_axiom/thread/list","params":{}}))
+        .await;
+    assert_eq!(acp.response(3).await["result"]["threads"], json!([]));
     acp.close().await;
 }
 

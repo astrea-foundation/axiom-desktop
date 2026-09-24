@@ -57,6 +57,14 @@ export function App() {
     threads, folders, activeThread, activeSession, agentAccountScope, agentControl, isStreaming,
     ensureThreadLoaded, loadThread, showWelcome, reviseMessage, submitDraft, stopStream, deleteThread,
     messageQueue, threadLoads } = conversations;
+  const composeDraft = (text: string) => {
+    setDraft(text);
+    const selectedModel = modelId || models[0]?.id;
+    if (text.trim() && selectedModel && agentState.connected && !requiresSignIn && !isStreaming) {
+      // Sends only the model ID; draft text stays on this device.
+      void window.axiomDesktop?.agent.prewarmSecurity(selectedModel).catch(() => undefined);
+    }
+  };
   const preparation = threadPreparation?.accountId === billingAccountId
     && threadPreparation?.runtimeId === agentState.runtimeInstanceId ? threadPreparation : null;
   const errorNotice = uiError ? { source: "ui", text: uiError }
@@ -286,7 +294,7 @@ export function App() {
                 session={activeSession}
                 attachments={{ items: attachmentDraft.attachments, busy: attachmentDraft.attachmentsBusy, onAddFiles: (files) => void attachmentDraft.addFiles(files), onRemove: (index) => attachmentDraft.setAttachments(attachmentDraft.attachments.filter((_, current) => current !== index)) }}
                 draft={draft}
-                onDraftChange={setDraft}
+                onDraftChange={composeDraft}
                 onSubmit={() => void submitDraft()}
                 onStop={stopStream}
                 isStreaming={isStreaming}
@@ -331,7 +339,7 @@ export function App() {
                 onWebToggle={webAccess.toggle}
                 attachments={{ items: attachmentDraft.attachments, busy: attachmentDraft.attachmentsBusy, onAddFiles: (files) => void attachmentDraft.addFiles(files), onRemove: (index) => attachmentDraft.setAttachments(attachmentDraft.attachments.filter((_, current) => current !== index)) }}
                 draft={draft}
-                onDraftChange={setDraft}
+                onDraftChange={composeDraft}
                 onSubmit={() => void submitDraft()}
                 models={models}
                 selectedModelId={modelId || models[0]?.id || ""}

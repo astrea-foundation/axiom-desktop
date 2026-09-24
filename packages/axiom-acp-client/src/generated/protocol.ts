@@ -154,6 +154,7 @@ export interface ProtocolSchema {
   apiKeyCreatedResponse: ApiKeyCreatedResponse;
   apiKeyRevokeRequest: ApiKeyRevokeRequest;
   apiKeyRevokeResponse: ApiKeyRevokeResponse;
+  prewarmSecurityRequest: PrewarmSecurityRequest;
   verifySecurityRequest: VerifySecurityRequest;
   verifySecurityResponse: VerifySecurityResponse;
   compactRequest: CompactRequest;
@@ -757,6 +758,13 @@ export interface ApiKeyRevokeRequest {
   id: string;
 }
 export interface ApiKeyRevokeResponse {
+  [k: string]: unknown;
+}
+/**
+ * Model-only warmup: no thread, prompt, inference, or implicit consent.
+ */
+export interface PrewarmSecurityRequest {
+  modelId: string;
   [k: string]: unknown;
 }
 export interface VerifySecurityRequest {

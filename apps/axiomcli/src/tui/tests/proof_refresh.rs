@@ -19,11 +19,12 @@ fn verified_state(now: Instant) -> TuiState {
 }
 
 #[test]
-fn automatic_renewal_is_due_a_minute_before_expiry_and_never_extends_evidence() {
+fn composition_reuses_proof_until_expiry_and_never_extends_evidence() {
     let now = Instant::now();
     let mut state = verified_state(now);
     assert!(!state.security_refresh_due(now, 1_239));
-    assert!(state.security_refresh_due(now, 1_240));
+    assert!(!state.security_refresh_due(now, 1_240));
+    assert!(!state.security_refresh_due(now, 1_299));
     assert!(state.security_refresh_due(now, 1_300));
     assert_eq!(
         state
@@ -94,7 +95,7 @@ fn idle_header_is_neutral_and_waking_never_verifies_expired_evidence() {
 }
 
 #[test]
-fn automatic_retries_are_bounded_and_even_successful_short_leases_are_paced() {
+fn composition_retries_are_bounded_and_even_successful_short_leases_are_paced() {
     let mut now = Instant::now();
     let mut refresh = ProofRefresh::new(now);
     refresh.enable();

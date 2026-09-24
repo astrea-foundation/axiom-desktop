@@ -219,16 +219,29 @@ pub(super) fn start_security_preflight(
     cancellation: &mut Option<CancellationToken>,
     generation: &mut u64,
 ) {
-    start_security_preflight_with_consent(state, runner, ui_tx, cancellation, generation, false);
+    start_security_check(
+        state,
+        runner,
+        ui_tx,
+        cancellation,
+        generation,
+        SecurityCheck::Refresh,
+    );
 }
 
-fn start_security_preflight_with_consent(
+enum SecurityCheck {
+    Refresh,
+    Prewarm,
+    AcceptOutdated,
+}
+
+fn start_security_check(
     state: &mut TuiState,
     runner: &Arc<dyn TurnRunner>,
     ui_tx: &mpsc::Sender<UiMessage>,
     cancellation: &mut Option<CancellationToken>,
     generation: &mut u64,
-    accept_outdated: bool,
+    check: SecurityCheck,
 ) {
     if let Some(previous) = cancellation.take() {
         previous.cancel();
@@ -246,10 +259,12 @@ fn start_security_preflight_with_consent(
     let model = state.model.clone();
     let result_tx = ui_tx.clone();
     tokio::spawn(async move {
-        let result = if accept_outdated {
-            task_runner.accept_outdated_tee(&model, token.clone()).await
-        } else {
-            task_runner.verify_security(&model, token.clone()).await
+        let result = match check {
+            SecurityCheck::AcceptOutdated => {
+                task_runner.accept_outdated_tee(&model, token.clone()).await
+            }
+            SecurityCheck::Refresh => task_runner.verify_security(&model, token.clone()).await,
+            SecurityCheck::Prewarm => task_runner.prewarm_security(&model, token.clone()).await,
         };
         let result = if token.is_cancelled() {
             Err(AxiomError::Cancelled)
@@ -927,8 +942,6 @@ pub async fn run(
     let mut animation_ticks = tokio::time::interval(ANIMATION_TICK);
     animation_ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     // Renewal and inactivity must advance even with animations disabled.
-    let mut proof_ticks = tokio::time::interval(Duration::from_secs(1));
-    proof_ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut accounting_ticks = tokio::time::interval(Duration::from_secs(5));
     accounting_ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut accounting_busy = false;
@@ -969,16 +982,6 @@ pub async fn run(
         tokio::select! {
             _ = billing_ticks.tick(), if matches!(&state.overlay, Some(Overlay::Billing(view)) if !view.busy && !view.redeem) => {
                 billing_flow.start(&mut state, None, &ui_tx);
-            }
-            _ = proof_ticks.tick() => {
-                if !startup_auth_pending && auth.has_credential()
-                    && store.as_ref().is_some_and(SessionStore::is_active)
-                    && !matches!(state.overlay, Some(Overlay::Auth(_)))
-                    && security_cancellation.is_none()
-                    && state.security_refresh_due(Instant::now(), u64::try_from(chrono::Utc::now().timestamp()).unwrap_or(0))
-                {
-                    start_security_preflight(&mut state, &runner, &ui_tx, &mut security_cancellation, &mut security_generation);
-                }
             }
             _ = accounting_ticks.tick(), if !accounting_busy && store.as_ref().is_some_and(SessionStore::is_active) => {
                 accounting_attempts.retain(|id, _| state.request_usage.get(id).is_some_and(|r| !r.settled));
@@ -1034,6 +1037,7 @@ pub async fn run(
                 {
                     state.proof_refresh.record_activity(Instant::now());
                 }
+                let composer_before = state.input.to_string();
                 match event {
                     Event::Key(key) if key.kind == KeyEventKind::Press => {
                         if key.code == KeyCode::Esc
@@ -1333,15 +1337,8 @@ pub async fn run(
                                                     for event in events {
                                                         state.apply(&event.event);
                                                     }
-                                                    if auth.has_credential() {
-                                                        start_security_preflight(
-                                                            &mut state,
-                                                            &runner,
-                                                            &ui_tx,
-                                                            &mut security_cancellation,
-                                                            &mut security_generation,
-                                                        );
-                                                    }
+                                                    if let Some(token) = security_cancellation.take() { token.cancel(); }
+                                                    security_generation = security_generation.wrapping_add(1);
                                                 }
                                                 Err(error) => show_slash_error(
                                                     &mut state,
@@ -1425,15 +1422,8 @@ pub async fn run(
                                             active_turn = None;
                                             pending_approval = None;
                                             pending_questions = None;
-                                            if auth.has_credential() {
-                                                start_security_preflight(
-                                                    &mut state,
-                                                    &runner,
-                                                    &ui_tx,
-                                                    &mut security_cancellation,
-                                                    &mut security_generation,
-                                                );
-                                            }
+                                            if let Some(token) = security_cancellation.take() { token.cancel(); }
+                                                    security_generation = security_generation.wrapping_add(1);
                                         }
                                         Err(error) => {
                                             show_slash_error(&mut state, &error.to_string());
@@ -1963,7 +1953,7 @@ pub async fn run(
                                             }
                                             Ok(SlashCommand::AcceptOutdatedTee) => {
                                                 if auth.has_credential() {
-                                                    start_security_preflight_with_consent(&mut state, &runner, &ui_tx, &mut security_cancellation, &mut security_generation, true);
+                                                    start_security_check(&mut state, &runner, &ui_tx, &mut security_cancellation, &mut security_generation, SecurityCheck::AcceptOutdated);
                                                     state.status = "Checking TEE with your outdated-provider consent…".into();
                                                     state.status_tone = StatusTone::Waiting;
                                                 } else { state.open_login(Some("Sign in before accepting a provider warning.".into())); }
@@ -2047,12 +2037,6 @@ pub async fn run(
                                         state.status_tone = StatusTone::Waiting;
                                         continue;
                                     }
-                                    if security_cancellation.is_some() {
-                                        state.input.set_text(prompt);
-                                        state.status = "Please wait…".into();
-                                        state.status_tone = StatusTone::Waiting;
-                                        continue;
-                                    }
                                     if !uses_deterministic_test_runner()
                                         && !store.as_ref().is_some_and(SessionStore::is_active)
                                     {
@@ -2123,7 +2107,12 @@ pub async fn run(
                                         approval: Some(Arc::new(TuiApproval { tx: task_tx.clone() })),
                                         questions: Some(Arc::new(TuiQuestions { tx: task_tx.clone() })),
                                     };
+                                    // Keep the warmup alive for the provider's singleflight wait,
+                                    // but never let its late UI result overwrite this turn's evidence.
+                                    let preflight_guard = security_cancellation.take().map(CancellationToken::drop_guard);
+                                    security_generation = security_generation.wrapping_add(1);
                                     tokio::spawn(async move {
+                                        let _preflight_guard = preflight_guard;
                                         let (event_tx, mut event_rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
                                         let forwarding = task_tx.clone();
                                         let forward = tokio::spawn(async move {
@@ -2230,6 +2219,20 @@ pub async fn run(
                         state.paste_text(&text);
                     }
                     _ => {}
+                }
+                let draft = state.input.as_str();
+                if draft != composer_before && !draft.trim().is_empty() && !draft.starts_with('/')
+                    && state.focus == Focus::Composer && state.overlay.is_none() && state.interaction.is_none()
+                    && !startup_auth_pending && auth.has_credential()
+                    && store.as_ref().is_some_and(SessionStore::is_active)
+                {
+                    state.proof_refresh.enable();
+                    if security_cancellation.is_none()
+                        && state.security_refresh_due(Instant::now(), u64::try_from(chrono::Utc::now().timestamp()).unwrap_or(0))
+                    {
+                        start_security_check(&mut state, &runner, &ui_tx,
+                            &mut security_cancellation, &mut security_generation, SecurityCheck::Prewarm);
+                    }
                 }
             }
             message = ui_rx.recv() => {
@@ -2547,13 +2550,7 @@ pub async fn run(
                                     "AXIOM ACCOUNT\nSigned in to Axiom.".into(),
                                     false,
                                 );
-                                start_security_preflight(
-                                    &mut state,
-                                    &runner,
-                                    &ui_tx,
-                                    &mut security_cancellation,
-                                    &mut security_generation,
-                                );
+                                // Composing starts verification; opening a thread/account does not.
                             }
                             Err(AxiomError::Cancelled) => {}
                             Err(error) => state.open_login(Some(error.to_string())),
@@ -2622,13 +2619,7 @@ pub async fn run(
                                 if purpose == ValidationPurpose::Startup {
                                     state.status = "Ready".into();
                                     state.status_tone = StatusTone::Success;
-                                    start_security_preflight(
-                                        &mut state,
-                                        &runner,
-                                        &ui_tx,
-                                        &mut security_cancellation,
-                                        &mut security_generation,
-                                    );
+                                    // Composing starts verification; opening a thread/account does not.
                                 } else {
                                     if purpose == ValidationPurpose::Login {
                                         state.reset_security();
@@ -2642,15 +2633,6 @@ pub async fn run(
                                     }));
                                     state.status = "Ready".into();
                                     state.status_tone = StatusTone::Success;
-                                    if purpose == ValidationPurpose::Login {
-                                        start_security_preflight(
-                                            &mut state,
-                                            &runner,
-                                            &ui_tx,
-                                            &mut security_cancellation,
-                                            &mut security_generation,
-                                        );
-                                    }
                                 }
                             }
                             (ValidationPurpose::Account, ValidationStatus::Missing) => {

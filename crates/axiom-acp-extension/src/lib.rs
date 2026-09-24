@@ -99,7 +99,7 @@ impl FeatureVersions {
             account: 2,
             billing: 3,
             usage: 1,
-            security_evidence: 3,
+            security_evidence: 4,
             web_consent: 1,
             steering: 1,
             message_revision: 1,
@@ -1102,6 +1102,14 @@ pub struct VerifySecurityRequest {
     pub model_id: Option<String>,
 }
 
+/// Model-only warmup: no thread, prompt, inference, or implicit consent.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcRequest)]
+#[request(method = "_axiom/security/prewarm", response = VerifySecurityResponse)]
+#[serde(rename_all = "camelCase")]
+pub struct PrewarmSecurityRequest {
+    pub model_id: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcResponse)]
 #[serde(rename_all = "camelCase")]
 pub struct VerifySecurityResponse {
@@ -1200,6 +1208,7 @@ pub struct ProtocolSchema {
     pub api_key_created_response: ApiKeyCreatedResponse,
     pub api_key_revoke_request: ApiKeyRevokeRequest,
     pub api_key_revoke_response: ApiKeyRevokeResponse,
+    pub prewarm_security_request: PrewarmSecurityRequest,
     pub verify_security_request: VerifySecurityRequest,
     pub verify_security_response: VerifySecurityResponse,
     pub compact_request: CompactRequest,
@@ -1263,6 +1272,7 @@ mod tests {
             "CreateCollectionRequest",
             "NativeLoginStartRequest",
             "VerifySecurityRequest",
+            "PrewarmSecurityRequest",
             "CompactRequest",
             "EventNotification",
         ] {

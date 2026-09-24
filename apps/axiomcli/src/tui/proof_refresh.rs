@@ -1,9 +1,8 @@
-//! UI-only proof renewal policy. This never changes evidence or its expiry.
+//! Composition-triggered proof retry pacing. This never renews evidence itself.
 
 use std::time::{Duration, Instant};
 
 pub(super) const PROOF_IDLE_AFTER: Duration = Duration::from_secs(30 * 60);
-pub(super) const REFRESH_BEFORE_EXPIRY_SECONDS: u64 = 60;
 const MIN_RETRY: Duration = Duration::from_secs(30);
 const MAX_RETRY: Duration = Duration::from_secs(300);
 

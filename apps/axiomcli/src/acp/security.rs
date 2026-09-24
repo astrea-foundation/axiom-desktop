@@ -2,6 +2,49 @@
 
 use super::*;
 
+/// Prepares model keys even before a draft has a thread. The provider owns
+/// freshness and per-model singleflight; account transitions cancel this work.
+pub(super) async fn prewarm_security(
+    context: &ServerContext,
+    request: extension::PrewarmSecurityRequest,
+    responder: Responder<VerifySecurityResponse>,
+    connection: &ConnectionTo<Client>,
+) -> agent_client_protocol::Result<()> {
+    if !extension_enabled(&context.extension_state, ExtensionFeature::SecurityEvidence) {
+        return responder.respond_with_error(extension_not_negotiated());
+    }
+    if request.model_id.is_empty() || request.model_id.len() > 512 {
+        return responder.respond_with_internal_error("invalid model ID");
+    }
+    let cancellation = CancellationToken::new();
+    let guard = respond_or_return!(
+        responder,
+        context
+            .account_work
+            .register(cancellation.clone())
+            .map_err(agent_error)
+    );
+    let runner = context.runner.clone();
+    let request_cancellation = responder.cancellation();
+    connection.spawn(async move {
+        let _guard = guard;
+        let result = tokio::select! {
+            () = request_cancellation.cancelled() => {
+                cancellation.cancel();
+                Err(agent_client_protocol::Error::request_cancelled())
+            }
+            () = cancellation.cancelled() => Err(agent_client_protocol::Error::request_cancelled()),
+            result = runner.prewarm_security(&request.model_id, cancellation.clone()) => {
+                result.and_then(strict_extension_security_verification)
+                    .map(|(status, evidence)| VerifySecurityResponse {
+                        status: extension_security_status(status), evidence,
+                    }).map_err(agent_error)
+            }
+        };
+        responder.respond_with_result(result)
+    })
+}
+
 pub(super) async fn verify_security(
     context: &ServerContext,
     request: VerifySecurityRequest,

@@ -42,7 +42,7 @@ pub trait InferenceProvider: Send + Sync {
         ))
     }
     /// Establish and verify the selected model's security session without
-    /// performing inference. Front ends use this as a startup preflight.
+    /// performing inference. This explicitly refreshes attestation.
     async fn verify_security(
         &self,
         _model: &str,
@@ -51,6 +51,15 @@ pub trait InferenceProvider: Send + Sync {
         Err(AxiomError::Provider(
             "provider does not support security preflight".into(),
         ))
+    }
+
+    /// Reuse fresh verified material, or join/perform verification if needed.
+    async fn prewarm_security(
+        &self,
+        model: &str,
+        cancellation: CancellationToken,
+    ) -> Result<ProviderSecurityVerification> {
+        self.verify_security(model, cancellation).await
     }
 
     async fn stream(
@@ -249,6 +258,22 @@ impl InferenceProvider for SecureAxiomProvider {
         cancellation: CancellationToken,
     ) -> Result<ProviderSecurityVerification> {
         let (_, _, session) = self.establish_verified(model, cancellation, true).await?;
+        Ok(ProviderSecurityVerification {
+            state: if session.evidence().state == axiom_secure_client::SecurityState::Degraded {
+                ProviderSecurityState::Degraded
+            } else {
+                ProviderSecurityState::Verified
+            },
+            evidence: Some(session.evidence().clone()),
+        })
+    }
+
+    async fn prewarm_security(
+        &self,
+        model: &str,
+        cancellation: CancellationToken,
+    ) -> Result<ProviderSecurityVerification> {
+        let (_, _, session) = self.establish_verified(model, cancellation, false).await?;
         Ok(ProviderSecurityVerification {
             state: if session.evidence().state == axiom_secure_client::SecurityState::Degraded {
                 ProviderSecurityState::Degraded

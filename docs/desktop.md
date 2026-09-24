@@ -197,13 +197,16 @@ Click the badge to inspect **Latest reply verification** separately from the
 in the report explains TEE protection and the check of the
 server’s hardware in plain language. Hover, focus or click it to show the help;
 Escape dismisses the help before closing the report. Refresh requests
-fresh evidence when allowed. While active and connected, the badge automatically
-renews within 60 seconds of expiry, between replies. Checks are deduplicated and retries back off
-from 30 seconds to at most five minutes; even a successful short lease is paced.
-After 30 minutes without user interaction or a running reply, it shows neutral
-`Idle` and stops automatic checks. Keyboard/pointer activity or returning to the
-window resumes verification. Background checks and network events do not reset
-inactivity. Reply verification remains available in the inspector while idle.
+fresh evidence when allowed. Editing a nonempty message while signed in starts
+verification for the selected model, including on the welcome screen before a
+thread exists. Only the model ID crosses the verification IPC boundary. Draft
+text is never part of this request. Valid reports and checks already in progress
+are reused; Enter waits for that work and native inference checks freshness again.
+Failed warmups back off from 30 seconds to five minutes and require another edit
+to retry. Opening a thread, focus changes and timers do not request verification.
+After 30 minutes without user interaction or a running reply, the badge shows
+neutral `Idle`. Activity wakes the display without issuing verification requests.
+Reply verification remains available in the inspector while idle.
 A failed or blocked refresh cannot extend a report or mark it verified;
 native inference always enforces fresh proof independently of this display.
 Reports show hardware, encryption-key, freshness and source-provenance checks

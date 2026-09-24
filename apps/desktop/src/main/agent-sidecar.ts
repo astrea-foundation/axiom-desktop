@@ -343,6 +343,10 @@ export class AgentSidecar {
     return this.requireClient().logout();
   }
 
+  prewarmSecurity(modelId: string) {
+    return this.requireClient().prewarmSecurity(modelId);
+  }
+
   verifySecurity(sessionId: string, acceptOutdatedTee = false, modelId?: string) {
     return this.requireClient().verifySecurity(sessionId, acceptOutdatedTee, modelId);
   }
