@@ -2,7 +2,7 @@
   "name": "axiom-desktop",
   "productName": "Axiom",
   "desktopName": "stream.axiom.desktop.desktop",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "private": true,
   "description": "Axiom private desktop chat driven by AxiomCLI over ACP",
   "homepage": "https://axiom.stream",

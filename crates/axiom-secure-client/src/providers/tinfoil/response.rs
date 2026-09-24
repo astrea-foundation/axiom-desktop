@@ -127,8 +127,12 @@ impl StreamParser {
             return Err(invalid("invalid assistant role"));
         }
         let mut events = Vec::new();
-        for (field, target) in [("content", 0), ("reasoning_content", 1), ("refusal", 2)] {
-            if let Some(value) = delta.get(field).filter(|v| !v.is_null()) {
+        for (value, target) in [
+            (delta.get("content"), 0),
+            (reasoning_value(delta)?, 1),
+            (delta.get("refusal"), 2),
+        ] {
+            if let Some(value) = value.filter(|v| !v.is_null()) {
                 let text = value
                     .as_str()
                     .ok_or_else(|| invalid("nontext assistant delta"))?;
@@ -225,6 +229,7 @@ pub(super) fn complete(body: &[u8], _model: &str) -> Result<InferenceResponse> {
     }
     let message = choice
         .get("message")
+        .and_then(Value::as_object)
         .ok_or_else(|| invalid("missing assistant message"))?;
     if message.get("role").and_then(Value::as_str) != Some("assistant") {
         return Err(invalid("invalid completion role"));
@@ -237,7 +242,7 @@ pub(super) fn complete(body: &[u8], _model: &str) -> Result<InferenceResponse> {
     };
     axiom_inference::validate_tool_calls(&calls)
         .map_err(|_| invalid("invalid completion tool calls"))?;
-    let reasoning = optional_text(message.get("reasoning_content"))?;
+    let reasoning = optional_text(reasoning_value(message)?)?;
     let mut output = InferenceResponse {
         assistant: AssistantTurn {
             text: optional_text(message.get("content"))?.unwrap_or_default(),
@@ -313,6 +318,23 @@ fn optional_text(value: Option<&Value>) -> Result<Option<String>> {
         Some(Value::String(s)) => Ok(Some(s.clone())),
         _ => Err(invalid("invalid assistant text field")),
     }
+}
+fn reasoning_value(fields: &serde_json::Map<String, Value>) -> Result<Option<&Value>> {
+    let reasoning = fields.get("reasoning").filter(|value| !value.is_null());
+    let compatibility = fields
+        .get("reasoning_content")
+        .filter(|value| !value.is_null());
+    for value in [reasoning, compatibility].into_iter().flatten() {
+        if !value.is_string() {
+            return Err(invalid("invalid assistant reasoning field"));
+        }
+    }
+    // Tinfoil documents `reasoning`; keep the compatibility alias as a fallback.
+    // Select one field so providers returning both do not duplicate the trace.
+    Ok(reasoning
+        .filter(|value| value.as_str() != Some(""))
+        .or(compatibility)
+        .or(reasoning))
 }
 fn append(target: &mut String, text: &str) -> Result<()> {
     if target.len().saturating_add(text.len()) > axiom_inference::MAX_MESSAGE_TEXT_BYTES {

@@ -14,7 +14,8 @@ must be recorded against the actual source revision and signed installers.
 | [Configuration](configuration.md) | Configuration precedence, paths and limits |
 | [Privacy](privacy.md) | Local storage, credentials and what leaves the device |
 | [Troubleshooting](troubleshooting.md) | Diagnosis and recovery |
-| [0.1.8 release notes](releases/0.1.8.md) | Changes in this release |
+| [0.1.9 release notes](releases/0.1.9.md) | Changes in this release |
+| [0.1.8 release notes](releases/0.1.8.md) | Previous release |
 
 ## Build and integrate
 

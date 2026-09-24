@@ -29,6 +29,15 @@ The protocol's frame-level EOF alone does not authenticate completion. A streami
 
 Only then does the adapter emit `Finished` and return success. Deltas before this are provisional. Nonstreaming success requires a complete authenticated JSON response with corresponding terminal fields and accounting. No signed receipt is claimed: response AEAD and authenticated application framing establish the request/environment binding.
 
+The adapter reads Tinfoil's documented [`reasoning` field](https://docs.tinfoil.sh/guides/reasoning)
+from streaming deltas and completed messages, with `reasoning_content` as a
+compatibility fallback when `reasoning` is absent, null or empty. If both contain
+text, `reasoning` takes precedence so the trace appears once. Both fields must be
+strings or null when present and retain the existing message size limits.
+Reasoning is kept separate from the answer and delivered through the shared
+reasoning events and stored assistant turn; streamed traces remain provisional
+until authenticated completion.
+
 The outer CLI marks durable output verified only after the session returns successfully. A trailer error or transport intermediary cannot make an incomplete accounting record successful merely by supplying EOF. The backend cannot mark output cryptographically verified.
 
 The adapter checks requested tool controls against the completed result. Undefined tools, ignored required/named choices and forbidden parallel calls fail. Tinfoil sometimes labels complete tool calls `stop`; normalization happens only after names, IDs and JSON-object arguments validate.
@@ -87,7 +96,7 @@ cargo run -p axiom-secure-client --example tinfoil_relay_smoke
 
 For an isolated local relay, build with `--features test-fixture`, set `AXIOM_TINFOIL_ALLOW_LOCAL_RELAY=1`, and use `http://127.0.0.1:<port>`. This opt-in permits loopback transport to the test backend; it does **not** bypass Tinfoil attestation or EHBP. Production configuration requires HTTPS.
 
-Regression tests cover reordered/tampered/replayed/truncated frames, wrong response contexts, missing authenticated terminal markers, incomplete tools, malformed usage, hostile catalog entries and byte-fragmented UTF-8/SSE. Desktop proof tests distinguish router verification from independent GPU verification.
+Regression tests cover reordered/tampered/replayed/truncated frames, wrong response contexts, missing authenticated terminal markers, incomplete tools, malformed usage, hostile catalog entries and byte-fragmented UTF-8/SSE. Reasoning tests cover both field names, alias precedence, absent/null/empty traces, malformed values, message size limits, incremental events and completed turns. Desktop proof tests distinguish router verification from independent GPU verification.
 
 
 `RUST_LOG=axiom_secure_client=info` enables native attestation/exchange timing records in CLI/ACP modes. They include first authenticated delta and total exchange times, with no message or key material. TUI suppresses tracing output to protect its screen. The backend separately measures headers/first ciphertext/body idle time; ciphertext arrival must not be described as time to an authenticated token.
