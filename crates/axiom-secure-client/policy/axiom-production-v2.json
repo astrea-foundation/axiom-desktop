@@ -1,0 +1,20 @@
+{
+  "policy": {
+    "schema_version": 2,
+    "sequence": 3,
+    "version": "axiom-production-2026-09-22.3",
+    "issued_at_unix_seconds": 1790068825,
+    "not_before_unix_seconds": 1790068825,
+    "expires_at_unix_seconds": 1821604825,
+    "accepted_intel_statuses": [
+      "UpToDate"
+    ],
+    "require_nvidia_verified": true,
+    "require_model_binding": true,
+    "require_live_tls_binding": true,
+    "nvidia_anchor_sha256": [
+      "2df8907cf4d6c277b855d407ec178a649930a8e73f7294e8fce66e6ee27c5175"
+    ]
+  },
+  "signature": "926a6d70e6592409dc5300f12b7395cd7e775d4955b6f3c4a49131d0f1bd2a783ed00e50401d23970889e35077a44491a2f0e41941f40282aecf81f73bfcba0f"
+}

@@ -1,0 +1,55 @@
+[package]
+name = "axiom-secure-client"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+# Deterministic process-test provider. This is intentionally absent from
+# production builds and additionally requires an explicit runtime opt-in.
+test-fixture = []
+
+[dependencies]
+anyhow = "1.0.100"
+async-trait = "0.1.89"
+axiom-inference.workspace = true
+base64 = "0.22.1"
+chacha20poly1305 = "0.10.1"
+curve25519-dalek = "4.1.3"
+dcap-qvl = { version = "0.5.2", default-features = false, features = ["report", "ring"] }
+ed25519-dalek = { version = "2.2.0", features = ["hazmat", "zeroize"] }
+futures-util = "0.3.31"
+fs2 = "0.4.3"
+hex = "0.4.3"
+hkdf = "0.12.4"
+p384 = { version = "0.13.1", features = ["ecdsa", "pkcs8"] }
+rand_core = { version = "0.6.4", features = ["getrandom"] }
+reqwest = { version = "0.13.4", default-features = false, features = ["json", "query", "rustls", "stream"] }
+secrecy = "0.10.3"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+sha2 = "0.10.9"
+thiserror = "2.0.17"
+tokio = { version = "1.48.0", features = ["macros", "net", "rt", "sync", "time"] }
+tokio-util = "0.7.17"
+tinfoil = { version = "0.2.0", git = "https://github.com/tinfoilsh/tinfoil-rs", rev = "91e8aef8fbc34129b68de8667ece5bd9ef7b7110" }
+tinfoil-ehbp = { version = "0.3.1", git = "https://github.com/tinfoilsh/encrypted-http-body-protocol", rev = "93cc1fa1ad61e19f9a34fb23cb5b5d5635d3edb0", default-features = false, features = ["rustls-no-provider"] }
+tracing = "0.1.44"
+url = "2.5.7"
+x25519-dalek = { version = "2.0.1", features = ["static_secrets", "zeroize"] }
+x509-parser = { version = "0.17.0", features = ["verify"] }
+zeroize = "1.8.2"
+ryu = "1.0.20"
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+tokio = { version = "1.48.0", features = ["test-util"] }
+aes-gcm = "0.10"
+http = "1.3.1"
+proptest = "1.9.0"
+rcgen = "0.14.5"
+tempfile = "3.23.0"

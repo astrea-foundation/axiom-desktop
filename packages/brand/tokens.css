@@ -1,0 +1,51 @@
+/* Axiom's website palette and desktop surface language. Shared brand source. */
+:root {
+  color-scheme: light;
+  --font-sans: "DM Sans Variable", "DM Sans", sans-serif;
+  --font-display: "PP Cirka", Georgia, serif;
+  --font-mono: "DM Mono", monospace;
+  --paper: #f2f4fa;
+  --ink: #1f1f1f;
+  --signal: #ff7653;
+  --canvas: var(--paper);
+  --text: var(--ink);
+  --muted: #64666f;
+  --subtle: #777b87;
+  --surface: rgba(255,255,255,.64);
+  --surface-solid: #fafbfe;
+  --surface-hover: rgba(255,255,255,.95);
+  --tile: rgba(225,228,238,.36);
+  --line: rgba(31,31,31,.095);
+  --line-strong: rgba(31,31,31,.19);
+  --primary: #1f1f1f;
+  --on-primary: #fff;
+  --success: #247351;
+  --success-soft: rgba(38,132,89,.07);
+  --danger: #b53938;
+  --danger-soft: rgba(180,56,56,.065);
+  --shadow: 0 18px 65px -35px rgba(40,48,76,.22), inset 0 1px 0 rgba(255,255,255,.9);
+  --scrim: rgba(35,39,50,.28);
+  --radius-panel: 24px;
+  --radius-control: 10px;
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --canvas: #191a1f;
+  --text: #f4f4f6;
+  --muted: #adaeb7;
+  --subtle: #9698a5;
+  --surface: rgba(43,44,51,.75);
+  --surface-solid: #292a31;
+  --surface-hover: rgba(62,63,72,.9);
+  --tile: rgba(255,255,255,.035);
+  --line: rgba(255,255,255,.085);
+  --line-strong: rgba(255,255,255,.18);
+  --primary: #f4f4f6;
+  --on-primary: #1a1b20;
+  --success: #83cba7;
+  --success-soft: rgba(99,193,143,.08);
+  --danger: #f2a4a1;
+  --danger-soft: rgba(220,111,108,.09);
+  --shadow: 0 22px 65px -35px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.035);
+  --scrim: rgba(0,0,0,.5);
+}

@@ -1,0 +1,3022 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ProtocolSchema",
+  "description": "Schema root used to generate the checked-in language-neutral contract.",
+  "type": "object",
+  "properties": {
+    "configureDesktopAgentRequest": {
+      "$ref": "#/$defs/ConfigureDesktopAgentRequest"
+    },
+    "configureDesktopAgentResponse": {
+      "$ref": "#/$defs/ConfigureDesktopAgentResponse"
+    },
+    "capabilities": {
+      "$ref": "#/$defs/ExtensionCapabilities"
+    },
+    "desktopBootstrapRequest": {
+      "$ref": "#/$defs/DesktopBootstrapRequest"
+    },
+    "desktopBootstrapResponse": {
+      "$ref": "#/$defs/DesktopBootstrapResponse"
+    },
+    "promptMetadata": {
+      "$ref": "#/$defs/PromptMetadata"
+    },
+    "getAttachmentsRequest": {
+      "$ref": "#/$defs/GetAttachmentsRequest"
+    },
+    "getAttachmentsResponse": {
+      "$ref": "#/$defs/GetAttachmentsResponse"
+    },
+    "deliveryMetadata": {
+      "$ref": "#/$defs/DeliveryMetadata"
+    },
+    "listThreadsRequest": {
+      "$ref": "#/$defs/ListThreadsRequest"
+    },
+    "listThreadsResponse": {
+      "$ref": "#/$defs/ListThreadsResponse"
+    },
+    "renameThreadRequest": {
+      "$ref": "#/$defs/RenameThreadRequest"
+    },
+    "renameThreadResponse": {
+      "$ref": "#/$defs/RenameThreadResponse"
+    },
+    "getThreadTimelineRequest": {
+      "$ref": "#/$defs/GetThreadTimelineRequest"
+    },
+    "getThreadTimelineResponse": {
+      "$ref": "#/$defs/GetThreadTimelineResponse"
+    },
+    "deletePreviewRequest": {
+      "$ref": "#/$defs/DeletePreviewRequest"
+    },
+    "deletePreviewResponse": {
+      "$ref": "#/$defs/DeletePreviewResponse"
+    },
+    "deleteConfirmRequest": {
+      "$ref": "#/$defs/DeleteConfirmRequest"
+    },
+    "deleteConfirmResponse": {
+      "$ref": "#/$defs/DeleteConfirmResponse"
+    },
+    "listModelsRequest": {
+      "$ref": "#/$defs/ListModelsRequest"
+    },
+    "listModelsResponse": {
+      "$ref": "#/$defs/ListModelsResponse"
+    },
+    "getProfilePreferencesRequest": {
+      "$ref": "#/$defs/GetProfilePreferencesRequest"
+    },
+    "setProfilePreferencesRequest": {
+      "$ref": "#/$defs/SetProfilePreferencesRequest"
+    },
+    "profilePreferencesResponse": {
+      "$ref": "#/$defs/ProfilePreferencesResponse"
+    },
+    "listCollectionsRequest": {
+      "$ref": "#/$defs/ListCollectionsRequest"
+    },
+    "createCollectionRequest": {
+      "$ref": "#/$defs/CreateCollectionRequest"
+    },
+    "renameCollectionRequest": {
+      "$ref": "#/$defs/RenameCollectionRequest"
+    },
+    "setCollectionCollapsedRequest": {
+      "$ref": "#/$defs/SetCollectionCollapsedRequest"
+    },
+    "moveCollectionRequest": {
+      "$ref": "#/$defs/MoveCollectionRequest"
+    },
+    "deleteCollectionRequest": {
+      "$ref": "#/$defs/DeleteCollectionRequest"
+    },
+    "assignThreadCollectionRequest": {
+      "$ref": "#/$defs/AssignThreadCollectionRequest"
+    },
+    "collectionStateResponse": {
+      "$ref": "#/$defs/CollectionStateResponse"
+    },
+    "assignThreadCollectionResponse": {
+      "$ref": "#/$defs/AssignThreadCollectionResponse"
+    },
+    "accountStatusRequest": {
+      "$ref": "#/$defs/AccountStatusRequest"
+    },
+    "accountStatusResponse": {
+      "$ref": "#/$defs/AccountStatusResponse"
+    },
+    "nativeLoginStartRequest": {
+      "$ref": "#/$defs/NativeLoginStartRequest"
+    },
+    "nativeLoginStartResponse": {
+      "$ref": "#/$defs/NativeLoginStartResponse"
+    },
+    "nativeLoginCompleteRequest": {
+      "$ref": "#/$defs/NativeLoginCompleteRequest"
+    },
+    "nativeLoginCancelRequest": {
+      "$ref": "#/$defs/NativeLoginCancelRequest"
+    },
+    "logoutRequest": {
+      "$ref": "#/$defs/LogoutRequest"
+    },
+    "billingStatusRequest": {
+      "$ref": "#/$defs/BillingStatusRequest"
+    },
+    "billingStatusResponse": {
+      "$ref": "#/$defs/BillingStatusResponse"
+    },
+    "giftCodeRedeemRequest": {
+      "$ref": "#/$defs/GiftCodeRedeemRequest"
+    },
+    "giftCodeRedeemResponse": {
+      "$ref": "#/$defs/GiftCodeRedeemResponse"
+    },
+    "usageSummaryRequest": {
+      "$ref": "#/$defs/UsageSummaryRequest"
+    },
+    "usageSummaryResponse": {
+      "$ref": "#/$defs/UsageSummaryResponse"
+    },
+    "apiKeyListRequest": {
+      "$ref": "#/$defs/ApiKeyListRequest"
+    },
+    "apiKeyListResponse": {
+      "$ref": "#/$defs/ApiKeyListResponse"
+    },
+    "apiKeyCreateRequest": {
+      "$ref": "#/$defs/ApiKeyCreateRequest"
+    },
+    "apiKeyCreatedResponse": {
+      "$ref": "#/$defs/ApiKeyCreatedResponse"
+    },
+    "apiKeyRevokeRequest": {
+      "$ref": "#/$defs/ApiKeyRevokeRequest"
+    },
+    "apiKeyRevokeResponse": {
+      "$ref": "#/$defs/ApiKeyRevokeResponse"
+    },
+    "prewarmSecurityRequest": {
+      "$ref": "#/$defs/PrewarmSecurityRequest"
+    },
+    "verifySecurityRequest": {
+      "$ref": "#/$defs/VerifySecurityRequest"
+    },
+    "verifySecurityResponse": {
+      "$ref": "#/$defs/VerifySecurityResponse"
+    },
+    "compactRequest": {
+      "$ref": "#/$defs/CompactRequest"
+    },
+    "compactResponse": {
+      "$ref": "#/$defs/CompactResponse"
+    },
+    "steerTurnRequest": {
+      "$ref": "#/$defs/SteerTurnRequest"
+    },
+    "steerTurnResponse": {
+      "$ref": "#/$defs/SteerTurnResponse"
+    },
+    "eventNotification": {
+      "$ref": "#/$defs/EventNotification"
+    },
+    "error": {
+      "$ref": "#/$defs/ExtensionError"
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "required": [
+    "configureDesktopAgentRequest",
+    "configureDesktopAgentResponse",
+    "capabilities",
+    "desktopBootstrapRequest",
+    "desktopBootstrapResponse",
+    "promptMetadata",
+    "getAttachmentsRequest",
+    "getAttachmentsResponse",
+    "deliveryMetadata",
+    "listThreadsRequest",
+    "listThreadsResponse",
+    "renameThreadRequest",
+    "renameThreadResponse",
+    "getThreadTimelineRequest",
+    "getThreadTimelineResponse",
+    "deletePreviewRequest",
+    "deletePreviewResponse",
+    "deleteConfirmRequest",
+    "deleteConfirmResponse",
+    "listModelsRequest",
+    "listModelsResponse",
+    "getProfilePreferencesRequest",
+    "setProfilePreferencesRequest",
+    "profilePreferencesResponse",
+    "listCollectionsRequest",
+    "createCollectionRequest",
+    "renameCollectionRequest",
+    "setCollectionCollapsedRequest",
+    "moveCollectionRequest",
+    "deleteCollectionRequest",
+    "assignThreadCollectionRequest",
+    "collectionStateResponse",
+    "assignThreadCollectionResponse",
+    "accountStatusRequest",
+    "accountStatusResponse",
+    "nativeLoginStartRequest",
+    "nativeLoginStartResponse",
+    "nativeLoginCompleteRequest",
+    "nativeLoginCancelRequest",
+    "logoutRequest",
+    "billingStatusRequest",
+    "billingStatusResponse",
+    "giftCodeRedeemRequest",
+    "giftCodeRedeemResponse",
+    "usageSummaryRequest",
+    "usageSummaryResponse",
+    "apiKeyListRequest",
+    "apiKeyListResponse",
+    "apiKeyCreateRequest",
+    "apiKeyCreatedResponse",
+    "apiKeyRevokeRequest",
+    "apiKeyRevokeResponse",
+    "prewarmSecurityRequest",
+    "verifySecurityRequest",
+    "verifySecurityResponse",
+    "compactRequest",
+    "compactResponse",
+    "steerTurnRequest",
+    "steerTurnResponse",
+    "eventNotification",
+    "error",
+    "metadata"
+  ],
+  "$defs": {
+    "ConfigureDesktopAgentRequest": {
+      "type": "object",
+      "properties": {
+        "threadId": {
+          "type": "string"
+        },
+        "expectedRevision": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "permission": {
+          "$ref": "#/$defs/DesktopAgentPermission"
+        },
+        "workingDirectory": {
+          "description": "None resets to the application-owned per-thread directory. A custom\ndirectory must be an absolute, existing directory on this machine.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "threadId",
+        "expectedRevision",
+        "enabled",
+        "permission"
+      ]
+    },
+    "DesktopAgentPermission": {
+      "type": "string",
+      "enum": [
+        "approve_commands",
+        "full_access"
+      ]
+    },
+    "ConfigureDesktopAgentResponse": {
+      "type": "object",
+      "properties": {
+        "thread": {
+          "$ref": "#/$defs/ThreadSummary"
+        },
+        "agent": {
+          "$ref": "#/$defs/DesktopAgentSettings"
+        }
+      },
+      "required": [
+        "thread",
+        "agent"
+      ]
+    },
+    "ThreadSummary": {
+      "type": "object",
+      "properties": {
+        "threadId": {
+          "type": "string"
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "origin": {
+          "type": "string"
+        },
+        "profile": {
+          "type": "string"
+        },
+        "selectedModel": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "thinkingLevel": {
+          "type": "string"
+        },
+        "lifecycle": {
+          "$ref": "#/$defs/ThreadLifecycle"
+        },
+        "archived": {
+          "type": "boolean"
+        },
+        "revision": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "lastTimelineSequence": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "createdAt": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "type": "string"
+        },
+        "lastMessageAt": {
+          "description": "Latest actual message activity, absent for message-free threads.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lastUserMessageAt": {
+          "description": "Latest user submission. Streaming output does not advance sidebar order.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "threadId",
+        "cwd",
+        "origin",
+        "profile",
+        "thinkingLevel",
+        "lifecycle",
+        "archived",
+        "revision",
+        "lastTimelineSequence",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "ThreadLifecycle": {
+      "type": "string",
+      "enum": [
+        "ready",
+        "running",
+        "waiting_for_approval",
+        "waiting_for_answer",
+        "compacting",
+        "closed"
+      ]
+    },
+    "DesktopAgentSettings": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "permission": {
+          "$ref": "#/$defs/DesktopAgentPermission"
+        },
+        "workingDirectory": {
+          "type": "string"
+        },
+        "defaultWorkingDirectory": {
+          "type": "string"
+        },
+        "usesDefaultDirectory": {
+          "type": "boolean"
+        },
+        "revision": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "permission",
+        "workingDirectory",
+        "defaultWorkingDirectory",
+        "usesDefaultDirectory",
+        "revision"
+      ]
+    },
+    "ExtensionCapabilities": {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "type": "string"
+        },
+        "features": {
+          "$ref": "#/$defs/FeatureVersions"
+        },
+        "runtimeInstanceId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "features"
+      ]
+    },
+    "FeatureVersions": {
+      "type": "object",
+      "properties": {
+        "desktopChat": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535,
+          "default": 0
+        },
+        "desktopAgent": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535,
+          "default": 0
+        },
+        "threadCatalog": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535,
+          "default": 0
+        },
+        "timeline": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535,
+          "default": 0
+        },
+        "modelCatalog": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535,
+          "default": 0
+        },
+        "profilePreferences": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535,
+          "default": 0
+        },
+        "collections": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535,
+          "default": 0
+        },
+        "account": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535,
+          "default": 0
+        },
+        "billing": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535,
+          "default": 0
+        },
+        "usage": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535,
+          "default": 0
+        },
+        "securityEvidence": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535,
+          "default": 0
+        },
+        "webConsent": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535,
+          "default": 0
+        },
+        "steering": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535,
+          "default": 0
+        },
+        "messageRevision": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535,
+          "default": 0
+        },
+        "attachments": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535,
+          "default": 0
+        },
+        "compaction": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535,
+          "default": 0
+        },
+        "activity": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535,
+          "default": 0
+        }
+      }
+    },
+    "DesktopBootstrapRequest": {
+      "type": "object"
+    },
+    "DesktopBootstrapResponse": {
+      "type": "object",
+      "properties": {
+        "frontend": {
+          "description": "Stable front-end identifier selected when the sidecar was launched.",
+          "type": "string"
+        },
+        "chatCwd": {
+          "description": "Canonical parent of application-owned, per-thread desktop workspaces.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "permissionProfile": {
+          "description": "Default permission profile for a new desktop chat (Agent starts off).",
+          "type": "string"
+        },
+        "newThreadSettings": {
+          "description": "Settings `AxiomCLI` will apply to the next thread. On a clean profile the\nthinking level is `medium`; afterward these are the last-used values.",
+          "$ref": "#/$defs/ProfilePreferences"
+        }
+      },
+      "required": [
+        "frontend",
+        "permissionProfile",
+        "newThreadSettings"
+      ]
+    },
+    "ProfilePreferences": {
+      "type": "object",
+      "properties": {
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "thinkingLevel": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "thinkingLevel",
+        "updatedAt"
+      ]
+    },
+    "PromptMetadata": {
+      "description": "Metadata Axiom Desktop attaches beneath the standard ACP `_meta.axiom`\nnamespace when submitting a user message.",
+      "type": "object",
+      "properties": {
+        "clientItemId": {
+          "type": "string"
+        },
+        "webEnabled": {
+          "description": "Explicit per-message desktop consent to external web tools. Never\ninherited from an earlier turn, saved thread, or permission profile.",
+          "type": "boolean",
+          "default": false
+        },
+        "agentRevision": {
+          "description": "Bind queued input to the exact locally approved Agent configuration.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "revision": {
+          "description": "Replace local history starting at this user message before the normal\nnative E2EE turn. Never interpreted by the hosted backend.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PromptRevision"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "attachments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PromptAttachment"
+          }
+        }
+      },
+      "required": [
+        "clientItemId"
+      ]
+    },
+    "PromptRevision": {
+      "type": "object",
+      "properties": {
+        "userItemId": {
+          "type": "string"
+        },
+        "expectedRevision": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "userItemId",
+        "expectedRevision"
+      ]
+    },
+    "PromptAttachment": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "text"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "name",
+            "text"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "image": {
+              "$ref": "#/$defs/ImageContent"
+            },
+            "kind": {
+              "type": "string",
+              "const": "image"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "name",
+            "image"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "file": {
+              "$ref": "#/$defs/FileContent"
+            },
+            "kind": {
+              "type": "string",
+              "const": "file"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "name",
+            "file"
+          ]
+        }
+      ]
+    },
+    "ImageContent": {
+      "type": "object",
+      "properties": {
+        "mimeType": {
+          "type": "string"
+        },
+        "data": {
+          "description": "Canonical base64, without a data-URL prefix. Remote URLs are not images.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "mimeType",
+        "data"
+      ]
+    },
+    "FileContent": {
+      "description": "Original file bytes. Extraction belongs to the attested provider, not Axiom.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "mimeType": {
+          "type": "string"
+        },
+        "data": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "mimeType",
+        "data"
+      ]
+    },
+    "GetAttachmentsRequest": {
+      "type": "object",
+      "properties": {
+        "threadId": {
+          "type": "string"
+        },
+        "userItemId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId",
+        "userItemId"
+      ]
+    },
+    "GetAttachmentsResponse": {
+      "type": "object",
+      "properties": {
+        "attachments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PromptAttachment"
+          }
+        }
+      },
+      "required": [
+        "attachments"
+      ]
+    },
+    "DeliveryMetadata": {
+      "description": "Durable identity attached beneath `_meta.axiom` on standard ACP\nnotifications. Content still belongs exclusively to standard ACP; this\nmetadata lets a client reconcile it with an authoritative timeline page.",
+      "type": "object",
+      "properties": {
+        "threadRevision": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "lastTimelineSequence": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "lastMessageAt": {
+          "description": "Latest actual message activity; operational updates do not advance it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lastUserMessageAt": {
+          "description": "Latest user submission. Streaming output does not advance sidebar order.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "timelineItemId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "clientItemId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "threadRevision",
+        "lastTimelineSequence"
+      ]
+    },
+    "ListThreadsRequest": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "includeArchived": {
+          "type": "boolean",
+          "default": false
+        },
+        "limit": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "cursor": {
+          "description": "Opaque cursor returned by the previous page.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "ListThreadsResponse": {
+      "type": "object",
+      "properties": {
+        "threads": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ThreadSummary"
+          }
+        },
+        "nextCursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "threads"
+      ]
+    },
+    "RenameThreadRequest": {
+      "type": "object",
+      "properties": {
+        "threadId": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId",
+        "title"
+      ]
+    },
+    "RenameThreadResponse": {
+      "type": "object",
+      "properties": {
+        "thread": {
+          "$ref": "#/$defs/ThreadSummary"
+        }
+      },
+      "required": [
+        "thread"
+      ]
+    },
+    "GetThreadTimelineRequest": {
+      "type": "object",
+      "properties": {
+        "threadId": {
+          "type": "string"
+        },
+        "afterSequence": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "afterRequestId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limit": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "threadId"
+      ]
+    },
+    "GetThreadTimelineResponse": {
+      "type": "object",
+      "properties": {
+        "thread": {
+          "$ref": "#/$defs/ThreadSummary"
+        },
+        "desktopAgent": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DesktopAgentSettings"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "activeTurnId": {
+          "description": "Active durable turn, including when a client missed its start event.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "contextUsage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ContextUsage"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "requestUsage": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RequestUsage"
+          },
+          "default": []
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TimelineItem"
+          }
+        },
+        "nextCursor": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "nextRequestUsageCursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "thread",
+        "items"
+      ]
+    },
+    "ContextUsage": {
+      "description": "Last provider-reported conversation request, not a measurement of the next\nrequest or a cumulative billing total. Auxiliary title/compaction requests\nnever replace this report. Limits describe the model used by that request.",
+      "type": "object",
+      "properties": {
+        "inputTokens": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "outputTokens": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "modelId": {
+          "type": "string"
+        },
+        "reportedAt": {
+          "type": "string"
+        },
+        "contextWindowTokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "autoCompactThresholdTokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "inputTokens",
+        "outputTokens",
+        "modelId",
+        "reportedAt"
+      ]
+    },
+    "RequestUsage": {
+      "description": "Decimal strings remain exact in JavaScript, on disk, and over ACP.\nA settled charge does not imply an authenticated/complete model response.",
+      "type": "object",
+      "properties": {
+        "requestId": {
+          "type": "string"
+        },
+        "modelId": {
+          "type": "string"
+        },
+        "providerId": {
+          "type": "string"
+        },
+        "contextWindowTokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0,
+          "default": null
+        },
+        "autoCompactThresholdTokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0,
+          "default": null
+        },
+        "turnId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "purpose": {
+          "$ref": "#/$defs/InvocationPurpose",
+          "default": "conversation"
+        },
+        "state": {
+          "$ref": "#/$defs/InvocationState",
+          "default": "running"
+        },
+        "completeness": {
+          "$ref": "#/$defs/UsageCompleteness",
+          "default": "unknown"
+        },
+        "inputTokens": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "cachedInputTokens": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "outputTokens": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "reasoningTokens": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "costMicrousd": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "settled": {
+          "type": "boolean",
+          "default": false
+        },
+        "responseVerified": {
+          "type": "boolean",
+          "default": false
+        },
+        "startedAtMs": {
+          "type": "string",
+          "default": ""
+        },
+        "finishedAtMs": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "errorCode": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "finishReason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "requestId",
+        "modelId",
+        "providerId"
+      ]
+    },
+    "InvocationPurpose": {
+      "type": "string",
+      "enum": [
+        "conversation",
+        "title",
+        "compaction"
+      ]
+    },
+    "InvocationState": {
+      "type": "string",
+      "enum": [
+        "running",
+        "completed",
+        "failed",
+        "cancelled"
+      ]
+    },
+    "UsageCompleteness": {
+      "type": "string",
+      "enum": [
+        "unknown",
+        "live",
+        "final",
+        "partial"
+      ]
+    },
+    "TimelineItem": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sequence": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "kind": {
+          "$ref": "#/$defs/TimelineItemKind"
+        },
+        "status": {
+          "$ref": "#/$defs/TimelineItemStatus"
+        },
+        "clientItemId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "externalId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "content": {
+          "type": "string"
+        },
+        "metadata": true,
+        "createdAt": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "threadId",
+        "sequence",
+        "kind",
+        "status",
+        "content",
+        "metadata",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "TimelineItemKind": {
+      "type": "string",
+      "enum": [
+        "user_message",
+        "assistant_message",
+        "reasoning",
+        "tool_call",
+        "plan",
+        "notice"
+      ]
+    },
+    "TimelineItemStatus": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "in_progress",
+        "completed",
+        "cancelled",
+        "failed",
+        "interrupted"
+      ]
+    },
+    "DeletePreviewRequest": {
+      "type": "object",
+      "properties": {
+        "threadIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "threadIds"
+      ]
+    },
+    "DeletePreviewResponse": {
+      "type": "object",
+      "properties": {
+        "confirmationToken": {
+          "type": "string"
+        },
+        "expiresAtUnixSeconds": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "threads": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ThreadSummary"
+          }
+        }
+      },
+      "required": [
+        "confirmationToken",
+        "expiresAtUnixSeconds",
+        "threads"
+      ]
+    },
+    "DeleteConfirmRequest": {
+      "type": "object",
+      "properties": {
+        "confirmationToken": {
+          "type": "string"
+        },
+        "threadIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "confirmationToken",
+        "threadIds"
+      ]
+    },
+    "DeleteConfirmResponse": {
+      "type": "object",
+      "properties": {
+        "deleted": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "deleted"
+      ]
+    },
+    "ListModelsRequest": {
+      "type": "object"
+    },
+    "ListModelsResponse": {
+      "type": "object",
+      "properties": {
+        "models": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ModelInfo"
+          }
+        }
+      },
+      "required": [
+        "models"
+      ]
+    },
+    "ModelInfo": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "shortLabel": {
+          "type": "string"
+        },
+        "providerId": {
+          "type": "string"
+        },
+        "providerLabel": {
+          "type": "string"
+        },
+        "upstreamModel": {
+          "type": "string"
+        },
+        "thinkingLevels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "contextWindowTokens": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "maxOutputTokens": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "supportsImages": {
+          "type": "boolean",
+          "default": false
+        },
+        "fileMimeTypes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "autoCompactThresholdTokens": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "inputPriceMicrousdPerMillionTokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "outputPriceMicrousdPerMillionTokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "shortLabel",
+        "providerId",
+        "providerLabel",
+        "upstreamModel",
+        "thinkingLevels",
+        "contextWindowTokens",
+        "maxOutputTokens",
+        "autoCompactThresholdTokens"
+      ]
+    },
+    "GetProfilePreferencesRequest": {
+      "type": "object"
+    },
+    "SetProfilePreferencesRequest": {
+      "type": "object",
+      "properties": {
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "thinkingLevel": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "ProfilePreferencesResponse": {
+      "type": "object",
+      "properties": {
+        "preferences": {
+          "$ref": "#/$defs/ProfilePreferences"
+        }
+      },
+      "required": [
+        "preferences"
+      ]
+    },
+    "ListCollectionsRequest": {
+      "type": "object"
+    },
+    "CreateCollectionRequest": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ]
+    },
+    "RenameCollectionRequest": {
+      "type": "object",
+      "properties": {
+        "collectionId": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "collectionId",
+        "name"
+      ]
+    },
+    "SetCollectionCollapsedRequest": {
+      "type": "object",
+      "properties": {
+        "collectionId": {
+          "type": "string"
+        },
+        "collapsed": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "collectionId",
+        "collapsed"
+      ]
+    },
+    "MoveCollectionRequest": {
+      "type": "object",
+      "properties": {
+        "collectionId": {
+          "type": "string"
+        },
+        "position": {
+          "type": "integer",
+          "format": "int64"
+        }
+      },
+      "required": [
+        "collectionId",
+        "position"
+      ]
+    },
+    "DeleteCollectionRequest": {
+      "type": "object",
+      "properties": {
+        "collectionId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "collectionId"
+      ]
+    },
+    "AssignThreadCollectionRequest": {
+      "type": "object",
+      "properties": {
+        "threadId": {
+          "type": "string"
+        },
+        "collectionId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "threadId"
+      ]
+    },
+    "CollectionStateResponse": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "$ref": "#/$defs/CollectionState"
+        }
+      },
+      "required": [
+        "state"
+      ]
+    },
+    "CollectionState": {
+      "type": "object",
+      "properties": {
+        "revision": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "collections": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Collection"
+          }
+        }
+      },
+      "required": [
+        "revision",
+        "collections"
+      ]
+    },
+    "Collection": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "collapsed": {
+          "type": "boolean"
+        },
+        "position": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "threadIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "createdAt": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "collapsed",
+        "position",
+        "threadIds",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "AssignThreadCollectionResponse": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "$ref": "#/$defs/CollectionState"
+        },
+        "threadRevision": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "lastTimelineSequence": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "state",
+        "threadRevision",
+        "lastTimelineSequence"
+      ]
+    },
+    "AccountStatusRequest": {
+      "type": "object"
+    },
+    "AccountStatusResponse": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "$ref": "#/$defs/AccountStatus"
+        }
+      },
+      "required": [
+        "status"
+      ]
+    },
+    "AccountStatus": {
+      "type": "object",
+      "properties": {
+        "revision": {
+          "description": "Monotonic within one agent runtime. Clients must ignore account states\nwhose revision is not newer than the state they already applied.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "state": {
+          "$ref": "#/$defs/AccountState"
+        },
+        "account": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AccountProfile"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "session": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NativeSession"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "detail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "revision",
+        "state"
+      ]
+    },
+    "AccountState": {
+      "type": "string",
+      "enum": [
+        "starting",
+        "signed_out",
+        "valid",
+        "expired",
+        "unavailable"
+      ]
+    },
+    "AccountProfile": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "displayName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "avatarUrl": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "verifiedEmail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "linkedMethods": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LoginMethod"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "linkedMethods"
+      ]
+    },
+    "LoginMethod": {
+      "type": "string",
+      "enum": [
+        "passkey",
+        "google",
+        "password",
+        "ethereum_wallet"
+      ]
+    },
+    "NativeSession": {
+      "type": "object",
+      "properties": {
+        "expiresAt": {
+          "type": "string"
+        },
+        "credentialStore": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "expiresAt",
+        "credentialStore"
+      ]
+    },
+    "NativeLoginStartRequest": {
+      "type": "object",
+      "properties": {
+        "methodHint": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LoginMethod"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "NativeLoginStartResponse": {
+      "type": "object",
+      "properties": {
+        "login": {
+          "$ref": "#/$defs/NativeLoginState"
+        }
+      },
+      "required": [
+        "login"
+      ]
+    },
+    "NativeLoginState": {
+      "type": "object",
+      "properties": {
+        "loginId": {
+          "type": "string"
+        },
+        "userCode": {
+          "type": "string"
+        },
+        "authorizationUrl": {
+          "type": "string"
+        },
+        "browserOpened": {
+          "type": "boolean"
+        },
+        "expiresAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "loginId",
+        "userCode",
+        "authorizationUrl",
+        "browserOpened",
+        "expiresAt"
+      ]
+    },
+    "NativeLoginCompleteRequest": {
+      "type": "object",
+      "properties": {
+        "loginId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "loginId"
+      ]
+    },
+    "NativeLoginCancelRequest": {
+      "type": "object",
+      "properties": {
+        "loginId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "loginId"
+      ]
+    },
+    "LogoutRequest": {
+      "type": "object"
+    },
+    "BillingStatusRequest": {
+      "type": "object"
+    },
+    "BillingStatusResponse": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "$ref": "#/$defs/BillingStatus"
+        }
+      },
+      "required": [
+        "status"
+      ]
+    },
+    "BillingStatus": {
+      "type": "object",
+      "properties": {
+        "revision": {
+          "description": "Monotonic within one agent runtime; clients ignore older projections.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "postedMicrousd": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "availableMicrousd": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "ledgerSequence": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "trialMicrousd": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "paidMicrousd": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "paymentReviewRequired": {
+          "type": "boolean",
+          "default": false
+        },
+        "currency": {
+          "type": "string"
+        },
+        "paymentAccount": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PaymentAccount"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "zecUsdQuote": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ZecUsdQuote"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "revision",
+        "postedMicrousd",
+        "availableMicrousd",
+        "ledgerSequence",
+        "trialMicrousd",
+        "paidMicrousd",
+        "currency"
+      ]
+    },
+    "PaymentAccount": {
+      "description": "Payment-service values remain exact decimal strings across Rust/ACP/JS.\nNested fields retain the backend's `snake_case` HTTP contract.",
+      "type": "object",
+      "properties": {
+        "network": {
+          "type": "string"
+        },
+        "asset": {
+          "type": "string"
+        },
+        "conversion_status": {
+          "type": "string"
+        },
+        "valuation_enabled": {
+          "type": "boolean",
+          "default": false
+        },
+        "state": {
+          "type": "string"
+        },
+        "address": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "payment_uri": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "monitoring_status": {
+          "type": "string"
+        },
+        "required_confirmations": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "confirmed_zatoshis": {
+          "type": "string"
+        },
+        "confirming_zatoshis": {
+          "type": "string"
+        },
+        "review_required": {
+          "type": "boolean"
+        },
+        "deposits": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DepositReceipt"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "network",
+        "asset",
+        "conversion_status",
+        "state",
+        "monitoring_status",
+        "confirmed_zatoshis",
+        "confirming_zatoshis",
+        "review_required",
+        "deposits"
+      ]
+    },
+    "DepositReceipt": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "amount_zatoshis": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string"
+        },
+        "object_version": {
+          "type": "string"
+        },
+        "confirmations": {
+          "type": "string"
+        },
+        "required_confirmations": {
+          "type": "string"
+        },
+        "review_required": {
+          "type": "boolean"
+        },
+        "observed_at": {
+          "type": "string"
+        },
+        "valuation_status": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "credit_microusd": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "price_microusd_per_zec": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "price_source": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "priced_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "amount_zatoshis",
+        "state",
+        "object_version",
+        "confirmations",
+        "required_confirmations",
+        "review_required",
+        "observed_at"
+      ]
+    },
+    "ZecUsdQuote": {
+      "description": "Indicative live market price; deposit credit uses its confirmation-time rate.",
+      "type": "object",
+      "properties": {
+        "price_microusd_per_zec": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "as_of": {
+          "type": "string"
+        },
+        "expires_at": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "price_microusd_per_zec",
+        "source",
+        "as_of",
+        "expires_at"
+      ]
+    },
+    "GiftCodeRedeemRequest": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "code"
+      ]
+    },
+    "GiftCodeRedeemResponse": {
+      "type": "object",
+      "properties": {
+        "creditedMicrousd": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "alreadyRedeemed": {
+          "type": "boolean"
+        },
+        "status": {
+          "$ref": "#/$defs/BillingStatus"
+        }
+      },
+      "required": [
+        "creditedMicrousd",
+        "alreadyRedeemed",
+        "status"
+      ]
+    },
+    "UsageSummaryRequest": {
+      "type": "object",
+      "properties": {
+        "period": {
+          "$ref": "#/$defs/UsagePeriod",
+          "default": "all_time"
+        },
+        "timezone": {
+          "description": "IANA timezone for calendar boundaries. Omitted clients retain UTC/all-time behavior.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "maxLength": 128
+        }
+      }
+    },
+    "UsagePeriod": {
+      "type": "string",
+      "enum": [
+        "week",
+        "month",
+        "all_time"
+      ]
+    },
+    "UsageSummaryResponse": {
+      "type": "object",
+      "properties": {
+        "summary": {
+          "$ref": "#/$defs/UsageSummary"
+        }
+      },
+      "required": [
+        "summary"
+      ]
+    },
+    "UsageSummary": {
+      "type": "object",
+      "properties": {
+        "period": {
+          "type": "string"
+        },
+        "totalCostMicrousd": {
+          "type": "string"
+        },
+        "models": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ModelSpend"
+          }
+        }
+      },
+      "required": [
+        "period",
+        "totalCostMicrousd",
+        "models"
+      ]
+    },
+    "ModelSpend": {
+      "type": "object",
+      "properties": {
+        "provider": {
+          "type": "string"
+        },
+        "modelId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "modelName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "costMicrousd": {
+          "description": "Exact USD millionths; never an IEEE-754 amount.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider",
+        "costMicrousd"
+      ]
+    },
+    "ApiKeyListRequest": {
+      "type": "object"
+    },
+    "ApiKeyListResponse": {
+      "type": "object",
+      "properties": {
+        "keys": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ApiKeyRecord"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "keys"
+      ]
+    },
+    "ApiKeyRecord": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "scopes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "createdAt": {
+          "type": "string"
+        },
+        "lastUsedAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "expiresAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "revokedAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "usageStartedAt": {
+          "type": "string"
+        },
+        "usage": {
+          "$ref": "#/$defs/ApiKeyUsage"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "scopes",
+        "createdAt",
+        "usageStartedAt",
+        "usage"
+      ]
+    },
+    "ApiKeyUsage": {
+      "type": "object",
+      "properties": {
+        "requestCount": {
+          "type": "string"
+        },
+        "inputTokens": {
+          "type": "string"
+        },
+        "cachedInputTokens": {
+          "type": "string"
+        },
+        "outputTokens": {
+          "type": "string"
+        },
+        "costMicrousd": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "requestCount",
+        "inputTokens",
+        "cachedInputTokens",
+        "outputTokens",
+        "costMicrousd"
+      ]
+    },
+    "ApiKeyCreateRequest": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ]
+    },
+    "ApiKeyCreatedResponse": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "$ref": "#/$defs/ApiKeyRecord"
+        },
+        "token": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "token"
+      ]
+    },
+    "ApiKeyRevokeRequest": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id"
+      ]
+    },
+    "ApiKeyRevokeResponse": {
+      "type": "object"
+    },
+    "PrewarmSecurityRequest": {
+      "description": "Model-only warmup: no thread, prompt, inference, or implicit consent.",
+      "type": "object",
+      "properties": {
+        "modelId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "modelId"
+      ]
+    },
+    "VerifySecurityRequest": {
+      "type": "object",
+      "properties": {
+        "threadId": {
+          "type": "string"
+        },
+        "acceptOutdatedTee": {
+          "type": "boolean",
+          "default": false
+        },
+        "modelId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "threadId"
+      ]
+    },
+    "VerifySecurityResponse": {
+      "type": "object",
+      "properties": {
+        "evidence": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SecurityEvidence"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "$ref": "#/$defs/SecurityStatus"
+        }
+      },
+      "required": [
+        "status"
+      ]
+    },
+    "SecurityEvidence": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "$ref": "#/$defs/SecurityStatus"
+        },
+        "providerId": {
+          "type": "string"
+        },
+        "modelId": {
+          "type": "string"
+        },
+        "attestationProtocol": {
+          "type": "string"
+        },
+        "e2eeProtocol": {
+          "type": "string"
+        },
+        "e2eeEncryptionVersion": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "trustPolicyVersion": {
+          "type": "string"
+        },
+        "verifiedAtUnixSeconds": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "attestationGeneration": {
+          "description": "Relay lease generation, when the provider protocol uses relay leases.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "hardExpiresAtUnixSeconds": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "modelKeyFingerprint": {
+          "type": "string"
+        },
+        "tlsSpkiFingerprint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "checks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EvidenceCheck"
+          }
+        },
+        "providerClaims": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EvidenceClaim"
+          }
+        },
+        "workloadManifest": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "status",
+        "providerId",
+        "modelId",
+        "attestationProtocol",
+        "e2eeProtocol",
+        "e2eeEncryptionVersion",
+        "trustPolicyVersion",
+        "verifiedAtUnixSeconds",
+        "hardExpiresAtUnixSeconds",
+        "modelKeyFingerprint",
+        "checks",
+        "providerClaims"
+      ]
+    },
+    "SecurityStatus": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "$ref": "#/$defs/SecurityState"
+        },
+        "detail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "state"
+      ]
+    },
+    "SecurityState": {
+      "type": "string",
+      "enum": [
+        "unverified",
+        "verifying",
+        "unattested_development",
+        "verified",
+        "degraded",
+        "outdated",
+        "failed"
+      ]
+    },
+    "EvidenceCheck": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "passed": {
+          "type": "boolean"
+        },
+        "detail": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "passed",
+        "detail"
+      ]
+    },
+    "EvidenceClaim": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "value"
+      ]
+    },
+    "CompactRequest": {
+      "type": "object",
+      "properties": {
+        "threadId": {
+          "type": "string"
+        },
+        "focus": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "threadId"
+      ]
+    },
+    "CompactResponse": {
+      "type": "object",
+      "properties": {
+        "messagesBefore": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "messagesBefore"
+      ]
+    },
+    "SteerTurnRequest": {
+      "type": "object",
+      "properties": {
+        "agentRevision": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "expectedTurnId": {
+          "type": "string"
+        },
+        "clientItemId": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "webEnabled": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "threadId",
+        "expectedTurnId",
+        "clientItemId",
+        "text",
+        "webEnabled"
+      ]
+    },
+    "SteerTurnResponse": {
+      "type": "object",
+      "properties": {
+        "turnId": {
+          "type": "string"
+        },
+        "clientItemId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "turnId",
+        "clientItemId"
+      ]
+    },
+    "EventNotification": {
+      "type": "object",
+      "properties": {
+        "runtimeInstanceId": {
+          "type": "string"
+        },
+        "sessionId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sequence": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "occurredAt": {
+          "description": "RFC 3339 time recorded by `AxiomCLI` when the outward event was created.",
+          "type": "string"
+        },
+        "correlationId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "threadRevision": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "lastTimelineSequence": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "event": {
+          "$ref": "#/$defs/ActivityEvent"
+        }
+      },
+      "required": [
+        "runtimeInstanceId",
+        "sequence",
+        "occurredAt",
+        "event"
+      ]
+    },
+    "ActivityEvent": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "turnId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "active_turn_changed"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "usage": {
+              "$ref": "#/$defs/ContextUsage"
+            },
+            "kind": {
+              "type": "string",
+              "const": "context_usage_changed"
+            }
+          },
+          "required": [
+            "kind",
+            "usage"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "usage": {
+              "$ref": "#/$defs/RequestUsage"
+            },
+            "kind": {
+              "type": "string",
+              "const": "request_usage_changed"
+            }
+          },
+          "required": [
+            "kind",
+            "usage"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "status": {
+              "$ref": "#/$defs/SecurityStatus"
+            },
+            "kind": {
+              "type": "string",
+              "const": "security_changed"
+            }
+          },
+          "required": [
+            "kind",
+            "status"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "status": {
+              "$ref": "#/$defs/AccountStatus"
+            },
+            "kind": {
+              "type": "string",
+              "const": "account_changed"
+            }
+          },
+          "required": [
+            "kind",
+            "status"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "status": {
+              "$ref": "#/$defs/BillingStatus"
+            },
+            "kind": {
+              "type": "string",
+              "const": "billing_changed"
+            }
+          },
+          "required": [
+            "kind",
+            "status"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "task_id": {
+              "type": "string"
+            },
+            "state": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "background_task"
+            }
+          },
+          "required": [
+            "kind",
+            "task_id",
+            "state"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "paths": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "kind": {
+              "type": "string",
+              "const": "workspace_changed"
+            }
+          },
+          "required": [
+            "kind",
+            "paths"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "phase": {
+              "$ref": "#/$defs/CompactionPhase"
+            },
+            "detail": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "compaction"
+            }
+          },
+          "required": [
+            "kind",
+            "phase"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "state": {
+              "$ref": "#/$defs/CollectionState"
+            },
+            "kind": {
+              "type": "string",
+              "const": "collections_changed"
+            }
+          },
+          "required": [
+            "kind",
+            "state"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "preferences": {
+              "$ref": "#/$defs/ProfilePreferences"
+            },
+            "kind": {
+              "type": "string",
+              "const": "profile_preferences_changed"
+            }
+          },
+          "required": [
+            "kind",
+            "preferences"
+          ]
+        }
+      ]
+    },
+    "CompactionPhase": {
+      "type": "string",
+      "enum": [
+        "started",
+        "summarizing",
+        "replacing_context",
+        "completed",
+        "cancelled",
+        "failed"
+      ]
+    },
+    "ExtensionError": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/ExtensionErrorCode"
+        },
+        "message": {
+          "type": "string"
+        },
+        "retryable": {
+          "type": "boolean"
+        },
+        "correlationId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "code",
+        "message",
+        "retryable"
+      ]
+    },
+    "ExtensionErrorCode": {
+      "type": "string",
+      "enum": [
+        "unsupported_feature",
+        "invalid_request",
+        "invalid_state",
+        "not_found",
+        "conflict",
+        "permission_denied",
+        "authentication_required",
+        "security_verification_failed",
+        "cancelled",
+        "expired",
+        "provider_unavailable",
+        "internal"
+      ]
+    }
+  }
+}

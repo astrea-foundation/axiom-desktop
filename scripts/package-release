@@ -1,0 +1,155 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+workspace_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+dist_dir=${AXIOMCLI_DIST_DIR:-"$workspace_root/dist"}
+source_date_epoch=${SOURCE_DATE_EPOCH:-$(git -C "$workspace_root" show -s --format=%ct HEAD)}
+sign=false
+
+if [[ ${1:-} == "--sign" ]]; then
+  sign=true
+elif [[ $# -ne 0 ]]; then
+  echo "usage: scripts/package-release [--sign]" >&2
+  exit 2
+fi
+
+version=$(cargo pkgid --manifest-path "$workspace_root/Cargo.toml" -p axiomcli | sed -E 's/.*[#@]//')
+host=$(rustc -vV | sed -n 's/^host: //p')
+if [[ $host != "x86_64-unknown-linux-gnu" ]]; then
+  echo "release packaging currently supports x86_64-unknown-linux-gnu; found $host" >&2
+  exit 1
+fi
+
+if [[ ! -f $workspace_root/.cargo-deny-version ]]; then
+  echo "pinned cargo-deny version file is missing" >&2
+  exit 1
+fi
+IFS= read -r required_cargo_deny_version < "$workspace_root/.cargo-deny-version"
+if [[ ! $required_cargo_deny_version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "pinned cargo-deny version is invalid" >&2
+  exit 1
+fi
+if ! cargo_deny_report=$(cargo deny --version 2>/dev/null); then
+  echo "cargo-deny $required_cargo_deny_version is required to build a release" >&2
+  exit 1
+fi
+if [[ $cargo_deny_report != "cargo-deny $required_cargo_deny_version" ]]; then
+  echo "cargo-deny $required_cargo_deny_version is required; found $cargo_deny_report" >&2
+  exit 1
+fi
+
+if [[ -n ${AXIOMCLI_PACKAGE_BINARY:-} ]]; then
+  cli_binary=$AXIOMCLI_PACKAGE_BINARY
+else
+  cargo build --manifest-path "$workspace_root/Cargo.toml" --locked --release \
+    -p axiomcli -p axiom-proxy
+  cli_binary="$workspace_root/target/release/axiomcli"
+fi
+if [[ -n ${AXIOM_PROXY_PACKAGE_BINARY:-} ]]; then
+  proxy_binary=$AXIOM_PROXY_PACKAGE_BINARY
+else
+  proxy_binary="$workspace_root/target/release/axiom-proxy"
+fi
+if [[ ! -x $cli_binary ]]; then
+  echo "AxiomCLI release binary is missing or not executable: $cli_binary" >&2
+  exit 1
+fi
+if [[ ! -x $proxy_binary ]]; then
+  echo "proxy release binary is missing or not executable: $proxy_binary" >&2
+  exit 1
+fi
+
+mkdir -p "$dist_dir"
+staging=$(mktemp -d "${TMPDIR:-/tmp}/axiomcli-package.XXXXXX")
+trap 'rm -rf -- "$staging"' EXIT
+package_name="axiomai-$version-$host"
+package_root="$staging/$package_name"
+mkdir -p "$package_root/bin" "$package_root/share/doc/axiomcli"
+install -m 0755 "$cli_binary" "$package_root/bin/axiomcli"
+install -m 0755 "$proxy_binary" "$package_root/bin/axiom-proxy"
+install -m 0644 "$workspace_root/LICENSE" "$package_root/share/doc/axiomcli/LICENSE"
+install -m 0644 "$workspace_root/THIRD_PARTY.md" "$package_root/share/doc/axiomcli/THIRD_PARTY.md"
+cargo deny --manifest-path "$workspace_root/Cargo.toml" list --format tsv \
+  > "$package_root/share/doc/axiomcli/THIRD_PARTY-LICENSES.tsv"
+
+if ! command -v jq >/dev/null 2>&1; then
+  echo "jq is required to collect dependency license and notice files" >&2
+  exit 1
+fi
+third_party_files="$package_root/share/doc/axiomcli/third-party"
+mkdir -p "$third_party_files"
+third_party_manifest="$third_party_files/MANIFEST.tsv"
+printf 'crate\tversion\tdeclared_license\tincluded_file\n' > "$third_party_manifest"
+metadata=$(cargo metadata --manifest-path "$workspace_root/Cargo.toml" --locked --format-version 1)
+while IFS=$'\t' read -r crate_name crate_version declared_license manifest_path; do
+  crate_root=$(dirname "$manifest_path")
+  destination="$third_party_files/$crate_name-$crate_version"
+  found=false
+  while IFS= read -r -d '' notice; do
+    if ! $found; then
+      mkdir -p "$destination"
+      found=true
+    fi
+    notice_name=$(basename "$notice")
+    install -m 0644 "$notice" "$destination/$notice_name"
+    printf '%s\t%s\t%s\t%s/%s\n' \
+      "$crate_name" "$crate_version" "$declared_license" \
+      "$crate_name-$crate_version" "$notice_name" >> "$third_party_manifest"
+  done < <(
+    find -L "$crate_root" -maxdepth 1 -type f \
+      \( -iname 'LICENSE*' -o -iname 'COPYING*' -o -iname 'NOTICE*' \) \
+      -print0 | sort -z
+  )
+  if ! $found; then
+    printf '%s\t%s\t%s\t%s\n' \
+      "$crate_name" "$crate_version" "$declared_license" '(metadata only)' \
+      >> "$third_party_manifest"
+  fi
+done < <(
+  jq -r '
+    .workspace_members as $workspace
+    | [.packages[]
+       | select(.id as $id | ($workspace | index($id) | not))]
+    | sort_by(.name, .version)
+    | .[]
+    | [.name, .version, (.license // "UNKNOWN"), .manifest_path]
+    | @tsv
+  ' <<< "$metadata"
+)
+# Installed docs are a subset of the source tree. Resolve navigation/source links
+# against this exact revision so they also work outside a repository checkout.
+source_revision=$(git -C "$workspace_root" rev-parse HEAD)
+source_url="https://github.com/astrea-foundation/axiom-desktop/blob/$source_revision"
+for document in README.md docs/acp-compatibility.md docs/configuration.md \
+  docs/privacy.md docs/troubleshooting.md docs/versioning.md; do
+  document_directory=""
+  if [[ $document == docs/* ]]; then
+    document_directory="docs/"
+  fi
+  destination="$package_root/share/doc/axiomcli/${document##*/}"
+  sed -E "s@\]\(([^#/:][^:[:space:]()]*)\)@]($source_url/$document_directory\1)@g" \
+    "$workspace_root/$document" > "$destination"
+  chmod 0644 "$destination"
+done
+printf 'name=axiomai\nversion=%s\ntarget=%s\nsource_date_epoch=%s\ncargo_deny_version=%s\ncomponents=axiomcli,axiom-proxy\n' \
+  "$version" "$host" "$source_date_epoch" "$required_cargo_deny_version" \
+  > "$package_root/share/doc/axiomcli/BUILD-METADATA"
+
+artifact="$dist_dir/$package_name.tar.gz"
+tar --sort=name \
+  --mtime="@$source_date_epoch" \
+  --owner=0 --group=0 --numeric-owner \
+  --mode='u+rwX,go+rX,go-w' \
+  -C "$staging" -cf - "$package_name" | gzip -n > "$artifact"
+(
+  cd "$dist_dir"
+  sha256sum "$(basename "$artifact")" > "$(basename "$artifact").sha256"
+)
+
+if $sign; then
+  : "${AXIOMCLI_SIGNING_KEY:?set AXIOMCLI_SIGNING_KEY to a GPG signing-key fingerprint}"
+  gpg --batch --yes --local-user "$AXIOMCLI_SIGNING_KEY" \
+    --armor --detach-sign --output "$artifact.asc" "$artifact"
+fi
+
+printf '%s\n' "$artifact"

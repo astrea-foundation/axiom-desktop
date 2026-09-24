@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+workspace_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+mode=${1:-deterministic}
+
+cd "$workspace_root"
+
+run_deterministic() {
+  for repetition in 1 2; do
+    echo "deterministic evaluation repetition ${repetition}/2"
+    cargo test --workspace --all-features --locked --test autonomous_eval
+    cargo test --workspace --all-features --locked --test evaluation_suite original_multilanguage_evaluation_set_is_repeatable_from_clean_fixtures
+    cargo test --workspace --all-features --locked --test soak -- --include-ignored
+    cargo test --workspace --all-features --locked --test acp_transcript
+    cargo test --workspace --all-features --locked --test tui_pty -- --include-ignored
+    cargo test --workspace --all-features --locked --test mcp_integration
+  done
+}
+
+run_live_model() {
+  : "${AXIOM_LIVE_BASE_URL:?set AXIOM_LIVE_BASE_URL for the opt-in live evaluation}"
+  : "${AXIOM_LIVE_MODEL:?set AXIOM_LIVE_MODEL for the opt-in live evaluation}"
+  cargo test -p axiomcli --test evaluation_suite \
+    live_model_investigation_baseline_is_budgeted_and_non_mutating \
+    -- --ignored --nocapture
+}
+
+case "$mode" in
+  deterministic)
+    run_deterministic
+    ;;
+  live)
+    run_live_model
+    ;;
+  full)
+    run_deterministic
+    run_live_model
+    ;;
+  *)
+    echo "usage: scripts/axiomcli-eval [deterministic|live|full]" >&2
+    exit 2
+    ;;
+esac

@@ -1,0 +1,3 @@
+#!/bin/sh
+# This launcher is owned by the DEB/Arch package. Both interfaces use one binary.
+exec /opt/Axiom/resources/bin/axiomcli "$@"

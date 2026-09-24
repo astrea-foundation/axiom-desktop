@@ -1,0 +1,74 @@
+[package]
+name = "axiomcli"
+version = "0.1.8"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+axiom-installation.workspace = true
+agent-client-protocol = { version = "2.0.0", features = ["unstable_elicitation"] }
+anyhow = "1.0.100"
+async-trait = "0.1.89"
+axiom-inference.workspace = true
+axiom-acp-extension.workspace = true
+axiom-secure-client.workspace = true
+axiom-proxy = { version = "0.1.0", path = "../axiom-proxy" }
+base64 = "0.22.1"
+chrono = { version = "0.4.42", features = ["serde"] }
+clap = { version = "4.5.50", features = ["derive", "env"] }
+# Level-triggered Unix polling retains keyboard readiness when resize and input
+# arrive together; the default Mio backend can lose that readiness edge.
+crossterm = { version = "0.29.0", features = ["event-stream", "use-dev-tty"] }
+directories = "6.0.0"
+ed25519-dalek = "2.2.0"
+hex = "0.4.3"
+tempfile = "3.23.0"
+futures = "0.3.31"
+fs2 = "0.4.3"
+getrandom = "0.4.1"
+# Desktop bundles must not depend on a build machine's Homebrew/system libgit2.
+git2 = { version = "0.21.0", features = ["vendored-libgit2"] }
+globset = "0.4.20"
+ignore = "0.4.33"
+keyring = "4.1.6"
+open = "5.3.6"
+pulldown-cmark = { version = "0.13.4", default-features = false }
+ratatui = "0.30.2"
+reqwest = { version = "0.13.4", default-features = false, features = ["json", "query", "rustls", "stream"] }
+rmcp = { version = "3.1.4", default-features = false, features = ["client", "server", "transport-child-process", "transport-io"] }
+rusqlite = { version = "0.40.2", features = ["bundled", "chrono", "uuid"] }
+secrecy = "0.10.3"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+sha2 = "0.10.9"
+shell-words = "1.1.1"
+similar = "3.0.2"
+thiserror = "2.0.17"
+tokio = { version = "1.48.0", features = ["full"] }
+tokio-util = { version = "0.7.16", features = ["compat"] }
+toml = "0.9.8"
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.20", features = ["env-filter", "fmt"] }
+syntect = { version = "5.3.0", default-features = false, features = ["default-syntaxes", "default-themes", "regex-fancy"] }
+unicode-segmentation = "1.12.0"
+unicode-width = "0.2.2"
+url = { version = "2.5.7", features = ["serde"] }
+uuid = { version = "1.18.1", features = ["v4", "serde"] }
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.31.3", features = ["process", "signal"] }
+
+[target.'cfg(windows)'.dependencies]
+win32job = "2.0.3"
+
+[dev-dependencies]
+assert_cmd = "2.1.1"
+axum = "0.8.7"
+insta = { version = "1.43.2", features = ["json"] }
+predicates = "3.1.3"
+portable-pty = "0.9.0"
+proptest = "1.9.0"
+
+[lints]
+workspace = true

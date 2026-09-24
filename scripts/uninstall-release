@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+prefix=${1:-/usr/local}
+if [[ -z $prefix || $prefix == / ]]; then
+  echo "installation prefix must be a specific directory, not /" >&2
+  exit 1
+fi
+
+rm -f -- "$prefix/bin/axiomcli"
+rm -f -- "$prefix/bin/axiom-proxy"
+rm -rf -- "$prefix/share/doc/axiomcli/third-party"
+for document in \
+  LICENSE THIRD_PARTY.md THIRD_PARTY-LICENSES.tsv README.md acp-compatibility.md configuration.md \
+  privacy.md troubleshooting.md versioning.md BUILD-METADATA; do
+  rm -f -- "$prefix/share/doc/axiomcli/$document"
+done
+rm -f -- "$prefix/share/axiomcli/install-manifest"
+rmdir "$prefix/share/doc/axiomcli" 2>/dev/null || true
+rmdir "$prefix/share/axiomcli" 2>/dev/null || true
+rmdir "$prefix/share/doc" 2>/dev/null || true
+rmdir "$prefix/share" 2>/dev/null || true
+rmdir "$prefix/bin" 2>/dev/null || true
+rmdir "$prefix" 2>/dev/null || true
+echo "removed AxiomCLI and proxy program files; user configuration and session data were preserved"

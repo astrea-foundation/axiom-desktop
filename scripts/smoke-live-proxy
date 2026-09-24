@@ -1,0 +1,245 @@
+#!/usr/bin/env bash
+
+# Protected Lane C/D smoke test for the real proxy and live Axiom service.
+# Credentials are inherited only by the proxy child and are never written to
+# argv, request files, logs, or the external client environment.
+
+set +x
+set -euo pipefail
+
+fail() {
+  printf 'live proxy smoke failed: %s\n' "$1" >&2
+  exit 1
+}
+
+for required in cargo curl jq openssl timeout; do
+  command -v "$required" >/dev/null 2>&1 || fail "missing required command: $required"
+done
+
+[[ -n "${AXIOM_API_KEY:-}" ]] || fail "export AXIOM_API_KEY in the protected environment"
+upstream_key="$AXIOM_API_KEY"
+unset AXIOM_API_KEY
+
+repository="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+proxy_bin="${AXIOM_PROXY_BIN:-$repository/target/debug/axiom-proxy}"
+axiom_base_url="${AXIOM_BASE_URL:-https://api.axiom.stream}"
+requested_model="${AXIOM_LIVE_MODEL:-}"
+reasoning_effort="${AXIOM_LIVE_REASONING_EFFORT:-medium}"
+keep_artifacts="${KEEP_LIVE_ARTIFACTS:-0}"
+
+[[ "$reasoning_effort" =~ ^(low|medium|high|xhigh)$ ]] \
+  || fail "AXIOM_LIVE_REASONING_EFFORT must be low, medium, high, or xhigh"
+
+if [[ ! -x "$proxy_bin" ]]; then
+  cargo build --manifest-path "$repository/Cargo.toml" -p axiom-proxy
+fi
+
+artifact_root="$(mktemp -d "${TMPDIR:-/tmp}/axiom-live-proxy.XXXXXX")"
+proxy_stdout="$artifact_root/proxy.stdout.jsonl"
+proxy_log="$artifact_root/proxy.stderr.jsonl"
+models_file="$artifact_root/models.json"
+result_file="$artifact_root/result.json"
+nonstream_file="$artifact_root/nonstream.json"
+second_model_file="$artifact_root/second-model.json"
+stream_file="$artifact_root/stream.sse"
+proxy_pid=""
+
+cleanup() {
+  status=$?
+  trap - EXIT INT TERM
+  if [[ -n "$proxy_pid" ]] && kill -0 "$proxy_pid" 2>/dev/null; then
+    kill -INT "$proxy_pid" 2>/dev/null || true
+    wait "$proxy_pid" 2>/dev/null || true
+  fi
+  # Plaintext model output is never retained as a failure artifact.
+  rm -f -- "$nonstream_file" "$second_model_file" "$stream_file"
+  if ((status != 0)) || [[ "$keep_artifacts" == "1" ]]; then
+    printf 'Sanitized live artifacts retained at %s\n' "$artifact_root" >&2
+  else
+    rm -rf -- "$artifact_root"
+  fi
+  exit "$status"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+local_token="$(openssl rand -hex 32)"
+AXIOM_API_KEY="$upstream_key" \
+AXIOM_PROXY_TOKEN="$local_token" \
+  "$proxy_bin" --bind 127.0.0.1:0 --axiom-base-url "$axiom_base_url" \
+  >"$proxy_stdout" 2>"$proxy_log" &
+proxy_pid=$!
+
+address=""
+for _attempt in $(seq 1 120); do
+  if [[ -s "$proxy_stdout" ]]; then
+    address="$(jq -r 'select(.event == "ready") | .address' "$proxy_stdout" 2>/dev/null | head -n 1)"
+    [[ -n "$address" && "$address" != "null" ]] && break
+  fi
+  kill -0 "$proxy_pid" 2>/dev/null || fail "proxy exited before readiness"
+  sleep 0.25
+done
+[[ -n "$address" ]] || fail "proxy did not announce readiness"
+proxy_url="http://$address"
+
+curl --fail --silent --show-error --max-time 30 \
+  -H "Authorization: Bearer $local_token" \
+  "$proxy_url/v1/models" >"$models_file" \
+  || fail "live model discovery failed"
+
+if [[ -n "$requested_model" ]]; then
+  jq -e --arg model "$requested_model" --arg effort "$reasoning_effort" \
+    'any(.data[]; .id == $model and (.supported_reasoning_efforts | index($effort)))' \
+    "$models_file" >/dev/null \
+    || fail "AXIOM_LIVE_MODEL is absent or does not support the requested reasoning effort"
+  model="$requested_model"
+else
+  model="$(jq -r --arg effort "$reasoning_effort" \
+    '[.data[] | select(.supported_reasoning_efforts | index($effort))][0].id // empty' \
+    "$models_file")"
+fi
+[[ -n "$model" ]] || fail "live catalog returned no model supporting $reasoning_effort"
+
+sentinel="AXIOM_LIVE_$(openssl rand -hex 12)"
+nonstream_status="$({
+  jq -cn --arg model "$model" --arg prompt "Reply with exactly $sentinel" \
+    --arg effort "$reasoning_effort" \
+    '{model:$model,messages:[{role:"user",content:$prompt}],reasoning_effort:$effort}'
+} | curl --silent --show-error --max-time 180 \
+  -H "Authorization: Bearer $local_token" -H 'Content-Type: application/json' \
+  --data-binary @- --output "$nonstream_file" --write-out '%{http_code}' \
+  "$proxy_url/v1/chat/completions")"
+[[ "$nonstream_status" == "200" ]] \
+  || fail "live non-stream request returned HTTP $nonstream_status"
+jq -e '.choices[0].message.content | type == "string" and length > 0' "$nonstream_file" >/dev/null \
+  || fail "live non-stream response had no assistant text"
+jq -e '.usage.total_tokens | type == "number"' "$nonstream_file" >/dev/null \
+  || fail "live non-stream response omitted usage"
+
+second_model="$(jq -r --arg selected "$model" \
+  '[.data[] | select(.id != $selected)][0].id // empty' \
+  "$models_file")"
+if [[ -n "$second_model" ]]; then
+  second_status="$({
+    jq -cn --arg model "$second_model" --arg prompt "Reply briefly with cherry. $sentinel" \
+      --arg effort "$reasoning_effort" \
+      '{model:$model,messages:[{role:"user",content:$prompt}],reasoning_effort:$effort}'
+  } | curl --silent --show-error --max-time 180 \
+    -H "Authorization: Bearer $local_token" -H 'Content-Type: application/json' \
+    --data-binary @- --output "$second_model_file" --write-out '%{http_code}' \
+    "$proxy_url/v1/chat/completions")"
+  [[ "$second_status" == "200" ]] \
+    || fail "second live model returned HTTP $second_status"
+  jq -e --arg model "$second_model" \
+    '.model == $model and (.choices[0].message.content | type == "string" and length > 0)' \
+    "$second_model_file" >/dev/null || fail "second live model response was invalid"
+fi
+
+jq -cn --arg model "$model" --arg prompt "Answer briefly with the word blossom and then stop. $sentinel" \
+  --arg effort "$reasoning_effort" \
+  '{model:$model,messages:[{role:"user",content:$prompt}],reasoning_effort:$effort,
+    stream:true,stream_options:{include_usage:true}}' \
+| curl --fail --silent --show-error --no-buffer --max-time 180 \
+    -H "Authorization: Bearer $local_token" -H 'Content-Type: application/json' \
+    --data-binary @- "$proxy_url/v1/chat/completions" >"$stream_file" \
+  || fail "live streaming request failed"
+grep -Fq 'data: [DONE]' "$stream_file" || fail "live stream omitted [DONE]"
+grep -Fq '"usage"' "$stream_file" || fail "live stream omitted usage"
+grep -Fq '"reasoning_content"' "$stream_file" \
+  || fail "reasoning-capable live model emitted no reasoning stream"
+
+# Ask for a deliberately long stream, then close the local client. The proxy's
+# metadata log must report cancellation rather than completion.
+set +e
+jq -cn --arg model "$model" \
+  --arg prompt "Produce 4000 numbered one-word lines without stopping early. cancellation-$sentinel" \
+  '{model:$model,messages:[{role:"user",content:$prompt}],stream:true,max_completion_tokens:4096}' \
+| timeout --signal=TERM --kill-after=2 10 \
+    curl --silent --show-error --no-buffer \
+      -H "Authorization: Bearer $local_token" -H 'Content-Type: application/json' \
+      --data-binary @- "$proxy_url/v1/chat/completions" >/dev/null
+cancel_status=$?
+set -e
+[[ "$cancel_status" == "124" || "$cancel_status" == "143" ]] \
+  || fail "cancellation client unexpectedly exited with status $cancel_status"
+
+cancelled=0
+for _attempt in $(seq 1 80); do
+  if jq -Rse '[split("\n")[] | fromjson? | select(.event == "request_terminal" and .terminal == "cancelled")] | length > 0' \
+    "$proxy_log" >/dev/null; then
+    cancelled=1
+    break
+  fi
+  sleep 0.25
+done
+((cancelled == 1)) || fail "proxy did not record the disconnected live request as cancelled"
+
+jq -Rse '[split("\n")[] | fromjson? | select(.event == "security_verified" and
+  .attestation_protocol != null and .e2ee_protocol != null and
+  .model_key_fingerprint != null and (.checks | all(.passed == true)))] | length >= 2' \
+  "$proxy_log" >/dev/null \
+  || fail "live requests did not emit verified metadata-only evidence"
+if [[ -n "$second_model" ]]; then
+  jq -Rse --arg first "$model" --arg second "$second_model" \
+    '[split("\n")[] | fromjson? | select(.event == "security_verified") | .model_id] as $models |
+      ($models | index($first)) != null and ($models | index($second)) != null' \
+    "$proxy_log" >/dev/null || fail "attestation evidence crossed or omitted a selected model"
+fi
+
+if grep -Fq -- "$sentinel" "$proxy_log"; then
+  fail "prompt sentinel appeared in proxy operational logs"
+fi
+if grep -Fq -- "$upstream_key" "$proxy_stdout" "$proxy_log" "$models_file" "$result_file" 2>/dev/null; then
+  fail "Axiom credential appeared in a captured artifact"
+fi
+if grep -Fq -- "$local_token" "$proxy_stdout" "$proxy_log" "$models_file" "$result_file" 2>/dev/null; then
+  fail "local proxy token appeared in a captured artifact"
+fi
+
+# A separate real proxy process pointed at an unresolvable relay must fail
+# closed. It must not report verification or fall back to plaintext transport.
+kill -INT "$proxy_pid" 2>/dev/null || true
+wait "$proxy_pid" 2>/dev/null || fail "positive proxy did not stop cleanly"
+proxy_pid=""
+negative_stdout="$artifact_root/negative.stdout.jsonl"
+negative_log="$artifact_root/negative.stderr.jsonl"
+AXIOM_API_KEY="$upstream_key" AXIOM_PROXY_TOKEN="$local_token" \
+  "$proxy_bin" --bind 127.0.0.1:0 --axiom-base-url https://unresolvable.invalid \
+  --request-timeout-secs 5 >"$negative_stdout" 2>"$negative_log" &
+proxy_pid=$!
+negative_address=""
+for _attempt in $(seq 1 40); do
+  if [[ -s "$negative_stdout" ]]; then
+    negative_address="$(jq -r 'select(.event == "ready") | .address' "$negative_stdout" 2>/dev/null | head -n 1)"
+    [[ -n "$negative_address" && "$negative_address" != "null" ]] && break
+  fi
+  kill -0 "$proxy_pid" 2>/dev/null || fail "negative proxy exited before readiness"
+  sleep 0.25
+done
+[[ -n "$negative_address" ]] || fail "negative proxy did not announce readiness"
+negative_status="$(curl --silent --show-error --max-time 15 --output /dev/null --write-out '%{http_code}' \
+  -H "Authorization: Bearer $local_token" "http://$negative_address/v1/models")"
+[[ "$negative_status" == "502" ]] || fail "unavailable relay did not fail closed with HTTP 502"
+if grep -Fq 'security_verified' "$negative_log"; then
+  fail "unavailable relay was incorrectly reported as verified"
+fi
+if grep -Fq -- "$upstream_key" "$negative_stdout" "$negative_log" \
+  || grep -Fq -- "$local_token" "$negative_stdout" "$negative_log"; then
+  fail "a credential appeared in negative-path artifacts"
+fi
+kill -INT "$proxy_pid" 2>/dev/null || true
+wait "$proxy_pid" 2>/dev/null || fail "negative proxy did not stop cleanly"
+proxy_pid=""
+
+jq -n --arg model "$model" --arg second_model "$second_model" --arg base_url "$axiom_base_url" \
+  '{status:"pass",model:$model,
+    second_model:($second_model | if length > 0 then . else null end),base_url:$base_url,
+    nonstream:true,stream:true,cancellation:true,
+    attestation:"verified locally per request",network_failure:"failed closed",
+    plaintext_log_scan:"pass",credential_scan:"pass"}' \
+  >"$result_file"
+
+jq -Rsc '[split("\n")[] | fromjson? | select(.event == "security_verified")][-1]' \
+  "$proxy_log"
+printf 'Live secure proxy smoke passed for %s.\n' "$model"

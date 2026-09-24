@@ -1,0 +1,17 @@
+export type ReleasePlatform = 'mac' | 'win' | 'linux';
+export type ReleaseArch = 'x64' | 'arm64' | 'universal';
+export type PackageFormat = 'pkg' | 'exe' | 'AppImage' | 'deb' | 'pacman';
+export type ReleaseDownload = { name: string; product: 'desktop'; platform: ReleasePlatform; arch: ReleaseArch; format: PackageFormat; bytes: number; sha256: string; url: string; githubUrl: string };
+export type CliDownload = Omit<ReleaseDownload, 'product' | 'format'> & { product: 'cli'; format: 'exe' | 'pkg' | 'sh' };
+export type Release = { schemaVersion: 2 | 3; version: string; revision: string; sequence: number; signing: 'signed' | 'unsigned'; downloads: ReleaseDownload[]; cliDownloads: CliDownload[]; signature?: {keyId: string; value: string} };
+export const RELEASE_API: string;
+export const GITHUB_RELEASES: string;
+export const VERSION_PATTERN: RegExp;
+export const FORMATS: Record<ReleasePlatform, PackageFormat[]>;
+export const CLI_FORMATS: Record<ReleasePlatform, string[]>;
+export function compareVersions(a: string, b: string): number;
+export function artifactFormat(name: string): PackageFormat | CliDownload['format'] | null;
+export function canonicalJson(value: unknown): string;
+export function unsignedManifest(value: Release): Omit<Release, 'signature'>;
+export function parseRelease(value: unknown): Release;
+export function requireCompleteRelease(value: unknown): Release;

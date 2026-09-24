@@ -1,0 +1,8 @@
+Tinfoil provider mark, copyright Tinfoil.
+Derived from tinfoilsh/tinfoil-webapp/public/logo-white.svg (Git blob
+9fdd69971d85ba3be121b36298a5548075c3da5a), retrieved September 21, 2026.
+Source: https://github.com/tinfoilsh/tinfoil-webapp/blob/main/public/logo-white.svg
+The upstream repository is licensed under AGPL-3.0; its license is included here.
+Axiom retains only the symbol path, crops the viewBox, and uses a monochrome fill.
+The modified SVG source is included alongside this notice. The mark identifies
+Tinfoil as the upstream service. Tinfoil retains its trademark rights.

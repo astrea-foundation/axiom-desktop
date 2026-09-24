@@ -1,0 +1,16 @@
+{
+  "name": "axiom-desktop-workspace",
+  "private": true,
+  "scripts": {
+    "check:rust": "cargo check --workspace --all-targets --all-features",
+    "test:rust": "cargo test --workspace --all-features && pnpm test:acp-sdk-stack",
+    "test:acp-sdk-stack": "cargo test --target-dir target/acp-sdk-vendor --locked --manifest-path vendor/agent-client-protocol-2.0.0/Cargo.toml --test jsonrpc_deep_chain_stack",
+    "generate:protocol": "pnpm --filter @axiom/axiom-acp-client generate",
+    "typecheck": "pnpm --recursive typecheck",
+    "test": "pnpm --recursive test",
+    "build:desktop": "pnpm --filter axiom-desktop build",
+    "desktop:install": "pnpm --filter axiom-desktop install:desktop",
+    "desktop": "cargo build -p axiomcli && pnpm --filter axiom-desktop dev",
+    "desktop:staging": "cargo build -p axiomcli && pnpm --filter axiom-desktop dev:staging"
+  }
+}

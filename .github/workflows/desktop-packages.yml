@@ -1,0 +1,71 @@
+name: Preview installers
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  RUST_TEST_THREADS: 2
+jobs:
+  package:
+    name: Preview ${{ matrix.platform }} ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {platform: linux, arch: x64, runner: ubuntu-22.04}
+          - {platform: mac, arch: x64, runner: macos-15-intel}
+          - {platform: mac, arch: arm64, runner: macos-15}
+          - {platform: win, arch: x64, runner: windows-2025}
+          - {platform: win, arch: arm64, runner: windows-11-arm}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: actions/setup-python@v5
+        if: runner.os == 'Linux'
+        with:
+          python-version: '3.12'
+      - run: pnpm install --frozen-lockfile
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap libarchive-tools libfuse2 rpm
+      - if: runner.os == 'Windows'
+        run: choco install nsis --version=3.11 --no-progress -y
+      - run: cargo test -p axiom-installation -p axiomcli --all-features
+      - run: pnpm --filter axiom-desktop typecheck
+      - run: pnpm --filter axiom-desktop test
+      - run: cargo build --locked --release -p axiomcli -p axiom-proxy
+      - name: Package unsigned preview installers without stable update trust
+        run: |
+          node apps/desktop/scripts/package-desktop.mjs --${{ matrix.platform }} --${{ matrix.arch }} --unsigned
+          node scripts/package-cli.mjs --${{ matrix.platform }} --${{ matrix.arch }} --unsigned
+      - name: Build internal inventory
+        shell: bash
+        run: |
+          version=$(node -p "require('./apps/desktop/package.json').version")
+          node scripts/download-manifest.mjs apps/desktop/dist "$version" unsigned
+      - uses: actions/upload-artifact@v4
+        with:
+          name: preview-installers-${{ matrix.platform }}-${{ matrix.arch }}
+          if-no-files-found: error
+          path: |
+            apps/desktop/dist/*.exe
+            apps/desktop/dist/*.pkg
+            apps/desktop/dist/*.AppImage
+            apps/desktop/dist/*.deb
+            apps/desktop/dist/*.pkg.tar.xz
+            apps/desktop/dist/*.sh
+            apps/desktop/dist/manifest.json
+            apps/desktop/dist/SHA256SUMS

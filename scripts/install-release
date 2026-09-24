@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+archive=${1:?usage: scripts/install-release ARCHIVE [PREFIX]}
+prefix=${2:-/usr/local}
+if [[ -z $prefix || $prefix == / ]]; then
+  echo "installation prefix must be a specific directory, not /" >&2
+  exit 1
+fi
+
+workspace_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+"$workspace_root/scripts/verify-release" "$archive"
+staging=$(mktemp -d "${TMPDIR:-/tmp}/axiomcli-install.XXXXXX")
+trap 'rm -rf -- "$staging"' EXIT
+tar -xzf "$archive" -C "$staging"
+package_root=$(find "$staging" -mindepth 1 -maxdepth 1 -type d -print -quit)
+
+install -d "$prefix/bin" "$prefix/share/doc/axiomcli" "$prefix/share/axiomcli"
+install -m 0755 "$package_root/bin/axiomcli" "$prefix/bin/axiomcli"
+install -m 0755 "$package_root/bin/axiom-proxy" "$prefix/bin/axiom-proxy"
+cp -a "$package_root/share/doc/axiomcli/." "$prefix/share/doc/axiomcli/"
+printf '%s\n' \
+  "$prefix/bin/axiomcli" \
+  "$prefix/bin/axiom-proxy" \
+  "$prefix/share/doc/axiomcli" \
+  > "$prefix/share/axiomcli/install-manifest"
+echo "installed AxiomCLI and axiom-proxy under $prefix"

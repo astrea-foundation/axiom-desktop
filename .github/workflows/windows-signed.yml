@@ -1,0 +1,153 @@
+name: Windows production signing
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+env:
+  RUST_TEST_THREADS: 2
+
+jobs:
+  build:
+    name: Native Windows build (${{ matrix.arch }})
+    if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
+    runs-on: ${{ matrix.runner }}
+    env:
+      AXIOM_UPDATE_PUBLIC_KEYS: ${{ vars.AXIOM_UPDATE_PUBLIC_KEYS }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-2025
+          - arch: arm64
+            runner: windows-11-arm
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Require promoted stable tag
+        shell: bash
+        run: |
+          git merge-base --is-ancestor HEAD origin/main
+          node apps/desktop/scripts/set-release-version.mjs "${GITHUB_REF_NAME#v}" --check-only
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: cargo build --locked --release -p axiomcli -p axiom-proxy
+      - name: Verify and capture native signing inputs
+        run: node scripts/native-input.mjs win ${{ matrix.arch }} native-input
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-native-${{ matrix.arch }}
+          path: native-input/
+          retention-days: 7
+          if-no-files-found: error
+
+  sign:
+    name: Sign combined Windows installers
+    needs: build
+    # Microsoft's signing toolchain runs on x64, even for ARM64 payloads.
+    runs-on: windows-2025
+    timeout-minutes: 45
+    environment: windows-signing
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AXIOM_UPDATE_PUBLIC_KEYS: ${{ vars.AXIOM_UPDATE_PUBLIC_KEYS }}
+      AXIOM_SIGNING_ENDPOINT: ${{ vars.AXIOM_SIGNING_ENDPOINT }}
+      AXIOM_SIGNING_ACCOUNT: ${{ vars.AXIOM_SIGNING_ACCOUNT }}
+      AXIOM_SIGNING_PROFILE: ${{ vars.AXIOM_SIGNING_PROFILE }}
+      AXIOM_SIGNING_PUBLISHER: ${{ vars.AXIOM_SIGNING_PUBLISHER }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Recheck release revision before accessing signing identity
+        shell: bash
+        run: |
+          git merge-base --is-ancestor HEAD origin/main
+          node apps/desktop/scripts/set-release-version.mjs "${GITHUB_REF_NAME#v}" --check-only
+          node apps/desktop/scripts/set-release-version.mjs "${GITHUB_REF_NAME#v}"
+          node -e "require('./apps/desktop/scripts/windows-signing.cjs').signingSettings()"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Install pinned Microsoft signing module
+        shell: pwsh
+        run: Install-Module ArtifactSigning -RequiredVersion 0.1.20 -Repository PSGallery -Scope CurrentUser -Force -ErrorAction Stop
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.1
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-native-x64
+          path: target/release/x64
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-native-arm64
+          path: target/release/arm64
+      - name: Authenticate using the release-only federated identity
+        uses: azure/login@v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Build and sign combined Desktop and CLI installers
+        shell: pwsh
+        run: |
+          choco install nsis --version=3.11 --no-progress -y
+          node apps/desktop/scripts/package-desktop.mjs --win --universal
+          if ($LASTEXITCODE -ne 0) { throw 'Desktop packaging failed' }
+          node scripts/package-cli.mjs --win --universal
+          if ($LASTEXITCODE -ne 0) { throw 'CLI packaging failed' }
+      - name: Install and verify native x64 payloads
+        shell: pwsh
+        run: ./apps/desktop/scripts/verify-windows-install.ps1 -Installers apps/desktop/dist -Version ($env:GITHUB_REF_NAME.Substring(1)) -Arch x64 -Publisher $env:AXIOM_SIGNING_PUBLISHER
+      - uses: actions/upload-artifact@v4
+        with:
+          name: axiom-release-win-universal
+          retention-days: 7
+          path: |
+            apps/desktop/dist/*.exe
+          if-no-files-found: error
+
+  verify-arm64:
+    name: Install combined packages on Windows ARM64
+    needs: sign
+    runs-on: windows-11-arm
+    timeout-minutes: 10
+    environment: windows-signing
+    env:
+      AXIOM_UPDATE_PUBLIC_KEYS: ${{ vars.AXIOM_UPDATE_PUBLIC_KEYS }}
+      AXIOM_SIGNING_PUBLISHER: ${{ vars.AXIOM_SIGNING_PUBLISHER }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          name: axiom-release-win-universal
+          path: installers
+      - name: Verify installers select runnable ARM64 binaries
+        shell: pwsh
+        run: ./apps/desktop/scripts/verify-windows-install.ps1 -Installers installers -Version ($env:GITHUB_REF_NAME.Substring(1)) -Arch arm64 -Publisher $env:AXIOM_SIGNING_PUBLISHER
