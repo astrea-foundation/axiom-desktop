@@ -1,4 +1,4 @@
-use super::{Job, Restart, cache, installation, read_job};
+use super::{Job, Restart, cache, installation, read_job, staging};
 use anyhow::{Context as _, ensure};
 use fs2::FileExt as _;
 use serde_json::json;
@@ -309,6 +309,8 @@ fn relaunch(job: &Job) -> anyhow::Result<()> {
 
 pub fn run(path: &Path, parent: Option<u32>, ready_file: bool) -> anyhow::Result<()> {
     let job = read_job(path)?;
+    let directory = path.parent().context("Invalid update job")?;
+    let lease = staging::lock(directory)?;
     // A bounded acknowledgement is written only after the copied helper has
     // started and independently authenticated its complete staging input.
     if ready_file {
@@ -323,7 +325,9 @@ pub fn run(path: &Path, parent: Option<u32>, ready_file: bool) -> anyhow::Result
         install_staged(path, super::TRUSTED_KEYS)?;
         Ok::<(), anyhow::Error>(())
     })();
-    record_outcome(&job, &result)?;
+    let recorded = record_outcome(&job, &result);
+    staging::finish(directory, lease);
+    recorded?;
     if let Err(error) = &result {
         eprintln!("Axiom update failed: {error}");
     }

@@ -1,10 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import {readFileSync} from 'node:fs';
+import {createElement} from 'react';
+import {renderToStaticMarkup} from 'react-dom/server';
 import {desktopReleaseFixture} from '../../../fixtures/desktop-releases.mts';
 import {UpdateService, type NativeUpdateEvent} from '../src/main/update-service';
 import {updateIdentity} from '../src/main/update-identity';
-import {compareVersions, FORMATS} from '../../../packages/desktop-releases/manifest.mjs';
-import type {UpdateIdentity, UpdateState} from '../src/shared/updates';
+import {compareVersions, FORMATS, parseRelease} from '../../../packages/desktop-releases/manifest.mjs';
+import {matchesUpdateTarget, type UpdateIdentity, type UpdateState} from '../src/shared/updates';
+import {UpdatesPanel} from '../src/renderer/src/components/UpdatesPanel';
 
 const identity: UpdateIdentity = {currentVersion:'0.1.4',packaged:true,platform:'linux',arch:'x64',format:'AppImage'};
 function setup(current = identity, release = desktopReleaseFixture()) {
@@ -16,7 +20,7 @@ function setup(current = identity, release = desktopReleaseFixture()) {
       if (args[0] === '--start-job') {receive({event:'installing'});return;}
       receive({event:'checked',release,installation:{product:'desktop',format:current.format!}});
       if (args[0] === '--prepare' && compareVersions(release.version,current.currentVersion)>0) {
-        const file = release.downloads.find(f=>f.format===current.format && f.platform===current.platform && f.arch===current.arch)!;
+        const file = release.downloads.find(f=>f.format===current.format && f.platform===current.platform && (f.arch===current.arch || f.arch==='universal'))!;
         receive({event:'progress',name:file.name,received:file.bytes,total:file.bytes});
         receive({event:'ready',job:'/private/update/job.json'});
       }
@@ -52,6 +56,34 @@ test('every installation updates its own product, architecture, and package form
     assert.ok(a.events.some(s=>s.status==='downloading' && s.download?.name===file.name));
     await a.service.dispose();
   }
+});
+test('combined signed installers update both Mac and Windows architectures',async()=>{
+  const fixture=JSON.parse(readFileSync(new URL('../../../packages/desktop-releases/universal-fixture.json',import.meta.url),'utf8'));
+  const release=parseRelease(fixture.release);
+  for(const platform of ['mac','win'] as const) for(const arch of ['x64','arm64'] as const) {
+    const target={...identity,platform,arch,format:platform==='mac'?'pkg' as const:'exe' as const};
+    const file=release.downloads.find(file=>matchesUpdateTarget(file,target));
+    assert.ok(file,`${platform}/${arch} has an installer in Desktop`);
+    assert.equal(file.arch,'universal');
+    const a=setup(target,release);
+    const state=await a.service.check();
+    const markup=renderToStaticMarkup(createElement(UpdatesPanel,{updates:{
+      state,error:null,check:async()=>{},install:async()=>{},cancel:async()=>{},
+    }}));
+    assert.match(markup,/Update and restart/);
+    assert.doesNotMatch(markup,/disabled=""|A matching installer has not been published/);
+    assert.equal((await a.service.install()).status,'installing');
+    assert.ok(a.events.some(state=>state.status==='downloading' && state.download?.name===file.name));
+    assert.deepEqual(a.lifecycle,['saved','restart']);
+    await a.service.dispose();
+  }
+  const mac=release.downloads.find(file=>file.platform==='mac')!;
+  assert.equal(matchesUpdateTarget(mac,{...identity,platform:'mac',arch:null,format:'pkg'}),false);
+  assert.equal(matchesUpdateTarget(mac,{...identity,platform:'mac',arch:'universal',format:'pkg'}),false);
+  assert.equal(matchesUpdateTarget(mac,{...identity,platform:'win',format:'exe'}),false);
+  assert.equal(matchesUpdateTarget(mac,{...identity,platform:'mac',format:'exe'}),false);
+  const linux=release.downloads.find(file=>file.platform==='linux')!;
+  assert.equal(matchesUpdateTarget(linux,{...identity,arch:'arm64'}),false);
 });
 test('same/older releases do not start installation',async()=>{
   for(const version of ['0.1.4','0.1.3']) {
