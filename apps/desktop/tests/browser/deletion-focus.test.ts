@@ -1869,7 +1869,10 @@ test("folder deletion uses the same modal without deleting its threads or blocki
     await page.keyboard.type(" remains editable");
     assert.equal(await page.locator("textarea").inputValue(), "Folder draft remains editable");
     await page.getByRole("button", { name: "Viewed Existing thread", exact: true }).waitFor();
-    assert.deepEqual(await calls(page), [{ method: "deleteFolder", id: "folder" }]);
+    // Editing the preserved draft may prewarm verification without touching threads.
+    assert.deepEqual((await calls(page)).filter((call) => call.method !== "prewarm"), [
+      { method: "deleteFolder", id: "folder" },
+    ]);
     assert.deepEqual(errors, []);
     assert.deepEqual(nativeDialogs, []);
   } finally { await page.close(); }
@@ -2875,6 +2878,9 @@ test("gift redemption is masked, updates balance, retries safely and clears on a
     await page.waitForFunction(() => !!(window as any).__giftRelease);
     assert.equal(await page.getByRole("button", {name: "Redeeming…", exact: true}).isDisabled(), true);
     await page.evaluate(() => (window as any).__deletionTest.setAccount("another-account"));
+    // Let the account switch render before delivering the previous account's receipt.
+    await page.waitForFunction(() => Array.from(document.querySelectorAll<HTMLInputElement>('input[name="gift-code"]'))
+      .every(input => input.value.length === 0));
     await page.evaluate(() => (window as any).__giftRelease());
     assert.equal(await page.getByText("$25.00 added to your account.", {exact: true}).count(), 0);
     // Account navigation may dismiss Balance; whichever screen remains cannot retain the code.
