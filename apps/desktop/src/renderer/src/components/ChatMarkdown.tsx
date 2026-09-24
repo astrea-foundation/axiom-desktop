@@ -1,8 +1,8 @@
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import { rehypeCodeHighlight } from "../codeHighlight";
+import { remarkCurrencyMath } from "../currencyMath";
 
 // Keep component identities stable: chat interaction/streaming can rerender
 // Markdown between pointer-down and click, and must not replace the link DOM.
@@ -25,7 +25,7 @@ export function ChatMarkdown({ text }: { text: string }) {
     <div className="markdown-prose">
       <ReactMarkdown
         components={markdownComponents}
-        remarkPlugins={[remarkGfm, remarkMath]}
+        remarkPlugins={[remarkGfm, remarkCurrencyMath]}
         rehypePlugins={[[rehypeKatex, {
           // Model output is untrusted. Never allow TeX to inject HTML, open
           // URLs, fetch images, or expand unbounded macros/dimensions.

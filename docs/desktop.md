@@ -255,6 +255,10 @@ Tool activity appears at its execution point between assistant segments, with
 stable IDs for live/snapshot reconciliation. Markdown, code and KaTeX render
 locally with bundled fonts. Code blocks use bundled syntax grammars and light/dark
 token colours; language-labelled fences and common unlabelled code are highlighted.
+Single-dollar inline math requires non-whitespace immediately inside both
+delimiters, and the closing dollar cannot be followed by a digit. This keeps
+ordinary prices such as `$5 and $10` and `$8–10 billion` literal while preserving
+`$x^2$`, `$$` math and math fences. Escaped dollars and code stay literal.
 Inline code, explicit text/log/output fences and unknown languages remain literal.
 Highlighting preserves all whitespace and never executes code or loads remote assets.
 To keep streamed replies responsive, blocks over 50,000 characters (10,000 for

@@ -1871,6 +1871,28 @@ test("folder deletion uses the same modal without deleting its threads or blocki
   } finally { await page.close(); }
 });
 
+test("dollar amounts preserve prose and formatting alongside streamed LaTeX", async () => {
+  const { page, errors } = await openApp();
+  try {
+    await page.getByRole("button", { name: "Viewed Existing thread", exact: true }).click();
+    const reply = async (text: string) => page.evaluate((text) => (window as any).__deletionTest.setReply(text), text);
+    const prose = "Almost true, but a bit generous. The budget remains in the **high-$8–10 billion** range, hovering just under or around $10bn depending on the accounting period. It is **not dramatically above $10bn**.";
+    for (const partial of ["Cost: $5 and $", "Cost: $5 and $10.", prose]) {
+      await reply(partial);
+      await page.locator(".markdown-prose").getByText(partial.startsWith("Cost:") ? partial : "high-$8–10 billion", { exact: false }).waitFor();
+      assert.equal(await page.locator(".katex").count(), 0);
+    }
+    assert.equal(await page.locator(".markdown-prose strong").first().innerText(), "high-$8–10 billion");
+    assert.equal(await page.locator(".markdown-prose strong").last().innerText(), "not dramatically above $10bn");
+    assert.match(await page.locator(".markdown-prose").innerText(), /around \$10bn depending on the accounting period/);
+    await reply(prose + String.raw` The equation is $E = mc^2$.`);
+    await page.locator(".katex").waitFor();
+    assert.equal(await page.locator(".katex").count(), 1);
+    assert.equal(await page.locator(".katex-error").count(), 0);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
 test("LaTeX renders in the real chat with local fonts, safe streamed updates, and scrollable wide equations", async () => {
   const { page, errors } = await openApp();
   const remoteRequests: string[] = [];

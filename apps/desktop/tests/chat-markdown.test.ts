@@ -28,6 +28,43 @@ test("inline LaTeX renders visually and includes accessible MathML", () => {
   assert.doesNotMatch(html, /katex-error/);
 });
 
+test("unescaped prices and budget prose preserve money, spaces and Markdown", () => {
+  for (const text of [
+    "Cost: $5 and $10.",
+    "The budget remains in the **high-$8–10 billion** range, hovering just under or around $10bn depending on the accounting period. It is **not dramatically above $10bn**.",
+    "A $1,234.56–$2,345.67 range, $10/month, and US$20 or CA$30.",
+    "Prices: **$5** and **$10**. See [$15 plan](https://example.invalid/pricing).",
+  ]) {
+    const html = render(text);
+    assert.doesNotMatch(html, /katex|<math /);
+    assert.equal((html.match(/\$/g) ?? []).length, (text.match(/\$/g) ?? []).length);
+  }
+  assert.match(render("The budget is **$8–10 billion**, around $10bn."), /<strong>\$8–10 billion<\/strong>, around \$10bn/);
+  assert.match(render("**$5** and **$10**"), /<strong>\$5<\/strong> and <strong>\$10<\/strong>/);
+});
+
+test("currency does not steal delimiters from adjacent inline or display math", () => {
+  const html = render(String.raw`A $5 fee and $10 shipping. Math: $2 + 2 = 4$ and $x^2$; $15 total.
+
+$$
+\frac{1}{2}
+$$`);
+  assert.equal(html.match(/class="katex"/g)?.length, 3);
+  assert.match(html, /A \$5 fee and \$10 shipping/);
+  assert.match(html, /\$15 total/);
+  assert.doesNotMatch(html, /katex-error/);
+});
+
+test("streaming ordinary dollar amounts never turns budget prose into math", () => {
+  const message = "Budget: **$8–10 billion**, around $10bn, not dramatically above $10bn.";
+  for (let end = 1; end <= message.length; end++) {
+    assert.doesNotMatch(render(message.slice(0, end)), /katex|<math /);
+  }
+  assert.doesNotMatch(render("Cost: $5 and $"), /katex/);
+  assert.doesNotMatch(render("Cost: $5 and $10"), /katex/);
+  assert.match(render("Price $5. Equation $x^2$"), /class="katex"/);
+});
+
 test("block equations, matrices and aligned expressions render as display math", () => {
   const html = render(String.raw`$$
 \int_0^\infty e^{-x^2}\,dx = \frac{\sqrt{\pi}}{2}
