@@ -1,4 +1,7 @@
-Var axiomFreshInstall
+!ifndef BUILD_UNINSTALLER
+  ; electron-builder compiles the uninstaller separately with warnings as errors.
+  Var axiomFreshInstall
+!endif
 
 !macro customInit
   ; Inspect installation ownership before NSIS writes its new registry entries.

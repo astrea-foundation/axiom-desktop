@@ -254,6 +254,10 @@ Use `--mac --arm64|--x64` or `--win --arm64|--x64` on native hosts. Windows need
 NSIS 3.11 and the Visual C++ runtime files. Linux packaging uses Ubuntu 22.04,
 `libarchive-tools`, `rpm`, FUSE and Bubblewrap. The builders verify native binary
 architecture/version and include project and Rust dependency license notices.
+The Desktop NSIS include is compiled separately for installer and uninstaller
+by electron-builder's bundled compiler. Guard installer-only global variables
+with `!ifndef BUILD_UNINSTALLER`; unused variables fail packaging because warnings
+are errors. Check both compilation modes when changing this include.
 Standalone macOS and Desktop both register `axiomcli`; an unrelated existing
 command is preserved and must be resolved before switching owners.
 
