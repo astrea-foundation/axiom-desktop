@@ -130,6 +130,15 @@ platform publisher verifies both metadata records and every byte before activati
 `/download/windows` and `/api/installers/windows`; it keeps the offline download.
 The optional CDN aliases follow mirror verification and website activation.
 
+For signed-package qualification before public activation, set repository
+variable `AXIOM_RELEASE_BUILD_ONLY=true` before tagging. The complete build,
+signing, native installation checks, signed inventory and Store handoff still
+run, while source publication, distribution uploads and platform dispatch are
+held. Download `axiom-signed-release`, qualify those exact bytes, then publish
+the retained `release/` and `setup/` through the operator commands above and
+dispatch the platform publisher on `main`. Clear the variable after publication.
+Do not rebuild or resign qualified files for this handoff.
+
 `scripts/prepare-store-submission.mjs release setup store` prepares the private
 `windows-store-submission` workflow artifact: the exact full offline EXE URL,
 hash, silent arguments, certification notes and remaining acceptance fields.

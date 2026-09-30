@@ -251,10 +251,12 @@ jobs:
           path: store/
           if-no-files-found: error
       - name: Publish signed installers in the source repository Releases tab
+        if: vars.AXIOM_RELEASE_BUILD_ONLY != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: node scripts/publish-github-release.mjs release --source
       - name: Create or verify immutable GitHub draft assets
+        if: vars.AXIOM_RELEASE_BUILD_ONLY != 'true'
         id: draft
         env:
           GH_TOKEN: ${{ secrets.AXIOM_RELEASES_TOKEN }}
@@ -266,7 +268,7 @@ jobs:
             echo 'Cross-repository credential is not configured; publish the axiom-signed-release artifact using the documented operator procedure.' >> "$GITHUB_STEP_SUMMARY"
           fi
       - name: Hand off to the promoted platform publisher
-        if: steps.draft.outputs.published == 'true'
+        if: vars.AXIOM_RELEASE_BUILD_ONLY != 'true' && steps.draft.outputs.published == 'true'
         env:
           GH_TOKEN: ${{ secrets.AXIOM_PLATFORM_RELEASE_TOKEN }}
         run: |
