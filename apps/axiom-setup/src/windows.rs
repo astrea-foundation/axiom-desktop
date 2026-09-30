@@ -32,7 +32,7 @@ struct Registered {
 }
 
 struct Windows {
-    script: tempfile::NamedTempFile,
+    script: tempfile::TempPath,
     powershell: PathBuf,
 }
 impl Windows {
@@ -44,6 +44,9 @@ impl Windows {
             .tempfile()?;
         script.write_all(include_bytes!("windows.ps1"))?;
         script.as_file().sync_all()?;
+        // PowerShell opens scripts without sharing existing write handles on
+        // Windows. Close ours while retaining automatic cleanup of the path.
+        let script = script.into_temp_path();
         let powershell =
             PathBuf::from(std::env::var_os("WINDIR").context("Windows directory is unavailable")?)
                 .join("System32/WindowsPowerShell/v1.0/powershell.exe");
@@ -62,7 +65,7 @@ impl Windows {
                 "Bypass",
                 "-File",
             ])
-            .arg(self.script.path())
+            .arg(&self.script)
             .args(["-Action", action]);
         command
     }
@@ -110,6 +113,15 @@ impl Windows {
         Self::output(&mut command)?;
         Ok(())
     }
+}
+
+pub fn self_check() -> anyhow::Result<()> {
+    let windows = Windows::new()?;
+    ensure!(
+        Windows::output(&mut windows.command("Check"))? == b"ready\r\n",
+        "Setup PowerShell helper did not respond"
+    );
+    Ok(())
 }
 
 fn installed(windows: &Windows, registered: &Registered) -> anyhow::Result<(Installation, String)> {

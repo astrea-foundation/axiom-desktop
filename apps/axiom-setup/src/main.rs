@@ -11,6 +11,7 @@ fn main() {
         // Used by native Windows qualification; no network or installation.
         let result = (|| -> anyhow::Result<()> {
             gui::run(true)?;
+            windows::self_check()?;
             let arguments = std::env::args().collect::<Vec<_>>();
             let path = arguments
                 .windows(2)

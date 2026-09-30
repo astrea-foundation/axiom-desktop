@@ -47,7 +47,7 @@ with the release; retain raw operational captures privately.
 
 ## Windows setup and Store acceptance
 
-For the 0.1.11 Windows distribution candidate, record the promoted revision and final signed
+For the 0.1.12 Windows distribution candidate, record the promoted revision and final signed
 bytes before release. Cross-compilation, controller/browser tests and hidden
 native-control initialization checks are development evidence, not Windows Store
 certification. Outstanding signed-package acceptance includes:
@@ -56,6 +56,14 @@ The 0.1.10 build failed before publication because an installer-only NSIS
 variable was declared in the separately compiled uninstaller. The corrected
 include guards that declaration. Both modes were checked with electron-builder's
 NSIS 3.0.4.1 and warnings treated as errors; 0.1.10 remains an unpublished build.
+
+The 0.1.11 VM qualification found that the setup process held its PowerShell
+helper open for writing, preventing Windows PowerShell from reading it. Setup
+1.0.1 closes that handle while retaining automatic path cleanup. The native
+self-check now executes the bundled helper on both Windows architectures without
+networking or installation. The final setup inventory also accepts an unset or
+empty publisher setting consistently with the setup build. 0.1.11 remains
+unpublished; qualification continues with 0.1.12.
 
 - Fresh standard-user silent offline install at the default destination on x64
   and ARM64; shortcuts, Add/Remove Programs, no installer-triggered app launch,
