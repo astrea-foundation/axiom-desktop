@@ -2336,8 +2336,16 @@ test("deposit progress keeps ZEC primary and changes estimated USD to credited U
     await openAccountScreen(page, "Balance");
     const row = page.getByRole("region", { name: "Zcash deposits" }).locator("li summary");
     await row.getByText("~$0.10", { exact: true }).waitFor();
-    const zecBounds = (await row.getByText("0.0008 ZEC", { exact: true }).boundingBox())!;
-    const usdBounds = (await row.getByText("~$0.10", { exact: true }).boundingBox())!;
+    // Measure both amounts in the same frame while the account panel animates.
+    const [zecBounds, usdBounds] = await row.evaluate((summary) => {
+      const amount = (text: string) => {
+        const element = [...summary.querySelectorAll("span")].find(span => span.textContent === text);
+        if (!element) throw new Error(`Missing deposit amount: ${text}`);
+        const { x, y, width, height } = element.getBoundingClientRect();
+        return { x, y, width, height };
+      };
+      return [amount("0.0008 ZEC"), amount("~$0.10")];
+    });
     assert.ok(usdBounds.x > zecBounds.x + zecBounds.width);
     assert.ok(Math.abs(usdBounds.y - zecBounds.y) < 4);
     assert.match(await row.innerText(), /3\/10 confirmations/);
