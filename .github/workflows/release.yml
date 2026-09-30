@@ -209,6 +209,8 @@ jobs:
       contents: write
     env:
       AXIOM_UPDATE_PUBLIC_KEYS: ${{ vars.AXIOM_UPDATE_PUBLIC_KEYS }}
+      AXIOM_SIGNING_PUBLISHER: ${{ vars.AXIOM_SIGNING_PUBLISHER }}
+      AXIOM_SETUP_DIRECTORY: setup
     steps:
       - uses: actions/checkout@v4
         with:
@@ -221,16 +223,32 @@ jobs:
           pattern: axiom-release-*
           path: release
           merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: axiom-windows-setup
+          path: setup
       - name: Sign the complete final-byte inventory
         env:
           AXIOM_UPDATE_SIGNING_KEY: ${{ secrets.AXIOM_UPDATE_SIGNING_KEY }}
-        run: node scripts/download-manifest.mjs release "${GITHUB_REF_NAME#v}" signed
+        run: |
+          node scripts/download-manifest.mjs release "${GITHUB_REF_NAME#v}" signed
+          node scripts/setup-manifest.mjs setup "${GITHUB_REF_NAME#v}" signed
       - name: Retain verified installers for publication retries
         uses: actions/upload-artifact@v4
         with:
           name: axiom-signed-release
           retention-days: 7
-          path: release/
+          path: |
+            release/
+            setup/
+          if-no-files-found: error
+      - name: Prepare the full offline Microsoft Store package handoff
+        run: node scripts/prepare-store-submission.mjs release setup store
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-store-submission
+          retention-days: 30
+          path: store/
           if-no-files-found: error
       - name: Publish signed installers in the source repository Releases tab
         env:

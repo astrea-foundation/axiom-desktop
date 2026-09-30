@@ -135,3 +135,15 @@ installer failure, retry the same package from the signed release. Programs keep
 account data separately from installation files. Keep the same package format;
 use the OS uninstaller before switching installation owners to avoid duplicate
 launchers. See [troubleshooting](troubleshooting.md#updates).
+
+## Windows setup choices
+
+Windows website downloads offer **Setup**, which downloads and verifies the latest
+version when run, and a complete **Offline installer**. Both install Desktop and
+its bundled CLI together. Setup requires internet; the offline installer does not.
+
+On a fresh Windows installation, the first app launch checks for a newer signed
+release and automatically updates before sign-in. If the update fails, choose
+**Retry update** or **Use installed version**. Existing users keep their normal
+update controls. A completed Store listing uses the full offline installer and
+then this same app update flow; Store availability requires separate approval.

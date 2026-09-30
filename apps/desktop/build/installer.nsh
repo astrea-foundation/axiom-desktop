@@ -1,3 +1,20 @@
+Var axiomFreshInstall
+
+!macro customInit
+  ; Inspect installation ownership before NSIS writes its new registry entries.
+  ; Existing Desktop installations, including versions predating this feature,
+  ; must not unexpectedly start installing updates on their next launch.
+  StrCpy $axiomFreshInstall "1"
+  ReadRegStr $R0 HKCU "${INSTALL_REGISTRY_KEY}" "InstallLocation"
+  ReadRegStr $R1 HKLM "${INSTALL_REGISTRY_KEY}" "InstallLocation"
+  ${if} $R0 != ""
+    StrCpy $axiomFreshInstall "0"
+  ${endif}
+  ${if} $R1 != ""
+    StrCpy $axiomFreshInstall "0"
+  ${endif}
+!macroend
+
 !macro axiomNativePowerShell
   ; NSIS runs as x86. Use native PowerShell on x64/ARM64 Windows instead of
   ; the emulated SysWOW64 host.
@@ -7,6 +24,11 @@
 !macroend
 
 !macro customInstall
+  ${if} $axiomFreshInstall == "1"
+    FileOpen $R0 "$INSTDIR\resources\axiom-first-launch.json" w
+    FileWrite $R0 '{$\"schemaVersion$\":1}'
+    FileClose $R0
+  ${endif}
   StrCpy $R0 "User"
   ${if} $installMode == "all"
     StrCpy $R0 "Machine"

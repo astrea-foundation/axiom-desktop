@@ -3,6 +3,7 @@
 **/node_modules/
 .pnpm-store/
 apps/desktop/dist/
+apps/axiom-setup/dist/
 apps/desktop/out/
 apps/desktop/.electron-vite/
 .env

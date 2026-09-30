@@ -82,6 +82,8 @@ const api: DesktopApi = {
     check: () => ipcRenderer.invoke("updates:check"),
     install: () => ipcRenderer.invoke("updates:install"),
     cancel: () => ipcRenderer.invoke("updates:cancel"),
+    ready: () => ipcRenderer.invoke("updates:ready"),
+    continue: () => ipcRenderer.invoke("updates:continue"),
     onStateChange: (callback) => {
       const listener = (_event: unknown, state: Parameters<typeof callback>[0]) => callback(state);
       ipcRenderer.on("updates:state-changed", listener);

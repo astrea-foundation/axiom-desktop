@@ -109,6 +109,46 @@ The tag-triggered [release workflow](../.github/workflows/release.yml):
 5. Dispatches the platform publisher on its `main` branch with native version
    and revision. Its separate run owns CDN verification and channel activation.
 
+Windows native x64 builds also produce the static setup input once. The existing
+Windows signing job verifies its input receipt, signs it, and checks native GUI
+initialization without networking. ARM64 qualification runs that same x64 setup
+through emulation. No new scheduled workflow or duplicate platform build is added.
+
+Setup is retained separately from the app inventory. Its immutable name is
+`AxiomSetup-SETUP_VERSION-REVISION_PREFIX.exe`; signed `windows-setup.json` binds
+its full source revision, associated app release, publisher, length, hash and
+exact CDN/GitHub URLs. A new app release gets its own immutable setup path even
+when the setup component version stays unchanged. Keep the schema-3 eight-target
+app inventory unchanged. The final-byte signing job generates setup metadata with
+the same protected Ed25519 identity as app updates, after Authenticode signing.
+
+The retained `axiom-signed-release` Actions artifact has `release/` and `setup/`
+subdirectories. For operator retry, pass `AXIOM_SETUP_DIRECTORY=setup` when
+running `publish-github-release.mjs release [--source]`. Both public release tabs
+carry the setup EXE and `windows-setup.json` beside the app installers. The
+platform publisher verifies both metadata records and every byte before activating
+`/download/windows` and `/api/installers/windows`; it keeps the offline download.
+The optional CDN aliases follow mirror verification and website activation.
+
+`scripts/prepare-store-submission.mjs release setup store` prepares the private
+`windows-store-submission` workflow artifact: the exact full offline EXE URL,
+hash, silent arguments, certification notes and remaining acceptance fields.
+This packet is not a Store submission or certification result. Partner Center
+identity/listing/reviewer fields and signed first-launch/offline OS acceptance
+remain maintainer requirements in [release acceptance](validation.md). The
+website downloader is not eligible for the Store's offline EXE package slot.
+
+To build a local unsigned setup preview on x64 Windows:
+
+```sh
+node scripts/package-setup.mjs --unsigned
+```
+
+Production setup builds require `AXIOM_UPDATE_PUBLIC_KEYS` and the existing
+Windows signing publisher. `--build-only` creates a receipt-bound input for the
+protected signing job; `--input DIRECTORY` signs that exact captured input.
+Unsigned previews compile no stable-feed trust and cannot install a stable app.
+
 The manifest's `sequence` defaults to the native commit timestamp. It must
 increase between versions; a deliberate `AXIOM_RELEASE_SEQUENCE` override is
 available to the generator. `revision` defaults to `git rev-parse HEAD`.

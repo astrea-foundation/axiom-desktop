@@ -44,3 +44,27 @@ fresh outcomes rather than carrying forward old test counts or failure claims.
 Use synthetic accounts for screenshots and never attach credentials, gift codes,
 private keys or real conversation data. Publish a concise qualification summary
 with the release; retain raw operational captures privately.
+
+## Windows setup and Store acceptance
+
+For the 0.1.10 distribution change, record the promoted revision and final signed
+bytes before release. Cross-compilation, controller/browser tests and hidden
+native-control initialization checks are development evidence, not Windows Store
+certification. Outstanding signed-package acceptance includes:
+
+- Fresh standard-user silent offline install at the default destination on x64
+  and ARM64; shortcuts, Add/Remove Programs, no installer-triggered app launch,
+  native CLI/proxy pairing, timestamped publisher and clean uninstall.
+- First-launch latest/no-update/offline/error/retry/continue paths, saved-state
+  handoff and one restart, including interrupted launches and no restart loop.
+- Website setup on both CPUs: signed feed, digest/size/publisher rejection,
+  cancelled downloads, equal/newer installed versions, lock waits, existing
+  destination/scope preservation, denied UAC and installer repair.
+- Defender scan, full EXE qualification and private Partner Center listing,
+  funded reviewer credentials, privacy review and certification. The Store
+  receives the full offline EXE; the website setup EXE is never submitted there.
+
+The release workflow emits `windows-store-submission` with immutable full-package
+references and remaining fields. Private maintainer records live in the platform
+repository. Store approval covers its initial installation channel; direct website
+downloads and subsequent updates can still receive Windows reputation prompts.

@@ -17,6 +17,7 @@ import { APP_ID, APP_NAME, setLinuxDesktopIdentity } from "../../scripts/desktop
 import { UpdateService } from "./update-service";
 import { updateIdentity } from "./update-identity";
 import { nativeUpdates } from "./native-updates";
+import { claimFirstLaunchUpdate } from "./first-launch-update";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -548,6 +549,10 @@ if (primaryInstance) void app.whenReady().then(async () => {
   const metadata = app.isPackaged
     ? JSON.parse(await readFile(join(app.getAppPath(), "package.json"), "utf8")) as { axiomUpdateFormat?: unknown; axiomUpdateChannel?: string }
     : {};
+  const firstLaunch = await claimFirstLaunchUpdate({
+    enabled: app.isPackaged && process.platform === 'win32' && metadata.axiomUpdateChannel === 'stable',
+    resources: process.resourcesPath, userData: app.getPath('userData'), executable: app.getPath('exe'),
+  });
   updates = new UpdateService(updateIdentity({ version: app.getVersion(), platform: process.platform,
     arch: process.arch, packaged: app.isPackaged && metadata.axiomUpdateChannel === 'stable', packageFormat: metadata.axiomUpdateFormat, appImage: process.env.APPIMAGE }), {
     run: nativeUpdates(resolveSidecar),
@@ -562,8 +567,10 @@ if (primaryInstance) void app.whenReady().then(async () => {
     emit: (state) => {
       for (const window of BrowserWindow.getAllWindows()) window.webContents.send("updates:state-changed", state);
     },
-  });
+  }, firstLaunch);
   agentHandle("updates:state", () => updates!.snapshot());
+  agentHandle("updates:ready", () => updates!.ready());
+  agentHandle("updates:continue", () => updates!.continue());
   agentHandle("updates:check", () => updates!.check());
   agentHandle("updates:install", () => updates!.install());
   agentHandle("updates:cancel", () => updates!.cancel());

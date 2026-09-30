@@ -31,6 +31,48 @@ Polkit; AppImage replaces its installed image. Standalone Linux activates a
 versioned CLI/proxy directory through one symlink. Windows uses signed NSIS;
 macOS uses signed, notarized PKG installers and the OS authorization dialog.
 
+## Windows setup and first launch
+
+The website's small native `AxiomSetup` executable fetches the latest stable
+inventory from the same public release API as the updater. It uses the shared
+`axiom-update-client` verifier: compiled Ed25519 trust keys, bounded responses,
+exact target, size and SHA-256, and remembered signed sequence/version. It also
+requires a valid timestamped Authenticode signature from its compiled expected
+publisher, immediately before executing the full NSIS installer.
+
+Setup installs Desktop and its matching CLI together. The setup binary is x64;
+it runs through Windows' x64 emulation on supported ARM64 PCs, while the combined
+NSIS installer chooses native application payloads. Setup preserves a registered
+installation's destination and scope, never downgrades a newer installed version,
+and waits for Desktop and CLI/proxy sessions without killing them. Concurrent
+setup processes share a per-user lock. Downloads are staged privately and removed
+on failure or cancellation. Installation cannot be cancelled after handoff to
+NSIS; installer repair semantics still apply. Fresh setup installs per user into
+`%LOCALAPPDATA%\Programs\Axiom`; unregistered nonempty destinations require repair
+with the offline installer. macOS and Linux retain their existing packages.
+
+A fresh Windows offline installation writes `resources/axiom-first-launch.json`.
+Only stable packaged Windows builds claim this marker. Before networking, the
+app creates a durable per-user, case-insensitive installation-path attempt in
+`first-launch-updates/` inside its user data. This survives upgrades and prevents
+restart loops; changing versions alone does not reset it. Existing installations
+are not marked fresh. An interrupted or failed first attempt falls back to the
+normal update controls on later launches.
+
+The renderer registers its state-flush handler, then signals readiness. The
+fresh launch checks for the latest signed release and automatically downloads,
+verifies and applies a newer version through the existing native updater. The
+startup screen shows progress, retry and **Use installed version**; no account is
+needed to update. A current build proceeds directly. Offline or verification
+failure leaves the complete installed app usable. Existing chat/proxy guards and
+durable-state flush still run before restart; no active work is forced closed.
+
+The website setup is a separate signed artifact with its own component version
+and revision-qualified immutable URL. It is not an application update target;
+the app inventory still contains eight installers. Microsoft Store submission
+uses the complete offline Desktop EXE, never the downloader. The EXE/MSI Store
+route leaves subsequent app updates under Axiom's existing native updater.
+
 ## Trust and publication
 
 The schema-3 inventory records product, platform, architecture, format, byte
