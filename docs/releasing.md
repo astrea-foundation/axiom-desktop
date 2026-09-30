@@ -111,7 +111,8 @@ The tag-triggered [release workflow](../.github/workflows/release.yml):
 
 Windows native x64 builds also produce the static setup input once. The existing
 Windows signing job verifies its input receipt, signs it, and checks native GUI
-initialization without networking. ARM64 qualification runs that same x64 setup
+initialization and executes the bundled PowerShell helper without networking.
+ARM64 qualification runs that same x64 setup
 through emulation. No new scheduled workflow or duplicate platform build is added.
 
 Setup is retained separately from the app inventory. Its immutable name is

@@ -1,5 +1,5 @@
 param(
-    [Parameter(Mandatory)][ValidateSet('Inspect','Verify','Running','Install')][string] $Action,
+    [Parameter(Mandatory)][ValidateSet('Check','Inspect','Verify','Running','Install')][string] $Action,
     [string] $FilePath,
     [string] $Destination,
     [string] $Publisher,
@@ -10,6 +10,7 @@ Set-StrictMode -Version Latest
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 
 switch ($Action) {
+    'Check' { 'ready' }
     'Inspect' {
         $found = @()
         foreach ($hive in @([Microsoft.Win32.RegistryHive]::CurrentUser, [Microsoft.Win32.RegistryHive]::LocalMachine)) {
