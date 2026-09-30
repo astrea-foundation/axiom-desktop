@@ -199,14 +199,13 @@ fn install(job: &Job, artifact: &Path) -> anyhow::Result<()> {
         }
         #[cfg(windows)]
         "exe" => {
-            ensure!(
-                Command::new(artifact)
-                    .arg("/S")
-                    .arg(format!("/D={}", owner.root.display()))
-                    .status()?
-                    .success(),
-                "Windows installer failed"
-            );
+            use std::os::windows::process::CommandExt as _;
+            let mut command = Command::new(artifact);
+            command.arg("/S");
+            // NSIS /D is the unquoted remainder and must be last, even for
+            // Unicode paths containing spaces. There is no shell evaluation.
+            command.raw_arg(format!("/D={}", installation::nsis_directory(&owner.root)?));
+            ensure!(command.status()?.success(), "Windows installer failed");
         }
         #[cfg(target_os = "macos")]
         "pkg" => {

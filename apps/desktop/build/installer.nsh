@@ -3,7 +3,34 @@
   Var axiomFreshInstall
 !endif
 
+!macro axiomNormalizeInstallDir
+  ; Earlier native updaters passed canonical Win32 namespaces and quoted /D.
+  ; ShellLink cannot create shortcuts for those paths. Keep the same directory
+  ; while restoring the ordinary path before registration and shortcut creation.
+  StrCpy $R0 "$INSTDIR" 1
+  ${if} $R0 == '$\"'
+    StrCpy $INSTDIR "$INSTDIR" "" 1
+  ${endif}
+  StrCpy $R0 "$INSTDIR" 1 -1
+  ${if} $R0 == '$\"'
+    StrLen $R0 "$INSTDIR"
+    IntOp $R0 $R0 - 1
+    StrCpy $INSTDIR "$INSTDIR" $R0
+  ${endif}
+  StrCpy $R0 "$INSTDIR" 8
+  ${if} $R0 == "\\?\UNC\"
+    StrCpy $INSTDIR "$INSTDIR" "" 8
+    StrCpy $INSTDIR "\\$INSTDIR"
+  ${else}
+    StrCpy $R0 "$INSTDIR" 4
+    ${if} $R0 == "\\?\"
+      StrCpy $INSTDIR "$INSTDIR" "" 4
+    ${endif}
+  ${endif}
+!macroend
+
 !macro customInit
+  !insertmacro axiomNormalizeInstallDir
   ; Inspect installation ownership before NSIS writes its new registry entries.
   ; Existing Desktop installations, including versions predating this feature,
   ; must not unexpectedly start installing updates on their next launch.
@@ -27,6 +54,18 @@
 !macroend
 
 !macro customInstall
+  ; A silent elevated machine upgrade can select its mode again after onInit.
+  StrCpy $R4 "$INSTDIR"
+  !insertmacro axiomNormalizeInstallDir
+  ${if} $INSTDIR != $R4
+    StrCpy $appExe "$INSTDIR\${APP_EXECUTABLE_FILENAME}"
+    StrCpy $keepShortcuts "false"
+    !insertmacro registryAddInstallInfo
+    !insertmacro setLinkVars
+    !insertmacro addStartMenuLink $keepShortcuts
+    !insertmacro addDesktopLink $keepShortcuts
+    StrCpy $launchLink "$appExe"
+  ${endif}
   ${if} $axiomFreshInstall == "1"
     FileOpen $R0 "$INSTDIR\resources\axiom-first-launch.json" w
     FileWrite $R0 '{$\"schemaVersion$\":1}'

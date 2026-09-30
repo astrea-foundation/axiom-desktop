@@ -27,7 +27,7 @@ function Assert-Cli([string] $file) {
 }
 
 foreach ($product in @('Axiom','AxiomCLI')) {
-    $destination = Join-Path $temporary $product
+    $destination = Join-Path $temporary "$product espace-é"
     $installer = Join-Path $Installers "$product-$Version-win-universal.exe"
     if ($Publisher) { Assert-AxiomSignature -FilePath $installer -Publisher $Publisher }
     # NSIS requires /D last and unquoted, even when the destination has spaces.
@@ -40,9 +40,14 @@ foreach ($product in @('Axiom','AxiomCLI')) {
         if (@(Get-Process -Name Axiom -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path -ieq (Join-Path $destination 'Axiom.exe') }).Count -ne 0) { throw 'Silent installation launched Axiom' }
         # Upgrading an existing install must not opt an existing user into startup installation.
         Remove-Item -LiteralPath $marker
-        Invoke-Installer $installer @('/S',"/D=$destination")
+        # Reproduce older clients' canonical path and automatic argument quotes.
+        Invoke-Installer $installer @('/S',"`"/D=\\?\$destination`"")
         if (Test-Path -LiteralPath $marker) { throw 'Upgrade incorrectly marked an existing installation as fresh' }
         Assert-Cli (Join-Path $destination 'resources/bin/axiomcli.exe')
+        $shortcut = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Axiom.lnk'
+        if (-not (Test-Path -LiteralPath $shortcut)) { throw 'Upgrade removed the Start menu shortcut' }
+        $link = (New-Object -ComObject WScript.Shell).CreateShortcut($shortcut)
+        if ($link.TargetPath -ine (Join-Path $destination 'Axiom.exe')) { throw 'Upgrade created a broken Start menu target' }
         $uninstaller = Join-Path $destination 'Uninstall Axiom.exe'
     } else {
         foreach ($name in @('axiomcli.exe','axiom-proxy.exe')) {

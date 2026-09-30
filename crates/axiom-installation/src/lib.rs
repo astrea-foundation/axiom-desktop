@@ -121,6 +121,31 @@ pub fn discover() -> anyhow::Result<Installation> {
     )
 }
 
+/// NSIS and ShellLink need ordinary Windows paths, not canonical verbatim paths.
+#[cfg(windows)]
+pub fn nsis_directory(root: &Path) -> anyhow::Result<String> {
+    use std::path::{Component, Prefix};
+    ensure!(root.is_absolute(), "Installer destination must be absolute");
+    ensure!(
+        matches!(root.components().next(), Some(Component::Prefix(prefix))
+            if matches!(prefix.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_) | Prefix::UNC(..) | Prefix::VerbatimUNC(..))),
+        "Unsupported installer destination"
+    );
+    let value = root
+        .to_str()
+        .context("Installer destination is not Unicode")?;
+    ensure!(
+        !value.chars().any(|c| c.is_control() || c == '"'),
+        "Invalid installer destination"
+    );
+    let value = if let Some(unc) = value.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{unc}")
+    } else {
+        value.strip_prefix(r"\\?\").unwrap_or(value).to_owned()
+    };
+    Ok(value.replace('/', r"\"))
+}
+
 pub fn cache(installation: &Installation) -> anyhow::Result<PathBuf> {
     let base = directories::BaseDirs::new().context("No user cache directory")?;
     let id = hex::encode(Sha256::digest(
@@ -171,6 +196,26 @@ pub fn lease() -> anyhow::Result<Option<File>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
+    #[test]
+    fn nsis_paths_preserve_unicode_and_spaces_without_verbatim_namespaces() {
+        for (input, expected) in [
+            (
+                r"\\?\C:\Users\équipe\Axiom Chat",
+                r"C:\Users\équipe\Axiom Chat",
+            ),
+            (r"\\?\UNC\server\share\Axiom", r"\\server\share\Axiom"),
+            (
+                r"C:/Users/Test/Programs/Axiom",
+                r"C:\Users\Test\Programs\Axiom",
+            ),
+        ] {
+            assert_eq!(nsis_directory(Path::new(input)).unwrap(), expected);
+        }
+        for input in ["relative", "C:Axiom", r"\\.\device", "C:\\Axiom\" /S"] {
+            assert!(nsis_directory(Path::new(input)).is_err());
+        }
+    }
     #[test]
     fn installed_cli_and_proxy_share_the_owner_and_exclusive_lease() {
         let fixture = tempfile::tempdir().unwrap();

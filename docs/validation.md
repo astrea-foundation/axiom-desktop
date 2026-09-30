@@ -69,6 +69,13 @@ delimiter; setup now constructs that path with native Windows separators. The
 helper probe runs before UI initialization to keep its synchronous subprocess
 independent of the GUI lifecycle.
 
+An additional VM upgrade check found that canonical `\\?\` destinations kept
+the app files but prevented NSIS from creating shortcuts. The shared Windows
+installer boundary now removes that namespace and passes `/D` as the unquoted
+last argument, preserving Unicode and spaces. The Desktop installer also
+normalizes paths from older clients before registering the app and creating
+shortcuts. Signed native checks include that legacy update argument format.
+
 - Fresh standard-user silent offline install at the default destination on x64
   and ARM64; shortcuts, Add/Remove Programs, no installer-triggered app launch,
   native CLI/proxy pairing, timestamped publisher and clean uninstall.
