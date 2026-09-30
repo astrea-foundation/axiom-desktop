@@ -23,6 +23,14 @@ switch ($Action) {
                         $root = $key.GetValue('InstallLocation')
                         if ([string]::IsNullOrWhiteSpace($root)) { continue }
                         $root = [IO.Path]::GetFullPath($root)
+                        # Older updaters registered canonical Win32 namespaces.
+                        # Windows PowerShell's path provider cannot join those
+                        # paths; inspect the same directory using its ordinary form.
+                        if ($root.StartsWith('\\?\UNC\', [StringComparison]::OrdinalIgnoreCase)) {
+                            $root = '\\' + $root.Substring(8)
+                        } elseif ($root.StartsWith('\\?\', [StringComparison]::OrdinalIgnoreCase)) {
+                            $root = $root.Substring(4)
+                        }
                         if (-not (Test-Path -LiteralPath (Join-Path $root 'Axiom.exe'))) { throw 'Registered Axiom installation is incomplete. Repair it with the offline installer.' }
                         $found += @{root=$root;machine=($hive -eq [Microsoft.Win32.RegistryHive]::LocalMachine)}
                     } finally { $key.Dispose() }

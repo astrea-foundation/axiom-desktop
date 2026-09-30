@@ -49,6 +49,19 @@ foreach ($product in @('Axiom','AxiomCLI')) {
         $link = (New-Object -ComObject WScript.Shell).CreateShortcut($shortcut)
         if ($link.TargetPath -ine (Join-Path $destination 'Axiom.exe')) { throw 'Upgrade created a broken Start menu target' }
         $uninstaller = Join-Path $destination 'Uninstall Axiom.exe'
+        # Earlier clients persisted canonical paths too. A default-path upgrade
+        # must repair registration before it invokes the previous uninstaller.
+        $installKey = 'HKCU:\Software\2fdd6a83-7dae-5442-aa32-e7c956c0a096'
+        $uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\2fdd6a83-7dae-5442-aa32-e7c956c0a096'
+        if ((Get-ItemProperty $installKey).InstallLocation -ine $destination) { throw 'Installation registration mismatch before regression check' }
+        Set-ItemProperty $installKey InstallLocation "\\?\$destination"
+        Set-ItemProperty $uninstallKey UninstallString "`"\\?\$uninstaller`" /currentuser"
+        $registered = & "$PSScriptRoot/../../axiom-setup/src/windows.ps1" -Action Inspect | ConvertFrom-Json
+        if ($registered.root -ine $destination -or $registered.machine) { throw 'Setup could not inspect the legacy registered path' }
+        Invoke-Installer $installer @('/S')
+        if ((Get-ItemProperty $installKey).InstallLocation -ine $destination) { throw 'Upgrade retained the legacy registered path' }
+        if ((New-Object -ComObject WScript.Shell).CreateShortcut($shortcut).TargetPath -ine (Join-Path $destination 'Axiom.exe')) { throw 'Registered-path upgrade broke the Start menu target' }
+        Assert-Cli (Join-Path $destination 'resources/bin/axiomcli.exe')
     } else {
         foreach ($name in @('axiomcli.exe','axiom-proxy.exe')) {
             $binary = Join-Path $destination "bin/$name"
