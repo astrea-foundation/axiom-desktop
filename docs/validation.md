@@ -63,7 +63,11 @@ helper open for writing, preventing Windows PowerShell from reading it. Setup
 self-check now executes the bundled helper on both Windows architectures without
 networking or installation. The final setup inventory also accepts an unset or
 empty publisher setting consistently with the setup build. 0.1.11 remains
-unpublished; qualification continues with 0.1.12.
+unpublished; qualification continues with 0.1.12. VM testing also caught NSIS
+interpreting the forward slash in the fresh setup destination as an option
+delimiter; setup now constructs that path with native Windows separators. The
+helper probe runs before UI initialization to keep its synchronous subprocess
+independent of the GUI lifecycle.
 
 - Fresh standard-user silent offline install at the default destination on x64
   and ARM64; shortcuts, Add/Remove Programs, no installer-triggered app launch,

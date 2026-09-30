@@ -204,7 +204,10 @@ pub async fn install_latest(
         registered.root.clone()
     } else {
         PathBuf::from(std::env::var_os("LOCALAPPDATA").context("No local application directory")?)
-            .join("Programs/Axiom")
+            // NSIS /D requires native Windows separators; a forward slash is
+            // treated as an option delimiter rather than a path separator.
+            .join("Programs")
+            .join("Axiom")
     };
     if registered.is_none() && root.exists() {
         ensure!(

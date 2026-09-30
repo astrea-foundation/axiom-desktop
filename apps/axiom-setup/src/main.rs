@@ -10,8 +10,8 @@ fn main() {
     if std::env::args().any(|arg| arg == "--verify-build") {
         // Used by native Windows qualification; no network or installation.
         let result = (|| -> anyhow::Result<()> {
-            gui::run(true)?;
             windows::self_check()?;
+            gui::run(true)?;
             let arguments = std::env::args().collect::<Vec<_>>();
             let path = arguments
                 .windows(2)
