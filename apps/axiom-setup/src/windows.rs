@@ -106,7 +106,7 @@ impl Windows {
             .arg("-FilePath")
             .arg(file)
             .arg("-Destination")
-            .arg(root);
+            .arg(axiom_installation::nsis_directory(root)?);
         if machine {
             command.arg("-Machine");
         }

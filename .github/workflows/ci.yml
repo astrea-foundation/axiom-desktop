@@ -118,7 +118,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       # Formatting is enforced by the rust job. Keep native platform tests
       # running even when that independent check fails.
-      - run: cargo test -p axiom-acp-extension -p axiomcli -p axiom-setup -p axiom-update-client --all-features --locked --no-fail-fast
+      - run: cargo test -p axiom-acp-extension -p axiomcli -p axiom-setup -p axiom-update-client -p axiom-installation --all-features --locked --no-fail-fast
       - name: Verify Windows setup controls start without installing or downloading
         if: runner.os == 'Windows'
         shell: pwsh
