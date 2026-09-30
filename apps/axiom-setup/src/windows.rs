@@ -279,3 +279,16 @@ pub fn open(file: &Path) -> anyhow::Result<()> {
     Command::new(file).spawn()?;
     Ok(())
 }
+
+pub fn show_licenses() -> anyhow::Result<()> {
+    let base = directories::BaseDirs::new().context("No user cache directory")?;
+    let directory = base.cache_dir().join("axiom/setup");
+    std::fs::create_dir_all(&directory)?;
+    let file = directory.join("licenses.txt");
+    std::fs::write(&file, axiom_setup::LICENSES)?;
+    let notepad =
+        PathBuf::from(std::env::var_os("WINDIR").context("Windows directory is unavailable")?)
+            .join("System32/notepad.exe");
+    Command::new(notepad).arg(file).spawn()?;
+    Ok(())
+}

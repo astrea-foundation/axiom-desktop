@@ -19,7 +19,8 @@ fn main() {
             std::fs::write(
                 &path[1],
                 serde_json::to_vec(&serde_json::json!({"version":env!("CARGO_PKG_VERSION"),
-                "trustedKeys":axiom_setup::TRUSTED_KEYS,"publisher":axiom_setup::PUBLISHER}))?,
+                "trustedKeys":axiom_setup::TRUSTED_KEYS,"publisher":axiom_setup::PUBLISHER,
+                "licensesIncluded":axiom_setup::LICENSES_INCLUDED == "true"}))?,
             )?;
             Ok(())
         })();

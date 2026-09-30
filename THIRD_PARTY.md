@@ -24,6 +24,12 @@ The test suite uses the MIT-licensed `portable-pty` crate to exercise terminal
 resize, cancellation, panic unwinding, and restoration against an actual
 pseudo-terminal rather than a mocked input stream.
 
+Windows setup uses MIT-licensed `native-windows-gui` 1.0.13. Its Cargo archive
+omits the repository license; the unchanged upstream license is retained under
+`apps/axiom-setup/resources/licenses/` with
+provenance. Setup embeds the project license and the locked Rust workspace
+notices, accessible through its Licenses button without networking.
+
 Desktop's Tinfoil provider mark is derived from the symbol in the official
 `tinfoilsh/tinfoil-webapp` `public/logo-white.svg`, retrieved September 21, 2026.
 Only the symbol path is retained, with a cropped viewBox and monochrome fill.

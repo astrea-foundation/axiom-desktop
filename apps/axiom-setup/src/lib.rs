@@ -9,6 +9,8 @@ pub const PUBLISHER: &str = match option_env!("AXIOM_SIGNING_PUBLISHER") {
     Some(name) => name,
     None => "Astrea Labs, Inc.",
 };
+pub const LICENSES: &str = include_str!(concat!(env!("OUT_DIR"), "/setup-licenses.txt"));
+pub const LICENSES_INCLUDED: &str = env!("AXIOM_SETUP_LICENSES_INCLUDED");
 
 /// The combined installer detects the native CPU even when setup is emulated.
 pub fn windows_installer(release: &Release) -> anyhow::Result<&Artifact> {

@@ -1,6 +1,36 @@
 fn main() {
     println!("cargo:rerun-if-env-changed=AXIOM_UPDATE_PUBLIC_KEYS");
     println!("cargo:rerun-if-env-changed=AXIOM_SIGNING_PUBLISHER");
+    println!("cargo:rerun-if-env-changed=AXIOM_SETUP_NOTICES_FILE");
+    let notices = if let Some(path) = std::env::var_os("AXIOM_SETUP_NOTICES_FILE") {
+        println!(
+            "cargo:rerun-if-changed={}",
+            std::path::Path::new(&path).display()
+        );
+        println!("cargo:rustc-env=AXIOM_SETUP_LICENSES_INCLUDED=true");
+        let text = std::fs::read_to_string(path).expect("Read bundled setup notices");
+        assert!(
+            text.contains("native-windows-gui-1.0.13/"),
+            "Setup notices must include the Windows GUI license"
+        );
+        text
+    } else {
+        assert!(
+            std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows")
+                || std::env::var("AXIOM_UPDATE_PUBLIC_KEYS")
+                    .unwrap_or_default()
+                    .is_empty(),
+            "Stable setup builds require AXIOM_SETUP_NOTICES_FILE; use scripts/package-setup.mjs"
+        );
+        println!("cargo:rerun-if-changed=../../LICENSE");
+        println!("cargo:rustc-env=AXIOM_SETUP_LICENSES_INCLUDED=false");
+        std::fs::read_to_string("../../LICENSE").expect("Read project license")
+    };
+    std::fs::write(
+        std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("setup-licenses.txt"),
+        notices,
+    )
+    .expect("Embed setup notices");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         let mut resource = winresource::WindowsResource::new();
         resource.set_icon("../desktop/build/icon.ico")

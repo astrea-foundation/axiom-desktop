@@ -19,6 +19,7 @@ struct Ui {
     progress: nwg::ProgressBar,
     action: nwg::Button,
     cancel: nwg::Button,
+    licenses: nwg::Button,
     notice: nwg::Notice,
     receiver: RefCell<Option<mpsc::Receiver<Event>>>,
     cancelled: RefCell<Arc<AtomicBool>>,
@@ -154,6 +155,12 @@ pub fn run(smoke: bool) -> anyhow::Result<()> {
         .build(&mut ui.progress)?;
     nwg::Button::builder()
         .parent(&ui.window)
+        .position((28, 228))
+        .size((88, 32))
+        .text("Licenses")
+        .build(&mut ui.licenses)?;
+    nwg::Button::builder()
+        .parent(&ui.window)
         .position((274, 228))
         .size((136, 32))
         .text("Install Axiom")
@@ -181,6 +188,15 @@ pub fn run(smoke: bool) -> anyhow::Result<()> {
             nwg::Event::OnWindowClose => ui.close(),
             nwg::Event::OnNotice if handle == ui.notice.handle => ui.events(),
             nwg::Event::OnButtonClick if handle == ui.cancel.handle => ui.close(),
+            nwg::Event::OnButtonClick if handle == ui.licenses.handle => {
+                if let Err(error) = windows::show_licenses() {
+                    nwg::modal_error_message(
+                        &ui.window.handle,
+                        "Couldn’t open licenses",
+                        &format!("{error}"),
+                    );
+                }
+            }
             nwg::Event::OnButtonClick if handle == ui.action.handle => {
                 if let Some(path) = ui.installed.borrow().as_ref() {
                     match windows::open(path) {

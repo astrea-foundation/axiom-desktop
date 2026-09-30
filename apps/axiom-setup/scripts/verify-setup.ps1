@@ -1,4 +1,4 @@
-param([Parameter(Mandatory)][string] $FilePath,[Parameter(Mandatory)][string] $Version,[string] $Publisher)
+param([Parameter(Mandatory)][string] $FilePath,[Parameter(Mandatory)][string] $Version,[string] $Publisher,[switch] $RequireLicenses)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $FilePath = (Resolve-Path -LiteralPath $FilePath).Path
@@ -15,5 +15,6 @@ try {
     $expectedKeys = if ($env:AXIOM_UPDATE_PUBLIC_KEYS) { $env:AXIOM_UPDATE_PUBLIC_KEYS } else { '' }
     if ($metadata.version -cne $Version -or $metadata.trustedKeys -cne $expectedKeys) { throw 'Setup version or compiled update trust mismatch' }
     if ($Publisher -and $metadata.publisher -cne $Publisher) { throw 'Setup publisher mismatch' }
+    if (($Publisher -or $RequireLicenses) -and -not $metadata.licensesIncluded) { throw 'Setup dependency notices are missing' }
     Write-Host "PASS setup $Version starts and builds its native controls on $([Runtime.InteropServices.RuntimeInformation]::OSArchitecture)"
 } finally { Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue }

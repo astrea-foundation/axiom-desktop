@@ -148,6 +148,9 @@ Production setup builds require `AXIOM_UPDATE_PUBLIC_KEYS` and the existing
 Windows signing publisher. `--build-only` creates a receipt-bound input for the
 protected signing job; `--input DIRECTORY` signs that exact captured input.
 Unsigned previews compile no stable-feed trust and cannot install a stable app.
+Packaging embeds the project license and locked Rust dependency notices in the
+standalone EXE; its Licenses button opens that bundle without networking. Stable
+setup builds fail if the bundle is missing, and native signing checks its presence.
 The website setup requires Windows 10+ on x64 or Windows 11 on ARM64.
 
 The manifest's `sequence` defaults to the native commit timestamp. It must
