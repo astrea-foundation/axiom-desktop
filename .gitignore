@@ -29,3 +29,7 @@ apps/desktop/.electron-vite/
 coverage/
 *.profraw
 lcov.info
+
+# Python check caches
+**/__pycache__/
+*.pyc
