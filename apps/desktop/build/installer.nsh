@@ -29,8 +29,35 @@
   ${endif}
 !macroend
 
+!macro axiomRepairInstallRegistration hive
+  ; Old clients also stored the namespace in registry paths used by the old
+  ; uninstaller. Repair those equivalent paths before invoking that uninstaller.
+  StrCpy $R4 "$INSTDIR"
+  ReadRegStr $R5 ${hive} "${INSTALL_REGISTRY_KEY}" "InstallLocation"
+  ${if} $R5 != ""
+    StrCpy $INSTDIR "$R5"
+    !insertmacro axiomNormalizeInstallDir
+    ${if} $INSTDIR != $R5
+      WriteRegStr ${hive} "${INSTALL_REGISTRY_KEY}" "InstallLocation" "$INSTDIR"
+      ReadRegStr $R7 ${hive} "${UNINSTALL_REGISTRY_KEY}" "UninstallString"
+      StrCpy $R8 '$\"$R5\Uninstall Axiom.exe$\"'
+      StrLen $R9 "$R8"
+      StrCpy $R6 "$R7" $R9
+      ${if} $R6 == $R8
+        StrCpy $R7 "$R7" "" $R9
+        WriteRegStr ${hive} "${UNINSTALL_REGISTRY_KEY}" "UninstallString" '$\"$INSTDIR\Uninstall Axiom.exe$\"$R7'
+      ${endif}
+    ${endif}
+  ${endif}
+  StrCpy $INSTDIR "$R4"
+!macroend
+
 !macro customInit
   !insertmacro axiomNormalizeInstallDir
+  !insertmacro axiomRepairInstallRegistration HKCU
+  ${if} ${UAC_IsAdmin}
+    !insertmacro axiomRepairInstallRegistration HKLM
+  ${endif}
   ; Inspect installation ownership before NSIS writes its new registry entries.
   ; Existing Desktop installations, including versions predating this feature,
   ; must not unexpectedly start installing updates on their next launch.

@@ -76,6 +76,13 @@ last argument, preserving Unicode and spaces. The Desktop installer also
 normalizes paths from older clients before registering the app and creating
 shortcuts. Signed native checks include that legacy update argument format.
 
+VM qualification also exercises a previously persisted canonical installation
+path, rather than only passing one to a new installer. Setup normalizes that
+registry path before using Windows PowerShell's path provider. Desktop normalizes
+the equivalent installation location and quoted uninstall command before running
+the old uninstaller, preserving its arguments. Signed native checks cover both
+Setup inspection and a default-destination upgrade from that registration.
+
 - Fresh standard-user silent offline install at the default destination on x64
   and ARM64; shortcuts, Add/Remove Programs, no installer-triggered app launch,
   native CLI/proxy pairing, timestamped publisher and clean uninstall.

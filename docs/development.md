@@ -20,6 +20,15 @@ selects the staging API/auth pair. `pnpm desktop:install` installs the Linux
 checkout launcher; it is a development convenience, not a release package.
 CLI alternatives are in [the CLI guide](cli.md).
 
+For Windows work, install the MSVC C++ Build Tools and Windows SDK in the test VM
+and use the same pinned Rust, Node.js and pnpm versions there. Build and test from
+`dev` inside the VM with the current app version. `pnpm desktop` runs the native
+debug sidecar and Electron; `cargo build --locked -p axiom-setup` compiles the
+setup executable locally. Test installation under an isolated standard user and
+keep private previews outside the public update feed. Qualify the Windows change
+locally before preparing its actual public version, promotion and signed release;
+see [release previews](releasing.md#development-previews).
+
 Electron main launches `axiomcli acp --frontend desktop-chat`. Packaged builds
 resolve a fixed binary under `resources/bin`; `AXIOMCLI_SIDECAR` overrides that
 path only in development. Production service origins are pinned. Development
