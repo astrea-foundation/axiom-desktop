@@ -1,12 +1,13 @@
 [package]
 name = "axiomcli"
-version = "0.1.9"
+version = "0.1.10"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
 axiom-installation.workspace = true
+axiom-update-client.workspace = true
 agent-client-protocol = { version = "2.0.0", features = ["unstable_elicitation"] }
 anyhow = "1.0.100"
 async-trait = "0.1.89"

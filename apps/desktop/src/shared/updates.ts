@@ -22,6 +22,7 @@ export type UpdateState = UpdateIdentity & {
   checkedAt: number | null;
   error: string | null;
   download: { name: string; received: number; total: number } | null;
+  firstLaunch?: boolean;
 };
 export type UpdatesApi = {
   getState: () => Promise<UpdateState>;
@@ -29,5 +30,7 @@ export type UpdatesApi = {
   check: () => Promise<UpdateState>;
   install: () => Promise<UpdateState>;
   cancel: () => Promise<UpdateState>;
+  ready?: () => Promise<UpdateState>;
+  continue?: () => Promise<UpdateState>;
   onStateChange: (callback: (state: UpdateState) => void) => () => void;
 };

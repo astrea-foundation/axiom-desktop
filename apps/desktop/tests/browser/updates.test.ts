@@ -59,6 +59,8 @@ async function open(theme = 'light', overrides: Partial<UpdateState> = {}) {
           onStateChange:(listener: (state: UpdateState) => void) => { listeners.add(listener); return () => listeners.delete(listener); },
           check:async () => { checks++; update({status:'current',error:null,checkedAt:Date.now()}); return structuredClone(state); },
           onBeforeRestart:() => () => {},
+          ready:async () => structuredClone(state),
+          continue:async () => { update({firstLaunch:false,status:'idle',download:null,error:null}); finish?.(structuredClone(state)); finish=null; return structuredClone(state); },
           install:() => {
             installs++;
             const file = state.release!.downloads.find(file => file.platform === state.platform && file.arch === state.arch && file.format === state.format)!;
@@ -71,7 +73,7 @@ async function open(theme = 'light', overrides: Partial<UpdateState> = {}) {
     });
   }, {theme, initial:{revision:1,status:'available',currentVersion:'0.1.0',platform:'linux',arch:'x64',format:'AppImage',packaged:true,release,checkedAt:Date.now(),error:null,download:null,...overrides} as UpdateState});
   await page.goto(origin);
-  try { await page.getByRole('button',{name:/View updates$/}).waitFor(); }
+  try { await (overrides.firstLaunch ? page.getByRole('region',{name:'First launch update'}) : page.getByRole('button',{name:/View updates$/})).waitFor(); }
   catch (error) { console.error(errors,await page.locator('body').innerText()); await page.close(); throw error; }
   return {page,errors};
 }
@@ -117,4 +119,24 @@ test('failure remains visible and offers a retry, while missing installers canno
     assert.equal(await page.getByRole('button',{name:'Update and restart',exact:true}).isDisabled(),true);
     assert.deepEqual(errors,[]);
   }finally{await page.close();}
+});
+
+
+test('fresh Windows startup shows progress, retry and continue before sign-in', async () => {
+  const {page,errors} = await open('dark',{firstLaunch:true,platform:'win',arch:'x64',format:'exe',status:'checking'});
+  try {
+    const startup=page.getByRole('region',{name:'First launch update'});
+    await startup.getByText('Getting the latest Axiom…',{exact:true}).waitFor();
+    assert.equal(await page.getByRole('button',{name:'New thread',exact:true}).count(),0);
+    await page.evaluate(() => (window as any).__updatesTest.update({status:'downloading',download:{name:'Axiom.exe',received:50,total:100}}));
+    await page.waitForFunction(() => document.querySelector('[role="progressbar"]')?.getAttribute('aria-valuenow') === '50');
+    await page.evaluate(() => (window as any).__updatesTest.update({status:'error',error:'Offline',download:null}));
+    await startup.getByRole('alert').getByText('Offline',{exact:true}).waitFor();
+    await startup.getByRole('button',{name:'Retry update'}).click();
+    await startup.getByRole('progressbar').waitFor();
+    assert.equal(await page.evaluate(() => (window as any).__updatesTest.installs()),1);
+    await startup.getByRole('button',{name:'Use installed version'}).click();
+    await startup.waitFor({state:'detached'});
+    assert.deepEqual(errors,[]);
+  } finally { await page.close(); }
 });

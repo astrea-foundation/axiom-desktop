@@ -35,6 +35,14 @@ foreach ($product in @('Axiom','AxiomCLI')) {
     if ($product -eq 'Axiom') {
         & "$PSScriptRoot/verify-windows-package.ps1" -Unpacked $destination -Arch $Arch -Version $Version -Publisher $Publisher
         Assert-Cli (Join-Path $destination 'resources/bin/axiomcli.exe')
+        $marker = Join-Path $destination 'resources/axiom-first-launch.json'
+        if ((Get-Content -LiteralPath $marker -Raw | ConvertFrom-Json).schemaVersion -ne 1) { throw 'Fresh install did not mark the first launch' }
+        if (@(Get-Process -Name Axiom -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path -ieq (Join-Path $destination 'Axiom.exe') }).Count -ne 0) { throw 'Silent installation launched Axiom' }
+        # Upgrading an existing install must not opt an existing user into startup installation.
+        Remove-Item -LiteralPath $marker
+        Invoke-Installer $installer @('/S',"/D=$destination")
+        if (Test-Path -LiteralPath $marker) { throw 'Upgrade incorrectly marked an existing installation as fresh' }
+        Assert-Cli (Join-Path $destination 'resources/bin/axiomcli.exe')
         $uninstaller = Join-Path $destination 'Uninstall Axiom.exe'
     } else {
         foreach ($name in @('axiomcli.exe','axiom-proxy.exe')) {

@@ -44,6 +44,19 @@ jobs:
         with:
           node-version: 22
       - run: cargo build --locked --release -p axiomcli -p axiom-proxy
+      - name: Build the static website setup input once
+        if: matrix.arch == 'x64'
+        shell: pwsh
+        env:
+          AXIOM_SIGNING_PUBLISHER: ${{ vars.AXIOM_SIGNING_PUBLISHER }}
+        run: node scripts/package-setup.mjs --build-only
+      - uses: actions/upload-artifact@v4
+        if: matrix.arch == 'x64'
+        with:
+          name: windows-setup-input-x64
+          path: apps/axiom-setup/dist/
+          retention-days: 7
+          if-no-files-found: error
       - name: Verify and capture native signing inputs
         run: node scripts/native-input.mjs win ${{ matrix.arch }} native-input
       - uses: actions/upload-artifact@v4
@@ -105,6 +118,10 @@ jobs:
         with:
           name: windows-native-arm64
           path: target/release/arm64
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-setup-input-x64
+          path: target/setup-input
       - name: Authenticate using the release-only federated identity
         uses: azure/login@v3
         with:
@@ -119,6 +136,14 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Desktop packaging failed' }
           node scripts/package-cli.mjs --win --universal
           if ($LASTEXITCODE -ne 0) { throw 'CLI packaging failed' }
+      - name: Sign and verify the website setup
+        run: node scripts/package-setup.mjs --input target/setup-input
+      - uses: actions/upload-artifact@v4
+        with:
+          name: axiom-windows-setup
+          retention-days: 7
+          path: apps/axiom-setup/dist/*.exe
+          if-no-files-found: error
       - name: Install and verify native x64 payloads
         shell: pwsh
         run: ./apps/desktop/scripts/verify-windows-install.ps1 -Installers apps/desktop/dist -Version ($env:GITHUB_REF_NAME.Substring(1)) -Arch x64 -Publisher $env:AXIOM_SIGNING_PUBLISHER
@@ -148,6 +173,16 @@ jobs:
         with:
           name: axiom-release-win-universal
           path: installers
+      - uses: actions/download-artifact@v4
+        with:
+          name: axiom-windows-setup
+          path: setup
+      - name: Verify the x64 setup also starts on ARM64 Windows
+        shell: pwsh
+        run: |
+          $file = (Get-ChildItem setup/*.exe).FullName
+          $version = (Select-String -Path apps/axiom-setup/Cargo.toml -Pattern '^version = "([^"]+)"').Matches.Groups[1].Value
+          ./apps/axiom-setup/scripts/verify-setup.ps1 -FilePath $file -Version $version -Publisher $env:AXIOM_SIGNING_PUBLISHER
       - name: Verify installers select runnable ARM64 binaries
         shell: pwsh
         run: ./apps/desktop/scripts/verify-windows-install.ps1 -Installers installers -Version ($env:GITHUB_REF_NAME.Substring(1)) -Arch arm64 -Publisher $env:AXIOM_SIGNING_PUBLISHER
