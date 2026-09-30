@@ -17,8 +17,10 @@ export class UpdateService {
   private controller = new AbortController();
   private timer?: ReturnType<typeof setInterval>;
   private disposed = false;
-  constructor(identity: UpdateIdentity, private dependencies: Dependencies) {
+  private firstLaunchStarted = false;
+  constructor(identity: UpdateIdentity, private dependencies: Dependencies, firstLaunch = false) {
     this.state = {...identity, revision: 0, status: identity.packaged && identity.platform && identity.arch && identity.format && VERSION_PATTERN.test(identity.currentVersion) ? 'idle' : 'disabled', release: null, checkedAt: null, error: null, download: null};
+    if (firstLaunch && this.state.status !== 'disabled' && identity.platform === 'win' && identity.format === 'exe') this.state.firstLaunch = true;
   }
   snapshot(): UpdateState { return structuredClone(this.state); }
   private set(patch: Partial<UpdateState>): UpdateState {
@@ -27,7 +29,23 @@ export class UpdateService {
   }
   start(): void {
     if (this.timer || this.state.status === 'disabled') return;
-    void this.check(); this.timer = setInterval(() => { void this.check(); }, 6 * 60 * 60 * 1000); this.timer.unref();
+    if (!this.state.firstLaunch) void this.check();
+    this.timer = setInterval(() => { if (!this.state.firstLaunch) void this.check(); }, 6 * 60 * 60 * 1000); this.timer.unref();
+  }
+  /** Called only after the renderer registers its durable-state flush handler. */
+  async ready(): Promise<UpdateState> {
+    if (!this.state.firstLaunch || this.firstLaunchStarted) return this.snapshot();
+    this.firstLaunchStarted = true;
+    const checked = await this.check();
+    if (!this.state.firstLaunch || this.controller.signal.aborted) return this.snapshot();
+    if (checked.status === 'current') return this.continue();
+    if (checked.status === 'available') return this.install();
+    return this.snapshot();
+  }
+  continue(): UpdateState {
+    if (this.state.status === 'installing') return this.snapshot();
+    this.cancel();
+    return this.set({firstLaunch: false});
   }
   async dispose(): Promise<void> { this.disposed = true; clearInterval(this.timer); this.controller.abort(); await this.operation; }
   cancel(): UpdateState { if (this.state.status !== 'installing') this.controller.abort(); return this.snapshot(); }
@@ -61,6 +79,7 @@ export class UpdateService {
         } else throw new Error('Unexpected native update event');
       }, signal);
       if (!checked) throw new Error('Update check ended without an authenticated release');
+      if (this.state.status === 'current' && this.state.firstLaunch) return this.continue();
       if (!install || this.state.status === 'current') return this.snapshot();
       if (!job) throw new Error('Update download ended before verification');
       this.set({status: 'waiting'});

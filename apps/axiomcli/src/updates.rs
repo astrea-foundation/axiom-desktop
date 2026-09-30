@@ -5,21 +5,25 @@ mod manifest;
 mod staging;
 
 use anyhow::{Context as _, ensure};
-use fs2::FileExt as _;
+use axiom_update_client::{download_verified, latest_release as fetch_latest_release, verify_file};
+#[cfg(test)]
+use axiom_update_client::{read_release, release_client};
 use installation::{Installation, cache, discover};
-use manifest::{Artifact, MAX_FEED_BYTES, Release, parse_release, verify_release, version_parts};
+#[cfg(test)]
+use manifest::MAX_FEED_BYTES;
+use manifest::{Artifact, Release, parse_release, verify_release, version_parts};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+#[cfg(test)]
 use sha2::{Digest as _, Sha256};
 use std::{
-    fs::{File, OpenOptions},
-    io::{Read as _, Write as _},
+    fs::OpenOptions,
+    io::Write as _,
     path::{Path, PathBuf},
-    time::Duration,
 };
 
 pub use installation::lease;
-const RELEASE_API: &str = "https://axiom.stream/api/releases/latest";
+
 const TRUSTED_KEYS: &str = match option_env!("AXIOM_UPDATE_PUBLIC_KEYS") {
     Some(keys) => keys,
     None => "",
@@ -77,47 +81,8 @@ fn emit(event: &serde_json::Value, machine: bool) {
     }
 }
 
-fn release_client() -> anyhow::Result<reqwest::Client> {
-    Ok(reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(Duration::from_secs(15))
-        .build()?)
-}
-
-async fn read_release(mut response: reqwest::Response) -> anyhow::Result<Release> {
-    ensure!(
-        response.status() == reqwest::StatusCode::OK,
-        "Release feed is unavailable"
-    );
-    ensure!(
-        response
-            .content_length()
-            .is_none_or(|n| n <= MAX_FEED_BYTES as u64),
-        "Release feed is too large"
-    );
-    let mut bytes = Vec::new();
-    while let Some(chunk) = response.chunk().await? {
-        ensure!(
-            bytes.len() + chunk.len() <= MAX_FEED_BYTES,
-            "Release feed is too large"
-        );
-        bytes.extend_from_slice(&chunk);
-    }
-    parse_release(&bytes)
-}
-
 async fn latest_release() -> anyhow::Result<Release> {
-    let release = read_release(
-        release_client()?
-            .get(RELEASE_API)
-            .timeout(Duration::from_secs(20))
-            .header("Accept", "application/json")
-            .send()
-            .await?,
-    )
-    .await?;
-    verify_release(&release, TRUSTED_KEYS)?;
-    Ok(release)
+    fetch_latest_release(TRUSTED_KEYS).await
 }
 
 fn accept_sequence(installation: &Installation, release: &Release) -> anyhow::Result<()> {
@@ -128,36 +93,7 @@ fn accept_sequence_with_keys(
     release: &Release,
     trusted_keys: &str,
 ) -> anyhow::Result<()> {
-    verify_release(release, trusted_keys)?;
-    let directory = cache(installation)?;
-    let lock = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(directory.join("feed.lock"))?;
-    lock.lock_exclusive()?;
-    let path = directory.join("accepted.json");
-    if path.exists() {
-        let previous: Release = parse_release(&std::fs::read(&path)?)?;
-        verify_release(&previous, trusted_keys)?;
-        ensure!(
-            release.sequence >= previous.sequence
-                && version_parts(&release.version)? >= version_parts(&previous.version)?,
-            "Refusing an older update feed"
-        );
-        if release.sequence == previous.sequence || release.version == previous.version {
-            ensure!(
-                serde_json::to_value(release)? == serde_json::to_value(&previous)?,
-                "An immutable release changed"
-            );
-        }
-    }
-    let mut pending = tempfile::NamedTempFile::new_in(directory)?;
-    pending.write_all(&serde_json::to_vec(release)?)?;
-    pending.as_file().sync_all()?;
-    pending.persist(&path)?;
-    Ok(())
+    axiom_update_client::accept_sequence(&cache(installation)?, release, trusted_keys)
 }
 
 fn host_platform() -> &'static str {
@@ -201,63 +137,16 @@ fn select<'a>(release: &'a Release, installation: &Installation) -> anyhow::Resu
         .context("No update has been published for this installation")
 }
 
-fn verify_file(path: &Path, file: &Artifact) -> anyhow::Result<()> {
-    let mut input = File::open(path)?;
-    ensure!(
-        input.metadata()?.is_file() && input.metadata()?.len() == file.bytes,
-        "Update size mismatch"
-    );
-    let mut hash = Sha256::new();
-    let mut buffer = vec![0; 64 * 1024];
-    loop {
-        let count = input.read(&mut buffer)?;
-        if count == 0 {
-            break;
-        }
-        hash.update(&buffer[..count]);
-    }
-    ensure!(
-        hex::encode(hash.finalize()) == file.sha256,
-        "Update checksum mismatch"
-    );
-    Ok(())
-}
-
 async fn download(file: &Artifact, destination: &Path, machine: bool) -> anyhow::Result<()> {
-    let mut response = release_client()?
-        .get(&file.url)
-        .timeout(Duration::from_secs(1800))
-        .send()
-        .await?;
-    ensure!(
-        response.status() == reqwest::StatusCode::OK
-            && response.content_length().is_none_or(|n| n == file.bytes),
-        "Update download is unavailable or changed"
-    );
-    let mut output = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(destination)?;
-    let mut received = 0u64;
-    let mut last_percent = 101;
-    while let Some(chunk) = response.chunk().await? {
-        received += chunk.len() as u64;
-        ensure!(received <= file.bytes, "Update exceeds expected size");
-        output.write_all(&chunk)?;
-        let percent = received * 100 / file.bytes;
-        if percent != last_percent {
-            emit(
-                &json!({"event":"progress", "name":file.name, "received":received, "total":file.bytes,
-                "message":format!("Downloading update: {percent}%")}),
-                machine,
-            );
-            last_percent = percent;
-        }
-    }
-    output.sync_all()?;
-    drop(output);
-    verify_file(destination, file)?;
-    Ok(())
+    download_verified(file, destination, |received, total| {
+        let percent = received * 100 / total;
+        emit(
+            &json!({"event":"progress", "name":file.name, "received":received, "total":total,
+            "message":format!("Downloading update: {percent}%")}),
+            machine,
+        );
+    })
+    .await
 }
 
 async fn prepare(

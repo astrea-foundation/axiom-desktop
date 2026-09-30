@@ -7,6 +7,7 @@ import path from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
 import {requireCompleteRelease} from '../packages/desktop-releases/manifest.mjs';
 import {verifyRelease} from '../packages/desktop-releases/signing.mjs';
+import {verifySetup} from '../packages/desktop-releases/windows-setup.mjs';
 const directory = process.argv[2];
 const sourceRelease = process.argv[3] === '--source';
 if (!directory || process.argv.length > 4 || (process.argv[3] && !sourceRelease)) throw new Error('Usage: publish-github-release.mjs DIRECTORY [--source]');
@@ -20,8 +21,12 @@ if (git(['rev-parse',`${tag}^{commit}`]) !== manifest.revision) throw new Error(
 git(['merge-base','--is-ancestor',manifest.revision,'origin/main']);
 // Authenticate every local artifact before making any mutation.
 const files = [...manifest.downloads,...manifest.cliDownloads];
-for (const file of files) {
-  const bytes = await readFile(path.join(directory,file.name));
+const setupDirectory = process.env.AXIOM_SETUP_DIRECTORY;
+const setup = setupDirectory ? verifySetup(JSON.parse(await readFile(path.join(setupDirectory,'windows-setup.json'),'utf8')), process.env.AXIOM_UPDATE_PUBLIC_KEYS ?? '') : null;
+if (setup && (setup.releaseVersion !== manifest.version || setup.revision !== manifest.revision || setup.sequence !== manifest.sequence)) throw new Error('Setup and application inventories belong to different releases');
+const assets = [...files.map(file=>({...file,directory})),...(setup ? [{...setup.artifact,directory:setupDirectory}] : [])];
+for (const file of assets) {
+  const bytes = await readFile(path.join(file.directory,file.name));
   if (bytes.length !== file.bytes || createHash('sha256').update(bytes).digest('hex') !== file.sha256) throw new Error(`Changed installer: ${file.name}`);
 }
 const repositoryInfo = JSON.parse(gh(['api', `repos/${repository}`]));
@@ -45,14 +50,14 @@ if (!release) {
 }
 
 const existing = new Map(release.assets.map(asset=>[asset.name,asset]));
-for (const name of [...files.map(f=>f.name),'manifest.json','SHA256SUMS']) {
-  const asset = existing.get(name), bytes = await readFile(path.join(directory,name));
+for (const {name,directory:assetDirectory} of [...assets,{name:'manifest.json',directory},{name:'SHA256SUMS',directory},...(setup ? [{name:'windows-setup.json',directory:setupDirectory}] : [])]) {
+  const asset = existing.get(name), bytes = await readFile(path.join(assetDirectory,name));
   if (asset) {
     const remote = execFileSync('gh',['api',`repos/${repository}/releases/assets/${asset.id}`,'-H','Accept: application/octet-stream'],{maxBuffer:2*1024**3});
     if (!bytes.equals(remote)) throw new Error(`Immutable GitHub asset changed: ${name}`);
   } else {
     if (!release.draft) throw new Error('Cannot add assets to a published release');
-    gh(['release','upload',tag,path.join(directory,name),'--repo',repository]);
+    gh(['release','upload',tag,path.join(assetDirectory,name),'--repo',repository]);
   }
 }
 if (sourceRelease && release.draft) gh(['release','edit',tag,'--repo',repository,'--draft=false','--latest']);

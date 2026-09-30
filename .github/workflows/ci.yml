@@ -118,7 +118,15 @@ jobs:
       - run: pnpm install --frozen-lockfile
       # Formatting is enforced by the rust job. Keep native platform tests
       # running even when that independent check fails.
-      - run: cargo test -p axiom-acp-extension -p axiomcli --all-features --locked --no-fail-fast
+      - run: cargo test -p axiom-acp-extension -p axiomcli -p axiom-setup -p axiom-update-client --all-features --locked --no-fail-fast
+      - name: Verify Windows setup controls start without installing or downloading
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cargo build --locked -p axiom-setup
+          if ($LASTEXITCODE -ne 0) { throw 'Setup build failed' }
+          $version = (Select-String -Path apps/axiom-setup/Cargo.toml -Pattern '^version = "([^"]+)"').Matches.Groups[1].Value
+          ./apps/axiom-setup/scripts/verify-setup.ps1 -FilePath target/debug/axiom-setup.exe -Version $version
       - run: cargo test --target-dir target/acp-sdk-vendor --locked --manifest-path vendor/agent-client-protocol-2.0.0/Cargo.toml --test jsonrpc_deep_chain_stack
       - run: pnpm generate:protocol
       - name: Generated ACP contract is committed

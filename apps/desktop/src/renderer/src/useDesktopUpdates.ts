@@ -18,6 +18,9 @@ export function useDesktopUpdates() {
     void api.getState().then(next => { if (active) accept(next); }).catch(() => {
       if (active) setError('Update controls are unavailable. Restart Axiom to try again.');
     });
+    void api.ready?.().then(next => { if (active) accept(next); }).catch(() => {
+      if (active) setError('Couldn’t start the update. You can use the installed version.');
+    });
     return () => { active = false; unsubscribe(); beforeRestart?.(); };
   }, [accept]);
   const run = useCallback(async (action: (api: UpdatesApi) => Promise<UpdateState | void>) => {
@@ -28,6 +31,7 @@ export function useDesktopUpdates() {
     catch { setError('Couldn’t complete that update action. Please try again.'); }
   }, [accept]);
   return { state, error, check: () => run(api => api.check()),
-    install: () => run(api => api.install()), cancel: () => run(api => api.cancel()) };
+    install: () => run(api => api.install()), cancel: () => run(api => api.cancel()),
+    continue: () => run(async api => api.continue?.()) };
 }
-export type DesktopUpdates = ReturnType<typeof useDesktopUpdates>;
+export type DesktopUpdates = Omit<ReturnType<typeof useDesktopUpdates>, 'continue'> & {continue?: () => Promise<void>};

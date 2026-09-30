@@ -17,6 +17,7 @@ import { UpdateNotice } from "./components/UpdateNotice";
 import { WebConsentDialog } from "./components/WebConsentDialog";
 import { WelcomeView } from "./components/WelcomeView";
 import { WindowControls } from "./components/WindowControls";
+import { FirstLaunchUpdate } from "./components/FirstLaunchUpdate";
 import { setThemePreference, useTheme } from "./lib/theme";
 import { isMac, MAC_TRAFFIC_LIGHT_INSET_CLASS, useFullScreen } from "./lib/window-chrome";
 import { useDesktopUpdates } from "./useDesktopUpdates";
@@ -140,6 +141,12 @@ export function App() {
 
   const macNotch = isMac && !sidebarOpen && !fullScreen;
   const windowControlsCutout = !isMac && !fullScreen;
+
+  if (updates.state?.firstLaunch) return <div className="app-canvas flex h-full overflow-hidden p-2.5 text-[var(--color-text-primary)]">
+    <WindowControls />
+    <div className="drag-region fixed left-0 right-[112px] top-0 h-8" aria-hidden="true" />
+    <FirstLaunchUpdate updates={updates} />
+  </div>;
 
   return (
     <div className="app-canvas flex h-full overflow-hidden p-2.5 text-[var(--color-text-primary)]">

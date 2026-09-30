@@ -6,6 +6,8 @@ members = [
     "crates/axiom-acp-extension",
     "crates/axiom-inference",
     "crates/axiom-installation",
+    "crates/axiom-update-client",
+    "apps/axiom-setup",
     "crates/axiom-openai-compat",
     "crates/axiom-secure-client",
 ]
@@ -16,6 +18,8 @@ default-members = [
     "crates/axiom-acp-extension",
     "crates/axiom-inference",
     "crates/axiom-installation",
+    "crates/axiom-update-client",
+    "apps/axiom-setup",
     "crates/axiom-openai-compat",
     "crates/axiom-secure-client",
 ]
@@ -26,6 +30,7 @@ license = "Apache-2.0"
 rust-version = "1.88"
 
 [workspace.dependencies]
+axiom-update-client = { version = "0.1.0", path = "crates/axiom-update-client" }
 axiom-installation = { version = "0.1.0", path = "crates/axiom-installation" }
 axiom-acp-extension = { version = "0.2.0", path = "crates/axiom-acp-extension" }
 axiom-inference = { version = "0.1.0", path = "crates/axiom-inference" }

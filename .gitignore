@@ -3,6 +3,7 @@
 **/node_modules/
 .pnpm-store/
 apps/desktop/dist/
+apps/axiom-setup/dist/
 apps/desktop/out/
 apps/desktop/.electron-vite/
 .env
@@ -28,3 +29,7 @@ apps/desktop/.electron-vite/
 coverage/
 *.profraw
 lcov.info
+
+# Python check caches
+**/__pycache__/
+*.pyc
