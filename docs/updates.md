@@ -41,7 +41,7 @@ requires a valid timestamped Authenticode signature from its compiled expected
 publisher, immediately before executing the full NSIS installer.
 
 Setup installs Desktop and its matching CLI together. The setup binary is x64;
-it runs through Windows' x64 emulation on supported ARM64 PCs, while the combined
+it runs through Windows 11's x64 emulation on ARM64 PCs, while the combined
 NSIS installer chooses native application payloads. Setup preserves a registered
 installation's destination and scope, never downgrades a newer installed version,
 and waits for Desktop and CLI/proxy sessions without killing them. Concurrent

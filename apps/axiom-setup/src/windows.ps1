@@ -7,6 +7,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 
 switch ($Action) {
     'Inspect' {
@@ -40,8 +41,12 @@ switch ($Action) {
         if ($name -cne $Publisher) { throw 'The installer was signed by an unexpected publisher.' }
     }
     'Running' {
-        # Never close or kill the user's app. CLI/proxy leases are checked separately.
-        $running = @(Get-Process -Name Axiom -ErrorAction SilentlyContinue | Where-Object { $_.Path -and [IO.Path]::GetFullPath($_.Path) -ieq [IO.Path]::GetFullPath($FilePath) })
+        # Include other users' sessions, whose per-user leases are separate.
+        # An inaccessible process path is busy rather than proof it is safe.
+        $root = [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($FilePath)).TrimEnd('\') + '\'
+        $running = @(Get-Process -Name Axiom,axiomcli,axiom-proxy -ErrorAction SilentlyContinue | Where-Object {
+            -not $_.Path -or [IO.Path]::GetFullPath($_.Path).StartsWith($root, [StringComparison]::OrdinalIgnoreCase)
+        })
         if ($running.Count -gt 0) { 'true' } else { 'false' }
     }
     'Install' {
@@ -55,7 +60,9 @@ switch ($Action) {
             $process = Start-Process -FilePath $FilePath -ArgumentList $arguments -PassThru
         }
         $null = $process.Handle
-        if (-not $process.WaitForExit(1200000)) { throw 'Installation is still running. Wait for it to finish before trying again.' }
+        # Keep the lease and verified staging alive until NSIS actually exits.
+        # A timeout must not offer another installer while the first is running.
+        $process.WaitForExit()
         $process.Refresh()
         if ($process.ExitCode -ne 0) { throw "The installer did not finish successfully (exit $($process.ExitCode))." }
     }

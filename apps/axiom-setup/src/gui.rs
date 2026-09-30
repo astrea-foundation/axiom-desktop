@@ -97,8 +97,7 @@ impl Ui {
                 }
                 Event::Cancelled => {
                     self.busy.set(false);
-                    self.detail
-                        .set_text("Setup cancelled. The downloaded files have been removed.");
+                    self.detail.set_text("Setup cancelled.");
                     self.action.set_text("Install Axiom");
                     self.action.set_enabled(true);
                     self.cancel.set_text("Close");
@@ -158,7 +157,7 @@ pub fn run(smoke: bool) -> anyhow::Result<()> {
         .position((274, 228))
         .size((136, 32))
         .text("Install Axiom")
-        .focus(true)
+        .focus(!smoke)
         .build(&mut ui.action)?;
     nwg::Button::builder()
         .parent(&ui.window)

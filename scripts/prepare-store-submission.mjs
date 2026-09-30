@@ -11,7 +11,7 @@ const release=requireCompleteRelease(JSON.parse(await readFile(path.join(directo
 const keys=process.env.AXIOM_UPDATE_PUBLIC_KEYS ?? '';
 if(!keys.split(',').some(key=>{try{verifyRelease(release,key.trim());return true;}catch{return false;}}))throw new Error('Store preparation requires a trusted release');
 const setup=verifySetup(JSON.parse(await readFile(path.join(setupDirectory,'windows-setup.json'),'utf8')),keys);
-if(setup.releaseVersion!==release.version || setup.revision!==release.revision)throw new Error('Setup belongs to a different release');
+if(setup.releaseVersion!==release.version || setup.revision!==release.revision || setup.sequence!==release.sequence)throw new Error('Setup belongs to a different release');
 const installer=release.downloads.find(file=>file.platform==='win' && file.arch==='universal' && file.product==='desktop' && file.format==='exe');
 if(!installer)throw new Error('Store requires the full offline Desktop installer');
 const bytes=await readFile(path.join(directory,installer.name));

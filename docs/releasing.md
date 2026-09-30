@@ -148,6 +148,7 @@ Production setup builds require `AXIOM_UPDATE_PUBLIC_KEYS` and the existing
 Windows signing publisher. `--build-only` creates a receipt-bound input for the
 protected signing job; `--input DIRECTORY` signs that exact captured input.
 Unsigned previews compile no stable-feed trust and cannot install a stable app.
+The website setup requires Windows 10+ on x64 or Windows 11 on ARM64.
 
 The manifest's `sequence` defaults to the native commit timestamp. It must
 increase between versions; a deliberate `AXIOM_RELEASE_SEQUENCE` override is
