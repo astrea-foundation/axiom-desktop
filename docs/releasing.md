@@ -5,6 +5,13 @@ workflow in [CONTRIBUTING](../CONTRIBUTING.md), a stable `vMAJOR.MINOR.PATCH` ta
 on promoted `main`, and matching Desktop/AxiomCLI versions. A version bump or
 push to `dev` does not publish installers or activate the update feed.
 
+Compile and test Windows development changes in the Windows VM from `dev`, using
+the current version for private previews. Qualify installer changes there before
+preparing a version bump or promoting a release. Do not use `main`, stable tags
+or cross-platform release builds as a development test loop: those actions are
+reserved for an explicitly authorized public release. A fix found during testing
+returns to local VM qualification before another release is considered.
+
 The [update architecture](updates.md) describes installation ownership and
 recovery. [Release acceptance](validation.md) covers signed OS qualification;
 [repository setup](repository-setup.md) lists Actions credentials and settings.

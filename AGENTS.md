@@ -21,6 +21,12 @@ request to merge changes, build, or finish work does not authorize promotion.
 Signed installers are published by stable version tags on promoted `main` commits;
 never create or push release tags without explicit release authorization.
 
+Do not bump versions, promote to `main`, or run the full release build merely
+to compile or test a development change. Build and test Windows changes in the
+Windows VM from `dev` first, retaining the current version for private previews.
+Reserve version changes, cross-platform release validation, promotion and stable
+tags for an actual explicitly authorized release after local qualification.
+
 When explicitly authorized, open a `dev` → `main` pull request, validate the batch,
 and use a merge commit to preserve shared history. Merge `main` back into `dev`
 afterward. Production
