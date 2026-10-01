@@ -17,11 +17,23 @@ shown on the next check. Restart resets all runtime-only attestation consent.
 
 Installation identity comes from `axiom-install.json`. Desktop and its bundled
 CLI always update the complete Desktop package. Standalone CLI and proxy update
-as a pair. Installed CLI/ACP/proxy processes share an installation lock; the
-helper waits up to three minutes for them to close and never kills them. A bundled
-TUI can update with Desktop closed; if Desktop is open, close it when the helper
-asks for other processes to stop. Simultaneous helpers recheck the installed
-version under the lock and do not reinstall an already-applied target.
+as a pair. Update jobs must resolve inside their installation's private cache;
+both the job and cache directory are canonicalized before checking containment.
+This accounts for Windows' verbatim path namespace without accepting a job in
+a sibling directory or outside the cache. Installed CLI/ACP/proxy processes share
+an installation lock. The helper waits up to three minutes for them to close and
+never kills them. A bundled TUI can update with Desktop closed; if Desktop is
+open, close it when the helper asks for other processes to stop. Simultaneous
+helpers recheck the installed version under the lock and do not reinstall an
+already-applied target. On Windows, an already-exited Desktop parent counts as
+ready; the bounded wait runs without opening a console window and still rejects
+a parent that stays open.
+
+Desktop proceeds with restart only after the native helper acknowledges its
+verified job and the handoff CLI exits successfully. It releases the bridge's
+pipe handles at that point: on Windows the detached helper can retain inherited
+handles while waiting for Desktop to close. Other native update operations still
+wait for complete output and reject incomplete responses.
 
 One native engine is used instead of adding `electron-updater`: a bundled TUI
 must also update and restart when Electron is not running. The same finished
@@ -32,6 +44,15 @@ versioned CLI/proxy directory through one symlink. Windows uses signed NSIS;
 macOS uses signed, notarized PKG installers and the OS authorization dialog.
 
 ## Windows setup and first launch
+
+The published Windows 0.1.12 native updater rejects its own staged job because
+it compares a canonical job path with an ordinary cache path. After correcting
+that check, the Desktop bridge also needs to release inherited pipes to avoid
+waiting for a helper that is waiting for Desktop to close, and the Windows parent
+wait must succeed when Desktop has already exited. Windows upgrades
+must use the website Setup until the corrected updater is released. Setup
+itself installs the current signed release successfully. Microsoft Store
+submission remains held pending signed automatic-handoff acceptance.
 
 The website's small native `AxiomSetup` executable fetches the latest stable
 inventory from the same public release API as the updater. It uses the shared

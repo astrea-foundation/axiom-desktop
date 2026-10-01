@@ -47,6 +47,23 @@ with the release; retain raw operational captures privately.
 
 ## Windows setup and Store acceptance
 
+The 0.1.12 offline package and website Setup were published after signed Windows
+installation qualification. The live older-to-current first-launch check then
+found a separate native updater failure: the canonical job path is rejected
+against an ordinary Windows cache path. A local preview then exposed a second
+failure: Desktop waited for bridge pipe closure while the detached helper waited
+for Desktop to exit. Once Desktop closed, PowerShell's missing-parent lookup
+incorrectly reported failure. These corrections must pass locally in the Windows
+VM before a subsequent actual release. Do not replace the published 0.1.12
+artifacts or bump versions merely to test the corrections. Local MSVC previews
+passed 14 native update tests and the full standard-user first-launch handoff
+from a private older-version fixture to the real signed 0.1.12 feed, including
+installation, restart and unchanged user-data digest. Windows Desktop update
+tests, typecheck and compilation passed as well. This is development evidence;
+the corrected code has not shipped in a signed public installer. Store submission
+remains blocked on that actual release's signed qualification and Partner
+Center/reviewer access; the existing website Setup provides manual upgrades.
+
 For the 0.1.12 Windows distribution candidate, record the promoted revision and final signed
 bytes before release. Cross-compilation, controller/browser tests and hidden
 native-control initialization checks are development evidence, not Windows Store

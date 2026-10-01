@@ -3,8 +3,56 @@ import {mkdtemp,writeFile,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import {EventEmitter} from 'node:events';
+import {PassThrough} from 'node:stream';
+import type {ChildProcessWithoutNullStreams, spawn} from 'node:child_process';
 import {nativeUpdates} from '../src/main/native-updates';
 import {flushForUpdate,registerUpdateFlush,releaseUpdateFlush,updateRestartPending} from '../src/renderer/src/updateFlush';
+
+function heldHandoff() {
+  const stdout=new PassThrough(), stderr=new PassThrough();
+  let killed=false;
+  const child=Object.assign(new EventEmitter(),{stdout,stderr,kill:()=>{killed=true;return true;}});
+  const start=(()=>child as unknown as ChildProcessWithoutNullStreams) as typeof spawn;
+  const events:unknown[]=[];
+  const operation=nativeUpdates(async()=>'installed-cli',start)(['--start-job','private-job','--parent','123'],event=>events.push(event),new AbortController().signal);
+  return {child,stdout,stderr,events,operation,killed:()=>killed};
+}
+
+test('handoff completes after acknowledgement and CLI exit even when the helper retains its pipes',async()=>{
+  for(const exitFirst of [false,true]) {
+    const a=heldHandoff();
+    await new Promise<void>(resolve=>setImmediate(resolve));
+    let completed=false;void a.operation.then(()=>{completed=true;});
+    if(exitFirst) a.child.emit('exit',0,null);
+    else a.stdout.write('{"event":"installing"}\n');
+    await new Promise<void>(resolve=>setImmediate(resolve));
+    assert.equal(completed,false,'both verified helper acknowledgement and successful CLI exit are required');
+    if(exitFirst) a.stdout.write('{"event":"installing"}\n');
+    else a.child.emit('exit',0,null);
+    const timeout=setTimeout(()=>a.child.emit('close',0,null),500);
+    try {
+      await a.operation;
+      assert.equal(a.stdout.destroyed,true,'handoff must release its inherited stdout pipe before helper exit');
+      assert.equal(a.stderr.destroyed,true);
+      assert.equal(a.killed(),false,'do not terminate the detached installer');
+      assert.deepEqual(a.events,[{event:'installing'}]);
+    } finally {clearTimeout(timeout);a.stdout.destroy();a.stderr.destroy();}
+  }
+});
+
+test('handoff rejects missing acknowledgement, failed CLI exit and incomplete trailing output',async()=>{
+  for(const stage of ['missing','failed','partial']) {
+    const a=heldHandoff();
+    await new Promise<void>(resolve=>setImmediate(resolve));
+    const rejection=assert.rejects(a.operation);
+    if(stage!=='missing') a.stdout.write('{"event":"installing"}\n'+(stage==='partial'?'incomplete':''));
+    a.child.emit('exit',stage==='failed'?1:0,null);
+    a.child.emit('close',stage==='failed'?1:0,null);
+    await rejection;
+    a.stdout.destroy();a.stderr.destroy();
+  }
+});
 
 async function withExecutable(body:string,run:(file:string)=>Promise<void>) {
   const directory=await mkdtemp(path.join(tmpdir(),'axiom-native-updates-'));
