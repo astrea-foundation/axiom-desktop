@@ -66,6 +66,7 @@ macro_rules! respond_or_return {
 mod account;
 mod catalog;
 mod collections;
+mod mcp;
 mod prompts;
 mod security;
 mod server;
@@ -1475,6 +1476,7 @@ enum ExtensionFeature {
     Usage = 1 << 13,
     Attachments = 1 << 14,
     GiftCodes = 1 << 15,
+    DesktopMcp = 1 << 16,
 }
 
 struct ExtensionState {
@@ -1563,6 +1565,9 @@ impl ExtensionState {
         }
         if features.desktop_agent >= 1 {
             mask |= ExtensionFeature::DesktopAgent as u64;
+        }
+        if features.desktop_mcp >= 1 {
+            mask |= ExtensionFeature::DesktopMcp as u64;
         }
         self.enabled_features.store(mask, Ordering::Release);
     }

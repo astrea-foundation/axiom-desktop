@@ -51,6 +51,7 @@ const COMPACTION_BYTES_PER_TOKEN: usize = 3;
 
 #[derive(Clone)]
 pub struct TurnContext {
+    pub mcp: Option<crate::desktop_mcp::DesktopMcpTurn>,
     pub session_id: SessionId,
     pub turn_id: TurnId,
     pub cwd: PathBuf,
@@ -232,6 +233,7 @@ impl std::fmt::Debug for TurnContext {
                 "attachments",
                 &format_args!("{} local attachments", self.attachments.len()),
             )
+            .field("mcp", &self.mcp.as_ref().map(|mcp| &mcp.tools))
             .field("session_id", &self.session_id)
             .field("turn_id", &self.turn_id)
             .field("cwd", &self.cwd)
@@ -1542,27 +1544,44 @@ impl AgentEngine {
 
     async fn authorize(
         &self,
+        tools: &ToolRegistry,
         context: &TurnContext,
-        tool_context: &ToolContext,
         tool_name: &str,
         arguments: &serde_json::Value,
         events: &mpsc::Sender<AppEvent>,
         cancellation: CancellationToken,
     ) -> Result<()> {
-        if !context.web_enabled && self.tools.access(tool_name)? == crate::policy::ToolAccess::Web {
+        if !context.web_enabled && tools.access(tool_name)? == crate::policy::ToolAccess::Web {
             return Err(AxiomError::PermissionDenied(
                 "Web is off for this message. The user must enable Web in the chat before searching or fetching pages.".into(),
             ));
         }
+        let tool_context = ToolContext {
+            session_id: context.session_id.clone(),
+            cwd: context.cwd.clone(),
+            permission_profile: context.permission_profile,
+        };
         let policy = self.policy_for(context).await?;
-        let mut effects = vec![Effect::ToolUse {
-            name: tool_name.to_owned(),
-            access: self.tools.access(tool_name)?,
-        }];
-        effects.extend(self.tools.effects(tool_name, tool_context, arguments)?);
+        let desktop_mcp = context.mcp.is_some() && tool_name.starts_with("mcp__");
+        let profile = context.permission_profile;
+        let mut effects = if desktop_mcp {
+            Vec::new()
+        } else {
+            vec![Effect::ToolUse {
+                name: tool_name.to_owned(),
+                access: tools.access(tool_name)?,
+            }]
+        };
+        effects.extend(tools.effects(tool_name, &tool_context, arguments)?);
         let decisions = effects
             .into_iter()
-            .map(|effect| policy.evaluate(context.permission_profile, effect))
+            .map(|effect| {
+                if desktop_mcp {
+                    policy.evaluate_desktop_mcp(effect)
+                } else {
+                    policy.evaluate(profile, effect)
+                }
+            })
             .collect::<Vec<_>>();
 
         // Validate every concrete effect before asking. A confirmation must
@@ -1583,7 +1602,8 @@ impl AgentEngine {
             .join("\n");
         for decision in decisions.into_iter().filter(|decision| {
             decision.kind == DecisionKind::Ask
-                && (context.permission_profile != PermissionProfile::Confirm
+                && (desktop_mcp
+                    || profile != PermissionProfile::Confirm
                     || matches!(&decision.normalized_effect, Effect::ToolUse { .. }))
         }) {
             match decision.kind {
@@ -1591,6 +1611,13 @@ impl AgentEngine {
                 DecisionKind::Deny => unreachable!("denials were handled before approval"),
                 DecisionKind::Ask => {
                     let mut request = ApprovalRequest::new(&decision);
+                    if desktop_mcp {
+                        request.explanation = format!(
+                            "{}\nArguments: {}",
+                            crate::policy::describe_effect(&request.effect),
+                            truncate_utf8(&arguments.to_string(), 16 * 1024).0
+                        );
+                    }
                     if matches!(decision.normalized_effect, Effect::ToolUse { .. }) {
                         request.explanation = format!("Allow {}?", tool_name.replace('_', " "));
                     }
@@ -1998,6 +2025,35 @@ impl TurnRunner for AgentEngine {
         events: mpsc::Sender<AppEvent>,
         cancellation: CancellationToken,
     ) -> Result<()> {
+        let extra = if let Some(mcp) = &context.mcp {
+            let discovered = tokio::select! {
+                () = cancellation.cancelled() => return Err(AxiomError::Cancelled),
+                result = tokio::time::timeout(Duration::from_secs(30), crate::mcp::connect_tools(&mcp.servers, self.limits.max_tool_output_bytes)) => result.map_err(|_| AxiomError::Tool("Local MCP server initialization timed out. Test the connections in Settings.".into()))?.map_err(|_| AxiomError::Tool("Could not initialize the selected local MCP servers. Test the connections in Settings before retrying.".into()))?,
+            };
+            let selected: Vec<_> = discovered
+                .into_iter()
+                .filter(|tool| mcp.tools.contains(tool.name()))
+                .collect();
+            if selected.len() != mcp.tools.len()
+                || selected.iter().any(|tool| {
+                    mcp.schemas.get(tool.name())
+                        != Some(&crate::desktop_mcp::schema_hash(&tool.parameters()))
+                })
+            {
+                for tool in selected {
+                    tool.shutdown().await;
+                }
+                return Err(AxiomError::Tool("MCP tool discovery changed. Test the connection and review this thread's selection.".into()));
+            }
+            selected
+        } else {
+            Vec::new()
+        };
+        // Process-group leases belong to these per-turn adapters. Dropping the
+        // scoped registry on completion, cancellation or failure closes all
+        // local MCP processes, including their descendants.
+        let scoped_tools = self.tools.with_session_tools(&extra)?;
+        let tools = &scoped_tools;
         let mut settings = self.settings_for(&context.session_id).await;
         let _steering_guard = crate::steering::SteeringGuard(context.steering.clone());
         let model = self
@@ -2227,9 +2283,10 @@ impl TurnRunner for AgentEngine {
                         &model,
                         settings.model.clone(),
                         messages.clone(),
-                        self.tools.definitions_for_with_web(
+                        tools.definitions_for_with_mcp(
                             context.permission_profile,
                             context.web_enabled,
+                            context.mcp.is_some(),
                         ),
                         settings.thinking,
                     ),
@@ -2419,8 +2476,8 @@ impl TurnRunner for AgentEngine {
                 let authorization = before_optional_deadline(
                     deadline,
                     self.authorize(
+                        tools,
                         &context,
-                        &tool_context,
                         &call.function.name,
                         &arguments,
                         &events,
@@ -2488,7 +2545,7 @@ impl TurnRunner for AgentEngine {
                     .map_err(|_| AxiomError::Cancelled)?;
                 let result = before_optional_deadline(
                     deadline,
-                    self.tools.execute(
+                    tools.execute(
                         &call.function.name,
                         &tool_context,
                         arguments.clone(),
@@ -2542,7 +2599,7 @@ impl TurnRunner for AgentEngine {
                                 })
                                 .await
                                 .map_err(|_| AxiomError::Cancelled)?;
-                            match self.tools.complete_interaction(
+                            match tools.complete_interaction(
                                 &call.function.name,
                                 &tool_context,
                                 &arguments,
@@ -4559,6 +4616,7 @@ mod engine_tests {
 
     fn context() -> TurnContext {
         TurnContext {
+            mcp: None,
             attachments: Vec::new(),
             session_id: SessionId::new(),
             turn_id: TurnId::new(),
@@ -5366,6 +5424,7 @@ mod engine_tests {
 
         let second_prompt = "x".repeat(600);
         let second = TurnContext {
+            mcp: None,
             attachments: Vec::new(),
             session_id,
             turn_id: TurnId::new(),
@@ -5517,6 +5576,7 @@ mod engine_tests {
         engine
             .run(
                 TurnContext {
+                    mcp: None,
                     attachments: Vec::new(),
                     session_id,
                     turn_id: TurnId::new(),
@@ -5690,6 +5750,7 @@ mod engine_tests {
         engine
             .run(
                 TurnContext {
+                    mcp: None,
                     attachments: Vec::new(),
                     session_id,
                     turn_id: TurnId::new(),
@@ -5840,6 +5901,7 @@ mod engine_tests {
         engine
             .run(
                 TurnContext {
+                    mcp: None,
                     attachments: Vec::new(),
                     session_id,
                     turn_id: TurnId::new(),
@@ -6440,13 +6502,8 @@ mod engine_tests {
         });
         let mut context = context();
         context.approval = Some(approval.clone());
-        let tool_context = ToolContext {
-            session_id: context.session_id.clone(),
-            cwd: context.cwd.clone(),
-            permission_profile: context.permission_profile,
-        };
         let (tx, mut rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
-        engine.authorize(&context, &tool_context, "ask_user_questions", &serde_json::json!({"questions":[{"id":"choice","prompt":"Which option?","options":["A","B"]}]}), &tx, CancellationToken::new()).await.unwrap();
+        engine.authorize(&engine.tools, &context, "ask_user_questions", &serde_json::json!({"questions":[{"id":"choice","prompt":"Which option?","options":["A","B"]}]}), &tx, CancellationToken::new()).await.unwrap();
         assert_eq!(approval.requests.load(Ordering::SeqCst), 0);
         assert!(rx.try_recv().is_err());
     }

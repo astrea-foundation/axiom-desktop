@@ -1,4 +1,4 @@
-import { ArrowDownToLine, ChartPie, KeyRound, Palette, UserRound } from "lucide-react";
+import { ArrowDownToLine, ChartPie, Plug, KeyRound, Palette, UserRound } from "lucide-react";
 import type { ReactNode } from "react";
 
 /** Add categories here, then their controls in SettingsSheet. */
@@ -6,6 +6,7 @@ export const SETTINGS_CATEGORIES = [
   { id: "appearance", label: "Appearance", description: "Make Axiom feel at home on your desktop.", icon: Palette },
   { id: "account", label: "Account", description: "Your identity and sign-in methods.", icon: UserRound },
   { id: "usage", label: "Usage", description: "Your spending, by model.", icon: ChartPie },
+  { id: "mcp", label: "MCP connections", description: "Connect local tools to your conversations.", icon: Plug },
   { id: "api-keys", label: "API keys", description: "Connect your tools. Track what each key uses.", icon: KeyRound },
   { id: "updates", label: "Updates", description: "The latest Axiom, ready when you are.", icon: ArrowDownToLine },
 ] as const;

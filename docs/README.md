@@ -11,6 +11,7 @@ must be recorded against the actual source revision and signed installers.
 | [Desktop](desktop.md) | Conversations, Agent/Web controls, evidence, credit and usage |
 | [CLI and TUI](cli.md) | Commands, terminal interaction, funding, plans and sessions |
 | [Local proxy](proxy.md) | Loopback integration and OpenAI compatibility |
+| [Local MCP connections](mcp.md) | Desktop connections, thread tools and approvals |
 | [Configuration](configuration.md) | Configuration precedence, paths and limits |
 | [Privacy](privacy.md) | Local storage, credentials and what leaves the device |
 | [Troubleshooting](troubleshooting.md) | Diagnosis and recovery |

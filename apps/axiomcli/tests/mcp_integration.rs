@@ -201,6 +201,7 @@ fn config(mode: &str, state: Option<&Path>, read_only: bool) -> McpServerConfig 
         "1".into(),
     ]);
     McpServerConfig {
+        env: std::collections::BTreeMap::default(),
         name: "Blossom Fixture".into(),
         command: "env".into(),
         args,
@@ -405,4 +406,27 @@ async fn invalid_deadlines_are_rejected_before_starting_a_server() {
     }
     let cfg: McpServerConfig = toml::from_str("name = 'fixture'\ncommand = 'fixture'").unwrap();
     assert_eq!(cfg.tool_timeout_secs, 300);
+}
+
+#[tokio::test]
+async fn explicit_environment_values_never_reach_tool_results_or_debug_output() {
+    let root = TempDir::new().unwrap();
+    let mut cfg = config("normal", None, false);
+    let secret = "mcp-fixture-secret-not-an-inherited-token";
+    cfg.env.insert("LOCAL_MCP_TEST_TOKEN".into(), secret.into());
+    assert!(!format!("{cfg:?}").contains(secret));
+    let tools = connect_tools(&[cfg], 8192).await.unwrap();
+    let result = tools[0]
+        .execute(
+            &context(&root),
+            json!({"text": secret}),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert!(!result.content.contains(secret));
+    assert!(result.content.contains("[REDACTED]"));
+    for tool in tools {
+        tool.shutdown().await;
+    }
 }

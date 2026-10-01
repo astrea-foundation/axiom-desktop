@@ -111,6 +111,7 @@ async fn deterministic_agent_edits_runs_tests_and_reports_completion() {
     engine
         .run(
             TurnContext {
+                mcp: None,
                 attachments: Vec::new(),
                 session_id: session_id.clone(),
                 turn_id: TurnId::new(),
@@ -217,6 +218,7 @@ async fn deterministic_agent_observes_failure_repairs_and_reruns() {
     engine
         .run(
             TurnContext {
+                mcp: None,
                 attachments: Vec::new(),
                 session_id: SessionId::new(),
                 turn_id: TurnId::new(),
@@ -286,6 +288,7 @@ async fn adversarial_out_of_root_edit_is_rejected_without_side_effect() {
     engine
         .run(
             TurnContext {
+                mcp: None,
                 attachments: Vec::new(),
                 session_id: SessionId::new(),
                 turn_id: TurnId::new(),

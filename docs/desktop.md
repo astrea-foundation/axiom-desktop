@@ -61,7 +61,10 @@ Agent settings persist atomically. Save requires an idle thread; the renderer
 also requires an empty queue. Prompts and steering carry the saved settings
 revision, so queued text cannot silently inherit a different permission/directory
 configuration. A change clears cached policy grants and file-change tracking.
-Desktop does not launch configured MCP servers.
+Desktop supports explicitly configured [local MCP connections](mcp.md). The
+Agent menu selects MCP tools per thread independently of shell/filesystem
+permissions; MCP can be used while Agent is off. Settings provides connection
+management, testing, tool inspection and configuration import.
 
 Full access removes routine approval prompts while native validation and deny
 rules still apply. Linux command tools require Bubblewrap and run without host

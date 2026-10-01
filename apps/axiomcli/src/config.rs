@@ -63,12 +63,14 @@ pub struct Config {
     pub mcp_servers: Vec<McpServerConfig>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct McpServerConfig {
     pub name: String,
     pub command: String,
     #[serde(default)]
     pub args: Vec<String>,
+    #[serde(skip)]
+    pub env: std::collections::BTreeMap<String, String>,
     /// Names explicitly trusted by the user as read-only. Server annotations
     /// are display hints and never grant this policy classification.
     #[serde(default)]
@@ -81,6 +83,17 @@ pub struct McpServerConfig {
 #[must_use]
 pub const fn default_mcp_tool_timeout_secs() -> u64 {
     300
+}
+
+impl std::fmt::Debug for McpServerConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("McpServerConfig")
+            .field("name", &self.name)
+            .field("command", &self.command)
+            .field("args", &self.args)
+            .field("environment_keys", &self.env.keys().collect::<Vec<_>>())
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Default, Deserialize)]
@@ -147,7 +160,7 @@ impl ConfigLayer {
     fn apply_desktop_shared(mut self, config: &mut Config) {
         // The shared file is also the CLI's trusted configuration. Desktop
         // consumes its common fields, but these two CLI-only authority
-        // surfaces cannot alter the fixed Web/no-MCP desktop product profile.
+        // surfaces cannot alter Desktop startup authority or its separately managed MCP connections.
         self.permission_profile = None;
         self.mcp_servers = None;
         self.apply_trusted(config);

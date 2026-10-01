@@ -135,15 +135,28 @@ export function useConversations(agentState: ClientState, navigation: ReturnType
   for (const message of messageQueue.current.list(activeThreadId, billingAccountId)) {
     attachmentPreviews.remember(message.id, message.attachments ?? []);
   }
+  const [mcpError, setMcpError] = useState<string | undefined>();
+  useEffect(() => {
+    let live = true;
+    const api = window.axiomDesktop?.agent;
+    if (!billingAccountId || !agentState.connected || !api?.desktopMcp) return;
+    setMcpError(undefined);
+    void api.desktopMcp({ threadId: surface === "thread" ? activeThreadId : undefined, action: { kind: "list" } })
+      .catch((cause) => { if (live) setMcpError(cause instanceof Error ? cause.message : String(cause)); });
+    return () => { live = false; };
+  }, [agentAccountScope, agentState.connected, surface, activeThreadId]);
   const newAgentSelection = newAgentDraft?.scope === agentAccountScope ? newAgentDraft.selection : DEFAULT_AGENT_SELECTION;
   const currentAgent = surface === "thread" ? activeSession?.desktopAgent : null;
   const agentControl: AgentControlOptions = {
     scope: JSON.stringify([agentAccountScope, surface === "thread" ? activeThreadId : "new"]),
     selection: currentAgent ? {
       enabled: currentAgent.enabled, permission: currentAgent.permission,
-      workingDirectory: currentAgent.usesDefaultDirectory ? null : currentAgent.workingDirectory
+      workingDirectory: currentAgent.usesDefaultDirectory ? null : currentAgent.workingDirectory,
+      mcpTools: activeSession?.desktopMcp?.selectedTools ?? []
     } : surface === "thread" ? DEFAULT_AGENT_SELECTION : newAgentSelection,
     defaultDirectory: currentAgent?.defaultWorkingDirectory,
+    mcpServers: agentState.mcp?.servers,
+    mcpError,
     disabledReason: !billingAccountId || !agentState.connected ? "Sign in and connect to configure Agent mode."
       : typeof window.axiomDesktop?.agent.configureDesktopAgent !== "function" ? "Restart Axiom to enable the Agent controls."
         : surface === "thread" && !currentAgent ? "Agent settings are unavailable. Restart Axiom to load the updated native app."
@@ -164,7 +177,20 @@ export function useConversations(agentState: ClientState, navigation: ReturnType
         if (!current.connected || current.account?.state !== "valid" || current.account.account?.id !== billingAccountId
           || current.runtimeInstanceId !== agentState.runtimeInstanceId) throw new Error("The account or connection changed. No Agent settings were applied.");
         if (surface === "thread" && activeThreadId && currentAgent) {
-          await api.configureDesktopAgent({ threadId: activeThreadId, expectedRevision: currentAgent.revision, ...selection });
+          const { mcpTools, ...agentSelection } = selection;
+          let mcpApplied = false;
+          if (agentState.mcp) {
+            const mcp = await api.desktopMcp({ threadId: activeThreadId, action: { kind: "list" } });
+            if (JSON.stringify([...mcp.selectedTools].sort()) !== JSON.stringify([...(mcpTools ?? [])].sort())) {
+              await api.desktopMcp({ threadId: activeThreadId, expectedRevision: mcp.revision, action: { kind: "select", tools: mcpTools ?? [] } });
+              mcpApplied = true;
+            }
+          }
+          const directory = currentAgent.usesDefaultDirectory ? null : currentAgent.workingDirectory;
+          if (agentSelection.enabled !== currentAgent.enabled || agentSelection.permission !== currentAgent.permission || agentSelection.workingDirectory !== directory) {
+            try { await api.configureDesktopAgent({ threadId: activeThreadId, expectedRevision: currentAgent.revision, ...agentSelection }); }
+            catch (cause) { if (mcpApplied) throw new Error(`MCP tools were saved, but Agent settings could not be applied: ${cause instanceof Error ? cause.message : String(cause)}`); throw cause; }
+          }
         } else {
           setNewAgentDraft({ scope: agentAccountScope, selection });
         }
@@ -260,7 +286,7 @@ export function useConversations(agentState: ClientState, navigation: ReturnType
     const threadId = activeThreadId;
     setUiError(null);
     try {
-      await api.revisePrompt(threadId, text, userItemId, activeSession.threadRevision, webAccess.enabled, activeSession.desktopAgent?.revision ?? 0);
+      await api.revisePrompt(threadId, text, userItemId, activeSession.threadRevision, webAccess.enabled, activeSession.desktopAgent?.revision ?? 0, agentState.mcp?.revision);
     } catch (error) {
       const current = await api.getState();
       if (current.account?.account?.id === owner && activeThreadIdRef.current === threadId) setUiError(error instanceof Error ? error.message : String(error));
@@ -290,7 +316,7 @@ export function useConversations(agentState: ClientState, navigation: ReturnType
     const last = session.timeline.at(-1);
     const user = [...session.timeline].reverse().find((item) => item.kind === "user");
     if (last?.kind === "error" && last.text.includes("OutOfDate") && user && user.turnId === last.turnId) {
-      await api.revisePrompt(threadId, user.text, user.id, session.threadRevision, webAccess.enabled, session.desktopAgent?.revision ?? 0);
+      await api.revisePrompt(threadId, user.text, user.id, session.threadRevision, webAccess.enabled, session.desktopAgent?.revision ?? 0, agentState.mcp?.revision);
     }
   };
 
@@ -366,7 +392,12 @@ export function useConversations(agentState: ClientState, navigation: ReturnType
         if (!await currentSubmissionState()) return;
         if (newAgentSelection.enabled || newAgentSelection.permission !== "approve_commands" || newAgentSelection.workingDirectory) {
           if (typeof api.configureDesktopAgent !== "function") throw new Error("Restart Axiom to enable Agent mode. Your draft was kept.");
-          await api.configureDesktopAgent({ threadId: sessionId, expectedRevision: 0, ...newAgentSelection });
+          const { mcpTools: _mcpTools, ...agentSelection } = newAgentSelection;
+          await api.configureDesktopAgent({ threadId: sessionId, expectedRevision: 0, ...agentSelection });
+        }
+        if (newAgentSelection.mcpTools?.length) {
+          const mcp = await api.desktopMcp({ threadId: sessionId, action: { kind: "list" } });
+          await api.desktopMcp({ threadId: sessionId, expectedRevision: mcp.revision, action: { kind: "select", tools: newAgentSelection.mcpTools } });
         }
       } else if (sessionId && !agentState.sessions[sessionId]) {
         await api.loadChat(sessionId);

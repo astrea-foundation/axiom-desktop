@@ -9,6 +9,7 @@ import { createChildEnvironment, DESKTOP_SIDECAR_INHERITED_ENV } from "@axiom/ax
 import type { ElicitationOutcome, ListThreadsRequest, LoginMethod, PermissionOutcome, ThreadSettingsRequest } from "@axiom/axiom-acp-client";
 import { AgentSidecar, resolveSidecar } from "./agent-sidecar";
 import { ProxySupervisor } from "./proxy-supervisor";
+import { desktopMcpRequest } from "./desktop-mcp-settings";
 import { agentRevision, desktopAgentRequest } from "./desktop-agent-settings";
 import { requirePaymentAccount, resolveServiceOrigins, STAGING_API_ORIGIN } from "./service-origins";
 import { platformWindowChrome } from "./window-chrome";
@@ -147,31 +148,31 @@ function installAgentIpc(): void {
   );
   // Do not alias the legacy channel: mismatched renderer/preload/main builds
   // must fail before a prompt can reach a runtime without Web consent support.
-  agentHandle("agent:prompt-with-agent-context", (_event, sessionId: unknown, prompt: unknown, clientItemId: unknown, webEnabled: unknown, revision: unknown) => {
+  agentHandle("agent:prompt-with-agent-context", (_event, sessionId: unknown, prompt: unknown, clientItemId: unknown, webEnabled: unknown, revision: unknown, mcpRevision: unknown) => {
     if (typeof webEnabled !== "boolean") throw new Error("webEnabled must be a boolean");
     return sidecar.prompt(
       boundedString(sessionId, "thread ID", 128),
       boundedString(prompt, "prompt", 4 * 1024 * 1024),
       boundedString(clientItemId, "client item ID", 512),
       webEnabled,
-      agentRevision(revision),
+      agentRevision(revision), undefined, [], mcpRevision === undefined ? undefined : agentRevision(mcpRevision),
     );
   });
-  agentHandle("agent:prompt-with-attachments", (_event, sessionId: unknown, text: unknown, clientItemId: unknown, webEnabled: unknown, revision: unknown, attachments: unknown) => {
+  agentHandle("agent:prompt-with-attachments", (_event, sessionId: unknown, text: unknown, clientItemId: unknown, webEnabled: unknown, revision: unknown, attachments: unknown, mcpRevision: unknown) => {
     if (typeof webEnabled !== "boolean" || typeof text !== "string") throw new Error("Invalid prompt input");
     validatePrompt(text, attachments);
-    return sidecar.prompt(boundedString(sessionId, "thread ID", 128), text, boundedString(clientItemId, "client item ID", 512), webEnabled, agentRevision(revision), undefined, attachments);
+    return sidecar.prompt(boundedString(sessionId, "thread ID", 128), text, boundedString(clientItemId, "client item ID", 512), webEnabled, agentRevision(revision), undefined, attachments, mcpRevision === undefined ? undefined : agentRevision(mcpRevision));
   });
   agentHandle("agent:attachments", (_event, threadId: unknown, userItemId: unknown) =>
     sidecar.getAttachments(boundedString(threadId, "thread ID", 128), boundedString(userItemId, "user message ID", 512)));
-  agentHandle("agent:prompt-revise", (_event, sessionId: unknown, text: unknown, userItemId: unknown, expectedRevision: unknown, webEnabled: unknown, revision: unknown) => {
+  agentHandle("agent:prompt-revise", (_event, sessionId: unknown, text: unknown, userItemId: unknown, expectedRevision: unknown, webEnabled: unknown, revision: unknown, mcpRevision: unknown) => {
     if (typeof webEnabled !== "boolean") throw new Error("webEnabled must be a boolean");
     if (typeof text !== "string") throw new Error("Invalid prompt input");
     validatePrompt(text, [], true);
     return sidecar.prompt(boundedString(sessionId, "thread ID", 128), text,
       crypto.randomUUID(), webEnabled, agentRevision(revision), {
         userItemId: boundedString(userItemId, "user message ID", 512), expectedRevision: agentRevision(expectedRevision),
-      });
+      }, [], mcpRevision === undefined ? undefined : agentRevision(mcpRevision));
   });
   agentHandle("agent:cancel", (_event, sessionId: unknown) =>
     sidecar.cancel(boundedString(sessionId, "session ID", 128)),
@@ -189,6 +190,7 @@ function installAgentIpc(): void {
       agentRevision: agentRevision(request.agentRevision ?? 0),
     });
   });
+  agentHandle("agent:desktop-mcp", (_event, value: unknown) => sidecar.desktopMcp(desktopMcpRequest(value)));
   agentHandle("agent:desktop-agent-configure", (_event, value: unknown) => sidecar.configureDesktopAgent(desktopAgentRequest(value)));
   agentHandle("agent:working-directory-choose", async (event, current: unknown) => {
     const state = sidecar.state();

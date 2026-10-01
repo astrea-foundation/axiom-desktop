@@ -82,7 +82,7 @@ are never an instruction to send conversation plaintext through a hosted endpoin
 
 | Group | Method names following `_axiom/` |
 |---|---|
-| Desktop | `desktop/bootstrap`, `desktop/agent/configure` |
+| Desktop | `desktop/bootstrap`, `desktop/agent/configure`, `desktop/mcp` |
 | Threads | `thread/list`, `thread/timeline`, `thread/attachments`, `thread/rename`, `thread/delete_preview`, `thread/delete_confirm` |
 | Models/preferences | `models/list`, `profile/preferences`, `profile/preferences/set` |
 | Collections | `collection/list`, `collection/create`, `collection/rename`, `collection/set_collapsed`, `collection/move`, `collection/delete`, `collection/assign` |
@@ -125,7 +125,19 @@ Bootstrap starts new Desktop threads with Agent off. `desktopAgent@1` atomically
 configures enablement, approval level and directory with `expectedRevision`.
 Changes require idle work; queued prompts/steering carry `agentRevision` to
 reject stale authority. Generic mode setters cannot bypass this path. Desktop
-keeps its embedded system prompt and does not start configured MCP servers.
+keeps its embedded system prompt and does not start servers from CLI configuration.
+
+Optional `desktopMcp@1` adds `_axiom/desktop/mcp` for account-scoped local stdio
+connections: `list`, `save`, `delete`, `test`, `import` and per-thread `select`.
+Mutations carry `expectedRevision` and require idle work. Secrets are write-only
+OS-credential-store variables; only their names and opaque references are
+returned. Thread selections expose only the chosen MCP tools, without granting
+builtin Agent or Web authority. Prompts with `_meta.axiom.mcpRevision` bind to the
+current account-wide configuration/selection revision; mismatches fail before
+acceptance. Missing metadata exposes no Desktop MCP tools, preserving safe older
+client behavior. Connection changes invalidate affected selections/grants;
+MCP schema hashes are rechecked before each turn. This optional feature is
+advertised only by the Desktop frontend. See [local MCP connections](mcp.md).
 
 Every Desktop prompt supplies `_meta.axiom.webEnabled`; only explicit boolean
 `true` permits built-in Web tools. Missing consent is false, and malformed

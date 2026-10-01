@@ -18,6 +18,7 @@ mod codec;
 mod collections;
 mod connection;
 mod events;
+mod mcp;
 mod preferences;
 mod projection;
 mod queries;

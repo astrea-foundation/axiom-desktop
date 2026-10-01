@@ -77,7 +77,11 @@ export function toolLabel(tool: ToolActivity): string {
   const reason = toolFailureReason(tool);
   const done = tool.status === "completed";
   let label: string;
-  if (name === "web_search") {
+  if (name.startsWith("mcp__")) {
+    const [server, ...parts] = name.slice(5).split("__");
+    const target = compact(`${server} / ${parts.join("__").replaceAll("_", " ")}`, 120);
+    label = `${failed ? "Failed to call" : done ? "Called" : "Calling"} ${target} · MCP`;
+  } else if (name === "web_search") {
     const verb = failed ? "Failed to search the web" : done ? "Searched the web" : "Searching the web";
     const query = typeof input?.query === "string" ? compact(input.query, 140) : "";
     label = reason

@@ -58,6 +58,9 @@ pub(super) async fn prompt(
         .as_ref()
         .and_then(|metadata| metadata.agent_revision)
         .unwrap_or(0);
+    let mcp_revision = prompt_metadata
+        .as_ref()
+        .and_then(|metadata| metadata.mcp_revision);
     let message_revision = prompt_metadata
         .as_ref()
         .and_then(|metadata| metadata.revision.clone());
@@ -126,6 +129,24 @@ pub(super) async fn prompt(
             return responder.respond_with_internal_error("session already has active work");
         }
         if ctx_frontend == FrontendKind::DesktopChat {
+            if let Some(expected) = mcp_revision {
+                if !extension_enabled(&ctx_extension_state, ExtensionFeature::DesktopMcp) {
+                    return responder.respond_with_error(extension_not_negotiated());
+                }
+                let snapshot = respond_or_return!(
+                    responder,
+                    ctx_store
+                        .as_ref()
+                        .expect("desktop store")
+                        .desktop_mcp_snapshot(Some(&internal_id))
+                        .map_err(agent_error)
+                );
+                if snapshot.revision != expected {
+                    return responder.respond_with_internal_error(
+                        "MCP settings changed since this message was queued. Review and resend it.",
+                    );
+                }
+            }
             let agent = respond_or_return!(
                 responder,
                 ctx_store
@@ -1112,8 +1133,14 @@ pub(super) async fn prompt(
         let display_cwd = cwd.clone();
         let mut terminalized = false;
         let mut task_result: agent_client_protocol::Result<_> = async {
+            let mcp = if let Some(expected) = mcp_revision {
+                let store = task_store.as_ref().expect("desktop store").bind_active_account().map_err(agent_error)?;
+                let thread = internal_id.clone();
+                crate::desktop_mcp::credential_task(move || crate::desktop_mcp::turn_config(&store, &thread, expected)).await.map_err(agent_error)?
+            } else { None };
             let run = task_runner.run(
                 crate::agent::TurnContext {
+                    mcp,
                     session_id: internal_id.clone(),
                     turn_id: turn_id.clone(),
                     cwd,

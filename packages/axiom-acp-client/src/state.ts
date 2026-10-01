@@ -11,6 +11,7 @@ import type {
   GetThreadTimelineResponse,
   DesktopAgentSettings,
   ConfigureDesktopAgentResponse,
+  DesktopMcpResponse,
   ProfilePreferences,
   SecurityStatus,
   SecurityEvidence,
@@ -73,6 +74,7 @@ export interface ClientSessionState {
   running: boolean;
   activeTurnId?: string | null;
   desktopAgent?: DesktopAgentSettings | null;
+  desktopMcp?: Pick<DesktopMcpResponse, "revision" | "selectedTools"> | null;
   needsResync: boolean;
   threadRevision: number;
   lastTimelineSequence: number;
@@ -81,6 +83,7 @@ export interface ClientSessionState {
 }
 
 export interface ClientState {
+  mcp?: DesktopMcpResponse | null;
   connected: boolean;
   runtimeInstanceId: string | null;
   lastSequence: number;
@@ -341,6 +344,7 @@ export class AxiomStateStore extends EventEmitter {
       // Account context is one atomic replacement. No thread, optimistic
       // timeline item, collection, preference, security state, or stale error
       // from the previous account survives this publication.
+      this.value.mcp = null;
       this.value.sessions = {};
       this.textRevisions.clear();
       this.value.catalog = [];
@@ -453,6 +457,15 @@ export class AxiomStateStore extends EventEmitter {
     session.needsResync = false;
     this.changed();
     return true;
+  }
+
+  setDesktopMcp(response: DesktopMcpResponse, threadId?: string | null, resetSelections = false): void {
+    this.value.mcp = response;
+    for (const session of Object.values(this.value.sessions)) {
+      if (session.desktopMcp) session.desktopMcp = { revision: response.revision, selectedTools: resetSelections ? [] : session.desktopMcp.selectedTools };
+    }
+    if (threadId && this.value.sessions[threadId]) this.value.sessions[threadId].desktopMcp = { revision: response.revision, selectedTools: response.selectedTools };
+    this.changed();
   }
 
   setDesktopAgent(response: ConfigureDesktopAgentResponse): void {
@@ -624,6 +637,7 @@ export class AxiomStateStore extends EventEmitter {
       this.value.lastSequence = 0;
       // Account revisions are monotonic only within one agent runtime.
       this.value.account = null;
+      this.value.mcp = null;
       this.value.sessions = {};
       this.textRevisions.clear();
       this.value.catalog = [];

@@ -197,7 +197,7 @@ pub async fn connect_tools(
                 public_name,
                 remote_name: descriptor.remote_name,
                 server_name: config.name.clone(),
-                description: descriptor.description,
+                description: redact_environment_text(&descriptor.description, &config.env),
                 schema: descriptor.schema,
                 trusted_read_only,
                 connection: connection.clone(),
@@ -215,6 +215,7 @@ async fn connect(
 ) -> Result<ConnectedMcp> {
     let mut command = configured_command(config)?;
     crate::process_env::apply_sanitized_environment(&mut command);
+    command.envs(&config.env);
     command.stdin(Stdio::null());
     #[cfg(unix)]
     command.process_group(0);
@@ -518,6 +519,7 @@ impl Tool for McpTool {
         arguments: Value,
         cancellation: CancellationToken,
     ) -> Result<ToolResult> {
+        let outcome = async {
         let arguments: JsonObject = arguments
             .as_object()
             .cloned()
@@ -585,7 +587,10 @@ impl Tool for McpTool {
             "result": result,
         });
         redact_value(&mut envelope);
-        let serialized = serde_json::to_string_pretty(&envelope)?;
+        let serialized = redact_environment_text(
+            &serde_json::to_string_pretty(&envelope)?,
+            &self.connection.config.env,
+        );
         let (content, truncated) = truncate(&serialized, self.max_output_bytes);
         Ok(ToolResult {
             content,
@@ -598,7 +603,29 @@ impl Tool for McpTool {
             events: Vec::new(),
             questions: None,
         })
+        }.await;
+        match outcome {
+            Err(AxiomError::Cancelled) => Err(AxiomError::Cancelled),
+            Err(error) => Err(AxiomError::Tool(redact_environment_text(
+                &error.to_string(),
+                &self.connection.config.env,
+            ))),
+            Ok(result) => Ok(result),
+        }
     }
+}
+
+pub(crate) fn redact_environment_text(text: &str, env: &BTreeMap<String, String>) -> String {
+    let mut text = text.to_owned();
+    let mut values: Vec<_> = env.values().filter(|value| !value.is_empty()).collect();
+    values.sort_by_key(|value| std::cmp::Reverse(value.len()));
+    for value in values {
+        text = text.replace(value, "[REDACTED]");
+        if let Ok(encoded) = serde_json::to_string(value) {
+            text = text.replace(&encoded[1..encoded.len() - 1], "[REDACTED]");
+        }
+    }
+    text
 }
 
 async fn call_with_limits(
