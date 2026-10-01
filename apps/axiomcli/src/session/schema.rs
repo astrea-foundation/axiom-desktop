@@ -7,7 +7,7 @@ use crate::{AxiomError, Result};
 use super::SessionStore;
 use super::codec::storage_error;
 
-pub(super) const SCHEMA_VERSION: i64 = 3;
+pub(super) const SCHEMA_VERSION: i64 = 4;
 // Clean-slate account-scoped storage contract (`AXA3`). Installation-scoped
 // pre-release databases use a different application ID and are never opened.
 pub(super) const APPLICATION_ID: i64 = 0x4158_4133;
@@ -88,6 +88,11 @@ pub(super) fn initialize_schema(connection: &mut Connection, version: i64) -> Re
             .map_err(storage_error)?;
         transaction.commit().map_err(storage_error)?;
     }
+    if version < 4 {
+        let transaction = connection.transaction().map_err(storage_error)?;
+        transaction.execute_batch("CREATE TABLE desktop_mcp_state(id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL); INSERT INTO desktop_mcp_state VALUES(1, '{\"revision\":0,\"servers\":{}}'); CREATE TABLE desktop_mcp_threads(thread_id TEXT PRIMARY KEY REFERENCES threads(id) ON DELETE CASCADE, tools TEXT NOT NULL); PRAGMA user_version=4;").map_err(storage_error)?;
+        transaction.commit().map_err(storage_error)?;
+    }
     Ok(())
 }
 
@@ -96,6 +101,8 @@ pub(super) const SCHEMA_BASELINE: &str = include_str!("schema.sql");
 pub(super) fn validate_schema(connection: &Connection) -> Result<()> {
     for table in [
         "threads",
+        "desktop_mcp_state",
+        "desktop_mcp_threads",
         "turns",
         "timeline_items",
         "prompt_attachments",

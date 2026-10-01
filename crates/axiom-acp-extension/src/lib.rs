@@ -68,6 +68,7 @@ impl ExtensionCapabilities {
 pub struct FeatureVersions {
     pub desktop_chat: u16,
     pub desktop_agent: u16,
+    pub desktop_mcp: u16,
     pub thread_catalog: u16,
     pub timeline: u16,
     pub model_catalog: u16,
@@ -91,6 +92,7 @@ impl FeatureVersions {
         Self {
             desktop_chat: 1,
             desktop_agent: 1,
+            desktop_mcp: 1,
             thread_catalog: 1,
             timeline: 2,
             model_catalog: 1,
@@ -144,6 +146,8 @@ pub struct PromptMetadata {
     /// Bind queued input to the exact locally approved Agent configuration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_revision: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_revision: Option<u64>,
     /// Replace local history starting at this user message before the normal
     /// native E2EE turn. Never interpreted by the hosted backend.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -197,6 +201,84 @@ pub struct ConfigureDesktopAgentRequest {
 pub struct ConfigureDesktopAgentResponse {
     pub thread: ThreadSummary,
     pub agent: DesktopAgentSettings,
+}
+
+/// Local stdio configuration. Environment values are write-only secrets.
+#[derive(Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DesktopMcpServerInput {
+    pub name: String,
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    pub enabled: bool,
+    /// None preserves existing credentials; an empty map clears them.
+    #[serde(default)]
+    pub env: Option<BTreeMap<String, String>>,
+}
+
+impl std::fmt::Debug for DesktopMcpServerInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DesktopMcpServerInput")
+            .field("name", &self.name)
+            .field("command", &self.command)
+            .field("args", &self.args)
+            .field("enabled", &self.enabled)
+            .field("has_environment", &self.env.is_some())
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum DesktopMcpAction {
+    List,
+    Save { server: DesktopMcpServerInput },
+    Delete { name: String },
+    Test { name: String },
+    Select { tools: Vec<String> },
+    Import { servers: Vec<DesktopMcpServerInput> },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcRequest)]
+#[request(method = "_axiom/desktop/mcp", response = DesktopMcpResponse)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DesktopMcpRequest {
+    #[serde(default)]
+    pub thread_id: Option<String>,
+    #[serde(default)]
+    pub expected_revision: Option<u64>,
+    pub action: DesktopMcpAction,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DesktopMcpTool {
+    pub name: String,
+    pub description: String,
+    pub schema_hash: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DesktopMcpServer {
+    pub name: String,
+    pub command: String,
+    pub args: Vec<String>,
+    pub enabled: bool,
+    pub environment_keys: Vec<String>,
+    pub credential_id: Option<String>,
+    pub tools: Vec<DesktopMcpTool>,
+    pub status: String,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcResponse)]
+#[serde(rename_all = "camelCase")]
+pub struct DesktopMcpResponse {
+    pub revision: u64,
+    pub servers: Vec<DesktopMcpServer>,
+    pub selected_tools: Vec<String>,
 }
 
 /// Durable identity attached beneath `_meta.axiom` on standard ACP
@@ -1156,6 +1238,8 @@ pub struct SteerTurnResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ProtocolSchema {
+    pub desktop_mcp_request: DesktopMcpRequest,
+    pub desktop_mcp_response: DesktopMcpResponse,
     pub configure_desktop_agent_request: ConfigureDesktopAgentRequest,
     pub configure_desktop_agent_response: ConfigureDesktopAgentResponse,
     pub capabilities: ExtensionCapabilities,

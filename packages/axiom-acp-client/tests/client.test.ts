@@ -1309,3 +1309,55 @@ test("timeline assembly independently drains accounting pages and rejects repeat
   assert.throws(() => internal.state.replaceTimeline([first, { ...second, requestUsage: [a] }]), /identity/);
   assert.throws(() => internal.state.replaceTimeline([first, { ...second, thread: { ...first.thread, revision: 2 } }]), /changed/);
 });
+
+test("Desktop local MCP configuration discovers tools, persists thread choices and rejects stale authority", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "axiom-desktop-mcp-"));
+  const script = resolve(root, "server.cjs");
+  await writeFile(script, `const readline = require('node:readline');
+const lines = readline.createInterface({ input: process.stdin });
+lines.on('line', line => {
+  const request = JSON.parse(line); if (request.id === undefined) return;
+  let result;
+  if (request.method === 'initialize') result = { protocolVersion: request.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: 'local-fixture', version: '1' } };
+  else if (request.method === 'tools/list') result = { tools: [{ name: 'echo', description: 'Echo local input', inputSchema: { type: 'object', properties: { text: { type: 'string' } } } }] };
+  else if (request.method === 'tools/call') result = { content: [{ type: 'text', text: request.params.arguments.text }] };
+  else result = {};
+  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result }) + '\\n');
+});`);
+  const create = () => new AxiomAcpClient({ command: binary, args: ["acp", "--frontend", "desktop-chat"], env: {
+    AXIOMCLI_TEST_RUNNER: "echo", XDG_CONFIG_HOME: resolve(root, "config"), XDG_DATA_HOME: resolve(root, "data"),
+  } });
+  let client = create();
+  let selectedThread = "";
+  try {
+    await client.initialize(); await client.bootstrapDesktop();
+    const first = await client.newChat(); const second = await client.newChat(); selectedThread = first.sessionId;
+    const initial = await client.desktopMcp({ action: { kind: "list" } });
+    const server = { name: "local", command: process.execPath, args: [script], enabled: true };
+    const saved = await client.desktopMcp({ expectedRevision: initial.revision, action: { kind: "save", server } });
+    const tested = await client.desktopMcp({ expectedRevision: saved.revision, action: { kind: "test", name: "local" } });
+    assert.equal(tested.servers[0]?.status, "tested");
+    assert.equal(tested.servers[0]?.tools[0]?.name, "mcp__local__echo");
+    assert.equal(tested.servers[0]?.environmentKeys.length, 0);
+    assert.equal(tested.servers[0]?.credentialId, null);
+    await assert.rejects(client.desktopMcp({ threadId: first.sessionId, expectedRevision: tested.revision, action: { kind: "select", tools: ["run_command"] } }));
+    const selected = await client.desktopMcp({ threadId: first.sessionId, expectedRevision: tested.revision, action: { kind: "select", tools: ["mcp__local__echo"] } });
+    assert.deepEqual(selected.selectedTools, ["mcp__local__echo"]);
+    assert.equal(client.getState().sessions[first.sessionId]?.desktopAgent?.enabled, false);
+    assert.deepEqual(client.getState().sessions[second.sessionId]?.desktopMcp?.selectedTools, []);
+    await assert.rejects(client.prompt(first.sessionId, "stale tools", "stale-mcp", false, 0, undefined, [], tested.revision));
+    assert.equal(client.getState().sessions[first.sessionId]?.timeline.some(item => item.clientItemId === "stale-mcp"), false);
+    const failed = await client.desktopMcp({ expectedRevision: selected.revision, action: { kind: "save", server: { name: "broken", command: resolve(root, "missing-server"), args: [], enabled: true } } });
+    const inspected = await client.desktopMcp({ expectedRevision: failed.revision, action: { kind: "test", name: "broken" } });
+    assert.equal(inspected.servers.find(item => item.name === "broken")?.status, "error");
+    assert.deepEqual(client.getState().sessions[first.sessionId]?.desktopMcp?.selectedTools, ["mcp__local__echo"], "unrelated failures preserve the thread's tools");
+  } finally { await client.close(); }
+  client = create();
+  try {
+    await client.initialize(); await client.bootstrapDesktop(); await client.loadChat(selectedThread);
+    assert.deepEqual(client.getState().sessions[selectedThread]?.desktopMcp?.selectedTools, ["mcp__local__echo"]);
+    const state = await client.desktopMcp({ action: { kind: "list" } });
+    await client.desktopMcp({ expectedRevision: state.revision, action: { kind: "delete", name: "local" } });
+    assert.deepEqual(client.getState().sessions[selectedThread]?.desktopMcp?.selectedTools, []);
+  } finally { await client.close(); }
+});

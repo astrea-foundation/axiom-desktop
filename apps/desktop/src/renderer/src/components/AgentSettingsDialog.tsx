@@ -1,5 +1,5 @@
 import { Bot, FolderOpen, Info, LoaderCircle, ShieldCheck, Terminal, X } from "lucide-react";
-import { useId, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { AgentControlOptions } from "./AgentModeControl";
 
 const PERMISSIONS = [
@@ -14,6 +14,10 @@ export function AgentSettingsDialog({ options, onClose }: { options: AgentContro
   const mounted = useRef(false);
   const inFlight = useRef(false);
   const [draft, setDraft] = useState(options.selection);
+  const mcpModified = useRef(false);
+  useEffect(() => {
+    if (!mcpModified.current) setDraft(current => ({ ...current, mcpTools: options.selection.mcpTools }));
+  }, [options.selection.mcpTools]);
   const [busy, setBusy] = useState<"saving" | "choosing" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const id = useId();
@@ -82,7 +86,7 @@ export function AgentSettingsDialog({ options, onClose }: { options: AgentContro
         <div className="shadow-glass-tile flex h-10 w-10 shrink-0 items-center justify-center rounded-[13px] bg-[var(--surface-tile)] text-[var(--color-text-secondary)]"><Bot size={20} aria-hidden="true" /></div>
         <div className="min-w-0 flex-1">
           <h2 className="text-[20px] font-medium tracking-tight">Agent mode</h2>
-          <p id={`${id}-description`} className="mt-1 text-[13px] leading-5 text-[var(--color-text-secondary)]">Work with files and run commands on your computer.</p>
+          <p id={`${id}-description`} className="mt-1 text-[13px] leading-5 text-[var(--color-text-secondary)]">Configure local tools for this thread.</p>
         </div>
         <button type="button" disabled={!!busy} aria-label="Close Agent settings" onClick={dismiss} className="-mr-1 -mt-1 rounded-lg p-1.5 text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--wash-chip-hover)] hover:text-[var(--color-text-primary)] disabled:opacity-40"><X size={16} /></button>
       </header>
@@ -123,6 +127,27 @@ export function AgentSettingsDialog({ options, onClose }: { options: AgentContro
           </div>
           {!draft.workingDirectory ? <p id={`${id}-directory-help`} className="mt-2 text-[12px] leading-[18px] text-[var(--color-text-tertiary)]">A separate folder for this thread in Axiom’s local data.</p> : null}
           {draft.workingDirectory ? <button type="button" disabled={blocked} onClick={() => { setDraft((value) => ({ ...value, workingDirectory: null })); setError(null); }} className="mt-1 text-[12px] text-[var(--color-text-secondary)] underline decoration-[var(--color-border-accent)] underline-offset-4 hover:text-[var(--color-text-primary)] disabled:opacity-40">Use default thread folder</button> : null}
+        </section>
+
+        <section aria-label="MCP tools for this thread" className="space-y-3 border-t border-[var(--color-border)] pt-5">
+          <h3 className="text-[13px] font-medium">MCP tools for this thread</h3>
+          <p className="text-[12px] leading-5 text-[var(--color-text-tertiary)]">Choose tools from your local connections. MCP works with Agent mode off. Calls ask for approval unless you grant access for this thread.</p>
+          {options.mcpError ? <p role="status" className="text-[12px] text-[var(--color-text-tertiary)]">{options.mcpError}</p> : null}
+          {!options.mcpError && !options.mcpServers?.length ? <p className="text-[12px] text-[var(--color-text-tertiary)]">Add and test local servers in Settings → MCP connections.</p> : null}
+          {options.mcpServers?.map((server) => <fieldset key={server.name} disabled={blocked || !server.enabled} className="space-y-2 rounded-xl bg-[var(--wash-row)] p-3">
+            <legend className="px-1 text-[12px] font-medium"><label className="flex items-center gap-2">
+              <input type="checkbox" aria-label={`Use ${server.name} in this thread`} disabled={blocked || !server.enabled || !server.tools.length}
+                checked={server.tools.length > 0 && server.tools.every(tool => draft.mcpTools?.includes(tool.name))}
+                ref={element => { if (element) element.indeterminate = server.tools.some(tool => draft.mcpTools?.includes(tool.name)) && !server.tools.every(tool => draft.mcpTools?.includes(tool.name)); }}
+                onChange={event => { mcpModified.current = true; const checked = event.target.checked; setDraft(current => ({ ...current, mcpTools: checked ? [...new Set([...current.mcpTools ?? [], ...server.tools.map(tool => tool.name)])] : current.mcpTools?.filter(name => !server.tools.some(tool => tool.name === name)) ?? [] })); }} />
+              {server.name}{!server.enabled ? " · disabled" : ""}
+            </label></legend>
+            {!server.tools.length ? <p className="text-[12px] text-[var(--color-text-tertiary)]">Test this connection in Settings to discover its tools.</p> : server.tools.map((tool) => <label key={tool.name} className="flex items-start gap-2.5 text-[12px]">
+              <input type="checkbox" className="mt-1" checked={draft.mcpTools?.includes(tool.name) ?? false} onChange={(event) => { mcpModified.current = true; setDraft((current) => ({ ...current, mcpTools: event.target.checked ? [...current.mcpTools ?? [], tool.name] : current.mcpTools?.filter((name) => name !== tool.name) ?? [] })); }} />
+              <span className="min-w-0"><span className="block break-all font-medium">{tool.name.replace(`mcp__${server.name}__`, "")}</span><span className="mt-0.5 block text-[var(--color-text-tertiary)]">{tool.description}</span></span>
+            </label>)}
+          </fieldset>)}
+          <p className="text-[12px] leading-5 text-[var(--color-text-tertiary)]">Connected services can see tool inputs and results. MCP activity is outside the model’s TEE protection.</p>
         </section>
 
         <p className="flex items-start gap-2 text-[12px] leading-[18px] text-[var(--color-text-tertiary)]"><Info size={13} className="mt-0.5 shrink-0" aria-hidden="true" /><span>Commands use your computer’s permissions and can access files and the network outside this folder.</span></p>

@@ -1,5 +1,29 @@
 /* Generated from protocol/axiom-acp-extension/v0.2/schema.json. Do not edit. */
 
+export type DesktopMcpAction =
+  | {
+      kind: "list";
+    }
+  | {
+      server: DesktopMcpServerInput;
+      kind: "save";
+    }
+  | {
+      name: string;
+      kind: "delete";
+    }
+  | {
+      name: string;
+      kind: "test";
+    }
+  | {
+      tools: string[];
+      kind: "select";
+    }
+  | {
+      servers: DesktopMcpServerInput[];
+      kind: "import";
+    };
 export type DesktopAgentPermission = "approve_commands" | "full_access";
 export type ThreadLifecycle =
   "ready" | "running" | "waiting_for_approval" | "waiting_for_answer" | "compacting" | "closed";
@@ -102,6 +126,8 @@ export type ExtensionErrorCode =
  * Schema root used to generate the checked-in language-neutral contract.
  */
 export interface ProtocolSchema {
+  desktopMcpRequest: DesktopMcpRequest;
+  desktopMcpResponse: DesktopMcpResponse;
   configureDesktopAgentRequest: ConfigureDesktopAgentRequest;
   configureDesktopAgentResponse: ConfigureDesktopAgentResponse;
   capabilities: ExtensionCapabilities;
@@ -168,6 +194,50 @@ export interface ProtocolSchema {
   };
   [k: string]: unknown;
 }
+export interface DesktopMcpRequest {
+  threadId?: string | null;
+  expectedRevision?: number | null;
+  action: DesktopMcpAction;
+}
+/**
+ * Local stdio configuration. Environment values are write-only secrets.
+ */
+export interface DesktopMcpServerInput {
+  name: string;
+  command: string;
+  args?: string[];
+  enabled: boolean;
+  /**
+   * None preserves existing credentials; an empty map clears them.
+   */
+  env?: {
+    [k: string]: string;
+  } | null;
+}
+export interface DesktopMcpResponse {
+  revision: number;
+  servers: DesktopMcpServer[];
+  selectedTools: string[];
+  [k: string]: unknown;
+}
+export interface DesktopMcpServer {
+  name: string;
+  command: string;
+  args: string[];
+  enabled: boolean;
+  environmentKeys: string[];
+  credentialId?: string | null;
+  tools: DesktopMcpTool[];
+  status: string;
+  error?: string | null;
+  [k: string]: unknown;
+}
+export interface DesktopMcpTool {
+  name: string;
+  description: string;
+  schemaHash: string;
+  [k: string]: unknown;
+}
 export interface ConfigureDesktopAgentRequest {
   threadId: string;
   expectedRevision: number;
@@ -225,6 +295,7 @@ export interface ExtensionCapabilities {
 export interface FeatureVersions {
   desktopChat?: number;
   desktopAgent?: number;
+  desktopMcp?: number;
   threadCatalog?: number;
   timeline?: number;
   modelCatalog?: number;
@@ -286,6 +357,7 @@ export interface PromptMetadata {
    * Bind queued input to the exact locally approved Agent configuration.
    */
   agentRevision?: number | null;
+  mcpRevision?: number | null;
   /**
    * Replace local history starting at this user message before the normal
    * native E2EE turn. Never interpreted by the hosted backend.

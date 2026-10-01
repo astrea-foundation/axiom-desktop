@@ -165,7 +165,7 @@ fn version_two_store_upgrades_preserving_titles_and_history() {
         .lock()
         .unwrap()
         .execute_batch(
-            "ALTER TABLE threads DROP COLUMN title_generation_id; PRAGMA user_version=2;",
+            "DROP TABLE desktop_mcp_threads; DROP TABLE desktop_mcp_state; ALTER TABLE threads DROP COLUMN title_generation_id; PRAGMA user_version=2;",
         )
         .unwrap();
     drop(store);
@@ -189,6 +189,102 @@ fn version_two_store_upgrades_preserving_titles_and_history() {
             .unwrap()
             .is_some()
     );
+}
+
+#[test]
+fn desktop_mcp_selections_are_account_scoped_revision_checked_and_independent() {
+    use axiom_acp_extension::{DesktopMcpServer, DesktopMcpTool};
+    let (_root, store) = routed_store();
+    store.activate_account("account-a").unwrap();
+    let first = SessionId::new();
+    let second = SessionId::new();
+    create(&store, &first);
+    create(&store, &second);
+    let server = DesktopMcpServer {
+        name: "local".into(),
+        command: "local-server".into(),
+        args: vec![],
+        enabled: true,
+        environment_keys: vec![],
+        credential_id: None,
+        tools: vec![DesktopMcpTool {
+            name: "mcp__local__echo".into(),
+            description: "Echo".into(),
+            schema_hash: "schema".into(),
+        }],
+        status: "tested".into(),
+        error: None,
+    };
+    store
+        .save_desktop_mcp(0, vec![server.clone()], None)
+        .unwrap();
+    store
+        .save_desktop_mcp(
+            1,
+            vec![server.clone()],
+            Some((&first, vec!["mcp__local__echo".into()])),
+        )
+        .unwrap();
+    assert_eq!(
+        store
+            .desktop_mcp_snapshot(Some(&first))
+            .unwrap()
+            .selected_tools,
+        vec!["mcp__local__echo"]
+    );
+    assert!(
+        store
+            .desktop_mcp_snapshot(Some(&second))
+            .unwrap()
+            .selected_tools
+            .is_empty()
+    );
+    assert!(!store.desktop_agent_settings(&first).unwrap().enabled);
+    assert!(
+        store
+            .save_desktop_mcp(1, vec![server.clone()], Some((&second, vec![])))
+            .is_err()
+    );
+    assert!(
+        store
+            .save_desktop_mcp(
+                2,
+                vec![server.clone()],
+                Some((&first, vec!["run_command".into()]))
+            )
+            .is_err()
+    );
+    let mut unrelated = server.clone();
+    unrelated.name = "other".into();
+    unrelated.tools.clear();
+    store
+        .save_desktop_mcp(2, vec![server.clone(), unrelated], None)
+        .unwrap();
+    assert_eq!(
+        store
+            .desktop_mcp_snapshot(Some(&first))
+            .unwrap()
+            .selected_tools
+            .len(),
+        1
+    );
+    let mut changed = server;
+    changed.command = "different-server".into();
+    store.save_desktop_mcp(3, vec![changed], None).unwrap();
+    assert!(
+        store
+            .desktop_mcp_snapshot(Some(&first))
+            .unwrap()
+            .selected_tools
+            .is_empty()
+    );
+    let bound = store.bind_active_account().unwrap();
+    store.activate_account("account-b").unwrap();
+    assert!(bound.desktop_mcp_snapshot(None).is_err());
+    assert!(store.desktop_mcp_snapshot(None).unwrap().servers.is_empty());
+    assert!(store.desktop_mcp_snapshot(Some(&first)).is_err());
+    store.activate_account("account-a").unwrap();
+    assert_eq!(store.desktop_mcp_snapshot(None).unwrap().revision, 4);
 }
 
 #[test]

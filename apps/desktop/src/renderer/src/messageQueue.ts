@@ -11,14 +11,15 @@ export interface QueuedMessage {
   payloadId?: string;
   webEnabled: boolean;
   agentRevision: number;
+  mcpRevision?: number;
   status: "queued" | "sending" | "stopping";
   preparing?: boolean;
   error?: string;
 }
 export interface QueueApi {
   getState(): Promise<ClientState>;
-  promptWithWebConsent(thread: string, text: string, id: string, web: boolean, agentRevision: number): Promise<PromptResult>;
-  promptWithAttachments?(thread: string, text: string, id: string, web: boolean, agentRevision: number, attachments: PromptAttachment[]): Promise<PromptResult>;
+  promptWithWebConsent(thread: string, text: string, id: string, web: boolean, agentRevision: number, mcpRevision?: number): Promise<PromptResult>;
+  promptWithAttachments?(thread: string, text: string, id: string, web: boolean, agentRevision: number, attachments: PromptAttachment[], mcpRevision?: number): Promise<PromptResult>;
   cancel(threadId: string): Promise<void>;
 }
 const MAX_MESSAGES = 32;
@@ -83,11 +84,12 @@ export class MessageQueue {
             if (!value || typeof value !== "object" || typeof value.id !== "string" || !value.id || value.id.length > 128
               || typeof value.threadId !== "string" || !value.threadId || value.threadId.length > 128
               || typeof value.webEnabled !== "boolean" || this.items.some((item) => item.id === value.id)
-              || !Number.isSafeInteger(value.agentRevision ?? 0) || (value.agentRevision ?? 0) < 0) throw new Error("invalid queue");
+              || !Number.isSafeInteger(value.agentRevision ?? 0) || (value.agentRevision ?? 0) < 0
+              || (value.mcpRevision !== undefined && (!Number.isSafeInteger(value.mcpRevision) || value.mcpRevision < 0))) throw new Error("invalid queue");
             validatePrompt(value.text, value.attachments ?? []);
             if (this.items.reduce((sum, item) => sum + promptBytes(item.text, item.attachments ?? []), promptBytes(value.text, value.attachments ?? [])) > MAX_QUEUE_BYTES) throw new Error("invalid queue size");
             this.items.push({ id: value.id, threadId: value.threadId, text: value.text, attachments: value.attachments,
-              payloadId: value.payloadId, webEnabled: value.webEnabled, agentRevision: value.agentRevision ?? 0,
+              payloadId: value.payloadId, webEnabled: value.webEnabled, agentRevision: value.agentRevision ?? 0, mcpRevision: value.mcpRevision,
               preparing: value.preparing === true, status: "queued", error: "Restored after reconnect. Review and send when ready." });
             this.paused.add(value.threadId);
           };
@@ -160,6 +162,7 @@ export class MessageQueue {
     if (this.items.reduce((sum, item) => sum + promptBytes(item.text, item.attachments ?? []), promptBytes(text, attachments)) > MAX_QUEUE_BYTES) throw new Error("The local queue is full (64 MiB). Send or remove a queued message first.");
     const id = payloadId ?? crypto.randomUUID();
     const item: QueuedMessage = { id, threadId: threadId ?? `pending:${id}`, text, attachments, payloadId, webEnabled,
+      mcpRevision: this.state.mcp?.revision,
       agentRevision: threadId ? this.state.sessions[threadId]?.desktopAgent?.revision ?? 0 : 0,
       preparing: true, status: "sending" };
     this.items.push(item);
@@ -183,7 +186,7 @@ export class MessageQueue {
     const item = this.items.find((item) => item.id === id && item.preparing);
     if (!item || !this.state?.sessions[threadId]) throw new Error("The thread is not ready. Your message is saved for review.");
     const previous = { ...item };
-    Object.assign(item, { threadId, preparing: false, status: "queued", agentRevision: this.state.sessions[threadId]?.desktopAgent?.revision ?? 0 });
+    Object.assign(item, { threadId, preparing: false, status: "queued", mcpRevision: this.state.mcp?.revision, agentRevision: this.state.sessions[threadId]?.desktopAgent?.revision ?? 0 });
     delete item.error;
     try { this.persist(); } catch (error) { Object.assign(item, previous); throw error; }
     // New intent survives Stop's asynchronous cleanup. It does not release
@@ -290,6 +293,10 @@ export class MessageQueue {
       item.error = "Agent settings changed. Remove this queued message and send it again with the settings you want.";
       this.paused.add(item.threadId); this.save(); this.changed(); return false;
     }
+    if (item.mcpRevision !== (this.state?.mcp?.revision)) {
+      item.status = "queued"; item.error = "MCP settings changed. Remove this queued message and send it again with the tools you want.";
+      this.paused.add(item.threadId); this.save(); this.changed(); return false;
+    }
     return true;
   }
   private async dispatch(item: QueuedMessage): Promise<void> {
@@ -304,8 +311,8 @@ export class MessageQueue {
     try {
       if (item.attachments?.length && !api.promptWithAttachments) throw new Error("Restart Axiom to enable attachments.");
       const result = item.attachments?.length
-        ? await api.promptWithAttachments!(item.threadId, item.text, item.id, item.webEnabled, item.agentRevision, item.attachments)
-        : await api.promptWithWebConsent(item.threadId, item.text, item.id, item.webEnabled, item.agentRevision);
+        ? await api.promptWithAttachments!(item.threadId, item.text, item.id, item.webEnabled, item.agentRevision, item.attachments, item.mcpRevision)
+        : await api.promptWithWebConsent(item.threadId, item.text, item.id, item.webEnabled, item.agentRevision, item.mcpRevision);
       if (generation !== this.generation) return;
       const state = await api.getState();
       if (generation !== this.generation) return;

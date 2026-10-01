@@ -3,6 +3,7 @@ import { access, stat } from "node:fs/promises";
 import { constants } from "node:fs";
 import { join, resolve } from "node:path";
 import { app, BrowserWindow, shell } from "electron";
+import type { DesktopMcpRequest } from "@axiom/axiom-acp-client";
 import {
   AxiomAcpClient,
   DESKTOP_SIDECAR_INHERITED_ENV,
@@ -230,12 +231,13 @@ export class AgentSidecar {
     return this.requireClient().loadChat(sessionId);
   }
 
+  desktopMcp(request: DesktopMcpRequest) { return this.requireClient().desktopMcp(request); }
   configureDesktopAgent(request: ConfigureDesktopAgentRequest) { return this.requireClient().configureDesktopAgent(request); }
 
   getAttachments(threadId: string, userItemId: string) { return this.requireClient().getAttachments(threadId, userItemId); }
 
-  prompt(sessionId: string, text: string, clientItemId: string, webEnabled = false, agentRevision = 0, revision?: { userItemId: string; expectedRevision: number }, attachments: PromptAttachment[] = []) {
-    return this.requireClient().prompt(sessionId, text, clientItemId, webEnabled, agentRevision, revision, attachments);
+  prompt(sessionId: string, text: string, clientItemId: string, webEnabled = false, agentRevision = 0, revision?: { userItemId: string; expectedRevision: number }, attachments: PromptAttachment[] = [], mcpRevision?: number) {
+    return this.requireClient().prompt(sessionId, text, clientItemId, webEnabled, agentRevision, revision, attachments, mcpRevision);
   }
 
   steer(request: SteerTurnRequest) { return this.requireClient().steer(request); }

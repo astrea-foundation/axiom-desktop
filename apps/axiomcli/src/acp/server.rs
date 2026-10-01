@@ -388,6 +388,14 @@ pub async fn serve_stdio(
         async,
         builder,
         context,
+        mcp::manage,
+        extension::DesktopMcpRequest,
+        extension::DesktopMcpResponse
+    );
+    let builder = request_handler!(
+        async,
+        builder,
+        context,
         settings::set_session_mode,
         protocol::SetSessionModeRequest,
         protocol::SetSessionModeResponse

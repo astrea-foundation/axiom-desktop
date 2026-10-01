@@ -97,7 +97,9 @@ annotation cannot grant that classification. MCP initialization/discovery retain
 `tool_timeout_secs`, including any progress notifications; progress does not reset
 the absolute deadline. Stop and timeout send a bounded MCP cancellation notification.
 A timed-out tool is never automatically replayed, even when marked read-only.
-Desktop still does not launch MCP servers.
+Desktop uses its own account-scoped [local MCP connections](mcp.md), managed
+through Settings and selected per thread in the Agent menu. It does not launch
+servers from shared CLI configuration.
 
 | Tool profile | Behavior |
 |---|---|
@@ -113,7 +115,8 @@ process boundaries. See [security](threat-model.md#local-tools-and-processes).
 ## Desktop profile
 
 `axiomcli acp --frontend desktop-chat` starts with Agent off and profile `web`.
-It ignores shared CLI `permission_profile`/`mcp_servers`, clears MCP servers,
+It ignores shared CLI `permission_profile`/`mcp_servers` and clears those imported
+CLI server configurations,
 rejects a non-Web startup profile from frontend config/environment, and uses
 the embedded product prompt. `--system-prompt-file` cannot replace it.
 

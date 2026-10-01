@@ -90,8 +90,11 @@ provider setting, remove that override or explicitly select `axiom` after
 reviewing the hosted-search privacy behavior. Rejection of loopback/private
 URLs by `fetch_url` is expected.
 
-MCP server commands belong in trusted user configuration. Desktop's chat profile
-does not connect them. A disconnected read-only tool may retry once only if its
+CLI MCP server commands belong in trusted user configuration. In Desktop, add
+and test [local connections](mcp.md) in Settings, then choose tools in the thread's
+Agent menu. Check that the executable and its runtime are installed and reachable
+on the sanitized PATH; use an absolute path if needed. Locked/missing environment
+credentials require unlocking the OS credential store or saving them again. A disconnected read-only tool may retry once only if its
 name/schema are unchanged. A side-effecting operation with an ambiguous outcome
 is never replayed. Keep server logs off ACP stdout.
 

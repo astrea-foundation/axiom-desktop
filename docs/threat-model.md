@@ -151,7 +151,13 @@ MCP servers or grant broader authority.
 Processes have bounded output/time and cancellation cleanup; background tasks
 have four slots. An approved host-authority program on macOS/Windows can access
 resources beyond its cwd. The Web toggle only gates built-in search/fetch tools.
-MCP executables are trusted user-selected host code at startup; returned schemas,
+MCP executables are trusted user-selected host code on every OS. Desktop starts
+only explicitly tested, selected [local connections](mcp.md), with per-thread
+tool authority and approval separate from builtin Agent permissions. Account and
+revision checks prevent queued messages inheriting changed MCP authority.
+Environment secrets use immutable OS credential references and are never part
+of public snapshots. Server processes belong to their turn and are closed on
+completion/cancellation; returned schemas,
 text and side-effect claims stay untrusted. Ambiguous side-effecting calls are
 never automatically replayed. Read-only reconnect retry requires unchanged schema.
 

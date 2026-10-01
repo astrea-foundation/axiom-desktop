@@ -4,6 +4,12 @@
   "description": "Schema root used to generate the checked-in language-neutral contract.",
   "type": "object",
   "properties": {
+    "desktopMcpRequest": {
+      "$ref": "#/$defs/DesktopMcpRequest"
+    },
+    "desktopMcpResponse": {
+      "$ref": "#/$defs/DesktopMcpResponse"
+    },
     "configureDesktopAgentRequest": {
       "$ref": "#/$defs/ConfigureDesktopAgentRequest"
     },
@@ -193,6 +199,8 @@
     }
   },
   "required": [
+    "desktopMcpRequest",
+    "desktopMcpResponse",
     "configureDesktopAgentRequest",
     "configureDesktopAgentResponse",
     "capabilities",
@@ -257,6 +265,283 @@
     "metadata"
   ],
   "$defs": {
+    "DesktopMcpRequest": {
+      "type": "object",
+      "properties": {
+        "threadId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "expectedRevision": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0,
+          "default": null
+        },
+        "action": {
+          "$ref": "#/$defs/DesktopMcpAction"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "action"
+      ]
+    },
+    "DesktopMcpAction": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "list"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "server": {
+              "$ref": "#/$defs/DesktopMcpServerInput"
+            },
+            "kind": {
+              "type": "string",
+              "const": "save"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "server"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "delete"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "name"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "test"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "name"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "tools": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "kind": {
+              "type": "string",
+              "const": "select"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "tools"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "servers": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/DesktopMcpServerInput"
+              }
+            },
+            "kind": {
+              "type": "string",
+              "const": "import"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "servers"
+          ]
+        }
+      ]
+    },
+    "DesktopMcpServerInput": {
+      "description": "Local stdio configuration. Environment values are write-only secrets.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "command": {
+          "type": "string"
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "env": {
+          "description": "None preserves existing credentials; an empty map clears them.",
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": null
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "command",
+        "enabled"
+      ]
+    },
+    "DesktopMcpResponse": {
+      "type": "object",
+      "properties": {
+        "revision": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "servers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DesktopMcpServer"
+          }
+        },
+        "selectedTools": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "revision",
+        "servers",
+        "selectedTools"
+      ]
+    },
+    "DesktopMcpServer": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "command": {
+          "type": "string"
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "environmentKeys": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "credentialId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DesktopMcpTool"
+          }
+        },
+        "status": {
+          "type": "string"
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "command",
+        "args",
+        "enabled",
+        "environmentKeys",
+        "tools",
+        "status"
+      ]
+    },
+    "DesktopMcpTool": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "schemaHash": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "description",
+        "schemaHash"
+      ]
+    },
     "ConfigureDesktopAgentRequest": {
       "type": "object",
       "properties": {
@@ -477,6 +762,13 @@
           "maximum": 65535,
           "default": 0
         },
+        "desktopMcp": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535,
+          "default": 0
+        },
         "threadCatalog": {
           "type": "integer",
           "format": "uint16",
@@ -651,6 +943,14 @@
         },
         "agentRevision": {
           "description": "Bind queued input to the exact locally approved Agent configuration.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "mcpRevision": {
           "type": [
             "integer",
             "null"

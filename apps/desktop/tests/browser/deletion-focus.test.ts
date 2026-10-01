@@ -5,7 +5,7 @@ import { chromium, type Browser, type Page } from "playwright";
 import { createServer, type ViteDevServer } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
-import type { ApiKeyRecord, AccountStatus, BillingStatus, ClientSessionState, ClientTimelineItem, ContextUsage, ConfigureDesktopAgentRequest, DesktopAgentSettings, ListModelsResponse } from "@axiom/axiom-acp-client";
+import type { ClientState, DesktopMcpRequest, DesktopMcpResponse, ApiKeyRecord, AccountStatus, BillingStatus, ClientSessionState, ClientTimelineItem, ContextUsage, ConfigureDesktopAgentRequest, DesktopAgentSettings, ListModelsResponse } from "@axiom/axiom-acp-client";
 
 // Real renderer/DOM focus tests, but no Electron window, OS input, account,
 // sidecar, or provider request. The bridge below operates only on fake threads.
@@ -248,6 +248,33 @@ async function openApp(platform = "linux", failDelete = false, thinkingLevels: s
       __deletionTest: {
         calls,
         settingsCalls,
+        enableMcp: () => {
+          const native = state as unknown as ClientState;
+          const selected = new Map<string, string[]>();
+          let config: DesktopMcpResponse = { revision: 1, selectedTools: [], servers: [{
+            name: "fixture", command: "local-fixture", args: [], enabled: true, environmentKeys: [], credentialId: null,
+            status: "tested", error: null, tools: [{ name: "mcp__fixture__echo", description: "Echo from a local server", schemaHash: "fixture" }],
+          }] };
+          (agent as any).desktopMcp = async (request: DesktopMcpRequest) => {
+            calls.push({ method: "mcp", id: request.threadId ?? undefined, text: request.action.kind });
+            if (request.action.kind !== "list") {
+              if (request.expectedRevision !== config.revision) throw new Error("MCP settings changed");
+              config = { ...config, revision: config.revision + 1 };
+              if (request.action.kind === "select" && request.threadId) selected.set(request.threadId, request.action.tools);
+              if (request.action.kind === "save") {
+                const server = request.action.server;
+                config.servers = [...config.servers.filter(s => s.name !== server.name), { ...server, tools: [], environmentKeys: Object.keys(server.env ?? {}), credentialId: null, status: "untested", error: null }];
+              }
+              if (request.action.kind === "test") config.servers = config.servers.map(server => server.name === request.action.name ? { ...server, status: "tested", tools: [{ name: `mcp__${server.name}__echo`, description: "Echo from a local server", schemaHash: "fixture" }] } : server);
+              if (request.action.kind === "delete") config.servers = config.servers.filter(server => server.name !== request.action.name);
+            }
+            native.mcp = config;
+            for (const [id, current] of Object.entries(native.sessions)) current.desktopMcp = { ...config, selectedTools: selected.get(id) ?? [] };
+            emit();
+            return { ...config, selectedTools: request.threadId ? selected.get(request.threadId) ?? [] : [] };
+          };
+          native.mcp = config; emit();
+        },
         finishLogin: (id: string, error?: string) => {
           const pending = pendingLogins.get(id);
           if (!pending) throw new Error(`No pending login: ${id}`);
@@ -1960,7 +1987,7 @@ for (const platform of ["linux", "win32", "darwin"]) {
       const usage = settings.getByRole("tab", { name: "Usage", exact: true });
       const updates = settings.getByRole("tab", { name: "Updates", exact: true });
       assert.equal(await settings.evaluate((element) => getComputedStyle(element).animationName), "account-screen-enter");
-      assert.equal(await settings.getByRole("tab").count(), 5);
+      assert.equal(await settings.getByRole("tab").count(), 6);
       assert.equal(await settings.getByRole("tabpanel").count(), 1);
       assert.equal(await appearance.getAttribute("aria-selected"), "true");
       assert.equal(await settings.getByText("Inference balance").count(), 0);
@@ -1979,6 +2006,9 @@ for (const platform of ["linux", "win32", "darwin"]) {
       await account.press("ArrowDown");
       assert.equal(await usage.getAttribute("aria-selected"), "true");
       await usage.press("ArrowDown");
+      const mcp = settings.getByRole("tab", {name: "MCP connections", exact: true});
+      assert.equal(await mcp.getAttribute("aria-selected"), "true");
+      await mcp.press("ArrowDown");
       const apiKeys = settings.getByRole("tab", {name: "API keys", exact: true});
       assert.equal(await apiKeys.getAttribute("aria-selected"), "true");
       await apiKeys.press("ArrowDown");
@@ -3462,6 +3492,53 @@ test("only editing the signed-in composer starts model-only verification, includ
     assert.equal((await warmups()).length, 1, "loading a thread does not verify");
     await page.locator("textarea").fill("Follow-up draft");
     assert.equal((await warmups()).length, 2);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("MCP selection in Agent settings applies only to that thread with Agent off", async () => {
+  const { page, errors } = await openApp();
+  try {
+    await page.evaluate(() => (window as any).__deletionTest.enableMcp());
+    await page.getByRole("button", { name: "Viewed Existing thread", exact: true }).click();
+    await page.getByRole("button", { name: "Agent", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Agent settings" });
+    await dialog.getByRole("checkbox", { name: /echo Echo from a local server/ }).check();
+    assert.equal(await dialog.getByRole("switch", { name: "Enable agent mode" }).getAttribute("aria-checked"), "false");
+    await dialog.getByRole("button", { name: "Save changes" }).click();
+    await dialog.waitFor({ state: "hidden" });
+    await page.getByRole("button", { name: "Agent", exact: true }).click();
+    assert.equal(await dialog.getByRole("checkbox", { name: /echo Echo from a local server/ }).isChecked(), true);
+    await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+    await page.getByRole("button", { name: "New thread", exact: true }).click();
+    await page.getByRole("button", { name: "Agent", exact: true }).click();
+    assert.equal(await dialog.getByRole("checkbox", { name: /echo Echo from a local server/ }).isChecked(), false);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("MCP settings add and test a local server without displaying saved secrets", async () => {
+  const { page, errors } = await openApp();
+  try {
+    await page.evaluate(() => (window as any).__deletionTest.enableMcp());
+    await openAccountScreen(page, "Settings");
+    await page.getByRole("tab", { name: "MCP connections", exact: true }).click();
+    await page.getByRole("button", { name: "Add local server" }).click();
+    await page.getByRole("textbox", { name: "Name", exact: true }).fill("new_local");
+    await page.getByRole("textbox", { name: "Command", exact: true }).fill("npx");
+    await page.getByRole("textbox", { name: "Arguments (JSON array)" }).fill('["-y","example-server"]');
+    await page.getByRole("button", { name: "Add variable", exact: true }).click();
+    await page.getByRole("textbox", { name: "Variable 1 name" }).fill("API_KEY");
+    await page.getByLabel("Variable 1 value").fill("browser-fixture-secret-value");
+    await page.getByRole("button", { name: "Save connection" }).click();
+    const server = page.getByRole("heading", { name: "new_local", exact: true }).locator("..").locator("..");
+    await server.getByRole("button", { name: "Test connection" }).click();
+    await server.getByText(/Tested · 1 tools/).waitFor();
+    await server.getByText("Inspect tools").click();
+    await server.getByText("mcp__new_local__echo", { exact: true }).waitFor();
+    await server.getByRole("button", { name: "Edit", exact: true }).click();
+    assert.equal(await page.getByLabel("Variable 1 value").count(), 0);
+    assert.doesNotMatch(await page.locator("body").innerText(), /browser-fixture-secret-value/);
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
 });
