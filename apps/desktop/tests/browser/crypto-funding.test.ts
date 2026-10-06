@@ -65,6 +65,8 @@ test("primary discount, safe retries, quote, network, memo and status restoratio
     await page.getByRole("button", {name: "Other crypto", exact: true}).click();
     await page.getByRole("combobox", {name: "Crypto", exact: true}).click();
     await page.getByRole("option", {name: /^USDT/}).click();
+    const networkWarning = page.getByRole("alert").filter({hasText: "Funds sent on other networks may be permanently lost."});
+    assert.match(await networkWarning.innerText(), /Network: TRON \(TRC20\) only\./);
     await page.evaluate(() => (window as any).__cryptoTest.failOnce());
     await page.getByRole("button", {name: "Create payment", exact: true}).click();
     await page.getByRole("button", {name: "Retry", exact: true}).click();
@@ -75,6 +77,7 @@ test("primary discount, safe retries, quote, network, memo and status restoratio
     assert.equal(await page.getByRole("button", {name: "Copy memo"}).count(), 1);
     assert.match(await page.locator("body").innerText(), /Use TRON \(TRC20\)/);
     assert.equal(await page.getByRole("img", {name: "Crypto payment address"}).count(), 1);
+    assert.match(await networkWarning.innerText(), /Network: TRON \(TRC20\) only\./);
     await page.screenshot({path: "/tmp/axiom-nowpayments-desktop-quote.png", fullPage: true});
     await page.getByRole("button", {name: "Close deposit", exact: true}).click();
     await page.getByRole("button", {name: "Other crypto", exact: true}).click();
@@ -131,7 +134,11 @@ test("icon picker uses clean names and keyboard selection; Escape closes one lay
     await entry.click();
     assert.equal(await picker.innerText(), "Monero");
     await picker.click();
+    await page.getByRole("option", {name: "Ethereum", exact: true}).click();
+    assert.match(await dialog.getByRole("alert").innerText(), /Network: Ethereum only\./);
+    await picker.click();
     await page.getByRole("option", {name: "Bitcoin", exact: true}).click();
+    assert.equal(await dialog.getByRole("alert").count(), 0);
     await page.getByRole("button", {name: "Create payment", exact: true}).click();
     await page.getByRole("img", {name: "Crypto payment address"}).waitFor();
     await page.getByRole("button", {name: "Close deposit", exact: true}).click();
@@ -152,8 +159,11 @@ test("deposit dialog and icon picker fit a small window and dark theme", async (
     const bounds = await page.getByRole("listbox").boundingBox();
     assert.ok(bounds && bounds.x >= 0 && bounds.y >= 0 && bounds.x + bounds.width <= 360 && bounds.y + bounds.height <= 568);
     await page.getByRole("option", {name: /^USDC/}).click();
+    const networkWarning = page.getByRole("alert").filter({hasText: "Funds sent on other networks may be permanently lost."});
+    assert.match(await networkWarning.innerText(), /Network: Ethereum only\./);
     await page.getByRole("button", {name: "Create payment", exact: true}).click();
     await page.getByRole("img", {name: "Crypto payment address"}).waitFor();
+    assert.match(await networkWarning.innerText(), /Network: Ethereum only\./);
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
