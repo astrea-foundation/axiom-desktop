@@ -26,11 +26,14 @@ async function open() {
     const records: Record<string, any[]> = {};
     const requests: any[] = [];
     let gate: (() => void) | null = null;
-    let held = false, fail = false;
+    let held = false, fail = false, lose = false;
     Object.assign(window, {__cryptoTest: {requests, records,
       hold: () => { held = true; }, release: () => { held = false; gate?.(); },
       failOnce: () => { fail = true; },
+      loseOnce: () => { lose = true; },
+      progress: (account: string, status: string) => { records[account].forEach((p) => { p.status = status; }); },
       finish: (account: string) => { records[account].forEach((p) => { p.status = "finished"; p.credited_microusd = p.amount_microusd; }); },
+      finishOriginal: (account: string) => { const p = records[account][0]; p.status = "finished"; p.credited_microusd = p.amount_microusd; },
     }, axiomDesktop: {agent: {
       cryptoOptions: async () => ({options: {enabled: true, zcash_discount_bps: 500, min_amount_microusd: 5_000_000,
         max_amount_microusd: 1_000_000_000, currencies: [
@@ -43,11 +46,15 @@ async function open() {
       createCryptoPayment: async (request: any, account: string) => {
         requests.push({...request, account});
         if (fail) { fail = false; throw new Error("test lost response"); }
+        const existing = records[account]?.find((p) => p.id === request.id);
+        if (existing) return {payment: structuredClone(existing)};
+        const index = records[account]?.length ?? 0;
         const payment = {id: request.id, status: "waiting", amount_microusd: request.amountMicrousd, credited_microusd: 0,
-          pay_currency: request.payCurrency, pay_amount: "25.00000001", pay_address: "TtestPaymentAddress", payin_extra_id: "0012345",
+          pay_currency: request.payCurrency, pay_amount: `25.${String(index + 1).padStart(8, "0")}`, pay_address: `TtestPaymentAddress${index || ""}`, payin_extra_id: "0012345",
           expires_at: new Date(Date.now() + 60_000).toISOString(), created_at: new Date().toISOString(), review_required: false};
         (records[account] ??= []).push(payment);
         if (held) await new Promise<void>((resolve) => { gate = resolve; });
+        if (lose) { lose = false; throw new Error("test lost attached response"); }
         return {payment};
       },
     }}});
@@ -106,7 +113,7 @@ test("an in-flight payment reply cannot enter another account", async () => {
   } finally { await page.close(); }
 });
 
-test("countdown expires on time; cancelling returns to the picker without losing payment tracking", async () => {
+test("rate countdown renews automatically; cancelling retains the original payment", async () => {
   const {page, errors} = await open();
   try {
     const time = new Date("2026-10-06T07:00:00Z");
@@ -117,7 +124,7 @@ test("countdown expires on time; cancelling returns to the picker without losing
     await picker.click();
     await page.getByRole("option", {name: "Bitcoin", exact: true}).click();
     await page.getByRole("button", {name: "Create payment", exact: true}).click();
-    const countdown = page.getByRole("timer", {name: "Time left to pay"});
+    const countdown = page.getByRole("timer", {name: "Time left to send for this rate"});
     assert.equal(await countdown.innerText(), "01:00");
     await page.clock.runFor(15_000);
     assert.equal(await countdown.innerText(), "00:45");
@@ -134,17 +141,138 @@ test("countdown expires on time; cancelling returns to the picker without losing
     assert.equal(requests.length, 2);
     assert.notEqual(requests[0].id, requests[1].id);
     await page.clock.runFor(60_000);
-    await page.getByRole("status").filter({hasText: /^Expired$/}).waitFor();
-    assert.equal(await countdown.count(), 0);
-    assert.equal(await page.getByRole("img", {name: "Crypto payment address"}).count(), 0);
-    assert.equal(await page.getByRole("button", {name: "Cancel deposit", exact: true}).count(), 0);
-    await page.getByRole("button", {name: "New payment", exact: true}).waitFor();
+    await page.getByText("Rate updated. Use this amount and address.", {exact: true}).waitFor();
+    assert.equal(await countdown.innerText(), "01:00");
+    assert.match(await page.getByRole("dialog").innerText(), /25\.00000003/);
+    assert.match(await page.getByLabel("Crypto address", {exact: true}).innerText(), /TtestPaymentAddress2/);
+    const renewedRequests = await page.evaluate(() => (window as any).__cryptoTest.requests);
+    assert.equal(renewedRequests.length, 3);
+    assert.equal(renewedRequests[2].amountMicrousd, 25_000_000);
+    assert.equal(renewedRequests[2].payCurrency, "btc");
+    assert.notEqual(renewedRequests[1].id, renewedRequests[2].id);
     await page.evaluate(() => (window as any).__cryptoTest.finish("account-a"));
     await page.clock.runFor(5_000);
     await page.getByRole("status").filter({hasText: /^Credited$/}).waitFor();
     const records = await page.evaluate(() => (window as any).__cryptoTest.records["account-a"]);
-    assert.equal(records.length, 2);
+    assert.equal(records.length, 3);
     assert.equal(records[0].credited_microusd, 25_000_000);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("a lost renewal response retries the same order and never loops on an expired rate", async () => {
+  const {page, errors} = await open();
+  try {
+    const time = new Date("2026-10-06T07:00:00Z");
+    await page.clock.install({time}); await page.clock.pauseAt(time);
+    await page.getByRole("button", {name: "Other crypto", exact: true}).click();
+    await page.getByRole("combobox", {name: "Crypto", exact: true}).click();
+    await page.getByRole("option", {name: "Bitcoin", exact: true}).click();
+    await page.getByRole("button", {name: "Create payment", exact: true}).click();
+    await page.getByRole("timer").waitFor();
+    await page.evaluate(() => (window as any).__cryptoTest.loseOnce());
+    await page.clock.runFor(60_000);
+    await page.getByRole("alert").filter({hasText: "Couldn’t refresh the rate."}).waitFor();
+    assert.equal(await page.getByRole("timer").count(), 0);
+    assert.equal(await page.getByRole("dialog").getByRole("button", {name: "Copy address"}).count(), 0);
+    await page.clock.runFor(15_000);
+    assert.equal(await page.evaluate(() => (window as any).__cryptoTest.requests.length), 2);
+    await page.getByRole("button", {name: "Retry quote", exact: true}).click();
+    await page.getByText("Rate updated. Use this amount and address.", {exact: true}).waitFor();
+    const requests = await page.evaluate(() => (window as any).__cryptoTest.requests);
+    assert.equal(requests.length, 3);
+    assert.equal(requests[1].id, requests[2].id);
+    assert.equal(await page.evaluate(() => (window as any).__cryptoTest.records["account-a"].length), 2);
+    assert.equal(await page.getByRole("timer").innerText(), "00:45");
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("sent transfers survive reopening and keep confirming beyond the quote deadline", async () => {
+  const {page, errors} = await open();
+  try {
+    const time = new Date("2026-10-06T07:00:00Z");
+    await page.clock.install({time}); await page.clock.pauseAt(time);
+    await page.getByRole("button", {name: "Other crypto", exact: true}).click();
+    await page.getByRole("combobox", {name: "Crypto", exact: true}).click();
+    await page.getByRole("option", {name: "Monero", exact: true}).click();
+    await page.getByRole("button", {name: "Create payment", exact: true}).click();
+    await page.getByRole("button", {name: "I’ve sent it", exact: true}).click();
+    await page.clock.runFor(75_000);
+    await page.getByRole("status").filter({hasText: /^Checking payment$/}).waitFor();
+    assert.equal(await page.evaluate(() => (window as any).__cryptoTest.requests.length), 1);
+    await page.evaluate(() => window.dispatchEvent(new Event("axiom-test-remount-funding")));
+    await page.getByRole("button", {name: "Other crypto", exact: true}).click();
+    await page.locator("summary").filter({hasText: "Recent payments"}).click();
+    await page.getByRole("button", {name: /\$25\.00 · XMR/}).click();
+    await page.getByRole("status").filter({hasText: /^Checking payment$/}).waitFor();
+    assert.equal(await page.getByRole("timer").count(), 0);
+    await page.evaluate(() => (window as any).__cryptoTest.progress("account-a", "confirming"));
+    await page.clock.runFor(5_000);
+    await page.getByRole("status").filter({hasText: /^Confirming$/}).waitFor();
+    await page.clock.runFor(600_000);
+    assert.equal(await page.evaluate(() => (window as any).__cryptoTest.requests.length), 1);
+    await page.evaluate(() => (window as any).__cryptoTest.finish("account-a"));
+    await page.clock.runFor(5_000);
+    await page.getByRole("status").filter({hasText: /^Credited$/}).waitFor();
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("late renewal replies cannot replace a cancelled checkout, another account or a confirming transfer", async () => {
+  for (const action of ["cancel", "switch", "confirming"]) {
+    const {page, errors} = await open();
+    try {
+      const time = new Date("2026-10-06T07:00:00Z");
+      await page.clock.install({time}); await page.clock.pauseAt(time);
+      await page.getByRole("button", {name: "Other crypto", exact: true}).click();
+      await page.getByRole("combobox", {name: "Crypto", exact: true}).click();
+      await page.getByRole("option", {name: "Bitcoin", exact: true}).click();
+      await page.getByRole("button", {name: "Create payment", exact: true}).click();
+      await page.getByRole("timer").waitFor();
+      await page.evaluate(() => (window as any).__cryptoTest.hold());
+      await page.clock.runFor(60_000);
+      await page.getByRole("status").filter({hasText: /^Updating rate…$/}).waitFor();
+      if (action === "cancel") await page.getByRole("button", {name: "Cancel deposit", exact: true}).click();
+      else if (action === "switch") await page.evaluate(() => window.dispatchEvent(new Event("axiom-test-switch-account")));
+      else {
+        await page.evaluate(() => (window as any).__cryptoTest.progress("account-a", "confirming"));
+        await page.clock.runFor(5_000);
+        await page.getByRole("status").filter({hasText: /^Confirming$/}).waitFor();
+      }
+      await page.evaluate(() => (window as any).__cryptoTest.release());
+      if (action === "switch") await page.getByRole("button", {name: "Other crypto", exact: true}).click();
+      if (action === "confirming") {
+        await page.evaluate(() => (window as any).__cryptoTest.finishOriginal("account-a"));
+        await page.clock.runFor(5_000);
+        await page.getByRole("status").filter({hasText: /^Credited$/}).waitFor();
+      } else await page.getByRole("button", {name: "Create payment", exact: true}).waitFor();
+      assert.equal(await page.getByRole("timer").count(), 0);
+      assert.equal(await page.getByRole("img", {name: "Crypto payment address"}).count(), 0);
+      const requests = await page.evaluate(() => (window as any).__cryptoTest.requests);
+      assert.equal(requests.length, 2);
+      assert.equal(requests[1].account, "account-a");
+      assert.deepEqual(errors, []);
+    } finally { await page.close(); }
+  }
+});
+
+test("provider confirmations stop renewal even when the customer has not marked the transfer sent", async () => {
+  const {page, errors} = await open();
+  try {
+    const time = new Date("2026-10-06T07:00:00Z");
+    await page.clock.install({time}); await page.clock.pauseAt(time);
+    await page.getByRole("button", {name: "Other crypto", exact: true}).click();
+    await page.getByRole("combobox", {name: "Crypto", exact: true}).click();
+    await page.getByRole("option", {name: "Monero", exact: true}).click();
+    await page.getByRole("button", {name: "Create payment", exact: true}).click();
+    await page.getByRole("timer").waitFor();
+    await page.evaluate(() => (window as any).__cryptoTest.progress("account-a", "confirming"));
+    await page.clock.runFor(75_000);
+    await page.getByRole("status").filter({hasText: /^Confirming$/}).waitFor();
+    assert.equal(await page.getByRole("timer").count(), 0);
+    assert.equal(await page.getByRole("button", {name: "I’ve sent it", exact: true}).count(), 0);
+    assert.equal(await page.evaluate(() => (window as any).__cryptoTest.requests.length), 1);
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
 });
