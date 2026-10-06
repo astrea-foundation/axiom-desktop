@@ -123,6 +123,7 @@ downloads and subsequent updates can still receive Windows reputation prompts.
 NOWPayments and the Zcash discount have local native, SDK, Desktop and browser
 coverage. Before release, qualify the matching backend's merchant configuration
 and sandbox payments, then verify Balance/network/memo/status/account switching,
-the deposit dialog's keyboard picker, focus restoration and small-window layout
+the deposit dialog's keyboard picker, focus restoration, countdown expiry,
+cancel-and-restart flow, continued tracking of sent funds and small-window layout
 on Windows and macOS previews. Keep Desktop and its bundled `billing@4` sidecar
 together. Installer publishing remains separate release work.

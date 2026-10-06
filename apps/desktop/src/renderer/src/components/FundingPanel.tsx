@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
-import { ArrowRight, ChevronRight, Copy, Plus, TriangleAlert } from "lucide-react";
+import { ArrowRight, ChevronRight, Clock3, Copy, Plus, TriangleAlert } from "lucide-react";
 import type { CryptoCurrency, CryptoOptions, CryptoPayment, CreateCryptoPaymentRequest, PaymentAccount, ZecUsdQuote } from "@axiom/axiom-acp-client";
 import { desktopErrorMessage } from "../signInFlow";
 import { DepositPanel } from "./DepositPanel";
@@ -45,6 +45,8 @@ export function CryptoPaymentDetails({ payment, options, now = Date.now() }: { p
   const status = cryptoStatus(payment, now);
   const payable = status === "Awaiting payment" && !!coin && !!payment.pay_address && !!payment.pay_amount
     && Date.parse(payment.expires_at ?? "") > now;
+  const secondsLeft = Math.max(0, Math.ceil((Date.parse(payment.expires_at ?? "") - now) / 1_000));
+  const timeLeft = `${String(Math.floor(secondsLeft / 60)).padStart(2, "0")}:${String(secondsLeft % 60).padStart(2, "0")}`;
   const copy = async (value: string, label: string) => {
     const current = generation.current;
     try { await navigator.clipboard.writeText(value); if (generation.current === current) { setCopied(label); setCopyError(false); } }
@@ -72,7 +74,10 @@ export function CryptoPaymentDetails({ payment, options, now = Date.now() }: { p
       </div>
       {payment.payin_extra_id ? <div className="rounded-xl border border-[var(--color-border)] p-3"><p className="selectable break-all font-mono text-[12px]">Memo: {payment.payin_extra_id}</p>
         <button type="button" onClick={() => void copy(payment.payin_extra_id!, "memo")} className="ax-pill ax-pill-button mt-2">{copied === "memo" ? "Copied" : "Copy memo"}</button></div> : null}
-      <p className="text-[11px] leading-5 text-[var(--color-text-secondary)]">Use {cryptoNetwork(coin!)}. Pay once before {new Date(payment.expires_at!).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"})}.</p>
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-[11px] leading-5 text-[var(--color-text-secondary)]">
+        <p>Use {cryptoNetwork(coin!)}.</p>
+        <p className="inline-flex items-center gap-1.5"><Clock3 size={13} aria-hidden="true" />Pay within <span role="timer" aria-label="Time left to pay" aria-live="off" className="font-medium tabular-nums">{timeLeft}</span></p>
+      </div>
     </> : null}
     <div className="flex justify-between gap-3 border-t border-[var(--color-border)] pt-4"><span className="text-[var(--color-text-secondary)]">USD credit</span><span className="font-medium tabular-nums">{usdFromMicrousd(payment.amount_microusd, 2)}</span></div>
     {status === "Partial payment" ? <p className="text-[12px] text-[var(--color-text-secondary)]">Payment needs review.</p> : null}
@@ -92,14 +97,16 @@ export function FundingPanel({ accountId, connected, payment, quote, onRefreshBi
   const [selected, setSelected] = useState<CryptoPayment | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [depositClosed, setDepositClosed] = useState(false);
   const [now, setNow] = useState(Date.now);
+  const form = useRef<HTMLFormElement>(null);
   const generation = useRef(0);
   const intent = useRef<CreateCryptoPaymentRequest | null>(null);
   const pending = useRef(false);
   const credited = useRef(new Set<string>());
   useEffect(() => {
     generation.current++;
-    setOptions(null); setOpen(false); setPayments([]); setSelected(null); setError(null);
+    setOptions(null); setOpen(false); setPayments([]); setSelected(null); setError(null); setDepositClosed(false);
     intent.current = null; credited.current.clear();
   }, [accountId]);
   useEffect(() => {
@@ -143,17 +150,21 @@ export function FundingPanel({ accountId, connected, payment, quote, onRefreshBi
     return () => clearInterval(timer);
   }, [selected?.id]);
 
+  useEffect(() => {
+    if (depositClosed && !selected) form.current?.querySelector<HTMLElement>('[role="combobox"]')?.focus();
+  }, [depositClosed, selected]);
+
   const create = async () => {
     const api = window.axiomDesktop?.agent;
     const value = creditAmount(amount);
     if (!api || !connected || !value || !coin || pending.current) return;
     intent.current ??= {id: crypto.randomUUID(), amountMicrousd: value, payCurrency: coin};
     const current = generation.current;
-    pending.current = true; setBusy(true); setError(null);
+    pending.current = true; setBusy(true); setError(null); setDepositClosed(false);
     try {
       const result = await api.createCryptoPayment(intent.current, accountId);
       if (generation.current !== current) return;
-      setSelected(result.payment); intent.current = null;
+      setNow(Date.now()); setSelected(result.payment); intent.current = null;
       setPayments((previous) => [result.payment, ...previous.filter((p) => p.id !== result.payment.id)]);
     } catch (failure) { if (generation.current === current) {
       const message = desktopErrorMessage(failure, "Could not confirm payment. Retry safely.");
@@ -162,6 +173,7 @@ export function FundingPanel({ accountId, connected, payment, quote, onRefreshBi
     } }
     finally { if (generation.current === current) { pending.current = false; setBusy(false); } }
   };
+  const canCancel = selected && ["Preparing payment", "Awaiting payment"].includes(cryptoStatus(selected, now));
   return <>
     {payment ? <DepositPanel payment={payment} connected={connected} quote={quote} discountBps={options?.zcash_discount_bps ?? 0} /> : payment === null ? <p className="mt-4 text-[12px] text-[var(--color-text-tertiary)]">Deposits are temporarily unavailable.</p> : null}
     {options?.enabled && options.currencies.length ? <section className="mt-5 border-t border-[var(--color-border)] pt-5 text-[13px]" aria-label="Other crypto">
@@ -175,17 +187,18 @@ export function FundingPanel({ accountId, connected, payment, quote, onRefreshBi
       </button>
       {open ? <CryptoDepositDialog onClose={() => setOpen(false)}>
         {selected ? <><CryptoPaymentDetails payment={selected} options={options} now={now} />
-          <button type="button" className="ax-pill ax-pill-button mt-5 w-full justify-center" disabled={!connected || busy} onClick={() => { setSelected(null); intent.current = null; setError(null); }}>New payment</button></> :
-          <form className="space-y-5" onSubmit={(e) => { e.preventDefault(); void create(); }}>
+          <button type="button" className="ax-pill ax-pill-button mt-5 w-full justify-center" disabled={busy} onClick={() => { setSelected(null); intent.current = null; setError(null); setDepositClosed(!!canCancel); }}>{canCancel ? "Cancel deposit" : "New payment"}</button></> :
+          <form ref={form} className="space-y-5" onSubmit={(e) => { e.preventDefault(); void create(); }}>
+            {depositClosed ? <p role="status" className="text-[12px] leading-5 text-[var(--color-text-secondary)]">Deposit closed. Funds already sent will still be processed.</p> : null}
             <div><CryptoCurrencyPicker currencies={options.currencies} value={coin} disabled={!connected || busy || !!intent.current}
-              onChange={(value) => { intent.current = null; setCoin(value); setError(null); }} />
+              onChange={(value) => { intent.current = null; setCoin(value); setError(null); setDepositClosed(false); }} />
             </div>
             <CryptoNetworkWarning coin={options.currencies.find((c) => c.code === coin)} currencies={options.currencies} />
             <div><label htmlFor={`crypto-amount-${accountId}`} className="mb-2 block text-[12px] font-medium text-[var(--color-text-secondary)]">Amount (USD credit)</label>
               <div className="flex min-h-14 items-center gap-2 rounded-xl border border-[var(--color-border)] bg-[var(--wash-row)] px-3.5 transition-colors focus-within:border-[var(--color-border-accent)]">
                 <span aria-hidden="true" className="text-[16px] text-[var(--color-text-tertiary)]">$</span>
                 <input id={`crypto-amount-${accountId}`} className="min-w-0 flex-1 bg-transparent py-3 text-[18px] font-medium tabular-nums outline-none disabled:opacity-40" inputMode="decimal" value={amount} disabled={!connected || busy || !!intent.current} maxLength={7}
-                  aria-invalid={creditAmount(amount) === null} onChange={(e) => { intent.current = null; setAmount(e.target.value); setError(null); }} />
+                  aria-invalid={creditAmount(amount) === null} onChange={(e) => { intent.current = null; setAmount(e.target.value); setError(null); setDepositClosed(false); }} />
                 <span aria-hidden="true" className="text-[11px] text-[var(--color-text-tertiary)]">USD</span>
               </div>
               {creditAmount(amount) === null ? <p className="mt-2 text-[12px] text-[var(--color-danger-strong)]">Enter $5–$1,000.</p> : null}
@@ -195,7 +208,7 @@ export function FundingPanel({ accountId, connected, payment, quote, onRefreshBi
             </button>
           </form>}
         {payments.length ? <details className="mt-5 border-t border-[var(--color-border)] pt-4"><summary className="cursor-pointer text-[12px] text-[var(--color-text-secondary)]">Recent payments</summary>
-          <ul className="mt-3 space-y-1">{payments.map((p) => <li key={p.id}><button type="button" className="flex w-full items-center gap-2.5 rounded-lg p-2 text-left text-[12px] hover:bg-[var(--wash-row)]" onClick={() => { setSelected(p); intent.current = null; setError(null); }}>
+          <ul className="mt-3 space-y-1">{payments.map((p) => <li key={p.id}><button type="button" className="flex w-full items-center gap-2.5 rounded-lg p-2 text-left text-[12px] hover:bg-[var(--wash-row)]" onClick={() => { setNow(Date.now()); setSelected(p); intent.current = null; setError(null); setDepositClosed(false); }}>
             <CryptoIcon code={p.pay_currency} className="h-5 w-5" /><span className="flex-1 tabular-nums">{usdFromMicrousd(p.amount_microusd, 2)} · {cryptoSymbol(p.pay_currency)}</span><span className="text-[11px] text-[var(--color-text-tertiary)]">{cryptoStatus(p, now)}</span>
           </button></li>)}</ul>
         </details> : null}

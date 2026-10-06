@@ -106,6 +106,49 @@ test("an in-flight payment reply cannot enter another account", async () => {
   } finally { await page.close(); }
 });
 
+test("countdown expires on time; cancelling returns to the picker without losing payment tracking", async () => {
+  const {page, errors} = await open();
+  try {
+    const time = new Date("2026-10-06T07:00:00Z");
+    await page.clock.install({time});
+    await page.clock.pauseAt(time);
+    await page.getByRole("button", {name: "Other crypto", exact: true}).click();
+    const picker = page.getByRole("combobox", {name: "Crypto", exact: true});
+    await picker.click();
+    await page.getByRole("option", {name: "Bitcoin", exact: true}).click();
+    await page.getByRole("button", {name: "Create payment", exact: true}).click();
+    const countdown = page.getByRole("timer", {name: "Time left to pay"});
+    assert.equal(await countdown.innerText(), "01:00");
+    await page.clock.runFor(15_000);
+    assert.equal(await countdown.innerText(), "00:45");
+    await page.getByRole("button", {name: "Cancel deposit", exact: true}).click();
+    await page.getByRole("button", {name: "Create payment", exact: true}).waitFor();
+    assert.equal(await picker.evaluate((element) => element === document.activeElement), true);
+    assert.equal(await page.getByRole("img", {name: "Crypto payment address"}).count(), 0);
+    assert.match(await page.getByRole("status").filter({hasText: /^Deposit closed\./}).innerText(), /Deposit closed\. Funds already sent will still be processed\./);
+    const original = await page.evaluate(() => (window as any).__cryptoTest.records["account-a"][0]);
+    assert.equal(original.status, "waiting");
+    await page.getByRole("button", {name: "Create payment", exact: true}).click();
+    assert.equal(await countdown.innerText(), "01:00");
+    const requests = await page.evaluate(() => (window as any).__cryptoTest.requests);
+    assert.equal(requests.length, 2);
+    assert.notEqual(requests[0].id, requests[1].id);
+    await page.clock.runFor(60_000);
+    await page.getByRole("status").filter({hasText: /^Expired$/}).waitFor();
+    assert.equal(await countdown.count(), 0);
+    assert.equal(await page.getByRole("img", {name: "Crypto payment address"}).count(), 0);
+    assert.equal(await page.getByRole("button", {name: "Cancel deposit", exact: true}).count(), 0);
+    await page.getByRole("button", {name: "New payment", exact: true}).waitFor();
+    await page.evaluate(() => (window as any).__cryptoTest.finish("account-a"));
+    await page.clock.runFor(5_000);
+    await page.getByRole("status").filter({hasText: /^Credited$/}).waitFor();
+    const records = await page.evaluate(() => (window as any).__cryptoTest.records["account-a"]);
+    assert.equal(records.length, 2);
+    assert.equal(records[0].credited_microusd, 25_000_000);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
 test("icon picker uses clean names and keyboard selection; Escape closes one layer and restores focus", async () => {
   const {page, errors} = await open();
   try {

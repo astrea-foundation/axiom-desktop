@@ -42,9 +42,12 @@ confirmation. The reusable address stays available.
 
 Choose **Other crypto** to open the deposit window. Pick a coin from the dropdown
 with its icon, enter the USD credit amount and create a payment. Send the exact crypto amount on the displayed network,
-including the memo if shown, before the quote expires. Each payment has its own
-address. ETH, USDC, USDT and assets offered on multiple networks show the exact
-network and a permanent-loss warning before payment creation and beside the
+including the memo if shown, before the countdown ends. The countdown uses the
+payment's expiry and updates every second. **Cancel deposit** returns to the coin
+selector; it does not revoke the address or reverse funds already sent. The
+payment remains in recent payments and sent funds continue to be tracked.
+Each payment has its own address. ETH, USDC, USDT and assets offered on multiple
+networks show the exact network and a permanent-loss warning before payment creation and beside the
 deposit details. Status updates automatically; recent payments remain available when you
 reopen Balance. Partial payments need review. Provider fees are covered by Axiom.
 The discount applies to Zcash only. Crypto availability requires backend setup.

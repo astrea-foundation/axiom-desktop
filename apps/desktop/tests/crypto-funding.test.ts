@@ -26,6 +26,9 @@ test("payment shows exact amount, network and memo with a local QR", () => {
   assert.match(html, /TRON \(TRC20\)/);
   assert.match(html, /Memo: 0012345/);
   assert.match(html, /Copy memo/);
+  assert.match(html, /Pay within/);
+  assert.match(html, /role="timer"[^>]*>15:00</);
+  assert.doesNotMatch(html, /Pay once before/);
   assert.match(html, /<svg/);
   assert.doesNotMatch(html, /(?:src|href)="https?:\/\//);
 });
@@ -38,5 +41,7 @@ test("expired, partial, confirming, reviewed and credited payments hide payable 
   assert.equal(cryptoStatus({...payment, status: "refunded", credited_microusd: 25_000_000}, now), "Refunded");
   assert.equal(cryptoStatus(payment, Date.parse(payment.expires_at!)), "Expired");
   const html = renderToStaticMarkup(createElement(CryptoPaymentDetails, {payment, options, now: Date.parse(payment.expires_at!)}));
-  assert.match(html, /Expired/); assert.doesNotMatch(html, /aria-label="Crypto payment address"|Copy address/);
+  assert.match(html, /Expired/); assert.doesNotMatch(html, /aria-label="Crypto payment address"|Copy address|role="timer"/);
+  const lastSecond = renderToStaticMarkup(createElement(CryptoPaymentDetails, {payment, options, now: Date.parse(payment.expires_at!) - 500}));
+  assert.match(lastSecond, /role="timer"[^>]*>00:01</);
 });
