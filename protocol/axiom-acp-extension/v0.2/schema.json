@@ -136,6 +136,24 @@
     "billingStatusResponse": {
       "$ref": "#/$defs/BillingStatusResponse"
     },
+    "cryptoOptionsRequest": {
+      "$ref": "#/$defs/CryptoOptionsRequest"
+    },
+    "cryptoOptionsResponse": {
+      "$ref": "#/$defs/CryptoOptionsResponse"
+    },
+    "createCryptoPaymentRequest": {
+      "$ref": "#/$defs/CreateCryptoPaymentRequest"
+    },
+    "cryptoPaymentResponse": {
+      "$ref": "#/$defs/CryptoPaymentResponse"
+    },
+    "cryptoPaymentsRequest": {
+      "$ref": "#/$defs/CryptoPaymentsRequest"
+    },
+    "cryptoPaymentsResponse": {
+      "$ref": "#/$defs/CryptoPaymentsResponse"
+    },
     "giftCodeRedeemRequest": {
       "$ref": "#/$defs/GiftCodeRedeemRequest"
     },
@@ -243,6 +261,12 @@
     "logoutRequest",
     "billingStatusRequest",
     "billingStatusResponse",
+    "cryptoOptionsRequest",
+    "cryptoOptionsResponse",
+    "createCryptoPaymentRequest",
+    "cryptoPaymentResponse",
+    "cryptoPaymentsRequest",
+    "cryptoPaymentsResponse",
     "giftCodeRedeemRequest",
     "giftCodeRedeemResponse",
     "usageSummaryRequest",
@@ -2464,6 +2488,193 @@
         "source",
         "as_of",
         "expires_at"
+      ]
+    },
+    "CryptoOptionsRequest": {
+      "type": "object"
+    },
+    "CryptoOptionsResponse": {
+      "type": "object",
+      "properties": {
+        "options": {
+          "$ref": "#/$defs/CryptoOptions"
+        }
+      },
+      "required": [
+        "options"
+      ]
+    },
+    "CryptoOptions": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "zcash_discount_bps": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "min_amount_microusd": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "max_amount_microusd": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "currencies": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CryptoCurrency"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "zcash_discount_bps",
+        "min_amount_microusd",
+        "max_amount_microusd",
+        "currencies"
+      ]
+    },
+    "CryptoCurrency": {
+      "description": "Independent funding contract; billing/status remains compatible with older clients.",
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "network": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "name",
+        "network"
+      ]
+    },
+    "CreateCryptoPaymentRequest": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "amountMicrousd": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "payCurrency": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "amountMicrousd",
+        "payCurrency"
+      ]
+    },
+    "CryptoPaymentResponse": {
+      "type": "object",
+      "properties": {
+        "payment": {
+          "$ref": "#/$defs/CryptoPayment"
+        }
+      },
+      "required": [
+        "payment"
+      ]
+    },
+    "CryptoPayment": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "amount_microusd": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "credited_microusd": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "pay_currency": {
+          "type": "string"
+        },
+        "pay_amount": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pay_address": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "payin_extra_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "expires_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "review_required": {
+          "type": "boolean"
+        },
+        "created_at": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "status",
+        "amount_microusd",
+        "credited_microusd",
+        "pay_currency",
+        "review_required",
+        "created_at"
+      ]
+    },
+    "CryptoPaymentsRequest": {
+      "type": "object"
+    },
+    "CryptoPaymentsResponse": {
+      "type": "object",
+      "properties": {
+        "payments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CryptoPayment"
+          }
+        }
+      },
+      "required": [
+        "payments"
       ]
     },
     "GiftCodeRedeemRequest": {

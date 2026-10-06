@@ -99,7 +99,7 @@ impl FeatureVersions {
             profile_preferences: 1,
             collections: 1,
             account: 2,
-            billing: 3,
+            billing: 4,
             usage: 1,
             security_evidence: 4,
             web_consent: 1,
@@ -616,6 +616,41 @@ pub struct BillingStatus {
     pub zec_usd_quote: Option<ZecUsdQuote>,
 }
 
+/// Independent funding contract; billing/status remains compatible with older clients.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CryptoCurrency {
+    pub code: String,
+    pub name: String,
+    pub network: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CryptoOptions {
+    pub enabled: bool,
+    pub zcash_discount_bps: u16,
+    pub min_amount_microusd: u64,
+    pub max_amount_microusd: u64,
+    pub currencies: Vec<CryptoCurrency>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CryptoPayment {
+    pub id: String,
+    pub status: String,
+    pub amount_microusd: u64,
+    pub credited_microusd: u64,
+    pub pay_currency: String,
+    pub pay_amount: Option<String>,
+    pub pay_address: Option<String>,
+    pub payin_extra_id: Option<String>,
+    pub expires_at: Option<String>,
+    pub review_required: bool,
+    pub created_at: String,
+}
+
 /// Indicative live market price; deposit credit uses its confirmation-time rate.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -1011,6 +1046,38 @@ pub struct LogoutRequest {}
 #[request(method = "_axiom/billing/status", response = BillingStatusResponse)]
 pub struct BillingStatusRequest {}
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, JsonRpcRequest)]
+#[request(method = "_axiom/billing/crypto_options", response = CryptoOptionsResponse)]
+pub struct CryptoOptionsRequest {}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, JsonRpcRequest)]
+#[request(method = "_axiom/billing/create_crypto_payment", response = CryptoPaymentResponse)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CreateCryptoPaymentRequest {
+    pub id: String,
+    pub amount_microusd: u64,
+    pub pay_currency: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, JsonRpcRequest)]
+#[request(method = "_axiom/billing/crypto_payments", response = CryptoPaymentsResponse)]
+pub struct CryptoPaymentsRequest {}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, JsonRpcResponse)]
+pub struct CryptoOptionsResponse {
+    pub options: CryptoOptions,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, JsonRpcResponse)]
+pub struct CryptoPaymentResponse {
+    pub payment: CryptoPayment,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, JsonRpcResponse)]
+pub struct CryptoPaymentsResponse {
+    pub payments: Vec<CryptoPayment>,
+}
+
 #[derive(Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcRequest)]
 #[request(method = "_axiom/billing/redeem_gift_code", response = GiftCodeRedeemResponse)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -1282,6 +1349,12 @@ pub struct ProtocolSchema {
     pub logout_request: LogoutRequest,
     pub billing_status_request: BillingStatusRequest,
     pub billing_status_response: BillingStatusResponse,
+    pub crypto_options_request: CryptoOptionsRequest,
+    pub crypto_options_response: CryptoOptionsResponse,
+    pub create_crypto_payment_request: CreateCryptoPaymentRequest,
+    pub crypto_payment_response: CryptoPaymentResponse,
+    pub crypto_payments_request: CryptoPaymentsRequest,
+    pub crypto_payments_response: CryptoPaymentsResponse,
     pub gift_code_redeem_request: GiftCodeRedeemRequest,
     pub gift_code_redeem_response: GiftCodeRedeemResponse,
     pub usage_summary_request: UsageSummaryRequest,

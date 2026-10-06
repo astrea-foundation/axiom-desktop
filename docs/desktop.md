@@ -34,11 +34,20 @@ draft; navigation, reselecting a thread and reload preserve them. An anonymous
 draft can follow the first sign-in. Pending first-message setup has its own
 identity, so navigating away does not silently discard or redirect it.
 
-## Balance and gift credit
+## Balance and payments
 
 Open the account menu and choose **Balance** to view credit and top up with mainnet
-Zcash. The reusable address and QR code appear once; automatic and manual balance
-refreshes update that panel in place without clearing an entered gift code.
+Zcash. **5% off** means $9.50 of Zcash buys $10 of credit, using the rate at
+confirmation. The reusable address stays available.
+
+Choose **Other crypto** for supported assets and networks. Enter the USD credit
+amount and create a payment; send the exact crypto amount on the displayed network,
+including the memo if shown, before the quote expires. Each payment has its own
+address. Status updates automatically; recent payments remain available when you
+reopen Balance. Partial payments need review. Provider fees are covered by Axiom.
+The discount applies to Zcash only. Crypto availability requires backend setup.
+
+Automatic and manual balance refreshes preserve an entered gift code.
 **Redeem a gift code** adds its USD value to the signed-in account. Code
 entry is masked and cleared on success, closing the screen, disconnect or account
 change. It is never a chat message or saved draft. A failed/uncertain request can
@@ -48,7 +57,7 @@ by this account reports that result and refreshes the balance.
 Gift credit is part of **Other credit**; trial credit is spent first. Gift
 redemption does not clear payment-review holds. It requires a native interactive
 account and a backend with gift redemption deployed. Desktop and its bundled
-sidecar negotiate `billing@3`; older sidecars must be updated together.
+sidecar negotiate `billing@4`; older sidecars must be updated together.
 
 ## Agent and Web controls
 

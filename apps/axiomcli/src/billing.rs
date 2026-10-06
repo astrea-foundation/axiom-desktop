@@ -192,6 +192,104 @@ impl BillingClient {
         Ok(status)
     }
 
+    async fn crypto_request<T: serde::de::DeserializeOwned>(
+        &self,
+        path: &str,
+        body: Option<serde_json::Value>,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<T>> {
+        let lease = self
+            .auth
+            .access_token_for_account_operation(cancellation)
+            .await?;
+        let builder = if let Some(body) = body {
+            self.client.post(self.endpoint(path)).json(&body)
+        } else {
+            self.client.get(self.endpoint(path))
+        };
+        let response = send_with_cancellation(
+            builder.bearer_auth(lease.expose_for_authorization()),
+            cancellation,
+            "crypto payment",
+        )
+        .await?;
+        self.ensure_account_current(&lease)?;
+        if response.status() == StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        if response.status() == StatusCode::UNPROCESSABLE_ENTITY {
+            return Err(AxiomError::Provider(
+                "Increase the amount or choose another crypto.".into(),
+            ));
+        }
+        ensure_success(response.status(), "crypto payment")?;
+        let result = decode_bounded_json(response, cancellation, "crypto-payment").await?;
+        self.ensure_account_current(&lease)?;
+        Ok(Some(result))
+    }
+
+    pub async fn crypto_options(
+        &self,
+        cancellation: &CancellationToken,
+    ) -> Result<axiom_acp_extension::CryptoOptions> {
+        let options = self
+            .crypto_request("/api/v1/billing/crypto/options", None, cancellation)
+            .await?
+            .unwrap_or(axiom_acp_extension::CryptoOptions {
+                enabled: false,
+                zcash_discount_bps: 0,
+                min_amount_microusd: 5_000_000,
+                max_amount_microusd: 1_000_000_000,
+                currencies: vec![],
+            });
+        validate_crypto_options(&options)?;
+        Ok(options)
+    }
+
+    pub async fn create_crypto_payment(
+        &self,
+        request: &axiom_acp_extension::CreateCryptoPaymentRequest,
+        cancellation: &CancellationToken,
+    ) -> Result<axiom_acp_extension::CryptoPayment> {
+        if uuid::Uuid::parse_str(&request.id).is_err()
+            || !valid_crypto_amount(request.amount_microusd)
+            || !valid_crypto_currency(&request.pay_currency)
+            || request.pay_currency == "zec"
+        {
+            return Err(AxiomError::Config("Invalid payment request.".into()));
+        }
+        let payment = self.crypto_request("/api/v1/billing/crypto/payments", Some(serde_json::json!({
+            "id": request.id, "amount_microusd": request.amount_microusd, "pay_currency": request.pay_currency
+        })), cancellation).await?.ok_or_else(|| AxiomError::Provider("Crypto payments are unavailable.".into()))?;
+        validate_crypto_payment(&payment)?;
+        if payment.id != request.id
+            || payment.amount_microusd != request.amount_microusd
+            || payment.pay_currency != request.pay_currency
+        {
+            return Err(AxiomError::Protocol(
+                "Payment request does not match its response.".into(),
+            ));
+        }
+        Ok(payment)
+    }
+
+    pub async fn crypto_payments(
+        &self,
+        cancellation: &CancellationToken,
+    ) -> Result<Vec<axiom_acp_extension::CryptoPayment>> {
+        let payments: Vec<_> = self
+            .crypto_request("/api/v1/billing/crypto/payments", None, cancellation)
+            .await?
+            .unwrap_or_default();
+        if payments.len() > 20 {
+            return Err(AxiomError::Protocol("Invalid payment history.".into()));
+        }
+        for payment in &payments {
+            validate_crypto_payment(payment)?;
+        }
+        Ok(payments)
+    }
+
     /// The secret is submitted only to the account API, never to inference or activity logs.
     pub async fn redeem_gift_code(
         &self,
@@ -557,6 +655,97 @@ fn parse_api_origin(value: &str) -> Result<Url> {
         ));
     }
     Ok(url)
+}
+
+fn valid_crypto_currency(value: &str) -> bool {
+    (2..=32).contains(&value.len())
+        && value
+            .bytes()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+}
+
+fn valid_crypto_amount(value: u64) -> bool {
+    (5_000_000..=1_000_000_000).contains(&value) && value.is_multiple_of(10_000)
+}
+
+fn validate_crypto_options(options: &axiom_acp_extension::CryptoOptions) -> Result<()> {
+    let clean = |s: &str| !s.is_empty() && s.len() <= 320 && !s.chars().any(char::is_control);
+    let mut codes = std::collections::HashSet::new();
+    if !matches!(options.zcash_discount_bps, 0 | 500)
+        || options.min_amount_microusd != 5_000_000
+        || options.max_amount_microusd != 1_000_000_000
+        || options.currencies.len() > 128
+        || (!options.enabled && !options.currencies.is_empty())
+        || options.currencies.iter().any(|c| {
+            !valid_crypto_currency(&c.code)
+                || c.code == "zec"
+                || !clean(&c.name)
+                || !clean(&c.network)
+                || !codes.insert(&c.code)
+        })
+    {
+        return Err(AxiomError::Protocol(
+            "Invalid crypto payment options.".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_crypto_payment(payment: &axiom_acp_extension::CryptoPayment) -> Result<()> {
+    let amount = payment.pay_amount.as_deref().is_none_or(|s| {
+        s.len() <= 80
+            && s.bytes().all(|c| c.is_ascii_digit() || c == b'.')
+            && s.split('.').count() <= 2
+            && s.bytes().any(|c| (b'1'..=b'9').contains(&c))
+            && !s.starts_with('.')
+            && !s.ends_with('.')
+    });
+    let address = payment.pay_address.as_deref().is_none_or(|s| {
+        !s.is_empty()
+            && s.len() <= 512
+            && s.is_ascii()
+            && !s.bytes().any(|c| c <= 32 || c == 127 || c == b':')
+    });
+    let memo = payment
+        .payin_extra_id
+        .as_deref()
+        .is_none_or(|s| !s.is_empty() && s.len() <= 128 && !s.chars().any(char::is_control));
+    let expiry = payment
+        .expires_at
+        .as_deref()
+        .is_none_or(|s| chrono::DateTime::parse_from_rfc3339(s).is_ok());
+    if uuid::Uuid::parse_str(&payment.id).is_err()
+        || !valid_crypto_amount(payment.amount_microusd)
+        || ![0, payment.amount_microusd].contains(&payment.credited_microusd)
+        || !valid_crypto_currency(&payment.pay_currency)
+        || payment.pay_currency == "zec"
+        || !matches!(
+            payment.status.as_str(),
+            "creating"
+                | "waiting"
+                | "confirming"
+                | "confirmed"
+                | "sending"
+                | "partially_paid"
+                | "finished"
+                | "failed"
+                | "expired"
+                | "refunded"
+                | "review"
+        )
+        || !amount
+        || !address
+        || !memo
+        || !expiry
+        || chrono::DateTime::parse_from_rfc3339(&payment.created_at).is_err()
+        || (payment.pay_address.is_some() != payment.pay_amount.is_some())
+        || (payment.pay_address.is_some() && payment.expires_at.is_none())
+    {
+        return Err(AxiomError::Protocol(
+            "Invalid crypto payment details.".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_billing_status(status: &BillingStatus) -> Result<()> {
@@ -1018,5 +1207,47 @@ mod tests {
             ..quote
         };
         assert!(!valid_current_quote(&malformed, now));
+    }
+    #[test]
+    fn crypto_payment_contract_rejects_unsafe_amounts_and_addresses() {
+        let now = chrono::Utc::now().to_rfc3339();
+        let mut payment = axiom_acp_extension::CryptoPayment {
+            id: uuid::Uuid::new_v4().to_string(),
+            status: "waiting".into(),
+            amount_microusd: 25_000_000,
+            credited_microusd: 0,
+            pay_currency: "btc".into(),
+            pay_amount: Some("0.00050001".into()),
+            pay_address: Some("bc1qtestaddress".into()),
+            payin_extra_id: Some("12345".into()),
+            expires_at: Some(now.clone()),
+            created_at: now,
+            review_required: false,
+        };
+        assert!(validate_crypto_payment(&payment).is_ok());
+        for amount in ["NaN", "1e-6", "0", ".5", "1.", "1.2.3", "-1"] {
+            payment.pay_amount = Some(amount.into());
+            assert!(validate_crypto_payment(&payment).is_err());
+        }
+        payment.pay_amount = Some("0.00050001".into());
+        payment.pay_address = Some("https://untrusted.example".into());
+        assert!(validate_crypto_payment(&payment).is_err());
+        payment.pay_address = Some("bc1qtestaddress".into());
+        payment.credited_microusd = 24_000_000;
+        assert!(validate_crypto_payment(&payment).is_err());
+        let mut options = axiom_acp_extension::CryptoOptions {
+            enabled: true,
+            zcash_discount_bps: 500,
+            min_amount_microusd: 5_000_000,
+            max_amount_microusd: 1_000_000_000,
+            currencies: vec![axiom_acp_extension::CryptoCurrency {
+                code: "btc".into(),
+                name: "Bitcoin".into(),
+                network: "Bitcoin".into(),
+            }],
+        };
+        assert!(validate_crypto_options(&options).is_ok());
+        options.currencies.push(options.currencies[0].clone());
+        assert!(validate_crypto_options(&options).is_err());
     }
 }

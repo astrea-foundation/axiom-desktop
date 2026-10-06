@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import type { AccountStatus, BillingStatus } from "@axiom/axiom-acp-client";
 import { desktopErrorMessage } from "../signInFlow";
 import { usdFromMicrousd } from "../lib/currency";
-import { DepositPanel } from "./DepositPanel";
+import { FundingPanel } from "./FundingPanel";
 import { AccountScreen } from "./AccountScreen";
 import { GiftCodePanel } from "./GiftCodePanel";
 
@@ -97,9 +97,7 @@ export function BalanceScreen({ onClose, connected, account, billing, onRefreshB
                 </details>
               ) : null}
               {billing?.paymentReviewRequired ? <p role="alert" className="mt-4 text-[12px] text-[var(--color-warning-strong)]">Spending is paused while a deposit is reviewed. Your trial credit is unchanged.</p> : null}
-              {billing?.paymentAccount ? <DepositPanel key={`deposit:${account?.account?.id}`} payment={billing.paymentAccount} connected={connected} quote={billing.zecUsdQuote} /> : billing ? (
-                <p className="mt-4 text-[12px] text-[var(--color-text-tertiary)]">Deposits are temporarily unavailable.</p>
-              ) : null}
+              {account?.account?.id ? <FundingPanel key={`funding:${account.account.id}`} accountId={account.account.id} payment={billing ? billing.paymentAccount ?? null : undefined} connected={connected} quote={billing?.zecUsdQuote} onRefreshBilling={onRefreshBilling} /> : null}
 
               {account?.account?.id ? <GiftCodePanel key={`gift:${account.account.id}`} accountId={account.account.id} connected={connected} /> : null}
 

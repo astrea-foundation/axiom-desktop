@@ -284,6 +284,18 @@ export class AgentSidecar {
     });
   }
 
+  cryptoOptions() {
+    return this.requireClient().cryptoOptions().catch((error: unknown) => { throw actionableAcpError(error); });
+  }
+
+  cryptoPayments() {
+    return this.requireClient().cryptoPayments().catch((error: unknown) => { throw actionableAcpError(error); });
+  }
+
+  createCryptoPayment(request: import("@axiom/axiom-acp-client").CreateCryptoPaymentRequest) {
+    return this.requireClient().createCryptoPayment(request).catch((error: unknown) => { throw actionableAcpError(error); });
+  }
+
   redeemGiftCode(code: string) {
     return this.requireClient().redeemGiftCode(code).catch((error: unknown) => {
       throw actionableAcpError(error);

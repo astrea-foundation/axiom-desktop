@@ -3,6 +3,10 @@ import type { PromptAttachment, GetAttachmentsResponse } from "@axiom/axiom-acp-
 import type {
   AccountStatusResponse,
   BillingStatusResponse,
+  CryptoOptionsResponse,
+  CryptoPaymentResponse,
+  CryptoPaymentsResponse,
+  CreateCryptoPaymentRequest,
   GiftCodeRedeemResponse,
   UsageSummaryResponse,
   UsageSummaryRequest,
@@ -60,6 +64,9 @@ export interface AgentApi {
   setSettings: (settings: ThreadSettingsRequest) => Promise<ThreadSettingsResult>;
   accountStatus: () => Promise<AccountStatusResponse>;
   billingStatus: () => Promise<BillingStatusResponse>;
+  cryptoOptions: (accountId: string) => Promise<CryptoOptionsResponse>;
+  cryptoPayments: (accountId: string) => Promise<CryptoPaymentsResponse>;
+  createCryptoPayment: (request: CreateCryptoPaymentRequest, accountId: string) => Promise<CryptoPaymentResponse>;
   redeemGiftCode: (code: string, accountId: string) => Promise<GiftCodeRedeemResponse>;
   usageSummary: (accountId: string, request?: UsageSummaryRequest) => Promise<UsageSummaryResponse>;
   apiKeys: (accountId: string) => Promise<ApiKeyListResponse>;
@@ -113,6 +120,9 @@ export const agentApi: AgentApi = {
   setSettings: (settings) => invoke("set-settings", settings),
   accountStatus: () => invoke("account-status"),
   billingStatus: () => invoke("billing-status"),
+  cryptoOptions: (accountId) => invoke("crypto-options", accountId),
+  cryptoPayments: (accountId) => invoke("crypto-payments", accountId),
+  createCryptoPayment: (request, accountId) => invoke("create-crypto-payment", request, accountId),
   redeemGiftCode: (code, accountId) => invoke("redeem-gift-code", code, accountId),
   usageSummary: (accountId, request = {}) => invoke("usage-summary", accountId, request.period ?? "all_time", request.timezone ?? "UTC"),
   apiKeys: (accountId) => invoke("api-keys", accountId),

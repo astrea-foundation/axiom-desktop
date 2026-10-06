@@ -83,6 +83,10 @@ session token and must not be retained in account snapshots or diagnostics.
 Account billing and payment-provider credentials remain backend-owned. Desktop
 receives bounded credit/deposit metadata and an indicative current ZEC/USD quote. It never receives wallet custody or grants the model
 transaction authority. Currency valuation is distinct from a currency conversion.
+Other crypto top-ups go through NOWPayments, which receives payment amounts,
+addresses, network and an opaque order ID. This payment traffic is outside
+inference E2EE. Zcash continues through Axiom's own receiver. Crypto payment
+metadata stays scoped to the signed-in account; QR codes are generated locally.
 
 Gift codes are bearer secrets entered in Desktop's Balance form or the TUI's
 masked `/redeem` screen. The native client sends the code to Axiom's authenticated
