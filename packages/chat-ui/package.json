@@ -1,0 +1,50 @@
+{
+  "name": "@axiom/chat-ui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "exports": {
+    ".": "./src/index.ts",
+    "./styles.css": "./src/styles.css",
+    "./ChatMarkdown": "./src/ChatMarkdown.tsx",
+    "./codeHighlight": "./src/codeHighlight.ts",
+    "./currencyMath": "./src/currencyMath.ts",
+    "./GreetingHeadline": "./src/GreetingHeadline.tsx",
+    "./ModelBrandIcon": "./src/ModelBrandIcon.tsx",
+    "./ModelPicker": "./src/ModelPicker.tsx",
+    "./modelPricing": "./src/modelPricing.ts",
+    "./modelPreferences": "./src/modelPreferences.ts",
+    "./OverflowTitle": "./src/OverflowTitle.tsx"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "react": "^19.2.6",
+    "@axiom/brand": "^0.1.0"
+  },
+  "dependencies": {
+    "@lobehub/icons-static-svg": "^1.94.0",
+    "lucide-react": "^0.564.0",
+    "react-markdown": "^10.1.0",
+    "rehype-highlight": "7.0.2",
+    "rehype-katex": "7.0.1",
+    "remark-gfm": "^4.0.1",
+    "remark-math": "6.0.0",
+    "unist-util-visit": "5.1.0",
+    "katex": "0.16.47"
+  },
+  "devDependencies": {
+    "typescript": "~5.9.2",
+    "@types/react": "^19.2.14",
+    "micromark-util-types": "2.0.2",
+    "unified": "11.0.5",
+    "@axiom/brand": "workspace:*"
+  }
+}
