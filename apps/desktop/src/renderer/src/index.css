@@ -3,6 +3,17 @@
 
 @custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
 
+.crypto-deposit-dialog[open], .crypto-deposit-dialog[open]::backdrop {
+  animation: crypto-deposit-enter 160ms ease-out;
+}
+@keyframes crypto-deposit-enter {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .crypto-deposit-dialog[open], .crypto-deposit-dialog[open]::backdrop { animation: none; }
+}
+
 /* A tool is an inline step in a response, not another full message. */
 .chat-timeline > [data-timeline-kind] + [data-timeline-kind] {
   margin-top: 12px;

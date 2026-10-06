@@ -1,9 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
+import { ArrowRight, ChevronRight, Copy, Plus } from "lucide-react";
 import type { CryptoOptions, CryptoPayment, CreateCryptoPaymentRequest, PaymentAccount, ZecUsdQuote } from "@axiom/axiom-acp-client";
 import { desktopErrorMessage } from "../signInFlow";
 import { DepositPanel } from "./DepositPanel";
 import { usdFromMicrousd } from "../lib/currency";
+import { CryptoIcon, cryptoName, cryptoNetwork, cryptoSymbol } from "./CryptoIcon";
+import { CryptoCurrencyPicker } from "./CryptoCurrencyPicker";
+import { CryptoDepositDialog } from "./CryptoDepositDialog";
 
 export function creditAmount(value: string): number | null {
   if (!/^\d{1,4}(?:\.\d{1,2})?$/.test(value)) return null;
@@ -35,23 +39,32 @@ export function CryptoPaymentDetails({ payment, options, now = Date.now() }: { p
     try { await navigator.clipboard.writeText(value); if (generation.current === current) { setCopied(label); setCopyError(false); } }
     catch { if (generation.current === current) setCopyError(true); }
   };
-  return <div className="mt-3 space-y-3 rounded-xl bg-[var(--wash-row)] p-4 text-[13px]">
-    <div className="flex justify-between gap-3"><span>{usdFromMicrousd(payment.amount_microusd, 2)} credit</span><span role="status">{status}</span></div>
-    <p className="text-[12px] text-[var(--color-text-secondary)]">{coin?.name ?? payment.pay_currency.toUpperCase()}{coin ? ` · ${coin.network}` : ""}</p>
+  const copyClass = "rounded-lg p-2 text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--wash-chip-hover)] hover:text-[var(--color-text-primary)] focus-visible:outline-2 focus-visible:outline-offset-2";
+  return <div className="space-y-5 text-[13px]">
+    <div className="flex items-center gap-3">
+      <CryptoIcon code={payment.pay_currency} className="h-9 w-9" />
+      <div className="min-w-0 flex-1"><p className="font-medium">{coin ? cryptoName(coin) : cryptoSymbol(payment.pay_currency)}</p>
+        {coin && cryptoNetwork(coin) !== cryptoName(coin) ? <p className="mt-0.5 text-[11px] text-[var(--color-text-tertiary)]">{cryptoNetwork(coin)}</p> : null}</div>
+      <span role="status" className={`rounded-full px-2.5 py-1 text-[11px] ${status === "Credited" ? "bg-[var(--color-success-glow)] text-[var(--color-success)]" : "bg-[var(--wash-chip)] text-[var(--color-text-secondary)]"}`}>{status}</span>
+    </div>
     {payable ? <>
-      <p className="selectable break-all font-mono">{payment.pay_amount} {payment.pay_currency.toUpperCase()}</p>
-      <button type="button" onClick={() => void copy(payment.pay_amount!, "amount")} className="ax-pill ax-pill-button">{copied === "amount" ? "Copied" : "Copy amount"}</button>
-      <div className="flex flex-col items-start gap-3 sm:flex-row">
-        <QRCodeSVG value={payment.pay_address!} size={160} marginSize={4} title="Crypto payment address" role="img" aria-label="Crypto payment address" />
-        <div className="min-w-0 flex-1"><p className="selectable break-all font-mono text-[12px]" aria-label="Crypto address">{payment.pay_address}</p>
-          <button type="button" onClick={() => void copy(payment.pay_address!, "address")} className="ax-pill ax-pill-button mt-3">{copied === "address" ? "Copied" : "Copy address"}</button>
+      <div className="rounded-2xl bg-[var(--wash-row)] px-4 py-5">
+        <div className="mb-5 flex items-center justify-center gap-1.5">
+          <p className="selectable min-w-0 break-all text-[19px] font-medium tracking-tight tabular-nums">{payment.pay_amount} <span className="text-[13px] text-[var(--color-text-secondary)]">{cryptoSymbol(payment.pay_currency)}</span></p>
+          <button type="button" aria-label={copied === "amount" ? "Amount copied" : "Copy amount"} onClick={() => void copy(payment.pay_amount!, "amount")} className={copyClass}><Copy size={14} aria-hidden="true" /></button>
         </div>
+        <div className="mx-auto w-fit overflow-hidden rounded-xl bg-white p-2"><QRCodeSVG value={payment.pay_address!} size={168} marginSize={2} title="Crypto payment address" role="img" aria-label="Crypto payment address" /></div>
+        <div className="mb-1 mt-4 flex items-center justify-between gap-3"><span className="text-[11px] text-[var(--color-text-tertiary)]">Deposit address</span>
+          <button type="button" aria-label={copied === "address" ? "Address copied" : "Copy address"} onClick={() => void copy(payment.pay_address!, "address")} className={copyClass}><Copy size={14} aria-hidden="true" /></button></div>
+        <p className="selectable break-all font-mono text-[11px] leading-5" aria-label="Crypto address">{payment.pay_address}</p>
       </div>
-      {payment.payin_extra_id ? <div><p className="selectable break-all font-mono">Memo: {payment.payin_extra_id}</p>
+      {payment.payin_extra_id ? <div className="rounded-xl border border-[var(--color-border)] p-3"><p className="selectable break-all font-mono text-[12px]">Memo: {payment.payin_extra_id}</p>
         <button type="button" onClick={() => void copy(payment.payin_extra_id!, "memo")} className="ax-pill ax-pill-button mt-2">{copied === "memo" ? "Copied" : "Copy memo"}</button></div> : null}
-      <p className="text-[12px] text-[var(--color-text-secondary)]">Use {coin!.network}. Pay once before {new Date(payment.expires_at!).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"})}.</p>
+      <p className="text-[11px] leading-5 text-[var(--color-text-secondary)]">Use {cryptoNetwork(coin!)}. Pay once before {new Date(payment.expires_at!).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"})}.</p>
     </> : null}
+    <div className="flex justify-between gap-3 border-t border-[var(--color-border)] pt-4"><span className="text-[var(--color-text-secondary)]">USD credit</span><span className="font-medium tabular-nums">{usdFromMicrousd(payment.amount_microusd, 2)}</span></div>
     {status === "Partial payment" ? <p className="text-[12px] text-[var(--color-text-secondary)]">Payment needs review.</p> : null}
+    {copied ? <p role="status" className="sr-only">Copied {copied}</p> : null}
     {copyError ? <p role="alert">Select the value to copy it.</p> : null}
   </div>;
 }
@@ -83,7 +96,7 @@ export function FundingPanel({ accountId, connected, payment, quote, onRefreshBi
     const api = window.axiomDesktop?.agent;
     if (connected && api?.cryptoOptions) void api.cryptoOptions(accountId).then(({options: value}) => {
       if (current !== generation.current) return;
-      setOptions(value); setCoin((previous) => value.currencies.some((c) => c.code === previous) ? previous : value.currencies[0]?.code ?? "");
+      setOptions(value); setCoin((previous) => value.currencies.some((c) => c.code === previous) ? previous : "");
     }).catch(() => {});
     return () => { generation.current++; };
   }, [accountId, connected]);
@@ -137,30 +150,45 @@ export function FundingPanel({ accountId, connected, payment, quote, onRefreshBi
     } }
     finally { if (generation.current === current) { pending.current = false; setBusy(false); } }
   };
-  const fieldClass = "mt-1 block w-full rounded-lg border border-[var(--color-border)] bg-[var(--wash-row)] px-3 py-2 text-[13px] outline-none disabled:opacity-40";
   return <>
     {payment ? <DepositPanel payment={payment} connected={connected} quote={quote} discountBps={options?.zcash_discount_bps ?? 0} /> : payment === null ? <p className="mt-4 text-[12px] text-[var(--color-text-tertiary)]">Deposits are temporarily unavailable.</p> : null}
     {options?.enabled && options.currencies.length ? <section className="mt-5 border-t border-[var(--color-border)] pt-5 text-[13px]" aria-label="Other crypto">
-      <button type="button" className="ax-pill ax-pill-button" aria-expanded={open} onClick={() => setOpen(!open)}>Other crypto</button>
-      {open ? <>
+      <button type="button" aria-label="Other crypto" aria-haspopup="dialog" aria-expanded={open} onClick={() => setOpen(true)}
+        className="group flex w-full items-center justify-between gap-4 rounded-2xl border border-[var(--color-border)] bg-[var(--surface-tile)] px-4 py-4 text-left transition-[border-color,background-color,transform] hover:border-[var(--color-border-strong)] hover:bg-[var(--surface-card-hover)] active:scale-[0.99] focus-visible:outline-2 focus-visible:outline-offset-2">
+        <span className="font-medium">Other crypto</span>
+        <span aria-hidden="true" className="flex items-center gap-3"><span className="flex -space-x-1.5">
+          {["btc", "eth", "xmr"].filter((code) => options.currencies.some((c) => c.code === code)).map((code) => <span key={code} className="rounded-full ring-2 ring-[var(--surface-tile)]"><CryptoIcon code={code} className="h-7 w-7" /></span>)}
+          <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-[var(--wash-chip)] text-[var(--color-text-secondary)] ring-2 ring-[var(--surface-tile)]"><Plus size={13} /></span>
+        </span><ChevronRight size={16} className="text-[var(--color-text-tertiary)] transition-transform group-hover:translate-x-0.5" /></span>
+      </button>
+      {open ? <CryptoDepositDialog onClose={() => setOpen(false)}>
         {selected ? <><CryptoPaymentDetails payment={selected} options={options} now={now} />
-          <button type="button" className="ax-pill ax-pill-button mt-3" disabled={!connected || busy} onClick={() => { setSelected(null); intent.current = null; setError(null); }}>New payment</button></> :
-          <form className="mt-3 flex flex-wrap items-end gap-3" onSubmit={(e) => { e.preventDefault(); void create(); }}>
-            <label className="min-w-0 flex-1 text-[12px]">Crypto<select aria-label="Crypto" value={coin} disabled={!connected || busy || !!intent.current} onChange={(e) => { intent.current = null; setCoin(e.target.value); setError(null); }} className={fieldClass}>
-              {options.currencies.map((c) => <option key={c.code} value={c.code}>{c.name} · {c.network}</option>)}
-            </select></label>
-            <label className="text-[12px]">Amount (USD credit)<input aria-label="Amount (USD credit)" className={`${fieldClass} w-32`} inputMode="decimal" value={amount} disabled={!connected || busy || !!intent.current} maxLength={7} onChange={(e) => { intent.current = null; setAmount(e.target.value); setError(null); }} /></label>
-            <button type="submit" className="ax-pill ax-pill-button disabled:opacity-40" disabled={!connected || busy || creditAmount(amount) === null}>{busy ? "Creating…" : intent.current ? "Retry" : "Create payment"}</button>
-            {creditAmount(amount) === null ? <p className="w-full text-[12px]">Enter $5–$1,000.</p> : null}
+          <button type="button" className="ax-pill ax-pill-button mt-5 w-full justify-center" disabled={!connected || busy} onClick={() => { setSelected(null); intent.current = null; setError(null); }}>New payment</button></> :
+          <form className="space-y-5" onSubmit={(e) => { e.preventDefault(); void create(); }}>
+            <div><CryptoCurrencyPicker currencies={options.currencies} value={coin} disabled={!connected || busy || !!intent.current}
+              onChange={(value) => { intent.current = null; setCoin(value); setError(null); }} />
+              {coin.startsWith("usdc") || coin.startsWith("usdt") ? <p className="mt-2 text-[11px] text-[var(--color-text-tertiary)]">Network: {cryptoNetwork(options.currencies.find((c) => c.code === coin)!)}</p> : null}</div>
+            <div><label htmlFor={`crypto-amount-${accountId}`} className="mb-2 block text-[12px] font-medium text-[var(--color-text-secondary)]">Amount (USD credit)</label>
+              <div className="flex min-h-14 items-center gap-2 rounded-xl border border-[var(--color-border)] bg-[var(--wash-row)] px-3.5 transition-colors focus-within:border-[var(--color-border-accent)]">
+                <span aria-hidden="true" className="text-[16px] text-[var(--color-text-tertiary)]">$</span>
+                <input id={`crypto-amount-${accountId}`} className="min-w-0 flex-1 bg-transparent py-3 text-[18px] font-medium tabular-nums outline-none disabled:opacity-40" inputMode="decimal" value={amount} disabled={!connected || busy || !!intent.current} maxLength={7}
+                  aria-invalid={creditAmount(amount) === null} onChange={(e) => { intent.current = null; setAmount(e.target.value); setError(null); }} />
+                <span aria-hidden="true" className="text-[11px] text-[var(--color-text-tertiary)]">USD</span>
+              </div>
+              {creditAmount(amount) === null ? <p className="mt-2 text-[12px] text-[var(--color-danger-strong)]">Enter $5–$1,000.</p> : null}
+            </div>
+            <button type="submit" className="flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-[var(--color-cherry)] px-4 py-3 text-[13px] font-medium text-on-accent transition-[background-color,transform] hover:bg-[var(--color-cherry-bright)] active:scale-[0.98] disabled:opacity-35" disabled={!connected || busy || !coin || creditAmount(amount) === null}>
+              {busy ? "Creating…" : intent.current ? "Retry" : "Create payment"}<ArrowRight size={15} aria-hidden="true" />
+            </button>
           </form>}
-        {payments.length ? <details className="mt-3"><summary className="cursor-pointer text-[12px]">Recent payments</summary>
-          <ul className="mt-2 space-y-2">{payments.map((p) => <li key={p.id}><button type="button" className="text-left text-[12px]" onClick={() => { setSelected(p); intent.current = null; setError(null); }}>
-            {usdFromMicrousd(p.amount_microusd, 2)} · {p.pay_currency.toUpperCase()} · {cryptoStatus(p, now)}
+        {payments.length ? <details className="mt-5 border-t border-[var(--color-border)] pt-4"><summary className="cursor-pointer text-[12px] text-[var(--color-text-secondary)]">Recent payments</summary>
+          <ul className="mt-3 space-y-1">{payments.map((p) => <li key={p.id}><button type="button" className="flex w-full items-center gap-2.5 rounded-lg p-2 text-left text-[12px] hover:bg-[var(--wash-row)]" onClick={() => { setSelected(p); intent.current = null; setError(null); }}>
+            <CryptoIcon code={p.pay_currency} className="h-5 w-5" /><span className="flex-1 tabular-nums">{usdFromMicrousd(p.amount_microusd, 2)} · {cryptoSymbol(p.pay_currency)}</span><span className="text-[11px] text-[var(--color-text-tertiary)]">{cryptoStatus(p, now)}</span>
           </button></li>)}</ul>
         </details> : null}
         {error ? <p role="alert" className="mt-3 text-[12px] text-[var(--color-danger-strong)]">{error}</p> : null}
         {!connected ? <p role="status" className="mt-3 text-[12px]">Reconnecting…</p> : null}
-      </> : null}
+      </CryptoDepositDialog> : null}
     </section> : null}
   </>;
 }

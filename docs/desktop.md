@@ -40,8 +40,8 @@ Open the account menu and choose **Balance** to view credit and top up with main
 Zcash. **5% off** means $9.50 of Zcash buys $10 of credit, using the rate at
 confirmation. The reusable address stays available.
 
-Choose **Other crypto** for supported assets and networks. Enter the USD credit
-amount and create a payment; send the exact crypto amount on the displayed network,
+Choose **Other crypto** to open the deposit window. Pick a coin from the dropdown
+with its icon, enter the USD credit amount and create a payment. Send the exact crypto amount on the displayed network,
 including the memo if shown, before the quote expires. Each payment has its own
 address. Status updates automatically; recent payments remain available when you
 reopen Balance. Partial payments need review. Provider fees are covered by Axiom.
