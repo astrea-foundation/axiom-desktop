@@ -16,6 +16,9 @@ importers:
       '@axiom/brand':
         specifier: workspace:*
         version: link:../../packages/brand
+      '@axiom/chat-ui':
+        specifier: workspace:*
+        version: link:../../packages/chat-ui
       '@dnd-kit/core':
         specifier: ^6.3.1
         version: 6.3.1(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
@@ -131,6 +134,55 @@ importers:
       '@fontsource/dm-mono':
         specifier: ^5.3.0
         version: 5.3.0
+
+  packages/chat-ui:
+    dependencies:
+      '@lobehub/icons-static-svg':
+        specifier: ^1.94.0
+        version: 1.94.0
+      katex:
+        specifier: 0.16.47
+        version: 0.16.47
+      lucide-react:
+        specifier: ^0.564.0
+        version: 0.564.0(react@19.2.8)
+      react:
+        specifier: ^19.2.6
+        version: 19.2.8
+      react-markdown:
+        specifier: ^10.1.0
+        version: 10.1.0(@types/react@19.2.18)(react@19.2.8)(supports-color@10.2.2)
+      rehype-highlight:
+        specifier: 7.0.2
+        version: 7.0.2
+      rehype-katex:
+        specifier: 7.0.1
+        version: 7.0.1
+      remark-gfm:
+        specifier: ^4.0.1
+        version: 4.0.1(supports-color@10.2.2)
+      remark-math:
+        specifier: 6.0.0
+        version: 6.0.0(supports-color@10.2.2)
+      unist-util-visit:
+        specifier: 5.1.0
+        version: 5.1.0
+    devDependencies:
+      '@axiom/brand':
+        specifier: workspace:*
+        version: link:../brand
+      '@types/react':
+        specifier: ^19.2.14
+        version: 19.2.18
+      micromark-util-types:
+        specifier: 2.0.2
+        version: 2.0.2
+      typescript:
+        specifier: ~5.9.2
+        version: 5.9.3
+      unified:
+        specifier: 11.0.5
+        version: 11.0.5
 
 packages:
 
