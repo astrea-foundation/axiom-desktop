@@ -30,6 +30,7 @@ must be recorded against the actual source revision and signed installers.
 | [NEAR v3](protocols/near-v3.md) | Worker sessions, encryption and receipts |
 | [Tinfoil EHBP](protocols/tinfoil-ehbp-v1.md) | Router verification and authenticated completion |
 | [Development](development.md) | Build commands, checks and visual assets |
+| [Shared chat UI](shared-chat-ui.md) | Portable presentation and package handoff |
 | [Evaluations](evaluations.md) | Deterministic and live-provider checks |
 | [Update architecture](updates.md) | Signed metadata, installation ownership and recovery |
 | [Repository setup](repository-setup.md) | Actions environments, credentials and repository handoff |
