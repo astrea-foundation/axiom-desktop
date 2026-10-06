@@ -1378,6 +1378,10 @@ test("crypto operations discard replies after account switches and validate requ
     complete({payment: {pay_address: "old-account-address"}});
     await assert.rejects(pending, /account changed/i);
   }
+  state.setAccount({revision: ++revision, state: "valid", account: {id: "account-a", linkedMethods: ["password"]}});
+  const singleLetter = client.createCryptoPayment({...request, payCurrency: "s"});
+  complete({payment: {pay_currency: "s"}});
+  assert.equal((await singleLetter).payment.pay_currency, "s");
   for (const amountMicrousd of [0, 4_999_999, 5_000_001, 1_000_000_001, NaN]) {
     await assert.rejects(client.createCryptoPayment({...request, amountMicrousd}), /Invalid payment request/);
   }

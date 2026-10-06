@@ -657,7 +657,7 @@ export class AxiomAcpClient extends EventEmitter {
   async createCryptoPayment(request: CreateCryptoPaymentRequest): Promise<CryptoPaymentResponse> {
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(request.id)
       || !Number.isSafeInteger(request.amountMicrousd) || request.amountMicrousd < 5_000_000 || request.amountMicrousd > 1_000_000_000
-      || request.amountMicrousd % 10_000 !== 0 || !/^[a-z0-9]{2,32}$/.test(request.payCurrency) || request.payCurrency === "zec") {
+      || request.amountMicrousd % 10_000 !== 0 || !/^[a-z0-9]{1,32}$/.test(request.payCurrency) || request.payCurrency === "zec") {
       throw new ProtocolError("Invalid payment request.");
     }
     const context = this.state.accountContextToken();

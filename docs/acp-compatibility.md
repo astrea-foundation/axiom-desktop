@@ -196,8 +196,9 @@ uses backend exact-once redemption; cancellation does not prove that credit fail
 retain the backend's snake_case fields and exact decimal strings. The create
 request carries UUID `id`, integer `amountMicrousd` and `payCurrency`; responses
 carry `options`, `payment` or `payments`. Native tokens and account-operation
-cancellation guard every request. IPC and the SDK discard replies after account
-changes. Merchant keys stay on the backend. A repeated UUID retrieves its prior
+cancellation guard every request. Currency codes accept 1–32 lowercase letters
+or digits, including one-letter provider asset codes. IPC and the SDK discard
+replies after account changes. Merchant keys stay on the backend. A repeated UUID retrieves its prior
 intent; cancellation never authorizes creating a replacement automatically.
 Desktop and its bundled sidecar require version 4 together. A new sidecar talking
 to an older backend hides Other crypto and leaves existing billing available.

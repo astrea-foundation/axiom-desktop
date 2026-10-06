@@ -658,7 +658,7 @@ fn parse_api_origin(value: &str) -> Result<Url> {
 }
 
 fn valid_crypto_currency(value: &str) -> bool {
-    (2..=32).contains(&value.len())
+    (1..=32).contains(&value.len())
         && value
             .bytes()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
@@ -1210,6 +1210,10 @@ mod tests {
     }
     #[test]
     fn crypto_payment_contract_rejects_unsafe_amounts_and_addresses() {
+        assert!(valid_crypto_currency("s"));
+        assert!(valid_crypto_currency("x"));
+        assert!(!valid_crypto_currency(""));
+        assert!(!valid_crypto_currency("X"));
         let now = chrono::Utc::now().to_rfc3339();
         let mut payment = axiom_acp_extension::CryptoPayment {
             id: uuid::Uuid::new_v4().to_string(),
