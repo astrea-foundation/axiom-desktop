@@ -41,3 +41,8 @@ Pack committed packages with `pnpm --filter @axiom/chat-core pack` and
 integrity in the consuming repository. Both repositories build independently;
 there are no neighboring-checkout source imports or submodules. Package artifact
 versions do not bump the Desktop product or publish installers.
+
+The vault form also accepts an explicit `change-password` mode and cancellation
+callback for a host that has already unlocked and paused its runtime. Key rotation
+remains host-owned and must finish atomic encrypted storage commit before returning
+to chat. Native local storage does not adopt the web vault.
