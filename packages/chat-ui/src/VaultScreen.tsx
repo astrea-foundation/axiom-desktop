@@ -4,7 +4,8 @@ import { Copy, Download, LockKeyhole, ShieldCheck } from 'lucide-react';
 
 type Mode = 'setup' | 'unlock' | 'recover' | 'change-password' | 'reset';
 export interface VaultScreenProps {
-  initialMode: 'setup' | 'unlock';
+  initialMode: 'setup' | 'unlock' | 'change-password';
+  onCancel?(): void;
   accountLabel: string;
   onUnlock(password: string): Promise<void>;
   onRecover(code: string): Promise<void>;
@@ -58,6 +59,7 @@ export function VaultScreen(props: VaultScreenProps) {
     lifetime.current++; props.onCancelPreparation();
     setPassword(''); setConfirmation(''); setRecovery(''); setCode(''); setPhrase('');
     setAcknowledged(false); setSaved(false); setBackupSaved(false); setDiscardConfirmed(false); setRemaining(null); setBusy(false); setError(''); setMode(props.initialMode);
+    if (props.initialMode === 'change-password') props.onCancel?.();
   };
   const newPassword = mode === 'setup' || mode === 'change-password';
   const title = code ? 'Save your recovery code' : mode === 'setup' ? 'Create an encryption password'
