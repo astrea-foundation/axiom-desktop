@@ -31,9 +31,9 @@ export function VaultScreen(props: VaultScreenProps) {
   const [backupSaved, setBackupSaved] = useState(false), [discardConfirmed, setDiscardConfirmed] = useState(false);
   const lifetime = useRef(0);
   useEffect(() => () => { lifetime.current++; }, []);
-  const perform = async (action: () => Promise<void>) => {
+  const perform = async (action: () => Promise<void>, clearError = true) => {
     const scope = lifetime.current;
-    setError(''); setBusy(true);
+    if (clearError) setError(''); setBusy(true);
     try { await action(); }
     catch (failure) { if (scope === lifetime.current) setError(failure instanceof Error ? failure.message : 'Couldn’t continue. Try again.'); }
     finally { if (scope === lifetime.current) setBusy(false); }
@@ -57,7 +57,7 @@ export function VaultScreen(props: VaultScreenProps) {
   const cancel = () => {
     lifetime.current++; props.onCancelPreparation();
     setPassword(''); setConfirmation(''); setRecovery(''); setCode(''); setPhrase('');
-    setAcknowledged(false); setSaved(false); setRemaining(null); setBusy(false); setError(''); setMode(props.initialMode);
+    setAcknowledged(false); setSaved(false); setBackupSaved(false); setDiscardConfirmed(false); setRemaining(null); setBusy(false); setError(''); setMode(props.initialMode);
   };
   const newPassword = mode === 'setup' || mode === 'change-password';
   const title = code ? 'Save your recovery code' : mode === 'setup' ? 'Create an encryption password'
@@ -119,9 +119,9 @@ export function VaultScreen(props: VaultScreenProps) {
       </form>}
       {error && <p role="alert" className="mt-4 text-[12px] text-[var(--color-error)]">{error} {error.includes('Sign in again') && <a href="/signin?reauth=1&return_to=%2Fchat%2F" className="underline">Sign in</a>}</p>}
       {error.includes('encrypted local copy was kept') && props.onDownloadUnsynced && props.onUseSynced && <div className="mt-4 space-y-3 text-[12px]">
-        <button type="button" disabled={busy} className={inputClass} onClick={() => void perform(async () => { await props.onDownloadUnsynced!(); setBackupSaved(true); })}>Download unsynced encrypted copy</button>
+        <button type="button" disabled={busy} className={inputClass} onClick={() => void perform(async () => { await props.onDownloadUnsynced!(); setBackupSaved(true); }, false)}>Download unsynced encrypted copy</button>
         <label className="flex items-start gap-2"><input type="checkbox" checked={discardConfirmed} onChange={event => setDiscardConfirmed(event.target.checked)} />I saved that copy and understand this device’s unsynced changes will be discarded.</label>
-        <button type="button" disabled={busy || !backupSaved || !discardConfirmed} className={inputClass} onClick={() => void perform(props.onUseSynced!)}>Use synced chats</button>
+        <button type="button" disabled={busy || !backupSaved || !discardConfirmed} className={inputClass} onClick={() => void perform(props.onUseSynced!, false)}>Use synced chats</button>
       </div>}
       <div className="mt-5 flex flex-wrap gap-x-4 gap-y-3 text-[12px] text-[var(--color-text-tertiary)]">
         {mode === 'unlock' && !code ? <><button type="button" onClick={() => { setMode('recover'); setError(''); setPassword(''); }}>Use recovery code</button><button type="button" onClick={() => { setMode('reset'); setError(''); setPassword(''); }}>Delete all chats and start fresh</button></>
