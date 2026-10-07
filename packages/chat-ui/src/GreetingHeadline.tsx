@@ -1,4 +1,5 @@
 /** @jsxRuntime automatic */
+/** @jsxRuntime automatic */
 import { useEffect, useRef, useState } from "react";
 
 const GREETINGS = [

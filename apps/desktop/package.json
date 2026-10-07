@@ -45,7 +45,8 @@
     "remark-gfm": "^4.0.1",
     "remark-math": "6.0.0",
     "unist-util-visit": "5.1.0",
-    "@axiom/chat-ui": "workspace:*"
+    "@axiom/chat-ui": "workspace:*",
+    "@axiom/chat-core": "workspace:*"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.0",

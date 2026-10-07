@@ -16,6 +16,9 @@ importers:
       '@axiom/brand':
         specifier: workspace:*
         version: link:../../packages/brand
+      '@axiom/chat-core':
+        specifier: workspace:*
+        version: link:../../packages/chat-core
       '@axiom/chat-ui':
         specifier: workspace:*
         version: link:../../packages/chat-ui
@@ -112,6 +115,10 @@ importers:
         version: 7.3.6(@types/node@24.13.3)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.23.12)
 
   packages/axiom-acp-client:
+    dependencies:
+      '@axiom/chat-core':
+        specifier: workspace:*
+        version: link:../chat-core
     devDependencies:
       '@types/node':
         specifier: ^24.12.3
@@ -135,8 +142,20 @@ importers:
         specifier: ^5.3.0
         version: 5.3.0
 
+  packages/chat-core:
+    devDependencies:
+      typescript:
+        specifier: ~5.9.2
+        version: 5.9.3
+
   packages/chat-ui:
     dependencies:
+      '@axiom/chat-core':
+        specifier: workspace:*
+        version: link:../chat-core
+      '@dnd-kit/core':
+        specifier: ^6.3.1
+        version: 6.3.1(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       '@lobehub/icons-static-svg':
         specifier: ^1.94.0
         version: 1.94.0
@@ -149,6 +168,9 @@ importers:
       react:
         specifier: ^19.2.6
         version: 19.2.8
+      react-dom:
+        specifier: ^19.2.6
+        version: 19.2.8(react@19.2.8)
       react-markdown:
         specifier: ^10.1.0
         version: 10.1.0(@types/react@19.2.18)(react@19.2.8)(supports-color@10.2.2)
@@ -174,6 +196,9 @@ importers:
       '@types/react':
         specifier: ^19.2.14
         version: 19.2.18
+      '@types/react-dom':
+        specifier: ^19.2.3
+        version: 19.2.4(@types/react@19.2.18)
       micromark-util-types:
         specifier: 2.0.2
         version: 2.0.2

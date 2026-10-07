@@ -1,4 +1,5 @@
 /** @jsxRuntime automatic */
+/** @jsxRuntime automatic */
 import { Box } from "lucide-react";
 import tinfoilIcon from "./assets/tinfoil/tinfoil.svg?url";
 import alibabaIcon from "@lobehub/icons-static-svg/icons/alibaba-color.svg?url";

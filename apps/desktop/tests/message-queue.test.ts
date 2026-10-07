@@ -345,3 +345,18 @@ test("disk failure or account switch during payload commit leaves the draft unco
   await assert.rejects(queue.reserveDurable("thread", "keep this", false), /disk full/);
   assert.equal(f.calls.length, 0);
 });
+
+test('an encrypted host commits its outbox before dispatch and rejects failed persistence', async () => {
+  const f = fixture(false);
+  let committed: (() => void) | undefined;
+  f.api.persistQueue = async () => new Promise<void>(resolve => { committed = resolve; });
+  const id = f.queue.enqueue('thread', 'durable before inference', false);
+  assert.equal(f.calls.length, 0);
+  committed!(); await settle();
+  assert.equal(f.calls[0]?.id, id);
+  await f.finish(id);
+  f.api.persistQueue = async () => { throw new Error('storage unavailable'); };
+  f.queue.enqueue('thread', 'never sent', false); await settle();
+  assert.equal(f.calls.length, 1);
+  assert.equal(f.queue.isPaused('thread'), true);
+});

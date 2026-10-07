@@ -1,4 +1,5 @@
 /** @jsxRuntime automatic */
+/** @jsxRuntime automatic */
 import { Check, Search, Image, FileText } from "lucide-react";
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ProviderModel } from "./types";
