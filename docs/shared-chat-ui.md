@@ -20,6 +20,18 @@ a new password/code, and destructive reset confirmation. Native local storage
 has no new password requirement. Encryption and reset authorization belong to
 the browser vault adapter and Platform backend, never these forms.
 
+Setup explains that this password protects saved web chats independently of
+account sign-in, displays the twelve-character minimum before entry and identifies
+the password/recovery-code steps. Show-password controls, password-manager field
+sections, matching feedback and Caps Lock hints help users avoid typos. Failed
+attempts preserve transient input for correction; successful steps, cancellation
+and navigation clear secrets. Inputs and navigation cannot change during a pending
+attempt. Code copying/downloads show feedback, with selectable code as a clipboard
+fallback. Recovery explains replacement of the password/code while keeping chats.
+Reset explains the reading countdown and can retry a failed challenge without
+bypassing it. Hosts supply `onReauthenticate` for actionable expired-session errors.
+The card scrolls from the top when it exceeds the available viewport height.
+
 The package ships TypeScript/TSX for React/Vite. Import its `styles.css` with
 Tailwind 4 and include both packages in the consumer's source scan. Theme,
 keyboard/focus, Markdown/code/math, provider logos and privacy states retain
