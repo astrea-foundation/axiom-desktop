@@ -69,7 +69,10 @@ export function VaultScreen(props: VaultScreenProps) {
         if (!document.hidden) left = Math.max(0, left - Math.min(now - last, 1000));
         last = now; setRemaining(Math.ceil(left / 1000));
       }, 250);
-    }).catch(failure => { if (!cancelled) setError(failure instanceof Error ? failure.message : 'Couldn’t prepare deletion. Try again.'); });
+    }).catch(failure => { if (!cancelled) {
+      const message = failure instanceof Error ? failure.message : '';
+      setError(/sign in again|session expired/i.test(message) ? message : 'Couldn’t prepare deletion. Try again.');
+    } });
     return () => { cancelled = true; if (timer) clearInterval(timer); };
   }, [mode, resetAttempt]);
   const cancel = () => {
@@ -122,7 +125,7 @@ export function VaultScreen(props: VaultScreenProps) {
         <p className="text-[12px] leading-5 text-[var(--color-text-secondary)]">Take a moment to read this. You can confirm after the 20-second countdown.</p>
         <label className="block text-[12px]">Type DELETE ALL CHATS<input aria-label="Confirm deletion" disabled={busy} autoComplete="off" value={phrase} onChange={event => setPhrase(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') event.preventDefault(); }} className={inputClass + ' mt-2'} /></label>
         <label className="flex items-start gap-2 text-[13px]"><input type="checkbox" disabled={busy} checked={acknowledged} onChange={event => setAcknowledged(event.target.checked)} className="mt-1" />I understand this deletes my web chats and files.</label>
-        <button type="button" disabled={remaining !== 0 || phrase !== 'DELETE ALL CHATS' || !acknowledged || busy} className={buttonClass + ' w-full !bg-[var(--color-error)]'} onClick={() => void perform(props.onReset)}>{busy ? 'Deleting…' : remaining === null ? 'Preparing confirmation…' : remaining > 0 ? `Delete all chats (${remaining}s)` : 'Delete all chats and start fresh'}</button>
+        <button type="button" disabled={remaining !== 0 || phrase !== 'DELETE ALL CHATS' || !acknowledged || busy} className={buttonClass + ' w-full !bg-[var(--color-danger-strong)] !text-white'} onClick={() => void perform(props.onReset)}>{busy ? 'Deleting…' : remaining === null ? 'Preparing confirmation…' : remaining > 0 ? `Delete all chats (${remaining}s)` : 'Delete all chats and start fresh'}</button>
       </div> : <form className="mt-5 space-y-4" onSubmit={event => {
         event.preventDefault();
         if (busy) return;
@@ -148,7 +151,7 @@ export function VaultScreen(props: VaultScreenProps) {
           {newPassword && <>
             <p id="vault-password-help" className="!mt-2 text-[12px] leading-5 text-[var(--color-text-secondary)]">At least 12 characters. A few words work well; numbers and symbols are optional.</p>
             <label className="block text-[12px]">Confirm password<input type={showPassword ? 'text' : 'password'} disabled={busy} autoComplete="section-chat-encryption new-password" aria-label="Confirm encryption password" aria-invalid={mismatch || undefined} aria-describedby={confirmation ? 'vault-password-match' : undefined} value={confirmation} onChange={event => setConfirmation(event.target.value)} onKeyUp={event => setCapsLock(event.getModifierState('CapsLock'))} onBlur={() => { setConfirmationTouched(true); setCapsLock(false); }} maxLength={1024} className={inputClass + ' mt-2'} required /></label>
-            {confirmation && <p id="vault-password-match" role="status" className={'!mt-2 text-[12px] ' + (mismatch ? 'text-[var(--color-error)]' : 'text-[var(--color-text-secondary)]')}>{mismatch ? 'Passwords don’t match.' : password === confirmation ? 'Passwords match.' : 'Enter the same password again.'}</p>}
+            {confirmation && <p id="vault-password-match" role="status" className={'!mt-2 text-[12px] ' + (mismatch ? 'text-[var(--color-danger-strong)]' : 'text-[var(--color-text-secondary)]')}>{mismatch ? 'Passwords don’t match.' : password === confirmation ? 'Passwords match.' : 'Enter the same password again.'}</p>}
           </>}
           <label className="flex items-center gap-2 text-[12px] text-[var(--color-text-secondary)]"><input type="checkbox" disabled={busy} checked={showPassword} onChange={event => setShowPassword(event.target.checked)} />{newPassword ? 'Show passwords' : 'Show password'}</label>
           {capsLock && <p role="status" className="!mt-2 text-[12px] text-[var(--color-text-secondary)]">Caps Lock is on.</p>}
@@ -159,7 +162,7 @@ export function VaultScreen(props: VaultScreenProps) {
         </>}
         <button type="submit" disabled={busy || (mode === 'recover' ? !recovery.trim() : !password) || (newPassword && (password.length < 12 || password !== confirmation || !acknowledged))} className={buttonClass + ' w-full'}>{busy ? mode === 'unlock' ? 'Unlocking chats…' : mode === 'recover' ? 'Checking recovery code…' : 'Creating recovery code…' : mode === 'unlock' ? 'Unlock' : mode === 'recover' ? 'Recover chats' : 'Continue'}</button>
       </form>}
-      {error && <p role="alert" className="mt-4 text-[12px] text-[var(--color-error)]">{error} {reauthenticationRequired && props.onReauthenticate && <button type="button" disabled={busy} onClick={props.onReauthenticate} className="underline">Sign in again</button>}</p>}
+      {error && <p role="alert" className="mt-4 text-[12px] text-[var(--color-danger-strong)]">{error} {reauthenticationRequired && props.onReauthenticate && <button type="button" disabled={busy} onClick={props.onReauthenticate} className="underline">Sign in again</button>}</p>}
       {mode === 'reset' && error && remaining === null && !reauthenticationRequired && <button type="button" className={inputClass + ' mt-3'} onClick={() => { setError(''); setResetAttempt(value => value + 1); }}>Try again</button>}
       {error.includes('encrypted local copy was kept') && props.onDownloadUnsynced && props.onUseSynced && <div className="mt-4 space-y-3 text-[12px]">
         <button type="button" disabled={busy} className={inputClass} onClick={() => void perform(async () => { await props.onDownloadUnsynced!(); setBackupSaved(true); }, false)}>Download unsynced encrypted copy</button>
