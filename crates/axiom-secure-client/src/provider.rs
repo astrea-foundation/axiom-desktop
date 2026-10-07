@@ -29,6 +29,9 @@ pub trait VerifiedSession: sealed::Session + Send {
         cancellation: CancellationToken,
     ) -> Result<InferenceResponse>;
 
+    /// Deltas remain provisional until protocol-specific completion checks pass.
+    /// Emit `ResponseVerified` after those checks; callers must also require a
+    /// successful return, since cancellation or event delivery can still fail.
     async fn stream(
         &mut self,
         request: InferenceRequest,

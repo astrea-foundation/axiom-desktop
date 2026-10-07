@@ -509,6 +509,15 @@ impl Session {
             &cancellation,
         )
         .await?;
+        // The ordered EHBP stream and terminal response have been authenticated,
+        // and the relay accounting above matches that exact response. Consumers
+        // can now distinguish provisional deltas from verified completion.
+        send(
+            sink.as_ref(),
+            ProviderEvent::ResponseVerified,
+            &cancellation,
+        )
+        .await?;
         if let Some(reason) = &output.finish_reason {
             send(
                 sink.as_ref(),
