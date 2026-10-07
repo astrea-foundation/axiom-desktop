@@ -7,12 +7,8 @@ export type SignInState =
   | { kind: "success" }
   | { kind: "error"; message: string };
 
-export type AccountPresentation =
-  | { kind: "starting"; title: string; detail: string }
-  | { kind: "signed-out"; title: string; detail: string }
-  | { kind: "expired"; title: string; detail: string }
-  | { kind: "unavailable"; title: string; detail: string }
-  | { kind: "valid"; title: string; detail: string };
+export type { AccountPresentation } from "@axiom/chat-core/account";
+import type { AccountPresentation } from "@axiom/chat-core/account";
 
 export function accountPresentation(
   connected: boolean,
