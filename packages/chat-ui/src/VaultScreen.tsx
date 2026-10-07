@@ -111,7 +111,7 @@ export function VaultScreen(props: VaultScreenProps) {
         {mode !== 'setup' && <p className="text-[12px] leading-5 text-[var(--color-text-secondary)]">This replaces your previous recovery code when you save the new password.</p>}
         <div className="flex flex-wrap gap-2">
           <button type="button" autoFocus disabled={busy} className={buttonClass + ' flex items-center gap-2'} onClick={download}><Download size={14} />Download recovery code</button>
-          <button type="button" disabled={busy} className={inputClass + ' !w-auto flex items-center gap-2'} onClick={() => void perform(async () => {
+          <button type="button" aria-label="Copy recovery code" disabled={busy} className={inputClass + ' !w-auto flex items-center gap-2'} onClick={() => void perform(async () => {
             try { await navigator.clipboard.writeText(code); setCopied(true); }
             catch { throw new Error('Couldn’t copy the code. Download it or open “Show recovery code” to copy it yourself.'); }
           })}>{copied ? <Check size={14} /> : <Copy size={14} />}<span role="status">{copied ? 'Copied' : 'Copy'}</span></button>
