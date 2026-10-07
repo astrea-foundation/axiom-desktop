@@ -27,7 +27,10 @@ The protocol's frame-level EOF alone does not authenticate completion. A streami
 3. An **encrypted and authenticated `[DONE]`** follows those terminal fields; no subsequent data event is accepted.
 4. Backend accounting is completed, final and settled for the same request/model, with token counts matching the authenticated response.
 
-Only then does the adapter emit `Finished` and return success. Deltas before this are provisional. Nonstreaming success requires a complete authenticated JSON response with corresponding terminal fields and accounting. No signed receipt is claimed: response AEAD and authenticated application framing establish the request/environment binding.
+Only then does the adapter emit `ResponseVerified`, followed by `Finished`, and
+return success. Consumers must require both the verification event and a
+successful session return; the event alone cannot override cancellation or an
+event-delivery failure. Deltas before this are provisional. Nonstreaming success requires a complete authenticated JSON response with corresponding terminal fields and accounting. No signed receipt is claimed: response AEAD and authenticated application framing establish the request/environment binding.
 
 The adapter reads Tinfoil's documented [`reasoning` field](https://docs.tinfoil.sh/guides/reasoning)
 from streaming deltas and completed messages, with `reasoning_content` as a
