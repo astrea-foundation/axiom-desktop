@@ -5,6 +5,10 @@ import type {
   GetAttachmentsResponse,
   AssignThreadCollectionResponse,
   BillingStatusResponse,
+  CryptoOptionsResponse,
+  CryptoPaymentResponse,
+  CryptoPaymentsResponse,
+  CreateCryptoPaymentRequest,
   GiftCodeRedeemResponse,
   UsageSummaryResponse,
   UsageSummaryRequest,
@@ -62,7 +66,7 @@ const EXTENSION_CAPABILITIES = {
     desktopAgent: 1,
     desktopMcp: 1,
     account: 2,
-    billing: 3,
+    billing: 4,
     usage: 1,
     securityEvidence: 4,
     webConsent: 1,
@@ -633,6 +637,32 @@ export class AxiomAcpClient extends EventEmitter {
     const result = await this.process.request<BillingStatusResponse>("_axiom/billing/status", {});
     this.assertAccountContext(accountContext);
     this.state.setBilling(result.status);
+    return result;
+  }
+
+  async cryptoOptions(): Promise<CryptoOptionsResponse> {
+    const context = this.state.accountContextToken();
+    const result = await this.process.request<CryptoOptionsResponse>("_axiom/billing/crypto_options", {});
+    this.assertAccountContext(context);
+    return result;
+  }
+
+  async cryptoPayments(): Promise<CryptoPaymentsResponse> {
+    const context = this.state.accountContextToken();
+    const result = await this.process.request<CryptoPaymentsResponse>("_axiom/billing/crypto_payments", {});
+    this.assertAccountContext(context);
+    return result;
+  }
+
+  async createCryptoPayment(request: CreateCryptoPaymentRequest): Promise<CryptoPaymentResponse> {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(request.id)
+      || !Number.isSafeInteger(request.amountMicrousd) || request.amountMicrousd < 5_000_000 || request.amountMicrousd > 1_000_000_000
+      || request.amountMicrousd % 10_000 !== 0 || !/^[a-z0-9]{1,32}$/.test(request.payCurrency) || request.payCurrency === "zec") {
+      throw new ProtocolError("Invalid payment request.");
+    }
+    const context = this.state.accountContextToken();
+    const result = await this.process.request<CryptoPaymentResponse>("_axiom/billing/create_crypto_payment", request);
+    this.assertAccountContext(context);
     return result;
   }
 

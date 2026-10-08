@@ -89,7 +89,7 @@ test("extension negotiation accepts additive families and optional features only
     profilePreferences: 1,
     collections: 1,
     account: 2,
-    billing: 3,
+    billing: 4,
     securityEvidence: 4,
     webConsent: 1,
     futureFeature: 7,
@@ -1360,4 +1360,31 @@ lines.on('line', line => {
     await client.desktopMcp({ expectedRevision: state.revision, action: { kind: "delete", name: "local" } });
     assert.deepEqual(client.getState().sessions[selectedThread]?.desktopMcp?.selectedTools, []);
   } finally { await client.close(); }
+});
+
+
+test("crypto operations discard replies after account switches and validate requests", async (t) => {
+  const {client} = await fixture();
+  t.after(() => client.close());
+  const state = (client as unknown as {state: AxiomStateStore}).state;
+  let revision = 0;
+  let complete!: (value: unknown) => void;
+  client.process.request = <T>(): Promise<T> => new Promise<T>((resolve) => { complete = resolve as (value: unknown) => void; });
+  const request = {id: "00000000-0000-4000-8000-000000000001", amountMicrousd: 25_000_000, payCurrency: "btc"};
+  for (const call of [() => client.cryptoOptions(), () => client.cryptoPayments(), () => client.createCryptoPayment(request)]) {
+    state.setAccount({revision: ++revision, state: "valid", account: {id: "account-a", linkedMethods: ["password"]}});
+    const pending = call();
+    state.setAccount({revision: ++revision, state: "valid", account: {id: "account-b", linkedMethods: ["password"]}});
+    complete({payment: {pay_address: "old-account-address"}});
+    await assert.rejects(pending, /account changed/i);
+  }
+  state.setAccount({revision: ++revision, state: "valid", account: {id: "account-a", linkedMethods: ["password"]}});
+  const singleLetter = client.createCryptoPayment({...request, payCurrency: "s"});
+  complete({payment: {pay_currency: "s"}});
+  assert.equal((await singleLetter).payment.pay_currency, "s");
+  for (const amountMicrousd of [0, 4_999_999, 5_000_001, 1_000_000_001, NaN]) {
+    await assert.rejects(client.createCryptoPayment({...request, amountMicrousd}), /Invalid payment request/);
+  }
+  await assert.rejects(client.createCryptoPayment({...request, payCurrency: "zec"}), /Invalid payment request/);
+  assert(!JSON.stringify(client.getState()).includes("old-account-address"));
 });

@@ -1477,6 +1477,7 @@ enum ExtensionFeature {
     Attachments = 1 << 14,
     GiftCodes = 1 << 15,
     DesktopMcp = 1 << 16,
+    CryptoPayments = 1 << 17,
 }
 
 struct ExtensionState {
@@ -1547,6 +1548,9 @@ impl ExtensionState {
         }
         if features.billing >= 3 {
             mask |= ExtensionFeature::GiftCodes as u64;
+        }
+        if features.billing >= 4 {
+            mask |= ExtensionFeature::CryptoPayments as u64;
         }
         if features.usage >= 1 {
             mask |= ExtensionFeature::Usage as u64;

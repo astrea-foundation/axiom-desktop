@@ -34,11 +34,36 @@ draft; navigation, reselecting a thread and reload preserve them. An anonymous
 draft can follow the first sign-in. Pending first-message setup has its own
 identity, so navigating away does not silently discard or redirect it.
 
-## Balance and gift credit
+## Balance and payments
 
 Open the account menu and choose **Balance** to view credit and top up with mainnet
-Zcash. The reusable address and QR code appear once; automatic and manual balance
-refreshes update that panel in place without clearing an entered gift code.
+Zcash. **5% off** means $9.50 of Zcash buys $10 of credit, using the rate at
+confirmation. The reusable address stays available.
+
+Choose **Other crypto** to open the deposit window. Pick a coin from the dropdown
+with its icon, enter the USD credit amount and create a payment. Send the exact
+crypto amount on the displayed network, including the memo if shown, before the
+countdown ends. The countdown uses the
+fixed-rate quote's expiry and updates every second. **Send within … for this rate**
+is the time to send, not a confirmation deadline. An unsent quote renews automatically
+while the deposit window is open, with a fresh amount and address. Old payments
+remain tracked separately. Failed renewal offers **Retry quote** without
+duplicating the order; it never loops on a failed or stale quote.
+
+Choose **I’ve sent it** after sending to stop renewal while the transfer is detected
+and confirmed. This hint is saved on this device for the signed-in account; it
+does not authorize credit. Confirming payments continue beyond the rate deadline.
+**Cancel deposit** returns to the coin selector; it does not revoke the address
+or reverse funds already sent. The
+payment remains in recent payments and sent funds continue to be tracked.
+Each payment has its own address. ETH, USDC, USDT and assets offered on multiple
+networks show the exact network and a permanent-loss warning before payment
+creation and beside the deposit details. Status updates automatically; recent
+payments remain available when you reopen Balance. Partial payments need review.
+Provider fees are covered by Axiom.
+The discount applies to Zcash only. Crypto availability requires backend setup.
+
+Automatic and manual balance refreshes preserve an entered gift code.
 **Redeem a gift code** adds its USD value to the signed-in account. Code
 entry is masked and cleared on success, closing the screen, disconnect or account
 change. It is never a chat message or saved draft. A failed/uncertain request can
@@ -48,7 +73,7 @@ by this account reports that result and refreshes the balance.
 Gift credit is part of **Other credit**; trial credit is spent first. Gift
 redemption does not clear payment-review holds. It requires a native interactive
 account and a backend with gift redemption deployed. Desktop and its bundled
-sidecar negotiate `billing@3`; older sidecars must be updated together.
+sidecar negotiate `billing@4`; older sidecars must be updated together.
 
 ## Agent and Web controls
 

@@ -116,3 +116,16 @@ The release workflow emits `windows-store-submission` with immutable full-packag
 references and remaining fields. Private maintainer records live in the platform
 repository. Store approval covers its initial installation channel; direct website
 downloads and subsequent updates can still receive Windows reputation prompts.
+
+
+## Crypto funding release qualification
+
+NOWPayments and the Zcash discount have local native, SDK, Desktop and browser
+coverage. Before release, qualify the matching backend's merchant configuration
+and sandbox payments, then verify Balance/network/memo/status/account switching,
+the deposit dialog's keyboard picker, focus restoration, countdown expiry,
+automatic renewal with the updated amount/address, safe renewal retries,
+cancel-and-restart flow, the saved sent-transfer hint, continued tracking beyond
+the quote deadline and small-window layout
+on Windows and macOS previews. Keep Desktop and its bundled `billing@4` sidecar
+together. Installer publishing remains separate release work.

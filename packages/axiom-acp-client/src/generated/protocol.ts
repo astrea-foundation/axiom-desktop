@@ -170,6 +170,12 @@ export interface ProtocolSchema {
   logoutRequest: LogoutRequest;
   billingStatusRequest: BillingStatusRequest;
   billingStatusResponse: BillingStatusResponse;
+  cryptoOptionsRequest: CryptoOptionsRequest;
+  cryptoOptionsResponse: CryptoOptionsResponse;
+  createCryptoPaymentRequest: CreateCryptoPaymentRequest;
+  cryptoPaymentResponse: CryptoPaymentResponse;
+  cryptoPaymentsRequest: CryptoPaymentsRequest;
+  cryptoPaymentsResponse: CryptoPaymentsResponse;
   giftCodeRedeemRequest: GiftCodeRedeemRequest;
   giftCodeRedeemResponse: GiftCodeRedeemResponse;
   usageSummaryRequest: UsageSummaryRequest;
@@ -756,6 +762,57 @@ export interface ZecUsdQuote {
   source: string;
   as_of: string;
   expires_at: string;
+}
+export interface CryptoOptionsRequest {
+  [k: string]: unknown;
+}
+export interface CryptoOptionsResponse {
+  options: CryptoOptions;
+  [k: string]: unknown;
+}
+export interface CryptoOptions {
+  enabled: boolean;
+  zcash_discount_bps: number;
+  min_amount_microusd: number;
+  max_amount_microusd: number;
+  currencies: CryptoCurrency[];
+}
+/**
+ * Independent funding contract; billing/status remains compatible with older clients.
+ */
+export interface CryptoCurrency {
+  code: string;
+  name: string;
+  network: string;
+}
+export interface CreateCryptoPaymentRequest {
+  id: string;
+  amountMicrousd: number;
+  payCurrency: string;
+}
+export interface CryptoPaymentResponse {
+  payment: CryptoPayment;
+  [k: string]: unknown;
+}
+export interface CryptoPayment {
+  id: string;
+  status: string;
+  amount_microusd: number;
+  credited_microusd: number;
+  pay_currency: string;
+  pay_amount?: string | null;
+  pay_address?: string | null;
+  payin_extra_id?: string | null;
+  expires_at?: string | null;
+  review_required: boolean;
+  created_at: string;
+}
+export interface CryptoPaymentsRequest {
+  [k: string]: unknown;
+}
+export interface CryptoPaymentsResponse {
+  payments: CryptoPayment[];
+  [k: string]: unknown;
 }
 export interface GiftCodeRedeemRequest {
   code: string;
