@@ -45,3 +45,5 @@ in the private platform repository. Native builds and tests are self-contained.
 Keep one current guide per topic. Internal plans, incident records and dated QA
 captures belong in private maintainer records. Preserve outstanding qualification
 requirements in [release acceptance](validation.md) when consolidating documents.
+
+- [Axiom 0.1.13](releases/0.1.13.md): shared chat, local MCP, crypto funding and updater fixes.
