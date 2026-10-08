@@ -45,6 +45,13 @@ keyboard/focus, Markdown/code/math, provider logos and privacy states retain
 Desktop behavior. The provider proof dialog distinguishes gateway evidence from
 upstream verification when a gateway adapter supplies that scope.
 
+Desktop's Electron main build must bundle both `@axiom/axiom-acp-client` and
+its transitive `@axiom/chat-core` imports into JavaScript. These packages export
+TypeScript source for bundlers; packaged Node cannot load their `.ts` exports
+from `node_modules`. The Desktop unit suite builds the production main entry
+and checks that shared attachment validation is included without runtime
+workspace-package or TypeScript imports.
+
 The settings screen and category navigation are shared too. Hosts supply the
 available categories and account/storage actions. Web hides Agent, MCP, Proxy,
 native updates and local API-key controls. Unsupported uploads are disabled with
