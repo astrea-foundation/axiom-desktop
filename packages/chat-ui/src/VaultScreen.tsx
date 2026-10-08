@@ -11,7 +11,6 @@ export interface VaultScreenProps {
   onRecover(code: string): Promise<void>;
   onPrepare(password: string): Promise<string>;
   onCommit(): Promise<void>;
-  onResetChallenge(): Promise<{ wait_seconds: number }>;
   onReset(): Promise<void>;
   onCancelPreparation(): void;
   onSignOut(): void;
@@ -29,12 +28,11 @@ export function VaultScreen(props: VaultScreenProps) {
   const [recovery, setRecovery] = useState(''), [code, setCode] = useState('');
   const [acknowledged, setAcknowledged] = useState(false), [saved, setSaved] = useState(false);
   const [busy, setBusy] = useState(false), [error, setError] = useState('');
-  const [remaining, setRemaining] = useState<number | null>(null), [phrase, setPhrase] = useState('');
+  const [remaining, setRemaining] = useState(5), [phrase, setPhrase] = useState('');
   const [backupSaved, setBackupSaved] = useState(false), [discardConfirmed, setDiscardConfirmed] = useState(false);
   const [showPassword, setShowPassword] = useState(false), [confirmationTouched, setConfirmationTouched] = useState(false);
   const [capsLock, setCapsLock] = useState(false), [recovered, setRecovered] = useState(false);
   const [copied, setCopied] = useState(false), [downloaded, setDownloaded] = useState(false);
-  const [resetAttempt, setResetAttempt] = useState(0);
   const passwordInput = useRef<HTMLInputElement>(null), recoveryInput = useRef<HTMLTextAreaElement>(null);
   const operation = useRef(false);
   const lifetime = useRef(0);
@@ -58,28 +56,21 @@ export function VaultScreen(props: VaultScreenProps) {
   }, [copied]);
   useEffect(() => {
     if (mode !== 'reset') return;
-    let cancelled = false, timer: ReturnType<typeof setInterval> | undefined;
-    setRemaining(null);
-    void props.onResetChallenge().then(({ wait_seconds }) => {
-      if (cancelled) return;
-      let left = Math.max(20000, wait_seconds * 1000), last = performance.now();
-      setRemaining(Math.ceil(left / 1000));
-      timer = setInterval(() => {
-        const now = performance.now();
-        if (!document.hidden) left = Math.max(0, left - Math.min(now - last, 1000));
-        last = now; setRemaining(Math.ceil(left / 1000));
-      }, 250);
-    }).catch(failure => { if (!cancelled) {
-      const message = failure instanceof Error ? failure.message : '';
-      setError(/sign in again|session expired/i.test(message) ? message : 'Couldn’t prepare deletion. Try again.');
-    } });
-    return () => { cancelled = true; if (timer) clearInterval(timer); };
-  }, [mode, resetAttempt]);
+    let left = 5000, last = performance.now();
+    setRemaining(5);
+    const timer = setInterval(() => {
+      const now = performance.now();
+      if (!document.hidden) left = Math.max(0, left - Math.min(now - last, 1000));
+      last = now; setRemaining(Math.ceil(left / 1000));
+      if (left === 0) clearInterval(timer);
+    }, 250);
+    return () => clearInterval(timer);
+  }, [mode]);
   const cancel = () => {
     lifetime.current++; props.onCancelPreparation();
     setPassword(''); setConfirmation(''); setRecovery(''); setCode(''); setPhrase('');
     operation.current = false;
-    setAcknowledged(false); setSaved(false); setBackupSaved(false); setDiscardConfirmed(false); setRemaining(null); setBusy(false); setError(''); setMode(props.initialMode);
+    setAcknowledged(false); setSaved(false); setBackupSaved(false); setDiscardConfirmed(false); setRemaining(5); setBusy(false); setError(''); setMode(props.initialMode);
     setShowPassword(false); setConfirmationTouched(false); setCapsLock(false); setRecovered(false); setCopied(false); setDownloaded(false);
     if (props.initialMode === 'change-password') props.onCancel?.();
   };
@@ -122,10 +113,10 @@ export function VaultScreen(props: VaultScreenProps) {
         <button type="button" disabled={!saved || busy} className={buttonClass + ' w-full'} onClick={() => void perform(props.onCommit)}>{busy ? 'Saving…' : mode === 'setup' ? 'Open chats' : 'Save new password'}</button>
       </div> : mode === 'reset' ? <div className="mt-5 space-y-4">
         <p className="text-[13px] leading-6 text-[var(--color-text-secondary)]">This permanently deletes all your saved web chats and files on every device. Axiom cannot restore them. Your account and balance will stay.</p>
-        <p className="text-[12px] leading-5 text-[var(--color-text-secondary)]">Take a moment to read this. You can confirm after the 20-second countdown.</p>
+        <p role="timer" aria-live="polite" className="text-[12px] leading-5 text-[var(--color-text-secondary)]">{remaining > 0 ? `You can confirm in ${remaining}s.` : 'You can now confirm deletion.'}</p>
         <label className="block text-[12px]">Type DELETE ALL CHATS<input aria-label="Confirm deletion" disabled={busy} autoComplete="off" value={phrase} onChange={event => setPhrase(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') event.preventDefault(); }} className={inputClass + ' mt-2'} /></label>
         <label className="flex items-start gap-2 text-[13px]"><input type="checkbox" disabled={busy} checked={acknowledged} onChange={event => setAcknowledged(event.target.checked)} className="mt-1" />I understand this deletes my web chats and files.</label>
-        <button type="button" disabled={remaining !== 0 || phrase !== 'DELETE ALL CHATS' || !acknowledged || busy} className={buttonClass + ' w-full !bg-[var(--color-danger-strong)] !text-white'} onClick={() => void perform(props.onReset)}>{busy ? 'Deleting…' : remaining === null ? 'Preparing confirmation…' : remaining > 0 ? `Delete all chats (${remaining}s)` : 'Delete all chats and start fresh'}</button>
+        <button type="button" disabled={remaining !== 0 || phrase !== 'DELETE ALL CHATS' || !acknowledged || busy} className={buttonClass + ' w-full !bg-[var(--color-danger-strong)] !text-white'} onClick={() => void perform(props.onReset)}>{busy ? 'Deleting…' : remaining > 0 ? `Delete all chats (${remaining}s)` : 'Delete all chats and start fresh'}</button>
       </div> : <form className="mt-5 space-y-4" onSubmit={event => {
         event.preventDefault();
         if (busy) return;
@@ -162,8 +153,7 @@ export function VaultScreen(props: VaultScreenProps) {
         </>}
         <button type="submit" disabled={busy || (mode === 'recover' ? !recovery.trim() : !password) || (newPassword && (password.length < 12 || password !== confirmation || !acknowledged))} className={buttonClass + ' w-full'}>{busy ? mode === 'unlock' ? 'Unlocking chats…' : mode === 'recover' ? 'Checking recovery code…' : 'Creating recovery code…' : mode === 'unlock' ? 'Unlock' : mode === 'recover' ? 'Recover chats' : 'Continue'}</button>
       </form>}
-      {error && <p role="alert" className="mt-4 text-[12px] text-[var(--color-danger-strong)]">{error} {reauthenticationRequired && props.onReauthenticate && <button type="button" disabled={busy} onClick={props.onReauthenticate} className="underline">Sign in again</button>}</p>}
-      {mode === 'reset' && error && remaining === null && !reauthenticationRequired && <button type="button" className={inputClass + ' mt-3'} onClick={() => { setError(''); setResetAttempt(value => value + 1); }}>Try again</button>}
+      {error && <p role="alert" className="mt-4 text-[12px] text-[var(--color-danger-strong)]">{error} {mode !== 'reset' && reauthenticationRequired && props.onReauthenticate && <button type="button" disabled={busy} onClick={props.onReauthenticate} className="underline">Sign in again</button>}</p>}
       {error.includes('encrypted local copy was kept') && props.onDownloadUnsynced && props.onUseSynced && <div className="mt-4 space-y-3 text-[12px]">
         <button type="button" disabled={busy} className={inputClass} onClick={() => void perform(async () => { await props.onDownloadUnsynced!(); setBackupSaved(true); }, false)}>Download unsynced encrypted copy</button>
         <label className="flex items-start gap-2"><input type="checkbox" checked={discardConfirmed} onChange={event => setDiscardConfirmed(event.target.checked)} />I saved that copy and understand this device’s unsynced changes will be discarded.</label>
