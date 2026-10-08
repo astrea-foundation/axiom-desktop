@@ -129,3 +129,10 @@ test("a payment risk hold explains why existing credit is unavailable", () => {
   assert.match(html, /Free trial credit/);
   assert.match(html, /\$1\.00/);
 });
+
+test("the primary Zcash discount is concise and requires the advertised policy", () => {
+  const active = {...payment, valuation_enabled: true};
+  const html = renderToStaticMarkup(createElement(DepositPanel, {payment: active, connected: true, discountBps: 500}));
+  assert.match(html, /5% off · \$9\.50 buys \$10 credit/);
+  assert.doesNotMatch(renderToStaticMarkup(createElement(DepositPanel, {payment: active, connected: true})), /5% off/);
+});

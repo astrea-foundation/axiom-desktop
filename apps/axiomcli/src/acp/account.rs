@@ -606,3 +606,105 @@ pub(super) fn redeem_gift_code(
     })?;
     Ok(())
 }
+
+pub(super) fn crypto_options(
+    context: &ServerContext,
+    _request: extension::CryptoOptionsRequest,
+    responder: Responder<extension::CryptoOptionsResponse>,
+    connection: &ConnectionTo<Client>,
+) -> agent_client_protocol::Result<()> {
+    if !extension_enabled(&context.extension_state, ExtensionFeature::CryptoPayments) {
+        return responder.respond_with_error(extension_not_negotiated());
+    }
+    let client = context.billing.clone();
+    let cancellation = CancellationToken::new();
+    let guard = respond_or_return!(
+        responder,
+        context
+            .account_work
+            .register(cancellation.clone())
+            .map_err(agent_error)
+    );
+    let request_cancellation = responder.cancellation();
+    connection.spawn(async move {
+        let _guard = guard;
+        let operation = client.crypto_options(&cancellation);
+        tokio::pin!(operation);
+        let result = tokio::select! {
+            biased;
+            result = &mut operation => result,
+            () = request_cancellation.cancelled() => { cancellation.cancel(); operation.await }
+        };
+        let options = respond_or_return!(responder, result.map_err(agent_error));
+        responder.respond(extension::CryptoOptionsResponse { options })
+    })?;
+    Ok(())
+}
+
+pub(super) fn create_crypto_payment(
+    context: &ServerContext,
+    request: extension::CreateCryptoPaymentRequest,
+    responder: Responder<extension::CryptoPaymentResponse>,
+    connection: &ConnectionTo<Client>,
+) -> agent_client_protocol::Result<()> {
+    if !extension_enabled(&context.extension_state, ExtensionFeature::CryptoPayments) {
+        return responder.respond_with_error(extension_not_negotiated());
+    }
+    let client = context.billing.clone();
+    let cancellation = CancellationToken::new();
+    let guard = respond_or_return!(
+        responder,
+        context
+            .account_work
+            .register(cancellation.clone())
+            .map_err(agent_error)
+    );
+    let request_cancellation = responder.cancellation();
+    connection.spawn(async move {
+        let _guard = guard;
+        let operation = client.create_crypto_payment(&request, &cancellation);
+        tokio::pin!(operation);
+        let result = tokio::select! {
+            biased;
+            result = &mut operation => result,
+            () = request_cancellation.cancelled() => { cancellation.cancel(); operation.await }
+        };
+        let payment = respond_or_return!(responder, result.map_err(agent_error));
+        responder.respond(extension::CryptoPaymentResponse { payment })
+    })?;
+    Ok(())
+}
+
+pub(super) fn crypto_payments(
+    context: &ServerContext,
+    _request: extension::CryptoPaymentsRequest,
+    responder: Responder<extension::CryptoPaymentsResponse>,
+    connection: &ConnectionTo<Client>,
+) -> agent_client_protocol::Result<()> {
+    if !extension_enabled(&context.extension_state, ExtensionFeature::CryptoPayments) {
+        return responder.respond_with_error(extension_not_negotiated());
+    }
+    let client = context.billing.clone();
+    let cancellation = CancellationToken::new();
+    let guard = respond_or_return!(
+        responder,
+        context
+            .account_work
+            .register(cancellation.clone())
+            .map_err(agent_error)
+    );
+    let request_cancellation = responder.cancellation();
+    connection.spawn(async move {
+        let _guard = guard;
+        let operation = client.crypto_payments(&cancellation);
+        tokio::pin!(operation);
+        let result = tokio::select! {
+            biased;
+            result = &mut operation => result,
+            () = request_cancellation.cancelled() => { cancellation.cancel(); operation.await }
+        };
+        let payments = respond_or_return!(responder, result.map_err(agent_error));
+        responder.respond(extension::CryptoPaymentsResponse { payments })
+    })?;
+    Ok(())
+}

@@ -12,7 +12,8 @@ export function zecFromZatoshis(value: string): string {
   return `${exact / 100_000_000n}${decimals ? `.${decimals}` : ""}`;
 }
 
-export function DepositPanel({ payment, connected, quote }: {
+export function DepositPanel({ payment, connected, quote, discountBps = 0 }: {
+  discountBps?: number;
   payment: PaymentAccount;
   connected: boolean;
   quote?: ZecUsdQuote | null;
@@ -53,6 +54,7 @@ export function DepositPanel({ payment, connected, quote }: {
     <header className="mb-5 flex flex-wrap items-start justify-between gap-3">
       <div>
         <h2 className="text-[17px] font-medium tracking-[-0.02em]">{payment.valuation_enabled ? "Top up via Zcash" : "Receive ZEC"}</h2>
+        {payment.valuation_enabled && discountBps === 500 ? <p className="mt-1 text-[12px] text-[var(--color-success)]">5% off · $9.50 buys $10 credit</p> : null}
       </div>
       {payment.valuation_enabled ? <div aria-label="Current ZEC exchange rate" className="text-right">
         <p className="font-medium tabular-nums">{currentQuote

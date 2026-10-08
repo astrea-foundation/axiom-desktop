@@ -366,6 +366,29 @@ impl PolicyEngine {
 
     #[must_use]
     pub fn evaluate(&self, profile: PermissionProfile, effect: Effect) -> PolicyDecision {
+        self.evaluate_with_defaults(profile, effect, false)
+    }
+
+    /// Desktop selection exposes only MCP authority, with narrow session grants.
+    #[must_use]
+    pub fn evaluate_desktop_mcp(&self, effect: Effect) -> PolicyDecision {
+        if !matches!(effect, Effect::Mcp { .. }) {
+            return decision(
+                DecisionKind::Deny,
+                "invalid MCP effect".into(),
+                effect,
+                false,
+            );
+        }
+        self.evaluate_with_defaults(PermissionProfile::Confirm, effect, true)
+    }
+
+    fn evaluate_with_defaults(
+        &self,
+        profile: PermissionProfile,
+        effect: Effect,
+        desktop_mcp: bool,
+    ) -> PolicyDecision {
         let normalized = match self.normalize(effect.clone()) {
             Ok(effect) => effect,
             Err(error) => return decision(DecisionKind::Deny, error.to_string(), effect, false),
@@ -429,7 +452,11 @@ impl PolicyEngine {
             );
         }
 
-        let (kind, explanation, grantable) = profile_default(profile, &normalized);
+        let (kind, explanation, grantable) = if desktop_mcp {
+            (DecisionKind::Ask, "MCP requires approval", true)
+        } else {
+            profile_default(profile, &normalized)
+        };
         decision(kind, explanation.into(), normalized, grantable)
     }
 
@@ -1424,5 +1451,76 @@ mod tests {
                 DecisionKind::Deny
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod desktop_mcp_tests {
+    use super::*;
+    #[test]
+    fn mcp_approval_and_grants_do_not_enable_builtin_or_other_server_authority() {
+        let root = tempfile::tempdir().unwrap();
+        let policy = PolicyEngine::for_workspace(root.path()).unwrap();
+        let effect = Effect::Mcp {
+            server: "local".into(),
+            tool: "echo".into(),
+            side_effecting: true,
+        };
+        let decision = policy.evaluate_desktop_mcp(effect.clone());
+        assert_eq!(decision.kind, DecisionKind::Ask);
+        let request = ApprovalRequest::new(&decision);
+        policy
+            .apply_approval(
+                &request,
+                ApprovalResponse {
+                    choice: ApprovalChoice::AllowExactSession,
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            policy.evaluate_desktop_mcp(effect).kind,
+            DecisionKind::Allow
+        );
+        assert_eq!(
+            policy
+                .evaluate_desktop_mcp(Effect::Mcp {
+                    server: "other".into(),
+                    tool: "echo".into(),
+                    side_effecting: true
+                })
+                .kind,
+            DecisionKind::Ask
+        );
+        assert_eq!(
+            policy
+                .evaluate_desktop_mcp(Effect::Mcp {
+                    server: "local".into(),
+                    tool: "delete".into(),
+                    side_effecting: true
+                })
+                .kind,
+            DecisionKind::Ask
+        );
+        assert_eq!(
+            policy
+                .evaluate(
+                    PermissionProfile::Web,
+                    Effect::ToolUse {
+                        name: "run_command".into(),
+                        access: ToolAccess::Write
+                    }
+                )
+                .kind,
+            DecisionKind::Deny
+        );
+        assert_eq!(
+            policy
+                .evaluate_desktop_mcp(Effect::ToolUse {
+                    name: "run_command".into(),
+                    access: ToolAccess::Write
+                })
+                .kind,
+            DecisionKind::Deny
+        );
     }
 }

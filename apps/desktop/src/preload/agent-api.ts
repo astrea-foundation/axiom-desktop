@@ -3,6 +3,10 @@ import type { PromptAttachment, GetAttachmentsResponse } from "@axiom/axiom-acp-
 import type {
   AccountStatusResponse,
   BillingStatusResponse,
+  CryptoOptionsResponse,
+  CryptoPaymentResponse,
+  CryptoPaymentsResponse,
+  CreateCryptoPaymentRequest,
   GiftCodeRedeemResponse,
   UsageSummaryResponse,
   UsageSummaryRequest,
@@ -16,6 +20,8 @@ import type {
   DeletePreviewResponse,
   DesktopBootstrapResponse,
   ConfigureDesktopAgentRequest,
+  DesktopMcpRequest,
+  DesktopMcpResponse,
   ConfigureDesktopAgentResponse,
   ElicitationOutcome,
   ListModelsResponse,
@@ -39,15 +45,16 @@ export interface AgentApi {
   getState: () => Promise<ClientState>;
   desktopBootstrap: () => Promise<DesktopBootstrapResponse>;
   newChat: () => Promise<SessionStartResult>;
+  desktopMcp: (request: DesktopMcpRequest) => Promise<DesktopMcpResponse>;
   configureDesktopAgent: (request: ConfigureDesktopAgentRequest) => Promise<ConfigureDesktopAgentResponse>;
   chooseWorkingDirectory: (current?: string) => Promise<string | null>;
   loadChat: (sessionId: string) => Promise<SessionStartResult>;
   // Deliberately distinct from the legacy prompt API: a hot-reloaded renderer
   // must never send through a preload/main process that ignores Web consent.
-  promptWithWebConsent: (sessionId: string, text: string, clientItemId: string, webEnabled: boolean, agentRevision?: number) => Promise<PromptResult>;
-  promptWithAttachments: (sessionId: string, text: string, clientItemId: string, webEnabled: boolean, agentRevision: number, attachments: PromptAttachment[]) => Promise<PromptResult>;
+  promptWithWebConsent: (sessionId: string, text: string, clientItemId: string, webEnabled: boolean, agentRevision?: number, mcpRevision?: number) => Promise<PromptResult>;
+  promptWithAttachments: (sessionId: string, text: string, clientItemId: string, webEnabled: boolean, agentRevision: number, attachments: PromptAttachment[], mcpRevision?: number) => Promise<PromptResult>;
   getAttachments: (threadId: string, userItemId: string) => Promise<GetAttachmentsResponse>;
-  revisePrompt: (sessionId: string, text: string, userItemId: string, expectedRevision: number, webEnabled: boolean, agentRevision: number) => Promise<PromptResult>;
+  revisePrompt: (sessionId: string, text: string, userItemId: string, expectedRevision: number, webEnabled: boolean, agentRevision: number, mcpRevision?: number) => Promise<PromptResult>;
   steer: (request: SteerTurnRequest) => Promise<SteerTurnResponse>;
   cancel: (sessionId: string) => Promise<void>;
   setConfig: (sessionId: string, configId: string, value: string) => Promise<void>;
@@ -57,6 +64,9 @@ export interface AgentApi {
   setSettings: (settings: ThreadSettingsRequest) => Promise<ThreadSettingsResult>;
   accountStatus: () => Promise<AccountStatusResponse>;
   billingStatus: () => Promise<BillingStatusResponse>;
+  cryptoOptions: (accountId: string) => Promise<CryptoOptionsResponse>;
+  cryptoPayments: (accountId: string) => Promise<CryptoPaymentsResponse>;
+  createCryptoPayment: (request: CreateCryptoPaymentRequest, accountId: string) => Promise<CryptoPaymentResponse>;
   redeemGiftCode: (code: string, accountId: string) => Promise<GiftCodeRedeemResponse>;
   usageSummary: (accountId: string, request?: UsageSummaryRequest) => Promise<UsageSummaryResponse>;
   apiKeys: (accountId: string) => Promise<ApiKeyListResponse>;
@@ -93,13 +103,14 @@ export const agentApi: AgentApi = {
   getState: () => invoke("state"),
   desktopBootstrap: () => invoke("desktop-bootstrap"),
   newChat: () => invoke("chat-new"),
+  desktopMcp: (request) => invoke("desktop-mcp", request),
   configureDesktopAgent: (request) => invoke("desktop-agent-configure", request),
   chooseWorkingDirectory: (current) => invoke("working-directory-choose", current),
   loadChat: (sessionId) => invoke("chat-load", sessionId),
-  promptWithWebConsent: (sessionId, text, clientItemId, webEnabled, agentRevision = 0) => invoke("prompt-with-agent-context", sessionId, text, clientItemId, webEnabled, agentRevision),
-  promptWithAttachments: (sessionId, text, clientItemId, webEnabled, agentRevision, attachments) => invoke("prompt-with-attachments", sessionId, text, clientItemId, webEnabled, agentRevision, attachments),
+  promptWithWebConsent: (sessionId, text, clientItemId, webEnabled, agentRevision = 0, mcpRevision) => invoke("prompt-with-agent-context", sessionId, text, clientItemId, webEnabled, agentRevision, ...(mcpRevision === undefined ? [] : [mcpRevision])),
+  promptWithAttachments: (sessionId, text, clientItemId, webEnabled, agentRevision, attachments, mcpRevision) => invoke("prompt-with-attachments", sessionId, text, clientItemId, webEnabled, agentRevision, attachments, mcpRevision),
   getAttachments: (threadId, userItemId) => invoke("attachments", threadId, userItemId),
-  revisePrompt: (sessionId, text, userItemId, expectedRevision, webEnabled, agentRevision) => invoke("prompt-revise", sessionId, text, userItemId, expectedRevision, webEnabled, agentRevision),
+  revisePrompt: (sessionId, text, userItemId, expectedRevision, webEnabled, agentRevision, mcpRevision) => invoke("prompt-revise", sessionId, text, userItemId, expectedRevision, webEnabled, agentRevision, mcpRevision),
   steer: (request) => invoke("steer", request),
   cancel: (sessionId) => invoke("cancel", sessionId),
   setConfig: (sessionId, configId, value) => invoke("set-config", sessionId, configId, value),
@@ -109,6 +120,9 @@ export const agentApi: AgentApi = {
   setSettings: (settings) => invoke("set-settings", settings),
   accountStatus: () => invoke("account-status"),
   billingStatus: () => invoke("billing-status"),
+  cryptoOptions: (accountId) => invoke("crypto-options", accountId),
+  cryptoPayments: (accountId) => invoke("crypto-payments", accountId),
+  createCryptoPayment: (request, accountId) => invoke("create-crypto-payment", request, accountId),
   redeemGiftCode: (code, accountId) => invoke("redeem-gift-code", code, accountId),
   usageSummary: (accountId, request = {}) => invoke("usage-summary", accountId, request.period ?? "all_time", request.timezone ?? "UTC"),
   apiKeys: (accountId) => invoke("api-keys", accountId),

@@ -225,7 +225,8 @@ fn read_job_with_keys(path: &Path, trusted_keys: &str) -> anyhow::Result<Job> {
     let job: Job = serde_json::from_slice(&std::fs::read(path)?)?;
     parse_release(&serde_json::to_vec(&job.release)?)?;
     ensure!(
-        path.canonicalize()?.starts_with(cache(&job.installation)?),
+        path.canonicalize()?
+            .starts_with(cache(&job.installation)?.canonicalize()?),
         "Update job is outside its private cache"
     );
     if let Some(image) = &job.installation.app_image {

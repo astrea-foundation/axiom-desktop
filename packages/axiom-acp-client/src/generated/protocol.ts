@@ -1,5 +1,29 @@
 /* Generated from protocol/axiom-acp-extension/v0.2/schema.json. Do not edit. */
 
+export type DesktopMcpAction =
+  | {
+      kind: "list";
+    }
+  | {
+      server: DesktopMcpServerInput;
+      kind: "save";
+    }
+  | {
+      name: string;
+      kind: "delete";
+    }
+  | {
+      name: string;
+      kind: "test";
+    }
+  | {
+      tools: string[];
+      kind: "select";
+    }
+  | {
+      servers: DesktopMcpServerInput[];
+      kind: "import";
+    };
 export type DesktopAgentPermission = "approve_commands" | "full_access";
 export type ThreadLifecycle =
   "ready" | "running" | "waiting_for_approval" | "waiting_for_answer" | "compacting" | "closed";
@@ -102,6 +126,8 @@ export type ExtensionErrorCode =
  * Schema root used to generate the checked-in language-neutral contract.
  */
 export interface ProtocolSchema {
+  desktopMcpRequest: DesktopMcpRequest;
+  desktopMcpResponse: DesktopMcpResponse;
   configureDesktopAgentRequest: ConfigureDesktopAgentRequest;
   configureDesktopAgentResponse: ConfigureDesktopAgentResponse;
   capabilities: ExtensionCapabilities;
@@ -144,6 +170,12 @@ export interface ProtocolSchema {
   logoutRequest: LogoutRequest;
   billingStatusRequest: BillingStatusRequest;
   billingStatusResponse: BillingStatusResponse;
+  cryptoOptionsRequest: CryptoOptionsRequest;
+  cryptoOptionsResponse: CryptoOptionsResponse;
+  createCryptoPaymentRequest: CreateCryptoPaymentRequest;
+  cryptoPaymentResponse: CryptoPaymentResponse;
+  cryptoPaymentsRequest: CryptoPaymentsRequest;
+  cryptoPaymentsResponse: CryptoPaymentsResponse;
   giftCodeRedeemRequest: GiftCodeRedeemRequest;
   giftCodeRedeemResponse: GiftCodeRedeemResponse;
   usageSummaryRequest: UsageSummaryRequest;
@@ -166,6 +198,50 @@ export interface ProtocolSchema {
   metadata: {
     [k: string]: unknown;
   };
+  [k: string]: unknown;
+}
+export interface DesktopMcpRequest {
+  threadId?: string | null;
+  expectedRevision?: number | null;
+  action: DesktopMcpAction;
+}
+/**
+ * Local stdio configuration. Environment values are write-only secrets.
+ */
+export interface DesktopMcpServerInput {
+  name: string;
+  command: string;
+  args?: string[];
+  enabled: boolean;
+  /**
+   * None preserves existing credentials; an empty map clears them.
+   */
+  env?: {
+    [k: string]: string;
+  } | null;
+}
+export interface DesktopMcpResponse {
+  revision: number;
+  servers: DesktopMcpServer[];
+  selectedTools: string[];
+  [k: string]: unknown;
+}
+export interface DesktopMcpServer {
+  name: string;
+  command: string;
+  args: string[];
+  enabled: boolean;
+  environmentKeys: string[];
+  credentialId?: string | null;
+  tools: DesktopMcpTool[];
+  status: string;
+  error?: string | null;
+  [k: string]: unknown;
+}
+export interface DesktopMcpTool {
+  name: string;
+  description: string;
+  schemaHash: string;
   [k: string]: unknown;
 }
 export interface ConfigureDesktopAgentRequest {
@@ -225,6 +301,7 @@ export interface ExtensionCapabilities {
 export interface FeatureVersions {
   desktopChat?: number;
   desktopAgent?: number;
+  desktopMcp?: number;
   threadCatalog?: number;
   timeline?: number;
   modelCatalog?: number;
@@ -286,6 +363,7 @@ export interface PromptMetadata {
    * Bind queued input to the exact locally approved Agent configuration.
    */
   agentRevision?: number | null;
+  mcpRevision?: number | null;
   /**
    * Replace local history starting at this user message before the normal
    * native E2EE turn. Never interpreted by the hosted backend.
@@ -684,6 +762,57 @@ export interface ZecUsdQuote {
   source: string;
   as_of: string;
   expires_at: string;
+}
+export interface CryptoOptionsRequest {
+  [k: string]: unknown;
+}
+export interface CryptoOptionsResponse {
+  options: CryptoOptions;
+  [k: string]: unknown;
+}
+export interface CryptoOptions {
+  enabled: boolean;
+  zcash_discount_bps: number;
+  min_amount_microusd: number;
+  max_amount_microusd: number;
+  currencies: CryptoCurrency[];
+}
+/**
+ * Independent funding contract; billing/status remains compatible with older clients.
+ */
+export interface CryptoCurrency {
+  code: string;
+  name: string;
+  network: string;
+}
+export interface CreateCryptoPaymentRequest {
+  id: string;
+  amountMicrousd: number;
+  payCurrency: string;
+}
+export interface CryptoPaymentResponse {
+  payment: CryptoPayment;
+  [k: string]: unknown;
+}
+export interface CryptoPayment {
+  id: string;
+  status: string;
+  amount_microusd: number;
+  credited_microusd: number;
+  pay_currency: string;
+  pay_amount?: string | null;
+  pay_address?: string | null;
+  payin_extra_id?: string | null;
+  expires_at?: string | null;
+  review_required: boolean;
+  created_at: string;
+}
+export interface CryptoPaymentsRequest {
+  [k: string]: unknown;
+}
+export interface CryptoPaymentsResponse {
+  payments: CryptoPayment[];
+  [k: string]: unknown;
 }
 export interface GiftCodeRedeemRequest {
   code: string;

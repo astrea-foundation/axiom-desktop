@@ -116,12 +116,14 @@ fn wait_parent(parent: Option<u32>) -> anyhow::Result<()> {
     }
     #[cfg(windows)]
     {
+        use std::os::windows::process::CommandExt as _;
         let script = format!(
-            "$p = Get-Process -Id {parent} -ErrorAction SilentlyContinue; if ($p) {{ $p | Wait-Process -Timeout 180 -ErrorAction Stop }}"
+            "$p = Get-Process -Id {parent} -ErrorAction SilentlyContinue; if ($p) {{ try {{ $p | Wait-Process -Timeout 180 -ErrorAction Stop }} catch {{ if (-not $p.HasExited) {{ throw }} }} }}; exit 0"
         );
         ensure!(
             Command::new("powershell.exe")
                 .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+                .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
                 .status()?
                 .success(),
             "Axiom did not close for the update"
@@ -380,4 +382,39 @@ fn record_outcome(job: &Job, result: &anyhow::Result<()>) -> anyhow::Result<()> 
     pending.as_file().sync_all()?;
     pending.persist(directory.join("last-update.json"))?;
     Ok(())
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn already_exited_windows_parent_is_ready_for_installation() {
+        let mut parent = Command::new("cmd.exe")
+            .args(["/c", "exit", "0"])
+            .spawn()
+            .unwrap();
+        let id = parent.id();
+        assert!(parent.wait().unwrap().success());
+        wait_parent(Some(id)).unwrap();
+        assert!(wait_parent(Some(0)).is_err());
+        assert!(wait_parent(Some(std::process::id())).is_err());
+    }
+
+    #[test]
+    fn running_windows_parent_is_waited_for() {
+        use std::os::windows::process::CommandExt as _;
+        let mut parent = Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Start-Sleep -Milliseconds 800",
+            ])
+            .creation_flags(0x0800_0000)
+            .spawn()
+            .unwrap();
+        wait_parent(Some(parent.id())).unwrap();
+        assert!(parent.try_wait().unwrap().is_some());
+    }
 }

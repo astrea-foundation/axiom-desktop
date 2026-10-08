@@ -2097,7 +2097,8 @@ pub async fn run(
                                     active_steering = Some(steering.clone());
                                     let task_runner = runner.clone();
                                     let task_tx = ui_tx.clone();
-                                    let context = TurnContext {attachments: Vec::new(),
+                                    let context = TurnContext {
+                    mcp: None,attachments: Vec::new(),
                                         session_id: session_id.clone(),
                                         turn_id: turn_id.clone(),
                                         cwd: cwd.clone(),

@@ -5,6 +5,10 @@ import type {
   GetAttachmentsResponse,
   AssignThreadCollectionResponse,
   BillingStatusResponse,
+  CryptoOptionsResponse,
+  CryptoPaymentResponse,
+  CryptoPaymentsResponse,
+  CreateCryptoPaymentRequest,
   GiftCodeRedeemResponse,
   UsageSummaryResponse,
   UsageSummaryRequest,
@@ -17,6 +21,8 @@ import type {
   DeletePreviewResponse,
   DesktopBootstrapResponse,
   ConfigureDesktopAgentRequest,
+  DesktopMcpRequest,
+  DesktopMcpResponse,
   ConfigureDesktopAgentResponse,
   EventNotification,
   GetThreadTimelineResponse,
@@ -58,8 +64,9 @@ const EXTENSION_CAPABILITIES = {
     collections: 1,
     desktopChat: 1,
     desktopAgent: 1,
+    desktopMcp: 1,
     account: 2,
-    billing: 3,
+    billing: 4,
     usage: 1,
     securityEvidence: 4,
     webConsent: 1,
@@ -151,6 +158,7 @@ export class AxiomAcpClient extends EventEmitter {
   private fullResyncRequired = false;
   private initialized = false;
   private supportsMessageRevision = false;
+  private supportsMcp = false;
   private supportsAttachments = false;
   private desktopBootstrap: DesktopBootstrapResponse | null = null;
   private closing = false;
@@ -223,6 +231,7 @@ export class AxiomAcpClient extends EventEmitter {
     } | undefined;
     validateDesktopExtension(meta);
     this.supportsMessageRevision = (meta?.features?.messageRevision ?? 0) >= 1;
+    this.supportsMcp = (meta?.features?.desktopMcp ?? 0) >= 1;
     this.supportsAttachments = (meta?.features?.attachments ?? 0) >= 2;
     this.initialized = true;
     this.state.setConnected(true);
@@ -283,6 +292,23 @@ export class AxiomAcpClient extends EventEmitter {
     return this.loadSession(threadId, page.thread.cwd);
   }
 
+  async desktopMcp(request: DesktopMcpRequest): Promise<DesktopMcpResponse> {
+    this.assertInitialized();
+    if (!this.supportsMcp) throw new ProtocolError("Restart Axiom with the updated native app to use MCP connections.");
+    const accountContext = this.state.accountContextToken();
+    const result = await this.process.request<DesktopMcpResponse>("_axiom/desktop/mcp", request);
+    this.assertAccountContext(accountContext);
+    this.state.setDesktopMcp(result, request.threadId);
+    if (request.action.kind !== "list") {
+      await Promise.all(Object.keys(this.state.snapshot().sessions).filter((id) => id !== request.threadId).map(async (threadId) => {
+        const fresh = await this.process.request<DesktopMcpResponse>("_axiom/desktop/mcp", { threadId, action: { kind: "list" } });
+        this.assertAccountContext(accountContext);
+        this.state.setDesktopMcp(fresh, threadId);
+      }));
+    }
+    return result;
+  }
+
   async configureDesktopAgent(request: ConfigureDesktopAgentRequest): Promise<ConfigureDesktopAgentResponse> {
     const accountContext = this.state.accountContextToken();
     await this.waitForSecurityPreflight(request.threadId);
@@ -303,6 +329,7 @@ export class AxiomAcpClient extends EventEmitter {
     if (result.modes) this.state.setModes(result.sessionId, result.modes.currentModeId, result.modes.availableModes);
     if (result.configOptions) this.state.setConfig(result.sessionId, result.configOptions);
     await this.refreshThread(result.sessionId);
+    if (this.supportsMcp) await this.desktopMcp({ threadId: result.sessionId, action: { kind: "list" } });
     return result;
   }
 
@@ -315,10 +342,11 @@ export class AxiomAcpClient extends EventEmitter {
     if (result.modes) this.state.setModes(threadId, result.modes.currentModeId, result.modes.availableModes);
     if (result.configOptions) this.state.setConfig(threadId, result.configOptions);
     await this.refreshThread(threadId);
+    if (this.supportsMcp) await this.desktopMcp({ threadId, action: { kind: "list" } });
     return { ...result, sessionId: threadId };
   }
 
-  async prompt(threadId: string, text: string, clientItemId: string, webEnabled = false, agentRevision = this.state.snapshot().sessions[threadId]?.desktopAgent?.revision ?? 0, revision?: { userItemId: string; expectedRevision: number }, attachments: PromptAttachment[] = []): Promise<PromptResult> {
+  async prompt(threadId: string, text: string, clientItemId: string, webEnabled = false, agentRevision = this.state.snapshot().sessions[threadId]?.desktopAgent?.revision ?? 0, revision?: { userItemId: string; expectedRevision: number }, attachments: PromptAttachment[] = [], mcpRevision?: number): Promise<PromptResult> {
     if (revision && (!this.supportsMessageRevision || !revision.userItemId || revision.userItemId.length > 512
       || !Number.isSafeInteger(revision.expectedRevision) || revision.expectedRevision < 0)) {
       throw new ProtocolError("Restart Axiom before editing or regenerating messages.");
@@ -326,6 +354,7 @@ export class AxiomAcpClient extends EventEmitter {
     if (revision && this.state.snapshot().sessions[threadId]?.running) throw new ProtocolError("Stop the current reply first.");
     if (typeof webEnabled !== "boolean") throw new ProtocolError("webEnabled must be a boolean");
     if (!Number.isSafeInteger(agentRevision) || agentRevision < 0) throw new ProtocolError("invalid Agent settings revision");
+    if (mcpRevision !== undefined && (!this.supportsMcp || !Number.isSafeInteger(mcpRevision) || mcpRevision < 0)) throw new ProtocolError("invalid or unsupported MCP settings revision");
     validatePrompt(text, attachments, Boolean(revision));
     if (attachments.length && !this.supportsAttachments) throw new ProtocolError("Restart Axiom to enable attachments. No message was sent.");
     if (!clientItemId || clientItemId.length > 512) throw new ProtocolError("invalid client item ID");
@@ -346,7 +375,7 @@ export class AxiomAcpClient extends EventEmitter {
         {
           sessionId: threadId,
           prompt: [{ type: "text", text }],
-          _meta: { axiom: { clientItemId, webEnabled, agentRevision, ...(revision ? { revision } : {}), ...(attachments.length ? { attachments } : {}) } },
+          _meta: { axiom: { clientItemId, webEnabled, agentRevision, ...(mcpRevision !== undefined ? { mcpRevision } : {}), ...(revision ? { revision } : {}), ...(attachments.length ? { attachments } : {}) } },
         },
         0,
       );
@@ -608,6 +637,32 @@ export class AxiomAcpClient extends EventEmitter {
     const result = await this.process.request<BillingStatusResponse>("_axiom/billing/status", {});
     this.assertAccountContext(accountContext);
     this.state.setBilling(result.status);
+    return result;
+  }
+
+  async cryptoOptions(): Promise<CryptoOptionsResponse> {
+    const context = this.state.accountContextToken();
+    const result = await this.process.request<CryptoOptionsResponse>("_axiom/billing/crypto_options", {});
+    this.assertAccountContext(context);
+    return result;
+  }
+
+  async cryptoPayments(): Promise<CryptoPaymentsResponse> {
+    const context = this.state.accountContextToken();
+    const result = await this.process.request<CryptoPaymentsResponse>("_axiom/billing/crypto_payments", {});
+    this.assertAccountContext(context);
+    return result;
+  }
+
+  async createCryptoPayment(request: CreateCryptoPaymentRequest): Promise<CryptoPaymentResponse> {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(request.id)
+      || !Number.isSafeInteger(request.amountMicrousd) || request.amountMicrousd < 5_000_000 || request.amountMicrousd > 1_000_000_000
+      || request.amountMicrousd % 10_000 !== 0 || !/^[a-z0-9]{1,32}$/.test(request.payCurrency) || request.payCurrency === "zec") {
+      throw new ProtocolError("Invalid payment request.");
+    }
+    const context = this.state.accountContextToken();
+    const result = await this.process.request<CryptoPaymentResponse>("_axiom/billing/create_crypto_payment", request);
+    this.assertAccountContext(context);
     return result;
   }
 

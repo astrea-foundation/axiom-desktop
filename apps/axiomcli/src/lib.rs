@@ -10,6 +10,7 @@ pub mod audit;
 pub mod auth;
 pub mod billing;
 pub mod config;
+pub mod desktop_mcp;
 pub mod error;
 pub mod mcp;
 pub mod paths;

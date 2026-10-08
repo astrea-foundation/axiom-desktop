@@ -50,7 +50,7 @@ mean unsupported. Desktop checks its required feature set and negotiates optiona
 features separately.
 
 `account`, `timeline`, and `attachments` are version **2**;
-`billing` is version **3** and `securityEvidence` is version **4**.
+`billing` is version **4** and `securityEvidence` is version **4**.
 Other advertised features are version **1**:
 `desktopChat`, `desktopAgent`, `threadCatalog`, `modelCatalog`,
 `profilePreferences`, `collections`, `usage`,
@@ -82,13 +82,13 @@ are never an instruction to send conversation plaintext through a hosted endpoin
 
 | Group | Method names following `_axiom/` |
 |---|---|
-| Desktop | `desktop/bootstrap`, `desktop/agent/configure` |
+| Desktop | `desktop/bootstrap`, `desktop/agent/configure`, `desktop/mcp` |
 | Threads | `thread/list`, `thread/timeline`, `thread/attachments`, `thread/rename`, `thread/delete_preview`, `thread/delete_confirm` |
 | Models/preferences | `models/list`, `profile/preferences`, `profile/preferences/set` |
 | Collections | `collection/list`, `collection/create`, `collection/rename`, `collection/set_collapsed`, `collection/move`, `collection/delete`, `collection/assign` |
 | Native account | `account/status`, `account/native_login_start`, `account/native_login_complete`, `account/native_login_cancel`, `account/logout` |
 | Automation-key management | `account/api_keys`, `account/api_key_create`, `account/api_key_revoke` |
-| Billing | `billing/status`, `billing/redeem_gift_code` |
+| Billing | `billing/status`, `billing/redeem_gift_code`, `billing/crypto_options`, `billing/create_crypto_payment`, `billing/crypto_payments` |
 | Usage | `usage/summary` (optional `period`: `week`/`month`/`all_time`, IANA `timezone`; defaults: all time/UTC) |
 | Evidence/compaction/steering | `security/verify`, `security/prewarm`, `compaction/start`, `turn/steer` |
 
@@ -125,7 +125,19 @@ Bootstrap starts new Desktop threads with Agent off. `desktopAgent@1` atomically
 configures enablement, approval level and directory with `expectedRevision`.
 Changes require idle work; queued prompts/steering carry `agentRevision` to
 reject stale authority. Generic mode setters cannot bypass this path. Desktop
-keeps its embedded system prompt and does not start configured MCP servers.
+keeps its embedded system prompt and does not start servers from CLI configuration.
+
+Optional `desktopMcp@1` adds `_axiom/desktop/mcp` for account-scoped local stdio
+connections: `list`, `save`, `delete`, `test`, `import` and per-thread `select`.
+Mutations carry `expectedRevision` and require idle work. Secrets are write-only
+OS-credential-store variables; only their names and opaque references are
+returned. Thread selections expose only the chosen MCP tools, without granting
+builtin Agent or Web authority. Prompts with `_meta.axiom.mcpRevision` bind to the
+current account-wide configuration/selection revision; mismatches fail before
+acceptance. Missing metadata exposes no Desktop MCP tools, preserving safe older
+client behavior. Connection changes invalidate affected selections/grants;
+MCP schema hashes are rechecked before each turn. This optional feature is
+advertised only by the Desktop frontend. See [local MCP connections](mcp.md).
 
 Every Desktop prompt supplies `_meta.axiom.webEnabled`; only explicit boolean
 `true` permits built-in Web tools. Missing consent is false, and malformed
@@ -174,11 +186,22 @@ spend by model.
 
 `billing@3` adds private gift redemption. Its bounded `code` request returns
 `creditedMicrousd`, `alreadyRedeemed` and `status`; only the updated billing status
-is published as activity. Never log or persist the code. Desktop requires version
+is published as activity. Never log or persist the code. Gift redemption requires version
 3 and carries its captured account ID through the IPC boundary. New sidecars still
 serve `billing/status` to negotiated version 2 clients, but reject redemption until
 version 3 is negotiated. Retrying the same gift code after an uncertain response
 uses backend exact-once redemption; cancellation does not prove that credit failed.
+
+`billing@4` adds crypto options, create and recent-payment reads. Funding objects
+retain the backend's snake_case fields and exact decimal strings. The create
+request carries UUID `id`, integer `amountMicrousd` and `payCurrency`; responses
+carry `options`, `payment` or `payments`. Native tokens and account-operation
+cancellation guard every request. Currency codes accept 1–32 lowercase letters
+or digits, including one-letter provider asset codes. IPC and the SDK discard
+replies after account changes. Merchant keys stay on the backend. A repeated UUID retrieves its prior
+intent; cancellation never authorizes creating a replacement automatically.
+Desktop and its bundled sidecar require version 4 together. A new sidecar talking
+to an older backend hides Other crypto and leaves existing billing available.
 
 Security projections require the registered provider identity, accepted key
 fingerprints and hard expiry. NEAR require positive lease generation;

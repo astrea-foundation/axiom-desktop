@@ -115,6 +115,7 @@ async fn check_stream_and_transcript(chunks: usize, checkpoints: usize, benchmar
     engine
         .run(
             TurnContext {
+                mcp: None,
                 attachments: Vec::new(),
                 session_id: SessionId::new(),
                 turn_id: TurnId::new(),

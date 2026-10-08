@@ -83,6 +83,7 @@ pub trait Tool: Send + Sync {
     async fn shutdown(&self) {}
 }
 
+#[derive(Clone)]
 pub struct ToolRegistry {
     tools: HashMap<String, Arc<dyn Tool>>,
     changes: Arc<SessionChanges>,
@@ -355,6 +356,39 @@ impl ToolRegistry {
 
     pub fn access(&self, name: &str) -> Result<ToolAccess> {
         Ok(self.tool(name)?.access())
+    }
+
+    pub fn with_session_tools(&self, tools: &[Arc<dyn Tool>]) -> Result<Self> {
+        let mut registry = self.clone();
+        for tool in tools {
+            registry.register(tool.clone())?;
+        }
+        Ok(registry)
+    }
+
+    #[must_use]
+    pub fn definitions_for_with_mcp(
+        &self,
+        profile: PermissionProfile,
+        web_enabled: bool,
+        desktop_mcp: bool,
+    ) -> Vec<ToolDefinition> {
+        let mut definitions = self.definitions_for_with_web(profile, web_enabled);
+        for tool in self.tools.values().filter(|tool| {
+            desktop_mcp && tool.name().starts_with("mcp__") && !tool.access().is_exposed_to(profile)
+        }) {
+            definitions.push(ToolDefinition {
+                kind: "function".into(),
+                function: FunctionDefinition {
+                    name: tool.name().into(),
+                    description: tool.description().into(),
+                    parameters: tool.parameters(),
+                    strict: None,
+                },
+            });
+        }
+        definitions.sort_by(|a, b| a.function.name.cmp(&b.function.name));
+        definitions
     }
 
     pub fn effects(

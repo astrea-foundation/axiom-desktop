@@ -1,0 +1,24 @@
+{
+  "name": "@axiom/chat-core",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "files": [
+    "src",
+    "prompts",
+    "LICENSE",
+    "README.md"
+  ],
+  "exports": {
+    ".": "./src/index.ts",
+    "./*": "./src/*.ts",
+    "./prompts/*": "./prompts/*"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "~5.9.2"
+  }
+}

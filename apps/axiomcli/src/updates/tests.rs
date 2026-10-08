@@ -74,6 +74,76 @@ fn signed_fixture() -> (Release, String) {
         value["publicKey"].as_str().unwrap().to_owned(),
     )
 }
+
+#[cfg(windows)]
+#[test]
+fn windows_update_jobs_accept_private_cache_and_reject_sibling_directories() {
+    let owner = tempfile::tempdir().unwrap();
+    let resources = owner.path().join("resources");
+    let cli = resources.join("bin/axiomcli.exe");
+    fs::create_dir_all(cli.parent().unwrap()).unwrap();
+    fs::write(&cli, b"installed CLI fixture").unwrap();
+    fs::write(
+        resources.join("axiom-install.json"),
+        br#"{"schemaVersion":1,"product":"desktop","format":"exe","versioned":false}"#,
+    )
+    .unwrap();
+    let installation = installation::discover_at(&cli, None).unwrap();
+    let root = cache(&installation).unwrap();
+    let pending = tempfile::tempdir_in(&root).unwrap();
+    let (release, key) = signed_fixture();
+    let artifact = select(&release, &installation).unwrap().name.clone();
+    let job = Job {
+        installation,
+        release,
+        artifact,
+        restart: Restart::Desktop,
+    };
+    let write_job = |directory: &Path| {
+        let path = directory.join("job.json");
+        fs::write(&path, serde_json::to_vec(&job).unwrap()).unwrap();
+        fs::write(directory.join(&job.artifact), b"an installer fixture").unwrap();
+        path
+    };
+    let path = write_job(pending.path());
+    // Windows canonicalization adds a verbatim namespace to the ordinary cache.
+    read_job_with_keys(&path, &key).unwrap();
+    read_job_with_keys(&path.canonicalize().unwrap(), &key).unwrap();
+
+    let sibling = root.with_file_name(format!(
+        "{}-outside",
+        root.file_name().unwrap().to_str().unwrap()
+    ));
+    fs::create_dir(&sibling).unwrap();
+    let escaped = write_job(&sibling);
+    assert!(
+        read_job_with_keys(&escaped, &key)
+            .err()
+            .expect("sibling directory must be rejected")
+            .to_string()
+            .contains("outside its private cache")
+    );
+    let junction = pending.path().join("escape");
+    let output = std::process::Command::new("cmd.exe")
+        .args(["/c", "mklink", "/J"])
+        .arg(&junction)
+        .arg(&sibling)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        read_job_with_keys(&junction.join("job.json"), &key)
+            .err()
+            .expect("junction escaping the cache must be rejected")
+            .to_string()
+            .contains("outside its private cache")
+    );
+    fs::remove_dir(junction).unwrap();
+    fs::remove_dir_all(sibling).unwrap();
+    drop(pending);
+    fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn node_signature_verifies_in_rust_and_tampering_fails_closed() {
     let (release, key) = signed_fixture();

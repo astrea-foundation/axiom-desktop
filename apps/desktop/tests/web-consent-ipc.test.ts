@@ -67,3 +67,10 @@ test("steering carries turn identity, idempotency identity and Web consent throu
   await api.steer(request);
   assert.deepEqual(calls, [["agent:steer", request]]);
 });
+
+test("the preload carries MCP authority captured when the message was queued", async () => {
+  const calls: unknown[][] = [];
+  const api = preload(async (...args) => { calls.push(args); return {}; });
+  await api.promptWithWebConsent("thread", "question", "message", false, 7, 12);
+  assert.deepEqual(calls, [["agent:prompt-with-agent-context", "thread", "question", "message", false, 7, 12]]);
+});

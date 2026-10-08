@@ -8,7 +8,7 @@ stable `vMAJOR.MINOR.PATCH`, match AxiomCLI's manifest and point to a promoted
 
 ## Local database
 
-The current SQLite schema is **3**, application ID **`0x41584133`**,
+The current SQLite schema is **4**, application ID **`0x41584133`**,
 with the schema 1 baseline in [schema.sql](../apps/axiomcli/src/session/schema.sql)
 and the forward migration in [the initializer](../apps/axiomcli/src/session/schema.rs).
 Each authenticated account
@@ -22,7 +22,10 @@ a payload table with cascading deletion from its user timeline row. Schema 2
 upgrades transactionally to schema 3 by adding a nullable title-generation
 reservation to threads. Background title results can replace only their own
 reserved fallback; a manual rename clears the reservation. Existing titles and
-conversation data are preserved. Future schema
+conversation data are preserved. Schema 3 upgrades transactionally to schema 4
+by adding account-scoped Desktop MCP configuration and a thread-tool selection
+table with cascading thread deletion. Environment secrets stay in the OS
+credential store. Future schema
 changes must continue adding transactional forward migrations.
 
 The [local-state reset command](configuration.md#paths-and-local-state) deletes

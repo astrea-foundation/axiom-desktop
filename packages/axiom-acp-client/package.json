@@ -17,5 +17,8 @@
     "json-schema-to-typescript": "^15.0.4",
     "tsx": "^4.20.6",
     "typescript": "~5.9.2"
+  },
+  "dependencies": {
+    "@axiom/chat-core": "workspace:*"
   }
 }

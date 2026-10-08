@@ -4,6 +4,18 @@ import type { ClientState, PromptResult } from "@axiom/axiom-acp-client";
 import { MessageQueue, type QueueApi } from "../src/renderer/src/messageQueue";
 
 const settle = () => new Promise((resolve) => setImmediate(resolve));
+
+test("queued messages cannot inherit changed MCP authority", async () => {
+  const f = fixture();
+  f.state.mcp = { revision: 3, servers: [], selectedTools: [] }; f.sync();
+  const id = f.queue.enqueue("thread", "queued with old tools", false);
+  assert.equal(f.queue.list("thread")[0]?.mcpRevision, 3);
+  f.state.mcp.revision = 4; f.state.sessions.thread!.running = false; f.sync();
+  await settle();
+  assert.equal(f.calls.length, 0);
+  assert.equal(f.queue.isPaused("thread"), true);
+  assert.match(f.queue.list("thread").find(item => item.id === id)?.error ?? "", /MCP settings changed/);
+});
 function fixture(running = true) {
   const values = new Map<string, string>();
   const storage = { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); } };
@@ -332,4 +344,19 @@ test("disk failure or account switch during payload commit leaves the draft unco
   payloads.put = async () => { throw new Error("disk full"); };
   await assert.rejects(queue.reserveDurable("thread", "keep this", false), /disk full/);
   assert.equal(f.calls.length, 0);
+});
+
+test('an encrypted host commits its outbox before dispatch and rejects failed persistence', async () => {
+  const f = fixture(false);
+  let committed: (() => void) | undefined;
+  f.api.persistQueue = async () => new Promise<void>(resolve => { committed = resolve; });
+  const id = f.queue.enqueue('thread', 'durable before inference', false);
+  assert.equal(f.calls.length, 0);
+  committed!(); await settle();
+  assert.equal(f.calls[0]?.id, id);
+  await f.finish(id);
+  f.api.persistQueue = async () => { throw new Error('storage unavailable'); };
+  f.queue.enqueue('thread', 'never sent', false); await settle();
+  assert.equal(f.calls.length, 1);
+  assert.equal(f.queue.isPaused('thread'), true);
 });

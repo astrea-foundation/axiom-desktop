@@ -22,6 +22,11 @@ pub(super) fn initialize(
     ctx_extension_state.negotiate(negotiated_extension_features(
         request.client_capabilities.meta.as_ref(),
     ));
+    let mut extensions =
+        ExtensionCapabilities::agent(ctx_extension_state.runtime_instance_id.clone());
+    if context.frontend != FrontendKind::DesktopChat {
+        extensions.features.desktop_mcp = 0;
+    }
     let capabilities = protocol::AgentCapabilities::new()
         .load_session(ctx_supports_load)
         .prompt_capabilities(
@@ -29,9 +34,7 @@ pub(super) fn initialize(
                 .image(true)
                 .embedded_context(false),
         )
-        .meta(extension_meta(ExtensionCapabilities::agent(
-            ctx_extension_state.runtime_instance_id.clone(),
-        )));
+        .meta(extension_meta(extensions));
     responder.respond(
         protocol::InitializeResponse::new(ProtocolVersion::V1)
             .agent_capabilities(capabilities)

@@ -23,21 +23,27 @@ async fn streamed(
     let consumer = tokio::spawn(async move {
         let mut deltas = 0;
         let mut terminal = 0;
+        let mut verified = 0;
+        let mut verified_before_terminal = true;
         while let Some(event) = rx.recv().await {
             match event {
                 ProviderEvent::TextDelta(_) | ProviderEvent::ToolCallDelta(_) => deltas += 1,
-                ProviderEvent::Finished(_) => terminal += 1,
+                ProviderEvent::ResponseVerified => verified += 1,
+                ProviderEvent::Finished(_) => {
+                    terminal += 1;
+                    verified_before_terminal &= verified == 1;
+                }
                 _ => {}
             }
         }
-        (deltas, terminal)
+        (deltas, terminal, verified, verified_before_terminal)
     });
     let result = session.stream(request, tx, CancellationToken::new()).await;
-    let (deltas, terminal) = consumer.await?;
+    let (deltas, terminal, verified, verified_before_terminal) = consumer.await?;
     let output = result?;
     anyhow::ensure!(
-        deltas > 0 && terminal == 1,
-        "stream omitted deltas or terminal event"
+        deltas > 0 && terminal == 1 && verified == 1 && verified_before_terminal,
+        "stream omitted deltas or ordered verified completion"
     );
     Ok(output)
 }
