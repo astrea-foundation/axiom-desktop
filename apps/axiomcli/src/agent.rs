@@ -39,6 +39,13 @@ pub const APP_EVENT_QUEUE_CAPACITY: usize = 256;
 /// the single-thread Tokio runtimes used by embedders and tests as well.
 const RESTORE_COOPERATION_INTERVAL: usize = 128;
 
+/// Shared product behavior plus the native Desktop capability profile.
+pub const DESKTOP_CHAT_SYSTEM_PROMPT: &str = concat!(
+    include_str!("../../../packages/chat-core/prompts/chat.md"),
+    "\n",
+    include_str!("../prompts/desktop-chat.md"),
+);
+
 /// Upper bound also enforced by the CLI before a launch-time system prompt is
 /// installed. Keeping the bound here protects library embedders as well.
 pub const MAX_CUSTOM_SYSTEM_PROMPT_BYTES: usize = 256 * 1024;
@@ -3417,7 +3424,8 @@ fn refresh_system_prompt(
         // Tell the model the actual per-turn setting, not just a conditional
         // description of the toggle. Authorization below remains authoritative.
         // Rebuild this text every turn so an earlier opt-in/out cannot linger.
-        prompt.push_str("\n\nWeb access for this message: OFF. The user has not enabled Web. You cannot search the web or fetch/open URLs for this message, even if the user asks you to. Do not announce a search, invent search results, or emit simulated tool calls or tool-call markup. If the request needs live web access, tell the user to enable the Web toggle in the chat. You may answer from existing knowledge if you clearly explain that it has not been checked against current sources.");
+        prompt.push_str("\n\n");
+        prompt.push_str(include_str!("../../../packages/chat-core/prompts/web-disabled.md").trim());
     }
     if let Some(message) = messages
         .first_mut()
@@ -4044,7 +4052,7 @@ mod engine_tests {
 
     #[test]
     fn desktop_prompt_declares_supported_rendering_syntax() {
-        let prompt = include_str!("../prompts/desktop-chat.md");
+        let prompt = DESKTOP_CHAT_SYSTEM_PROMPT;
         for capability in [
             "Markdown",
             "LaTeX math",
@@ -4095,7 +4103,7 @@ mod engine_tests {
             .expect("create");
         let settings = engine.settings_for(&session_id).await;
         assert_eq!(settings.started_at, started_at);
-        for instructions in [None, Some(include_str!("../prompts/desktop-chat.md"))] {
+        for instructions in [None, Some(DESKTOP_CHAT_SYSTEM_PROMPT)] {
             let expected = system_prompt(&cwd, &settings, instructions);
             assert!(
                 expected.contains("Conversation start date and time: 2026-09-07 12:31:00 UTC.")

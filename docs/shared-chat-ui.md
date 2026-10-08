@@ -8,7 +8,12 @@ renderer re-exports. Hosted applications consume the same committed artifact.
 
 `packages/chat-core` owns structural runtime views, host capabilities/ports,
 attachment validation and original-file reading, the existing durable message
-queue, thread ordering/loading, reasoning reconciliation and payload interfaces.
+queue, thread ordering/loading, reasoning reconciliation, payload interfaces and the canonical chat prompt assets.
+AxiomCLI embeds the shared base and Web-off rules with its native capability
+profile. Browser hosts consume the same packaged Markdown and add current model,
+provider, thinking, fixed conversation start time and web-only tool context.
+Prompts are built by the owning client before attested E2EE; the backend does
+not construct or inject model messages.
 ACP remains a native adapter: no Node transport or Electron implementation is
 included in either package. `ChatHostProvider` injects native attachment reads,
 usage, interaction resolution and window chrome; the browser supplies its own
@@ -21,7 +26,7 @@ has no new password requirement. Encryption and reset authorization belong to
 the browser vault adapter and Platform backend, never these forms.
 
 Setup explains that this password protects saved web chats independently of
-account sign-in, displays the twelve-character minimum before entry and identifies
+account sign-in, shows a live checklist for the twelve-character minimum and matching passwords and identifies
 the password/recovery-code steps. Show-password controls, password-manager field
 sections, matching feedback and Caps Lock hints help users avoid typos. Failed
 attempts preserve transient input for correction; successful steps, cancellation
@@ -30,8 +35,8 @@ attempt. Code copying/downloads show feedback, with selectable code as a clipboa
 fallback. Recovery explains replacement of the password/code while keeping chats.
 Reset shows a five-second reading countdown entirely in the client before enabling
 its confirmed delete action. It does not request a server challenge or require
-another sign-in. Hosts supply `onReauthenticate` for actionable expired-session
-errors in password/recovery flows.
+another sign-in. Hosts supply `onSignIn` only for an actually expired account session.
+Password changes and recovery use the existing active account session.
 The card scrolls from the top when it exceeds the available viewport height.
 
 The package ships TypeScript/TSX for React/Vite. Import its `styles.css` with

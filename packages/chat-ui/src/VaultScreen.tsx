@@ -1,6 +1,6 @@
 /** @jsxRuntime automatic */
 import { useEffect, useRef, useState } from 'react';
-import { Check, Copy, Download, LockKeyhole, ShieldCheck } from 'lucide-react';
+import { Check, Circle, Copy, Download, LockKeyhole, ShieldCheck } from 'lucide-react';
 
 type Mode = 'setup' | 'unlock' | 'recover' | 'change-password' | 'reset';
 export interface VaultScreenProps {
@@ -14,7 +14,7 @@ export interface VaultScreenProps {
   onReset(): Promise<void>;
   onCancelPreparation(): void;
   onSignOut(): void;
-  onReauthenticate?(): void;
+  onSignIn?(): void;
   onDownloadUnsynced?(): Promise<void>;
   onUseSynced?(): Promise<void>;
 }
@@ -30,7 +30,7 @@ export function VaultScreen(props: VaultScreenProps) {
   const [busy, setBusy] = useState(false), [error, setError] = useState('');
   const [remaining, setRemaining] = useState(5), [phrase, setPhrase] = useState('');
   const [backupSaved, setBackupSaved] = useState(false), [discardConfirmed, setDiscardConfirmed] = useState(false);
-  const [showPassword, setShowPassword] = useState(false), [confirmationTouched, setConfirmationTouched] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
   const [capsLock, setCapsLock] = useState(false), [recovered, setRecovered] = useState(false);
   const [copied, setCopied] = useState(false), [downloaded, setDownloaded] = useState(false);
   const passwordInput = useRef<HTMLInputElement>(null), recoveryInput = useRef<HTMLTextAreaElement>(null);
@@ -71,7 +71,7 @@ export function VaultScreen(props: VaultScreenProps) {
     setPassword(''); setConfirmation(''); setRecovery(''); setCode(''); setPhrase('');
     operation.current = false;
     setAcknowledged(false); setSaved(false); setBackupSaved(false); setDiscardConfirmed(false); setRemaining(5); setBusy(false); setError(''); setMode(props.initialMode);
-    setShowPassword(false); setConfirmationTouched(false); setCapsLock(false); setRecovered(false); setCopied(false); setDownloaded(false);
+    setShowPassword(false); setCapsLock(false); setRecovered(false); setCopied(false); setDownloaded(false);
     if (props.initialMode === 'change-password') props.onCancel?.();
   };
   const newPassword = mode === 'setup' || mode === 'change-password';
@@ -82,8 +82,9 @@ export function VaultScreen(props: VaultScreenProps) {
     : mode === 'unlock' ? 'Enter the encryption password you chose for web chat. Signing in alone doesn’t unlock your saved chats.'
     : mode === 'recover' ? 'Paste your code or open the file you saved. You’ll then choose a new password and recovery code. Your chats will be kept.'
     : mode === 'change-password' ? recovered ? 'Your recovery code worked. Choose a new password to protect your chats.' : 'Your chats will be kept. This replaces your encryption password and recovery code.' : '';
-  const mismatch = !!confirmation && password !== confirmation && (confirmationTouched || confirmation.length >= password.length);
-  const reauthenticationRequired = /sign in again|session expired/i.test(error);
+  const meetsLength = password.length >= 12;
+  const passwordsMatch = password.length > 0 && password === confirmation;
+  const sessionExpired = /session expired/i.test(error);
   const download = () => {
     const url = URL.createObjectURL(new Blob([code + '\n'], { type: 'text/plain;charset=utf-8' }));
     const link = document.createElement('a'); link.href = url; link.download = 'axiom-recovery-code.txt'; link.click();
@@ -126,7 +127,7 @@ export function VaultScreen(props: VaultScreenProps) {
           if (mode === 'unlock') await props.onUnlock(input);
           else if (mode === 'recover') { const scope = lifetime.current; await props.onRecover(input); if (scope === lifetime.current) { setMode('change-password'); setRecovered(true); setAcknowledged(false); } }
           else { const scope = lifetime.current, next = await props.onPrepare(input); if (scope === lifetime.current) setCode(next); else props.onCancelPreparation(); }
-          setPassword(''); setConfirmation(''); setRecovery(''); setShowPassword(false); setCapsLock(false); setConfirmationTouched(false);
+          setPassword(''); setConfirmation(''); setRecovery(''); setShowPassword(false); setCapsLock(false);
         });
       }}>
         {mode === 'recover' ? <>
@@ -138,11 +139,14 @@ export function VaultScreen(props: VaultScreenProps) {
             const scope = lifetime.current; void file.text().then(value => { if (scope === lifetime.current) setRecovery(value.trim()); }).catch(() => { if (scope === lifetime.current) setError('Couldn’t read this recovery file'); });
           }} /></label>
         </> : <>
-          <label className="block text-[12px]">Encryption password<input ref={passwordInput} type={showPassword ? 'text' : 'password'} disabled={busy} autoComplete={newPassword ? 'section-chat-encryption new-password' : 'section-chat-encryption current-password'} aria-label="Encryption password" aria-describedby={newPassword ? 'vault-password-help' : undefined} value={password} onChange={event => { setPassword(event.target.value); setError(''); }} onKeyUp={event => setCapsLock(event.getModifierState('CapsLock'))} onBlur={() => setCapsLock(false)} minLength={newPassword ? 12 : undefined} maxLength={1024} className={inputClass + ' mt-2'} required /></label>
+          <label className="block text-[12px]">Encryption password<input ref={passwordInput} type={showPassword ? 'text' : 'password'} disabled={busy} autoComplete={newPassword ? 'section-chat-encryption new-password' : 'section-chat-encryption current-password'} aria-label="Encryption password" aria-describedby={newPassword ? 'vault-password-criteria' : undefined} value={password} onChange={event => { setPassword(event.target.value); setError(''); }} onKeyUp={event => setCapsLock(event.getModifierState('CapsLock'))} onBlur={() => setCapsLock(false)} minLength={newPassword ? 12 : undefined} maxLength={1024} className={inputClass + ' mt-2'} required /></label>
           {newPassword && <>
-            <p id="vault-password-help" className="!mt-2 text-[12px] leading-5 text-[var(--color-text-secondary)]">At least 12 characters. A few words work well; numbers and symbols are optional.</p>
-            <label className="block text-[12px]">Confirm password<input type={showPassword ? 'text' : 'password'} disabled={busy} autoComplete="section-chat-encryption new-password" aria-label="Confirm encryption password" aria-invalid={mismatch || undefined} aria-describedby={confirmation ? 'vault-password-match' : undefined} value={confirmation} onChange={event => setConfirmation(event.target.value)} onKeyUp={event => setCapsLock(event.getModifierState('CapsLock'))} onBlur={() => { setConfirmationTouched(true); setCapsLock(false); }} maxLength={1024} className={inputClass + ' mt-2'} required /></label>
-            {confirmation && <p id="vault-password-match" role="status" className={'!mt-2 text-[12px] ' + (mismatch ? 'text-[var(--color-danger-strong)]' : 'text-[var(--color-text-secondary)]')}>{mismatch ? 'Passwords don’t match.' : password === confirmation ? 'Passwords match.' : 'Enter the same password again.'}</p>}
+            <label className="block text-[12px]">Confirm password<input type={showPassword ? 'text' : 'password'} disabled={busy} autoComplete="section-chat-encryption new-password" aria-label="Confirm encryption password" aria-invalid={(!!confirmation && !passwordsMatch) || undefined} aria-describedby="vault-password-criteria" value={confirmation} onChange={event => setConfirmation(event.target.value)} onKeyUp={event => setCapsLock(event.getModifierState('CapsLock'))} onBlur={() => { setCapsLock(false); }} maxLength={1024} className={inputClass + ' mt-2'} required /></label>
+            <ul id="vault-password-criteria" aria-label="Password requirements" aria-live="polite" className="!mt-2 space-y-1.5 text-[12px]">
+              {([['At least 12 characters', meetsLength], ['Passwords match', passwordsMatch]] as const).map(([label, met]) => <li key={String(label)} data-met={String(met)} className={'flex items-center gap-2 ' + (met ? 'text-[var(--color-success)]' : 'text-[var(--color-text-tertiary)]')}>
+                {met ? <Check size={14} aria-hidden="true" /> : <Circle size={14} aria-hidden="true" />}<span>{label}</span><span className="sr-only">{met ? 'Met' : 'Not met'}</span>
+              </li>)}
+            </ul>
           </>}
           <label className="flex items-center gap-2 text-[12px] text-[var(--color-text-secondary)]"><input type="checkbox" disabled={busy} checked={showPassword} onChange={event => setShowPassword(event.target.checked)} />{newPassword ? 'Show passwords' : 'Show password'}</label>
           {capsLock && <p role="status" className="!mt-2 text-[12px] text-[var(--color-text-secondary)]">Caps Lock is on.</p>}
@@ -153,7 +157,7 @@ export function VaultScreen(props: VaultScreenProps) {
         </>}
         <button type="submit" disabled={busy || (mode === 'recover' ? !recovery.trim() : !password) || (newPassword && (password.length < 12 || password !== confirmation || !acknowledged))} className={buttonClass + ' w-full'}>{busy ? mode === 'unlock' ? 'Unlocking chats…' : mode === 'recover' ? 'Checking recovery code…' : 'Creating recovery code…' : mode === 'unlock' ? 'Unlock' : mode === 'recover' ? 'Recover chats' : 'Continue'}</button>
       </form>}
-      {error && <p role="alert" className="mt-4 text-[12px] text-[var(--color-danger-strong)]">{error} {mode !== 'reset' && reauthenticationRequired && props.onReauthenticate && <button type="button" disabled={busy} onClick={props.onReauthenticate} className="underline">Sign in again</button>}</p>}
+      {error && <p role="alert" className="mt-4 text-[12px] text-[var(--color-danger-strong)]">{error} {sessionExpired && props.onSignIn && <button type="button" disabled={busy} onClick={props.onSignIn} className="underline">Sign in</button>}</p>}
       {error.includes('encrypted local copy was kept') && props.onDownloadUnsynced && props.onUseSynced && <div className="mt-4 space-y-3 text-[12px]">
         <button type="button" disabled={busy} className={inputClass} onClick={() => void perform(async () => { await props.onDownloadUnsynced!(); setBackupSaved(true); }, false)}>Download unsynced encrypted copy</button>
         <label className="flex items-start gap-2"><input type="checkbox" checked={discardConfirmed} onChange={event => setDiscardConfirmed(event.target.checked)} />I saved that copy and understand this device’s unsynced changes will be discarded.</label>
