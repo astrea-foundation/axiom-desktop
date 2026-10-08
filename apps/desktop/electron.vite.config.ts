@@ -5,7 +5,9 @@ import { defineConfig, externalizeDepsPlugin } from "electron-vite";
 
 export default defineConfig({
   main: {
-    plugins: [externalizeDepsPlugin({ exclude: ["@axiom/axiom-acp-client"] })],
+    // Both workspace packages export TypeScript; compile the SDK's transitive
+    // chat-core imports too, since packaged Node cannot load TS in node_modules.
+    plugins: [externalizeDepsPlugin({ exclude: ["@axiom/axiom-acp-client", "@axiom/chat-core"] })],
   },
   preload: {
     plugins: [externalizeDepsPlugin()],

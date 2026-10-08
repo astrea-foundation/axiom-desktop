@@ -14,6 +14,12 @@ TypeScript checks, Desktop unit/browser tests and the production build. Use the
 candidate instead of repeating unrelated jobs. The live release gate uses the
 registered provider's attested E2EE protocol; it does not replace interactive QA.
 
+The Desktop unit suite also builds the production Electron main entry and
+rejects runtime imports of workspace TypeScript packages. Native installer
+qualification must launch the installed app and reach its first window; a
+successful renderer build or source-mode launch does not establish that the
+packaged main process can start.
+
 ## Interactive qualification
 
 | Area | Required evidence |
