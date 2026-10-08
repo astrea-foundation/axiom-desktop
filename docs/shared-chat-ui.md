@@ -28,8 +28,10 @@ attempts preserve transient input for correction; successful steps, cancellation
 and navigation clear secrets. Inputs and navigation cannot change during a pending
 attempt. Code copying/downloads show feedback, with selectable code as a clipboard
 fallback. Recovery explains replacement of the password/code while keeping chats.
-Reset explains the reading countdown and can retry a failed challenge without
-bypassing it. Hosts supply `onReauthenticate` for actionable expired-session errors.
+Reset shows a five-second reading countdown entirely in the client before enabling
+its confirmed delete action. It does not request a server challenge or require
+another sign-in. Hosts supply `onReauthenticate` for actionable expired-session
+errors in password/recovery flows.
 The card scrolls from the top when it exceeds the available viewport height.
 
 The package ships TypeScript/TSX for React/Vite. Import its `styles.css` with
