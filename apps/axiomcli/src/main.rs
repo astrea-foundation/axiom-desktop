@@ -702,7 +702,7 @@ async fn build_runner(
     );
     if frontend == FrontendKind::DesktopChat {
         engine =
-            engine.with_system_prompt(include_str!("../prompts/desktop-chat.md").to_owned())?;
+            engine.with_system_prompt(axiomcli::agent::DESKTOP_CHAT_SYSTEM_PROMPT.to_owned())?;
     } else if let Some(system_prompt) = system_prompt {
         engine = engine.with_system_prompt(system_prompt.to_owned())?;
     }
