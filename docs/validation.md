@@ -29,7 +29,7 @@ packaged main process can start.
 | Provider security | Current catalog, fresh local attestation, authenticated encrypted completion, stream cancellation/truncation, proof expiry, and explicit degraded-TEE consent/reset |
 | Conversation state | Draft/queue/history retention, attachments, edit/regenerate, compaction, interrupted-turn recovery, restart and account isolation |
 | Tools | Approval, denial, cancellation and workspace boundaries on each supported OS; Web consent and search's distinct privacy boundary |
-| Account credit | Address provisioning, deposit progress and USD valuation, posted usage, gift-code masking/redemption and account-switch cleanup; coordinate real settlement/reorg checks with platform maintainers |
+| Account credit | Address provisioning, deposit progress and USD valuation, posted usage, gift-code masking/redemption, trial-capacity retry/paid continuation, six-hour invoice timers, five-active-invoice enforcement, server cancellation and account-switch cleanup; coordinate real settlement/reorg checks with platform maintainers |
 | Automatic updates | Signed A-to-B upgrades from idle and busy Desktop/TUI; same-terminal workspace/session restoration, GUI reopen, matching CLI version and preserved drafts/history |
 | Update failure paths | Denied OS authorization, cancellation, locked-process waits, interruption/repair, corrupt or wrong-target artifacts, rollback rejection and duplicate updater attempts; staging cleanup, including Windows helpers still in use and abandoned downloads |
 | Publication | Matching source tag, signed inventory, complete installer matrix, verified mirrors, feed activation and safe publication retries |

@@ -292,6 +292,10 @@ export class AgentSidecar {
     return this.requireClient().cryptoPayments().catch((error: unknown) => { throw actionableAcpError(error); });
   }
 
+  cryptoInvoiceAction(request: import("@axiom/axiom-acp-client").CryptoInvoiceActionRequest) {
+    return this.requireClient().cryptoInvoiceAction(request).catch((error: unknown) => { throw actionableAcpError(error); });
+  }
+
   createCryptoPayment(request: import("@axiom/axiom-acp-client").CreateCryptoPaymentRequest) {
     return this.requireClient().createCryptoPayment(request).catch((error: unknown) => { throw actionableAcpError(error); });
   }

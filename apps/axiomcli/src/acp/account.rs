@@ -675,6 +675,40 @@ pub(super) fn create_crypto_payment(
     Ok(())
 }
 
+pub(super) fn crypto_invoice_action(
+    context: &ServerContext,
+    request: extension::CryptoInvoiceActionRequest,
+    responder: Responder<extension::CryptoPaymentResponse>,
+    connection: &ConnectionTo<Client>,
+) -> agent_client_protocol::Result<()> {
+    if !extension_enabled(&context.extension_state, ExtensionFeature::CryptoInvoices) {
+        return responder.respond_with_error(extension_not_negotiated());
+    }
+    let client = context.billing.clone();
+    let cancellation = CancellationToken::new();
+    let guard = respond_or_return!(
+        responder,
+        context
+            .account_work
+            .register(cancellation.clone())
+            .map_err(agent_error)
+    );
+    let request_cancellation = responder.cancellation();
+    connection.spawn(async move {
+        let _guard = guard;
+        let operation = client.crypto_invoice_action(&request, &cancellation);
+        tokio::pin!(operation);
+        let result = tokio::select! {
+            biased;
+            result = &mut operation => result,
+            () = request_cancellation.cancelled() => { cancellation.cancel(); operation.await }
+        };
+        let payment = respond_or_return!(responder, result.map_err(agent_error));
+        responder.respond(extension::CryptoPaymentResponse { payment })
+    })?;
+    Ok(())
+}
+
 pub(super) fn crypto_payments(
     context: &ServerContext,
     _request: extension::CryptoPaymentsRequest,

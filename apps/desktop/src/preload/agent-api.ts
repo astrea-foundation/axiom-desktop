@@ -7,6 +7,7 @@ import type {
   CryptoPaymentResponse,
   CryptoPaymentsResponse,
   CreateCryptoPaymentRequest,
+  CryptoInvoiceActionRequest,
   GiftCodeRedeemResponse,
   UsageSummaryResponse,
   UsageSummaryRequest,
@@ -66,6 +67,7 @@ export interface AgentApi {
   billingStatus: () => Promise<BillingStatusResponse>;
   cryptoOptions: (accountId: string) => Promise<CryptoOptionsResponse>;
   cryptoPayments: (accountId: string) => Promise<CryptoPaymentsResponse>;
+  cryptoInvoiceAction: (request: CryptoInvoiceActionRequest, accountId: string) => Promise<CryptoPaymentResponse>;
   createCryptoPayment: (request: CreateCryptoPaymentRequest, accountId: string) => Promise<CryptoPaymentResponse>;
   redeemGiftCode: (code: string, accountId: string) => Promise<GiftCodeRedeemResponse>;
   usageSummary: (accountId: string, request?: UsageSummaryRequest) => Promise<UsageSummaryResponse>;
@@ -122,6 +124,7 @@ export const agentApi: AgentApi = {
   billingStatus: () => invoke("billing-status"),
   cryptoOptions: (accountId) => invoke("crypto-options", accountId),
   cryptoPayments: (accountId) => invoke("crypto-payments", accountId),
+  cryptoInvoiceAction: (request, accountId) => invoke("crypto-invoice-action", request, accountId),
   createCryptoPayment: (request, accountId) => invoke("create-crypto-payment", request, accountId),
   redeemGiftCode: (code, accountId) => invoke("redeem-gift-code", code, accountId),
   usageSummary: (accountId, request = {}) => invoke("usage-summary", accountId, request.period ?? "all_time", request.timezone ?? "UTC"),
