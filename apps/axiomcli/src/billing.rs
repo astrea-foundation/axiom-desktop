@@ -34,6 +34,8 @@ pub struct BillingStatus {
     pub payment_account: Option<axiom_acp_extension::PaymentAccount>,
     #[serde(default)]
     pub zec_usd_quote: Option<axiom_acp_extension::ZecUsdQuote>,
+    #[serde(default)]
+    pub trial_capacity: Option<Box<axiom_acp_extension::TrialCapacity>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -222,6 +224,22 @@ impl BillingClient {
                 "Increase the amount or choose another crypto.".into(),
             ));
         }
+        if response.status() == StatusCode::CONFLICT {
+            let value =
+                decode_bounded_json::<serde_json::Value>(response, cancellation, "crypto-payment")
+                    .await?;
+            self.ensure_account_current(&lease)?;
+            let message = if value
+                .pointer("/detail/code")
+                .and_then(serde_json::Value::as_str)
+                == Some("invoice_capacity")
+            {
+                "You have 5 active invoices. Cancel an invoice to create another."
+            } else {
+                "Invoice unavailable. Refresh its status before trying again."
+            };
+            return Err(AxiomError::Provider(message.into()));
+        }
         ensure_success(response.status(), "crypto payment")?;
         let result = decode_bounded_json(response, cancellation, "crypto-payment").await?;
         self.ensure_account_current(&lease)?;
@@ -269,6 +287,60 @@ impl BillingClient {
             return Err(AxiomError::Protocol(
                 "Payment request does not match its response.".into(),
             ));
+        }
+        Ok(payment)
+    }
+
+    pub async fn crypto_invoice_action(
+        &self,
+        request: &axiom_acp_extension::CryptoInvoiceActionRequest,
+        cancellation: &CancellationToken,
+    ) -> Result<axiom_acp_extension::CryptoPayment> {
+        use axiom_acp_extension::CryptoInvoiceAction;
+        let invoice = uuid::Uuid::parse_str(&request.invoice_id)
+            .map_err(|_| AxiomError::Protocol("Invalid invoice ID.".into()))?;
+        let (action, body) = match request.action {
+            CryptoInvoiceAction::Refresh => {
+                let id = request
+                    .id
+                    .as_deref()
+                    .and_then(|s| uuid::Uuid::parse_str(s).ok())
+                    .ok_or_else(|| AxiomError::Protocol("Invalid quote ID.".into()))?;
+                let previous = request
+                    .previous_quote_id
+                    .as_deref()
+                    .and_then(|s| uuid::Uuid::parse_str(s).ok())
+                    .ok_or_else(|| AxiomError::Protocol("Invalid previous quote ID.".into()))?;
+                (
+                    "refresh",
+                    serde_json::json!({"id":id.to_string(),"previous_quote_id":previous.to_string()}),
+                )
+            }
+            action => {
+                if request.id.is_some() || request.previous_quote_id.is_some() {
+                    return Err(AxiomError::Protocol("Unexpected invoice fields.".into()));
+                }
+                (
+                    if action == CryptoInvoiceAction::Cancel {
+                        "cancel"
+                    } else {
+                        "check"
+                    },
+                    serde_json::json!({}),
+                )
+            }
+        };
+        let payment: axiom_acp_extension::CryptoPayment = self
+            .crypto_request(
+                &format!("/api/v1/billing/crypto/payments/{invoice}/{action}"),
+                Some(body),
+                cancellation,
+            )
+            .await?
+            .ok_or_else(|| AxiomError::Provider("Invoices are unavailable.".into()))?;
+        validate_crypto_payment(&payment)?;
+        if payment.id != invoice.to_string() {
+            return Err(AxiomError::Protocol("Invoice identity changed.".into()));
         }
         Ok(payment)
     }
@@ -692,6 +764,31 @@ fn validate_crypto_options(options: &axiom_acp_extension::CryptoOptions) -> Resu
 }
 
 fn validate_crypto_payment(payment: &axiom_acp_extension::CryptoPayment) -> Result<()> {
+    let invoice = match (
+        &payment.quote_id,
+        &payment.invoice_expires_at,
+        payment.active,
+    ) {
+        (None, None, None) => true,
+        (Some(quote), Some(end), Some(active)) => {
+            match (
+                DateTime::parse_from_rfc3339(&payment.created_at),
+                DateTime::parse_from_rfc3339(end),
+            ) {
+                (Ok(created), Ok(end)) => {
+                    uuid::Uuid::parse_str(quote).is_ok()
+                        && end - created == chrono::Duration::hours(6)
+                        && payment.expires_at.as_deref().is_none_or(|rate| {
+                            DateTime::parse_from_rfc3339(rate).is_ok_and(|rate| rate <= end)
+                        })
+                        && (!active
+                            || (payment.status != "cancelled" && payment.credited_microusd == 0))
+                }
+                _ => false,
+            }
+        }
+        _ => false,
+    };
     let amount = payment.pay_amount.as_deref().is_none_or(|s| {
         s.len() <= 80
             && s.bytes().all(|c| c.is_ascii_digit() || c == b'.')
@@ -716,7 +813,10 @@ fn validate_crypto_payment(payment: &axiom_acp_extension::CryptoPayment) -> Resu
         .is_none_or(|s| chrono::DateTime::parse_from_rfc3339(s).is_ok());
     if uuid::Uuid::parse_str(&payment.id).is_err()
         || !valid_crypto_amount(payment.amount_microusd)
-        || ![0, payment.amount_microusd].contains(&payment.credited_microusd)
+        || payment.credited_microusd > MAX_ACP_SAFE_INTEGER
+        || !payment
+            .credited_microusd
+            .is_multiple_of(payment.amount_microusd)
         || !valid_crypto_currency(&payment.pay_currency)
         || payment.pay_currency == "zec"
         || !matches!(
@@ -732,11 +832,13 @@ fn validate_crypto_payment(payment: &axiom_acp_extension::CryptoPayment) -> Resu
                 | "expired"
                 | "refunded"
                 | "review"
+                | "cancelled"
         )
         || !amount
         || !address
         || !memo
         || !expiry
+        || !invoice
         || chrono::DateTime::parse_from_rfc3339(&payment.created_at).is_err()
         || (payment.pay_address.is_some() != payment.pay_amount.is_some())
         || (payment.pay_address.is_some() && payment.expires_at.is_none())
@@ -749,6 +851,23 @@ fn validate_crypto_payment(payment: &axiom_acp_extension::CryptoPayment) -> Resu
 }
 
 fn validate_billing_status(status: &BillingStatus) -> Result<()> {
+    if status.trial_capacity.as_ref().is_some_and(|capacity| {
+        capacity.capacity_microusd == 0
+            || capacity.capacity_microusd > 1_000_000_000
+            || !exact_integer(&capacity.spent_microusd)
+            || capacity.available
+                != capacity
+                    .spent_microusd
+                    .parse::<u64>()
+                    .is_ok_and(|spent| spent < capacity.capacity_microusd)
+            || (capacity.available != capacity.retry_at.is_none())
+            || capacity
+                .retry_at
+                .as_deref()
+                .is_some_and(|at| DateTime::parse_from_rfc3339(at).is_err())
+    }) {
+        return Err(AxiomError::Protocol("Invalid trial capacity status".into()));
+    }
     if status.trial_microusd > MAX_ACP_SAFE_INTEGER
         || status.paid_microusd.unsigned_abs() > MAX_ACP_SAFE_INTEGER
         || status.trial_microusd > status.posted_microusd.max(0).unsigned_abs()
@@ -1096,6 +1215,7 @@ mod tests {
             currency: "microUSD".into(),
             payment_account: None,
             zec_usd_quote: None,
+            trial_capacity: None,
         };
         assert!(validate_billing_status(&valid).is_ok());
         let negative = BillingStatus {
@@ -1216,6 +1336,9 @@ mod tests {
         assert!(!valid_crypto_currency("X"));
         let now = chrono::Utc::now().to_rfc3339();
         let mut payment = axiom_acp_extension::CryptoPayment {
+            quote_id: None,
+            invoice_expires_at: None,
+            active: None,
             id: uuid::Uuid::new_v4().to_string(),
             status: "waiting".into(),
             amount_microusd: 25_000_000,
@@ -1238,6 +1361,18 @@ mod tests {
         assert!(validate_crypto_payment(&payment).is_err());
         payment.pay_address = Some("bc1qtestaddress".into());
         payment.credited_microusd = 24_000_000;
+        assert!(validate_crypto_payment(&payment).is_err());
+        payment.credited_microusd = 0;
+        payment.quote_id = Some(uuid::Uuid::new_v4().to_string());
+        payment.active = Some(true);
+        let end =
+            DateTime::parse_from_rfc3339(&payment.created_at).unwrap() + chrono::Duration::hours(6);
+        payment.invoice_expires_at = Some(end.to_rfc3339());
+        assert!(validate_crypto_payment(&payment).is_ok());
+        payment.invoice_expires_at = Some((end + chrono::Duration::seconds(1)).to_rfc3339());
+        assert!(validate_crypto_payment(&payment).is_err());
+        payment.invoice_expires_at = Some(end.to_rfc3339());
+        payment.quote_id = None;
         assert!(validate_crypto_payment(&payment).is_err());
         let mut options = axiom_acp_extension::CryptoOptions {
             enabled: true,

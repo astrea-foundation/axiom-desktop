@@ -151,6 +151,9 @@
     "cryptoPaymentsRequest": {
       "$ref": "#/$defs/CryptoPaymentsRequest"
     },
+    "cryptoInvoiceActionRequest": {
+      "$ref": "#/$defs/CryptoInvoiceActionRequest"
+    },
     "cryptoPaymentsResponse": {
       "$ref": "#/$defs/CryptoPaymentsResponse"
     },
@@ -266,6 +269,7 @@
     "createCryptoPaymentRequest",
     "cryptoPaymentResponse",
     "cryptoPaymentsRequest",
+    "cryptoInvoiceActionRequest",
     "cryptoPaymentsResponse",
     "giftCodeRedeemRequest",
     "giftCodeRedeemResponse",
@@ -2313,6 +2317,16 @@
               "type": "null"
             }
           ]
+        },
+        "trialCapacity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TrialCapacity"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
@@ -2490,6 +2504,34 @@
         "expires_at"
       ]
     },
+    "TrialCapacity": {
+      "type": "object",
+      "properties": {
+        "available": {
+          "type": "boolean"
+        },
+        "capacity_microusd": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "spent_microusd": {
+          "type": "string"
+        },
+        "retry_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "available",
+        "capacity_microusd",
+        "spent_microusd"
+      ]
+    },
     "CryptoOptionsRequest": {
       "type": "object"
     },
@@ -2602,6 +2644,24 @@
         "id": {
           "type": "string"
         },
+        "quote_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "invoice_expires_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "active": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "status": {
           "type": "string"
         },
@@ -2662,6 +2722,42 @@
     },
     "CryptoPaymentsRequest": {
       "type": "object"
+    },
+    "CryptoInvoiceActionRequest": {
+      "type": "object",
+      "properties": {
+        "invoiceId": {
+          "type": "string"
+        },
+        "action": {
+          "$ref": "#/$defs/CryptoInvoiceAction"
+        },
+        "id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "previousQuoteId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "invoiceId",
+        "action"
+      ]
+    },
+    "CryptoInvoiceAction": {
+      "type": "string",
+      "enum": [
+        "cancel",
+        "check",
+        "refresh"
+      ]
     },
     "CryptoPaymentsResponse": {
       "type": "object",

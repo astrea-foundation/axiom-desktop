@@ -9,6 +9,7 @@ import type {
   CryptoPaymentResponse,
   CryptoPaymentsResponse,
   CreateCryptoPaymentRequest,
+  CryptoInvoiceActionRequest,
   GiftCodeRedeemResponse,
   UsageSummaryResponse,
   UsageSummaryRequest,
@@ -66,7 +67,7 @@ const EXTENSION_CAPABILITIES = {
     desktopAgent: 1,
     desktopMcp: 1,
     account: 2,
-    billing: 4,
+    billing: 5,
     usage: 1,
     securityEvidence: 4,
     webConsent: 1,
@@ -111,7 +112,7 @@ export function validateDesktopExtension(meta: {
     throw new ProtocolError("AxiomCLI does not support the required Axiom desktop extension");
   }
   for (const feature of REQUIRED_DESKTOP_FEATURES) {
-    const requiredVersion = EXTENSION_CAPABILITIES.features[feature];
+    const requiredVersion = feature === "billing" ? 4 : EXTENSION_CAPABILITIES.features[feature];
     if ((meta?.features?.[feature] ?? 0) < requiredVersion) {
       throw new ProtocolError(`AxiomCLI does not support required desktop feature ${feature}@${requiredVersion}`);
     }
@@ -159,6 +160,7 @@ export class AxiomAcpClient extends EventEmitter {
   private initialized = false;
   private supportsMessageRevision = false;
   private supportsMcp = false;
+  private supportsCryptoInvoices = false;
   private supportsAttachments = false;
   private desktopBootstrap: DesktopBootstrapResponse | null = null;
   private closing = false;
@@ -232,6 +234,7 @@ export class AxiomAcpClient extends EventEmitter {
     validateDesktopExtension(meta);
     this.supportsMessageRevision = (meta?.features?.messageRevision ?? 0) >= 1;
     this.supportsMcp = (meta?.features?.desktopMcp ?? 0) >= 1;
+    this.supportsCryptoInvoices = (meta?.features?.billing ?? 0) >= 5;
     this.supportsAttachments = (meta?.features?.attachments ?? 0) >= 2;
     this.initialized = true;
     this.state.setConnected(true);
@@ -662,6 +665,18 @@ export class AxiomAcpClient extends EventEmitter {
     }
     const context = this.state.accountContextToken();
     const result = await this.process.request<CryptoPaymentResponse>("_axiom/billing/create_crypto_payment", request);
+    this.assertAccountContext(context);
+    return result;
+  }
+
+  async cryptoInvoiceAction(request: CryptoInvoiceActionRequest): Promise<CryptoPaymentResponse> {
+    if (!this.supportsCryptoInvoices) throw new ProtocolError("Restart Axiom with the updated native app to manage invoices.");
+    const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+    if (!uuid.test(request.invoiceId) || !["cancel","check","refresh"].includes(request.action)
+      || (request.action === "refresh" ? !uuid.test(request.id ?? "") || !uuid.test(request.previousQuoteId ?? "")
+        : Boolean(request.id || request.previousQuoteId))) throw new ProtocolError("Invalid invoice action.");
+    const context = this.state.accountContextToken();
+    const result = await this.process.request<CryptoPaymentResponse>("_axiom/billing/crypto_invoice_action", request);
     this.assertAccountContext(context);
     return result;
   }

@@ -573,6 +573,21 @@ async fn secure_stream_failure<T>(
 
 #[allow(clippy::needless_pass_by_value)]
 fn map_secure_error(error: axiom_secure_client::SecureClientError) -> AxiomError {
+    if error.code() == axiom_secure_client::SecureErrorCode::TrialCapacity {
+        let message = error
+            .retry_at()
+            .and_then(|at| chrono::DateTime::from_timestamp(at, 0))
+            .map_or_else(
+                || error.safe_detail().to_owned(),
+                |at| {
+                    format!(
+                        "Free trials are currently at capacity. Try again at {} UTC.",
+                        at.format("%Y-%m-%d %H:%M:%S")
+                    )
+                },
+            );
+        return AxiomError::Provider(message);
+    }
     match error.kind() {
         ProviderFailureKind::Cancelled => AxiomError::Cancelled,
         ProviderFailureKind::InsufficientCredit => AxiomError::Provider(

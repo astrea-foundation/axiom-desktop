@@ -322,6 +322,19 @@ pub(crate) fn error_for_status_body(status: StatusCode, body: &[u8]) -> SecureCl
         .and_then(|envelope| envelope.detail.as_ref())
         .and_then(|detail| detail.code.as_deref());
     match code {
+        Some("trial_capacity") if status == StatusCode::SERVICE_UNAVAILABLE => {
+            let retry_at = public
+                .as_ref()
+                .and_then(|p| p.detail.as_ref())
+                .and_then(|d| d.retry_at_unix_seconds);
+            SecureClientError::with_code(
+                axiom_inference::ProviderFailureKind::RateLimited,
+                crate::SecureErrorCode::TrialCapacity,
+                "Free trials are currently at capacity. Please try again later.",
+                true,
+            )
+            .with_retry_at(retry_at)
+        }
         Some("ATTESTATION_KEY_CHANGED") => SecureClientError::with_code(
             axiom_inference::ProviderFailureKind::AttestationRejected,
             crate::SecureErrorCode::AttestationKeyChanged,
@@ -389,11 +402,24 @@ struct PublicErrorEnvelope {
 struct PublicErrorDetail {
     #[serde(default)]
     code: Option<String>,
+    #[serde(default)]
+    retry_at_unix_seconds: Option<i64>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trial_capacity_has_typed_retry_time_without_remote_diagnostics() {
+        let error = error_for_status_body(StatusCode::SERVICE_UNAVAILABLE,
+            br#"{"detail":{"code":"trial_capacity","message":"private upstream secret","retry_at_unix_seconds":1791849600}}"#);
+        assert_eq!(error.code(), crate::SecureErrorCode::TrialCapacity);
+        assert_eq!(error.retry_at(), Some(1_791_849_600));
+        assert!(error.retryable());
+        assert!(!error.requires_reattest_and_reencrypt());
+        assert!(!error.safe_detail().contains("secret"));
+    }
 
     #[test]
     fn typed_rotation_error_is_retryable_without_reflecting_remote_text() {

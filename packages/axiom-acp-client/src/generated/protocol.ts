@@ -47,6 +47,7 @@ export type TimelineItemKind = "user_message" | "assistant_message" | "reasoning
 export type TimelineItemStatus = "pending" | "in_progress" | "completed" | "cancelled" | "failed" | "interrupted";
 export type AccountState = "starting" | "signed_out" | "valid" | "expired" | "unavailable";
 export type LoginMethod = "passkey" | "google" | "password" | "ethereum_wallet";
+export type CryptoInvoiceAction = "cancel" | "check" | "refresh";
 export type SecurityState =
   "unverified" | "verifying" | "unattested_development" | "verified" | "degraded" | "outdated" | "failed";
 export type ActivityEvent =
@@ -175,6 +176,7 @@ export interface ProtocolSchema {
   createCryptoPaymentRequest: CreateCryptoPaymentRequest;
   cryptoPaymentResponse: CryptoPaymentResponse;
   cryptoPaymentsRequest: CryptoPaymentsRequest;
+  cryptoInvoiceActionRequest: CryptoInvoiceActionRequest;
   cryptoPaymentsResponse: CryptoPaymentsResponse;
   giftCodeRedeemRequest: GiftCodeRedeemRequest;
   giftCodeRedeemResponse: GiftCodeRedeemResponse;
@@ -718,6 +720,7 @@ export interface BillingStatus {
   currency: string;
   paymentAccount?: PaymentAccount | null;
   zecUsdQuote?: ZecUsdQuote | null;
+  trialCapacity?: TrialCapacity | null;
   [k: string]: unknown;
 }
 /**
@@ -763,6 +766,12 @@ export interface ZecUsdQuote {
   as_of: string;
   expires_at: string;
 }
+export interface TrialCapacity {
+  available: boolean;
+  capacity_microusd: number;
+  spent_microusd: string;
+  retry_at?: string | null;
+}
 export interface CryptoOptionsRequest {
   [k: string]: unknown;
 }
@@ -796,6 +805,9 @@ export interface CryptoPaymentResponse {
 }
 export interface CryptoPayment {
   id: string;
+  quote_id?: string | null;
+  invoice_expires_at?: string | null;
+  active?: boolean | null;
   status: string;
   amount_microusd: number;
   credited_microusd: number;
@@ -809,6 +821,12 @@ export interface CryptoPayment {
 }
 export interface CryptoPaymentsRequest {
   [k: string]: unknown;
+}
+export interface CryptoInvoiceActionRequest {
+  invoiceId: string;
+  action: CryptoInvoiceAction;
+  id?: string | null;
+  previousQuoteId?: string | null;
 }
 export interface CryptoPaymentsResponse {
   payments: CryptoPayment[];

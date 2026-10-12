@@ -203,6 +203,21 @@ intent; cancellation never authorizes creating a replacement automatically.
 Desktop and its bundled sidecar require version 4 together. A new sidecar talking
 to an older backend hides Other crypto and leaves existing billing available.
 
+`billing@5` adds `_axiom/billing/crypto_invoice_action` with `invoiceId`, action
+`cancel`, `check`, or `refresh`. Refresh also supplies a new UUID `id` and
+`previousQuoteId`; other actions omit those fields. Version 4 remains the required
+baseline; invoice actions are rejected until version 5 is negotiated. Captured
+account identity and operation cancellation guard IPC, RPC, and HTTP replies.
+Payment responses add optional `quote_id`, `invoice_expires_at`, and `active` for
+older-server compatibility, preserving the server's snake_case funding contract.
+The native client checks that invoice metadata appears together, expiry is exactly
+six hours after creation, and rate expiry never exceeds invoice expiry.
+
+Billing status can include shared `trial_capacity` metadata. Trial admission
+errors are typed `TRIAL_CAPACITY` with a retry timestamp; clients show a capacity
+message and retry time. Existing work finishes normally and paid funding stays
+usable when new trial requests are paused. No plaintext inference path is added.
+
 Security projections require the registered provider identity, accepted key
 fingerprints and hard expiry. NEAR require positive lease generation;
 Tinfoil intentionally omits it. The projection must preserve router-versus-worker

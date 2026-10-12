@@ -124,6 +124,17 @@ Use `AXIOMCLI_COLOR=none`, `NO_COLOR=1`, `AXIOMCLI_ASCII=1` or
 `AXIOMCLI_REDUCED_MOTION=1` for terminal compatibility/accessibility. Terminal
 restoration is guarded for normal exit and panic.
 
+## Trial and invoice capacity
+
+If free trials are at capacity, use the displayed retry time or add paid credit.
+A running response continues; this limit affects new trial-funded requests. Retry
+times can move when other admitted requests settle.
+
+If five invoices are active, open Balance → Other crypto → Recent payments and
+cancel an unpaid invoice. This releases a slot immediately. Refreshed rate quotes
+keep the same six-hour invoice deadline. Use Check payment status for an expired
+or cancelled invoice if a transfer was already sent; do not resend to stale rates.
+
 ## Updates
 
 Use `axiomcli update --check` or Settings → Updates to inspect a failure. Close

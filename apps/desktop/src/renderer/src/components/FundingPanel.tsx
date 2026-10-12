@@ -18,15 +18,18 @@ export function creditAmount(value: string): number | null {
 
 export function cryptoStatus(payment: CryptoPayment, now: number): string {
   if (payment.review_required || payment.status === "review") return "Under review";
+  if (payment.status === "cancelled") return "Cancelled";
   if (payment.status === "refunded") return "Refunded";
   if (payment.credited_microusd > 0) return "Credited";
+  if (payment.invoice_expires_at && Date.parse(payment.invoice_expires_at) <= now && ["waiting","creating","expired"].includes(payment.status)) return "Expired";
   if (payment.status === "waiting" && Date.parse(payment.expires_at ?? "") <= now) return "Rate expired";
   return ({creating: "Preparing payment", waiting: "Awaiting payment", confirming: "Confirming", confirmed: "Confirming",
     sending: "Confirming", partially_paid: "Partial payment", finished: "Confirming", failed: "Failed", expired: "Expired", refunded: "Refunded"} as Record<string, string>)[payment.status] ?? "Under review";
 }
 
-function awaitingQuote(payment: CryptoPayment): boolean {
-  return !payment.review_required && payment.credited_microusd === 0 && ["waiting", "expired"].includes(payment.status);
+function awaitingQuote(payment: CryptoPayment, now = Date.now()): boolean {
+  return payment.active !== false && !payment.review_required && payment.credited_microusd === 0 && ["waiting", "expired", "failed"].includes(payment.status)
+    && (!payment.invoice_expires_at || Date.parse(payment.invoice_expires_at) > now);
 }
 
 function sentPaymentIds(accountId: string): Set<string> {
@@ -53,11 +56,13 @@ export function CryptoPaymentDetails({ payment, options, now = Date.now(), sent 
   const [copied, setCopied] = useState<string | null>(null);
   const [copyError, setCopyError] = useState(false);
   const generation = useRef(0);
-  useEffect(() => { generation.current++; setCopied(null); setCopyError(false); return () => { generation.current++; }; }, [payment.id]);
+  useEffect(() => { generation.current++; setCopied(null); setCopyError(false); return () => { generation.current++; }; }, [payment.id,payment.quote_id]);
   const coin = options.currencies.find((item) => item.code === payment.pay_currency);
-  const status = awaitingQuote(payment) && sent ? "Checking payment" : awaitingQuote(payment) && refreshing ? "Updating rate…" : cryptoStatus(payment, now);
+  const status = awaitingQuote(payment, now) && sent ? "Checking payment" : awaitingQuote(payment, now) && refreshing ? "Updating rate…" : cryptoStatus(payment, now);
   const payable = status === "Awaiting payment" && !!coin && !!payment.pay_address && !!payment.pay_amount
     && Date.parse(payment.expires_at ?? "") > now;
+  const invoiceSeconds = Math.max(0,Math.ceil((Date.parse(payment.invoice_expires_at ?? "")-now)/1000));
+  const invoiceLeft = `${Math.floor(invoiceSeconds/3600)}:${String(Math.floor(invoiceSeconds/60)%60).padStart(2,"0")}:${String(invoiceSeconds%60).padStart(2,"0")}`;
   const secondsLeft = Math.max(0, Math.ceil((Date.parse(payment.expires_at ?? "") - now) / 1_000));
   const timeLeft = `${String(Math.floor(secondsLeft / 60)).padStart(2, "0")}:${String(secondsLeft % 60).padStart(2, "0")}`;
   const copy = async (value: string, label: string) => {
@@ -73,6 +78,7 @@ export function CryptoPaymentDetails({ payment, options, now = Date.now(), sent 
         {coin && cryptoNetwork(coin) !== cryptoName(coin) ? <p className="mt-0.5 text-[11px] text-[var(--color-text-tertiary)]">{cryptoNetwork(coin)}</p> : null}</div>
       <span role="status" className={`rounded-full px-2.5 py-1 text-[11px] ${status === "Credited" ? "bg-[var(--color-success-glow)] text-[var(--color-success)]" : "bg-[var(--wash-chip)] text-[var(--color-text-secondary)]"}`}>{status}</span>
     </div>
+    {payment.active && payment.invoice_expires_at ? <p className="text-[12px] text-[var(--color-text-secondary)]">Invoice expires in <span role="timer" aria-label="Time left to pay invoice" aria-live="off" className="tabular-nums">{invoiceLeft}</span></p> : null}
     {sent && awaitingQuote(payment) ? <p role="status" className="text-[12px] text-[var(--color-text-secondary)]">Waiting for your transfer. Confirmations can take longer.</p> : null}
     {rateUpdated && payable ? <p role="status" className="text-[12px] text-[var(--color-text-secondary)]">Rate updated. Use this amount and address.</p> : null}
     {payable ? <>
@@ -179,21 +185,22 @@ export function FundingPanel({ accountId, connected, payment, quote, onRefreshBi
   }, [selected?.id]);
 
   useEffect(() => {
-    if (depositClosed && !selected) form.current?.querySelector<HTMLElement>('[role="combobox"]')?.focus();
-  }, [depositClosed, selected]);
+    if (open && !selected) form.current?.querySelector<HTMLElement>('[role="combobox"]')?.focus();
+  }, [open, selected]);
 
   const renewQuote = async () => {
     const api = window.axiomDesktop?.agent;
     const source = selectedRef.current;
     if (!api || !connected || !source || !awaitingQuote(source) || sentRef.current.has(source.id)) return;
     const current = generation.current, revision = checkoutRevision.current;
-    let attempt = renewals.current.get(source.id);
+    const quoteKey = `${source.id}:${source.quote_id ?? source.id}`;
+    let attempt = renewals.current.get(quoteKey);
     if (!attempt) {
       attempt = {request: {id: crypto.randomUUID(), amountMicrousd: source.amount_microusd, payCurrency: source.pay_currency}, running: false};
-      renewals.current.set(source.id, attempt);
+      renewals.current.set(quoteKey, attempt);
     }
     if (attempt.running) return;
-    attempt.running = true; attemptedRenewals.current.add(source.id);
+    attempt.running = true; attemptedRenewals.current.add(quoteKey);
     setRenewal({sourceId: source.id, busy: true, failed: false}); setError(null);
     const stillSelected = () => generation.current === current && checkoutRevision.current === revision
       && selectedRef.current?.id === source.id && awaitingQuote(selectedRef.current) && !sentRef.current.has(source.id);
@@ -209,13 +216,14 @@ export function FundingPanel({ accountId, connected, payment, quote, onRefreshBi
         setSelected(latest);
         if (latest.credited_microusd > 0) await onRefreshBilling();
         // A provider-updated deadline can become eligible again later.
-        if (awaitingQuote(latest)) attemptedRenewals.current.delete(source.id);
+        if (awaitingQuote(latest)) attemptedRenewals.current.delete(quoteKey);
         return;
       }
-      const result = await api.createCryptoPayment(attempt.request, accountId);
-      if (generation.current !== current) return;
-      setPayments((previous) => [result.payment, ...previous.filter((p) => p.id !== result.payment.id)]);
+      const result = source.quote_id && source.invoice_expires_at
+        ? await api.cryptoInvoiceAction({invoiceId:source.id,action:"refresh",id:attempt.request.id,previousQuoteId:source.quote_id},accountId)
+        : await api.createCryptoPayment(attempt.request, accountId);
       if (!stillSelected()) return;
+      setPayments((previous) => [result.payment, ...previous.filter((p) => p.id !== result.payment.id)]);
       if (awaitingQuote(result.payment) && (result.payment.status !== "waiting"
         || !Number.isFinite(Date.parse(result.payment.expires_at ?? "")) || Date.parse(result.payment.expires_at!) <= Date.now())) {
         throw new Error("No fresh rate returned.");
@@ -232,10 +240,25 @@ export function FundingPanel({ accountId, connected, payment, quote, onRefreshBi
   useEffect(() => {
     if (!open || !connected || !options?.enabled || !selected || !awaitingQuote(selected) || sentPayments.has(selected.id)
       || !Number.isFinite(Date.parse(selected.expires_at ?? "")) || Date.parse(selected.expires_at!) > now
-      || attemptedRenewals.current.has(selected.id)) return;
+      || attemptedRenewals.current.has(`${selected.id}:${selected.quote_id ?? selected.id}`)) return;
     void renewQuote();
   }, [open, connected, options?.enabled, selected, sentPayments, now]);
 
+  const invoiceAction = async (payment: CryptoPayment, action: "cancel" | "check") => {
+    const api=window.axiomDesktop?.agent;
+    if (!api || !connected || pending.current || (action === "cancel" && payment.active !== true)) return;
+    const current=generation.current;
+    pending.current=true; setBusy(true); setError(null);
+    try {
+      const result=await api.cryptoInvoiceAction({invoiceId:payment.id,action},accountId);
+      if (generation.current !== current) return;
+      setPayments(previous => previous.map(value => value.id === payment.id ? result.payment : value));
+      setSelected(previous => previous?.id === payment.id ? result.payment : previous);
+      checkoutRevision.current++; intent.current=null;
+      if (result.payment.credited_microusd > 0) await onRefreshBilling();
+    } catch (failure) { if (generation.current === current) setError(desktopErrorMessage(failure,"Invoice could not be updated. Please retry.")); }
+    finally { if (generation.current === current) { pending.current=false; setBusy(false); } }
+  };
   const create = async () => {
     const api = window.axiomDesktop?.agent;
     const value = creditAmount(amount);
@@ -250,6 +273,7 @@ export function FundingPanel({ accountId, connected, payment, quote, onRefreshBi
       setPayments((previous) => [result.payment, ...previous.filter((p) => p.id !== result.payment.id)]);
     } catch (failure) { if (generation.current === current) {
       const message = desktopErrorMessage(failure, "Could not confirm payment. Retry safely.");
+      if (message.includes("5 active invoices")) intent.current = null;
       setError(message);
       if (message.includes("Increase the amount")) intent.current = null;
     } }
@@ -257,7 +281,7 @@ export function FundingPanel({ accountId, connected, payment, quote, onRefreshBi
   };
   const sent = !!selected && sentPayments.has(selected.id);
   const refreshing = renewal?.sourceId === selected?.id && !!renewal?.busy;
-  const canCancel = selected && !sent && (selected.status === "creating" || awaitingQuote(selected));
+  const activeCount = payments.filter(value => value.active === true && Date.parse(value.invoice_expires_at ?? "") > now).length;
   const rateExpired = selected && awaitingQuote(selected) && Date.parse(selected.expires_at ?? "") <= now;
   const markSent = () => {
     if (!selected) return;
@@ -277,14 +301,19 @@ export function FundingPanel({ accountId, connected, payment, quote, onRefreshBi
         </span><ChevronRight size={16} className="text-[var(--color-text-tertiary)] transition-transform group-hover:translate-x-0.5" /></span>
       </button>
       {open ? <CryptoDepositDialog onClose={() => setOpen(false)}>
+        {payments.some(value => value.active !== undefined) && <p className="mb-4 text-[12px] text-[var(--color-text-secondary)]">{activeCount} of 5 active invoices. Cancel an invoice to make room.</p>}
         {selected ? <><CryptoPaymentDetails payment={selected} options={options} now={now} sent={sent} refreshing={refreshing} rateUpdated={rateUpdatedId === selected.id} />
+          {selected.active === true && <button type="button" className="ax-pill ax-pill-button w-full justify-center" disabled={!connected || busy} onClick={() => void invoiceAction(selected, "cancel")}>Cancel invoice</button>}
+          {selected.quote_id && <button type="button" className="ax-pill ax-pill-button w-full justify-center" disabled={!connected || busy} onClick={() => void invoiceAction(selected, "check")}>Check payment status</button>}
+          {selected.status === "cancelled" && <p className="text-[12px] text-[var(--color-text-secondary)]">This invoice is cancelled. Any transfer already sent will still be processed.</p>}
+
           {rateExpired && !sent && !refreshing ? <div className="mt-4 space-y-3">
             {renewal?.failed ? <p role="alert" className="text-[12px] text-[var(--color-danger-strong)]">Couldn’t refresh the rate.</p> : null}
             <button type="button" className="ax-pill ax-pill-button w-full justify-center" disabled={!connected} onClick={() => void renewQuote()}>Retry quote</button>
           </div> : null}
           <div className="mt-5 flex gap-2">
             {awaitingQuote(selected) && !sent ? <button type="button" className="ax-pill ax-pill-button flex-1 justify-center" onClick={markSent}>I’ve sent it</button> : null}
-            <button type="button" className="ax-pill ax-pill-button flex-1 justify-center" disabled={busy} onClick={() => { checkoutRevision.current++; setSelected(null); intent.current = null; setError(null); setRenewal(null); setRateUpdatedId(null); setDepositClosed(!!canCancel); }}>{canCancel ? "Cancel deposit" : "New payment"}</button>
+            <button type="button" className="ax-pill ax-pill-button flex-1 justify-center" disabled={busy} onClick={() => { checkoutRevision.current++; setSelected(null); intent.current = null; setError(null); setRenewal(null); setRateUpdatedId(null); setDepositClosed(false); }}>New payment</button>
           </div></> :
           <form ref={form} className="space-y-5" onSubmit={(e) => { e.preventDefault(); void create(); }}>
             {depositClosed ? <p role="status" className="text-[12px] leading-5 text-[var(--color-text-secondary)]">Deposit closed. Funds already sent will still be processed.</p> : null}
@@ -301,7 +330,7 @@ export function FundingPanel({ accountId, connected, payment, quote, onRefreshBi
               </div>
               {creditAmount(amount) === null ? <p className="mt-2 text-[12px] text-[var(--color-danger-strong)]">Enter $5–$1,000.</p> : null}
             </div>
-            <button type="submit" className="flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-[var(--color-cherry)] px-4 py-3 text-[13px] font-medium text-on-accent transition-[background-color,transform] hover:bg-[var(--color-cherry-bright)] active:scale-[0.98] disabled:opacity-35" disabled={!connected || busy || !coin || creditAmount(amount) === null}>
+            <button type="submit" className="flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-[var(--color-cherry)] px-4 py-3 text-[13px] font-medium text-on-accent transition-[background-color,transform] hover:bg-[var(--color-cherry-bright)] active:scale-[0.98] disabled:opacity-35" disabled={!connected || busy || !coin || creditAmount(amount) === null || (!intent.current && activeCount >= 5)}>
               {busy ? "Creating…" : intent.current ? "Retry" : "Create payment"}<ArrowRight size={15} aria-hidden="true" />
             </button>
           </form>}
