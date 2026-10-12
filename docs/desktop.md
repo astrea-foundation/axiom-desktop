@@ -46,16 +46,20 @@ crypto amount on the displayed network, including the memo if shown, before the
 countdown ends. The countdown uses the
 fixed-rate quote's expiry and updates every second. **Send within … for this rate**
 is the time to send, not a confirmation deadline. An unsent quote renews automatically
-while the deposit window is open, with a fresh amount and address. Old payments
-remain tracked separately. Failed renewal offers **Retry quote** without
+while the deposit window is open, with a fresh amount and address. Old quotes
+remain tracked separately under the same invoice. Failed renewal offers **Retry quote** without
 duplicating the order; it never loops on a failed or stale quote.
 
 Choose **I’ve sent it** after sending to stop renewal while the transfer is detected
 and confirmed. This hint is saved on this device for the signed-in account; it
 does not authorize credit. Confirming payments continue beyond the rate deadline.
-**Cancel deposit** returns to the coin selector; it does not revoke the address
-or reverse funds already sent. The
-payment remains in recent payments and sent funds continue to be tracked.
+The invoice has its own **Invoice expires in** countdown and lasts six hours;
+refreshing a rate never extends that deadline. You can have five active invoices.
+**Cancel invoice** releases a slot on the server and hides its payment instructions.
+It does not reverse funds already sent; the invoice remains in recent payments
+and late transfers continue to be processed. **New payment** returns to the coin
+selector. **Check payment status** requests reconciliation even after expiry or
+cancellation.
 Each payment has its own address. ETH, USDC, USDT and assets offered on multiple
 networks show the exact network and a permanent-loss warning before payment
 creation and beside the deposit details. Status updates automatically; recent
@@ -70,7 +74,10 @@ change. It is never a chat message or saved draft. A failed/uncertain request ca
 be retried with the same code without duplicate credit; a code already redeemed
 by this account reports that result and refreshes the balance.
 
-Gift credit is part of **Other credit**; trial credit is spent first. Gift
+Gift credit is part of **Other credit**. Trial credit is normally spent first.
+A shared $15 rolling-24-hour trial admission threshold can pause new trial-funded
+requests with a retry time. Already running responses finish normally. Paid credit
+remains usable and is spent first while trial capacity is full. Gift
 redemption does not clear payment-review holds. It requires a native interactive
 account and a backend with gift redemption deployed. Desktop and its bundled
 sidecar negotiate `billing@4`; older sidecars must be updated together.

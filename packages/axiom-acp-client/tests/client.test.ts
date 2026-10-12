@@ -1371,7 +1371,7 @@ test("crypto operations discard replies after account switches and validate requ
   let complete!: (value: unknown) => void;
   client.process.request = <T>(): Promise<T> => new Promise<T>((resolve) => { complete = resolve as (value: unknown) => void; });
   const request = {id: "00000000-0000-4000-8000-000000000001", amountMicrousd: 25_000_000, payCurrency: "btc"};
-  for (const call of [() => client.cryptoOptions(), () => client.cryptoPayments(), () => client.createCryptoPayment(request)]) {
+  for (const call of [() => client.cryptoOptions(), () => client.cryptoPayments(), () => client.createCryptoPayment(request), () => client.cryptoInvoiceAction({invoiceId: request.id, action: "cancel"})]) {
     state.setAccount({revision: ++revision, state: "valid", account: {id: "account-a", linkedMethods: ["password"]}});
     const pending = call();
     state.setAccount({revision: ++revision, state: "valid", account: {id: "account-b", linkedMethods: ["password"]}});
@@ -1386,5 +1386,7 @@ test("crypto operations discard replies after account switches and validate requ
     await assert.rejects(client.createCryptoPayment({...request, amountMicrousd}), /Invalid payment request/);
   }
   await assert.rejects(client.createCryptoPayment({...request, payCurrency: "zec"}), /Invalid payment request/);
+  await assert.rejects(client.cryptoInvoiceAction({invoiceId: request.id, action: "refresh"}), /Invalid invoice action/);
+  await assert.rejects(client.cryptoInvoiceAction({invoiceId: request.id, action: "cancel", id: request.id}), /Invalid invoice action/);
   assert(!JSON.stringify(client.getState()).includes("old-account-address"));
 });

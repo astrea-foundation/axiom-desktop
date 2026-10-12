@@ -356,6 +356,14 @@ pub async fn serve_stdio(
         sync,
         builder,
         context,
+        account::crypto_invoice_action,
+        extension::CryptoInvoiceActionRequest,
+        extension::CryptoPaymentResponse
+    );
+    let builder = request_handler!(
+        sync,
+        builder,
+        context,
         account::crypto_payments,
         extension::CryptoPaymentsRequest,
         extension::CryptoPaymentsResponse

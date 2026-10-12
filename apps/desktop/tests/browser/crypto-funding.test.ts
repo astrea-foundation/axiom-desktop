@@ -26,8 +26,9 @@ async function open() {
     const records: Record<string, any[]> = {};
     const requests: any[] = [];
     let gate: (() => void) | null = null;
-    let held = false, fail = false, lose = false;
-    Object.assign(window, {__cryptoTest: {requests, records,
+    let held = false, fail = false, lose = false, invoiceMode = false;
+    const actions: any[] = [];
+    Object.assign(window, {__cryptoTest: {requests, records, actions, enableInvoices: () => { invoiceMode = true; },
       hold: () => { held = true; }, release: () => { held = false; gate?.(); },
       failOnce: () => { fail = true; },
       loseOnce: () => { lose = true; },
@@ -43,15 +44,28 @@ async function open() {
           {code: "usdttrc20", name: "USDT", network: "TRON (TRC20)"}, {code: "xmr", name: "Monero", network: "xmr"},
         ]}}),
       cryptoPayments: async (account: string) => ({payments: structuredClone(records[account] ?? [])}),
+      cryptoInvoiceAction: async (request: any, account: string) => {
+        actions.push({...request, account});
+        const payment = records[account]?.find(p => p.id === request.invoiceId);
+        if (!payment) throw new Error("Invoice not found");
+        if (request.action === "cancel") { payment.active = false; payment.status = "cancelled"; payment.pay_address = null; payment.pay_amount = null; }
+        if (request.action === "refresh") {
+          payment.quote_id = request.id; payment.expires_at = new Date(Math.min(Date.now() + 60_000, Date.parse(payment.invoice_expires_at))).toISOString();
+          payment.pay_address = "TrefreshedAddress";
+        }
+        return {payment: structuredClone(payment)};
+      },
       createCryptoPayment: async (request: any, account: string) => {
         requests.push({...request, account});
         if (fail) { fail = false; throw new Error("test lost response"); }
         const existing = records[account]?.find((p) => p.id === request.id);
         if (existing) return {payment: structuredClone(existing)};
+        if (invoiceMode && (records[account] ?? []).filter(p => p.active).length >= 5) throw new Error("You have 5 active invoices. Cancel an invoice to create another.");
         const index = records[account]?.length ?? 0;
         const payment = {id: request.id, status: "waiting", amount_microusd: request.amountMicrousd, credited_microusd: 0,
           pay_currency: request.payCurrency, pay_amount: `25.${String(index + 1).padStart(8, "0")}`, pay_address: `TtestPaymentAddress${index || ""}`, payin_extra_id: "0012345",
           expires_at: new Date(Date.now() + 60_000).toISOString(), created_at: new Date().toISOString(), review_required: false};
+        if (invoiceMode) Object.assign(payment, {quote_id: request.id, active: true, invoice_expires_at: new Date(Date.now() + 6 * 60 * 60 * 1000).toISOString()});
         (records[account] ??= []).push(payment);
         if (held) await new Promise<void>((resolve) => { gate = resolve; });
         if (lose) { lose = false; throw new Error("test lost attached response"); }
@@ -128,11 +142,10 @@ test("rate countdown renews automatically; cancelling retains the original payme
     assert.equal(await countdown.innerText(), "01:00");
     await page.clock.runFor(15_000);
     assert.equal(await countdown.innerText(), "00:45");
-    await page.getByRole("button", {name: "Cancel deposit", exact: true}).click();
+    await page.getByRole("button", {name: "New payment", exact: true}).click();
     await page.getByRole("button", {name: "Create payment", exact: true}).waitFor();
     assert.equal(await picker.evaluate((element) => element === document.activeElement), true);
     assert.equal(await page.getByRole("img", {name: "Crypto payment address"}).count(), 0);
-    assert.match(await page.getByRole("status").filter({hasText: /^Deposit closed\./}).innerText(), /Deposit closed\. Funds already sent will still be processed\./);
     const original = await page.evaluate(() => (window as any).__cryptoTest.records["account-a"][0]);
     assert.equal(original.status, "waiting");
     await page.getByRole("button", {name: "Create payment", exact: true}).click();
@@ -233,7 +246,7 @@ test("late renewal replies cannot replace a cancelled checkout, another account 
       await page.evaluate(() => (window as any).__cryptoTest.hold());
       await page.clock.runFor(60_000);
       await page.getByRole("status").filter({hasText: /^Updating rate…$/}).waitFor();
-      if (action === "cancel") await page.getByRole("button", {name: "Cancel deposit", exact: true}).click();
+      if (action === "cancel") await page.getByRole("button", {name: "New payment", exact: true}).click();
       else if (action === "switch") await page.evaluate(() => window.dispatchEvent(new Event("axiom-test-switch-account")));
       else {
         await page.evaluate(() => (window as any).__cryptoTest.progress("account-a", "confirming"));
@@ -337,5 +350,51 @@ test("deposit dialog and icon picker fit a small window and dark theme", async (
     assert.match(await networkWarning.innerText(), /Network: Ethereum only\./);
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
     assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+
+test("six-hour invoices retain their deadline on rate refresh and cancellation frees one of five slots", async () => {
+  const {page, errors} = await open();
+  try {
+    const time = new Date("2026-10-12T07:00:00Z");
+    await page.clock.install({time}); await page.clock.pauseAt(time);
+    await page.evaluate(() => (window as any).__cryptoTest.enableInvoices());
+    await page.getByRole("button", {name: "Other crypto", exact: true}).click();
+    await page.getByRole("combobox", {name: "Crypto", exact: true}).click();
+    await page.getByRole("option", {name: "Bitcoin", exact: true}).click();
+    await page.getByRole("button", {name: "Create payment", exact: true}).click();
+    const invoiceTimer = page.getByRole("timer", {name: "Time left to pay invoice"});
+    assert.equal(await invoiceTimer.innerText(), "6:00:00");
+    const original = await page.evaluate(() => (window as any).__cryptoTest.records["account-a"][0]);
+    await page.clock.runFor(60_000);
+    await page.getByText("Rate updated. Use this amount and address.", {exact: true}).waitFor();
+    assert.equal(await invoiceTimer.innerText(), "5:59:00");
+    const refreshed = await page.evaluate(() => (window as any).__cryptoTest.records["account-a"][0]);
+    assert.equal(refreshed.id, original.id); assert.equal(refreshed.invoice_expires_at, original.invoice_expires_at);
+    assert.notEqual(refreshed.quote_id, original.quote_id);
+    for (let index = 1; index < 5; index++) {
+      await page.getByRole("button", {name: "New payment", exact: true}).click();
+      await page.getByRole("button", {name: "Create payment", exact: true}).click();
+      await page.getByRole("status").filter({hasText: /^Awaiting payment$/}).waitFor();
+    }
+    await page.getByRole("button", {name: "New payment", exact: true}).click();
+    assert.equal(await page.getByRole("button", {name: "Create payment", exact: true}).isDisabled(), true);
+    assert.match(await page.getByRole("dialog").innerText(), /5 of 5 active invoices/);
+    await page.locator("summary").filter({hasText: "Recent payments"}).click();
+    await page.getByRole("button", {name: /\$25\.00 · BTC/}).first().click();
+    await page.getByRole("button", {name: "Cancel invoice", exact: true}).click();
+    await page.getByRole("status").filter({hasText: /^Cancelled$/}).waitFor();
+    assert.match(await page.getByRole("dialog").innerText(), /4 of 5 active invoices/);
+    assert.equal(await page.getByRole("dialog").getByRole("button", {name: "Copy address"}).count(), 0);
+    await page.getByRole("button", {name: "Check payment status", exact: true}).click();
+    await page.getByRole("button", {name: "New payment", exact: true}).click();
+    assert.equal(await page.getByRole("button", {name: "Create payment", exact: true}).isDisabled(), false);
+    await page.getByRole("button", {name: "Create payment", exact: true}).click();
+    await page.getByRole("status").filter({hasText: /^Awaiting payment$/}).waitFor();
+    assert.match(await page.getByRole("dialog").innerText(), /5 of 5 active invoices/);
+    assert.equal(await page.evaluate(() => (window as any).__cryptoTest.records["account-a"].length), 6);
+    assert.deepEqual(errors, []);
+    await page.screenshot({path: "/tmp/axiom-desktop-six-hour-invoice.png", fullPage: true});
   } finally { await page.close(); }
 });
