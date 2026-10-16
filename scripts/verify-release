@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+archive=${1:?usage: scripts/verify-release ARCHIVE [SIGNATURE]}
+signature=${2:-}
+archive_dir=$(cd "$(dirname "$archive")" && pwd)
+archive_name=$(basename "$archive")
+checksum="$archive.sha256"
+
+if [[ ! -f $archive || ! -f $checksum ]]; then
+  echo "archive and adjacent .sha256 file are required" >&2
+  exit 1
+fi
+(
+  cd "$archive_dir"
+  sha256sum -c "$archive_name.sha256"
+)
+if [[ -n $signature ]]; then
+  gpg --batch --verify "$signature" "$archive"
+fi
+
+entries=$(tar -tzf "$archive")
+if [[ -z $entries ]] || grep -Eq '(^/|(^|/)\.\.(/|$))' <<<"$entries"; then
+  echo "archive contains an invalid path" >&2
+  exit 1
+fi
+top_levels=$(cut -d/ -f1 <<<"$entries" | sort -u | wc -l)
+if [[ $top_levels -ne 1 ]]; then
+  echo "archive must contain exactly one top-level directory" >&2
+  exit 1
+fi
+
+inspection=$(mktemp -d "${TMPDIR:-/tmp}/axiomcli-verify.XXXXXX")
+trap 'rm -rf -- "$inspection"' EXIT
+tar -xzf "$archive" -C "$inspection"
+package_root="$inspection/$(head -n1 <<<"$entries" | cut -d/ -f1)"
+for required in \
+  bin/axiomcli \
+  bin/axiom-proxy \
+  share/doc/axiomcli/LICENSE \
+  share/doc/axiomcli/THIRD_PARTY.md \
+  share/doc/axiomcli/THIRD_PARTY-LICENSES.tsv \
+  share/doc/axiomcli/third-party/MANIFEST.tsv \
+  share/doc/axiomcli/BUILD-METADATA; do
+  if [[ ! -f $package_root/$required ]]; then
+    echo "release artifact is missing $required" >&2
+    exit 1
+  fi
+done
+if [[ $(find "$package_root/share/doc/axiomcli/third-party" -mindepth 2 -type f | wc -l) -eq 0 ]]; then
+  echo "release artifact contains no dependency license or notice files" >&2
+  exit 1
+fi
+if grep -aREq 'axm_[A-Za-z0-9_-]{20,}' "$package_root"; then
+  echo "release artifact contains a value shaped like an Axiom credential" >&2
+  exit 1
+fi
+"$package_root/bin/axiomcli" --version >/dev/null
+"$package_root/bin/axiom-proxy" --version >/dev/null
+echo "verified $archive_name"
