@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+volume=${3:-/}
+target=/Applications/Axiom.app/Contents/Resources/bin/axiomcli
+test -x "$volume/$target"
+mkdir -p "$volume/usr/local/bin"
+ln -sfn "$target" "$volume/usr/local/bin/axiomcli"
+echo "Axiom and axiomcli are installed. Open a terminal and run axiomcli."
