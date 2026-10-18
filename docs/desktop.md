@@ -112,6 +112,13 @@ queue delivery. Restored or uncertain submissions require review; disconnect,
 restart or account changes never justify silently resending them. A fresh prompt
 after Stop can start normally when no older queued message needs review.
 
+Follow-up messages include the available text from an incomplete reply, along
+with any completed tool results. The generator receives a notice that the earlier
+turn did not finish; retaining this context does not mark the reply verified or
+assume unfinished actions succeeded. Partial reasoning is retained and sent only
+when the selected model supports reasoning replay. This applies after Stop,
+stream failures and runtime limits, including when the conversation is reopened.
+
 ## Images and files
 
 Use Attach, paste an image, or drop files anywhere in the main chat panel,

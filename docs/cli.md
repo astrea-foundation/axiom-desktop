@@ -128,6 +128,11 @@ Paste targets the visible input: picker filters, transcript search, question
 answers, the masked gift-code field or the composer. Non-editable overlays never change a hidden draft.
 Automatic and explicit compaction use tool-free attested E2EE inference and
 persist successor context for resume. Failed or cancelled work remains incomplete.
+The next prompt retains available partial reply text and completed tool results,
+with a notice that the earlier turn did not finish. Partial reasoning follows
+the selected model's reasoning replay policy. Stream failures and runtime limits
+preserve this context as well as normal completion; retained output does not gain
+verification or imply unfinished actions succeeded.
 
 The footer's context percentage uses the last completed conversation request's
 reported input/output tokens and that report's model capacity. `/usage` shows the
