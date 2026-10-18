@@ -1,0 +1,11 @@
+export type ReleasePlatform = 'mac' | 'win' | 'linux';
+export type ReleaseArch = 'x64' | 'arm64';
+export type PackageFormat = 'pkg' | 'dmg' | 'zip' | 'exe' | 'AppImage' | 'deb' | 'pacman';
+export type ReleaseDownload = { name: string; platform: ReleasePlatform; arch: ReleaseArch; format: PackageFormat; bytes: number; sha256: string; url: string };
+export type Release = { schemaVersion: 1; version: string; signing: 'signed' | 'unsigned'; downloads: ReleaseDownload[] };
+export const RELEASE_API: string;
+export const VERSION_PATTERN: RegExp;
+export const FORMATS: Record<ReleasePlatform, PackageFormat[]>;
+export function compareVersions(a: string, b: string): number;
+export function artifactFormat(name: string): PackageFormat | null;
+export function parseRelease(value: unknown): Release;

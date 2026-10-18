@@ -1,0 +1,27 @@
+use_default_settings:
+  engines:
+    keep_only:
+      - axiomcli disabled fixture
+
+general:
+  debug: false
+  instance_name: "AxiomCLI Disabled Search Fixture"
+  enable_metrics: false
+
+search:
+  safe_search: 1
+  autocomplete: ""
+  formats: [html, json]
+
+server:
+  bind_address: "127.0.0.1"
+  secret_key: "axiomcli-development-disabled-fixture"
+  limiter: false
+  public_instance: false
+
+engines:
+  - name: axiomcli disabled fixture
+    engine: dummy
+    shortcut: axdisabled
+    disabled: true
+
