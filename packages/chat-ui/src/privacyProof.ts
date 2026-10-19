@@ -82,7 +82,7 @@ export function proofGroups(evidence: SecurityEvidence) {
   }));
 }
 
-type ReplyProofState = "none" | "pending" | "verified" | "failed" | "incomplete" | "unavailable";
+type ReplyProofState = "none" | "not_received" | "pending" | "verified" | "failed" | "incomplete" | "unavailable";
 type ReplyProof = { state: ReplyProofState; label: string; verified: boolean; detail: string };
 
 /** Response authentication comes from the durable reply, never the cached report or clock. */
@@ -99,6 +99,18 @@ export function replyProof(session: ClientSessionState): ReplyProof {
   while (start >= 0 && session.timeline[start]?.kind !== "user") start--;
   const turn = last?.turnId ? session.timeline.filter((item) => item.turnId === last.turnId) : session.timeline.slice(start + 1);
   const parts = turn.filter((item) => ["assistant", "reasoning"].includes(item.kind));
+  // Only authoritative admission failures can establish that no reply arrived.
+  // A first-ciphertext authentication failure also has no rendered text, so
+  // neither absence of text nor the human-readable error is sufficient. Every
+  // conversation request for this exact turn must agree; mixed, legacy and
+  // unknown failures retain the conservative failed-verification presentation.
+  const requests = last?.turnId ? session.requestUsage?.filter((request) => request.turnId === last.turnId
+    && request.purpose === "conversation") ?? [] : [];
+  const rateLimited = requests.length > 0 && requests.every((request) => request.state === "failed"
+    && request.errorCode === "RATE_LIMITED" && request.responseVerified !== true);
+  if (!parts.length && rateLimited && session.security?.state !== "failed" && turn.some((item) => item.kind === "error")) {
+    return { state: "not_received", label: "No reply received", verified: false, detail: "The request ended before a reply was received. Check the request error before trying again; no reply has been verified." };
+  }
   if (turn.some((item) => item.kind === "error") || parts.some((item) => item.status === "failed")) return { state: "failed", label: "Failed", verified: false, detail: "No verified completion is recorded for this reply. Its text alone does not prove successful authentication." };
   if (!parts.length) return { state: "none", label: "No reply yet", verified: false, detail: "Each reply must be authenticated to its request and verified environment. A TEE check alone does not verify a reply." };
   const verified = parts.every((item) => item.terminalVerified === true && item.status === "completed");
@@ -123,6 +135,7 @@ export function proofBadge(session: ClientSessionState, reportState: ProofState)
       case "failed": return { label: "Reply check failed", tone: "danger" };
       case "incomplete": return { label: "Reply incomplete", tone: "warning" };
       case "unavailable": return { label: "Reply unavailable", tone: "muted" };
+      case "not_received": return { label: "No reply received", tone: "warning" };
       case "none": break;
     }
   }
