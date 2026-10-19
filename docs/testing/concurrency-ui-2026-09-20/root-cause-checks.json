@@ -1,0 +1,83 @@
+{
+  "at": "2026-09-20T11:36:25.369542+00:00",
+  "nativeRevision": "7756c4f",
+  "backendRevision": "bff88ad",
+  "scope": "Offline control-flow and real-renderer checks with synthetic data. No provider inference or provider HTTP; temporary DOM styles are interventions, not committed product fixes.",
+  "compaction": {
+    "before_estimated_tokens": 98627,
+    "before_messages": 30,
+    "before_serialized_bytes": 398295,
+    "budget_bytes": 250674,
+    "budget_in_summary_input": false,
+    "marker_in_summary_input": false,
+    "notice": "[preprocessing: omitted 26 oldest message(s); truncated 0 older tool result(s)]",
+    "retained_messages": 4,
+    "retained_prefixes": [
+      "Round 12: Synthetic archive 12. These are disposable sample ",
+      "Round 13: Synthetic archive 13. These are disposable sample ",
+      "Round 14: Synthetic archive 14. These are disposable sample ",
+      "Round 15: Synthetic archive 15. These are disposable sample "
+    ],
+    "retained_roles": [
+      "User",
+      "User",
+      "User",
+      "User"
+    ],
+    "source": "functions extracted unchanged from apps/axiomcli/src/agent.rs; actual axiom-inference message types",
+    "transcript_bytes": 241990,
+    "venue_in_summary_input": false
+  },
+  "compactionSourceSha256": "ce99394f1a9838b3bb9019b48ab8f18be53ff6889f34d647559642ce6aae7355",
+  "nearLifecycle": {
+    "producer_alive_after_subscriber_close": true,
+    "connection_locked_after_close": true,
+    "followup_blocked": true,
+    "connection_users": 2,
+    "followup_after_explicit_producer_cancel": "acquired",
+    "connection_users_after_cleanup": 0
+  },
+  "renderer": {
+    "draftBefore": "Draft survival canary",
+    "draftAfterSameThreadClick": "",
+    "codeBaseline": {
+      "width": 29,
+      "client": 27,
+      "scroll": 286,
+      "contain": "inline-size"
+    },
+    "codeWithoutContainment": {
+      "width": 287.921875,
+      "client": 286,
+      "scroll": 286,
+      "contain": "none"
+    },
+    "codeWithDefiniteParentWidth": {
+      "width": 748,
+      "client": 746,
+      "scroll": 746,
+      "contain": "inline-size"
+    },
+    "list": {
+      "gutter": 22.5,
+      "markerApproxWidth": 34,
+      "font": "15px / 28px \"DM Sans Variable\", \"DM Sans\", system-ui, -apple-system, \"Segoe UI\", Roboto, sans-serif",
+      "position": "outside",
+      "proseOverflow": "hidden"
+    },
+    "errors": []
+  },
+  "existingRendererTests": {
+    "passed": 6,
+    "command": "pnpm exec tsx --test --test-name-pattern='leaving thread preparation|sidebar orders folders|new-chat drafts clear' tests/browser/deletion-focus.test.ts",
+    "output": "✔ leaving thread preparation for new cancels the send and ignores late creation (1882.87949ms)\n✔ leaving thread preparation for existing cancels the send and ignores late creation (520.936231ms)\n✔ leaving thread preparation for account cancels the send and ignores late creation (499.458989ms)\n✔ leaving thread preparation for runtime cancels the send and ignores late creation (497.742094ms)\n✔ sidebar orders folders and their threads by messages, and reorders immediately on live output (468.33622ms)\n✔ new-chat drafts clear on account switch and sign-out (473.405121ms)\nℹ tests 6\nℹ suites 0\nℹ pass 6\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 5317.438072\n"
+  },
+  "existingRelayTests": {
+    "passed": 2,
+    "runner": "Imported test_relay from backend/tests with backend uv environment; called the two fixture-free functions directly, without DB setup or provider calls.",
+    "names": [
+      "test_detached_relay_subscriber_does_not_cancel_or_block_the_producer",
+      "test_nonstream_relay_waiter_cancellation_does_not_cancel_tracked_execution"
+    ]
+  }
+}
