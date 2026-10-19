@@ -230,8 +230,13 @@ export class AxiomAcpClient extends EventEmitter {
     const meta = result.agentCapabilities._meta?.axiom as {
       protocolVersion?: string;
       features?: Record<string, number>;
+      runtimeInstanceId?: unknown;
     } | undefined;
     validateDesktopExtension(meta);
+    // The first account/billing/preferences event can arrive only after the
+    // user starts a chat. Publish the handshake identity first so that event
+    // cannot masquerade as a restart and invalidate an in-flight submission.
+    this.state.initializeRuntime(meta?.runtimeInstanceId);
     this.supportsMessageRevision = (meta?.features?.messageRevision ?? 0) >= 1;
     this.supportsMcp = (meta?.features?.desktopMcp ?? 0) >= 1;
     this.supportsCryptoInvoices = (meta?.features?.billing ?? 0) >= 5;

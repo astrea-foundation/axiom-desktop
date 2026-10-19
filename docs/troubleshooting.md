@@ -105,6 +105,13 @@ workspace must still exist and match any `--cwd`, and the active account must ow
 the session. Signing out closes the account store; switching accounts does not
 expose another account's threads. Desktop drafts and account data persist locally.
 
+Desktop holds pending messages after a reconnect rather than automatically
+resending them. On the welcome screen, **Review draft** moves a saved first
+message back into an empty composer; review it and press Send. In an existing
+thread, check the transcript before using **Send now** when delivery is uncertain.
+The composer's lock icon indicates encrypted model conversations and does not
+disable typing.
+
 Incomplete turns are marked interrupted after restart; tools are not replayed.
 Accounting reconciliation cannot turn incomplete text into a verified response.
 Export with `sessions export` while the database can still be read. Unknown,

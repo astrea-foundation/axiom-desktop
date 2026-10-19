@@ -60,6 +60,11 @@ thread creation and respects reduced motion.
 
 Queue hosts may provide `persistQueue` to require an encrypted durable commit
 before dispatch. Native hosts retain their existing synchronous admission timing.
+Only an active preparation may bind a thread or become ready for dispatch.
+Restoring an outbox after an account/connection change converts preparations to
+queued drafts; late callbacks cannot advance them, even if the same account and
+runtime return. Reviewing such a draft transfers it to the composer and still
+requires an explicit Send.
 
 Run the workspace typecheck, Desktop unit tests and affected browser suites.
 Pack committed packages with `pnpm --filter @axiom/chat-core pack` and
