@@ -4,6 +4,9 @@ yanked = "deny"
 ignore = [
   { id = "RUSTSEC-2025-0141", reason = "bincode 1 is unmaintained but is required transitively by syntect 5.3 embedded syntax/theme dumps; remove when syntect ships a replacement" },
   { id = "RUSTSEC-2023-0071", reason = "rsa is pulled in by dcap-qvl only to verify public attestation certificate signatures; Axiom never performs network-observable RSA private-key operations, which are the advisory's affected surface" },
+  { id = "RUSTSEC-2026-0370", reason = "Informational deprecation after zvariant merged into zbus 6; the published keyring Secret Service backend still requires zbus 5. Remove when that backend supports zbus 6; see docs/validation.md" },
+  { id = "RUSTSEC-2026-0371", reason = "Informational deprecation after zbus_names merged into zbus 6; the published keyring Secret Service backend still requires zbus 5. Remove when that backend supports zbus 6; see docs/validation.md" },
+  { id = "RUSTSEC-2026-0372", reason = "Informational deprecation after zvariant_derive merged into zbus 6; the published keyring Secret Service backend still requires zbus 5. Remove when that backend supports zbus 6; see docs/validation.md" },
 ]
 
 [licenses]
