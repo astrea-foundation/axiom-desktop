@@ -322,6 +322,17 @@ pub(crate) fn error_for_status_body(status: StatusCode, body: &[u8]) -> SecureCl
         .and_then(|envelope| envelope.detail.as_ref())
         .and_then(|detail| detail.code.as_deref());
     match code {
+        Some("concurrent_stream_limit") if status == StatusCode::TOO_MANY_REQUESTS => {
+            // This allowlisted admission code identifies an account concurrency
+            // limit, not a failed response-authentication check. Keep the advice
+            // local: remote diagnostics and the advertised limit are untrusted
+            // display data. A retryable error never authorizes replaying an
+            // inference request whose execution outcome could be ambiguous.
+            SecureClientError::new(
+                axiom_inference::ProviderFailureKind::RateLimited,
+                "Too many requests are already active for this account. Wait for a reply or stop a running request, then try again.",
+            )
+        }
         Some("trial_capacity") if status == StatusCode::SERVICE_UNAVAILABLE => {
             let retry_at = public
                 .as_ref()
@@ -409,6 +420,55 @@ struct PublicErrorDetail {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn concurrent_rate_limit_gives_local_advice_without_remote_diagnostics() {
+        let error = error_for_status_body(
+            StatusCode::TOO_MANY_REQUESTS,
+            br#"{"detail":{"code":"concurrent_stream_limit","limit":5,"message":"private upstream secret"}}"#,
+        );
+        assert_eq!(
+            error.kind(),
+            axiom_inference::ProviderFailureKind::RateLimited
+        );
+        assert_eq!(error.code(), crate::SecureErrorCode::RateLimited);
+        assert_eq!(
+            error.safe_detail(),
+            "Too many requests are already active for this account. Wait for a reply or stop a running request, then try again."
+        );
+        assert!(error.retryable());
+        assert!(!error.requires_reattest_and_reencrypt());
+        assert_eq!(error.retry_at(), None);
+    }
+
+    #[test]
+    fn concurrency_advice_requires_the_expected_status_and_code() {
+        let concurrent = br#"{"detail":{"code":"concurrent_stream_limit","limit":5}}"#;
+        for status in [
+            StatusCode::UNAUTHORIZED,
+            StatusCode::PAYMENT_REQUIRED,
+            StatusCode::BAD_GATEWAY,
+        ] {
+            let error = error_for_status_body(status, concurrent);
+            assert_eq!(error.safe_detail(), error_for_status(status).safe_detail());
+        }
+        // Other admission failures, unknown codes, and malformed envelopes must
+        // not be presented as evidence of an account concurrency problem.
+        for body in [
+            br#"{"detail":"private upstream secret"}"#.as_slice(),
+            br#"{"detail":{"code":"unknown","message":"private upstream secret"}}"#.as_slice(),
+            br#"{"detail":{"code":7}}"#.as_slice(),
+            br"not json".as_slice(),
+        ] {
+            let error = error_for_status_body(StatusCode::TOO_MANY_REQUESTS, body);
+            assert_eq!(
+                error.safe_detail(),
+                error_for_status(StatusCode::TOO_MANY_REQUESTS).safe_detail()
+            );
+            assert!(!error.safe_detail().contains("secret"));
+            assert!(!error.requires_reattest_and_reencrypt());
+        }
+    }
 
     #[test]
     fn trial_capacity_has_typed_retry_time_without_remote_diagnostics() {

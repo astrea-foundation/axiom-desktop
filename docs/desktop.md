@@ -40,6 +40,14 @@ Open the account menu and choose **Balance** to view credit and top up with main
 Zcash. **5% off** means $9.50 of Zcash buys $10 of credit, using the rate at
 confirmation. The reusable address stays available.
 
+Balance refreshes reuse a ready address instead of provisioning it again. A
+temporary deposit-service failure leaves validated credit visible while an
+unfinished address remains pending. If the balance read itself fails, the screen
+shows **Balance unavailable** and the error instead of loading indefinitely or
+assuming the credit is zero. **Refresh balance** retries immediately. Automatic
+monitoring backs off after failures, up to one refresh per minute, and stops when
+you leave the screen or disconnect.
+
 Choose **Other crypto** to open the deposit window. Pick a coin from the dropdown
 with its icon, enter the USD credit amount and create a payment. Send the exact
 crypto amount on the displayed network, including the memo if shown, before the
@@ -225,6 +233,9 @@ shield while streaming, **Reply verified** with a checkmark only after native au
 or **Reply incomplete** / **Reply check failed** when completion is absent
 or fails. A newer turn cannot inherit an older reply's verification. Expiry or
 renewal of the cached attestation report does not change a reply's verification.
+An authoritative rate-limit rejection before any reply shows **No reply received**.
+Unknown errors, failed TEE checks and response-authentication failures retain the
+failure warning; this label never marks a request verified or resends it.
 Before any reply, the badge summarizes the report instead; an expired report
 shows **Report needs refresh**.
 

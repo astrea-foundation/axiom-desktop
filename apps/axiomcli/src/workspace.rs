@@ -1745,11 +1745,23 @@ fn sanitize_terminal(input: &str) -> String {
     output
 }
 
+#[cfg_attr(
+    all(not(target_os = "linux"), not(windows)),
+    allow(
+        clippy::unnecessary_wraps,
+        reason = "Linux and Windows launchers are fallible; retain their shared Result contract"
+    )
+)]
 fn sandboxed_command(
     workspace: &Workspace,
     cwd: &Path,
     request: &ProcessRequest,
 ) -> Result<Command> {
+    // Only the Linux launcher uses the workspace to construct its isolation
+    // policy. Other platforms build their command from the cwd and request.
+    #[cfg(not(target_os = "linux"))]
+    let _ = workspace;
+
     #[cfg(target_os = "linux")]
     {
         let home = std::env::var_os("HOME").map(PathBuf::from);

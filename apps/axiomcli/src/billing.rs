@@ -16,6 +16,10 @@ use tokio_util::sync::CancellationToken;
 use crate::{AxiomError, Result, auth::AuthManager};
 
 const MAX_BILLING_RESPONSE_BYTES: usize = 64 * 1024;
+// Deposit provisioning/receipt display is optional once the ledger is loaded.
+// Bound the whole operation, including response decoding, independently of the
+// much longer inference timeout. A shorter configured HTTP deadline still wins.
+const OPTIONAL_DEPOSIT_TIMEOUT: Duration = Duration::from_secs(5);
 // ACP's generated TypeScript contract represents integer fields as IEEE-754
 // numbers. Reject projections that could lose precision at that boundary.
 const MAX_ACP_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
@@ -162,36 +166,82 @@ impl BillingClient {
             decode_bounded_json::<BillingStatus>(response, cancellation, "billing-status").await?;
         validate_billing_status(&status)?;
         self.ensure_account_current(&lease)?;
-        if status.payment_account.is_some() {
-            // Provision once per authenticated app account. The backend owns
-            // durable operation keys; repeats poll the corresponding address GET.
-            // Never send payment-service credentials to the native client.
-            let response = send_with_cancellation(
-                self.client
-                    .post(self.endpoint("/api/v1/billing/deposit-address"))
-                    .bearer_auth(lease.expose_for_authorization())
-                    .json(&serde_json::json!({})),
-                cancellation,
-                "deposit address",
+        if status.payment_account.as_ref().is_some_and(|account| {
+            account.state != "ready"
+                || account
+                    .deposits
+                    .iter()
+                    .any(|deposit| deposit.state == "confirming")
+        }) {
+            // Idle ready addresses already arrive in the read-only projection.
+            // Pending receipts still need this endpoint for per-block display
+            // progress: backend events describe transitions, not every block.
+            // Lost/timed-out provisioning reuses the backend's durable keys.
+            let payment = match tokio::time::timeout(
+                OPTIONAL_DEPOSIT_TIMEOUT,
+                self.provision_deposit_address(&lease, cancellation),
             )
-            .await?;
-            ensure_success(response.status(), "deposit address")?;
-            status.payment_account = Some(
-                decode_bounded_json::<axiom_acp_extension::PaymentAccount>(
-                    response,
-                    cancellation,
-                    "deposit-address",
-                )
-                .await?,
-            );
-            validate_billing_status(&status)?;
-            self.ensure_account_current(&lease)?;
+            .await
+            {
+                Ok(result) => result?,
+                Err(_) => None,
+            };
+            if let Some(payment) = payment {
+                status.payment_account = Some(payment);
+                validate_billing_status(&status)?;
+            }
         }
         // Expired/invalid indicative data must not hide an otherwise valid balance.
         status.zec_usd_quote = status
             .zec_usd_quote
             .filter(|quote| valid_current_quote(quote, chrono::Utc::now()));
+        // Optional deposit work never extends the lifetime or account scope of
+        // the financial projection obtained above. A cancellation or account
+        // change must win even when provisioning was temporarily unavailable.
+        if cancellation.is_cancelled() {
+            return Err(AxiomError::Cancelled);
+        }
+        self.ensure_account_current(&lease)?;
         Ok(status)
+    }
+
+    /// A deposit-service outage must not discard an authenticated, validated
+    /// ledger balance. On a transient failure retain the original validated
+    /// deposit state so the caller can safely retry; never invent an address,
+    /// credit, or successful provisioning state. Invalid responses and access
+    /// rejections still fail closed rather than being treated as an outage.
+    async fn provision_deposit_address(
+        &self,
+        lease: &crate::auth::AccountAccessTokenLease,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<axiom_acp_extension::PaymentAccount>> {
+        let response = match send_with_cancellation(
+            self.client
+                .post(self.endpoint("/api/v1/billing/deposit-address"))
+                .bearer_auth(lease.expose_for_authorization())
+                .json(&serde_json::json!({})),
+            cancellation,
+            "deposit address",
+        )
+        .await
+        {
+            // This helper's Provider error comes only from the transport.
+            // Remote bodies and credentials are not logged or surfaced here.
+            Err(AxiomError::Provider(_)) => return Ok(None),
+            response => response?,
+        };
+        if matches!(response.status().as_u16(), 408 | 425 | 429 | 500..=599) {
+            return Ok(None);
+        }
+        ensure_success(response.status(), "deposit address")?;
+        let payment = decode_bounded_json::<axiom_acp_extension::PaymentAccount>(
+            response,
+            cancellation,
+            "deposit-address",
+        )
+        .await?;
+        validate_payment_account(&payment)?;
+        Ok(Some(payment))
     }
 
     async fn crypto_request<T: serde::de::DeserializeOwned>(
@@ -1024,6 +1074,423 @@ fn validate_payment_account(payment: &axiom_acp_extension::PaymentAccount) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Exercise the real native-session and HTTP path with an isolated
+    /// in-memory credential store. No real account, Keychain entry, payment
+    /// service, or provider is contacted by these fixtures.
+    #[cfg(debug_assertions)]
+    mod status_http {
+        use super::*;
+        use std::sync::{
+            Arc, RwLock,
+            atomic::{AtomicBool, AtomicUsize, Ordering},
+        };
+
+        use axum::{
+            Json, Router,
+            extract::State,
+            http::{HeaderMap, StatusCode as HttpStatus},
+            response::{IntoResponse as _, Response as HttpResponse},
+            routing::{delete, get, post},
+        };
+        use serde_json::{Value, json};
+        use tokio::sync::Notify;
+
+        struct ServerState {
+            billing: RwLock<Value>,
+            payment: RwLock<Value>,
+            provision_status: AtomicUsize,
+            provision_calls: AtomicUsize,
+            block_provision: AtomicBool,
+            provision_started: Notify,
+            provision_release: Notify,
+        }
+
+        struct Fixture {
+            client: BillingClient,
+            state: Arc<ServerState>,
+            server: tokio::task::JoinHandle<()>,
+            // Keep the synthetic credential-lock paths alive until all HTTP
+            // operations end. The actual user's platform paths are never used.
+            _directory: tempfile::TempDir,
+        }
+
+        impl Drop for Fixture {
+            fn drop(&mut self) {
+                self.server.abort();
+            }
+        }
+
+        fn payment(ready: bool) -> Value {
+            let address = format!("u1{}", "a".repeat(40));
+            json!({
+                "network": "mainnet", "asset": "ZEC", "conversion_status": "none",
+                "valuation_enabled": true,
+                "state": if ready { "ready" } else { "unprovisioned" },
+                "address": if ready { Some(address.clone()) } else { None },
+                "payment_uri": if ready { Some(format!("zcash:{address}")) } else { None },
+                "monitoring_status": if ready { "ready" } else { "unprovisioned" },
+                "required_confirmations": null, "confirmed_zatoshis": "0",
+                "confirming_zatoshis": "0", "review_required": false, "deposits": []
+            })
+        }
+
+        fn check_native_bearer(headers: &HeaderMap) {
+            assert_eq!(
+                headers
+                    .get("authorization")
+                    .and_then(|value| value.to_str().ok()),
+                Some("Bearer access-token-with-enough-entropy-123456789")
+            );
+        }
+
+        async fn create_login(Json(request): Json<Value>) -> Json<Value> {
+            // This URL is only validated as login metadata; the test never
+            // launches a browser or sends a request to the auth website.
+            let origin = std::env::var("AXIOM_AUTH_URL")
+                .unwrap_or_else(|_| "https://auth.axiom.stream".into());
+            Json(json!({
+                "id": "billing-test-authorization",
+                "device_code": "device-code-with-enough-entropy-123456789",
+                "user_code": "AXIOM-TEST",
+                "state": "billing-state-with-enough-entropy-123456789",
+                "authorization_url": format!("{}/native/authorize?authorization_id=billing-test-authorization&state=billing-state-with-enough-entropy-123456789", origin.trim_end_matches('/')),
+                "callback_uri": request["callback_uri"],
+                "expires_at": (chrono::Utc::now() + chrono::Duration::minutes(5)).to_rfc3339(),
+                "interval_seconds": 1
+            }))
+        }
+
+        async fn exchange_login() -> Json<Value> {
+            let expiry = (chrono::Utc::now() + chrono::Duration::days(1)).to_rfc3339();
+            Json(json!({
+                "status": "complete", "token_type": "bearer",
+                "access_token": "access-token-with-enough-entropy-123456789",
+                "access_expires_at": expiry,
+                "refresh_token": "refresh-token-with-enough-entropy-123456789",
+                "refresh_expires_at": expiry,
+                "account": {"id": "billing-test-account", "display_name": null,
+                    "avatar_url": null, "verified_email": null, "linked_methods": []},
+                "session": {"id": "billing-test-session", "expires_at": expiry}
+            }))
+        }
+
+        async fn get_status(
+            State(state): State<Arc<ServerState>>,
+            headers: HeaderMap,
+        ) -> Json<Value> {
+            check_native_bearer(&headers);
+            Json(state.billing.read().expect("billing fixture").clone())
+        }
+
+        async fn provision(
+            State(state): State<Arc<ServerState>>,
+            headers: HeaderMap,
+            Json(request): Json<Value>,
+        ) -> HttpResponse {
+            check_native_bearer(&headers);
+            assert_eq!(request, json!({}));
+            state.provision_calls.fetch_add(1, Ordering::AcqRel);
+            if state.block_provision.load(Ordering::Acquire) {
+                state.provision_started.notify_one();
+                state.provision_release.notified().await;
+            }
+            let status = HttpStatus::from_u16(
+                u16::try_from(state.provision_status.load(Ordering::Acquire))
+                    .expect("fixture HTTP status range"),
+            )
+            .expect("fixture HTTP status");
+            if !status.is_success() {
+                return (status, "remote error body must not be reflected").into_response();
+            }
+            (
+                status,
+                Json(state.payment.read().expect("payment fixture").clone()),
+            )
+                .into_response()
+        }
+
+        async fn fixture(ready: bool) -> Fixture {
+            let state = Arc::new(ServerState {
+                billing: RwLock::new(json!({
+                    "posted_microusd": 3_500_000, "available_microusd": 3_500_000,
+                    "ledger_sequence": 2, "trial_microusd": 1_000_000,
+                    "paid_microusd": 2_500_000, "payment_review_required": false,
+                    "currency": "microUSD", "payment_account": payment(ready),
+                    "zec_usd_quote": null, "trial_capacity": null
+                })),
+                payment: RwLock::new(payment(true)),
+                provision_status: AtomicUsize::new(200),
+                provision_calls: AtomicUsize::new(0),
+                block_provision: AtomicBool::new(false),
+                provision_started: Notify::new(),
+                provision_release: Notify::new(),
+            });
+            let router = Router::new()
+                .route("/api/v1/auth/native/authorizations", post(create_login))
+                .route("/api/v1/auth/native/exchange", post(exchange_login))
+                .route(
+                    "/api/v1/auth/session",
+                    delete(|| async { HttpStatus::NO_CONTENT }),
+                )
+                .route("/api/v1/billing/status", get(get_status))
+                .route("/api/v1/billing/deposit-address", post(provision))
+                .with_state(Arc::clone(&state));
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("listener");
+            let origin = format!("http://{}", listener.local_addr().expect("address"));
+            let server = tokio::spawn(async move {
+                axum::serve(listener, router)
+                    .await
+                    .expect("billing fixture server");
+            });
+            let directory = tempfile::tempdir().expect("isolated native account directory");
+            let paths = crate::paths::AxiomPaths::from_roots(
+                directory.path().join("config"),
+                directory.path().join("data"),
+            );
+            let auth = AuthManager::new_ephemeral_test(&origin, Duration::from_secs(2), &paths)
+                .expect("ephemeral auth");
+            auth.start_native_login(None)
+                .await
+                .expect("native login")
+                .complete(CancellationToken::new())
+                .await
+                .expect("native session");
+            let client =
+                BillingClient::new(&origin, auth, Duration::from_secs(2)).expect("billing client");
+            Fixture {
+                client,
+                state,
+                server,
+                _directory: directory,
+            }
+        }
+
+        #[tokio::test]
+        async fn ready_balances_refresh_without_deposit_provisioning() {
+            let fixture = fixture(true).await;
+            // A failing deposit service must be irrelevant once its validated
+            // ready address is already included in the read-only projection.
+            fixture.state.provision_status.store(503, Ordering::Release);
+            for _ in 0..2 {
+                let status = fixture
+                    .client
+                    .status(&CancellationToken::new())
+                    .await
+                    .expect("balance");
+                assert_eq!(status.available_microusd, 3_500_000);
+                assert_eq!(
+                    status.payment_account.expect("payment account").state,
+                    "ready"
+                );
+            }
+            assert_eq!(fixture.state.provision_calls.load(Ordering::Acquire), 0);
+        }
+
+        #[tokio::test]
+        async fn transient_deposit_failures_preserve_validated_balance_and_pending_state() {
+            let fixture = fixture(false).await;
+            for status_code in [408, 425, 429, 500, 503] {
+                fixture
+                    .state
+                    .provision_status
+                    .store(status_code, Ordering::Release);
+                let status = fixture
+                    .client
+                    .status(&CancellationToken::new())
+                    .await
+                    .expect("balance survives deposit outage");
+                assert_eq!(status.available_microusd, 3_500_000);
+                let payment = status.payment_account.expect("pending account");
+                assert_eq!(payment.state, "unprovisioned");
+                assert_eq!(payment.address, None);
+                assert_eq!(payment.payment_uri, None);
+            }
+            assert_eq!(fixture.state.provision_calls.load(Ordering::Acquire), 5);
+        }
+
+        #[tokio::test]
+        async fn ready_accounts_still_refresh_confirming_receipts_without_hiding_credit() {
+            let fixture = fixture(true).await;
+            let mut pending = payment(true);
+            pending["confirming_zatoshis"] = json!("1000");
+            pending["deposits"] = json!([{
+                "id": "20000000-0000-4000-8000-000000000001", "amount_zatoshis": "1000",
+                "state": "confirming", "object_version": "1", "confirmations": "1",
+                "required_confirmations": "10", "review_required": false,
+                "observed_at": "2026-10-20T00:00:00Z", "valuation_status": "pending"
+            }]);
+            fixture.state.billing.write().expect("billing fixture")["payment_account"] =
+                pending.clone();
+            let mut current = pending;
+            current["deposits"][0]["confirmations"] = json!("6");
+            *fixture.state.payment.write().expect("payment fixture") = current;
+            let status = fixture
+                .client
+                .status(&CancellationToken::new())
+                .await
+                .expect("receipt refresh");
+            assert_eq!(status.available_microusd, 3_500_000);
+            assert_eq!(
+                status.payment_account.expect("ready account").deposits[0].confirmations,
+                "6"
+            );
+            fixture.state.provision_status.store(503, Ordering::Release);
+            let status = fixture
+                .client
+                .status(&CancellationToken::new())
+                .await
+                .expect("balance survives receipt outage");
+            let payment = status.payment_account.expect("validated account retained");
+            assert_eq!(status.available_microusd, 3_500_000);
+            assert_eq!(payment.state, "ready");
+            assert!(payment.address.is_some());
+            assert_eq!(payment.deposits[0].confirmations, "1");
+            assert_eq!(fixture.state.provision_calls.load(Ordering::Acquire), 2);
+        }
+
+        #[tokio::test]
+        async fn optional_deposit_work_does_not_wait_for_the_long_request_timeout() {
+            let fixture = fixture(false).await;
+            fixture.state.block_provision.store(true, Ordering::Release);
+            let client = BillingClient::new(
+                fixture.client.api_base_url.as_str(),
+                fixture.client.auth.clone(),
+                Duration::from_secs(30),
+            )
+            .expect("long request timeout");
+            let cancellation = CancellationToken::new();
+            let status = tokio::time::timeout(
+                OPTIONAL_DEPOSIT_TIMEOUT + Duration::from_secs(2),
+                client.status(&cancellation),
+            )
+            .await
+            .expect("optional deposit deadline")
+            .expect("validated balance");
+            assert_eq!(status.available_microusd, 3_500_000);
+            let payment = status.payment_account.expect("pending account");
+            assert_eq!(payment.state, "unprovisioned");
+            assert_eq!(payment.address, None);
+            fixture.state.provision_release.notify_one();
+        }
+
+        #[tokio::test]
+        async fn deposit_transport_timeout_preserves_validated_balance() {
+            let fixture = fixture(false).await;
+            fixture.state.block_provision.store(true, Ordering::Release);
+            let client = BillingClient::new(
+                fixture.client.api_base_url.as_str(),
+                fixture.client.auth.clone(),
+                Duration::from_secs(1),
+            )
+            .expect("short bounded client");
+            let status = client
+                .status(&CancellationToken::new())
+                .await
+                .expect("balance survives timeout");
+            assert_eq!(status.available_microusd, 3_500_000);
+            assert_eq!(
+                status.payment_account.expect("pending account").state,
+                "unprovisioned"
+            );
+            fixture.state.provision_release.notify_one();
+        }
+
+        #[tokio::test]
+        async fn successful_provisioning_retains_ledger_credit_and_validates_the_address() {
+            let fixture = fixture(false).await;
+            let status = fixture
+                .client
+                .status(&CancellationToken::new())
+                .await
+                .expect("provisioned status");
+            assert_eq!(status.available_microusd, 3_500_000);
+            assert_eq!(status.paid_microusd, 2_500_000);
+            assert_eq!(
+                status.payment_account.expect("ready account").state,
+                "ready"
+            );
+            assert_eq!(fixture.state.provision_calls.load(Ordering::Acquire), 1);
+        }
+
+        #[tokio::test]
+        async fn malformed_deposit_or_ledger_data_and_access_rejections_fail_closed() {
+            let fixture = fixture(false).await;
+            for status in [400, 401, 403] {
+                fixture
+                    .state
+                    .provision_status
+                    .store(status, Ordering::Release);
+                let error = fixture
+                    .client
+                    .status(&CancellationToken::new())
+                    .await
+                    .expect_err("access rejection");
+                assert!(!error.to_string().contains("remote error body"));
+            }
+            fixture.state.provision_status.store(200, Ordering::Release);
+            for invalid in [json!({"unexpected": true}), {
+                let mut invalid = payment(true);
+                invalid["payment_uri"] = json!("https://untrusted.example/");
+                invalid
+            }] {
+                *fixture.state.payment.write().expect("payment fixture") = invalid;
+                assert!(matches!(
+                    fixture.client.status(&CancellationToken::new()).await,
+                    Err(AxiomError::Protocol(_))
+                ));
+            }
+            let calls = fixture.state.provision_calls.load(Ordering::Acquire);
+            fixture.state.billing.write().expect("billing fixture")["available_microusd"] =
+                json!(9_000_000);
+            assert!(matches!(
+                fixture.client.status(&CancellationToken::new()).await,
+                Err(AxiomError::Protocol(_))
+            ));
+            assert_eq!(fixture.state.provision_calls.load(Ordering::Acquire), calls);
+        }
+
+        #[tokio::test]
+        async fn pending_provisioning_does_not_publish_after_cancellation() {
+            let fixture = fixture(false).await;
+            fixture.state.provision_status.store(503, Ordering::Release);
+            fixture.state.block_provision.store(true, Ordering::Release);
+            let cancellation = CancellationToken::new();
+            let status = fixture.client.status(&cancellation);
+            tokio::pin!(status);
+            tokio::select! {
+                biased;
+                _ = &mut status => panic!("provisioning must be pending"),
+                () = fixture.state.provision_started.notified() => {}
+            }
+            cancellation.cancel();
+            assert!(matches!(status.await, Err(AxiomError::Cancelled)));
+            fixture.state.provision_release.notify_one();
+        }
+
+        #[tokio::test]
+        async fn pending_provisioning_does_not_publish_after_logout() {
+            let fixture = fixture(false).await;
+            fixture.state.provision_status.store(503, Ordering::Release);
+            fixture.state.block_provision.store(true, Ordering::Release);
+            let next_cancellation = CancellationToken::new();
+            let next = fixture.client.status(&next_cancellation);
+            tokio::pin!(next);
+            tokio::select! {
+                biased;
+                _ = &mut next => panic!("provisioning must be pending"),
+                () = fixture.state.provision_started.notified() => {}
+            }
+            fixture.client.auth.logout_async().await.expect("logout");
+            fixture.state.provision_release.notify_one();
+            let error = next
+                .await
+                .expect_err("stale financial projection must be discarded");
+            assert!(error.to_string().contains("account changed"));
+        }
+    }
 
     #[test]
     fn api_key_metadata_is_exact_and_creation_debug_redacts_the_token() {
