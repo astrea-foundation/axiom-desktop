@@ -43,6 +43,25 @@ Backend rollback, payment-receiver recovery and secret management are separate
 platform operations. Coordinate their acceptance with compatible native releases;
 this document does not authorize a production reset or deployment.
 
+## Dependency maintenance
+
+The 0.1.15 candidate updates Rustls to 0.23.46, resolving
+[RUSTSEC-2026-0346](https://rustsec.org/advisories/RUSTSEC-2026-0346.html),
+[RUSTSEC-2026-0347](https://rustsec.org/advisories/RUSTSEC-2026-0347.html),
+[RUSTSEC-2026-0348](https://rustsec.org/advisories/RUSTSEC-2026-0348.html) and
+[RUSTSEC-2026-0349](https://rustsec.org/advisories/RUSTSEC-2026-0349.html).
+
+The Linux Secret Service credential-store chain still requires zbus 5 and its
+standalone zvariant, zbus_names and zvariant_derive crates. Upstream merged those
+crates into zbus 6 and issued informational maintenance notices
+[RUSTSEC-2026-0370](https://rustsec.org/advisories/RUSTSEC-2026-0370.html),
+[RUSTSEC-2026-0371](https://rustsec.org/advisories/RUSTSEC-2026-0371.html) and
+[RUSTSEC-2026-0372](https://rustsec.org/advisories/RUSTSEC-2026-0372.html).
+The specific exceptions in [deny.toml](../deny.toml) cover those notices while
+the published keyring backend requires zbus 5; they do not suppress vulnerability
+advisories. Migrate when the credential-store backend supports zbus 6, verify
+existing Linux credentials remain readable, and remove all three exceptions.
+
 ## Recording results
 
 Keep unresolved requirements visible in the candidate's acceptance record. Record

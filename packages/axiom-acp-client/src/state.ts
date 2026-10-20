@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { ProtocolError } from "./errors.js";
 import type {
   AccountStatus,
   ActivityEvent,
@@ -285,6 +286,24 @@ export class AxiomStateStore extends EventEmitter {
 
   accountContextToken(): number {
     return this.accountContextGeneration;
+  }
+
+  /** Bind the local process identity before exposing a connected client.
+   * This is initialization metadata, not an activity event: never advance the
+   * event sequence or reset account/security state to manufacture this binding.
+   * Notifications can race the initialize response, so an already observed
+   * identity must agree and its sequence must remain intact. */
+  initializeRuntime(runtimeInstanceId: unknown): void {
+    if (typeof runtimeInstanceId !== "string" || !runtimeInstanceId
+      || runtimeInstanceId.length > 128 || /[\s\u0000-\u001f\u007f]/u.test(runtimeInstanceId)) {
+      throw new ProtocolError("AxiomCLI returned an invalid runtime identity during initialization");
+    }
+    if (this.value.runtimeInstanceId !== null && this.value.runtimeInstanceId !== runtimeInstanceId) {
+      throw new ProtocolError("AxiomCLI initialization runtime identity disagrees with its events");
+    }
+    this.value.runtimeInstanceId = runtimeInstanceId;
+    // setConnected publishes this together with readiness after the client
+    // finishes negotiation; subscribers never see connected with a null ID.
   }
 
   setConnected(connected: boolean, error: string | null = null): void {

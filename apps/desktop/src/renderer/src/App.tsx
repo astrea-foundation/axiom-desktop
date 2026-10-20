@@ -44,7 +44,7 @@ export function App() {
   const accountScreenReturnFocus = useRef<HTMLElement | null>(null);
   const [proxyInspecting, setProxyInspecting] = useState(false);
   const [uiError, setUiError] = useState<string | null>(null);
-  const { agentState, errorRevision } = useDesktopState(setUiError);
+  const { agentState, errorRevision, connectionContext } = useDesktopState(setUiError);
   const navigation = useConversationNavigation();
   const { surface, setSurface, activeThreadId, cancelThreadPreparation } = navigation;
   const catalog = useModelCatalog(agentState, navigation, setUiError);
@@ -52,7 +52,7 @@ export function App() {
   const closeAccountScreen = useCallback(() => setAccountScreen(null), []);
   const account = useNativeAccount(agentState, catalog.desktopReady, catalog.refreshModels, catalog.clearModels, closeAccountScreen, setUiError);
   const { accountView, requiresSignIn, signInState, setSignInState, refreshAccount, logout, refreshBilling, cancelNativeSignIn, openSignIn, openAccountPortal } = account;
-  const conversations = useConversations(agentState, navigation, catalog, requiresSignIn, openSignIn, setUiError);
+  const conversations = useConversations(agentState, connectionContext, navigation, catalog, requiresSignIn, openSignIn, setUiError);
   const { reviewPreparation, attachmentDraft, draft, setDraft, threadPreparation, pendingUserMessage, threadLoadError,
     deleteTarget, setDeleteTarget, renameTarget, setRenameTarget, billingAccountId, webAccess,
     threads, folders, activeThread, activeSession, agentAccountScope, agentControl, isStreaming,
@@ -67,7 +67,8 @@ export function App() {
     }
   };
   const preparation = threadPreparation?.accountId === billingAccountId
-    && threadPreparation?.runtimeId === agentState.runtimeInstanceId ? threadPreparation : null;
+    && threadPreparation?.runtimeId === agentState.runtimeInstanceId
+    && threadPreparation?.connectionRevision === connectionContext.revision ? threadPreparation : null;
   const errorNotice = uiError ? { source: "ui", text: uiError }
     : webAccess.error ? { source: "web", text: webAccess.error }
     : agentState.error ? { source: "agent", text: agentState.error }

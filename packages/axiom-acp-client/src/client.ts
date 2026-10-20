@@ -150,6 +150,7 @@ export class AxiomAcpClient extends EventEmitter {
   private readonly interactions = new Map<string, InteractionResolver>();
   private readonly background = new Set<Promise<void>>();
   private readonly refreshingThreads = new Map<string, Promise<GetThreadTimelineResponse>>();
+  private billingRefresh: { context: number; promise: Promise<BillingStatusResponse> } | null = null;
   private readonly securityWarmups = new Map<string, {
     context: number; promise: Promise<VerifySecurityResponse>; pending: boolean; validUntil: number; retryAt: number; failures: number;
   }>();
@@ -230,8 +231,13 @@ export class AxiomAcpClient extends EventEmitter {
     const meta = result.agentCapabilities._meta?.axiom as {
       protocolVersion?: string;
       features?: Record<string, number>;
+      runtimeInstanceId?: unknown;
     } | undefined;
     validateDesktopExtension(meta);
+    // The first account/billing/preferences event can arrive only after the
+    // user starts a chat. Publish the handshake identity first so that event
+    // cannot masquerade as a restart and invalidate an in-flight submission.
+    this.state.initializeRuntime(meta?.runtimeInstanceId);
     this.supportsMessageRevision = (meta?.features?.messageRevision ?? 0) >= 1;
     this.supportsMcp = (meta?.features?.desktopMcp ?? 0) >= 1;
     this.supportsCryptoInvoices = (meta?.features?.billing ?? 0) >= 5;
@@ -635,12 +641,22 @@ export class AxiomAcpClient extends EventEmitter {
     return result;
   }
 
-  async billingStatus(): Promise<BillingStatusResponse> {
+  billingStatus(): Promise<BillingStatusResponse> {
     const accountContext = this.state.accountContextToken();
-    const result = await this.process.request<BillingStatusResponse>("_axiom/billing/status", {});
-    this.assertAccountContext(accountContext);
-    this.state.setBilling(result.status);
-    return result;
+    if (this.billingRefresh?.context === accountContext) return this.billingRefresh.promise;
+    // Startup, the account menu and the balance/deposit screens can all request
+    // the same balance at once. Share only in-flight work for this exact account
+    // generation; never cache a settled balance or join an old owner's request.
+    const promise = this.process.request<BillingStatusResponse>("_axiom/billing/status", {}).then((result) => {
+      this.assertAccountContext(accountContext);
+      this.state.setBilling(result.status);
+      return result;
+    }).finally(() => {
+      // An old account's completion must not detach a newer account's request.
+      if (this.billingRefresh?.promise === promise) this.billingRefresh = null;
+    });
+    this.billingRefresh = { context: accountContext, promise };
+    return promise;
   }
 
   async cryptoOptions(): Promise<CryptoOptionsResponse> {

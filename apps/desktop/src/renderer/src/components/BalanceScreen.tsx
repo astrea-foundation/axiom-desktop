@@ -19,29 +19,46 @@ interface BalanceScreenProps {
 export function BalanceScreen({ onClose, connected, account, billing, onRefreshBilling, onLogin }: BalanceScreenProps) {
   const [billingBusy, setBillingBusy] = useState(false);
   const [billingError, setBillingError] = useState<string | null>(null);
+  const generation = useRef(0);
   const content = useRef<HTMLElement>(null);
   const signedIn = account?.state === "valid";
   const shouldPoll = !billing || !!billing.paymentAccount;
+  const pollEnabled = useRef(shouldPoll);
+  pollEnabled.current = shouldPoll;
   useEffect(() => { content.current?.focus({ preventScroll: true }); }, []);
   useEffect(() => {
+    generation.current++;
     setBillingError(null);
     setBillingBusy(false);
-  }, [account?.account?.id, account?.state]);
+    return () => { generation.current++; };
+  }, [account?.account?.id, account?.state, connected]);
 
   useEffect(() => {
     if (!signedIn || !connected) return;
     let stopped = false;
+    let failures = 0;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const poll = async () => {
+      setBillingBusy(true);
       try {
         await onRefreshBilling();
-        if (!stopped) setBillingError(null);
+        if (!stopped) { failures = 0; setBillingError(null); }
       } catch (error) {
-        if (!stopped) setBillingError(shouldPoll
-          ? "Deposit status is temporarily unavailable. Retrying…"
-          : desktopErrorMessage(error, "Could not load your balance."));
+        if (!stopped) {
+          failures++;
+          // A balance read can fail before any deposit request exists. Keep
+          // its actual error visible rather than blaming deposit processing.
+          setBillingError(desktopErrorMessage(error, "Could not load your balance."));
+        }
       } finally {
-        if (!stopped && shouldPoll) timer = setTimeout(() => void poll(), 5_000);
+        if (!stopped) {
+          setBillingBusy(false);
+          // Successful deposit monitoring stays responsive; outages back off
+          // to one request per minute. Never loop immediately on a rejection.
+          if (pollEnabled.current) timer = setTimeout(() => {
+            if (pollEnabled.current) void poll();
+          }, Math.min(60_000, 5_000 * 2 ** Math.min(failures, 4)));
+        }
       }
     };
     void poll();
@@ -49,14 +66,17 @@ export function BalanceScreen({ onClose, connected, account, billing, onRefreshB
   }, [signedIn, connected, account?.account?.id, shouldPoll, onRefreshBilling]);
 
   const refreshBilling = async () => {
+    // A late manual request cannot replace another account's error or clear
+    // its in-flight indicator after an account/connection change or unmount.
+    const current = generation.current;
     setBillingBusy(true);
     setBillingError(null);
     try {
       await onRefreshBilling();
     } catch (error) {
-      setBillingError(desktopErrorMessage(error, "Could not load your balance."));
+      if (current === generation.current) setBillingError(desktopErrorMessage(error, "Could not load your balance."));
     } finally {
-      setBillingBusy(false);
+      if (current === generation.current) setBillingBusy(false);
     }
   };
 
@@ -71,7 +91,7 @@ export function BalanceScreen({ onClose, connected, account, billing, onRefreshB
                   <div className="text-[32px] font-semibold tracking-[-0.03em] text-[var(--color-text-primary)]">
                     {billing ? usdFromMicrousd(billing.availableMicrousd, 2) : "—"}
                   </div>
-                  {!billing ? <div className="mt-0.5 text-[12px] text-[var(--color-text-tertiary)]">Loading balance…</div> : null}
+                  {!billing ? <div role="status" className="mt-0.5 text-[12px] text-[var(--color-text-tertiary)]">{!connected ? "Connect to load your balance." : billingError ? "Balance unavailable" : "Loading balance…"}</div> : null}
                   {billing && billing.postedMicrousd < 0 ? <p role="status" className="mt-2 text-[12px] text-[var(--color-text-secondary)]">Top up to send another message.</p> : null}
                 </div>
                 <button

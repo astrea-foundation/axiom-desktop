@@ -58,6 +58,11 @@ export class MessageQueue {
   dispose(): void {
     this.generation++; this.account = null; this.runtime = null; this.api = null; this.state = null;
     this.operations.clear(); this.interruptions.clear();
+    // Keep the account-scoped durable outbox, but clear every in-memory view
+    // and permission. A subsequent anonymous sync also has a null account and
+    // must not expose the previous owner's items or wait on their restoration.
+    this.items = []; this.paused.clear(); this.freshSends.clear();
+    this.loading = false; this.restoring = Promise.resolve();
   }
   private persist(): void {
     if (!this.storage || !this.account) throw new Error("The message queue could not be saved. No new message was sent.");
@@ -173,19 +178,22 @@ export class MessageQueue {
     return item.id;
   }
   bindPreparation(id: string, threadId: string): void {
-    const item = this.items.find((item) => item.id === id && item.preparing);
+    // A restored reservation is queued for review, even if an old async
+    // newChat/settings callback later returns to the same account/runtime.
+    // Only a reservation still active in this connection can advance setup.
+    const item = this.items.find((item) => item.id === id && item.preparing && item.status === "sending");
     if (!item) throw new Error("The account or connection changed. Your message remains saved for review.");
     item.threadId = threadId;
     this.persist(); this.changed();
   }
   failPreparation(id: string, error: string): void {
-    const item = this.items.find((item) => item.id === id && item.preparing);
+    const item = this.items.find((item) => item.id === id && item.preparing && item.status === "sending");
     if (!item) return;
     item.status = "queued"; item.error = error;
     this.save(); this.changed();
   }
   ready(id: string, threadId: string): void {
-    const item = this.items.find((item) => item.id === id && item.preparing);
+    const item = this.items.find((item) => item.id === id && item.preparing && item.status === "sending");
     if (!item || !this.state?.sessions[threadId]) throw new Error("The thread is not ready. Your message is saved for review.");
     const previous = { ...item };
     Object.assign(item, { threadId, preparing: false, status: "queued", mcpRevision: this.state.mcp?.revision, agentRevision: this.state.sessions[threadId]?.desktopAgent?.revision ?? 0 });

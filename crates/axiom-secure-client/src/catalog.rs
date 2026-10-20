@@ -405,7 +405,7 @@ pub(crate) fn error_for_status(status: StatusCode) -> SecureClientError {
         ),
         429 => (
             ProviderFailureKind::RateLimited,
-            "Axiom request was rate limited",
+            "Axiom is rate limited. Wait before trying again.",
         ),
         400 | 409 | 415 | 422 => (
             ProviderFailureKind::InvalidRequest,
@@ -681,5 +681,12 @@ mod tests {
             error_for_status(StatusCode::TOO_MANY_REQUESTS).kind(),
             axiom_inference::ProviderFailureKind::RateLimited
         );
+        let limited = error_for_status(StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            limited.safe_detail(),
+            "Axiom is rate limited. Wait before trying again."
+        );
+        assert!(limited.retryable());
+        assert!(!limited.requires_reattest_and_reencrypt());
     }
 }

@@ -15,7 +15,8 @@ must be recorded against the actual source revision and signed installers.
 | [Configuration](configuration.md) | Configuration precedence, paths and limits |
 | [Privacy](privacy.md) | Local storage, credentials and what leaves the device |
 | [Troubleshooting](troubleshooting.md) | Diagnosis and recovery |
-| [0.1.14 release notes](releases/0.1.14.md) | Invoice deadlines, cancellation and trial capacity |
+| [0.1.15 release notes](releases/0.1.15.md) | First-message recovery, resilient balances and rate-limit guidance |
+| [0.1.14 candidate notes](releases/0.1.14.md) | Unpublished candidate; included in 0.1.15 |
 | [0.1.10 release notes](releases/0.1.10.md) | Windows setup and first-launch updates |
 | [0.1.9 release notes](releases/0.1.9.md) | Previous release |
 | [0.1.8 release notes](releases/0.1.8.md) | Previous release |

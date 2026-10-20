@@ -127,7 +127,48 @@ test("a newer empty or failed turn cannot inherit an older reply's verification"
   assert.equal(replyProof(current).label, "Incomplete");
   current.timeline.pop();
   current.timeline.push({ id: "error", turnId: "new-turn", kind: "error", text: "Verification failed", status: "failed" });
+  current.security = { state: "failed" };
   assert.equal(replyProof(current).label, "Failed");
+});
+
+test("a rate-limited request without output is not a failed reply authentication", () => {
+  const current = session();
+  current.requestUsage = [{ requestId: "request", modelId: "test-model", providerId: "test", turnId: "new",
+    purpose: "conversation", state: "failed", errorCode: "RATE_LIMITED", responseVerified: false }];
+  current.timeline = [
+    { id: "old", turnId: "old", kind: "assistant", text: "Earlier verified reply", status: "completed", terminalVerified: true },
+    { id: "question", turnId: "new", kind: "user", text: "Next", status: "completed" },
+    { id: "error", turnId: "new", kind: "error", text: "Axiom request was rate limited", status: "failed" },
+  ];
+  assert.equal(replyProof(current).label, "No reply received");
+  assert.equal(replyProof(current).verified, false, "an earlier reply or TEE report cannot verify this request");
+  assert.deepEqual(proofBadge(current, "verified"), { label: "No reply received", tone: "warning" });
+  current.timeline.splice(2, 0, { id: "partial", turnId: "new", kind: "reasoning", text: "Partial", status: "failed" });
+  assert.equal(proofBadge(current, "verified").label, "Reply check failed", "received output still requires authentication");
+  current.timeline.splice(2, 1);
+  current.security = { state: "failed" };
+  assert.equal(proofBadge(current, "failed").label, "Reply check failed", "a failed TEE check must remain a security failure");
+});
+
+test("empty cryptographic, unknown and mixed failures retain failed reply verification", () => {
+  for (const usage of [
+    [],
+    [{ errorCode: "INVALID_RESPONSE" }],
+    [{ errorCode: "RATE_LIMITED", purpose: "title" as const }],
+    [{ errorCode: "RATE_LIMITED", turnId: "old" }],
+    [{ errorCode: "RATE_LIMITED", responseVerified: true }],
+    [{ errorCode: "RATE_LIMITED" }, { errorCode: "INVALID_RESPONSE" }],
+  ]) {
+    const current = session();
+    current.timeline = [
+      { id: "question", turnId: "new", kind: "user", text: "Next", status: "completed" },
+      { id: "error", turnId: "new", kind: "error", text: "Request failed", status: "failed" },
+    ];
+    current.requestUsage = usage.map((request, index) => ({ requestId: `request-${index}`, modelId: "test-model",
+      providerId: "test", turnId: "new", purpose: "conversation" as const, state: "failed" as const, ...request }));
+    assert.equal(proofBadge(current, "verified").label, "Reply check failed");
+    assert.equal(replyProof(current).verified, false);
+  }
 });
 
 test("all reply segments need verification while handled tool failures remain separate", () => {

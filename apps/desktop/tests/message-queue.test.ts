@@ -1,9 +1,44 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { ClientState, PromptResult } from "@axiom/axiom-acp-client";
+import { AxiomAcpClient, type ClientState, type PromptResult } from "@axiom/axiom-acp-client";
 import { MessageQueue, type QueueApi } from "../src/renderer/src/messageQueue";
 
 const settle = () => new Promise((resolve) => setImmediate(resolve));
+
+test("the first native event during setup does not restore and pause a fresh outbox entry", async (t) => {
+  // Use the real native adapter with an idle local transport, alongside the
+  // actual shared queue. Neither account credentials nor inference are used.
+  const client = new AxiomAcpClient({ command: process.execPath, args: ["-e", "process.stdin.resume()"] });
+  t.after(() => client.close());
+  t.mock.method(client.process, "request", async () => ({
+    protocolVersion: 1, agentCapabilities: { _meta: { axiom: {
+      protocolVersion: "0.2", runtimeInstanceId: "startup-runtime",
+      features: { desktopChat: 1, threadCatalog: 1, timeline: 2, modelCatalog: 1,
+        profilePreferences: 1, collections: 1, account: 2, billing: 4, securityEvidence: 4, webConsent: 1 },
+    } } },
+  }));
+  const f = fixture(false);
+  f.api.getState = async () => client.getState();
+  client.on("state", state => f.queue.sync(state, f.api));
+  t.after(() => f.queue.dispose());
+  await client.initialize();
+  client.state.setAccount({ revision: 1, state: "valid", account: { id: "account", linkedMethods: [] } });
+  const capturedRuntime = client.getState().runtimeInstanceId;
+  const id = f.queue.reserve(null, "hi", false);
+  client.state.extensionEvent({
+    runtimeInstanceId: "startup-runtime", sequence: 1, occurredAt: "2026-10-20T00:00:00Z",
+    event: { kind: "profile_preferences_changed", preferences: {
+      model: "test-model", thinkingLevel: "medium", updatedAt: "2026-10-20T00:00:00Z",
+    } },
+  });
+  assert.equal(client.getState().runtimeInstanceId, capturedRuntime);
+  assert.equal(f.queue.preparations("account")[0]?.status, "sending");
+  assert.equal(f.queue.preparations("account")[0]?.error, undefined);
+  client.state.addSession("thread", "");
+  f.queue.bindPreparation(id, "thread");
+  f.queue.ready(id, "thread");
+  assert.deepEqual(f.calls.map(call => call.text), ["hi"]);
+});
 
 test("queued messages cannot inherit changed MCP authority", async () => {
   const f = fixture();
@@ -126,6 +161,40 @@ test("failed cancellation retains the queued message without automatic retry", a
   assert.match(f.queue.list("thread")[0]?.error ?? "", /Couldn’t stop/);
   assert.equal(f.queue.isPaused("thread"), true);
   assert.equal(f.queue.isStopping("thread"), false);
+});
+
+test("disposing clears anonymous views and send permissions while preserving the owner's durable outbox", () => {
+  const f = fixture(false);
+  const id = f.queue.reserve(null, "private saved draft", false);
+  const saved = f.values.get("axiom.message-queue.v1:account");
+  f.queue.dispose();
+  f.queue.sync({ ...f.state, connected: false, account: null, runtimeInstanceId: null }, null);
+  assert.deepEqual(f.queue.preparations(null), []);
+  assert.deepEqual(f.queue.list(null, null), []);
+  assert.equal(f.values.get("axiom.message-queue.v1:account"), saved);
+  f.sync();
+  assert.equal(f.queue.preparations("account")[0]?.id, id);
+  assert.equal(f.queue.preparations("account")[0]?.status, "queued");
+  assert.equal(f.calls.length, 0);
+});
+
+for (const change of ["account", "runtime", "disconnect"] as const) test(`old preparation cannot resume after a ${change} change and return`, () => {
+  const f = fixture(false);
+  const id = f.queue.reserve(null, "saved for review", false);
+  if (change === "account") f.state.account!.account!.id = "other-account";
+  if (change === "runtime") f.state.runtimeInstanceId = "other-runtime";
+  if (change === "disconnect") f.state.connected = false;
+  f.sync();
+  f.state.account!.account!.id = "account";
+  f.state.runtimeInstanceId = "runtime";
+  f.state.connected = true;
+  f.sync();
+  // The original async newChat/settings callbacks may still resolve. Their
+  // reservation was restored as a draft and must no longer authorize a send.
+  assert.throws(() => f.queue.bindPreparation(id, "thread"), /saved for review/);
+  assert.throws(() => f.queue.ready(id, "thread"), /saved for review/);
+  assert.equal(f.queue.preparations("account")[0]?.status, "queued");
+  assert.equal(f.calls.length, 0);
 });
 
 for (const change of ["account", "runtime", "disconnect"] as const) test(`Send now cannot cross a ${change} change`, async () => {

@@ -131,6 +131,13 @@ from the backend. The Axiom Payments path uses persistent **mainnet ZEC** addres
 exact integer receipt amounts, and optional backend-reported USD valuation.
 The client validates the valuation fields and does not perform a currency swap
 or hold payment-provider credentials. Testnet data is rejected in this path.
+Ready deposit accounts without confirming receipts use the read-only billing
+projection. Non-ready accounts and confirming receipts use an optional refresh
+bounded to five seconds; transient deposit transport/service failures preserve
+the validated ledger and previous deposit state. Malformed
+financial/address data, access rejection, cancellation and account transitions
+still reject the operation. The ACP client shares overlapping balance reads only
+within the same account generation and never caches a settled result.
 Gift redemption uses the same interactive account authority. TUI and Desktop
 send codes through the native account client, receive a validated credit receipt,
 and never store the code as chat/history. Platform issues the card and owns its

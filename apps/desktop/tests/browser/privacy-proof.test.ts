@@ -50,6 +50,31 @@ const dialog = (page: Page) => page.getByRole("dialog", { name: "Privacy proof",
 const count = (page: Page) => page.evaluate(() => (window as any).__privacyTest.calls());
 const capture = async (page: Page, name: string) => { if (captures) await page.screenshot({ path: `${captures}/${name}.png` }); };
 
+test("rate-limited turns without a reply stay distinct from failed authentication", async () => {
+  const { page, errors } = await open("dark");
+  try {
+    await page.evaluate(() => (window as any).__privacyTest.update({
+      timeline: [
+        { id: "question", turnId: "limited", kind: "user", text: "Hello", status: "completed" },
+        { id: "error", turnId: "limited", kind: "error", text: "Axiom is rate limited. Wait before trying again.", status: "failed" },
+      ],
+      requestUsage: [{ requestId: "request", modelId: "test-model", providerId: "test", turnId: "limited",
+        purpose: "conversation", state: "failed", errorCode: "RATE_LIMITED", responseVerified: false }],
+    }));
+    await page.getByRole("button", { name: "No reply received. View privacy proof", exact: true }).waitFor();
+    await capture(page, "rate-limited-no-reply");
+    await proofButton(page).click();
+    await dialog(page).getByText("No reply received", { exact: true }).waitFor();
+    await page.keyboard.press("Escape");
+    await page.evaluate(() => (window as any).__privacyTest.update({
+      requestUsage: [{ requestId: "request", modelId: "test-model", providerId: "test", turnId: "limited",
+        purpose: "conversation", state: "failed", errorCode: "INVALID_RESPONSE", responseVerified: false }],
+    }));
+    await page.getByRole("button", { name: "Reply check failed. View privacy proof", exact: true }).waitFor();
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
 for (const theme of ["light", "dark"]) test(`outdated TEE requires a click and keeps a warning after consent (${theme})`, async () => {
   const { page, errors } = await open(theme);
   try {

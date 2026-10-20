@@ -225,7 +225,14 @@ async function openApp(platform = "linux", failDelete = false, thinkingLevels: s
       createApiKey: async () => { throw new Error("API keys not configured in this fixture"); },
       revokeApiKey: async () => ({}),
       accountStatus: async () => { calls.push({ method: "accountStatus" }); return { account: state.account }; },
-      billingStatus: async () => { calls.push({ method: "billingStatus" }); if (failBalance) throw new Error("Balance test failure"); return { billing: state.billing }; },
+      billingStatus: async () => {
+        const accountId = state.account.account?.id;
+        calls.push({ method: "billingStatus", id: accountId });
+        await waitForSetup(`billing:${accountId}`);
+        await waitForSetup("billing");
+        if (failBalance) throw new Error("Balance test failure");
+        return { billing: state.billing };
+      },
       openAccountPortal: async () => { calls.push({ method: "accountPortal" }); },
       nativeLoginStart: async (...hints: unknown[]) => {
         const loginId = `test-login-${++loginCount}`;
@@ -577,6 +584,45 @@ for (const destination of ["new", "existing", "account", "runtime"]) {
         assert.equal(payload.text, "Private pending message");
         assert.equal(saved[0].preparing, true);
       }
+      assert.deepEqual(errors, []);
+    } finally { await page.close(); }
+  });
+}
+
+for (const batched of [false, true]) for (const change of ["disconnect", "runtime", "account"]) {
+  test(`${batched ? "batched " : ""}first-message preparation stays paused after ${change} and return, even when old setup completes`, async () => {
+    const { page, errors } = await openApp("darwin");
+    try {
+      await page.evaluate(() => (window as any).__deletionTest.holdSetup("new"));
+      const input = page.locator("textarea[data-chat-input]");
+      await input.fill("hi");
+      await input.press("Enter");
+      await page.getByRole("status", { name: "Sending message" }).waitFor();
+      await page.evaluate(({ change, batched }) => {
+        const app = (window as any).__deletionTest;
+        if (change === "account") app.setAccount("another-account");
+        else app.setRuntime(change === "runtime" ? "another-runtime" : "test-runtime", change !== "disconnect");
+        if (batched) { app.setAccount("test-account"); app.setRuntime("test-runtime"); }
+      }, { change, batched });
+      await input.waitFor({ state: "visible" });
+      await page.waitForFunction(() => !document.querySelector('[aria-label="Sending message"]'));
+      if (!batched) await page.evaluate(() => {
+        const app = (window as any).__deletionTest;
+        app.setAccount("test-account"); app.setRuntime("test-runtime");
+      });
+      const queue = page.getByRole("region", { name: "Message queue" });
+      await queue.getByText("Restored after reconnect. Review and send when ready.", { exact: true }).waitFor();
+      await page.evaluate(() => (window as any).__deletionTest.releaseSetup("new"));
+      await page.waitForFunction(() => document.querySelector('[data-thread-id="new-thread"]'));
+      assert.equal((await calls(page)).some(call => call.method === "prompt"), false);
+      assert.equal(await queue.getByRole("button", { name: "Review draft", exact: true }).count(), 1);
+      assert.equal(await input.isEnabled(), true, "the privacy lock does not disable the welcome composer");
+      await queue.getByRole("button", { name: "Review draft", exact: true }).click();
+      await page.waitForFunction(() => (document.querySelector("textarea[data-chat-input]") as HTMLTextAreaElement)?.value === "hi");
+      await queue.waitFor({ state: "hidden" });
+      await input.press("Enter");
+      await page.waitForFunction(() => (window as any).__deletionTest.calls.some((call: any) => call.method === "prompt"));
+      assert.equal((await calls(page)).filter(call => call.method === "prompt").length, 1);
       assert.deepEqual(errors, []);
     } finally { await page.close(); }
   });
@@ -2170,6 +2216,121 @@ test("balance refreshes keep one top-up panel and preserve gift code input", asy
         revision % 2 === 0 ? /1 ZEC ≈ \$1,510\.36/ : /Rate unavailable/);
     }
     assert.deepEqual(keyWarnings, []);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("failed balance reads show an error, back off, and recover without blaming deposits", async () => {
+  const { page, errors } = await openApp("darwin");
+  try {
+    const now = await page.evaluate(() => Date.now());
+    await page.clock.install({ time: now });
+    await page.clock.pauseAt(now + 100);
+    await page.evaluate(() => (window as any).__deletionTest.failBalance(true));
+    await openAccountScreen(page, "Balance");
+    const panel = page.getByRole("region", { name: "Balance and payments", exact: true });
+    await panel.getByText("Balance unavailable", { exact: true }).waitFor();
+    await panel.getByRole("alert").getByText("Balance test failure", { exact: true }).waitFor();
+    assert.equal(await panel.getByText("Loading balance…", { exact: true }).count(), 0);
+    assert.doesNotMatch(await panel.innerText(), /Deposit status is temporarily unavailable/);
+    const refresh = page.getByRole("button", { name: "Refresh balance", exact: true });
+    await page.waitForFunction(() => !(document.querySelector('[aria-label="Refresh balance"]') as HTMLButtonElement)?.disabled);
+    const count = () => page.evaluate(() => (window as any).__deletionTest.calls.filter((call: any) => call.method === "billingStatus").length);
+    let previous = await count();
+    for (const delay of [10_000, 20_000, 40_000, 60_000]) {
+      await page.clock.runFor(delay - 1);
+      assert.equal(await count(), previous, "a rejected read must not keep polling every five seconds");
+      await page.clock.runFor(1);
+      await page.waitForFunction((before) => (window as any).__deletionTest.calls.filter((call: any) => call.method === "billingStatus").length > before, previous);
+      previous = await count();
+    }
+    await page.evaluate((billing) => {
+      (window as any).__deletionTest.failBalance(false);
+      (window as any).__deletionTest.setBilling(billing);
+    }, depositBilling(3_500_000));
+    await refresh.click();
+    await panel.getByText("$3.50", { exact: true }).first().waitFor();
+    await page.waitForFunction(() => !document.querySelector('[aria-label="Balance and payments"] [role="alert"]'));
+    await panel.getByLabel("Mainnet deposit address", { exact: true }).waitFor();
+    assert.equal(await count(), previous + 1, "manual recovery sends exactly one fresh request");
+    if (process.env.AXIOM_BALANCE_CAPTURE_PATH) await page.screenshot({ path: process.env.AXIOM_BALANCE_CAPTURE_PATH });
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("a failed deposit refresh retains loaded credit and stops polling after leaving Balance", async () => {
+  const { page, errors } = await openApp();
+  try {
+    const now = await page.evaluate(() => Date.now());
+    await page.clock.install({ time: now });
+    await page.clock.pauseAt(now + 100);
+    await page.evaluate((billing) => {
+      (window as any).__deletionTest.setBilling(billing);
+      (window as any).__deletionTest.failBalance(true);
+    }, depositBilling(4_000_000));
+    await openAccountScreen(page, "Balance");
+    const panel = page.getByRole("region", { name: "Balance and payments", exact: true });
+    await panel.getByRole("alert").waitFor();
+    assert.equal(await panel.getByText("$4.00", { exact: true }).first().isVisible(), true);
+    assert.equal(await panel.getByLabel("Mainnet deposit address", { exact: true }).isVisible(), true);
+    assert.equal(await panel.getByText("Loading balance…", { exact: true }).count(), 0);
+    await page.getByRole("button", { name: "Back", exact: true }).click();
+    await page.clock.runFor(500);
+    await panel.waitFor({ state: "detached" });
+    const count = await page.evaluate(() => (window as any).__deletionTest.calls.filter((call: any) => call.method === "billingStatus").length);
+    await page.clock.runFor(120_000);
+    assert.equal(await page.evaluate(() => (window as any).__deletionTest.calls.filter((call: any) => call.method === "billingStatus").length), count);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("deposit monitoring resumes when a later refresh enables a payment account", async () => {
+  const { page, errors } = await openApp();
+  try {
+    const now = await page.evaluate(() => Date.now());
+    await page.clock.install({ time: now });
+    await page.clock.pauseAt(now + 100);
+    await page.evaluate((billing) => (window as any).__deletionTest.setBilling({ ...billing, paymentAccount: null }), depositBilling(1_000_000));
+    await openAccountScreen(page, "Balance");
+    await page.waitForFunction(() => !(document.querySelector('[aria-label="Refresh balance"]') as HTMLButtonElement)?.disabled);
+    const count = () => page.evaluate(() => (window as any).__deletionTest.calls.filter((call: any) => call.method === "billingStatus").length);
+    let previous = await count();
+    await page.clock.runFor(15_000);
+    assert.equal(await count(), previous, "there is no deposit monitoring before it is enabled");
+    await page.evaluate((billing) => (window as any).__deletionTest.setBilling(billing), depositBilling(1_000_000, 2));
+    await page.getByLabel("Mainnet deposit address", { exact: true }).waitFor();
+    await page.waitForFunction((before) => (window as any).__deletionTest.calls.filter((call: any) => call.method === "billingStatus").length > before, previous);
+    await page.waitForFunction(() => !(document.querySelector('[aria-label="Refresh balance"]') as HTMLButtonElement)?.disabled);
+    previous = await count();
+    await page.clock.runFor(5_001);
+    await page.waitForFunction((before) => (window as any).__deletionTest.calls.filter((call: any) => call.method === "billingStatus").length > before, previous);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("a stale manual balance failure cannot overwrite a new account's active refresh", async () => {
+  const { page, errors } = await openApp();
+  try {
+    await page.evaluate((billing) => (window as any).__deletionTest.setBilling({ ...billing, paymentAccount: null }), depositBilling(1_000_000));
+    await openAccountScreen(page, "Balance");
+    const refresh = page.getByRole("button", { name: "Refresh balance", exact: true });
+    await page.waitForFunction(() => !(document.querySelector('[aria-label="Refresh balance"]') as HTMLButtonElement)?.disabled);
+    await page.evaluate(() => {
+      const app = (window as any).__deletionTest;
+      app.holdSetup("billing:test-account");
+      app.holdSetup("billing:account-b");
+    });
+    await refresh.click();
+    await page.evaluate(() => (window as any).__deletionTest.setAccount("account-b"));
+    await page.waitForFunction(() => (window as any).__deletionTest.calls.some((call: any) => call.method === "billingStatus" && call.id === "account-b"));
+    await page.evaluate(async () => {
+      (window as any).__deletionTest.releaseSetup("billing:test-account", "Old account refresh failed");
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    assert.equal(await refresh.isDisabled(), true, "old finally cannot clear the current account's busy flag");
+    assert.equal(await page.getByText("Old account refresh failed", { exact: true }).count(), 0);
+    await page.evaluate(() => (window as any).__deletionTest.releaseSetup("billing:account-b"));
+    await page.waitForFunction(() => !(document.querySelector('[aria-label="Refresh balance"]') as HTMLButtonElement)?.disabled);
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
 });
