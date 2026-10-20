@@ -7,7 +7,7 @@ for await (const line of createInterface({ input: process.stdin })) {
   process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {
     protocolVersion: 1,
     ...(version === 'missing' ? {} : { agentInfo: { name: 'axiomcli', version } }),
-    agentCapabilities: { _meta: { axiom: { protocolVersion: '0.2', features: {
+    agentCapabilities: { _meta: { axiom: { protocolVersion: '0.2', runtimeInstanceId: 'version-fixture-runtime', features: {
       desktopChat: 1, threadCatalog: 1, timeline: 2, modelCatalog: 1,
       profilePreferences: 1, collections: 1, account: 2, billing: 4,
       securityEvidence: 4, webConsent: 1,

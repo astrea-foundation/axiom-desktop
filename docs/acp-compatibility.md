@@ -49,6 +49,17 @@ family; each named feature negotiates its own version. Missing/zero versions
 mean unsupported. Desktop checks its required feature set and negotiates optional
 features separately.
 
+The agent's initialization metadata must also include a nonempty
+`runtimeInstanceId` of at most 128 characters without whitespace or control
+characters. The Node client binds it before publishing a connected state; it
+does not wait for the first activity event. An earlier event must identify the
+same runtime, and its sequence is preserved. Missing, malformed or conflicting
+identities reject initialization. This local process identity is separate from
+provider TEE evidence and never grants inference or tool authority. Actual
+runtime changes still invalidate account and session state. Restored message
+preparations require review and a fresh send; an old setup callback cannot
+reactivate them after an account or connection changes and returns.
+
 `account`, `timeline`, and `attachments` are version **2**;
 `billing` is version **4** and `securityEvidence` is version **4**.
 Other advertised features are version **1**:

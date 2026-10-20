@@ -582,6 +582,45 @@ for (const destination of ["new", "existing", "account", "runtime"]) {
   });
 }
 
+for (const batched of [false, true]) for (const change of ["disconnect", "runtime", "account"]) {
+  test(`${batched ? "batched " : ""}first-message preparation stays paused after ${change} and return, even when old setup completes`, async () => {
+    const { page, errors } = await openApp("darwin");
+    try {
+      await page.evaluate(() => (window as any).__deletionTest.holdSetup("new"));
+      const input = page.locator("textarea[data-chat-input]");
+      await input.fill("hi");
+      await input.press("Enter");
+      await page.getByRole("status", { name: "Sending message" }).waitFor();
+      await page.evaluate(({ change, batched }) => {
+        const app = (window as any).__deletionTest;
+        if (change === "account") app.setAccount("another-account");
+        else app.setRuntime(change === "runtime" ? "another-runtime" : "test-runtime", change !== "disconnect");
+        if (batched) { app.setAccount("test-account"); app.setRuntime("test-runtime"); }
+      }, { change, batched });
+      await input.waitFor({ state: "visible" });
+      await page.waitForFunction(() => !document.querySelector('[aria-label="Sending message"]'));
+      if (!batched) await page.evaluate(() => {
+        const app = (window as any).__deletionTest;
+        app.setAccount("test-account"); app.setRuntime("test-runtime");
+      });
+      const queue = page.getByRole("region", { name: "Message queue" });
+      await queue.getByText("Restored after reconnect. Review and send when ready.", { exact: true }).waitFor();
+      await page.evaluate(() => (window as any).__deletionTest.releaseSetup("new"));
+      await page.waitForFunction(() => document.querySelector('[data-thread-id="new-thread"]'));
+      assert.equal((await calls(page)).some(call => call.method === "prompt"), false);
+      assert.equal(await queue.getByRole("button", { name: "Review draft", exact: true }).count(), 1);
+      assert.equal(await input.isEnabled(), true, "the privacy lock does not disable the welcome composer");
+      await queue.getByRole("button", { name: "Review draft", exact: true }).click();
+      await page.waitForFunction(() => (document.querySelector("textarea[data-chat-input]") as HTMLTextAreaElement)?.value === "hi");
+      await queue.waitFor({ state: "hidden" });
+      await input.press("Enter");
+      await page.waitForFunction(() => (window as any).__deletionTest.calls.some((call: any) => call.method === "prompt"));
+      assert.equal((await calls(page)).filter(call => call.method === "prompt").length, 1);
+      assert.deepEqual(errors, []);
+    } finally { await page.close(); }
+  });
+}
+
 test("a long draft keeps its sending indicator in view during thread preparation", async () => {
   const { page, errors } = await openApp();
   try {

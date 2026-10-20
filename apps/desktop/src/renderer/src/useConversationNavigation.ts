@@ -7,7 +7,7 @@ export function useConversationNavigation() {
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const activeThreadIdRef = useRef(activeThreadId);
   const navigationRevision = useRef(0);
-  const [threadPreparation, setThreadPreparation] = useState<{ id: string; text: string; attachments: PromptAttachment[]; accountId: string | null; runtimeId: string | null; } | null>(null);
+  const [threadPreparation, setThreadPreparation] = useState<{ id: string; text: string; attachments: PromptAttachment[]; accountId: string | null; runtimeId: string | null; connectionRevision: number; } | null>(null);
   const cancelThreadPreparation = useCallback(() => {
     navigationRevision.current += 1;
     setThreadPreparation(null);
