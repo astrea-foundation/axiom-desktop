@@ -1,0 +1,107 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.1
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y bubblewrap jq
+      - run: cargo fmt --all -- --check
+      - run: cargo check --workspace --all-targets --all-features
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: Install pinned cargo-deny
+        shell: bash
+        run: cargo install cargo-deny --version "=$(tr -d '\r\n' < .cargo-deny-version)" --locked
+      - run: cargo test --workspace --all-features
+      - run: cargo test --target-dir target/acp-sdk-vendor --locked --manifest-path vendor/agent-client-protocol-2.0.0/Cargo.toml --test jsonrpc_deep_chain_stack
+      - run: scripts/axiomcli-eval deterministic
+      - run: cargo deny check
+
+  desktop-ui:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: node packages/brand/scripts/build-callback.mjs --check
+      - run: pnpm --filter axiom-desktop exec playwright install --with-deps chromium
+      - run: pnpm --filter axiom-desktop test:browser
+
+  portability:
+    name: desktop portability (${{ matrix.name }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS Intel
+            runner: macos-15-intel
+          - name: macOS Apple Silicon
+            runner: macos-15
+          - name: Windows x64
+            runner: windows-latest
+          - name: Windows ARM64
+            runner: windows-11-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.1
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # Formatting is enforced by the rust job. Keep native platform tests
+      # running even when that independent check fails.
+      - run: cargo check --workspace --all-targets --all-features
+      - run: cargo test -p axiom-acp-extension -p axiomcli --all-features
+      - run: cargo test --target-dir target/acp-sdk-vendor --locked --manifest-path vendor/agent-client-protocol-2.0.0/Cargo.toml --test jsonrpc_deep_chain_stack
+      - run: pnpm generate:protocol
+      - name: Generated ACP contract is committed
+        shell: bash
+        run: git diff --exit-code -- protocol/axiom-acp-extension packages/axiom-acp-client/src/generated
+      - run: pnpm typecheck
+      - run: pnpm test
+      # Release archives and Desktop bundles are built only by the release
+      # workflows. Keep branch and PR CI focused on checks and tests.
+
+  real-searxng:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.1
+      - uses: astral-sh/setup-uv@v6
+      - uses: Swatinem/rust-cache@v2
+      - run: scripts/searxng-dev integration-test
