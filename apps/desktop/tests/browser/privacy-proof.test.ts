@@ -59,9 +59,16 @@ for (const theme of ["light", "dark"]) test(`privacy proof matches the composer 
     assert.equal(await page.getByText("UpToDate", { exact: true }).first().isVisible(), false);
     await capture(page, `${theme}-summary`);
     await page.locator("summary").filter({ hasText: "Hardware evidence" }).click();
-    assert.equal(await page.getByText("UpToDate", { exact: true }).first().isVisible(), true);
+    // Disclosures animate open; their content becomes visible within the first frames.
+    await page.getByText("UpToDate", { exact: true }).first().waitFor({ state: "visible" });
+    const compactWidth = (await dialog(page).boundingBox())!.width;
     await page.locator("summary").filter({ hasText: "Technical details" }).click();
-    assert.equal(await page.getByText("a1b2c3d4".repeat(8), { exact: true }).isVisible(), true);
+    await page.getByText("a1b2c3d4".repeat(8), { exact: true }).waitFor({ state: "visible" });
+    await page.waitForFunction((before) => {
+      const bounds = document.querySelector<HTMLElement>("dialog[data-technical-open]")?.getBoundingClientRect();
+      return bounds !== undefined && bounds.width >= before + 200;
+    }, compactWidth);
+    assert.ok((await dialog(page).boundingBox())!.width < 800, "the widened report stays bounded");
     await capture(page, `${theme}-details`);
     await page.locator("summary").filter({ hasText: "Workload manifest" }).click();
     await page.locator("textarea[data-chat-input]").evaluate((element: HTMLTextAreaElement) => element.focus());
@@ -309,9 +316,11 @@ test("Phala separates gateway, workers, and receipt policy, with safe clipboard 
     await proofButton(page).click();
     assert.match(await dialog(page).innerText(), /phala/);
     await page.locator("summary").filter({ hasText: "Hardware evidence" }).click();
+    await page.getByText("Gateway TDX", { exact: true }).first().waitFor({ state: "visible" });
     assert.match(await dialog(page).innerText(), /Gateway TDX/);
     assert.match(await dialog(page).innerText(), /Worker GPU/);
     await page.locator("summary").filter({ hasText: "Technical details" }).click();
+    await page.getByText("Receipt policy", { exact: true }).waitFor({ state: "visible" });
     assert.match(await dialog(page).innerText(), /Receipt policy\s+Required for each reply/);
     assert.match(await dialog(page).innerText(), /Latest reply verification\s+No reply yet/);
     assert.match(await dialog(page).innerText(), /preverified worker sessions/);

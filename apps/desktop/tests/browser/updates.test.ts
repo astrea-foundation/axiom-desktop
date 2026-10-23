@@ -108,6 +108,7 @@ for (const theme of ['light','dark']) test(`update notice opens integrated Setti
     await page.getByRole('button',{name:'Show in folder'}).click();
     assert.equal(await page.evaluate(() => (window as any).__updatesTest.revealed()),1);
     await page.locator('summary').filter({hasText:'Download details'}).click();
+    await page.getByText('File size and SHA-256 matched the release manifest.',{exact:true}).waitFor({state:'visible'});
     assert.match(await settings(page).innerText(),/File size and SHA-256 matched/);
     await capture(page,`${theme}-downloaded`);
     await page.keyboard.press('Escape'); await settings(page).waitFor({state:'detached'});

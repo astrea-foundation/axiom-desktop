@@ -42,6 +42,9 @@ export function useAccountDraft(accountId: string | null, threadId: string | nul
   const draft = read(accountId, threadId);
   useEffect(() => {
     const scope = key(accountId, threadId);
+    // An explicit in-memory write (including a preparing draft handoff) is newer
+    // than a potentially pending IndexedDB save. Do not hydrate over it.
+    if (versions.current.has(scope)) return;
     const version = versions.current.get(scope) ?? 0;
     let active = true;
     void localPayloads.get(accountId ?? "anonymous", scope).then((saved) => {
@@ -89,5 +92,16 @@ export function useAccountDraft(accountId: string | null, threadId: string | nul
     changed((value) => value + 1);
     return true;
   }, [accountId, storage]);
-  return [draft, setDraft, writeDraft, writeDraftDurable] as const;
+  const moveDraft = useCallback((from: string | null, to: string) => {
+    if (currentAccount.current !== accountId) return false;
+    const scope = key(accountId, from);
+    let text = drafts.current.get(scope);
+    if (text === undefined) {
+      try { text = storage?.getItem(scope) ?? ""; } catch { text = ""; }
+    }
+    if (!text) return true;
+    writeDraft(to, (previous) => previous ? `${previous}\n\n${text}` : text!);
+    return writeDraft(from, "");
+  }, [accountId, storage, writeDraft]);
+  return [draft, setDraft, writeDraft, writeDraftDurable, moveDraft] as const;
 }

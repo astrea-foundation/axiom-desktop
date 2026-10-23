@@ -1,3 +1,4 @@
+import { useOverlayPresence } from "../useOverlayMotion";
 import {
   DndContext,
   DragOverlay,
@@ -343,6 +344,8 @@ function SidebarFrame({
   const fullScreen = useFullScreen();
   const trafficLightInset = isMac && !fullScreen;
   const [menu, setMenu] = useState<SidebarMenuTarget | null>(null);
+  const menuPresence = useOverlayPresence(menu);
+  const visibleMenu = menuPresence.value;
   const closeMenu = useCallback(() => setMenu(null), []);
   // A menu must never outlive its row (search, deletion, collapse, or account switch).
   useEffect(() => {
@@ -479,11 +482,12 @@ function SidebarFrame({
             onSignIn={onSignIn} onLogout={onLogout} onOpenSettings={onOpenSettings} onOpenBalance={onOpenBalance} onRefreshBalance={onRefreshBalance} />
         </div>
       </aside>
-      {menu ? <SidebarContextMenu
-        target={menu}
+      {visibleMenu ? <SidebarContextMenu
+        motion={menuPresence.props}
+        target={visibleMenu}
         onClose={closeMenu}
-        onRename={() => menu.kind === "thread" ? onRenameThread(menu.id) : onRenameFolder(menu.id)}
-        onDelete={() => menu.kind === "thread" ? onDeleteThread(menu.id) : onDeleteFolder(menu.id)}
+        onRename={() => visibleMenu.kind === "thread" ? onRenameThread(visibleMenu.id) : onRenameFolder(visibleMenu.id)}
+        onDelete={() => visibleMenu.kind === "thread" ? onDeleteThread(visibleMenu.id) : onDeleteFolder(visibleMenu.id)}
       /> : null}
 
       <DragOverlay>

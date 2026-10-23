@@ -1,3 +1,4 @@
+import { useAnimatedClose } from "../useOverlayMotion";
 import { useId, useLayoutEffect, useRef, useState } from "react";
 
 /** Keep editing in the renderer; native JavaScript prompts can break Electron focus. */
@@ -8,6 +9,7 @@ export function RenameDialog({ kind, title, onCancel, onSave }: {
   onSave: (name: string) => Promise<unknown>;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
+  const motion = useAnimatedClose();
   const input = useRef<HTMLInputElement>(null);
   const mounted = useRef(false);
   const submitting = useRef(false);
@@ -27,14 +29,14 @@ export function RenameDialog({ kind, title, onCancel, onSave }: {
     return () => { mounted.current = false; dialog.close(); };
   }, []);
 
-  const finish = () => {
+  const finish = () => motion.close(() => {
     ref.current?.close();
     onCancel();
     document.querySelector<HTMLTextAreaElement>("[data-chat-input]")?.focus({ preventScroll: true });
-  };
+  });
 
   return (
-    <dialog ref={ref} aria-modal="true" aria-labelledby={titleId}
+    <dialog {...motion.props} ref={ref} aria-modal="true" aria-labelledby={titleId}
       onCancel={(event) => { event.preventDefault(); if (!submitting.current) finish(); }}
       onKeyDown={(event) => {
         if (event.key !== "Tab") return;
@@ -49,7 +51,7 @@ export function RenameDialog({ kind, title, onCancel, onSave }: {
           first?.focus();
         }
       }}
-      className="no-drag glass-panel-solid shadow-glass-pop m-auto w-[460px] max-w-[calc(100%_-_40px)] rounded-[22px] border-0 p-7 text-[var(--color-text-primary)] backdrop:bg-[var(--surface-scrim)]">
+      className="no-drag glass-panel-solid shadow-glass-pop dialog-motion m-auto w-[460px] max-w-[calc(100%_-_40px)] rounded-[22px] border-0 p-7 text-[var(--color-text-primary)] backdrop:bg-[var(--surface-scrim)]">
       <form onSubmit={async (event) => {
         event.preventDefault();
         if (submitting.current || !name || tooLong) return;

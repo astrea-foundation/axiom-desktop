@@ -1881,13 +1881,18 @@ pub(super) fn render_auth_overlay(
 }
 
 pub(super) fn render_model_picker(frame: &mut Frame<'_>, state: &TuiState, theme: Theme) {
-    let Some(Overlay::ModelPicker { query, selected }) = &state.overlay else {
+    let Some(Overlay::ModelPicker {
+        query,
+        selected,
+        provider,
+    }) = &state.overlay
+    else {
         return;
     };
     let rows = u16::try_from(state.model_candidates.len())
         .unwrap_or(10)
         .clamp(3, 10);
-    let area = fitted_rect(76, rows + 6, frame.area());
+    let area = fitted_rect(76, rows + 7, frame.area());
     frame.render_widget(Clear, area);
     let block = Block::default()
         .title(Span::styled(
@@ -1900,13 +1905,14 @@ pub(super) fn render_model_picker(frame: &mut Frame<'_>, state: &TuiState, theme
         .style(Style::default().fg(theme.text).bg(theme.surface));
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    if inner.width == 0 || inner.height < 4 {
+    if inner.width == 0 || inner.height < 5 {
         return;
     }
 
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
+            Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Min(1),
@@ -1926,6 +1932,22 @@ pub(super) fn render_model_picker(frame: &mut Frame<'_>, state: &TuiState, theme
         rows[0],
     );
 
+    let mut tabs = Vec::new();
+    for (id, label, count) in state.model_picker_providers() {
+        let active = id == *provider;
+        let style = if active {
+            Style::default()
+                .fg(theme.text)
+                .patch(theme.selection())
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.muted)
+        };
+        tabs.push(Span::styled(format!(" {label} {count} "), style));
+        tabs.push(Span::raw("  "));
+    }
+    frame.render_widget(Paragraph::new(Line::from(tabs)), rows[1]);
+
     let matches = state.model_picker_match_indices();
     frame.render_widget(
         Paragraph::new(Line::from(vec![
@@ -1936,10 +1958,10 @@ pub(super) fn render_model_picker(frame: &mut Frame<'_>, state: &TuiState, theme
                 Style::default().fg(theme.muted),
             ),
         ])),
-        rows[1],
+        rows[2],
     );
 
-    let list_height = usize::from(rows[2].height);
+    let list_height = usize::from(rows[3].height);
     let mut lines = Vec::new();
     if state.model_catalog_loading {
         lines.push(Line::from(Span::styled(
@@ -1979,7 +2001,7 @@ pub(super) fn render_model_picker(frame: &mut Frame<'_>, state: &TuiState, theme
             } else {
                 ""
             };
-            let row_width = usize::from(rows[2].width);
+            let row_width = usize::from(rows[3].width);
             let model_label = state
                 .model_details
                 .get(model)
@@ -2018,16 +2040,16 @@ pub(super) fn render_model_picker(frame: &mut Frame<'_>, state: &TuiState, theme
             lines.push(Line::from(Span::styled(label, style)));
         }
     }
-    frame.render_widget(Paragraph::new(lines), rows[2]);
+    frame.render_widget(Paragraph::new(lines), rows[3]);
     frame.render_widget(
         Paragraph::new(Span::styled(
             truncate_end(
-                "Type to search · ↑/↓ to scroll · Enter select · Esc cancel",
-                usize::from(rows[3].width),
+                "Type to search · Tab/Shift+Tab provider · ↑/↓ · Enter select · Esc cancel",
+                usize::from(rows[4].width),
             ),
             Style::default().fg(theme.muted),
         )),
-        rows[3],
+        rows[4],
     );
 
     let cursor_x = rows[0]

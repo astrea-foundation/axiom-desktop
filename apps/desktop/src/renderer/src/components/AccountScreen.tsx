@@ -14,7 +14,7 @@ export function AccountScreen({ title, onClose, wide = false, children }: {
   const close = useCallback(() => setClosing(true), []);
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") { event.preventDefault(); close(); }
+      if (event.key === "Escape" && !event.defaultPrevented && !document.querySelector("dialog[open]")) { event.preventDefault(); close(); }
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);

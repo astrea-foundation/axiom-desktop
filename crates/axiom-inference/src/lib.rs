@@ -12,7 +12,7 @@ mod attachments;
 pub use accounting::{InvocationPurpose, InvocationState, RequestUsage, UsageCompleteness};
 pub use attachments::{
     ImageContent, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS, MAX_IMAGE_BYTES, PromptAttachment,
-    user_message, validate_prompt,
+    user_message, validate_prompt, validate_stored_prompt,
 };
 
 pub const MAX_TOOLS: usize = 128;

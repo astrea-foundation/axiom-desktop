@@ -9,14 +9,16 @@ function thoughtLabel(durationMs?: number): string {
   return `Thought for ${seconds} ${seconds === 1 ? "second" : "seconds"}`;
 }
 
-export function MessageBubble({ message, onRevise, revisionText, revisionHasAttachments = false }: {
+export function MessageBubble({ message, onRevise, revisionText, revisionHasAttachments = false, animateIn = true }: {
   message: Message; onRevise?: (text: string) => Promise<void>; revisionText?: string; revisionHasAttachments?: boolean;
+  /** Entrance motion; off when the surface around the bubble already animates in. */
+  animateIn?: boolean;
 }) {
   const [copied, setCopied] = useState(false);
   const [revisionMode, setRevisionMode] = useState<"edit" | "regenerate" | null>(null);
   const [revisionDraft, setRevisionDraft] = useState("");
   const [revising, setRevising] = useState(false);
-  const revisionControls = revisionMode ? <div data-preserve-follow className="my-2 rounded-lg border border-[var(--color-border)] p-3 text-[12px]">
+  const revisionControls = revisionMode ? <div data-preserve-follow className="animate-fade-in-up my-2 rounded-lg border border-[var(--color-border)] p-3 text-[12px]">
     {revisionMode === "edit" ? <textarea aria-label="Edited message" value={revisionDraft} onChange={(event) => setRevisionDraft(event.target.value)}
       className="mb-2 min-h-24 w-full rounded bg-[var(--color-bg-surface)] p-2 text-[14px]" /> : null}
     <p>This replaces the reply and all later messages. Files already changed stay as they are.</p>
@@ -42,20 +44,20 @@ export function MessageBubble({ message, onRevise, revisionText, revisionHasAtta
 
   if (message.role === "user") {
     return (
-      <div className={`group flex min-w-0 justify-end${message.status === "pending" ? "" : " animate-fade-in-up"}`}>
+      <div className={`group flex min-w-0 justify-end${animateIn ? " animate-fade-in-up" : ""}`}>
         <div className="flex min-w-0 max-w-[min(80%,48rem)] flex-col items-end gap-1">
           <div className="shadow-glass-tile min-w-0 max-w-full overflow-hidden rounded-[19px] rounded-br-[8px] bg-[var(--surface-bubble-user)] px-4 py-2.5 text-[15px] leading-6 text-[var(--color-text-primary)]">
             <ChatMarkdown text={message.content} />
           </div>
           {message.status === "pending" ? (
-            <div role="status" aria-label="Sending message" className="flex items-center gap-1.5 px-1 py-1 text-[11px] text-[var(--color-text-tertiary)]">
+            <div role="status" aria-label="Sending message" className="animate-fade-in flex items-center gap-1.5 px-1 py-1 text-[11px] text-[var(--color-text-tertiary)]">
               <LoaderCircle size={12} className="animate-spin motion-reduce:animate-none" aria-hidden="true" />
               Sending…
             </div>
-          ) : <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+          ) : <div className="flex items-center gap-0.5 opacity-0 transition-opacity duration-200 group-hover:opacity-100 group-focus-within:opacity-100">
             <button
               type="button"
-              className="rounded-md p-1.5 text-[var(--color-text-tertiary)] transition-colors disabled:cursor-not-allowed disabled:opacity-35"
+              className="rounded-md p-1.5 text-[var(--color-text-tertiary)] transition-[background-color,color,transform] hover:bg-[var(--color-bg-surface-hover)] hover:text-[var(--color-text-secondary)] active:scale-90 disabled:cursor-not-allowed disabled:opacity-35"
               aria-label="Edit message"
               disabled={!onRevise || revising}
               onClick={() => { setRevisionDraft(message.content); setRevisionMode("edit"); }}
@@ -82,12 +84,12 @@ export function MessageBubble({ message, onRevise, revisionText, revisionHasAtta
           >
             <ChevronDown
               size={14}
-              className={`transition-transform ${reasoningOpen ? "rotate-0" : "-rotate-90"}`}
+              className={`transition-transform duration-200 ease-[var(--ease-out-expo)] ${reasoningOpen ? "rotate-0" : "-rotate-90"}`}
             />
             <span>{thoughtLabel(message.reasoningDurationMs)}</span>
           </button>
           {reasoningOpen ? (
-            <div className="mt-1.5 rounded-[10px] bg-[var(--wash-row)] px-3.5 py-2.5 text-[var(--color-text-secondary)]">
+            <div className="animate-fade-in-up mt-1.5 rounded-[10px] bg-[var(--wash-row)] px-3.5 py-2.5 text-[var(--color-text-secondary)]">
               <ChatMarkdown text={reasoning} />
             </div>
           ) : null}
@@ -123,7 +125,7 @@ export function MessageBubble({ message, onRevise, revisionText, revisionHasAtta
         </div>
       </div>
       ) : null}
-      {!message.continues ? <div className="flex max-w-full items-center gap-1.5 self-start opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+      {!message.continues ? <div className="flex max-w-full items-center gap-1.5 self-start opacity-0 transition-opacity duration-200 group-hover:opacity-100 group-focus-within:opacity-100">
           <div className="flex items-center gap-0.5">
             <button
               type="button"

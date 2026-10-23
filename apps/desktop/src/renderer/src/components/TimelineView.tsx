@@ -10,7 +10,7 @@ import { hasActiveResponse, messageRevisionSources, presentTimeline } from "./ti
 function ActivityRow({ item }: { item: ClientTimelineItem }) {
   const error = item.kind === "error";
   return (
-    <div className={`flex items-start gap-2 rounded-lg px-3 py-2 text-[12.5px] ${error ? "bg-[var(--color-danger-soft)] text-[var(--color-danger-strong)]" : "bg-[var(--wash-row)] text-[var(--color-text-tertiary)]"}`}>
+    <div className={`animate-fade-in-up flex items-start gap-2 rounded-lg px-3 py-2 text-[12.5px] ${error ? "bg-[var(--color-danger-soft)] text-[var(--color-danger-strong)]" : "bg-[var(--wash-row)] text-[var(--color-text-tertiary)]"}`}>
       {error ? <AlertTriangle size={14} className="mt-0.5 shrink-0" /> : item.kind === "plan" ? <ListChecks size={14} className="mt-0.5 shrink-0" /> : <CheckCircle2 size={14} className="mt-0.5 shrink-0" />}
       <span>{item.text}</span>
     </div>
@@ -28,12 +28,15 @@ export function TimelineView({
 }) {
   const presentation = presentTimeline(session.timeline);
   const sources = messageRevisionSources(session.timeline);
+  // A user row keeps the key of its optimistic bubble so the echoed transcript
+  // item takes over the same element instead of re-animating a second bubble.
+  const clientIds = new Map(session.timeline.flatMap((item) => item.clientItemId ? [[item.id, item.clientItemId] as const] : []));
   const rows = presentation.map((row) => {
     if (row.kind === "message") {
       const source = sources.get(row.message.id);
-      return <div key={row.key} data-timeline-kind={row.message.role}>
-        {row.message.role === "user" ? <StoredAttachments threadId={session.sessionId} userItemId={row.message.id} names={attachmentNames(source?.raw)} /> : null}
-        <MessageBubble message={row.message} revisionHasAttachments={Boolean(attachmentNames(source?.raw).length)}
+      return <div key={row.message.role === "user" ? clientIds.get(row.message.id) ?? row.key : row.key} data-timeline-kind={row.message.role}>
+        {row.message.role === "user" ? <StoredAttachments key="attachments" threadId={session.sessionId} userItemId={row.message.id} names={attachmentNames(source?.raw)} /> : null}
+        <MessageBubble key="bubble" message={row.message} revisionHasAttachments={Boolean(attachmentNames(source?.raw).length)}
         revisionText={source?.text} onRevise={source && onRevise ? (text) => onRevise(source.id, text) : undefined} /></div>;
     }
     if (row.kind === "tool" && row.item.tool) {
@@ -49,6 +52,7 @@ export function TimelineView({
   if (showPendingUser && pendingUserMessage) {
     rows.push(
       <div key={pendingUserMessage.id} data-timeline-kind="user"><MessageBubble
+        key="bubble"
         message={{
           id: pendingUserMessage.id,
           role: "user",
@@ -70,7 +74,7 @@ export function TimelineView({
         /></div>
       ) : null}
       {session.interactions.map((interaction) => (
-        <div key={interaction.id} data-timeline-kind="interaction" data-preserve-follow><InteractionCard interaction={interaction} /></div>
+        <div key={interaction.id} data-timeline-kind="interaction" data-preserve-follow className="animate-fade-in-up"><InteractionCard interaction={interaction} /></div>
       ))}
     </div>
   );

@@ -1,3 +1,4 @@
+import type { useOverlayPresence } from "../useOverlayMotion";
 import { Pencil, Trash2 } from "lucide-react";
 import { useLayoutEffect, useRef, type KeyboardEvent, type MouseEvent } from "react";
 import { createPortal } from "react-dom";
@@ -33,7 +34,8 @@ export function contextMenuTrigger(
   };
 }
 
-export function SidebarContextMenu({ target, onClose, onRename, onDelete }: {
+export function SidebarContextMenu({ motion, target, onClose, onRename, onDelete }: {
+  motion: ReturnType<typeof useOverlayPresence>["props"];
   target: SidebarMenuTarget;
   onClose: () => void;
   onRename: () => void;
@@ -46,6 +48,7 @@ export function SidebarContextMenu({ target, onClose, onRename, onDelete }: {
   };
 
   useLayoutEffect(() => {
+    if (motion.inert) return;
     const menu = ref.current!;
     const rect = menu.getBoundingClientRect();
     menu.style.left = `${Math.max(8, Math.min(target.x, window.innerWidth - rect.width - 8))}px`;
@@ -66,15 +69,15 @@ export function SidebarContextMenu({ target, onClose, onRename, onDelete }: {
       window.removeEventListener("resize", onClose);
       window.removeEventListener("blur", onClose);
     };
-  }, [target, onClose]);
+  }, [target, onClose, motion.inert]);
 
   return createPortal(
-    <div
+    <div {...motion}
       ref={ref}
       role="menu"
       aria-label={`${target.kind === "thread" ? "Thread" : "Folder"} actions`}
       style={{ left: target.x, top: target.y }}
-      className="no-drag glass-panel-solid shadow-glass-pop fixed z-[100] w-40 rounded-[10px] p-1"
+      className="no-drag glass-panel-solid shadow-glass-pop popover-motion fixed z-[100] w-40 origin-top-left rounded-[10px] p-1"
       onContextMenu={(event) => event.preventDefault()}
       onKeyDown={(event) => {
         if (event.key === "Escape" || event.key === "Tab") {

@@ -196,12 +196,12 @@ test("large attachment payloads commit before queuing, hydrate paused, and stay 
   const queue = new MessageQueue(f.storage, () => {}, assert.fail, payloads);
   queue.sync(f.state, f.api);
   const text = "large private prompt ".repeat(20_000);
-  const files = [{ kind: "text" as const, name: "private.txt", text: "private attachment" }];
+  const files = [{ kind: "image" as const, name: "private.png", image: { mimeType: "image/png", data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC" } }];
   const id = await queue.reserveDurable("thread", text, false, files);
   queue.ready(id, "thread");
   const manifest = [...f.values.values()].join("");
   assert.ok(manifest.length < 1000);
-  assert.ok(!manifest.includes("private attachment"));
+  assert.ok(!manifest.includes(files[0]!.image.data));
   const restored = new MessageQueue(f.storage, () => {}, assert.fail, payloads);
   restored.sync(f.state, f.api); await settle();
   assert.equal(restored.list("thread")[0]?.text, text);

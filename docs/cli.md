@@ -44,7 +44,7 @@ Slash commands are handled locally rather than sent to the model as prompts.
 
 | Command | Purpose |
 |---|---|
-| `/model` | Search the discovered catalog; unsupported/manual IDs are rejected |
+| `/model` | Search the discovered catalog by provider; Tab / Shift+Tab switches providers, ↑/↓ selects a model, Enter confirms |
 | `/thinking <level>` | Select a supported reasoning level |
 | `/permissions` | Open tool permission settings |
 | `/web on` / `/web off` | Opt into or disable external search/fetch tools for subsequent turns |
@@ -55,6 +55,10 @@ Slash commands are handled locally rather than sent to the model as prompts.
 | `/security`, `/refresh` | Inspect cached public evidence or request fresh local verification |
 | `/theme dark\|light\|terminal` | Set the session appearance |
 | `/help` | Show the complete command reference |
+
+The model picker refreshes the catalog each time it opens. Provider tabs reflect
+the service’s enabled offerings; search is kept when switching tabs. Unsupported
+manual IDs are rejected.
 
 Web starts off. Search queries and fetched URLs leave the encrypted inference
 boundary. Tool profiles and process isolation are described in

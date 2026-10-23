@@ -77,6 +77,7 @@ export function useModelCatalog(agentState: ClientState, navigation: ReturnType<
   const [modelCatalogRefresh, setModelCatalogRefresh] = useState(0);
   const [desktopReady, setDesktopReady] = useState(false);
   const settingsGeneration = useRef(0);
+  const catalogScope = useRef("");
   const preferredModelId = useRef("");
   const preferredReasoningEffort = useRef<ReasoningEffort>("provider_default");
   const selectedModel = models.find((model) => model.id === modelId) ?? models[0];
@@ -132,7 +133,9 @@ export function useModelCatalog(agentState: ClientState, navigation: ReturnType<
       return;
     }
     let cancelled = false;
-    setModels([]);
+    const scope = `${agentState.runtimeInstanceId}:${agentState.account.account?.id}`;
+    if (catalogScope.current !== scope) setModels([]);
+    catalogScope.current = scope;
     setModelCatalogError(null);
     void api.listModels().then((response) => {
       if (cancelled) return;
@@ -152,6 +155,7 @@ export function useModelCatalog(agentState: ClientState, navigation: ReturnType<
       }
     }).catch((error: unknown) => {
       if (cancelled) return;
+      setModels([]);
       const detail = desktopErrorMessage(error, "AxiomCLI could not load the model catalog.");
       setModelCatalogError(`Could not load models. Check your connection or refresh your account in Settings. ${detail}`);
     });

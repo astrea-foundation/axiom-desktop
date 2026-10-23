@@ -1,3 +1,4 @@
+import { useAnimatedClose } from "../useOverlayMotion";
 import { Bot, FolderOpen, Info, LoaderCircle, ShieldCheck, Terminal, X } from "lucide-react";
 import { useId, useLayoutEffect, useRef, useState } from "react";
 import type { AgentControlOptions } from "./AgentModeControl";
@@ -10,6 +11,7 @@ const PERMISSIONS = [
 /** Renderer-owned modal; no OS prompt or composer-positioned overlay. */
 export function AgentSettingsDialog({ options, onClose }: { options: AgentControlOptions; onClose(): void }) {
   const dialog = useRef<HTMLDialogElement>(null);
+  const motion = useAnimatedClose();
   const toggle = useRef<HTMLButtonElement>(null);
   const mounted = useRef(false);
   const inFlight = useRef(false);
@@ -27,10 +29,10 @@ export function AgentSettingsDialog({ options, onClose }: { options: AgentContro
     return () => { mounted.current = false; element.close(); };
   }, []);
 
-  const finish = () => {
+  const finish = () => motion.close(() => {
     dialog.current?.close();
     onClose();
-  };
+  });
   const dismiss = () => { if (!inFlight.current) finish(); };
   const choose = async () => {
     if (inFlight.current || blocked) return;
@@ -61,7 +63,7 @@ export function AgentSettingsDialog({ options, onClose }: { options: AgentContro
     }
   };
 
-  return <dialog ref={dialog} aria-modal="true" aria-label="Agent settings" aria-describedby={`${id}-description`}
+  return <dialog {...motion.props} ref={dialog} aria-modal="true" aria-label="Agent settings" aria-describedby={`${id}-description`}
     onCancel={(event) => { event.preventDefault(); dismiss(); }}
     onClick={(event) => {
       if (event.target !== event.currentTarget) return;
@@ -76,7 +78,7 @@ export function AgentSettingsDialog({ options, onClose }: { options: AgentContro
       if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
       else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
     }}
-    className="no-drag glass-panel-solid shadow-glass-pop m-auto max-h-[calc(100dvh-40px)] w-[520px] max-w-[calc(100%_-_40px)] overflow-y-auto rounded-[22px] border-0 p-0 text-[var(--color-text-primary)] backdrop:bg-[var(--surface-scrim)] backdrop:backdrop-blur-[4px]">
+    className="no-drag glass-panel-solid shadow-glass-pop dialog-motion m-auto max-h-[calc(100dvh-40px)] w-[520px] max-w-[calc(100%_-_40px)] overflow-y-auto rounded-[22px] border-0 p-0 text-[var(--color-text-primary)] backdrop:bg-[var(--surface-scrim)] backdrop:backdrop-blur-[4px]">
     <form onSubmit={(event) => { event.preventDefault(); void save(); }}>
       <header className="flex items-start gap-3.5 px-7 pt-7">
         <div className="shadow-glass-tile flex h-10 w-10 shrink-0 items-center justify-center rounded-[13px] bg-[var(--surface-tile)] text-[var(--color-text-secondary)]"><Bot size={20} aria-hidden="true" /></div>

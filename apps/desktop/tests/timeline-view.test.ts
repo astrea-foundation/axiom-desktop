@@ -69,6 +69,27 @@ test("optimistic new prompts show their own single loading indicator", () => {
   assert.match(html, /Next question/);
 });
 
+test("an optimistic prompt in an idle thread shows Sending without a generation indicator", () => {
+  const html = renderToStaticMarkup(createElement(TimelineView, {
+    session: { ...session([{ ...pending, text: "Previous answer", status: "completed" }]), running: false },
+    pendingUserMessage: { id: "optimistic-user", sessionId: "thread-1", text: "Next question" },
+  }));
+  assert.match(html, /Next question/);
+  assert.match(html, /Sending…/);
+  assert.equal(html.match(/data-timeline-kind="user"/g)?.length, 1);
+  assert.doesNotMatch(html, /Generating/);
+});
+
+test("an echoed prompt replaces its optimistic bubble instead of duplicating it", () => {
+  const echoed: ClientTimelineItem = { id: "native-1", clientItemId: "optimistic-user", turnId: "turn-2", kind: "user", text: "Next question", status: "completed" };
+  const html = renderToStaticMarkup(createElement(TimelineView, {
+    session: session([echoed]),
+    pendingUserMessage: { id: "optimistic-user", sessionId: "thread-1", text: "Next question" },
+  }));
+  assert.equal(html.match(/Next question/g)?.length, 1);
+  assert.doesNotMatch(html, /Sending…/);
+});
+
 test("settled replies do not show a generation indicator", () => {
   const current = session([user, { ...pending, text: "Done", status: "completed", terminalVerified: true }, provider]);
   current.running = false;

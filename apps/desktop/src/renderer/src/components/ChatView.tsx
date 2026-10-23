@@ -1,68 +1,16 @@
 import { ArrowDown } from "lucide-react";
-import type { ReactNode } from "react";
 import type { ClientSessionState } from "@axiom/axiom-acp-client";
-import type { PendingUserMessage, ProviderModel, ReasoningEffort } from "../types";
-import type { AttachmentControl } from "./Attachments";
-import { ChatComposer } from "./ChatComposer";
-import type { AgentControlOptions } from "./AgentModeControl";
+import type { PendingUserMessage } from "../types";
 import { TimelineView } from "./TimelineView";
 import { useChatAutoScroll } from "../useChatAutoScroll";
 
 interface ChatViewProps {
-  attachments?: AttachmentControl;
-  agentControl?: AgentControlOptions;
-  queue?: ReactNode;
   session: ClientSessionState;
-  draft: string;
-  onDraftChange: (value: string) => void;
-  onSubmit: () => void;
-  onStop: () => void;
   onRevise?: (userItemId: string, text: string) => Promise<void>;
-  isStreaming: boolean;
-  models: ProviderModel[];
-  selectedModelId: string;
-  modelStatusLabel: string;
-  onModelChange: (modelId: string) => void;
-  requiresSignIn: boolean;
-  onSignIn: () => void;
-  reasoningEffort: ReasoningEffort;
-  onReasoningEffortChange: (effort: ReasoningEffort) => void;
   pendingUserMessage?: PendingUserMessage | null;
-  onVerifySecurity: () => void | Promise<unknown>;
-  securityScope?: string;
-  securityRefreshDisabledReason?: string;
-  webEnabled: boolean;
-  webDisabled: boolean;
-  onWebToggle: () => void;
 }
 
-export function ChatView({
-  attachments,
-  agentControl,
-  queue,
-  session,
-  draft,
-  onDraftChange,
-  onSubmit,
-  onStop,
-  onRevise,
-  isStreaming,
-  models,
-  selectedModelId,
-  modelStatusLabel,
-  onModelChange,
-  requiresSignIn,
-  onSignIn,
-  reasoningEffort,
-  onReasoningEffortChange,
-  pendingUserMessage,
-  onVerifySecurity,
-  securityScope,
-  securityRefreshDisabledReason,
-  webEnabled,
-  webDisabled,
-  onWebToggle,
-}: ChatViewProps) {
+export function ChatView({ session, onRevise, pendingUserMessage }: ChatViewProps) {
   const autoScroll = useChatAutoScroll(session.sessionId);
 
   return (
@@ -79,7 +27,9 @@ export function ChatView({
         {...autoScroll.handlers}
       >
         <div ref={autoScroll.contentRef} className="mx-auto flex w-full max-w-[760px] flex-col pb-8 pt-[88px]">
-          <TimelineView session={session} pendingUserMessage={pendingUserMessage} onRevise={onRevise} />
+          <div key={session.sessionId} className="animate-fade-in flex flex-col">
+            <TimelineView session={session} pendingUserMessage={pendingUserMessage} onRevise={onRevise} />
+          </div>
         </div>
       </div>
 
@@ -95,38 +45,7 @@ export function ChatView({
       ) : null}
       </div>
 
-      <div className="shrink-0 px-6 pb-5 pt-2">
-        <div className="mx-auto w-full max-w-[760px]">
-          {queue}
-          <ChatComposer
-            attachments={attachments}
-            agentControl={agentControl}
-            webEnabled={webEnabled}
-            webDisabled={webDisabled}
-            onWebToggle={onWebToggle}
-            value={draft}
-            onChange={onDraftChange}
-            onSubmit={onSubmit}
-            onStop={onStop}
-            isStreaming={isStreaming}
-            models={models}
-            selectedModelId={selectedModelId}
-            modelStatusLabel={modelStatusLabel}
-            onModelChange={onModelChange}
-            requiresSignIn={requiresSignIn}
-            onSignIn={onSignIn}
-            reasoningEffort={reasoningEffort}
-            onReasoningEffortChange={onReasoningEffortChange}
-            security={session}
-            securityScope={securityScope}
-            securityRefreshDisabledReason={securityRefreshDisabledReason}
-            contextUsage={session.contextUsage ?? null}
-            requestUsage={session.requestUsage}
-            activeTurnId={session.activeTurnId}
-            onVerifySecurity={onVerifySecurity}
-          />
-        </div>
-      </div>
+
     </div>
   );
 }

@@ -1744,18 +1744,9 @@ fn prompt_input(
                 });
                 continue;
             }
-            protocol::ContentBlock::Resource(resource) => {
-                if let protocol::EmbeddedResourceResource::TextResourceContents(content) =
-                    &resource.resource
-                {
-                    attachments.push(axiom_inference::PromptAttachment::Text {
-                        name: content.uri.clone(),
-                        text: content.text.clone(),
-                    });
-                    continue;
-                }
+            protocol::ContentBlock::Resource(_) => {
                 return Err(
-                    "Binary resources must be converted locally to text or image content before sending",
+                    "File resources are not supported for upload. Only native image input is supported by eligible models.",
                 );
             }
             _ => return Err("ACP prompt contains a content type AxiomCLI did not advertise"),
@@ -2453,6 +2444,24 @@ mod tests {
             .expect("resource link"),
             "[Referenced resource: source](file:///tmp/source.rs)"
         );
+    }
+
+    #[test]
+    fn embedded_file_resources_are_rejected_instead_of_extracted() {
+        for resource in [
+            serde_json::json!({"uri": "file:///notes.txt", "mimeType": "text/plain", "text": "private file"}),
+            serde_json::json!({"uri": "file:///notes.pdf", "mimeType": "application/pdf", "blob": "JVBERi0="}),
+        ] {
+            let block = serde_json::from_value(
+                serde_json::json!({"type": "resource", "resource": resource}),
+            )
+            .unwrap();
+            assert!(
+                prompt_input(&[block])
+                    .unwrap_err()
+                    .contains("not supported for upload")
+            );
+        }
     }
 
     #[test]

@@ -760,13 +760,9 @@ input {
   animation: account-screen-exit 180ms ease-in both;
   pointer-events: none;
 }
-.account-menu-motion {
-  animation: account-screen-enter 160ms var(--ease-out-expo) both;
-}
 @media (prefers-reduced-motion: reduce) {
   .account-screen-motion,
-  .account-screen-motion[data-closing="true"],
-  .account-menu-motion { animation: none; }
+  .account-screen-motion[data-closing="true"] { animation: none; }
 }
 
 @keyframes fade-in-up {
@@ -867,6 +863,65 @@ input {
 }
 .animate-progress-in {
   animation: progress-in 0.7s var(--ease-out-expo) both;
+}
+
+/* Modal entry: the panel settles in from slightly below while its scrim fades. */
+@keyframes dialog-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.965);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.dialog-motion[open] {
+  animation: dialog-in 0.28s var(--ease-out-expo) both;
+}
+.dialog-motion[open]::backdrop {
+  animation: fade-in 0.25s ease-out both;
+}
+
+/* Overlays stay mounted and inert until exit completes, including native backdrops. */
+@keyframes dialog-out {
+  to { opacity: 0; transform: translateY(6px) scale(0.975); }
+}
+@keyframes backdrop-out {
+  to { opacity: 0; }
+}
+@keyframes popover-out {
+  to { opacity: 0; transform: translateY(3px) scale(0.97); }
+}
+.dialog-motion[open][data-closing="true"] {
+  animation: dialog-out 160ms ease-in both;
+}
+.dialog-motion[open][data-closing="true"]::backdrop {
+  animation: backdrop-out 160ms ease-in both;
+}
+.popover-motion {
+  animation: pop-in 200ms var(--ease-out-expo) both;
+}
+.popover-motion[data-closing="true"] {
+  animation: popover-out 160ms ease-in both;
+  pointer-events: none;
+}
+
+/* Disclosure content grows and shrinks instead of snapping. Chromium supports
+   interpolating to `auto` heights via interpolate-size; other engines ignore
+   the transition and keep the instant open/close. */
+:root {
+  interpolate-size: allow-keywords;
+}
+details::details-content {
+  height: 0;
+  overflow: clip;
+  transition:
+    height 0.28s var(--ease-out-expo),
+    content-visibility 0.28s allow-discrete;
+}
+details[open]::details-content {
+  height: auto;
 }
 
 .dot-bounce {
@@ -1058,10 +1113,23 @@ input {
   .animate-progress-in,
   .animate-pop-in,
   .animate-fade-in-up,
-  .animate-fade-in {
+  .animate-fade-in,
+  .dialog-motion[open],
+  .dialog-motion[open]::backdrop,
+  .dialog-motion[open][data-closing="true"],
+  .dialog-motion[open][data-closing="true"]::backdrop,
+  .popover-motion,
+  .popover-motion[data-closing="true"] {
     animation-duration: 0.01ms;
     animation-delay: 0ms !important;
     animation-iteration-count: 1;
+  }
+  .popover-motion,
+  .popover-motion[data-closing="true"] {
+    animation: none;
+  }
+  details::details-content {
+    transition: none;
   }
   .animate-pulse-glow {
     animation: none;

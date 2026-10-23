@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { ClientSessionState } from "@axiom/axiom-acp-client";
+import { ChatComposer } from "../../../src/renderer/src/components/ChatComposer";
 import { ChatView } from "../../../src/renderer/src/components/ChatView";
 import { securityEvidence } from "../../../../../fixtures/desktop-security.mts";
 import type { ProviderModel } from "../../../src/renderer/src/types";
@@ -48,11 +49,15 @@ function ProofHarness() {
   return <div style={{ height: "100vh" }} className="bg-[var(--color-bg-base)] p-4">
     <main className="relative h-full overflow-hidden rounded-[22px] bg-[var(--surface-stage)] shadow-glass-card">
       <header className="absolute inset-x-0 top-0 z-10 flex h-12 items-center justify-center text-[13px] text-[var(--color-text-secondary)]">Private conversation</header>
-      {showChat ? <ChatView session={session} draft={draft} onDraftChange={setDraft} onSubmit={() => {}} onStop={() => {}}
+      {showChat ? <div className="flex h-full min-h-0 flex-col">
+        <div className="min-h-0 flex-1"><ChatView session={session} /></div>
+        <div className="shrink-0 px-6 pb-5 pt-2"><div className="mx-auto max-w-[760px]">
+        <ChatComposer security={session} value={draft} onChange={setDraft} onSubmit={() => {}} onStop={() => {}}
         isStreaming={session.running} models={[model]} selectedModelId={selectedModel} modelStatusLabel="" onModelChange={setModel}
         requiresSignIn={false} onSignIn={() => {}} reasoningEffort="medium" onReasoningEffortChange={() => {}}
         onVerifySecurity={verify} securityScope={scope} securityRefreshDisabledReason={disabledReason}
-        webEnabled={web} webDisabled={false} onWebToggle={() => setWeb((value) => !value)} /> : null}
+        webEnabled={web} webDisabled={false} onWebToggle={() => setWeb((value) => !value)} />
+        </div></div></div> : null}
     </main>
   </div>;
 }

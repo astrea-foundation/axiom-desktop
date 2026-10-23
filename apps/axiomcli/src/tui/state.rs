@@ -46,6 +46,7 @@ pub(super) enum Overlay {
         selected: usize,
     },
     ModelPicker {
+        provider: String,
         query: String,
         selected: usize,
     },
@@ -1299,6 +1300,7 @@ impl TuiState {
 
     pub(super) fn open_model_picker(&mut self) {
         self.overlay = Some(Overlay::ModelPicker {
+            provider: String::new(),
             query: String::new(),
             selected: 0,
         });
@@ -1310,8 +1312,54 @@ impl TuiState {
         };
     }
 
+    pub(super) fn model_picker_providers(&self) -> Vec<(String, String, usize)> {
+        let mut providers: Vec<(String, String, usize)> = Vec::new();
+        for model in &self.model_candidates {
+            let details = self.model_details.get(model);
+            let id = details.map_or("", |details| details.provider_id.as_str());
+            if let Some(provider) = providers.iter_mut().find(|provider| provider.0 == id) {
+                provider.2 += 1;
+            } else {
+                let label = details.map_or("", |details| details.provider_label.as_str());
+                providers.push((
+                    id.into(),
+                    if label.is_empty() { "Models" } else { label }.into(),
+                    1,
+                ));
+            }
+        }
+        providers
+    }
+
+    pub(super) fn cycle_model_provider(&mut self, amount: isize) {
+        let providers = self.model_picker_providers();
+        let Some(Overlay::ModelPicker {
+            provider, selected, ..
+        }) = &mut self.overlay
+        else {
+            return;
+        };
+        if providers.is_empty() {
+            return;
+        }
+        let current = providers
+            .iter()
+            .position(|entry| entry.0 == *provider)
+            .unwrap_or(0);
+        let next = if amount.is_negative() {
+            current.checked_sub(1).unwrap_or(providers.len() - 1)
+        } else {
+            (current + 1) % providers.len()
+        };
+        provider.clone_from(&providers[next].0);
+        *selected = 0;
+    }
+
     pub(super) fn model_picker_match_indices(&self) -> Vec<usize> {
-        let Some(Overlay::ModelPicker { query, .. }) = &self.overlay else {
+        let Some(Overlay::ModelPicker {
+            query, provider, ..
+        }) = &self.overlay
+        else {
             return Vec::new();
         };
         let query = query.to_lowercase();
@@ -1319,6 +1367,14 @@ impl TuiState {
             .iter()
             .enumerate()
             .filter_map(|(index, model)| {
+                if self
+                    .model_details
+                    .get(model)
+                    .map_or("", |details| details.provider_id.as_str())
+                    != provider
+                {
+                    return None;
+                }
                 let matches = self.model_details.get(model).map_or_else(
                     || model.to_lowercase().contains(&query),
                     |details| {
@@ -1339,6 +1395,24 @@ impl TuiState {
     }
 
     pub(super) fn align_model_picker_to_current(&mut self) {
+        let current_provider = self
+            .model_details
+            .get(&self.model)
+            .map(|details| details.provider_id.clone())
+            .filter(|id| {
+                self.model_picker_providers()
+                    .iter()
+                    .any(|entry| &entry.0 == id)
+            })
+            .or_else(|| {
+                self.model_picker_providers()
+                    .first()
+                    .map(|entry| entry.0.clone())
+            })
+            .unwrap_or_default();
+        if let Some(Overlay::ModelPicker { provider, .. }) = &mut self.overlay {
+            *provider = current_provider;
+        }
         let matches = self.model_picker_match_indices();
         let selected = matches
             .iter()
@@ -1370,20 +1444,29 @@ impl TuiState {
     }
 
     pub(super) fn push_model_picker_search(&mut self, character: char) {
-        if let Some(Overlay::ModelPicker { query, selected }) = &mut self.overlay {
+        if let Some(Overlay::ModelPicker {
+            query, selected, ..
+        }) = &mut self.overlay
+        {
             query.push(character);
             *selected = 0;
         }
     }
 
     pub(super) fn pop_model_picker_search(&mut self) {
-        if let Some(Overlay::ModelPicker { query, selected }) = &mut self.overlay {
+        if let Some(Overlay::ModelPicker {
+            query, selected, ..
+        }) = &mut self.overlay
+        {
             query.pop();
             *selected = 0;
         }
     }
 
     pub(super) fn selected_model(&self) -> Option<String> {
+        if self.model_catalog_loading {
+            return None;
+        }
         let Overlay::ModelPicker { selected, .. } = self.overlay.as_ref()? else {
             return None;
         };

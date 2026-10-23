@@ -6,7 +6,8 @@ test("UTF-8 and aggregate attachment limits are enforced without the old 64 KiB 
   assert.doesNotThrow(() => validatePrompt("x".repeat(256 * 1024), []));
   assert.throws(() => validatePrompt("界".repeat(MAX_PROMPT_BYTES / 3 + 1), []));
   assert.throws(() => validatePrompt("x".repeat(MAX_PROMPT_BYTES), [{ kind: "text", name: "f", text: "x" }]));
-  assert.doesNotThrow(() => validatePrompt("", [{ kind: "text", name: "notes", text: "data" }]));
+  assert.throws(() => validatePrompt("", [{ kind: "text", name: "notes", text: "data" }]), /not supported for upload/);
+  assert.throws(() => validatePrompt("Question", [{ kind: "text", name: "notes.pdf", text: "extracted data" }]), /not supported for upload/);
   assert.throws(() => validatePrompt("", []));
 });
 

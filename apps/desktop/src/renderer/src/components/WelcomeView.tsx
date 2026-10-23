@@ -1,58 +1,18 @@
-import type { ReactNode } from "react";
 import { Cpu, EyeOff, LogIn, RefreshCw, ShieldAlert, ShieldCheck } from "lucide-react";
 import { AxiomMark } from "../brand/AxiomLogo";
 import { GreetingHeadline } from "../brand/GreetingHeadline";
 import type { AccountPresentation } from "../signInFlow";
-import type { ProviderModel, ReasoningEffort } from "../types";
-import type { AttachmentControl } from "./Attachments";
-import { ChatComposer } from "./ChatComposer";
-import type { AgentControlOptions } from "./AgentModeControl";
 
 interface WelcomeViewProps {
-  attachments?: AttachmentControl;
-  savedMessages?: ReactNode;
-  agentControl?: AgentControlOptions;
-  draft: string;
-  onDraftChange: (value: string) => void;
-  onSubmit: () => void;
-  models: ProviderModel[];
-  selectedModelId: string;
-  modelStatusLabel: string;
-  onModelChange: (modelId: string) => void;
   account: AccountPresentation;
   signInActive?: boolean;
   onSignIn: () => void;
   onRefreshAccount: () => void;
-  reasoningEffort: ReasoningEffort;
-  onReasoningEffortChange: (effort: ReasoningEffort) => void;
-  webEnabled: boolean;
-  webDisabled: boolean;
-  onWebToggle: () => void;
 }
 
-export function WelcomeView({
-  attachments,
-  savedMessages,
-  agentControl,
-  draft,
-  onDraftChange,
-  onSubmit,
-  models,
-  selectedModelId,
-  modelStatusLabel,
-  onModelChange,
-  account,
-  signInActive = false,
-  onSignIn,
-  onRefreshAccount,
-  reasoningEffort,
-  onReasoningEffortChange,
-  webEnabled,
-  webDisabled,
-  onWebToggle,
-}: WelcomeViewProps) {
+export function WelcomeView({ account, signInActive = false, onSignIn, onRefreshAccount }: WelcomeViewProps) {
   return (
-    <div className="relative flex h-full w-full items-center justify-center px-6">
+    <>
       {/* A fixed 2000×1400 composition pinned to the view's centre: the window
           reveals more or less of it instead of moving the blooms around. */}
       <div className="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden="true">
@@ -72,7 +32,7 @@ export function WelcomeView({
         </div>
       </div>
 
-      <div className="relative z-10 flex w-full max-w-[760px] flex-col items-center animate-fade-in">
+      <div className="relative z-10 mx-auto flex w-full max-w-[808px] shrink-0 flex-col items-center px-6 animate-fade-in">
         <AxiomMark className="mb-7 h-10 w-auto" />
         <GreetingHeadline />
         {!signInActive && account.kind !== "valid" && account.kind !== "starting" ? (
@@ -101,29 +61,14 @@ export function WelcomeView({
             </button>
           </div>
         ) : null}
-        <div className="w-full">
-          <div className="w-full">{savedMessages}</div>
-        <ChatComposer
-            attachments={attachments}
-            agentControl={agentControl}
-            webEnabled={webEnabled}
-            webDisabled={webDisabled}
-            onWebToggle={onWebToggle}
-            value={draft}
-            onChange={onDraftChange}
-            onSubmit={onSubmit}
-            autoFocus
-            models={models}
-            selectedModelId={selectedModelId}
-            modelStatusLabel={modelStatusLabel}
-            onModelChange={onModelChange}
-            requiresSignIn={account.kind === "signed-out" || account.kind === "expired"}
-            onSignIn={onSignIn}
-            reasoningEffort={reasoningEffort}
-            onReasoningEffortChange={onReasoningEffortChange}
-          />
-        </div>
-        <div className="mt-3.5 flex flex-wrap items-center justify-center gap-[18px] text-[11.5px] text-[var(--color-text-tertiary)]">
+      </div>
+    </>
+  );
+}
+
+export function ConversationPrivacyNote() {
+  return (
+        <div className="relative z-10 mt-3.5 shrink-0 px-6 flex flex-wrap items-center justify-center gap-[18px] text-[11.5px] text-[var(--color-text-tertiary)]">
           <span className="inline-flex items-center gap-1.5">
             <ShieldCheck size={12} className="shrink-0 text-[var(--color-text-muted)]" />
             Sealed on your machine
@@ -137,7 +82,5 @@ export function WelcomeView({
             Model traffic encrypted
           </span>
         </div>
-      </div>
-    </div>
   );
 }

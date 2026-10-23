@@ -486,6 +486,59 @@ fn model_picker_filters_navigates_and_selects_catalog_values() {
 }
 
 #[test]
+fn model_picker_tabs_follow_providers_and_preserve_search() {
+    let mut state = TuiState::new(
+        PathBuf::from("/tmp/project"),
+        "phala-glm".into(),
+        PermissionProfile::Confirm,
+    );
+    for (id, provider, label) in [
+        ("near-glm", "near", "NEAR AI"),
+        ("near-qwen", "near", "NEAR AI"),
+        ("phala-glm", "phala", "Phala"),
+    ] {
+        state.model_candidates.push(id.into());
+        state.model_details.insert(
+            id.into(),
+            axiom_inference::ModelInfo {
+                id: id.into(),
+                short_label: id.into(),
+                provider_id: provider.into(),
+                provider_label: label.into(),
+                ..axiom_inference::ModelInfo::default()
+            },
+        );
+    }
+    state.model_catalog_loaded = true;
+    state.open_model_picker();
+    assert_eq!(state.selected_model().as_deref(), Some("phala-glm"));
+    let output = render_symbols(120, 30, &state);
+    assert!(output.contains("NEAR AI 2"));
+    assert!(output.contains("Phala 1"));
+    assert!(output.contains("Tab/Shift+Tab provider"));
+    assert!(!output.contains("near-qwen"));
+    state.cycle_model_provider(1); // wraps to NEAR
+    assert_eq!(state.selected_model().as_deref(), Some("near-glm"));
+    state.push_model_picker_search('q');
+    assert_eq!(state.selected_model().as_deref(), Some("near-qwen"));
+    state.cycle_model_provider(-1); // reverse wrap, keep search
+    assert_eq!(state.selected_model(), None);
+    assert!(render_symbols(120, 30, &state).contains("No models match this search."));
+    state.pop_model_picker_search();
+    assert_eq!(state.selected_model().as_deref(), Some("phala-glm"));
+    // A refreshed catalog removes a disabled provider and realigns safely.
+    state.model_candidates.retain(|id| id != "phala-glm");
+    state.align_model_picker_to_current();
+    assert_eq!(state.selected_model().as_deref(), Some("near-glm"));
+    assert!(!render_symbols(120, 30, &state).contains("Phala 1"));
+    state.cycle_model_provider(1);
+    assert_eq!(state.selected_model().as_deref(), Some("near-glm"));
+    state.model_candidates.clear();
+    state.cycle_model_provider(-1);
+    assert_eq!(state.selected_model(), None);
+}
+
+#[test]
 fn resume_picker_filters_navigates_and_selects_saved_transcripts() {
     let mut state = TuiState::new(
         PathBuf::from("/tmp/project"),

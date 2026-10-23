@@ -19,8 +19,7 @@ export function validatePrompt(text: unknown, attachments: unknown, allowEmpty =
   for (const file of attachments) {
     if (!file || typeof file !== "object" || typeof file.name !== "string" || !file.name || bytes(file.name) > 512 || /[\u0000-\u001f\u007f-\u009f]/u.test(file.name)) throw new Error("Invalid attachment name.");
     if (file.kind === "text") {
-      if (typeof file.text !== "string" || !file.text || file.text.includes("\0") || bytes(file.text) > MAX_PROMPT_BYTES) throw new Error(`${file.name}: text must fit within 4 MiB.`);
-      combinedText += `\n\n[Attached file ${JSON.stringify(file.name)}]\n${file.text}\n[End attached file]`;
+      throw new Error(`${file.name}: text and document attachments are not supported for upload. Remove this attachment before sending.`);
     } else if (file.kind === "image") {
       const image = file.image;
       if (!image || !["image/png", "image/jpeg", "image/webp", "image/gif"].includes(image.mimeType) || typeof image.data !== "string"
@@ -31,7 +30,7 @@ export function validatePrompt(text: unknown, attachments: unknown, allowEmpty =
       combinedText += `\n[Attached image ${JSON.stringify(file.name)}]`;
     } else throw new Error("Unsupported attachment type.");
   }
-  if (bytes(combinedText) > MAX_PROMPT_BYTES) throw new Error("The message and extracted file text together must fit within 4 MiB.");
+  if (bytes(combinedText) > MAX_PROMPT_BYTES) throw new Error("The message and image names together must fit within 4 MiB.");
   if (promptBytes(text, attachments) > MAX_ATTACHMENT_BYTES) throw new Error("The message and encoded images together must fit within 16 MiB.");
 }
 

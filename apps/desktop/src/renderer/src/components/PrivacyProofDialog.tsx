@@ -1,3 +1,4 @@
+import { useAnimatedClose } from "../useOverlayMotion";
 import { Check, ChevronRight, Copy, FileCode2, Globe2, Minus, RotateCcw, Shield, ShieldCheck, ShieldX, X } from "lucide-react";
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import type { ClientSessionState } from "@axiom/axiom-acp-client";
@@ -48,10 +49,12 @@ export function PrivacyProofDialog({ session, model, modelId, state, now, webEna
   onClose: () => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
+  const motion = useAnimatedClose();
   const closeButton = useRef<HTMLButtonElement>(null);
   const id = useId();
   const [copied, setCopied] = useState(false);
   const [copyError, setCopyError] = useState(false);
+  const [technicalOpen, setTechnicalOpen] = useState(false);
   const mounted = useRef(false);
   // Reports belong to one selected model. Never relabel an old model’s report.
   const evidence = session.securityEvidence?.modelId === modelId ? session.securityEvidence : null;
@@ -76,6 +79,7 @@ export function PrivacyProofDialog({ session, model, modelId, state, now, webEna
     const timer = setTimeout(() => setCopied(false), 1500);
     return () => clearTimeout(timer);
   }, [copied]);
+  const dismiss = () => motion.close(onClose);
   const copyReport = async () => {
     if (!evidence) return;
     setCopyError(false);
@@ -88,8 +92,8 @@ export function PrivacyProofDialog({ session, model, modelId, state, now, webEna
     } catch { if (mounted.current) setCopyError(true); }
   };
 
-  return <dialog ref={dialog} aria-modal="true" aria-labelledby={`${id}-title`} aria-describedby={`${id}-description`}
-    onCancel={(event) => { event.preventDefault(); onClose(); }}
+  return <dialog {...motion.props} ref={dialog} aria-modal="true" aria-labelledby={`${id}-title`} aria-describedby={`${id}-description`}
+    onCancel={(event) => { event.preventDefault(); dismiss(); }}
     onKeyDown={(event) => {
       if (event.key !== "Tab") return;
       const controls = [...event.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled), summary, [tabindex="0"]')]
@@ -102,13 +106,14 @@ export function PrivacyProofDialog({ session, model, modelId, state, now, webEna
     onClick={(event) => {
       if (event.target !== event.currentTarget) return;
       const bounds = event.currentTarget.getBoundingClientRect();
-      if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) onClose();
+      if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) dismiss();
     }}
-    className="no-drag glass-panel-solid shadow-glass-pop m-auto max-h-[calc(100dvh-40px)] w-[520px] max-w-[calc(100%_-_40px)] overflow-hidden rounded-[22px] border-0 p-0 text-[var(--color-text-primary)] backdrop:bg-[var(--surface-scrim)] backdrop:backdrop-blur-[4px]">
-    <div className="flex max-h-[calc(100dvh-40px)] flex-col motion-safe:animate-fade-in">
+    data-technical-open={technicalOpen || undefined}
+    className={`no-drag glass-panel-solid shadow-glass-pop dialog-motion m-auto max-h-[calc(100dvh-40px)] max-w-[calc(100%_-_40px)] overflow-hidden rounded-[22px] border-0 p-0 text-[var(--color-text-primary)] transition-[width] duration-300 ease-[var(--ease-out-expo)] motion-reduce:transition-none backdrop:bg-[var(--surface-scrim)] backdrop:backdrop-blur-[4px] ${technicalOpen ? "w-[780px]" : "w-[520px]"}`}>
+    <div className="flex max-h-[calc(100dvh-40px)] flex-col">
       <header className="flex shrink-0 items-center justify-between gap-3 px-6 pb-4 pt-6 sm:px-7 sm:pt-7">
         <h2 id={`${id}-title`} className="text-[20px] font-medium tracking-tight">Privacy proof</h2>
-        <button ref={closeButton} type="button" aria-label="Close privacy proof" onClick={onClose}
+        <button ref={closeButton} type="button" aria-label="Close privacy proof" onClick={dismiss}
           className="-mr-1 rounded-lg p-1.5 text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--wash-chip-hover)] hover:text-[var(--color-text-primary)]"><X size={16} /></button>
       </header>
       <div className="min-h-0 overflow-y-auto px-6 pb-5 sm:px-7">
@@ -137,8 +142,8 @@ export function PrivacyProofDialog({ session, model, modelId, state, now, webEna
         <div className="-mx-3 mt-1">
           <Disclosure title="Latest reply verification" value={reply.label} verified={reply.verified}><p>{reply.detail}</p></Disclosure>
         </div>
-        {evidence ? <details className="group/technical mt-3 border-t border-[var(--color-border)] pt-3">
-          <summary className="flex cursor-pointer list-none items-center gap-2 rounded-lg py-1.5 text-[12px] text-[var(--color-text-secondary)] [&::-webkit-details-marker]:hidden">
+        {evidence ? <details className="group/technical mt-3 border-t border-[var(--color-border)] pt-3" onToggle={(event) => setTechnicalOpen(event.currentTarget.open)}>
+          <summary className="flex cursor-pointer list-none items-center gap-2 rounded-lg py-1.5 text-[12px] text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-text-primary)] [&::-webkit-details-marker]:hidden">
             <FileCode2 size={14} aria-hidden="true" /><span className="flex-1">Technical details</span><ChevronRight size={13} className="transition-transform group-open/technical:rotate-90 motion-reduce:transition-none" aria-hidden="true" />
           </summary>
           <div className="mt-3 space-y-4 text-[12px] leading-[19px]">
@@ -173,8 +178,8 @@ export function PrivacyProofDialog({ session, model, modelId, state, now, webEna
       </div>
       <footer className="shrink-0 border-t border-[var(--color-border)] px-6 py-4 sm:px-7">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <button type="button" aria-label="Copy verification report" disabled={!evidence} onClick={() => void copyReport()} className="flex items-center gap-2 rounded-lg py-2 text-[12px] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] disabled:opacity-40">{copied ? <Check size={13} aria-hidden="true" /> : <Copy size={13} aria-hidden="true" />}<span role="status">{copied ? "Copied" : "Copy verification report"}</span></button>
-          <button type="button" onClick={onRefresh} disabled={!!disabledReason} title={disabledReason} className="flex items-center gap-2 rounded-[9px] bg-[var(--wash-chip)] px-3.5 py-2 text-[12px] font-medium transition-colors hover:bg-[var(--wash-chip-hover)] disabled:opacity-40"><RotateCcw size={13} aria-hidden="true" className={state === "verifying" ? "animate-spin motion-reduce:animate-none" : ""} />{state === "verifying" ? "Checking…" : "Refresh"}</button>
+          <button type="button" aria-label="Copy verification report" disabled={!evidence} onClick={() => void copyReport()} className="flex items-center gap-2 rounded-lg py-2 text-[12px] text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-text-primary)] disabled:opacity-40">{copied ? <Check size={13} aria-hidden="true" /> : <Copy size={13} aria-hidden="true" />}<span role="status">{copied ? "Copied" : "Copy verification report"}</span></button>
+          <button type="button" onClick={onRefresh} disabled={!!disabledReason} title={disabledReason} className="flex items-center gap-2 rounded-[9px] bg-[var(--wash-chip)] px-3.5 py-2 text-[12px] font-medium transition-[background-color,transform] hover:bg-[var(--wash-chip-hover)] active:scale-[0.97] disabled:opacity-40 disabled:active:scale-100"><RotateCcw size={13} aria-hidden="true" className={state === "verifying" ? "animate-spin motion-reduce:animate-none" : ""} />{state === "verifying" ? "Checking…" : "Refresh"}</button>
         </div>
         {disabledReason && state !== "verifying" ? <p className="mt-1 text-right text-[11px] text-[var(--color-text-tertiary)]">{disabledReason}</p> : null}
         {copyError ? <p role="alert" className="mt-2 text-[12px] text-[var(--color-danger-strong)]">Couldn’t copy the report. Try again.</p> : null}

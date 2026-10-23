@@ -1,3 +1,4 @@
+import { useOverlayPresence } from "../useOverlayMotion";
 import { useId, useState } from "react";
 import type { ClientSessionState } from "@axiom/axiom-acp-client";
 
@@ -56,6 +57,7 @@ export function requestUsageTotals(records: RequestUsage[]) {
 export function ContextUsageIndicator(props: ContextUsageIndicatorProps) {
   const tooltipId = useId();
   const [open, setOpen] = useState(false);
+  const presence = useOverlayPresence(open ? true : null);
   const requests = requestUsageTotals(props.requestUsage ?? []).records;
   const conversation = requests.filter((request) => request.purpose === "conversation");
   const latest = conversation.at(-1);
@@ -105,8 +107,8 @@ export function ContextUsageIndicator(props: ContextUsageIndicatorProps) {
           {view.percentage === null ? "—" : Math.floor(view.percentage)}
         </span>
       </div>
-      {open ? (
-        <div className="absolute bottom-full right-0 z-50 w-[276px] max-w-[calc(100vw-48px)] pb-2">
+      {presence.value ? (
+        <div {...presence.props} className="popover-motion origin-bottom-right absolute bottom-full right-0 z-50 w-[276px] max-w-[calc(100vw-48px)] pb-2">
           <div id={tooltipId} role="tooltip" className="rounded-xl bg-[var(--surface-float)] p-3 text-[12px] leading-5 text-[var(--color-text-secondary)] shadow-glass-pop backdrop-blur-xl">
             <div className="mb-1 flex items-center justify-between gap-3 font-medium text-[var(--color-text-primary)]">
               <span>Usage</span><span>{view.percentageLabel}</span>

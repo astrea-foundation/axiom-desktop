@@ -1,3 +1,4 @@
+import { useAnimatedClose } from "../useOverlayMotion";
 import { useId, useLayoutEffect, useRef } from "react";
 
 interface DeleteConfirmationDialogProps {
@@ -10,6 +11,7 @@ interface DeleteConfirmationDialogProps {
 /** A renderer-owned modal: never open an OS/GTK JavaScript confirmation. */
 export function DeleteConfirmationDialog({ kind, title, onCancel, onConfirm }: DeleteConfirmationDialogProps) {
   const ref = useRef<HTMLDialogElement>(null);
+  const motion = useAnimatedClose();
   const titleId = useId();
   const descriptionId = useId();
 
@@ -19,17 +21,17 @@ export function DeleteConfirmationDialog({ kind, title, onCancel, onConfirm }: D
     return () => { dialog?.close(); };
   }, []);
 
-  const finish = (action: () => void) => {
+  const finish = (action: () => void) => motion.close(() => {
     // Remove modal inertness before navigation mounts/focuses the new composer.
     // The sidebar's Delete menu item may already be unmounted, so native focus
     // restoration alone cannot return focus to a useful control.
     ref.current?.close();
     action();
     document.querySelector<HTMLTextAreaElement>("[data-chat-input]")?.focus({ preventScroll: true });
-  };
+  });
 
   return (
-    <dialog
+    <dialog {...motion.props}
       ref={ref}
       role="alertdialog"
       aria-modal="true"
@@ -52,7 +54,7 @@ export function DeleteConfirmationDialog({ kind, title, onCancel, onConfirm }: D
           first?.focus();
         }
       }}
-      className="no-drag glass-panel-solid shadow-glass-pop m-auto w-[460px] max-w-[calc(100%_-_40px)] rounded-[22px] border-0 p-7 text-[var(--color-text-primary)] backdrop:bg-[var(--surface-scrim)]"
+      className="no-drag glass-panel-solid shadow-glass-pop dialog-motion m-auto w-[460px] max-w-[calc(100%_-_40px)] rounded-[22px] border-0 p-7 text-[var(--color-text-primary)] backdrop:bg-[var(--surface-scrim)]"
     >
       <h2 id={titleId} className="text-[20px] font-medium tracking-tight">Delete {kind}?</h2>
       <p id={descriptionId} className="mt-3 break-words text-[13.5px] leading-5 text-[var(--color-text-secondary)]">

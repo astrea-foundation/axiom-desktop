@@ -48,11 +48,11 @@ export function ToolCallCard({ tool }: { tool: ToolActivity }) {
     <span className="shrink-0 text-[var(--color-text-tertiary)]" aria-hidden="true">{toolIcon(tool)}</span>
     <span className="min-w-0 truncate">{label}</span>
     {sources ? <span className="shrink-0 text-[11px] text-[var(--color-text-tertiary)]">{sources.length} {sources.length === 1 ? "source" : "sources"}</span> : null}
-    {hasDetails ? <ChevronDown aria-hidden="true" size={12} className={`shrink-0 text-[var(--color-text-tertiary)] transition-transform ${open ? "rotate-0" : "-rotate-90"}`} /> : null}
+    {hasDetails ? <ChevronDown aria-hidden="true" size={12} className={`shrink-0 text-[var(--color-text-tertiary)] transition-transform duration-200 ease-[var(--ease-out-expo)] ${open ? "rotate-0" : "-rotate-90"}`} /> : null}
   </>;
 
   return (
-    <div className="min-w-0 text-[13px]" data-tool-call-id={tool.callId}>
+    <div className="animate-fade-in-up min-w-0 text-[13px]" data-tool-call-id={tool.callId}>
       {hasDetails ? <button
         type="button"
         onClick={() => setOpen((value) => !value)}
@@ -65,7 +65,7 @@ export function ToolCallCard({ tool }: { tool: ToolActivity }) {
         {row}
       </button> : <div className={rowClass} title={label}>{row}</div>}
       {hasDetails && open ? (
-        <div id={detailsId} className="ml-3.5 mt-1 max-h-80 overflow-auto border-l border-[var(--color-border)] pl-4 pr-2 text-[12px] leading-5 text-[var(--color-text-secondary)]">
+        <div id={detailsId} className="animate-fade-in-up ml-3.5 mt-1 max-h-80 overflow-auto border-l border-[var(--color-border)] pl-4 pr-2 text-[12px] leading-5 text-[var(--color-text-secondary)]">
           {sources ? (
             sources.length ? <ul className="space-y-3 py-1">
               {sources.map((source, index) => <li key={`${index}:${source.url}`} className="min-w-0 break-words">

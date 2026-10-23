@@ -1,3 +1,4 @@
+import type { useOverlayPresence } from "../useOverlayMotion";
 import { Check, Search } from "lucide-react";
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ProviderModel } from "../types";
@@ -11,6 +12,7 @@ interface ProviderGroup {
 }
 
 interface ModelPickerProps {
+  motion: ReturnType<typeof useOverlayPresence>["props"];
   models: ProviderModel[];
   selectedModelId: string;
   onSelect: (modelId: string) => void;
@@ -45,7 +47,7 @@ function matches(model: ProviderModel, query: string): boolean {
   return haystack.includes(query);
 }
 
-export function ModelPicker({ models, selectedModelId, onSelect }: ModelPickerProps) {
+export function ModelPicker({ motion, models, selectedModelId, onSelect }: ModelPickerProps) {
   const pickerRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const downwardOffsetRef = useRef(0);
@@ -97,12 +99,12 @@ export function ModelPicker({ models, selectedModelId, onSelect }: ModelPickerPr
   }, []);
 
   return (
-    <div
+    <div {...motion}
       ref={pickerRef}
       role="dialog"
       aria-label="Choose a model"
       style={{ bottom: `calc(2.5rem - ${downwardOffset}px)` }}
-      className="glass-panel-solid shadow-glass-pop animate-pop-in absolute left-0 z-40 flex max-h-[min(380px,calc(100vh-4rem))] w-[min(24rem,calc(100vw-3rem))] origin-bottom-left flex-col overflow-hidden rounded-[10px]"
+      className="glass-panel-solid shadow-glass-pop popover-motion absolute left-0 z-40 flex max-h-[min(380px,calc(100vh-4rem))] w-[min(24rem,calc(100vw-3rem))] origin-bottom-left flex-col overflow-hidden rounded-[10px]"
     >
       <div className="border-b border-[var(--color-border)] px-3 pb-0 pt-3">
         <label className="flex h-8 items-center gap-2 rounded-[8px] border border-[var(--color-border)] bg-[var(--color-bg-input)] px-2.5 transition-colors hover:border-[var(--border-hover)] focus-within:border-[var(--color-border-accent)]">

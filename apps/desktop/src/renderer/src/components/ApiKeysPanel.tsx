@@ -1,3 +1,4 @@
+import { useOverlayPresence } from "../useOverlayMotion";
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Check, Copy, KeyRound, Plus, RefreshCw } from "lucide-react";
 import type { ApiKeyRecord } from "@axiom/axiom-acp-client";
@@ -13,6 +14,7 @@ export function ApiKeysPanel({accountId, onLogin}: {accountId: string; onLogin: 
   const [error, setError] = useState<string | null>(null);
   const [reauth, setReauth] = useState(false);
   const [revoking, setRevoking] = useState<ApiKeyRecord | null>(null);
+  const revokePresence = useOverlayPresence(revoking);
   const [history, setHistory] = useState(false);
   const alive = useRef(false), pending = useRef(false), loadVersion = useRef(0);
   const createButton = useRef<HTMLButtonElement>(null);
@@ -95,7 +97,7 @@ export function ApiKeysPanel({accountId, onLogin}: {accountId: string; onLogin: 
       </article>)}</div>
       {keys?.some(inactive) && <button type="button" className="quiet-link key-history" aria-expanded={history} onClick={() => setHistory(value => !value)}>{history ? "Hide inactive keys" : "Show revoked and expired keys"}</button>}
       <p className="card-help">Keys use your account balance and work with AxiomCLI or the local proxy.</p>
-      {revoking && <ConfirmDialog title={`Revoke “${revoking.name}”?`} confirmLabel="Revoke key" busy={busy} onCancel={() => {setRevoking(null); setError(null);}} onConfirm={() => void revoke()}><p>Tools using this key will stop connecting. Its usage history stays available.</p>{error && <Notice kind="error">{error}</Notice>}</ConfirmDialog>}
+      {revokePresence.value && <ConfirmDialog motion={revokePresence.props} title={`Revoke “${revokePresence.value.name}”?`} confirmLabel="Revoke key" busy={busy} onCancel={() => {setRevoking(null); setError(null);}} onConfirm={() => void revoke()}><p>Tools using this key will stop connecting. Its usage history stays available.</p>{error && <Notice kind="error">{error}</Notice>}</ConfirmDialog>}
     </section>
   </div>;
 }
@@ -106,7 +108,8 @@ function cost(value: string) { const n = BigInt(value); if (n > 0n && n < 10_000
 
 function Spinner() { return <RefreshCw size={14} className="animate-spin motion-reduce:animate-none" />; }
 function Notice({children}: {kind: "error"; children: ReactNode}) { return <div className="key-notice" role="alert">{children}</div>; }
-function ConfirmDialog({title, confirmLabel, busy, onCancel, onConfirm, children}: {
+function ConfirmDialog({motion, title, confirmLabel, busy, onCancel, onConfirm, children}: {
+  motion: ReturnType<typeof useOverlayPresence>["props"];
   title: string; confirmLabel: string; busy: boolean; onCancel: () => void; onConfirm: () => void; children: ReactNode;
 }) {
   const ref = useRef<HTMLDialogElement>(null), cancel = useRef<HTMLButtonElement>(null);
@@ -117,8 +120,8 @@ function ConfirmDialog({title, confirmLabel, busy, onCancel, onConfirm, children
     element.showModal(); cancel.current?.focus();
     return () => { element.close(); if (opener?.isConnected) opener.focus({preventScroll: true}); };
   }, []);
-  return <dialog ref={ref} aria-modal="true" aria-labelledby={id} onCancel={event => {event.preventDefault(); if (!busy) onCancel();}}
-    className="no-drag glass-panel-solid shadow-glass-pop m-auto w-[460px] max-w-[calc(100%_-_40px)] rounded-[22px] border-0 p-7 text-[var(--color-text-primary)] backdrop:bg-[var(--surface-scrim)]">
+  return <dialog {...motion} ref={ref} aria-modal="true" aria-labelledby={id} onCancel={event => {event.preventDefault(); if (!busy) onCancel();}}
+    className="no-drag glass-panel-solid shadow-glass-pop dialog-motion m-auto w-[460px] max-w-[calc(100%_-_40px)] rounded-[22px] border-0 p-7 text-[var(--color-text-primary)] backdrop:bg-[var(--surface-scrim)]">
     <h2 id={id} className="mb-4 text-[20px] font-medium">{title}</h2><div className="text-[13px] leading-6 text-[var(--color-text-secondary)]">{children}</div>
     <div className="mt-6 flex justify-end gap-2"><button ref={cancel} type="button" disabled={busy} onClick={onCancel} className="rounded-lg bg-[var(--wash-chip)] px-4 py-2 text-[13px] disabled:opacity-50">Cancel</button><button type="button" disabled={busy} onClick={onConfirm} className="rounded-lg bg-[var(--wash-chip)] px-4 py-2 text-[13px] disabled:opacity-50">{busy ? "Revoking…" : confirmLabel}</button></div>
   </dialog>;

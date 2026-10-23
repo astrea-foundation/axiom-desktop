@@ -1121,6 +1121,9 @@ pub async fn run(
                                     state.overlay = None;
                                     state.status = "Model selection cancelled".into();
                                 }
+                                KeyCode::Tab if key.modifiers.contains(KeyModifiers::SHIFT) => state.cycle_model_provider(-1),
+                                KeyCode::Tab => state.cycle_model_provider(1),
+                                KeyCode::BackTab => state.cycle_model_provider(-1),
                                 KeyCode::Up => state.move_model_picker(-1),
                                 KeyCode::Down => state.move_model_picker(1),
                                 KeyCode::PageUp => state.move_model_picker(-8),
@@ -1641,9 +1644,7 @@ pub async fn run(
                                             }
                                             Ok(SlashCommand::Model) => {
                                                 state.open_model_picker();
-                                                if !state.model_catalog_loaded
-                                                    && !state.model_catalog_loading
-                                                {
+                                                if !state.model_catalog_loading {
                                                     state.model_catalog_loading = true;
                                                     state.status =
                                                         "Loading available models…".into();

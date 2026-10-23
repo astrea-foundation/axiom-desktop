@@ -63,6 +63,7 @@ impl ImageContent {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PromptAttachment {
+    // Legacy local history only. New prompts and revisions reject extracted text.
     Text { name: String, text: String },
     Image { name: String, image: ImageContent },
 }
@@ -111,6 +112,20 @@ impl PromptAttachment {
 }
 
 pub fn validate_prompt(
+    text: &str,
+    attachments: &[PromptAttachment],
+) -> Result<(), ValidationError> {
+    if attachments
+        .iter()
+        .any(|attachment| matches!(attachment, PromptAttachment::Text { .. }))
+    {
+        return Err(ValidationError::unsupported("attachment.text_upload"));
+    }
+    validate_stored_prompt(text, attachments)
+}
+
+/// Bounds-check historical local data without authorizing it for a new submission.
+pub fn validate_stored_prompt(
     text: &str,
     attachments: &[PromptAttachment],
 ) -> Result<(), ValidationError> {
@@ -182,12 +197,14 @@ mod tests {
     }
 
     #[test]
-    fn text_attachments_are_bounded_together_with_the_prompt() {
+    fn extracted_text_is_readable_in_legacy_history_but_rejected_for_submission() {
         let attachments = vec![PromptAttachment::Text {
             name: "notes.md".into(),
             text: "important fact".into(),
         }];
-        assert!(validate_prompt("", &attachments).is_ok());
+        assert!(validate_prompt("", &attachments).is_err());
+        assert!(validate_prompt("Question", &attachments).is_err());
+        assert!(validate_stored_prompt("Question", &attachments).is_ok());
         assert!(
             user_message("Question", &attachments)
                 .content

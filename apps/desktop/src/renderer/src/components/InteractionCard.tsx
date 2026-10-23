@@ -41,7 +41,7 @@ export function InteractionCard({ interaction }: { interaction: PendingInteracti
               </button>
             ) : null;
           })}
-          {!options.some((option) => option.kind === "reject_once") ? <button type="button" onClick={() => void window.axiomDesktop?.agent.resolvePermission(interaction.id, { outcome: "cancelled" })} className="rounded-lg px-3 py-1.5 text-[var(--color-text-tertiary)]">Deny</button> : null}
+          {!options.some((option) => option.kind === "reject_once") ? <button type="button" onClick={() => void window.axiomDesktop?.agent.resolvePermission(interaction.id, { outcome: "cancelled" })} className="rounded-lg px-3 py-1.5 text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-bg-surface-hover)] hover:text-[var(--color-text-secondary)]">Deny</button> : null}
         </div>
       </div>
     );
@@ -59,7 +59,7 @@ export function InteractionCard({ interaction }: { interaction: PendingInteracti
         ))}
         <div className="mt-1 flex gap-2">
           <button type="button" disabled={fields.some((field) => !(answers[field.id] ?? "").trim())} onClick={() => void window.axiomDesktop?.agent.resolveElicitation(interaction.id, { action: "accept", content: answers })} className="rounded-[8px] bg-[var(--color-cherry)] px-3 py-1.5 text-on-accent transition-colors hover:bg-[var(--color-cherry-bright)] disabled:opacity-40">Continue</button>
-          <button type="button" onClick={() => void window.axiomDesktop?.agent.resolveElicitation(interaction.id, { action: "decline" })} className="rounded-lg px-3 py-1.5 text-[var(--color-text-tertiary)]">Decline</button>
+          <button type="button" onClick={() => void window.axiomDesktop?.agent.resolveElicitation(interaction.id, { action: "decline" })} className="rounded-lg px-3 py-1.5 text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-bg-surface-hover)] hover:text-[var(--color-text-secondary)]">Decline</button>
         </div>
       </div>
     </div>

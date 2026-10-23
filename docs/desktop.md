@@ -63,7 +63,7 @@ tools; unstarted tool calls are explicitly skipped. Model and Web authority
 remain those of the active turn. Steering remains bounded to 64 KiB; larger
 messages and attachments wait for a new turn without dropping any content.
 
-Prompt text and extracted file text together may use up to **4 MiB of UTF-8**.
+Prompt text may use up to **4 MiB of UTF-8**.
 The model's context capacity and the configured native context budget still apply.
 Queues hold at most 32 messages and 64 MiB of payloads, scoped to the account.
 Large payloads commit to local IndexedDB before the draft is cleared; localStorage
@@ -73,27 +73,50 @@ queue delivery. Restored or uncertain submissions require review; disconnect,
 restart or account changes never justify silently resending them. A fresh prompt
 after Stop can start normally when no older queued message needs review.
 
+On the welcome screen, Send or Enter moves the same composer to the bottom with
+a smooth animation immediately after the local outbox save. It stays visible
+through thread creation and TEE verification; typing a follow-up during setup is
+preserved when the thread opens. Reduced motion docks it immediately.
+
+In an open thread, Enter immediately shows the message as a **Sending…** bubble
+at the end of the transcript, before thread setup and provider verification
+finish. The bubble is local feedback only: delivery is confirmed solely by the
+native transcript echo, which replaces it in place. Messages that must wait for
+the current reply, are paused, or need review stay in the queue panel above the
+composer instead.
+
+Opening the model picker refreshes its catalog. Provider tabs contain only
+offerings currently returned by the service, so disabled providers disappear
+without restarting Desktop.
+
 ## Images and files
 
-Use Attach, paste an image, or drop files onto the composer. Supported inputs are
-PNG/JPEG/WebP/GIF images, UTF-8 text/code, and PDFs. PDFs are read by a bundled local
-worker and contribute extracted text, not page images or layout. Scanned PDFs need
-an OCR text export or attached page images. Office files need a PDF/text export.
-Nothing is uploaded for file extraction.
+Attachments are enabled only when the selected upstream model and its registered
+E2EE adapter support sending the actual file bytes. Currently this means
+PNG/JPEG/WebP/GIF images with **Tinfoil Kimi K3**, inside its attested, authenticated
+encrypted request body. Current NEAR/Phala adapters do not support image uploads.
+PDFs, text/code files, Office documents, and other files are unsupported: Desktop
+does not extract file text or substitute it into a prompt.
 
-A message can include 8 files, up to 5 MiB per image and 16 MiB of text plus encoded
-image payloads in total. Desktop bounds image dimensions to 40 million pixels;
-PDF input is bounded to 20 MiB and 500 pages, with extraction limited to one minute.
-These are local resource ceilings, not provider limits. Oversize/unsupported input
-is rejected explicitly rather than truncated.
+Use Attach, paste an image, or drop images onto the composer. The picker accepts
+only the supported image formats. Attach is disabled and greyed out when the model
+does not support attachments, the catalog is unavailable, Axiom is disconnected,
+the account is signed out, or the build lacks attachment support. Hover explains
+why, including the provider and model name (for example, “NearAI’s GLM 5.3 Flash
+doesn’t support attachments”); file drop/paste and picker events cannot bypass
+this restriction.
 
-Image input currently requires **Tinfoil Kimi K3**. Its image parts travel inside
-the same attested, authenticated encrypted body as text. Current NEAR/Phala adapters
-reject images because their registered encryption formats do not support them.
-Text/code and extracted PDF text work with text models. Saved messages show file
-names; click to inspect the original local inputs. Attachments stay in account-local
-history and survive edits and regeneration. Compaction sends image inputs to the
-vision model, never base64 masquerading as text, and retains a textual successor summary.
+A message can include 8 images, up to 5 MiB per image and 16 MiB of prompt text plus
+encoded images in total. Desktop bounds image dimensions to 40 million pixels.
+Unsupported or oversized inputs are rejected without clearing the text draft.
+Switching to a text-only model blocks sending a draft that still contains images.
+Bridge and native prompt validation also reject legacy extracted-text attachments,
+including queued submissions and message revisions. Previously saved inputs remain
+available for local inspection; no new extraction is performed.
+
+Saved messages show attachment names; click to inspect the original local inputs.
+Images stay in account-local history and survive edits and regeneration. Compaction
+sends image inputs to the vision model and retains a textual successor summary.
 
 ## Edit, regenerate and compaction
 
@@ -127,7 +150,8 @@ survive reload, and model switches do not rescale old counts against a new model
 No report is shown as unknown, rather than fabricated zero usage.
 
 Click the TEE badge for the last local verification report; Refresh requests
-fresh evidence when allowed. Reports describe the provider-specific verified
+fresh evidence when allowed. Expanding **Technical details** widens the report
+dialog so fingerprints, evidence fields and the workload manifest have room. Reports describe the provider-specific verified
 claims. Tinfoil reports router verification, and NEAR v3 identifies an attested
 worker TLS key rather than claiming the client observed the backend's socket.
 Provisional streamed text becomes verified only after authenticated completion;
@@ -161,6 +185,12 @@ Tool activity appears at its execution point between assistant segments, with
 stable IDs for live/snapshot reconciliation. Markdown, code and KaTeX render
 locally with bundled fonts. Scrolling up or selecting transcript content pauses
 automatic following; Scroll to latest resumes it. Theme is light, dark or system.
+Dialogs and their backdrops, model/thinking/account/context menus, and tooltips
+animate on both opening and dismissal. Closing overlays remain mounted but inert
+until the exit completes; focus is restored afterward. Rapidly reopening a menu
+cancels its pending removal. Disclosures, queue panels, attachments and new
+transcript rows also animate. The OS reduced-motion preference skips motion and
+dismisses overlays immediately.
 
 The Proxy screen starts the optional authenticated local integration explicitly.
 See [Local proxy](proxy.md) for its separate credential and lifecycle. Updates

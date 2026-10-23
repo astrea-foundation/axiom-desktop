@@ -404,7 +404,9 @@ for (const platform of ["linux", "win32", "darwin"]) {
       assert.equal(await messages.locator('[data-timeline-kind="user"]').count(), 1);
       assert.match(await messages.innerText(), /Work on my project/);
       assert.equal(await messages.locator('[data-timeline-kind="user"] > .group').evaluate((element) => getComputedStyle(element).opacity), "1");
-      assert.equal(await page.locator("textarea[data-chat-input]").count(), 0);
+      assert.equal(await page.locator("textarea[data-chat-input]").count(), 1);
+      assert.equal(await page.locator("textarea[data-chat-input]").inputValue(), "");
+      assert.equal(await page.getByRole("button", { name: "Send", exact: true }).isDisabled(), true);
       await page.keyboard.press("Enter");
       assert.equal((await calls(page)).filter((call) => call.method === "new").length, 1);
       assert.equal((await calls(page)).some((call) => call.method === "prompt"), false);
@@ -437,6 +439,78 @@ for (const platform of ["linux", "win32", "darwin"]) {
     } finally { await page.close(); }
   });
 }
+
+for (const reducedMotion of [false, true]) {
+  test(`the welcome composer docks immediately and preserves typing during setup (reduced motion: ${reducedMotion})`, async () => {
+    const { page, errors } = await openApp();
+    try {
+      await page.emulateMedia({ reducedMotion: reducedMotion ? "reduce" : "no-preference" });
+      const input = page.locator("textarea[data-chat-input]");
+      await input.fill("First message");
+      await page.evaluate(() => {
+        (window as any).__originalComposer = document.querySelector("textarea[data-chat-input]");
+        (window as any).__dockAnimations = [];
+        const animate = Element.prototype.animate;
+        Element.prototype.animate = function (...args) {
+          if (this.hasAttribute("data-composer-dock")) (window as any).__dockAnimations.push(args);
+          return animate.apply(this, args);
+        };
+        (window as any).__deletionTest.holdSetup("new");
+        (window as any).__deletionTest.holdSetup("prompt");
+      });
+      const originalBox = await input.boundingBox();
+      await input.press("Enter");
+      await page.locator('[data-composer-dock="thread"]').waitFor();
+      assert.equal(await input.evaluate((node) => node === (window as any).__originalComposer), true);
+      const animations = await page.evaluate(() => (window as any).__dockAnimations);
+      assert.equal(animations.length, reducedMotion ? 0 : 1);
+      if (!reducedMotion) assert.match(animations[0][0][0].transform, /translate\(0px, -/);
+      await input.fill("Follow-up typed during setup");
+      await page.waitForFunction(() => !document.querySelector("[data-composer-dock]")!.getAnimations().some((animation) => animation.playState === "running"));
+      const dockedBox = await input.boundingBox();
+      assert.ok(dockedBox!.y > originalBox!.y + 100);
+      assert.ok(dockedBox!.y + dockedBox!.height < 900);
+      await page.evaluate(() => (window as any).__deletionTest.releaseSetup("new"));
+      await page.waitForFunction(() => (window as any).__deletionTest.calls.some((call: any) => call.method === "prompt"));
+      assert.equal(await input.inputValue(), "Follow-up typed during setup");
+      assert.equal(await input.evaluate((node) => node === (window as any).__originalComposer), true);
+      await page.evaluate(() => (window as any).__deletionTest.releaseSetup("prompt"));
+      await page.getByRole("status", { name: "Sending message" }).waitFor({ state: "hidden" });
+      assert.equal(await input.inputValue(), "Follow-up typed during setup");
+      assert.deepEqual(errors, []);
+    } finally { await page.close(); }
+  });
+}
+
+test("opening the model picker refreshes providers and removes disabled offerings", async () => {
+  const { page, errors } = await openApp();
+  try {
+    await page.evaluate(() => {
+      const agent = (window as any).axiomDesktop.agent;
+      const original = agent.listModels;
+      agent.listModels = async () => {
+        const response = await original();
+        return { models: [...response.models, { ...response.models[0], id: "tinfoil-kimi-k3", providerId: "tinfoil", providerLabel: "Tinfoil", shortLabel: "Kimi K3", label: "Kimi K3", supportsImages: true }] };
+      };
+    });
+    const modelButton = page.getByRole("button", { name: "Test model", exact: true });
+    await modelButton.click();
+    await page.getByRole("tab", { name: /Tinfoil/ }).waitFor();
+    await page.getByRole("tab", { name: /Tinfoil/ }).click();
+    await page.getByRole("button", { name: /Kimi K3/ }).waitFor();
+    await page.keyboard.press("Escape");
+    await page.getByRole("dialog", { name: "Choose a model" }).waitFor({ state: "detached" });
+    await page.evaluate(() => {
+      const agent = (window as any).axiomDesktop.agent;
+      const original = agent.listModels;
+      agent.listModels = async () => ({ models: (await original()).models.filter((model: any) => model.providerId !== "test") });
+    });
+    await modelButton.click();
+    await page.getByRole("tab", { name: /Test provider/ }).waitFor({ state: "detached" });
+    await page.getByRole("tab", { name: /Tinfoil/ }).waitFor();
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
 
 for (const stage of ["new", "settings", "agent"]) {
   test(`failed ${stage} setup restores the durable draft and requested Agent mode without sending`, async () => {
@@ -762,10 +836,10 @@ for (const platform of ["linux", "win32", "darwin"]) {
       assert.equal(await agent.getAttribute("aria-pressed"), "false");
       await agent.click();
       await page.keyboard.press("Escape");
-      assert.equal(await dialog.count(), 0);
+      await dialog.waitFor({ state: "detached" });
       await agent.click();
       await page.mouse.click(12, 12);
-      assert.equal(await dialog.count(), 0, "clicking the modal backdrop closes settings");
+      await dialog.waitFor({ state: "detached" });
       assert.equal(await agent.evaluate((element) => element === document.activeElement), true);
       await page.getByRole("button", { name: "New thread", exact: true }).click();
       await agent.click();
@@ -825,6 +899,7 @@ for (const platform of ["linux", "win32", "darwin"]) {
       assert.equal(await page.locator("[data-agent-toggle]").getAttribute("aria-pressed"), "false");
       assert.equal((await calls(page)).some((call) => call.method === "prompt"), false);
       await page.keyboard.press("Escape");
+      await dialog.waitFor({ state: "detached" });
       assert.equal(await page.locator("dialog:modal").count(), 0);
       assert.equal(await page.locator("[data-agent-toggle]").evaluate((element) => document.activeElement === element), true);
       await page.keyboard.press("Enter");
@@ -888,7 +963,7 @@ for (const platform of ["linux", "win32", "darwin"]) {
       ]);
       assert.equal(await page.getByRole("region", { name: "Chat messages" }).getByText("Use the revised requirements instead.", { exact: true }).count(), 0,
         "steering is not presented as delivered before the boundary acknowledgement");
-      if (platform === "linux") await page.screenshot({ path: "/tmp/axiom-message-queue.png" });
+      if (platform === "linux" && process.env.AXIOM_TEST_SCREENSHOTS) await page.screenshot({ path: "/tmp/axiom-message-queue.png" });
       await page.evaluate(() => (window as any).__deletionTest.finishSteers());
       await page.getByRole("region", { name: "Chat messages" }).getByText("Use the revised requirements instead.", { exact: true }).waitFor();
       await page.waitForFunction(() => document.querySelectorAll("[data-queued-message]").length === 1);
@@ -1048,7 +1123,7 @@ for (const platform of ["linux", "win32", "darwin"]) {
       if (platform === "linux") {
         await page.emulateMedia({ colorScheme: "dark" });
         await page.waitForFunction(() => getComputedStyle(document.querySelector("dialog")!).color === "rgb(244, 244, 246)");
-        await page.screenshot({ path: "/tmp/axiom-web-consent.png" });
+        if (process.env.AXIOM_TEST_SCREENSHOTS) await page.screenshot({ path: "/tmp/axiom-web-consent.png" });
       }
       assert.equal(await page.getByRole("button", { name: "No thanks", exact: true }).evaluate((el) => el === document.activeElement), true);
       await page.getByRole("checkbox", { name: "Don’t show this warning again" }).check();
@@ -1063,6 +1138,7 @@ for (const platform of ["linux", "win32", "darwin"]) {
       assert.equal(await web.getAttribute("aria-pressed"), "false");
       await web.click();
       await page.getByRole("button", { name: "Yes, I understand", exact: true }).click();
+      await warning.waitFor({ state: "detached" });
       assert.equal(await web.getAttribute("aria-pressed"), "true");
       await page.getByRole("button", { name: "Send", exact: true }).click();
       await page.waitForFunction(() => (window as unknown as { __deletionTest: { calls: { method: string }[] } }).__deletionTest.calls.some((call) => call.method === "prompt"));
@@ -1079,6 +1155,7 @@ for (const platform of ["linux", "win32", "darwin"]) {
       await warning.waitFor(); // Not remembered: every off -> on asks again.
       await page.getByRole("checkbox", { name: "Don’t show this warning again" }).check();
       await page.getByRole("button", { name: "Yes, I understand", exact: true }).click();
+      await page.getByRole("alertdialog", { name: "Turn on Web?" }).waitFor({ state: "detached" });
       await page.getByRole("button", { name: "New thread", exact: true }).click();
       assert.equal(await web.getAttribute("aria-pressed"), "false", "new chat always starts off");
       await web.click();
@@ -1131,6 +1208,7 @@ for (const platform of ["linux", "win32", "darwin"]) {
       await expectWeb(false);
       await web.click();
       await page.getByRole("button", { name: "Yes, I understand", exact: true }).click();
+      await page.getByRole("alertdialog", { name: "Turn on Web?" }).waitFor({ state: "detached" });
       await expectWeb(true);
       assert.equal((await calls(page)).filter((call) => call.method === "prompt").length, 0, "toggle saves without a message");
 
@@ -1177,6 +1255,7 @@ test("saved Web choices from the welcome draft stay with its new thread and are 
     const web = page.getByRole("button", { name: "Web", exact: true });
     await web.click();
     await page.getByRole("button", { name: "Yes, I understand", exact: true }).click();
+    await page.getByRole("alertdialog", { name: "Turn on Web?" }).waitFor({ state: "detached" });
     await page.locator("textarea").fill("Create with Web on");
     await page.getByRole("button", { name: "Send", exact: true }).click();
     await page.waitForFunction(() => (window as any).__deletionTest.calls.some((call: any) => call.method === "prompt"));
@@ -1207,11 +1286,13 @@ test("Web storage failures never silently enable Web or claim an opt-out was sav
     });
     await web.click();
     await page.getByRole("button", { name: "Yes, I understand", exact: true }).click();
+    await page.getByRole("alertdialog", { name: "Turn on Web?" }).waitFor({ state: "detached" });
     await page.getByText("Web could not be saved and remains off. Please try again.", { exact: true }).waitFor();
     assert.equal(await web.getAttribute("aria-pressed"), "false");
     await page.evaluate(() => (window as any).__restoreWebStorage());
     await web.click();
     await page.getByRole("button", { name: "Yes, I understand", exact: true }).click();
+    await page.getByRole("alertdialog", { name: "Turn on Web?" }).waitFor({ state: "detached" });
     assert.equal(await web.getAttribute("aria-pressed"), "true");
     await page.evaluate(() => { Storage.prototype.setItem = () => { throw new Error("Storage full"); }; });
     await web.click();
@@ -1314,7 +1395,7 @@ for (const platform of ["linux", "win32", "darwin"]) {
         await setUsage(76_000);
         await page.evaluate(() => { document.documentElement.dataset.theme = "dark"; });
         await page.waitForTimeout(350); // allow the theme's color transition to settle
-        await page.screenshot({ path: "/tmp/axiom-context-usage.png" });
+        if (process.env.AXIOM_TEST_SCREENSHOTS) await page.screenshot({ path: "/tmp/axiom-context-usage.png" });
       }
       await page.getByRole("button", { name: "New thread", exact: true }).click();
       assert.equal(await indicator.innerText(), "—");
@@ -1369,7 +1450,7 @@ for (const platform of ["linux", "win32", "darwin"]) {
       if (platform === "linux") {
         await page.emulateMedia({ colorScheme: "dark" });
         await page.evaluate(() => document.getAnimations().forEach((animation) => animation.finish()));
-        await page.screenshot({ path: "/tmp/axiom-readable-tools.png" });
+        if (process.env.AXIOM_TEST_SCREENSHOTS) await page.screenshot({ path: "/tmp/axiom-readable-tools.png" });
       }
       assert.deepEqual(errors, []);
     } finally { await page.close(); }
@@ -1428,7 +1509,7 @@ for (const platform of ["linux", "win32", "darwin"]) {
         });
         await search.evaluate((element) => (element as HTMLElement).blur());
         await page.evaluate(() => document.getAnimations().forEach((animation) => animation.finish()));
-        await page.screenshot({ path: "/tmp/axiom-inline-tools.png" });
+        if (process.env.AXIOM_TEST_SCREENSHOTS) await page.screenshot({ path: "/tmp/axiom-inline-tools.png" });
       }
       await search.focus();
       await page.keyboard.press("Space");
@@ -1505,7 +1586,7 @@ for (const kind of ["thread", "folder"] as const) {
         await row.click({ button: "right" });
         await page.getByRole("menuitem", { name: "Rename", exact: true }).click();
         await page.getByRole("dialog", { name: `Rename ${kind}` }).waitFor();
-        assert.equal(await page.getByRole("menu").count(), 0);
+        await page.getByRole("menu").waitFor({ state: "detached" });
       };
       await openRename();
       const input = page.getByRole("textbox", { name: "Name", exact: true });
@@ -1794,17 +1875,17 @@ for (const platform of ["linux", "win32", "darwin"]) {
       await page.getByRole("menuitem", { name: "Settings", exact: true }).press("ArrowDown");
       assert.equal(await page.evaluate(() => document.activeElement?.textContent?.startsWith("Balance")), true);
       await page.keyboard.press("Escape");
-      assert.equal(await menu.count(), 0);
+      await menu.waitFor({ state: "detached" });
       assert.equal(await trigger.getAttribute("aria-expanded"), "false");
       await trigger.press("ArrowUp");
       await page.keyboard.press("Tab");
-      assert.equal(await menu.count(), 0);
+      await menu.waitFor({ state: "detached" });
       await trigger.click();
       await page.getByPlaceholder("Search threads").click();
-      assert.equal(await menu.count(), 0);
+      await menu.waitFor({ state: "detached" });
       await trigger.click();
       await trigger.click();
-      assert.equal(await menu.count(), 0, "clicking the account again toggles the menu closed");
+      await menu.waitFor({ state: "detached" });
       await trigger.click();
       await page.evaluate(() => (window as any).__deletionTest.setAccount("different-account"));
       await menu.waitFor({ state: "detached" });
@@ -1898,7 +1979,7 @@ test("sign in opens browser authorization directly and leaves the composer usabl
     for (const theme of ["light", "dark"] as const) {
       await page.emulateMedia({ colorScheme: theme });
       await page.waitForFunction((expected) => document.documentElement.dataset.theme === expected, theme);
-      await page.screenshot({ path: `/tmp/axiom-sign-in-${theme}.png` });
+      if (process.env.AXIOM_TEST_SCREENSHOTS) await page.screenshot({ path: `/tmp/axiom-sign-in-${theme}.png` });
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth && document.documentElement.scrollHeight <= window.innerHeight), true);
     }
     await page.evaluate(() => (window as any).__deletionTest.finishLogin("test-login-1"));
@@ -2345,7 +2426,7 @@ test("API keys show usage, reveal a new key once, and preserve revoked history",
     await row.getByText("12,345", {exact: true}).waitFor();
     for (const theme of ["light", "dark"]) {
       await page.evaluate(theme => {document.documentElement.dataset.theme = theme;}, theme);
-      await panel.screenshot({path: `/tmp/axiom-api-keys-${theme}.png`, animations: "disabled"});
+      if (process.env.AXIOM_TEST_SCREENSHOTS) await panel.screenshot({path: `/tmp/axiom-api-keys-${theme}.png`, animations: "disabled"});
     }
     await row.getByRole("button", {name: "Revoke", exact: true}).click();
     await page.getByRole("dialog").getByRole("button", {name: "Cancel", exact: true}).click();
@@ -2357,7 +2438,7 @@ test("API keys show usage, reveal a new key once, and preserve revoked history",
     await row.getByText("$0.12", {exact: true}).waitFor();
     await page.setViewportSize({width: 750, height: 790});
     assert.equal(await panel.evaluate(element => element.scrollWidth > element.clientWidth), false);
-    await panel.screenshot({path: "/tmp/axiom-api-keys-small.png", animations: "disabled"});
+    if (process.env.AXIOM_TEST_SCREENSHOTS) await panel.screenshot({path: "/tmp/axiom-api-keys-small.png", animations: "disabled"});
     await page.evaluate(() => (window as any).__deletionTest.setAccount("other-account"));
     assert.equal(await secret.count(), 0);
     assert.deepEqual(errors, []);
@@ -2487,18 +2568,51 @@ test("two pending first messages continue independently while a third draft stay
 });
 
 
-test("large file text is sent intact through the attachment-aware bridge and survives transcript display", async () => {
+test("an idle thread shows the sent message immediately while the prompt is still in flight", async () => {
   const { page, errors } = await openApp();
   try {
-    const content = "local private content\n".repeat(10_000);
-    await page.locator('input[type="file"]').setInputFiles({ name: "notes.txt", mimeType: "text/plain", buffer: Buffer.from(content) });
-    await page.getByRole("button", { name: "Remove notes.txt" }).waitFor();
-    await page.getByRole("button", { name: "Send", exact: true }).click();
-    await page.waitForFunction(() => (window as any).__deletionTest.calls.some((call: any) => call.method === "attachments"));
-    const call = (await calls(page)).find((call) => call.method === "attachments")!;
-    assert.deepEqual(JSON.parse(call.text!), { text: "", attachments: [{ kind: "text", name: "notes.txt", text: content }] });
-    await page.getByRole("region", { name: "Chat messages", exact: true }).getByText("notes.txt", { exact: true }).waitFor();
-    assert.equal(await page.getByRole("button", { name: "Remove notes.txt" }).count(), 0);
+    await page.getByRole("button", { name: "Viewed Existing thread", exact: true }).click();
+    await page.evaluate(() => (window as any).__deletionTest.holdSetup("prompt"));
+    const messages = page.getByRole("region", { name: "Chat messages", exact: true });
+    const sending = messages.getByRole("status", { name: "Sending message" });
+    await page.locator("textarea[data-chat-input]").fill("Is the message visible yet?");
+    await page.locator("textarea[data-chat-input]").press("Enter");
+    await sending.waitFor();
+    assert.match(await messages.innerText(), /Is the message visible yet\?/);
+    assert.equal(await page.locator("[data-queued-message]").count(), 0, "a fresh turn in flight is not listed as a queued message");
+    assert.equal(await page.locator("textarea[data-chat-input]").inputValue(), "");
+    await page.waitForFunction(() => (window as any).__deletionTest.calls.some((call: any) => call.method === "prompt"));
+    assert.equal(await sending.count(), 1, "the bubble stays until the transcript echoes the message");
+    await page.evaluate(() => (window as any).__deletionTest.releaseSetup("prompt"));
+    await sending.waitFor({ state: "detached" });
+    assert.equal(await messages.getByText("Is the message visible yet?", { exact: true }).count(), 1);
+    assert.equal(await page.locator("[data-queued-message]").count(), 0);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("unsupported models disable Attach and block picker, drop, and file paste", async () => {
+  const { page, errors } = await openApp();
+  try {
+    const attach = page.locator("[data-attach-files]");
+    assert.equal(await attach.isDisabled(), true);
+    assert.equal(await page.locator('input[type="file"]').isDisabled(), true);
+    await attach.hover();
+    const tooltip = page.getByRole("tooltip");
+    await tooltip.waitFor();
+    assert.match(await tooltip.innerText(), /doesn’t support attachments/);
+    assert.doesNotMatch(await tooltip.innerText(), /PDF|still work/);
+    await page.locator("textarea[data-chat-input]").fill("Keep this draft");
+    await page.locator('input[type="file"]').setInputFiles({ name: "notes.txt", mimeType: "text/plain", buffer: Buffer.from("private file") });
+    await page.locator("textarea[data-chat-input]").evaluate((input) => {
+      const transfer = new DataTransfer();
+      transfer.items.add(new File(["private file"], "notes.pdf", { type: "application/pdf" }));
+      input.dispatchEvent(new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: transfer }));
+      input.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: transfer }));
+    });
+    assert.equal(await page.getByRole("button", { name: /^Remove / }).count(), 0);
+    assert.equal(await page.locator("textarea[data-chat-input]").inputValue(), "Keep this draft");
+    assert.equal((await calls(page)).some((call) => call.method === "attachments"), false);
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
 });
@@ -2509,12 +2623,12 @@ for (const vision of [false, true]) {
     const { page, errors } = await openApp("linux", false, [], "medium", vision);
     try {
       await page.locator('input[type="file"]').setInputFiles({ name: "pixel.png", mimeType: "image/png", buffer: tinyPng });
-      await page.getByRole("button", { name: "Remove pixel.png" }).waitFor();
       const send = page.getByRole("button", { name: "Send", exact: true });
       if (!vision) {
         assert.ok(await send.isDisabled());
-        await page.getByText("Choose a model with image support to send these images.").waitFor();
+        assert.equal(await page.getByRole("button", { name: "Remove pixel.png" }).count(), 0);
       } else {
+        await page.getByRole("button", { name: "Remove pixel.png" }).waitFor();
         await send.click();
         await page.waitForFunction(() => (window as any).__deletionTest.calls.some((call: any) => call.method === "attachments"));
         const call = (await calls(page)).find((call) => call.method === "attachments")!;
@@ -2525,30 +2639,93 @@ for (const vision of [false, true]) {
   });
 }
 
-function textPdf(text: string): Buffer {
-  const stream = `BT /F1 12 Tf 72 720 Td (${text}) Tj ET`;
-  const objects = ["<< /Type /Catalog /Pages 2 0 R >>", "<< /Type /Pages /Kids [3 0 R] /Count 1 >>", "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>", "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>", `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`];
-  let pdf = "%PDF-1.4\n";
-  const offsets = [0];
-  for (const [index, object] of objects.entries()) { offsets.push(pdf.length); pdf += `${index + 1} 0 obj\n${object}\nendobj\n`; }
-  const xref = pdf.length;
-  pdf += `xref\n0 6\n0000000000 65535 f \n${offsets.slice(1).map((offset) => String(offset).padStart(10, "0") + " 00000 n \n").join("")}trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`;
-  return Buffer.from(pdf);
+test("supported image models reject documents without extraction and keep the draft", async () => {
+  const { page, errors } = await openApp("linux", false, [], "medium", true, false);
+  try {
+    await page.locator("textarea[data-chat-input]").fill("Keep this draft");
+    for (const [name, mimeType] of [["notes.pdf", "application/pdf"], ["notes.txt", "text/plain"], ["main.ts", "text/plain"], ["binary.docx", "application/octet-stream"]]) {
+      await page.locator('input[type="file"]').setInputFiles({ name: name!, mimeType: mimeType!, buffer: Buffer.from("private file contents") });
+      await page.getByRole("alert").filter({ hasText: `${name}: this file type isn’t supported for upload` }).waitFor();
+      assert.equal(await page.getByRole("button", { name: `Remove ${name}` }).count(), 0);
+      assert.equal(await page.locator("textarea[data-chat-input]").inputValue(), "Keep this draft");
+    }
+    assert.equal((await calls(page)).some((call) => call.method === "attachments"), false);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+for (const kind of ["Agent", "Web", "Rename", "Delete"] as const) {
+  test(`${kind} dialog animates out with its backdrop before releasing focus`, async () => {
+    const { page, errors } = await openApp();
+    try {
+      await page.emulateMedia({ reducedMotion: "no-preference" });
+      if (kind === "Agent" || kind === "Web") {
+        await page.getByRole("button", { name: kind, exact: true }).click();
+      } else {
+        await page.locator('[data-thread-id="old-thread"]').click({ button: "right" });
+        await page.getByRole("menuitem", { name: kind, exact: true }).click();
+      }
+      const modal = page.locator("dialog[open]");
+      const close = modal.getByRole("button", { name: kind === "Web" ? "No thanks" : "Cancel", exact: true });
+      const exit = await close.evaluate(async (button) => {
+        const panel = button.closest("dialog")!;
+        (button as HTMLButtonElement).click();
+        await new Promise(requestAnimationFrame);
+        const animation = panel.getAnimations().find((item) => item instanceof CSSAnimation && item.animationName === "dialog-out");
+        animation?.pause();
+        if (animation) animation.currentTime = 80;
+        const result = {
+          open: panel.open, closing: panel.dataset.closing, inert: panel.inert,
+          opacity: Number(getComputedStyle(panel).opacity),
+          backdrop: getComputedStyle(panel, "::backdrop").animationName,
+        };
+        animation?.finish();
+        return result;
+      });
+      assert.equal(exit.open, true, "the modal remains in the top layer through exit");
+      assert.equal(exit.closing, "true");
+      assert.equal(exit.inert, true, "closing controls cannot trigger a second action");
+      assert.ok(exit.opacity > 0 && exit.opacity < 1, `intermediate opacity: ${exit.opacity}`);
+      assert.equal(exit.backdrop, "backdrop-out");
+      await modal.waitFor({ state: "detached" });
+      assert.equal(await page.locator("dialog:modal").count(), 0);
+      assert.deepEqual(errors, []);
+    } finally { await page.close(); }
+  });
 }
 
-test("PDF text extraction uses the local bundled worker and unsupported documents keep the draft", async () => {
-  const { page, errors } = await openApp("linux", false, [], "medium", false, false);
+test("menus animate out and rapidly reopening cancels pending removal", async () => {
+  const { page, errors } = await openApp("linux", false, ["low", "medium", "high"]);
   try {
-    await page.locator('input[type="file"]').setInputFiles({ name: "notes.pdf", mimeType: "application/pdf", buffer: textPdf("Local PDF fact") });
-    await page.getByRole("button", { name: "Remove notes.pdf" }).waitFor();
-    await page.getByRole("button", { name: "Send", exact: true }).click();
-    await page.waitForFunction(() => (window as any).__deletionTest.calls.some((call: any) => call.method === "attachments"));
-    const call = (await calls(page)).find((call) => call.method === "attachments")!;
-    assert.match(JSON.parse(call.text!).attachments[0].text, /Local PDF fact/);
-    await page.locator("textarea[data-chat-input]").fill("Keep this draft");
-    await page.locator('input[type="file"]').setInputFiles({ name: "binary.docx", mimeType: "application/octet-stream", buffer: Buffer.from("binary") });
-    await page.getByRole("alert").filter({ hasText: "Export Office documents" }).waitFor();
-    assert.equal(await page.locator("textarea[data-chat-input]").inputValue(), "Keep this draft");
+    await page.emulateMedia({ reducedMotion: "no-preference" });
+    for (const title of ["Select model", "Thinking level"]) {
+      const trigger = page.getByTitle(title, { exact: true });
+      await trigger.click();
+      const exit = await trigger.evaluate(async (button) => {
+        (button as HTMLButtonElement).click();
+        await new Promise(requestAnimationFrame);
+        const panel = button.parentElement!.querySelector<HTMLElement>(".popover-motion")!;
+        const result = { closing: panel.dataset.closing, inert: panel.inert, animation: getComputedStyle(panel).animationName };
+        (button as HTMLButtonElement).click();
+        return result;
+      });
+      assert.deepEqual(exit, { closing: "true", inert: true, animation: "popover-out" });
+      // Deliberately cross the original exit deadline to catch stale removal timers.
+      await page.waitForTimeout(250);
+      assert.equal(await trigger.getAttribute("aria-expanded"), "true");
+      assert.equal(await page.locator('.popover-motion:not([data-closing])').count(), 1);
+      await page.keyboard.press("Escape");
+      await page.locator(".popover-motion").waitFor({ state: "detached" });
+    }
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await page.getByRole("button", { name: "Agent", exact: true }).click();
+    const removed = await page.getByRole("button", { name: "Cancel", exact: true }).evaluate(async (button) => {
+      const panel = button.closest("dialog")!;
+      (button as HTMLButtonElement).click();
+      await new Promise(requestAnimationFrame);
+      return !panel.isConnected;
+    });
+    assert.equal(removed, true, "reduced motion skips the exit delay");
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
 });

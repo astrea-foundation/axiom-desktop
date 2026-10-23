@@ -1,3 +1,4 @@
+import { useOverlayPresence } from "../useOverlayMotion";
 import { ChevronUp, LogIn, LogOut, Settings, WalletCards } from "lucide-react";
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -21,6 +22,7 @@ export interface AccountMenuProps {
 export function AccountMenu({ account, accountId, billing, connected, onRefreshBalance, onSignIn, onLogout, onOpenSettings, onOpenBalance }: AccountMenuProps) {
   const avatar = accountAvatar(account.kind === "valid" ? account.title : null);
   const [open, setOpen] = useState(false);
+  const presence = useOverlayPresence(open ? true : null);
   const [refresh, setRefresh] = useState<"loading" | "ready" | "failed">("ready");
   const trigger = useRef<HTMLButtonElement>(null);
   const menu = useRef<HTMLDivElement>(null);
@@ -84,8 +86,8 @@ export function AccountMenu({ account, accountId, billing, connected, onRefreshB
       </span>
       <ChevronUp size={13} aria-hidden="true" className={`shrink-0 text-[var(--color-text-tertiary)] transition-transform motion-reduce:transition-none ${open ? "rotate-180" : ""}`} />
     </button>
-    {open ? createPortal(<div ref={menu} id={id} role="menu" aria-label="Account actions"
-      className="account-menu-motion no-drag glass-panel-solid shadow-glass-pop fixed z-[100] max-h-[calc(100dvh-80px)] overflow-y-auto rounded-[12px] p-1.5"
+    {presence.value ? createPortal(<div {...presence.props} ref={menu} id={id} role="menu" aria-label="Account actions"
+      className="popover-motion no-drag glass-panel-solid shadow-glass-pop fixed z-[100] max-h-[calc(100dvh-80px)] overflow-y-auto rounded-[12px] p-1.5"
       onKeyDown={(event) => {
         if (event.key === "Escape" || event.key === "Tab") { event.preventDefault(); event.stopPropagation(); restore(); }
         else if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {

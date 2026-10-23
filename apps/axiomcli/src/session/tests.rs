@@ -1710,9 +1710,13 @@ fn attachments_survive_reopen_and_revision_and_are_deleted_with_their_message() 
     let id = SessionId::new();
     let turn = TurnId::new();
     create(&store, &id);
-    let files = vec![axiom_inference::PromptAttachment::Text {
-        name: "notes.txt".into(),
-        text: "local file contents".into(),
+    let image_data = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
+    let files = vec![axiom_inference::PromptAttachment::Image {
+        name: "private.png".into(),
+        image: axiom_inference::ImageContent {
+            mime_type: "image/png".into(),
+            data: image_data.into(),
+        },
     }];
     store
         .append_prompt_revision(
@@ -1742,7 +1746,7 @@ fn attachments_survive_reopen_and_revision_and_are_deleted_with_their_message() 
     assert!(
         !serde_json::to_string(&snapshot.items)
             .unwrap()
-            .contains("local file contents")
+            .contains(image_data)
     );
     assert_eq!(store.prompt_attachments(&id, "client-id").unwrap(), files);
     store.activate_account("b").unwrap();

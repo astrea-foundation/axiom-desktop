@@ -27,7 +27,7 @@ pub(super) fn initialize(
         .prompt_capabilities(
             protocol::PromptCapabilities::new()
                 .image(true)
-                .embedded_context(true),
+                .embedded_context(false),
         )
         .meta(extension_meta(ExtensionCapabilities::agent(
             ctx_extension_state.runtime_instance_id.clone(),

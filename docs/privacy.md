@@ -68,10 +68,13 @@ for paths and the account-scoped reset command.
 
 ## Local attachments
 
-Desktop extracts UTF-8/PDF text locally and keeps attachment drafts and queued
-payloads in account-scoped IndexedDB. Accepted inputs are also stored in the native
-account-local conversation database for resume, inspection and regeneration. File
-contents, filenames included in prompts, and image bytes reach the provider only
-inside its authenticated E2EE request; hosted Axiom services do not parse or extract
-files. These local stores are not an additional at-rest encryption boundary.
-PDF extraction includes text only; scan pages and illustrations require images.
+Desktop accepts only file formats the selected provider adapter can transport as
+actual bytes inside authenticated E2EE requests; currently these are images on
+supported models. It does not extract PDF or text/code files into prompts.
+Attachment drafts and queued payloads stay in account-scoped IndexedDB. Accepted
+images are also stored in the native account-local conversation database for
+resume, inspection and regeneration. Filenames included in prompts and image
+bytes reach the provider only inside its authenticated E2EE request. Hosted Axiom
+services do not parse or extract files. These local stores are not an additional
+at-rest encryption boundary. Historical extracted attachments remain readable
+locally, but are rejected for new submissions and revisions.

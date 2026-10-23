@@ -39,7 +39,7 @@ export function useAttachmentDraft(accountId: string | null, threadId: string | 
     processing.current.add(scope); changed((value) => value + 1);
     try {
       const added: PromptAttachment[] = [];
-      // Decode sequentially to bound image/PDF memory.
+      // Decode sequentially to bound image memory.
       for (const file of files) added.push(await readAttachment(file));
       const next = [...previous, ...added];
       validatePrompt("", next);

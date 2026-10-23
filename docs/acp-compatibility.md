@@ -116,16 +116,22 @@ Identical IDs/text join an existing submission; conflicting ID reuse fails.
 The response acknowledges application to the local transcript, not completion of
 the whole turn. Uncertain delivery requires timeline reconciliation before retry.
 
-`attachments@1` adds `_meta.axiom.attachments` to prompt submissions: text files
-carry `{kind: "text", name, text}`, and images carry
-`{kind: "image", name, image: {mimeType, data}}` with inline base64 bytes.
+`attachments@1` adds `_meta.axiom.attachments` to prompt submissions. New inputs
+must contain actual PNG/JPEG/WebP/GIF image bytes and require the selected model's
+`supportsImages` capability, supplied by its registered E2EE adapter. Text files,
+PDFs, and other documents are rejected; the client does not extract their contents
+into prompts. Standard ACP image blocks use the same native validation and
+capability checks. Embedded text/binary resources are rejected and
+`promptCapabilities.embeddedContext` is false. Historical `kind: "text"` values
+remain readable in local storage, but cannot be submitted or used in revisions.
+
+Images carry `{kind: "image", name, image: {mimeType, data}}` with inline base64.
 The native runtime validates count, byte limits, MIME and image signatures.
-Desktop refuses to send attachments to a sidecar that did not advertise this
-feature. Standard ACP image/text-resource blocks use the same native validation.
+Desktop refuses attachments when the sidecar does not advertise this feature.
 Timeline metadata carries only file summaries; `thread/attachments` fetches full
 local inputs on demand with `{threadId, userItemId}`, under the active account guard.
-Message revisions preserve the original attachments and change the prompt text.
-The generated schema defines all shapes and defaults for older stored messages.
+Message revisions preserve supported attachments and change the prompt text.
+The generated schema retains legacy shapes for older stored messages.
 
 ## Accounts, billing and public evidence
 

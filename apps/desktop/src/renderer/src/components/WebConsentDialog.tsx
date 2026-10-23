@@ -1,3 +1,4 @@
+import { useAnimatedClose } from "../useOverlayMotion";
 import { Globe2 } from "lucide-react";
 import { useId, useLayoutEffect, useRef, useState } from "react";
 
@@ -6,6 +7,7 @@ export function WebConsentDialog({ onCancel, onConfirm }: {
   onConfirm: (remember: boolean) => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
+  const motion = useAnimatedClose();
   const decline = useRef<HTMLButtonElement>(null);
   const titleId = useId();
   const descriptionId = useId();
@@ -16,13 +18,13 @@ export function WebConsentDialog({ onCancel, onConfirm }: {
     return () => dialog.current?.close();
   }, []);
 
-  const finish = (action: () => void) => {
+  const finish = (action: () => void) => motion.close(() => {
     dialog.current?.close();
     action();
     document.querySelector<HTMLButtonElement>("[data-web-toggle]")?.focus({ preventScroll: true });
-  };
+  });
 
-  return <dialog
+  return <dialog {...motion.props}
     ref={dialog}
     role="alertdialog"
     aria-modal="true"
@@ -37,7 +39,7 @@ export function WebConsentDialog({ onCancel, onConfirm }: {
       if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
       else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
     }}
-    className="no-drag glass-panel-solid shadow-glass-pop m-auto w-[480px] max-w-[calc(100%_-_40px)] rounded-[22px] border-0 p-7 text-[var(--color-text-primary)] backdrop:bg-[var(--surface-scrim)]"
+    className="no-drag glass-panel-solid shadow-glass-pop dialog-motion m-auto w-[480px] max-w-[calc(100%_-_40px)] rounded-[22px] border-0 p-7 text-[var(--color-text-primary)] backdrop:bg-[var(--surface-scrim)]"
   >
     <Globe2 size={22} className="mb-4 text-[var(--color-warning)]" aria-hidden="true" />
     <h2 id={titleId} className="text-[20px] font-medium tracking-tight">Turn on Web?</h2>

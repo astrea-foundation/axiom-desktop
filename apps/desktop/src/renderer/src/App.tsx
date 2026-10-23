@@ -1,6 +1,8 @@
 import { Folder, PanelLeftOpen } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { BalanceScreen } from "./components/BalanceScreen";
+import { ChatComposer } from "./components/ChatComposer";
+import { useComposerDock } from "./useComposerDock";
 import { ChatView } from "./components/ChatView";
 import { DeleteConfirmationDialog } from "./components/DeleteConfirmationDialog";
 import { MessageQueue } from "./components/MessageQueue";
@@ -15,7 +17,7 @@ import { SignInStatus } from "./components/SignInStatus";
 import { TrafficLightGhost } from "./components/TrafficLightGhost";
 import { UpdateNotice } from "./components/UpdateNotice";
 import { WebConsentDialog } from "./components/WebConsentDialog";
-import { WelcomeView } from "./components/WelcomeView";
+import { ConversationPrivacyNote, WelcomeView } from "./components/WelcomeView";
 import { WindowControls } from "./components/WindowControls";
 import { setThemePreference, useTheme } from "./lib/theme";
 import { isMac, MAC_TRAFFIC_LIGHT_INSET_CLASS, useFullScreen } from "./lib/window-chrome";
@@ -56,6 +58,22 @@ export function App() {
     threads, folders, activeThread, activeSession, agentAccountScope, agentControl, isStreaming,
     ensureThreadLoaded, loadThread, showWelcome, reviseMessage, submitDraft, stopStream, deleteThread,
     messageQueue, threadLoads } = conversations;
+  const preparing = surface === "thread" && !!threadPreparation && threadPreparation.accountId === billingAccountId && threadPreparation.runtimeId === agentState.runtimeInstanceId;
+  const composerDock = useComposerDock(surface === "thread");
+  const submit = () => {
+    if (surface === "welcome") composerDock.capture();
+    void submitDraft();
+  };
+  const attachmentControl = {
+    items: attachmentDraft.attachments,
+    busy: attachmentDraft.attachmentsBusy,
+    disabledReason: preparing ? "Wait for this conversation to finish preparing before attaching files." : !agentState.connected ? "Attachments aren’t available while Axiom reconnects."
+      : requiresSignIn ? "Sign in to attach files."
+      : typeof window.axiomDesktop?.agent?.promptWithAttachments !== "function" ? "Attachments aren’t supported by this Axiom build. Restart Axiom to update."
+      : undefined,
+    onAddFiles: (files: File[]) => void attachmentDraft.addFiles(files),
+    onRemove: (index: number) => attachmentDraft.setAttachments(attachmentDraft.attachments.filter((_, current) => current !== index)),
+  };
 
   const showProxy = useCallback(() => {
     cancelThreadPreparation();
@@ -252,44 +270,17 @@ export function App() {
             <div role="alert" className="shadow-glass-pop absolute left-1/2 top-12 z-40 max-w-[80%] -translate-x-1/2 truncate rounded-full bg-[var(--surface-float)] px-4 py-2 text-[12.5px] text-[var(--color-text-secondary)] backdrop-blur">{modelCatalogError}</div>
           ) : null}
 
-          <div className="relative min-h-0 flex-1">
-            {surface === "proxy" ? <ProxyView accountId={agentState.connected ? billingAccountId : null} runtimeId={agentState.runtimeInstanceId} onInspecting={setProxyInspecting} /> : surface === "thread" && threadPreparation && threadPreparation.accountId === billingAccountId && threadPreparation.runtimeId === agentState.runtimeInstanceId ? (
-              <PreparingThreadView id={threadPreparation.id} text={threadPreparation.text} />
-            ) : surface === "thread" && activeSession ? (
-              <ChatView
-                onRevise={!activeSession?.running && agentState.account?.state === "valid" ? reviseMessage : undefined}
-                agentControl={agentControl}
-                queue={<MessageQueue messages={messageQueue.list(activeThreadId, billingAccountId).filter((message) => message.id !== pendingUserMessage?.id || message.status !== "sending")}
-                  paused={!!activeThreadId && messageQueue.isPaused(activeThreadId)}
-                  canSteer={agentState.connected && (!activeSession.running || !!activeSession.activeTurnId)}
-                  onSendNow={(id) => messageQueue?.sendNow(id)} onRemove={(id) => messageQueue?.remove(id)} />}
-                webEnabled={webAccess.enabled}
-                webDisabled={!billingAccountId || !agentState.connected}
-                onWebToggle={webAccess.toggle}
-                session={activeSession}
-                attachments={{ items: attachmentDraft.attachments, busy: attachmentDraft.attachmentsBusy, onAddFiles: (files) => void attachmentDraft.addFiles(files), onRemove: (index) => attachmentDraft.setAttachments(attachmentDraft.attachments.filter((_, current) => current !== index)) }}
-                draft={draft}
-                onDraftChange={setDraft}
-                onSubmit={() => void submitDraft()}
-                onStop={stopStream}
-                isStreaming={isStreaming}
-                models={models}
-                selectedModelId={modelId || models[0]?.id || ""}
-                modelStatusLabel={modelStatusLabel}
-                onModelChange={(id) => updateSettings(id, undefined)}
-                requiresSignIn={requiresSignIn}
-                onSignIn={openSignIn}
-                reasoningEffort={effectiveReasoningEffort}
-                onReasoningEffortChange={(effort) => updateSettings(undefined, effort)}
-                pendingUserMessage={pendingUserMessage}
-                securityScope={agentAccountScope}
-                securityRefreshDisabledReason={!agentState.connected ? "Reconnect to refresh verification" : requiresSignIn ? "Sign in to refresh verification" : undefined}
-                onVerifySecurity={async () => {
-                  if (!activeThreadId || !window.axiomDesktop?.agent) throw new Error("No active thread");
-                  await window.axiomDesktop.agent.verifySecurity(activeThreadId);
-                }}
-              />
-            ) : surface === "thread" ? (
+          <div className={`relative flex min-h-0 flex-1 flex-col ${surface === "welcome" ? "justify-center" : ""}`}>
+            {surface === "welcome" ? (
+              <WelcomeView account={accountView} signInActive={signInState.kind !== "closed"}
+                onSignIn={openSignIn} onRefreshAccount={() => void refreshAccount()} />
+            ) : <div className="relative min-h-0 flex-1">
+              {surface === "proxy" ? <ProxyView accountId={agentState.connected ? billingAccountId : null} runtimeId={agentState.runtimeInstanceId} onInspecting={setProxyInspecting} /> : preparing ? (
+                <PreparingThreadView id={threadPreparation!.id} text={threadPreparation!.text} />
+              ) : activeSession ? (
+                <ChatView session={activeSession} pendingUserMessage={pendingUserMessage}
+                  onRevise={!activeSession.running && agentState.account?.state === "valid" ? reviseMessage : undefined} />
+              ) : (
               <div className="flex h-full flex-col items-center justify-center gap-3 text-[13px] text-[var(--color-text-tertiary)]">
                 {threadLoadError?.id === activeThreadId ? (
                   <>
@@ -303,30 +294,41 @@ export function App() {
                   </>
                 ) : "Loading thread…"}
               </div>
-            ) : (
-              <WelcomeView
-                savedMessages={<MessageQueue messages={messageQueue.preparations(billingAccountId)} paused canSteer={agentState.connected && !draft.trim()}
-                  onSendNow={(id) => void reviewPreparation(id)} onRemove={(id) => messageQueue?.remove(id)} />}
-                agentControl={agentControl}
-                webEnabled={webAccess.enabled}
-                webDisabled={!billingAccountId || !agentState.connected}
-                onWebToggle={webAccess.toggle}
-                attachments={{ items: attachmentDraft.attachments, busy: attachmentDraft.attachmentsBusy, onAddFiles: (files) => void attachmentDraft.addFiles(files), onRemove: (index) => attachmentDraft.setAttachments(attachmentDraft.attachments.filter((_, current) => current !== index)) }}
-                draft={draft}
-                onDraftChange={setDraft}
-                onSubmit={() => void submitDraft()}
-                models={models}
-                selectedModelId={modelId || models[0]?.id || ""}
-                modelStatusLabel={modelStatusLabel}
-                onModelChange={catalog.selectNewModel}
-                account={accountView}
-                signInActive={signInState.kind !== "closed"}
-                onSignIn={openSignIn}
-                onRefreshAccount={() => void refreshAccount()}
-                reasoningEffort={effectiveReasoningEffort}
-                onReasoningEffortChange={catalog.selectNewThinking}
-              />
-            )}
+              )}
+            </div>}
+            {surface === "welcome" || preparing || (surface === "thread" && activeSession) ? (
+              <div ref={composerDock.ref} data-composer-dock={surface === "welcome" ? "welcome" : "thread"}
+                className={`relative z-20 shrink-0 px-6 ${surface === "welcome" ? "" : "pb-5 pt-2"}`}>
+                <div className="mx-auto w-full max-w-[760px]">
+                  {surface === "welcome" ? <MessageQueue messages={messageQueue.preparations(billingAccountId)} paused canSteer={agentState.connected && !draft.trim()}
+                    onSendNow={(id) => void reviewPreparation(id)} onRemove={(id) => messageQueue?.remove(id)} />
+                    : !preparing && activeSession ? <MessageQueue messages={messageQueue.list(activeThreadId, billingAccountId).filter((message) => message.id !== pendingUserMessage?.id)}
+                      paused={!!activeThreadId && messageQueue.isPaused(activeThreadId)}
+                      canSteer={agentState.connected && (!activeSession.running || !!activeSession.activeTurnId)}
+                      onSendNow={(id) => messageQueue.sendNow(id)} onRemove={(id) => messageQueue.remove(id)} /> : null}
+                  <ChatComposer
+                    attachments={attachmentControl} agentControl={agentControl} preparing={preparing}
+                    value={draft} onChange={setDraft} onSubmit={submit} onStop={stopStream} autoFocus
+                    isStreaming={isStreaming} models={models} selectedModelId={modelId || models[0]?.id || ""}
+                    modelStatusLabel={modelStatusLabel} onOpenModels={catalog.refreshModels}
+                    onModelChange={surface === "welcome" ? catalog.selectNewModel : (id) => updateSettings(id, undefined)}
+                    requiresSignIn={requiresSignIn} onSignIn={openSignIn}
+                    reasoningEffort={effectiveReasoningEffort}
+                    onReasoningEffortChange={surface === "welcome" ? catalog.selectNewThinking : (effort) => updateSettings(undefined, effort)}
+                    security={activeSession ?? undefined} securityScope={agentAccountScope}
+                    contextUsage={activeSession?.contextUsage ?? null} requestUsage={activeSession?.requestUsage}
+                    activeTurnId={activeSession?.activeTurnId}
+                    securityRefreshDisabledReason={!agentState.connected ? "Reconnect to refresh verification" : requiresSignIn ? "Sign in to refresh verification" : undefined}
+                    onVerifySecurity={async () => {
+                      if (!activeThreadId || !window.axiomDesktop?.agent) throw new Error("No active thread");
+                      await window.axiomDesktop.agent.verifySecurity(activeThreadId);
+                    }}
+                    webEnabled={webAccess.enabled} webDisabled={preparing || !billingAccountId || !agentState.connected} onWebToggle={webAccess.toggle}
+                  />
+                </div>
+              </div>
+            ) : null}
+            {surface === "welcome" ? <ConversationPrivacyNote /> : null}
           </div>
         </section>
       </div>

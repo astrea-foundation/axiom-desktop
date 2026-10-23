@@ -28,7 +28,7 @@ export function useConversations(agentState: ClientState, navigation: ReturnType
   const { surface, setSurface, activeThreadId, setActiveThreadId, activeThreadIdRef,
     navigationRevision, threadPreparation, setThreadPreparation, cancelThreadPreparation } = navigation;
   const { desktopReady, selectedModel, effectiveReasoningEffort, rememberSelection, restorePreferredSelection } = catalog;
-  const [draft, setDraft, writeDraft, writeDraftDurable] = useAccountDraft(agentState.account?.state === "valid" ? agentState.account.account?.id ?? null : null, surface === "thread" ? activeThreadId : null);
+  const [draft, setDraft, writeDraft, writeDraftDurable, moveDraft] = useAccountDraft(agentState.account?.state === "valid" ? agentState.account.account?.id ?? null : null, surface === "thread" ? activeThreadId : null);
   const attachmentDraft = useAttachmentDraft(agentState.account?.state === "valid" ? agentState.account.account?.id ?? null : null, surface === "thread" ? activeThreadId : null, setUiError);
   const savingDraft = useRef(false);
   const [queueRevision, setQueueRevision] = useState(0);
@@ -128,9 +128,9 @@ export function useConversations(agentState: ClientState, navigation: ReturnType
     selection: currentAgent ? {
       enabled: currentAgent.enabled, permission: currentAgent.permission,
       workingDirectory: currentAgent.usesDefaultDirectory ? null : currentAgent.workingDirectory
-    } : surface === "thread" ? DEFAULT_AGENT_SELECTION : newAgentSelection,
+    } : surface === "thread" && !threadPreparation ? DEFAULT_AGENT_SELECTION : newAgentSelection,
     defaultDirectory: currentAgent?.defaultWorkingDirectory,
-    disabledReason: !billingAccountId || !agentState.connected ? "Sign in and connect to configure Agent mode."
+    disabledReason: threadPreparation ? "Preparing this conversation…" : !billingAccountId || !agentState.connected ? "Sign in and connect to configure Agent mode."
       : typeof window.axiomDesktop?.agent.configureDesktopAgent !== "function" ? "Restart Axiom to enable the Agent controls."
         : surface === "thread" && !currentAgent ? "Agent settings are unavailable. Restart Axiom to load the updated native app."
           : agentSettingsBusy ? "Saving Agent settings…"
@@ -218,8 +218,12 @@ export function useConversations(agentState: ClientState, navigation: ReturnType
     if (!pendingUserMessage) return;
     const session = agentState.sessions[pendingUserMessage.sessionId];
     if (!session) return;
-    const queued = messageQueue.current!.list(pendingUserMessage.sessionId, billingAccountId).find((item) => item.id === pendingUserMessage.id);
-    if (session.timeline.some((item) => item.clientItemId === pendingUserMessage.id) || !queued || queued.status !== "sending") {
+    const queued = messageQueue.current!.list(pendingUserMessage.sessionId, billingAccountId).find((item) => item.id === pendingUserMessage.id)
+      ?? messageQueue.current!.preparations(billingAccountId).find((item) => item.id === pendingUserMessage.id);
+    // The optimistic bubble stands in for the message only while it is on its way
+    // as a fresh turn. Once the transcript echoes it, or it has to wait/review in
+    // the queue, the queue panel or the transcript owns it instead.
+    if (session.timeline.some((item) => item.clientItemId === pendingUserMessage.id) || !queued || queued.status === "queued") {
       setPendingUserMessage(null);
     }
   }, [agentState.sessions, pendingUserMessage, queueRevision, billingAccountId]);
@@ -270,7 +274,7 @@ export function useConversations(agentState: ClientState, navigation: ReturnType
     const api = window.axiomDesktop?.agent;
     const viewRevision = navigationRevision.current;
     const scope = `${billingAccountId}:${agentState.runtimeInstanceId}:${viewRevision}:${activeThreadId ?? "new"}`;
-    if ((!text && !attachmentDraft.attachments.length) || attachmentDraft.attachmentsBusy || savingDraft.current || !api || !agentState.connected || [...submittingDraft.current.values()].includes(scope) || agentSettingsBusy) return;
+    if (threadPreparation || (!text && !attachmentDraft.attachments.length) || attachmentDraft.attachmentsBusy || savingDraft.current || !api || !agentState.connected || [...submittingDraft.current.values()].includes(scope) || agentSettingsBusy) return;
     if (requiresSignIn) {
       openSignIn();
       return;
@@ -284,8 +288,8 @@ export function useConversations(agentState: ClientState, navigation: ReturnType
       return;
     }
     const files = attachmentDraft.attachments;
-    if (files.some((file) => file.kind === "image") && !selectedModel.supportsImages) {
-      setUiError("Choose a model with image support before sending."); return;
+    if (files.some((file) => file.kind !== "image" || !selectedModel.supportsImages)) {
+      setUiError("Remove unsupported files or choose a model that supports these attachments."); return;
     }
     if (files.length && !api.promptWithAttachments) { setUiError("Restart Axiom to enable attachments. Your draft was kept."); return; }
     const webEnabled = webAccess.enabled;
@@ -305,11 +309,17 @@ export function useConversations(agentState: ClientState, navigation: ReturnType
     writeDraft(creatingThread ? null : activeThreadId, (previous) => previous.trim() === text ? "" : previous);
     attachmentDraft.clearAttachments(files);
     const stillSelected = () => navigationRevision.current === viewRevision;
+    const optimisticText = text || files.map((file) => file.name).join(", ");
+    if (!creatingThread && activeThreadId && stillSelected() && !agentState.sessions[activeThreadId]?.running) {
+      // Show the bubble the moment Enter is pressed; delivery is still confirmed
+      // only by the native transcript echo, never by this local state.
+      setPendingUserMessage({ id: submissionId, sessionId: activeThreadId, text: optimisticText });
+    }
     rememberSelection(selectedModel.id, effectiveReasoningEffort);
     setUiError(null);
     if (creatingThread && stillSelected()) {
       // Navigation can dismiss this view without cancelling the durable submission.
-      setThreadPreparation({ id: submissionId, text: text || files.map((file) => file.name).join(", "), accountId: billingAccountId, runtimeId: agentState.runtimeInstanceId });
+      setThreadPreparation({ id: submissionId, text: optimisticText, accountId: billingAccountId, runtimeId: agentState.runtimeInstanceId });
       activeThreadIdRef.current = null;
       setActiveThreadId(null);
       setThreadLoadError(null);
@@ -355,9 +365,11 @@ export function useConversations(agentState: ClientState, navigation: ReturnType
       messageQueue.current!.ready(submissionId, sessionId);
       const messageId = submissionId;
       if (creatingThread && stillSelected()) {
+        // Text authored in the visible composer during setup belongs to this thread.
+        moveDraft(null, sessionId);
         activeThreadIdRef.current = sessionId;
         setActiveThreadId(sessionId);
-        setPendingUserMessage({ id: messageId, sessionId, text: text || files.map((file) => file.name).join(", ") });
+        setPendingUserMessage({ id: messageId, sessionId, text: optimisticText });
         setNewAgentDraft(null);
         setThreadPreparation(null);
       }

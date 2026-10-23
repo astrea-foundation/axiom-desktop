@@ -36,7 +36,6 @@
     "@lobehub/icons-static-svg": "^1.94.0",
     "katex": "0.16.47",
     "lucide-react": "^0.564.0",
-    "pdfjs-dist": "6.3.289",
     "qrcode.react": "4.2.0",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
