@@ -1,0 +1,133 @@
+name: ci
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Checks to run (native release validation is explicit)
+        type: choice
+        default: all
+        options: [all, native, linux, desktop, macos-intel, macos-arm64, windows-x64, windows-arm64]
+      extended:
+        description: Repeat deterministic suites and run performance/soak benchmarks
+        type: boolean
+        default: false
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ inputs.target || 'pr' }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+# Bound concurrent fixtures on shared runners. Debug symbols are unnecessary for
+# these checks; assertions, overflow checks and test coverage remain enabled.
+env:
+  RUST_TEST_THREADS: 2
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
+
+jobs:
+  rust:
+    if: github.event_name == 'pull_request' || inputs.target == 'all' || inputs.target == 'linux'
+    timeout-minutes: 35
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.1
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - run: sudo apt-get update && sudo apt-get install -y bubblewrap jq
+      - name: Allow Bubblewrap namespaces on the ephemeral CI runner
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - run: python3 -m unittest discover -s scripts/tests -p test_release_ci.py
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: Read pinned audit tool version
+        id: audit-tool
+        shell: bash
+        run: echo "version=$(tr -d '\r\n' < .cargo-deny-version)" >> "$GITHUB_OUTPUT"
+      - name: Install verified prebuilt cargo-deny
+        uses: taiki-e/install-action@dfae9bf3d6f6c6f20ef4ebb3486c01a51341ff12 # v2.87.18
+        with:
+          tool: cargo-deny@${{ steps.audit-tool.outputs.version }}
+          checksum: true
+          fallback: none
+      - run: cargo test --workspace --all-features --locked --no-fail-fast
+      - run: cargo test --target-dir target/acp-sdk-vendor --locked --manifest-path vendor/agent-client-protocol-2.0.0/Cargo.toml --test jsonrpc_deep_chain_stack
+      - run: cargo deny check
+      - name: Extended deterministic and performance evaluation
+        if: inputs.extended == true
+        run: scripts/axiomcli-eval deterministic
+
+  desktop-ui:
+    if: github.event_name == 'pull_request' || inputs.target == 'all' || inputs.target == 'desktop'
+    timeout-minutes: 20
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: node packages/brand/scripts/build-callback.mjs --check
+      - run: pnpm --filter axiom-desktop exec playwright install --with-deps chromium
+      - run: pnpm --filter axiom-desktop test:browser
+
+  portability:
+    if: github.event_name == 'workflow_dispatch' && inputs.target != 'linux' && inputs.target != 'desktop'
+    timeout-minutes: 45
+    name: desktop portability (${{ matrix.name }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include: >-
+          ${{ fromJSON(inputs.target == 'macos-intel' && '[{"name":"macOS Intel","runner":"macos-15-intel"}]' ||
+            inputs.target == 'macos-arm64' && '[{"name":"macOS Apple Silicon","runner":"macos-15"}]' ||
+            inputs.target == 'windows-x64' && '[{"name":"Windows x64","runner":"windows-latest"}]' ||
+            inputs.target == 'windows-arm64' && '[{"name":"Windows ARM64","runner":"windows-11-arm"}]' ||
+            '[{"name":"macOS Intel","runner":"macos-15-intel"},{"name":"macOS Apple Silicon","runner":"macos-15"},{"name":"Windows x64","runner":"windows-latest"},{"name":"Windows ARM64","runner":"windows-11-arm"}]') }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.1
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # Formatting is enforced by the rust job. Keep native platform tests
+      # running even when that independent check fails.
+      - run: cargo test -p axiom-acp-extension -p axiomcli --all-features --locked --no-fail-fast
+      - run: cargo test --target-dir target/acp-sdk-vendor --locked --manifest-path vendor/agent-client-protocol-2.0.0/Cargo.toml --test jsonrpc_deep_chain_stack
+      - run: pnpm generate:protocol
+      - name: Generated ACP contract is committed
+        shell: bash
+        run: git diff --exit-code -- protocol/axiom-acp-extension packages/axiom-acp-client/src/generated
+      - run: pnpm typecheck
+      - run: pnpm test
+      - name: Extended deterministic and performance evaluation
+        if: inputs.extended == true
+        run: bash scripts/axiomcli-eval deterministic
+      # Release archives and Desktop bundles are built only by the release
+      # workflows. Keep branch and PR CI focused on checks and tests.
