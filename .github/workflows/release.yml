@@ -1,0 +1,259 @@
+name: signed release artifact
+
+on:
+  push:
+    tags:
+      - "v*"
+      - "!v*-packaging.*"
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  RUST_TEST_THREADS: 2
+jobs:
+  live-evaluation:
+    runs-on: ubuntu-latest
+    environment: release
+    timeout-minutes: 15
+    env:
+      AXIOM_API_KEY: ${{ secrets.AXIOM_EVAL_API_KEY }}
+      AXIOM_LIVE_BASE_URL: ${{ secrets.AXIOM_EVAL_BASE_URL }}
+      AXIOM_LIVE_MODEL: ${{ secrets.AXIOM_EVAL_MODEL }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Require a promoted release revision and matching product version
+        shell: bash
+        run: |
+          git merge-base --is-ancestor HEAD origin/main
+          node apps/desktop/scripts/set-release-version.mjs "${GITHUB_REF_NAME#v}" --check-only
+      - name: Require completed CI for this exact revision
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/verify-release-ci.py "$(git rev-parse HEAD)"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: Require and run the budgeted live regression gate
+        shell: bash
+        run: |
+          test -n "$AXIOM_API_KEY"
+          test -n "$AXIOM_LIVE_BASE_URL"
+          test -n "$AXIOM_LIVE_MODEL"
+          scripts/axiomcli-eval live
+
+  linux:
+    needs: live-evaluation
+    timeout-minutes: 60
+    runs-on: ubuntu-22.04
+    environment: release
+    env:
+      AXIOM_UPDATE_PUBLIC_KEYS: ${{ vars.AXIOM_UPDATE_PUBLIC_KEYS }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: actions/setup-python@v5
+        if: runner.os == 'Linux'
+        with:
+          python-version: '3.12'
+      - run: pnpm install --frozen-lockfile
+      - run: sudo apt-get update && sudo apt-get install -y bubblewrap libarchive-tools rpm libfuse2
+      - run: cargo build --locked --release -p axiomcli -p axiom-proxy
+      - name: Build Desktop and standalone installers
+        run: |
+          test -n "$AXIOM_UPDATE_PUBLIC_KEYS"
+          test "$(target/release/axiomcli update --trust-keys)" = "$AXIOM_UPDATE_PUBLIC_KEYS"
+          node apps/desktop/scripts/package-desktop.mjs --linux --x64 --unsigned
+          node scripts/package-cli.mjs --linux --x64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: axiom-release-linux-x64
+          retention-days: 7
+          path: |
+            apps/desktop/dist/*.AppImage
+            apps/desktop/dist/*.deb
+            apps/desktop/dist/*.pkg.tar.xz
+            apps/desktop/dist/*.sh
+          if-no-files-found: error
+
+  macos-native:
+    name: Native macOS build (${{ matrix.arch }})
+    timeout-minutes: 90
+    needs: live-evaluation
+    runs-on: ${{ matrix.runner }}
+    env:
+      AXIOM_UPDATE_PUBLIC_KEYS: ${{ vars.AXIOM_UPDATE_PUBLIC_KEYS }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15-intel
+            arch: x64
+          - runner: macos-15
+            arch: arm64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: cargo build --locked --release -p axiomcli -p axiom-proxy
+      - run: node scripts/native-input.mjs mac ${{ matrix.arch }} native-input
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-native-${{ matrix.arch }}
+          path: native-input/
+          retention-days: 7
+          if-no-files-found: error
+
+  macos:
+    name: Sign combined macOS installers
+    timeout-minutes: 60
+    needs: macos-native
+    runs-on: macos-15
+    environment: release
+    env:
+      AXIOM_UPDATE_PUBLIC_KEYS: ${{ vars.AXIOM_UPDATE_PUBLIC_KEYS }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.1
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos-native-x64
+          path: target/release/x64
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos-native-arm64
+          path: target/release/arm64
+      - run: node scripts/combine-macos.mjs target/release target/release/universal
+      - name: Sign and notarize both PKG installers
+        env:
+          MACOS_CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          test -n "$AXIOM_UPDATE_PUBLIC_KEYS"
+          export CSC_KEYCHAIN="$RUNNER_TEMP/axiom-release.keychain-db"
+          password=$(openssl rand -hex 32)
+          trap 'security delete-keychain "$CSC_KEYCHAIN"; rm -f "$RUNNER_TEMP/axiom-cert.p12"' EXIT
+          printf '%s' "$MACOS_CERTIFICATE_BASE64" | base64 --decode > "$RUNNER_TEMP/axiom-cert.p12"
+          security create-keychain -p "$password" "$CSC_KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$CSC_KEYCHAIN"
+          security unlock-keychain -p "$password" "$CSC_KEYCHAIN"
+          security import "$RUNNER_TEMP/axiom-cert.p12" -k "$CSC_KEYCHAIN" -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign -T /usr/bin/productbuild -T /usr/bin/pkgbuild
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$CSC_KEYCHAIN"
+          security list-keychains -d user -s "$CSC_KEYCHAIN" "$HOME/Library/Keychains/login.keychain-db"
+          node apps/desktop/scripts/package-desktop.mjs --mac --universal
+          node scripts/package-cli.mjs --mac --universal --input target/release/universal
+          for file in apps/desktop/dist/*.pkg; do
+            pkgutil --check-signature "$file"
+            xcrun stapler validate "$file"
+            spctl --assess --type install --verbose=2 "$file"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: axiom-release-mac-universal
+          retention-days: 7
+          path: apps/desktop/dist/*.pkg
+          if-no-files-found: error
+
+  windows-desktop:
+    needs: live-evaluation
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/windows-signed.yml
+
+  publish-draft:
+    needs: [linux, macos, windows-desktop]
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+    env:
+      AXIOM_UPDATE_PUBLIC_KEYS: ${{ vars.AXIOM_UPDATE_PUBLIC_KEYS }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: axiom-release-*
+          path: release
+          merge-multiple: true
+      - name: Sign the complete final-byte inventory
+        env:
+          AXIOM_UPDATE_SIGNING_KEY: ${{ secrets.AXIOM_UPDATE_SIGNING_KEY }}
+        run: node scripts/download-manifest.mjs release "${GITHUB_REF_NAME#v}" signed
+      - name: Retain verified installers for publication retries
+        uses: actions/upload-artifact@v4
+        with:
+          name: axiom-signed-release
+          retention-days: 7
+          path: release/
+          if-no-files-found: error
+      - name: Publish signed installers in the source repository Releases tab
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/publish-github-release.mjs release --source
+      - name: Create or verify immutable GitHub draft assets
+        id: draft
+        env:
+          GH_TOKEN: ${{ secrets.AXIOM_RELEASES_TOKEN }}
+        run: |
+          if [ -n "$GH_TOKEN" ]; then
+            node scripts/publish-github-release.mjs release
+            echo 'published=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'Cross-repository credential is not configured; publish the axiom-signed-release artifact using the documented operator procedure.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Hand off to the promoted platform publisher
+        if: steps.draft.outputs.published == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.AXIOM_PLATFORM_RELEASE_TOKEN }}
+        run: |
+          if [ -n "$GH_TOKEN" ]; then
+            gh workflow run release.yml --repo astrea-foundation/axiom-platform --ref main -f version="${GITHUB_REF_NAME#v}" -f revision="$(git rev-parse HEAD)"
+          else
+            echo 'Platform dispatch credential is not configured; operator publication remains required.' >> "$GITHUB_STEP_SUMMARY"
+          fi
