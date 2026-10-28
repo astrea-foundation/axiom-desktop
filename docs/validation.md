@@ -310,3 +310,30 @@ and model-change protection in the ACP client security tests, and light/dark
 warning/acceptance screenshots in the Desktop privacy-proof browser suite. The
 companion backend tests explicit session consent and preserves rejection of
 invalid quote signatures, nonce/key/TLS/workload bindings and other TCB statuses.
+
+## NEAR rotating signing keys and reasoning-only completion (2026-10-28)
+
+The public NVIDIA JWKS measured 525,732 bytes, exceeding the native verifier's
+previous 256 KiB download bound. The new 1 MiB bound admits that rotating key set
+while retaining certificate validity, signed-policy anchors, ES384 signatures,
+challenge nonces and passing GPU verdicts. Local live investigation then passed
+NEAR's Intel `UpToDate`, NVIDIA, model/key, TLS and workload checks without
+outdated-TCB consent.
+
+That request subsequently failed in the relay after provider usage settled:
+the model exhausted its output budget with encrypted reasoning and no answer
+text, which the relay and native client incorrectly treated as empty output.
+Both source fixes preserve authenticated reasoning-only results and the provider's
+finish reason. A successful authenticated live completion after the paired fix
+remains outstanding; a debit or successful attestation is not completion evidence.
+The companion relay change is
+[axiom-platform PR 98](https://github.com/astrea-foundation/axiom-platform/pull/98).
+Production promotion and native release qualification remain separate work.
+
+The secure-client and proxy suites passed 78 tests, with two explicit live or
+cross-runtime tests ignored. Regressions cover large and oversized JWKS bodies,
+wrong nonces and anchors, expired certificates, signed reasoning-only output,
+empty output, missing receipts and altered ciphertext. Both packages passed
+Clippy with all targets/features and warnings denied; workspace formatting
+passed. The proxy also preserves static typed security diagnostics and correlates
+its completion IDs with upstream accounting IDs without relaxing response checks.
