@@ -1,5 +1,15 @@
 # AxiomAI
 
+> **Legacy repository — development has moved.**
+> [axiom-desktop](https://github.com/astrea-foundation/axiom-desktop) owns Desktop,
+> AxiomCLI, the local proxy and native installers.
+> [axiom-platform](https://github.com/astrea-foundation/axiom-platform) owns the
+> hosted API, websites, accounts and release publication.
+>
+> This repository is retained for historical branches, tags and unreleased work.
+> Use the active repositories for development, issues, builds and releases.
+> Legacy `dev` commits are not automatically part of the current Desktop source.
+
 Axiom's native clients: an Electron desktop app, AxiomCLI with a terminal UI and
 headless/ACP modes, and a local OpenAI-compatible proxy. AxiomCLI owns Desktop's
 agent runtime and account-local conversations. Every remote inference request
