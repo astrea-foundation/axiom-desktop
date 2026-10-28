@@ -851,7 +851,11 @@ fn decrypt_relay_completion(
         .map(|value| decrypt(identity, value))
         .transpose()?;
     let tool_calls = decrypt_tool_calls(identity, completion.encrypted_tool_calls)?;
-    if text.is_empty() && refusal.is_none() && tool_calls.is_empty() {
+    if text.is_empty()
+        && reasoning.as_deref().is_none_or(str::is_empty)
+        && refusal.is_none()
+        && tool_calls.is_empty()
+    {
         return Err(invalid("relay completion has no usable output"));
     }
     let finish_reason = parse_finish_reason(&completion.finish_reason)?;
@@ -2325,6 +2329,90 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn signed_reasoning_only_completion_is_preserved_and_still_requires_its_exact_receipt() {
+        let identity = crypto::ClientIdentity::generate();
+        let client_key = crypto::Ed25519PublicKey::from_hex(&identity.public_key_hex()).unwrap();
+        let request_hash = "22".repeat(32);
+        let (signing_key, signing_address) = response_signer();
+        for reasoning in ["reasoning reached the output budget", ""] {
+            let encrypted = encrypt(client_key, reasoning.as_bytes()).unwrap();
+            let raw_body = serde_json::to_vec(&serde_json::json!({
+                "id": "reasoning-chat",
+                "model": "provider/model",
+                "choices": [{"message": {
+                    "role": "assistant", "content": null, "reasoning_content": encrypted.as_str(),
+                }, "finish_reason": "length"}],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14},
+            }))
+            .unwrap();
+            let proof = signed_proof(
+                &raw_body,
+                &request_hash,
+                "reasoning-chat",
+                &signing_key,
+                &signing_address,
+            );
+            let completion = || RelayCompletion {
+                id: "reasoning-chat".into(),
+                model: Some("provider/model".into()),
+                encrypted_content: None,
+                encrypted_reasoning_content: Some(encrypted.clone()),
+                encrypted_refusal: None,
+                encrypted_tool_calls: Vec::new(),
+                finish_reason: "length".into(),
+                usage: RelayUsage {
+                    prompt_tokens: Some(10),
+                    completion_tokens: Some(4),
+                    total_tokens: Some(14),
+                    cached_prompt_tokens: None,
+                },
+                proof: Some(proof.clone()),
+            };
+            let result = decrypt_completion(
+                &model(),
+                &identity,
+                &request_hash,
+                &signing_address,
+                completion(),
+            );
+            if reasoning.is_empty() {
+                assert!(result.is_err());
+            } else {
+                let verified = result.unwrap();
+                assert!(verified.assistant.text.is_empty());
+                assert_eq!(verified.reasoning.as_deref(), Some(reasoning));
+                assert_eq!(verified.finish_reason, Some(FinishReason::Length));
+                assert_eq!(verified.usage.total_tokens, 14);
+            }
+            let mut missing_receipt = completion();
+            missing_receipt.proof = None;
+            assert!(
+                decrypt_completion(
+                    &model(),
+                    &identity,
+                    &request_hash,
+                    &signing_address,
+                    missing_receipt
+                )
+                .is_err()
+            );
+            let mut changed = completion();
+            changed.encrypted_reasoning_content =
+                Some(encrypt(client_key, b"different reasoning").unwrap());
+            assert!(
+                decrypt_completion(
+                    &model(),
+                    &identity,
+                    &request_hash,
+                    &signing_address,
+                    changed
+                )
+                .is_err()
+            );
+        }
     }
 
     #[test]

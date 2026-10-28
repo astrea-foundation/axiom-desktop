@@ -80,6 +80,13 @@ Local authentication failure returns 401. Upstream insufficient credit returns
 402. A sanitized upstream failure may return 502 for attestation rejection,
 transport failure or invalid encrypted output. Missing authenticated completion,
 stream reordering, decryption failure and protocol mismatches fail closed.
+The `security_failed` stderr diagnostic includes the typed `failure_kind`,
+`failure_code`, and a static `safe_detail` describing the failing local check.
+These distinguish resource limits and transport setup from evidence rejection;
+credentials, remote response bodies, quotes and ciphertext are not logged.
+The 32-character suffix of each `chatcmpl-…` ID is also that call's relay accounting
+request ID. Use it with the authenticated `/api/v1/usage/requests` lookup to recover
+operational status after a failure; accounting status does not verify a reply.
 Retrying a potentially dispatched inference is not a safe recovery shortcut.
 See [troubleshooting](troubleshooting.md#local-proxy).
 
