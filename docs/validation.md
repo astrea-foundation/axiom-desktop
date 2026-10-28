@@ -43,6 +43,16 @@ Backend rollback, payment-receiver recovery and secret management are separate
 platform operations. Coordinate their acceptance with compatible native releases;
 this document does not authorize a production reset or deployment.
 
+## NEAR completion qualification
+
+The NVIDIA signing-key download remains bounded at 1 MiB and requires the same
+certificate, signed-policy anchor, ES384 signature, nonce and passing-verdict
+checks. Qualify fresh NEAR attestation and authenticated completion against the
+compatible platform relay before release, including a reasoning-only response
+that ends at the output-token limit. Keep missing receipts, altered ciphertext,
+expired evidence and oversized key sets as rejecting cases. A successful
+attestation or posted usage charge does not establish authenticated completion.
+
 ## Dependency maintenance
 
 The 0.1.15 candidate updates Rustls to 0.23.46, resolving

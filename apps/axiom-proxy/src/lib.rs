@@ -286,9 +286,8 @@ async fn chat_completions(
         Err(error) => return Ok(translation_error_response(&error)),
     };
     let ignored_parameters = translated.ignored_parameters;
-    let domain = translated.request;
+    let (id, domain) = identify_request(translated.request);
     let model_id = domain.model.clone();
-    let id = format!("chatcmpl-{}", uuid::Uuid::new_v4().simple());
     let created = unix_seconds();
     let permit = state
         .concurrency
@@ -333,7 +332,7 @@ async fn chat_completions(
         .establish(model, &trust_policy, cancellation.clone())
         .await
         .map_err(|error| {
-            log_security_failure(&id, &model_id, error.kind());
+            log_security_failure(&id, &model_id, &error);
             map_secure_error(error)
         })?;
     log_security_evidence(&id, session.evidence());
@@ -489,6 +488,14 @@ fn translation_error_response(error: &CompatError) -> Response {
     response
 }
 
+fn identify_request(
+    mut request: axiom_inference::InferenceRequest,
+) -> (String, axiom_inference::InferenceRequest) {
+    let request_id = uuid::Uuid::new_v4().simple().to_string();
+    request.request_id = Some(request_id.clone());
+    (format!("chatcmpl-{request_id}"), request)
+}
+
 fn log_security_evidence(request_id: &str, evidence: &axiom_secure_client::SecurityEvidence) {
     let checks = evidence
         .checks
@@ -520,16 +527,29 @@ fn log_security_evidence(request_id: &str, evidence: &axiom_secure_client::Secur
     );
 }
 
-fn log_security_failure(request_id: &str, model_id: &str, kind: ProviderFailureKind) {
-    eprintln!(
-        "{}",
-        serde_json::json!({
-            "event":"security_failed",
-            "request_id":request_id,
-            "model_id":model_id,
-            "failure_kind":format!("{kind:?}"),
-        })
-    );
+fn security_failure_record(
+    request_id: &str,
+    model_id: &str,
+    error: &axiom_secure_client::SecureClientError,
+) -> serde_json::Value {
+    // SecureClientError exposes only a typed code and a static safe detail.
+    // Never format a transport error, credential, quote or ciphertext here.
+    serde_json::json!({
+        "event":"security_failed",
+        "request_id":request_id,
+        "model_id":model_id,
+        "failure_kind":format!("{:?}", error.kind()),
+        "failure_code":error.code().as_str(),
+        "safe_detail":error.safe_detail(),
+    })
+}
+
+fn log_security_failure(
+    request_id: &str,
+    model_id: &str,
+    error: &axiom_secure_client::SecureClientError,
+) {
+    eprintln!("{}", security_failure_record(request_id, model_id, error));
 }
 
 fn log_terminal(request_id: &str, terminal: &'static str, total_tokens: u64) {
@@ -705,6 +725,37 @@ fn unix_seconds() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn completion_ids_identify_the_exact_upstream_accounting_request() {
+        let mut input =
+            axiom_inference::InferenceRequest::streaming("model", Vec::new(), Vec::new());
+        input.request_id = Some("caller-controlled-label".into());
+        let (public_id, request) = identify_request(input);
+        let upstream_id = request.request_id.unwrap();
+        assert_eq!(public_id, format!("chatcmpl-{upstream_id}"));
+        assert_eq!(upstream_id.len(), 32);
+        assert!(
+            upstream_id
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        );
+        assert_ne!(upstream_id, "caller-controlled-label");
+    }
+
+    #[test]
+    fn security_failures_preserve_the_typed_static_diagnostic() {
+        let error = axiom_secure_client::SecureClientError::new(
+            ProviderFailureKind::SessionEstablishment,
+            "remote response exceeds the configured limit",
+        );
+        let record = security_failure_record("request", "model", &error);
+        assert_eq!(record["failure_kind"], "SessionEstablishment");
+        assert_eq!(record["failure_code"], "ATTESTATION_UNAVAILABLE");
+        assert_eq!(record["safe_detail"], error.safe_detail());
+        let public_error = map_secure_error(error);
+        assert_eq!(public_error.message, "secure inference verification failed");
+    }
 
     #[test]
     fn rejects_non_loopback_bind_and_weak_tokens() {

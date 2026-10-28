@@ -1035,6 +1035,14 @@ mod tests {
     }
 
     fn nvidia_fixture(result: &Value, verdict_nonce: Option<String>) -> NvidiaFixture {
+        nvidia_fixture_with_expiry(result, verdict_nonce, 2035)
+    }
+
+    fn nvidia_fixture_with_expiry(
+        result: &Value,
+        verdict_nonce: Option<String>,
+        expiry_year: i32,
+    ) -> NvidiaFixture {
         let mut ca_params = CertificateParams::default();
         ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
         ca_params
@@ -1044,8 +1052,8 @@ mod tests {
             KeyUsagePurpose::DigitalSignature,
             KeyUsagePurpose::KeyCertSign,
         ];
-        ca_params.not_before = date_time_ymd(2025, 1, 1);
-        ca_params.not_after = date_time_ymd(2035, 1, 1);
+        ca_params.not_before = date_time_ymd(2020, 1, 1);
+        ca_params.not_after = date_time_ymd(expiry_year, 1, 1);
         let ca_key = KeyPair::generate_for(&PKCS_ECDSA_P384_SHA384).unwrap();
         let ca_cert = ca_params.self_signed(&ca_key).unwrap();
         let issuer = Issuer::new(ca_params, ca_key);
@@ -1055,8 +1063,8 @@ mod tests {
             .distinguished_name
             .push(DnType::CommonName, "Test NVIDIA Leaf");
         leaf_params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
-        leaf_params.not_before = date_time_ymd(2025, 1, 1);
-        leaf_params.not_after = date_time_ymd(2035, 1, 1);
+        leaf_params.not_before = date_time_ymd(2020, 1, 1);
+        leaf_params.not_after = date_time_ymd(expiry_year, 1, 1);
         let leaf_key = KeyPair::generate_for(&PKCS_ECDSA_P384_SHA384).unwrap();
         let leaf_cert = leaf_params.signed_by(&leaf_key, &issuer).unwrap();
 
@@ -1145,6 +1153,64 @@ mod tests {
             )
             .is_err()
         );
+        let expired = nvidia_fixture_with_expiry(&Value::Bool(true), None, 2021);
+        assert!(
+            verify_nvidia_jwt(
+                &expired.jwt,
+                &expired.jwks,
+                &expired.nonce,
+                std::slice::from_ref(&expired.anchor_hash),
+            )
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn rotating_nvidia_key_set_can_exceed_legacy_limit_without_relaxing_verification() {
+        let fixture = nvidia_fixture(&Value::Bool(true), None);
+        let original: Value = serde_json::from_slice(&fixture.jwks).unwrap();
+        let signing_key = original["keys"][0].clone();
+        let key_size = serde_json::to_vec(&signing_key).unwrap().len();
+        let mut keys = Vec::new();
+        for index in 0..=(600 * 1024 / key_size) {
+            let mut retired = signing_key.clone();
+            retired["kid"] = format!("retired-{index}").into();
+            keys.push(retired);
+        }
+        keys.push(signing_key);
+        let bytes = serde_json::to_vec(&serde_json::json!({ "keys": keys })).unwrap();
+        assert!(bytes.len() > 512 * 1024);
+        let limit = SecureClientConfig::new("https://api.axiom.stream")
+            .unwrap()
+            .limits
+            .nvidia_jwks_bytes;
+        assert!(bytes.len() < limit);
+        // The real vendor response can be chunked; do not rely on Content-Length.
+        let response = reqwest::Response::from(http::Response::new(bytes));
+        let bounded = bounded_body(response, limit).await.unwrap();
+        assert!(
+            verify_nvidia_jwt(
+                &fixture.jwt,
+                &bounded,
+                &fixture.nonce,
+                std::slice::from_ref(&fixture.anchor_hash),
+            )
+            .is_ok()
+        );
+        assert!(
+            verify_nvidia_jwt(
+                &fixture.jwt,
+                &bounded,
+                &"cd".repeat(32),
+                std::slice::from_ref(&fixture.anchor_hash),
+            )
+            .is_err()
+        );
+        assert!(
+            verify_nvidia_jwt(&fixture.jwt, &bounded, &fixture.nonce, &["00".repeat(32)]).is_err()
+        );
+        let oversized = reqwest::Response::from(http::Response::new(vec![b' '; limit + 1]));
+        assert!(bounded_body(oversized, limit).await.is_err());
     }
 
     #[test]

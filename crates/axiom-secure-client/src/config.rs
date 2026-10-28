@@ -139,7 +139,9 @@ impl Default for SecureClientLimits {
             attestation_quote_bytes: 256 * 1024,
             nvidia_evidence_bytes: 1024 * 1024,
             nvidia_jwt_bytes: 256 * 1024,
-            nvidia_jwks_bytes: 256 * 1024,
+            // NVIDIA publishes a rotating multi-key certificate set. Keep its
+            // download bounded while allowing the vendor's >512 KiB key set.
+            nvidia_jwks_bytes: 1024 * 1024,
             intel_collateral_bytes: 2 * 1024 * 1024,
             relay_error_bytes: 4 * 1024,
             // A completion receipt contains the bounded 32 MiB provider
