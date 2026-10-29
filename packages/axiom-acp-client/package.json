@@ -1,0 +1,21 @@
+{
+  "name": "@axiom/axiom-acp-client",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./attachments": "./src/attachments.ts"
+  },
+  "scripts": {
+    "generate": "json2ts -i ../../protocol/axiom-acp-extension/v0.2/schema.json -o src/generated/protocol.ts --bannerComment \"/* Generated from protocol/axiom-acp-extension/v0.2/schema.json. Do not edit. */\"",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test tests/*.test.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^24.12.3",
+    "json-schema-to-typescript": "^15.0.4",
+    "tsx": "^4.20.6",
+    "typescript": "~5.9.2"
+  }
+}
