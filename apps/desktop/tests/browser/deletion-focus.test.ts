@@ -3017,7 +3017,22 @@ for (const vision of [false, true]) {
         await send.click();
         await page.waitForFunction(() => (window as any).__deletionTest.calls.some((call: any) => call.method === "attachments"));
         const call = (await calls(page)).find((call) => call.method === "attachments")!;
-        assert.equal(JSON.parse(call.text!).attachments[0].image.data, tinyPng.toString("base64"));
+        const image = JSON.parse(call.text!).attachments[0].image;
+        assert.equal(image.mimeType, "image/png");
+        const decoded = await page.evaluate(async ({ original, sent }) => {
+          const pixels = async (data: string) => {
+            const element = new Image();
+            element.src = `data:image/png;base64,${data}`;
+            await element.decode();
+            const canvas = document.createElement("canvas");
+            canvas.width = element.naturalWidth; canvas.height = element.naturalHeight;
+            const context = canvas.getContext("2d")!;
+            context.drawImage(element, 0, 0);
+            return [canvas.width, canvas.height, ...context.getImageData(0, 0, canvas.width, canvas.height).data];
+          };
+          return { original: await pixels(original), sent: await pixels(sent) };
+        }, { original: tinyPng.toString("base64"), sent: image.data });
+        assert.deepEqual(decoded.sent, decoded.original);
       }
       assert.deepEqual(errors, []);
     } finally { await page.close(); }

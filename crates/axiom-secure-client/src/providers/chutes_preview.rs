@@ -238,17 +238,16 @@ pub(crate) fn hosted_provider(
 }
 
 fn hosted_native() -> Result<Option<NativeConfig>> {
-    let path = match std::env::var_os("AXIOM_CHUTES_CLIENT_CONFIG_FILE") {
-        Some(path) => PathBuf::from(path),
-        None => {
-            let executable = std::env::current_exe().map_err(|_| {
-                SecureClientError::configuration("native executable location unavailable")
-            })?;
-            let Some(path) = bundled_native_config(&executable)? else {
-                return Ok(None);
-            };
-            path
-        }
+    let path = if let Some(path) = std::env::var_os("AXIOM_CHUTES_CLIENT_CONFIG_FILE") {
+        PathBuf::from(path)
+    } else {
+        let executable = std::env::current_exe().map_err(|_| {
+            SecureClientError::configuration("native executable location unavailable")
+        })?;
+        let Some(path) = bundled_native_config(&executable)? else {
+            return Ok(None);
+        };
+        path
     };
     load_hosted_native(&path).map(Some)
 }
