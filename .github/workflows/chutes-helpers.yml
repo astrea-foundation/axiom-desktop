@@ -55,9 +55,11 @@ jobs:
         with:
           toolchain: 1.97.1
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
       - name: Verify the frozen helper through the real native stdin/stdout protocol
         env:
-          AXIOM_CHUTES_BUNDLE_TEST_CONFIG_FILE: .local/chutes/bundle/native.json
+          AXIOM_CHUTES_BUNDLE_TEST_CONFIG_FILE: ${{ github.workspace }}/.local/chutes/bundle/native.json
         run: cargo test --locked -p axiom-secure-client frozen_helper_accepts_the_real_native_stdio_handshake_without_network -- --ignored
       - name: Archive the verified payload with executable modes preserved
         run: python -c "import tarfile; t=tarfile.open('helper.tar.gz','w:gz'); t.add('.local/chutes/bundle',arcname='bundle'); t.close()"
@@ -94,9 +96,11 @@ jobs:
         with:
           toolchain: 1.97.1
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
       - name: Drive the x64 helper from the native Arm SDK
         env:
-          AXIOM_CHUTES_BUNDLE_TEST_CONFIG_FILE: relocated helper/bundle/native.json
+          AXIOM_CHUTES_BUNDLE_TEST_CONFIG_FILE: ${{ github.workspace }}/relocated helper/bundle/native.json
         run: cargo test --locked -p axiom-secure-client frozen_helper_accepts_the_real_native_stdio_handshake_without_network -- --ignored
   universal-mac:
     name: Universal Mac helper assembly
