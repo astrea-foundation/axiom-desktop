@@ -5,6 +5,7 @@ import type { PromptAttachment, PermissionOutcome, ElicitationOutcome, UsageSumm
 export interface ChatHost {
   chrome?: { isMac: boolean; fullScreen: boolean; trafficLightInsetClass: string };
   getAttachments?(threadId: string, userItemId: string): Promise<{ attachments: PromptAttachment[] }>;
+  regenerateImage?(threadId: string, callId: string): Promise<{ callId: string }>;
   usageSummary?(accountId: string, request: Pick<UsageSummaryRequest, 'period' | 'timezone'>): Promise<{ summary: UsageSummary }>;
   resolvePermission?(interactionId: string, outcome: PermissionOutcome): Promise<unknown>;
   resolveElicitation?(interactionId: string, outcome: ElicitationOutcome): Promise<unknown>;

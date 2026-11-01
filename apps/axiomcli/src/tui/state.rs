@@ -768,6 +768,19 @@ impl TuiState {
                 self.status = activity.unwrap_or_else(|| format!("Running {name}"));
                 self.status_tone = StatusTone::Active;
             }
+            AppEvent::ImageGenerationProgress { call_id, progress } => {
+                let action = match progress.stage {
+                    axiom_inference::ImageGenerationStage::Queued => "Waiting for GPU",
+                    axiom_inference::ImageGenerationStage::Generating => "Generating image",
+                    axiom_inference::ImageGenerationStage::Finishing => "Finishing image",
+                };
+                let label = format!("{action} · {}%", progress.percent);
+                if let Some(task) = self.task_for_call_mut(call_id) {
+                    task.activity = TaskActivity::Working(label.clone());
+                }
+                self.status = label;
+                self.status_tone = StatusTone::Active;
+            }
             AppEvent::ToolOutput {
                 call_id,
                 content,
@@ -1051,6 +1064,12 @@ impl TuiState {
                     format!("WARNING: {}", sanitize_terminal_text(message)),
                     false,
                 );
+            }
+            AppEvent::SecurityEvidenceUpdated { evidence } => {
+                if evidence.model_id == self.model {
+                    self.security_evidence = Some(*evidence.clone());
+                    self.security_error = None;
+                }
             }
             AppEvent::SecurityStatusChanged { state } => {
                 self.security_error = None;

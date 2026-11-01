@@ -1641,7 +1641,7 @@ impl StreamState {
                 if payload.reason.as_deref() == Some("insufficient_credit") {
                     return Err(SecureClientError::new(
                         axiom_inference::ProviderFailureKind::InsufficientCredit,
-                        "Axiom credit is exhausted",
+                        crate::INSUFFICIENT_CREDIT_MESSAGE,
                     ));
                 }
                 return Err(SecureClientError::cancelled());

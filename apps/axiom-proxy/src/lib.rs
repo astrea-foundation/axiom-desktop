@@ -666,7 +666,7 @@ fn map_secure_error(error: axiom_secure_client::SecureClientError) -> ApiError {
         }
         ProviderFailureKind::InsufficientCredit => ApiError {
             status: StatusCode::PAYMENT_REQUIRED,
-            message: "Axiom credit is exhausted; visit axiom.stream to top up",
+            message: axiom_secure_client::INSUFFICIENT_CREDIT_MESSAGE,
             kind: "insufficient_quota",
             code: "insufficient_credit",
         },
@@ -778,6 +778,20 @@ mod tests {
         let wrong = token_hash("incorrect-token-value-1234567890123");
         assert!(bool::from(expected.ct_eq(&right)));
         assert!(!bool::from(expected.ct_eq(&wrong)));
+    }
+
+    #[test]
+    fn insufficient_credit_errors_keep_their_classification_and_explain_how_to_continue() {
+        let mapped = map_secure_error(axiom_secure_client::SecureClientError::new(
+            ProviderFailureKind::InsufficientCredit,
+            "private upstream details",
+        ));
+        assert_eq!(mapped.status, StatusCode::PAYMENT_REQUIRED);
+        assert_eq!(mapped.code, "insufficient_credit");
+        assert_eq!(
+            mapped.message,
+            axiom_secure_client::INSUFFICIENT_CREDIT_MESSAGE
+        );
     }
 
     #[test]

@@ -124,6 +124,7 @@ pub(super) async fn verify_security(
                 &ctx_extension_state,
                 Some(&external_id),
                 ActivityEvent::SecurityChanged {
+                    evidence: None,
                     status: extension_security_status(crate::app::SecurityStatus::Verifying),
                 },
             )?;
@@ -167,6 +168,7 @@ pub(super) async fn verify_security(
                 &ctx_extension_state,
                 Some(&external_id),
                 ActivityEvent::SecurityChanged {
+                    evidence: None,
                     status: status.clone(),
                 },
             )?;
@@ -207,7 +209,10 @@ pub(super) async fn verify_security(
                     &connection,
                     &ctx_extension_state,
                     Some(&external_id),
-                    ActivityEvent::SecurityChanged { status },
+                    ActivityEvent::SecurityChanged {
+                        evidence: None,
+                        status,
+                    },
                 );
             }
         }

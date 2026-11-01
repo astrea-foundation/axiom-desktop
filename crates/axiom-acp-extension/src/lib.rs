@@ -79,6 +79,8 @@ pub struct FeatureVersions {
     pub usage: u16,
     pub security_evidence: u16,
     pub web_consent: u16,
+    /// Version 2 exposes one image tool automatically for vision models.
+    pub image_generation: u16,
     pub steering: u16,
     pub message_revision: u16,
     pub attachments: u16,
@@ -103,6 +105,7 @@ impl FeatureVersions {
             usage: 1,
             security_evidence: 4,
             web_consent: 1,
+            image_generation: 4,
             steering: 1,
             message_revision: 1,
             attachments: 2,
@@ -737,6 +740,9 @@ pub enum ActivityEvent {
     },
     SecurityChanged {
         status: SecurityStatus,
+        /// Public report from the locally verified session for this request.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        evidence: Option<Box<SecurityEvidence>>,
     },
     AccountChanged {
         status: AccountStatus,
@@ -877,6 +883,20 @@ pub struct GetAttachmentsRequest {
 #[serde(rename_all = "camelCase")]
 pub struct GetAttachmentsResponse {
     pub attachments: Vec<axiom_inference::PromptAttachment>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcRequest)]
+#[request(method = "_axiom/image/regenerate", response = RegenerateImageResponse)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RegenerateImageRequest {
+    pub thread_id: String,
+    pub call_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcResponse)]
+#[serde(rename_all = "camelCase")]
+pub struct RegenerateImageResponse {
+    pub call_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcRequest)]
@@ -1350,6 +1370,8 @@ pub struct ProtocolSchema {
     pub prompt_metadata: PromptMetadata,
     pub get_attachments_request: GetAttachmentsRequest,
     pub get_attachments_response: GetAttachmentsResponse,
+    pub regenerate_image_request: RegenerateImageRequest,
+    pub regenerate_image_response: RegenerateImageResponse,
     pub delivery_metadata: DeliveryMetadata,
     pub list_threads_request: ListThreadsRequest,
     pub list_threads_response: ListThreadsResponse,

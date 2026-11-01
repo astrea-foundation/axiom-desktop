@@ -1095,7 +1095,7 @@ fn insufficient_credit_failure_has_a_specific_top_up_message() {
     });
 
     let folded = render_symbols(100, 30, &state);
-    assert!(folded.contains("Out of credits"));
+    assert!(folded.contains("Insufficient balance. Top up to continue."));
     assert!(folded.contains("Use /topup"));
     assert!(!folded.contains("insufficient_credit"));
     let task = state.entries[state.task_index(&turn).expect("task")]
@@ -1110,6 +1110,9 @@ fn insufficient_credit_failure_has_a_specific_top_up_message() {
 
     let unrelated = "provider error: HTTP 402 Payment Required: card authorization failed";
     assert_eq!(user_facing_provider_error(unrelated), unrelated);
+    let canonical = user_facing_provider_error(axiom_secure_client::INSUFFICIENT_CREDIT_MESSAGE);
+    assert!(canonical.contains("Insufficient balance. Top up to continue."));
+    assert!(canonical.contains("Use /topup"));
 }
 
 #[test]

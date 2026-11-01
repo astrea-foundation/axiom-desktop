@@ -16,6 +16,26 @@ The [update architecture](updates.md) describes installation ownership and
 recovery. [Release acceptance](validation.md) covers signed OS qualification;
 [repository setup](repository-setup.md) lists Actions credentials and settings.
 
+The optional managed Chutes provider uses a prebuilt standalone client payload.
+Set `AXIOM_CHUTES_BUNDLE` to its target-specific directory and explicitly set
+`AXIOM_CHUTES_RELEASE_CHANNEL=staging` for staging; production is the default.
+The packaging hook validates its exact inventory, native architecture, public
+authority and executable pin before copying it to `resources/chutes`. Signed
+macOS packages require the payload's native code to be signed by `APPLE_TEAM_ID`
+before its inventory is generated. Electron excludes that runtime from its own
+signing walk to preserve the executable hash. Use the
+[helper build guide](../../axiom-inference/docs/native-helper.md), including
+dependency notices, and retain signed installer acceptance as a separate check.
+An ad-hoc payload fails signed packaging. The release workflow builds the
+production helper on Ubuntu 22.04, signs the Windows x64 runtime before pinning
+it, and combines separately built Intel and Apple Silicon runtimes behind a
+signed universal launcher. Windows 11 on Arm uses that signed x64 helper through
+OS emulation. Desktop and standalone CLI packages include the same payload.
+The `chutes-helpers.yml` workflow qualifies native state, extensions, relocation
+and stdio on every supported architecture before installer acceptance. Keep
+actual signed-package and live inference results in the acceptance record;
+source and frozen-runtime checks do not establish installed-app acceptance.
+
 ## Supported platforms
 
 | Target | Desktop installer | Standalone CLI + proxy installer |

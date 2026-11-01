@@ -974,6 +974,7 @@ pub fn stream_event(
         )),
         ProviderEvent::Accounting(_)
         | ProviderEvent::SecurityState(_)
+        | ProviderEvent::SecurityEvidence(_)
         | ProviderEvent::ResponseVerified
         | ProviderEvent::Status { .. }
         | ProviderEvent::Usage { .. } => None,

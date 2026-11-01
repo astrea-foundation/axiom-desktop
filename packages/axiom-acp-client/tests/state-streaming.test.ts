@@ -42,6 +42,33 @@ function toolUpdate(revision: number, callId: string, status = "pending") {
 
 const report = (inputTokens: number) => ({ inputTokens, outputTokens: 10, modelId: "model", reportedAt: "2026-09-07T00:00:00Z", contextWindowTokens: 100_000, autoCompactThresholdTokens: 85_000 });
 
+test("image percentages update the owning tool and survive durable refresh without transcript text", () => {
+  const store = new AxiomStateStore();
+  store.replaceTimeline([page(1)]);
+  const proposed = toolUpdate(2, "image");
+  Object.assign(proposed.update, {title: "Generating image · generate", kind: "other", rawInput: {prompt: "A blue mug"}});
+  store.standardUpdate(proposed);
+  const progress = (revision: number, stage: string, percent: number) => ({...toolUpdate(revision, "image", "in_progress"),
+    update: {sessionUpdate: "tool_call_update", toolCallId: "image", rawOutput: {imageProgress: {stage, percent}}}});
+  store.standardUpdate(progress(3, "queued", 0));
+  store.standardUpdate(progress(4, "generating", 38));
+  let tool = store.snapshot().sessions.thread!.timeline.find(row => row.tool?.callId === "image")!.tool!;
+  assert.deepEqual(tool.imageProgress, {stage: "generating", percent: 38});
+  assert.deepEqual(tool.content, []);
+  store.standardUpdate(progress(5, "generating", 25));
+  store.standardUpdate(progress(6, "generating", 100));
+  tool = store.snapshot().sessions.thread!.timeline.find(row => row.tool?.callId === "image")!.tool!;
+  assert.deepEqual(tool.imageProgress, {stage: "generating", percent: 38});
+  const durable = page(8);
+  durable.thread.lastTimelineSequence = 2;
+  durable.items.push({...durable.items[0]!, id: "image-tool", externalId: "image", sequence: 2, kind: "tool_call", content: "", status: "in_progress",
+    metadata: {name: "generate", image_progress: {stage: "finishing", percent: 99}}});
+  store.replaceTimeline([durable]);
+  tool = store.snapshot().sessions.thread!.timeline.find(row => row.tool?.callId === "image")!.tool!;
+  assert.deepEqual(tool.imageProgress, {stage: "finishing", percent: 99});
+  assert.deepEqual(tool.content, []);
+});
+
 test("late generated titles update the sidebar without replacing chat or recency", () => {
   const store = new AxiomStateStore();
   const snapshot = page(1, "The answer");

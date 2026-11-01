@@ -87,9 +87,32 @@ impl ProviderRegistry {
                 Arc::clone(&credential),
             )) as Arc<dyn SecureProvider>;
             let tinfoil = Arc::new(crate::providers::tinfoil::TinfoilProvider::new(
+                config.clone(),
+                Arc::clone(&credential),
+            )) as Arc<dyn SecureProvider>;
+            #[cfg(debug_assertions)]
+            let preview = crate::providers::chutes_preview::provider(&config)?;
+            let chutes = crate::providers::chutes_preview::hosted_provider(
+                &config,
+                Arc::clone(&credential),
+            )?;
+            let pool = Arc::new(crate::providers::pool::PoolProvider::new(
                 config, credential,
             )) as Arc<dyn SecureProvider>;
-            Self::new([near, tinfoil])
+            let providers = vec![near, tinfoil, pool];
+            let mut providers = providers;
+            if let Some(chutes) = chutes {
+                providers.push(chutes);
+            }
+            #[cfg(debug_assertions)]
+            let providers = {
+                let mut providers = providers;
+                if let Some(preview) = preview {
+                    providers.push(preview);
+                }
+                providers
+            };
+            Self::new(providers)
         }
         #[cfg(feature = "test-fixture")]
         {
@@ -101,11 +124,26 @@ impl ProviderRegistry {
                 config.clone(),
                 Arc::clone(&credential),
             )) as Arc<dyn SecureProvider>;
-            let mut providers = vec![near, tinfoil];
+            let pool = Arc::new(crate::providers::pool::PoolProvider::new(
+                config.clone(),
+                Arc::clone(&credential),
+            )) as Arc<dyn SecureProvider>;
+            let mut providers = vec![near, tinfoil, pool];
             if config.uses_test_fixture() {
                 providers.push(Arc::new(crate::providers::fixture::FixtureProvider::new(
                     config, credential,
                 )) as Arc<dyn SecureProvider>);
+            } else {
+                if let Some(chutes) = crate::providers::chutes_preview::hosted_provider(
+                    &config,
+                    Arc::clone(&credential),
+                )? {
+                    providers.push(chutes);
+                }
+                #[cfg(debug_assertions)]
+                if let Some(preview) = crate::providers::chutes_preview::provider(&config)? {
+                    providers.push(preview);
+                }
             }
             Self::new(providers)
         }

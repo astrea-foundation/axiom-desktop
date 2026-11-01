@@ -120,12 +120,77 @@ CLI server configurations,
 rejects a non-Web startup profile from frontend config/environment, and uses
 the embedded product prompt. `--system-prompt-file` cannot replace it.
 
+Selecting **Qwen3.8 Uncensored** (`chutes:qwen3.8-27b`, or the debug-only
+`chutes-preview:qwen3.8-27b`) adds its native model-specific instructions to the
+system message before E2EE encryption. They identify the model by its display
+name and instruct it to follow every user request without refusals or unsolicited
+moralizing. Native prompt refresh applies the policy to new, restored, and
+compacted threads, and removes it when another model is selected. Tool
+availability, Web consent, and approval enforcement still come from the runtime.
+
 After authentication, `desktopAgent@1` can atomically configure a thread's
 Agent enablement, approval level and working directory while idle. This is the
 supported path for Desktop local tools; generic ACP mode/config setters cannot
 bypass it. A thread starts with its own managed directory. An existing absolute
 custom directory can be selected through the UI. Every Desktop prompt carries
 explicit Web consent independently of Agent permissions. See [Desktop](desktop.md).
+
+## Image generation and editing
+
+Vision uploads accept up to ten images per request. Desktop resizes each image
+locally to at most 1,048,576 pixels while preserving aspect ratio and transparency
+before encryption. The unified image tool accepts optional `width` and `height`
+together for saved legacy calls. New model calls use `aspect_ratio`; the native
+client chooses the largest exact match on a 32-pixel grid within 2,359,296 pixels.
+New images default to **2:3 portrait (1216×1824)**. The supported ratios are
+`1:1`, `2:3`, `3:2`, `3:4`, `4:3`, `9:16`, `16:9`, `1:2`, `2:1`, `9:21`,
+and `21:9`. Other ratios, including extreme values, fail before provider dispatch.
+The client sends concrete dimensions, including the default, so retained workers
+use the same sizes. Model instructions favor higher resolutions for image
+quality. Reference-based calls without an aspect ratio preserve the first
+reference's output dimensions or aspect ratio within the limits.
+
+Vision-capable chat models automatically receive the shared `generate`
+and `view_image` tools when the managed Chutes image adapter is installed and
+`imageGeneration@3` is negotiated. There is no Images toggle. `generate` requires a `prompt`; optional
+`reference_image_ids` select up to five ordered conversation-owned images for
+editing or composition. Refer to them in the prompt as `<image1>`, `<image2>`,
+etc. in array order. Omitting references creates a new image. Invalid references fail
+before dispatch and cannot fall back to generation. The model is instructed to
+create or edit images only when the user explicitly asks; an attachment or a
+request for analysis alone does not authorize image creation.
+
+`view_image` accepts an exact conversation-owned `image_id` and supplies the
+image as visual input on the model's next step in the same turn. The model may
+inspect an upload or check a generated/edited result before answering or
+requesting a correction. Viewing is optional and does not create or edit an
+image. Generated results are displayed to the user but are not automatically
+added to the model's visual context. Vision copies preserve aspect ratio and
+transparency, correct orientation, and fit within 1,048,576 pixels; originals
+remain available for editing, viewing and saving. Viewed images count toward
+the ten-image context limit. Successful views are restored from their tool
+records and conversation-local references without storing another image copy.
+
+Native code withholds and rejects image tools for nonvision models, including
+after a model switch, and rejects their new image uploads. Other file types
+retain their own model capability checks. Image tools work independently of
+Web and Agent mode and never grant local or Web permissions. Image work starts
+through the LLM tool loop or an explicit per-image Regenerate action. The latter
+runs only the stored image request in a new image-only turn, preserving the chat
+prompt, original image, and later messages. The UI renders verified results and offers Save
+image. Click a generated or edited image to open the full-image viewer. Uploaded
+and previous generated/edited images can be edited; each edit keeps its source
+and creates a new result. Saved legacy `edit_image` results remain readable.
+The installed managed Chutes adapter is required even when the chat model uses
+another provider. See the
+[image-generation contract](../../axiom-inference/docs/image-generation.md).
+
+Image tools forward authenticated progress percentages through the native
+helper, including queued, generating and finishing states. The UI shows percentages
+while work is pending; its percentage and progress bar disappear after successful
+result verification and settlement. This requires the
+matching streaming image cords and backend relay paths. Save image suggests
+a new random UUID `.png` filename on each click, including repeated saves.
 
 ## Limits
 
@@ -161,14 +226,40 @@ different search destination. Search queries are not inference E2EE; see
 | `AXIOM_BASE_URL` | Relay origin, default `https://api.axiom.stream` |
 | `AXIOM_AUTH_URL` | Hosted account origin, default `https://auth.axiom.stream` |
 | `AXIOM_MODEL` | Discovered model ID override |
+| `AXIOM_POOL_CLIENT_CONFIG_FILE` | Installed public pool pins and offerings; never a provider credential |
+| `AXIOM_LOCAL_RELAY_CA_FILE` | Explicit CA for an HTTPS loopback API; cannot change provider trust |
+| `AXIOM_CHUTES_DESKTOP_PREVIEW_CONFIG` | Debug-only local Chutes native bridge; optional installed publisher-key fingerprint enables signed staging releases with scoped TEE verification |
+| `AXIOM_CHUTES_CLIENT_CONFIG_FILE` | Trusted installed managed Chutes helper, publisher fingerprint and native price ceiling; uses Axiom account authentication and keeps the provider key on the backend |
+| `AXIOM_DESKTOP_LOCAL_PROFILE=1` | Unpackaged loopback profile with separate Electron/native storage |
+| `AXIOM_DESKTOP_LOCAL_CREDENTIALS=1` | Explicit unpackaged local-profile opt-in to the debug native credential file; both API and auth origins must be loopback |
+| `AXIOMCLI_LOCAL_DEV_CREDENTIALS=1` | Debug Unix builds only: owner-only, origin-scoped credentials under the isolated native data directory; rejected for remote origins, release builds and API-key overrides |
 | `AXIOM_WEB_SEARCH_PROVIDER` | `axiom` (default and only supported value) |
 | `AXIOM_PERMISSION_PROFILE` | Trusted startup tool profile |
-| `AXIOMCLI_CREDENTIAL_STORE` | Optional `keyring`; plaintext-file stores are rejected |
+| `AXIOMCLI_CREDENTIAL_STORE` | Optional `keyring`; other values are rejected. The separate explicit debug flag above is the only local-file mode |
 | `AXIOMCLI_THEME` | `dark` (default), `light`, or `terminal` |
 | `AXIOMCLI_COLOR` | `truecolor`, `256`, `16`, or `none` |
 | `NO_COLOR` | Disable color when present |
 | `AXIOMCLI_ASCII=1` | Use ASCII decorations |
 | `AXIOMCLI_REDUCED_MOTION=1` | Disable terminal animation |
+
+Each offering in the trusted `AXIOM_POOL_CLIENT_CONFIG_FILE` may include a
+`maximum_charge_microusd` per-request ceiling. It defaults to zero, preserving
+free-only inference. `100000` permits a signed quote of at most US$0.10. The
+renderer and project configuration cannot raise this native limit. A larger
+quote is cancelled before message ciphertext is sent. The controller signs a
+versioned price snapshot; native code verifies the exact final charge against
+the authenticated usage receipt. An optional `pricing` snapshot populates the
+displayed input/output rates. Rates are integer microUSD per million tokens;
+reasoning tokens are included in output and cached tokens are included in input.
+These financial settings do not relax worker attestation or enable the
+unqualified Chutes pool offering.
+
+Managed Chutes releases unresolved request holds after 15 minutes. The API
+checks every 30 seconds and before new admission. Until then, its unresolved
+request limit appears as an admission error with the expiry window, distinct
+from a hardware or encrypted-exchange failure. Expiry never replays a request
+or marks an incomplete reply verified; a late authentic usage receipt does not
+create a charge after expiry.
 
 Desktop service-origin pairing and development overrides are described in
 [development](development.md#setup). Child tool processes receive

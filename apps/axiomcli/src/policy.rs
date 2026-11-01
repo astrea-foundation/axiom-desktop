@@ -15,6 +15,7 @@ use crate::{AxiomError, Result, app::PermissionProfile};
 pub enum ToolAccess {
     Interaction,
     Web,
+    Image,
     Read,
     Write,
 }
@@ -24,8 +25,10 @@ impl ToolAccess {
     pub const fn is_exposed_to(self, profile: PermissionProfile) -> bool {
         match profile {
             PermissionProfile::None => false,
-            PermissionProfile::Web => matches!(self, Self::Web),
-            PermissionProfile::Observe => matches!(self, Self::Read | Self::Interaction),
+            PermissionProfile::Web => matches!(self, Self::Web | Self::Image),
+            PermissionProfile::Observe => {
+                matches!(self, Self::Read | Self::Interaction | Self::Image)
+            }
             PermissionProfile::Confirm | PermissionProfile::FullAccess => true,
         }
     }
@@ -789,6 +792,17 @@ fn profile_default(
 ) -> (DecisionKind, &'static str, bool) {
     match (profile, effect) {
         (PermissionProfile::None, _) => (DecisionKind::Deny, "tools are disabled", false),
+        (
+            _,
+            Effect::ToolUse {
+                access: ToolAccess::Image,
+                ..
+            },
+        ) => (
+            DecisionKind::Allow,
+            "image tool requires a vision-capable model and the native image service",
+            false,
+        ),
         (
             _,
             Effect::ToolUse {

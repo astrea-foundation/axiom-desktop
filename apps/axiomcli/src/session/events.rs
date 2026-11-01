@@ -598,6 +598,68 @@ pub(super) fn persist_event(
                 )
                 .map_err(storage_error)?;
         }
+        AppEvent::ImageGenerationProgress { call_id, progress } => {
+            let item_id =
+                find_external_item(transaction, &thread_id, TimelineItemKind::ToolCall, call_id)?
+                    .ok_or_else(|| {
+                    AxiomError::Storage("image progress requires its owning tool".into())
+                })?;
+            let mut metadata = item_metadata(transaction, &item_id)?;
+            let previous = metadata
+                .get("image_progress")
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|_| AxiomError::Storage("invalid stored image progress".into()))?;
+            if !matches!(
+                metadata["name"].as_str(),
+                Some("generate" | "generate_image" | "edit_image")
+            ) || !progress.valid_after(previous)
+            {
+                return Err(AxiomError::Storage(
+                    "invalid image progress or tool identity".into(),
+                ));
+            }
+            metadata["image_progress"] = serde_json::to_value(progress)?;
+            transaction
+                .execute(
+                    "UPDATE timeline_items SET metadata=?2, updated_at=?3 WHERE id=?1",
+                    params![item_id, encode_metadata(metadata)?, now],
+                )
+                .map_err(storage_error)?;
+        }
+        AppEvent::ImageGenerated { call_id, image } => {
+            let item_id = find_external_item(
+                transaction,
+                &thread_id,
+                TimelineItemKind::ToolCall,
+                call_id,
+            )?
+            .ok_or_else(|| AxiomError::Storage("image requires its owning tool call".into()))?;
+            let mut metadata = item_metadata(transaction, &item_id)?;
+            if !matches!(
+                metadata["name"].as_str(),
+                Some("generate" | "generate_image" | "edit_image")
+            ) || metadata.get("generated_image").is_some()
+            {
+                return Err(AxiomError::Storage(
+                    "image tool identity or replay differs".into(),
+                ));
+            }
+            let mut proof = serde_json::to_value(image)?;
+            proof
+                .as_object_mut()
+                .expect("image is an object")
+                .remove("data");
+            metadata["generated_image"] = proof;
+            metadata["content"] = json!([{"type":"content", "content":{"type":"image", "data":image.data,"mimeType":image.mime_type}}]);
+            transaction
+                .execute(
+                    "UPDATE timeline_items SET metadata=?2, updated_at=?3 WHERE id=?1",
+                    params![item_id, encode_metadata(metadata)?, now],
+                )
+                .map_err(storage_error)?;
+        }
         AppEvent::ToolCompleted { call_id, success } => {
             if let Some(item_id) =
                 find_external_item(transaction, &thread_id, TimelineItemKind::ToolCall, call_id)?
@@ -913,6 +975,9 @@ pub(super) fn persist_event(
                 },
             )?;
         }
+        // Attestation reports are public but ephemeral; persist terminal receipt
+        // verification separately and never restore a live lease from history.
+        AppEvent::SecurityEvidenceUpdated { .. } => {}
         AppEvent::ResponseVerified { turn_id } => {
             mark_response_verified(transaction, &thread_id, &turn_id.to_string(), &now)?;
         }

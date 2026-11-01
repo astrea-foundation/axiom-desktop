@@ -1,4 +1,6 @@
 import { ipcRenderer } from "electron";
+import { AgentStateImages } from "./agent-state-images";
+import type { AgentStatePacket } from "../shared/agent-state";
 import type { PromptAttachment, GetAttachmentsResponse } from "@axiom/axiom-acp-client";
 import type {
   AccountStatusResponse,
@@ -55,6 +57,7 @@ export interface AgentApi {
   promptWithWebConsent: (sessionId: string, text: string, clientItemId: string, webEnabled: boolean, agentRevision?: number, mcpRevision?: number) => Promise<PromptResult>;
   promptWithAttachments: (sessionId: string, text: string, clientItemId: string, webEnabled: boolean, agentRevision: number, attachments: PromptAttachment[], mcpRevision?: number) => Promise<PromptResult>;
   getAttachments: (threadId: string, userItemId: string) => Promise<GetAttachmentsResponse>;
+  regenerateImage: (threadId: string, callId: string) => Promise<{ callId: string }>;
   revisePrompt: (sessionId: string, text: string, userItemId: string, expectedRevision: number, webEnabled: boolean, agentRevision: number, mcpRevision?: number) => Promise<PromptResult>;
   steer: (request: SteerTurnRequest) => Promise<SteerTurnResponse>;
   cancel: (sessionId: string) => Promise<void>;
@@ -101,17 +104,29 @@ function invoke<T>(method: string, ...args: unknown[]): Promise<T> {
   return ipcRenderer.invoke(`agent:${method}`, ...args) as Promise<T>;
 }
 
+const stateImages = new AgentStateImages();
+const stateListeners = new Set<(state: ClientState) => void>();
+// Subscribe before any renderer listeners: initial image payloads must not be
+// lost between bootstrap and React mounting. Only document-local URLs cross
+// contextBridge, never binary assets or multi-megabyte base64 strings.
+ipcRenderer.on("agent:state-changed", (_event, packet: AgentStatePacket) => {
+  const state = stateImages.accept(packet);
+  for (const listener of stateListeners) listener(state);
+});
+window.addEventListener("unload", () => stateImages.dispose(), { once: true });
+
 export const agentApi: AgentApi = {
-  getState: () => invoke("state"),
+  getState: async () => stateImages.accept(await invoke<AgentStatePacket>("state")),
   desktopBootstrap: () => invoke("desktop-bootstrap"),
   newChat: () => invoke("chat-new"),
   desktopMcp: (request) => invoke("desktop-mcp", request),
   configureDesktopAgent: (request) => invoke("desktop-agent-configure", request),
   chooseWorkingDirectory: (current) => invoke("working-directory-choose", current),
   loadChat: (sessionId) => invoke("chat-load", sessionId),
-  promptWithWebConsent: (sessionId, text, clientItemId, webEnabled, agentRevision = 0, mcpRevision) => invoke("prompt-with-agent-context", sessionId, text, clientItemId, webEnabled, agentRevision, ...(mcpRevision === undefined ? [] : [mcpRevision])),
+  promptWithWebConsent: (sessionId, text, clientItemId, webEnabled, agentRevision = 0, mcpRevision) => invoke("prompt-with-agent-context", sessionId, text, clientItemId, webEnabled, agentRevision, mcpRevision),
   promptWithAttachments: (sessionId, text, clientItemId, webEnabled, agentRevision, attachments, mcpRevision) => invoke("prompt-with-attachments", sessionId, text, clientItemId, webEnabled, agentRevision, attachments, mcpRevision),
   getAttachments: (threadId, userItemId) => invoke("attachments", threadId, userItemId),
+  regenerateImage: (threadId, callId) => invoke("image-regenerate", threadId, callId),
   revisePrompt: (sessionId, text, userItemId, expectedRevision, webEnabled, agentRevision, mcpRevision) => invoke("prompt-revise", sessionId, text, userItemId, expectedRevision, webEnabled, agentRevision, mcpRevision),
   steer: (request) => invoke("steer", request),
   cancel: (sessionId) => invoke("cancel", sessionId),
@@ -151,9 +166,8 @@ export const agentApi: AgentApi = {
   deleteCollection: (collectionId) => invoke("collection-delete", collectionId),
   assignThreadCollection: (threadId, collectionId) => invoke("collection-assign", threadId, collectionId),
   onState: (callback) => {
-    const listener = (_event: unknown, state: ClientState) => callback(state);
-    ipcRenderer.on("agent:state-changed", listener);
-    return () => ipcRenderer.removeListener("agent:state-changed", listener);
+    stateListeners.add(callback);
+    return () => { stateListeners.delete(callback); };
   },
   onInteraction: (callback) => {
     const listener = (_event: unknown, interaction: PendingInteraction) => callback(interaction);

@@ -165,6 +165,10 @@ pub(super) fn account_status_text(account: &AccountStatus) -> String {
                 account.account.id
             )
         }
+        crate::auth::CredentialSource::LocalDevelopmentFile => format!(
+            "Signed in to local development account {}; its refresh token is in the owner-only development profile.",
+            account.account.id
+        ),
     }
 }
 
@@ -2104,6 +2108,7 @@ pub async fn run(
                                         cwd: cwd.clone(),
                                         permission_profile: state.profile,
                                         web_enabled: state.web_enabled,
+                                        image_tools_available: true,
                                         steering: Some(steering),
                                         approval: Some(Arc::new(TuiApproval { tx: task_tx.clone() })),
                                         questions: Some(Arc::new(TuiQuestions { tx: task_tx.clone() })),
