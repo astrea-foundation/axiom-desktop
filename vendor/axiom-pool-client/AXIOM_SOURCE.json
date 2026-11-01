@@ -3,7 +3,7 @@
   "canonical_repository": "https://github.com/astrea-foundation/axiom-inference",
   "package": "axiom-pool-client",
   "files": {
-    "Cargo.toml": "1231bd8f070009170ec8a2a8e1b8e264b7032f559e8c8a9c27145c58af046a02",
+    "Cargo.toml": "c415435be296a3dd5f5adb4d6a58fabe038974d9881d8166f385d40e2aa32a77",
     "src/attestation.rs": "01a81564b3415ef37c37b29bc3269a0854b5344d659d69ddfc5b24792ee2c71e",
     "src/lib.rs": "729705a64045619c6e19c4578de8322e9d6848a682591533349b6a4ef3c5dd0c",
     "examples/smoke.rs": "c55a1fb46b1da9a103bf734e8e909a2c7a65968242aa27162097fa30f8d9503f"

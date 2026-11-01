@@ -17,7 +17,7 @@ pub struct ClientKey {
 }
 impl ClientKey {
     pub fn from_signing(key: &SigningKey) -> Self {
-        let point = key.verifying_key().to_encoded_point(false);
+        let point = key.verifying_key().to_sec1_point(false);
         Self {
             kty: "EC".into(),
             crv: "P-256".into(),

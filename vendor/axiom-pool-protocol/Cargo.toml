@@ -15,8 +15,8 @@ aes-gcm = "0.10"
 base64 = "0.22"
 ed25519-dalek = { version = "2", features = ["pkcs8", "pem"] }
 hex = "0.4"
-hpke = "0.13"
-p256 = { version = "0.13", features = ["ecdsa"] }
+hpke = { version = "0.13", default-features = false, features = ["alloc", "x25519"] }
+p256 = { version = "0.14", features = ["ecdsa"] }
 pkcs8 = { version = "0.10", features = ["pem"] }
 rand = "0.9"
 serde = { version = "1", features = ["derive"] }
@@ -24,7 +24,7 @@ serde_json = "1"
 sha2 = "0.10"
 url = "2"
 zeroize = { version = "1", features = ["derive"] }
-ehbp = { package = "tinfoil-ehbp", git = "https://github.com/tinfoilsh/encrypted-http-body-protocol", rev = "93cc1fa1ad61e19f9a34fb23cb5b5d5635d3edb0", default-features = false, features = ["rustls-no-provider"] }
+ehbp = { package = "tinfoil-ehbp", version = "0.3.1", git = "https://github.com/tinfoilsh/encrypted-http-body-protocol", rev = "93cc1fa1ad61e19f9a34fb23cb5b5d5635d3edb0", default-features = false, features = ["rustls-no-provider"] }
 
 [dev-dependencies]
 proptest = "1"

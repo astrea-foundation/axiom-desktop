@@ -3,8 +3,8 @@
   "canonical_repository": "https://github.com/astrea-foundation/axiom-inference",
   "package": "axiom-pool-protocol",
   "files": {
-    "Cargo.toml": "2f1b150363cd9ba3274aa58cf639d36bcbabb3ed6af5a8133be1a89a49388507",
-    "src/authorization.rs": "b88fc26dafa615cd0b4e529fb9a7bba30938aae41c38db51838eb93f0293aa0a",
+    "Cargo.toml": "34fbd8a11d981855c36ef9565bea1db005ea8cb0ba93991d328c3119a1e71920",
+    "src/authorization.rs": "7e8b9b264a1491da53c1bb02c8d844277609ce25a8fd237bb76be1e7f94f92f3",
     "src/crypto.rs": "44d631ed676328601e0cd43a9bdec6b4af6faf33d61626cdca16615f0a12e107",
     "src/frames.rs": "2aa7b47af60311b92c4bc790d073df14609e004a4cd34a525aedd60a0f922882",
     "src/lib.rs": "b142507510f39ef77576eda4a672c6221c1aaad2771887102b7fc1e51f8f2e31",
