@@ -6,6 +6,7 @@
 //! credential store. Access tokens are short-lived and memory-only. A manual
 //! `AXIOM_API_KEY` is an explicit automation credential and never enters the
 //! native-session persistence path.
+//! Explicit debug-only loopback development can use an owner-only local file.
 
 use std::{
     fs::{self, OpenOptions},
@@ -46,6 +47,7 @@ const DEFAULT_MINIMUM_ACCESS_LIFETIME: Duration = Duration::from_secs(120);
 pub enum CredentialSource {
     Environment,
     SystemKeyring,
+    LocalDevelopmentFile,
 }
 
 impl CredentialSource {
@@ -54,6 +56,7 @@ impl CredentialSource {
         match self {
             Self::Environment => "AXIOM_API_KEY",
             Self::SystemKeyring => "system credential store",
+            Self::LocalDevelopmentFile => "local development credential file",
         }
     }
 }
@@ -263,6 +266,200 @@ struct UnavailableStore {
     detail: String,
     client_id_path: PathBuf,
     refresh_lock_path: PathBuf,
+}
+
+/// Explicit local development storage, never selected as a Keychain fallback.
+#[cfg(all(debug_assertions, unix))]
+#[derive(Debug)]
+struct LocalDevelopmentStore {
+    path: PathBuf,
+    client_id_path: PathBuf,
+    refresh_lock_path: PathBuf,
+}
+
+#[cfg(all(debug_assertions, unix))]
+impl LocalDevelopmentStore {
+    fn check_file(&self) -> std::result::Result<bool, String> {
+        use std::os::unix::fs::PermissionsExt as _;
+        match fs::symlink_metadata(&self.path) {
+            Ok(meta)
+                if meta.is_file()
+                    && !meta.file_type().is_symlink()
+                    && meta.permissions().mode().trailing_zeros() >= 6
+                    && meta.len() <= MAX_TOKEN_BYTES as u64 =>
+            {
+                Ok(true)
+            }
+            Ok(_) => Err(
+                "local development credential file must be a bounded owner-only regular file"
+                    .into(),
+            ),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(_) => Err("could not inspect local development credential file".into()),
+        }
+    }
+}
+
+#[cfg(all(debug_assertions, unix))]
+impl CredentialStore for LocalDevelopmentStore {
+    fn source(&self) -> CredentialSource {
+        CredentialSource::LocalDevelopmentFile
+    }
+    fn load(&self) -> std::result::Result<Option<String>, String> {
+        use std::io::Read as _;
+        if !self.check_file()? {
+            return Ok(None);
+        }
+        let mut file = fs::File::open(&self.path)
+            .map_err(|_| "could not open local development credential file")?;
+        let mut token = String::new();
+        std::io::Read::by_ref(&mut file)
+            .take((MAX_TOKEN_BYTES + 1) as u64)
+            .read_to_string(&mut token)
+            .map_err(|_| "could not read local development credential file")?;
+        if token.len() > MAX_TOKEN_BYTES {
+            return Err("local development credential exceeds limit".into());
+        }
+        Ok(Some(token))
+    }
+    fn save(&self, credential: &str) -> std::result::Result<(), String> {
+        if validate_token_shape(credential, "local development refresh token").is_err() {
+            return Err("invalid local development refresh token".into());
+        }
+        self.check_file()?;
+        let parent = self
+            .path
+            .parent()
+            .ok_or("missing local credential directory")?;
+        let mut temporary = tempfile::NamedTempFile::new_in(parent)
+            .map_err(|_| "could not create local development credential file")?;
+        set_file_permissions(temporary.path())
+            .map_err(|_| "could not protect local development credential file")?;
+        temporary
+            .write_all(credential.as_bytes())
+            .map_err(|_| "could not write local development credential file")?;
+        temporary
+            .as_file()
+            .sync_all()
+            .map_err(|_| "could not sync local development credential file")?;
+        temporary
+            .persist(&self.path)
+            .map_err(|_| "could not commit local development credential file")?;
+        fs::File::open(parent)
+            .and_then(|f| f.sync_all())
+            .map_err(|_| "could not sync local development credential directory")?;
+        Ok(())
+    }
+    fn delete(&self) -> std::result::Result<(), String> {
+        if self.check_file()? {
+            fs::remove_file(&self.path)
+                .map_err(|_| "could not remove local development credential")?;
+        }
+        Ok(())
+    }
+    fn client_id_path(&self) -> &Path {
+        &self.client_id_path
+    }
+    fn refresh_lock_path(&self) -> &Path {
+        &self.refresh_lock_path
+    }
+}
+
+fn local_development_credentials(
+    api: &Url,
+    auth: &Url,
+    requested: Option<&std::ffi::OsStr>,
+) -> Result<bool> {
+    let Some(requested) = requested else {
+        return Ok(false);
+    };
+    let loopback = |url: &Url| match url.host() {
+        Some(url::Host::Domain("localhost")) => true,
+        Some(url::Host::Ipv4(address)) => address.is_loopback(),
+        Some(url::Host::Ipv6(address)) => address.is_loopback(),
+        _ => false,
+    };
+    if requested != "1" || !cfg!(all(debug_assertions, unix)) || !loopback(api) || !loopback(auth) {
+        return Err(AxiomError::Config("local development credentials require an explicit Unix debug build with loopback API and auth origins".into()));
+    }
+    Ok(true)
+}
+
+#[cfg(all(test, debug_assertions, unix))]
+mod local_development_tests {
+    use super::*;
+    use std::os::unix::fs::{PermissionsExt as _, symlink};
+
+    #[test]
+    fn local_credential_mode_requires_opt_in_and_both_loopback_origins() {
+        let local = Url::parse("https://127.0.0.1:9443").unwrap();
+        let remote = Url::parse("https://api.axiom.stream").unwrap();
+        assert!(!local_development_credentials(&remote, &remote, None).unwrap());
+        assert!(
+            local_development_credentials(&local, &local, Some(std::ffi::OsStr::new("1"))).unwrap()
+        );
+        assert!(
+            local_development_credentials(&remote, &local, Some(std::ffi::OsStr::new("1")))
+                .is_err()
+        );
+        assert!(
+            local_development_credentials(&local, &remote, Some(std::ffi::OsStr::new("1")))
+                .is_err()
+        );
+        assert!(
+            local_development_credentials(&local, &local, Some(std::ffi::OsStr::new("true")))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn development_credentials_persist_privately_without_touching_keychain() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("development.token");
+        let store = || LocalDevelopmentStore {
+            path: path.clone(),
+            client_id_path: temp.path().join("identity"),
+            refresh_lock_path: temp.path().join("refresh.lock"),
+        };
+        assert_eq!(store().load().unwrap(), None);
+        let token = "development-refresh-token-with-enough-entropy";
+        store().save(token).unwrap();
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(store().load().unwrap().as_deref(), Some(token));
+        assert_eq!(store().source(), CredentialSource::LocalDevelopmentFile);
+        assert!(!format!("{:?}", store()).contains(token));
+        store().delete().unwrap();
+        assert_eq!(store().load().unwrap(), None);
+    }
+
+    #[test]
+    fn development_credentials_reject_shared_files_and_symlinks() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("development.token");
+        let store = LocalDevelopmentStore {
+            path: path.clone(),
+            client_id_path: temp.path().join("identity"),
+            refresh_lock_path: temp.path().join("refresh.lock"),
+        };
+        fs::write(&path, "development-refresh-token-with-enough-entropy").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(store.load().is_err());
+        assert!(
+            store
+                .save("development-refresh-token-with-enough-entropy")
+                .is_err()
+        );
+        fs::remove_file(&path).unwrap();
+        let target = temp.path().join("unrelated");
+        fs::write(&target, "unchanged").unwrap();
+        symlink(&target, &path).unwrap();
+        assert!(store.load().is_err());
+        assert!(store.delete().is_err());
+        assert_eq!(fs::read_to_string(target).unwrap(), "unchanged");
+    }
 }
 
 /// Process-local credential storage used only by debug test runners. This
@@ -488,9 +685,19 @@ impl AuthManager {
         paths: &crate::paths::AxiomPaths,
     ) -> Result<Self> {
         let (client, api_base_url, auth_base_url) = build_client(api_base_url, timeout)?;
+        let development_file = local_development_credentials(
+            &api_base_url,
+            &auth_base_url,
+            std::env::var_os("AXIOMCLI_LOCAL_DEV_CREDENTIALS").as_deref(),
+        )?;
         let (keyring_account, refresh_lock_path) =
             credential_scope(&api_base_url, &paths.identity_path());
         if let Ok(value) = std::env::var("AXIOM_API_KEY") {
+            if development_file {
+                return Err(AxiomError::Config(
+                    "local development sessions cannot be combined with an automation key".into(),
+                ));
+            }
             validate_api_key_shape(&value)?;
             let store: Arc<dyn CredentialStore> = Arc::new(EnvironmentStore {
                 client_id_path: paths.identity_path(),
@@ -525,11 +732,45 @@ impl AuthManager {
                     .into(),
             ));
         }
-        let keyring: Arc<dyn CredentialStore> = Arc::new(KeyringStore {
-            client_id_path: paths.identity_path(),
-            refresh_lock_path,
-            account_name: keyring_account,
-        });
+        let keyring: Arc<dyn CredentialStore> = if development_file {
+            #[cfg(all(debug_assertions, unix))]
+            {
+                let directory = paths
+                    .data_root()
+                    .join("shared")
+                    .join("development-credentials");
+                if let Ok(meta) = fs::symlink_metadata(&directory)
+                    && (!meta.is_dir() || meta.file_type().is_symlink())
+                {
+                    return Err(AxiomError::Config(
+                        "local development credential directory must not be a symlink".into(),
+                    ));
+                }
+                fs::create_dir_all(&directory).map_err(|_| {
+                    AxiomError::Storage("could not create local credential directory".into())
+                })?;
+                set_directory_permissions(&directory).map_err(|_| {
+                    AxiomError::Storage("could not protect local credential directory".into())
+                })?;
+                Arc::new(LocalDevelopmentStore {
+                    path: directory.join(format!("{keyring_account}.token")),
+                    client_id_path: paths.identity_path(),
+                    refresh_lock_path: directory.join(format!("{keyring_account}.lock")),
+                })
+            }
+            #[cfg(not(all(debug_assertions, unix)))]
+            {
+                return Err(AxiomError::Config(
+                    "local development credential storage is unavailable".into(),
+                ));
+            }
+        } else {
+            Arc::new(KeyringStore {
+                client_id_path: paths.identity_path(),
+                refresh_lock_path,
+                account_name: keyring_account,
+            })
+        };
         let _credential_lock = acquire_refresh_file_lock(keyring.refresh_lock_path())?;
         match keyring.load() {
             Ok(token) => {
@@ -1986,9 +2227,18 @@ fn build_client(api_base_url: &str, timeout: Duration) -> Result<(Client, Url, U
     let auth_url =
         std::env::var("AXIOM_AUTH_URL").unwrap_or_else(|_| "https://auth.axiom.stream".to_owned());
     let auth_base_url = parse_service_url(&auth_url, "authentication website")?;
-    let client = Client::builder()
+    let mut builder = Client::builder()
         .timeout(timeout)
-        .redirect(reqwest::redirect::Policy::none())
+        .redirect(reqwest::redirect::Policy::none());
+    if let Some(pem) = axiom_secure_client::local_relay_ca_pem(&api_base_url)
+        .map_err(|error| AxiomError::Config(error.safe_detail().to_owned()))?
+    {
+        builder = builder.add_root_certificate(
+            reqwest::Certificate::from_pem(&pem)
+                .map_err(|_| AxiomError::Config("invalid local relay CA".into()))?,
+        );
+    }
+    let client = builder
         .build()
         .map_err(|error| AxiomError::Config(format!("could not build auth client: {error}")))?;
     Ok((client, api_base_url, auth_base_url))

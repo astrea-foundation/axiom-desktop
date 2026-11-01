@@ -9,12 +9,51 @@ use std::{collections::BTreeMap, fmt};
 use serde::{Deserialize, Serialize};
 mod accounting;
 mod attachments;
+mod runtime_policy;
+mod security;
 pub use accounting::{InvocationPurpose, InvocationState, RequestUsage, UsageCompleteness};
 pub use attachments::{
-    FILE_MIME_TYPES, FileContent, ImageContent, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS,
-    MAX_FILE_BYTES, MAX_IMAGE_BYTES, PromptAttachment, user_message, validate_prompt,
-    validate_stored_prompt,
+    FILE_MIME_TYPES, FileContent, ImageContent, ImageDimensions, MAX_ATTACHMENT_BYTES,
+    MAX_ATTACHMENTS, MAX_FILE_BYTES, MAX_GENERATED_IMAGE_BYTES, MAX_GENERATED_IMAGE_PIXELS,
+    MAX_IMAGE_BYTES, PromptAttachment, user_message, validate_prompt, validate_stored_prompt,
 };
+pub use runtime_policy::{ImageRuntimePolicy, ImageRuntimeSettings, RuntimeLora};
+pub use security::{EvidenceCheck, EvidenceClaim, SecurityEvidence, SecurityState};
+
+pub struct ImageGenerationRequest<'a> {
+    pub chat_model_id: &'a str,
+    pub prompt: &'a str,
+    pub references: &'a [(&'a str, &'a ImageContent)],
+    pub dimensions: Option<ImageDimensions>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ImageGenerationStage {
+    Queued,
+    Generating,
+    Finishing,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImageGenerationProgress {
+    pub stage: ImageGenerationStage,
+    pub percent: u8,
+}
+
+impl ImageGenerationProgress {
+    #[must_use]
+    pub fn valid_after(self, previous: Option<Self>) -> bool {
+        self.percent <= 99
+            && match self.stage {
+                ImageGenerationStage::Queued => self.percent == 0,
+                ImageGenerationStage::Generating => true,
+                ImageGenerationStage::Finishing => self.percent == 99,
+            }
+            && previous.is_none_or(|old| self.stage >= old.stage && self.percent >= old.percent)
+    }
+}
 
 pub const MAX_TOOLS: usize = 128;
 pub const MAX_TOOL_CALLS: usize = 128;
@@ -561,6 +600,9 @@ fn merge_stable(
 pub enum ProviderEvent {
     Accounting(Box<RequestUsage>),
     SecurityState(ProviderSecurityState),
+    /// Public report for the exact locally verified session used by this call.
+    /// This event alone never establishes terminal response authentication.
+    SecurityEvidence(Box<SecurityEvidence>),
     /// The exact response associated with this provider call passed its
     /// terminal cryptographic verification. Secure adapters emit this only
     /// after the verified stream has returned successfully; preflight

@@ -36,7 +36,7 @@ test("pending response followed by status notices renders exactly one Generating
   const badge = renderToStaticMarkup(createElement(TeeVerificationBadge, {
     session: session([]), modelId: "test-model", webEnabled: false, onVerify: () => {},
   }));
-  assert.match(badge, /Verifying reply/);
+  assert.match(badge, /Verifying TEE/);
 });
 
 test("fallback appears once before the assistant placeholder arrives", () => {
@@ -76,6 +76,53 @@ test("settled replies do not show a generation indicator", () => {
   assert.doesNotMatch(html, /Generating|Verifying model attestation/);
 });
 
+test("completion actions wait for the whole turn while historical replies remain copyable", () => {
+  const current = session([
+    { ...user, id: "older-user", turnId: "older-turn" },
+    { ...pending, id: "older-answer", turnId: "older-turn", text: "Earlier answer", status: "completed" },
+    user,
+    { ...pending, text: "I will prepare the tool call.", status: "completed" },
+  ]);
+  current.activeTurnId = "turn-1";
+  const before = structuredClone(current);
+  let html = renderToStaticMarkup(createElement(TimelineView, { session: current }));
+  assert.equal(html.match(/aria-label="Copy"/g)?.length, 1, "only the historical reply has actions");
+  assert.deepEqual(current, before, "presentation must not change stored completion or verification status");
+  current.timeline.push(searchTool("news", "in_progress"));
+  html = renderToStaticMarkup(createElement(TimelineView, { session: current }));
+  assert.equal(html.match(/aria-label="Copy"/g)?.length, 1);
+  current.timeline.push({ ...pending, id: "final", text: "Final answer", status: "completed" });
+  html = renderToStaticMarkup(createElement(TimelineView, { session: current }));
+  assert.equal(html.match(/aria-label="Copy"/g)?.length, 1);
+  current.running = false;
+  html = renderToStaticMarkup(createElement(TimelineView, { session: current }));
+  assert.equal(html.match(/aria-label="Copy"/g)?.length, 2);
+});
+
+test("streaming and pending responses never show completion actions before a tool row arrives", () => {
+  for (const status of ["in_progress", "completed"]) {
+    for (const withTurnIds of [false, true]) {
+      const items = [user, { ...pending, text: "Preparing the image request", status }];
+      const current = session(withTurnIds ? items : items.map(({ turnId: _turnId, ...item }) => item));
+      const html = renderToStaticMarkup(createElement(TimelineView, { session: current }));
+      assert.doesNotMatch(html, /aria-label="Copy"|aria-label="Regenerate"/);
+    }
+  }
+});
+
+test("completed responses have no per-reply security label regardless of terminal metadata", () => {
+  for (const terminalVerified of [false, true]) {
+    const current = session([user, { ...pending, text: "Done", status: "completed", terminalVerified }]);
+    current.running = false;
+    const html = renderToStaticMarkup(createElement(TimelineView, { session: current }));
+    assert.match(html, /Done/);
+    assert.doesNotMatch(html, /E2EE|Reply verified|Reply incomplete|couldn.t be verified/);
+    const copy = html.match(/<button[^>]*aria-label="Copy"[^>]*>/)?.[0];
+    assert.ok(copy);
+    assert.doesNotMatch(copy, /\sdisabled(?:=|\s|>)/);
+  }
+});
+
 test("cancelled and interrupted partial replies remain copyable without an error banner or receipt badge", () => {
   for (const status of ["cancelled", "interrupted"]) {
     const current = session([user, { ...pending, text: "Keep this partial answer", status, terminalVerified: false }]);
@@ -91,11 +138,11 @@ test("cancelled and interrupted partial replies remain copyable without an error
   }
 });
 
-test("actual verification failures stay explicit and cannot be copied as completed responses", () => {
+test("failed requests keep a plain error notice without a reply verdict", () => {
   const current = session([user, { ...pending, text: "Failed response", status: "failed", terminalVerified: false }]);
   current.running = false;
   const html = renderToStaticMarkup(createElement(TimelineView, { session: current }));
-  assert.match(html, /This reply couldn&#x27;t be verified\. Try again\./);
+  assert.match(html, /The reply couldn’t finish\. Try again\./);
   assert.match(html, /<button[^>]*disabled=""[^>]*aria-label="Copy"/);
   assert.doesNotMatch(html, />E2EE</);
 });
@@ -149,7 +196,7 @@ test("a different turn's error cannot hide a failed reply's fallback notice", ()
   ]);
   current.running = false;
   const html = renderToStaticMarkup(createElement(TimelineView, { session: current }));
-  assert.match(html, /This reply couldn&#x27;t be verified\. Try again\./);
+  assert.match(html, /The reply couldn’t finish\. Try again\./);
   assert.equal(html.match(/role="alert"/g)?.length, 1);
 });
 

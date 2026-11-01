@@ -116,6 +116,21 @@ pub(super) fn project_runtime_events(
             project_thread_item(&mut projection, item)?;
             continue;
         };
+        // A user-triggered image regeneration is a tool-only turn: it has no
+        // replacement user prompt or assistant text, but keeps normal lifecycle
+        // and crash recovery when the first tool row is replayed.
+        if active_turn != item.turn_id.as_deref() {
+            if let Some(previous) = active_turn.take() {
+                project_turn_terminal(&mut projection, turns.get(previous).copied());
+            }
+            projection.push(
+                parse_time(&item.created_at),
+                AppEvent::TurnStarted {
+                    turn_id: turn_id.clone(),
+                },
+            );
+            active_turn = item.turn_id.as_deref();
+        }
         match item.kind {
             TimelineItemKind::AssistantMessage if !item.content.is_empty() => projection.push(
                 parse_time(&item.updated_at),
@@ -131,7 +146,7 @@ pub(super) fn project_runtime_events(
                     text: item.content.clone(),
                 },
             ),
-            TimelineItemKind::ToolCall => project_tool(&mut projection, item, turn_id),
+            TimelineItemKind::ToolCall => project_tool(&mut projection, item, turn_id)?,
             TimelineItemKind::Plan => project_plan(&mut projection, item)?,
             TimelineItemKind::Notice => project_notice(&mut projection, item),
             TimelineItemKind::UserMessage
@@ -216,7 +231,7 @@ pub(super) fn project_tool(
     projection: &mut RuntimeProjection,
     item: &TimelineItem,
     turn_id: TurnId,
-) {
+) -> Result<()> {
     let call_id = item.external_id.clone().unwrap_or_else(|| item.id.clone());
     let name = item
         .metadata
@@ -243,7 +258,24 @@ pub(super) fn project_tool(
             parse_time(&item.created_at),
             AppEvent::ToolStarted {
                 call_id: call_id.clone(),
-                name,
+                name: name.clone(),
+            },
+        );
+    }
+    if let Some(value) = item.metadata.get("image_progress") {
+        let progress: axiom_inference::ImageGenerationProgress =
+            serde_json::from_value(value.clone())
+                .map_err(|_| AxiomError::Storage("invalid stored image progress".into()))?;
+        if !matches!(name.as_str(), "generate" | "generate_image" | "edit_image")
+            || !progress.valid_after(None)
+        {
+            return Err(AxiomError::Storage("invalid stored image progress".into()));
+        }
+        projection.push(
+            parse_time(&item.updated_at),
+            AppEvent::ImageGenerationProgress {
+                call_id: call_id.clone(),
+                progress,
             },
         );
     }
@@ -258,6 +290,43 @@ pub(super) fn project_tool(
                     .get("output_truncated")
                     .and_then(Value::as_bool)
                     .unwrap_or(false),
+            },
+        );
+    }
+    if let Some(proof) = item.metadata.get("generated_image") {
+        if !matches!(name.as_str(), "generate" | "generate_image" | "edit_image") {
+            return Err(AxiomError::Storage(
+                "stored image requires its owning image tool".into(),
+            ));
+        }
+        let blocks = item
+            .metadata
+            .get("content")
+            .and_then(Value::as_array)
+            .ok_or_else(|| AxiomError::Storage("stored image bytes are missing".into()))?;
+        let images = blocks
+            .iter()
+            .filter_map(|entry| {
+                let content = if entry["type"] == "content" {
+                    &entry["content"]
+                } else {
+                    entry
+                };
+                (content["type"] == "image").then_some(content)
+            })
+            .collect::<Vec<_>>();
+        if images.len() != 1 || images[0]["mimeType"] != proof["mimeType"] {
+            return Err(AxiomError::Storage("stored image content differs".into()));
+        }
+        let mut image = proof.clone();
+        image["data"] = images[0]["data"].clone();
+        let image: axiom_secure_client::GeneratedImage = serde_json::from_value(image)
+            .map_err(|_| AxiomError::Storage("stored image proof is invalid".into()))?;
+        projection.push(
+            parse_time(&item.updated_at),
+            AppEvent::ImageGenerated {
+                call_id: call_id.clone(),
+                image: Box::new(image),
             },
         );
     }
@@ -294,6 +363,7 @@ pub(super) fn project_tool(
             },
         );
     }
+    Ok(())
 }
 
 pub(super) fn project_plan(projection: &mut RuntimeProjection, item: &TimelineItem) -> Result<()> {

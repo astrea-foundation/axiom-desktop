@@ -16,8 +16,11 @@ mod security;
 
 pub use client::SecureClient;
 pub use config::{EndpointPolicy, SecureClientConfig, SecureClientLimits};
-pub use error::{Result, SecureClientError, SecureErrorCode};
+pub use error::{INSUFFICIENT_CREDIT_MESSAGE, Result, SecureClientError, SecureErrorCode};
+pub use http::local_relay_ca_pem;
 pub use provider::{ProviderRegistry, SecureProvider, VerifiedSession};
+pub use providers::chutes_preview::{GeneratedImage, is_uncensored_model};
+pub use providers::pool::{PoolClientConfig, PoolOffering};
 pub use security::{EvidenceCheck, EvidenceClaim, SecurityEvidence, SecurityState, TrustPolicy};
 
 /// Cryptographic helpers for the deterministic process-level fixture.

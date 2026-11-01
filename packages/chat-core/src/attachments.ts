@@ -13,26 +13,49 @@ const fileTypes = new Map([
 const codeExtensions = new Set("tsv jsonl yaml yml toml css scss js jsx mjs cjs ts tsx py rs go java c h cpp hpp cs rb php sh bash zsh fish sql log ini conf cfg env tex rst diff patch svelte vue swift kt lua r dart dockerfile makefile gitignore".split(" "));
 
 export function acceptsAttachment(model: ProviderModel | undefined, attachment: PromptAttachment): boolean {
-  if (attachment.kind === "image") return Boolean(model?.supportsImages);
+  if (attachment.kind === "image") return model?.supportsImages === true;
   if (attachment.kind === "file") return model?.fileMimeTypes?.includes(attachment.file.mimeType) ?? false;
   return false;
 }
 
 export function attachmentAccept(model: ProviderModel | undefined): string {
   const types = new Set(model?.fileMimeTypes ?? []);
-  if (model?.supportsImages) for (const mime of imageTypes.values()) types.add(mime);
+  if (model?.supportsImages === true) for (const mime of imageTypes.values()) types.add(mime);
   return [...types].join(",") || ".unsupported";
 }
 
-/** Read original bytes only. No extraction, OCR, conversion, or prompt injection. */
+/** Resize image inputs locally before encryption; documents keep original bytes. */
 export async function readAttachment(file: File): Promise<PromptAttachment> {
   const extension = file.name.toLowerCase().split(".").at(-1) ?? "";
   const imageMime = imageTypes.get(extension) ?? (Array.from(imageTypes.values()).includes(file.type) ? file.type : undefined);
-  const mimeType = imageMime ?? fileTypes.get(extension) ?? (codeExtensions.has(extension) ? "text/plain" : undefined);
+  let mimeType = imageMime ?? fileTypes.get(extension) ?? (codeExtensions.has(extension) ? "text/plain" : undefined);
   if (!mimeType) throw new Error(`${file.name}: unsupported upload format.`);
-  const limit = imageMime ? MAX_IMAGE_BYTES : MAX_FILE_BYTES;
+  const limit = imageMime ? 32 * 1024 * 1024 : MAX_FILE_BYTES;
   if (!file.size || file.size > limit) throw new Error(`${file.name}: use a file up to ${limit / 1024 / 1024} MiB.`);
-  const bytes = new Uint8Array(await file.arrayBuffer());
+  let bytes: Uint8Array;
+  if (imageMime) {
+    const bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });
+    try {
+      if (bitmap.width > 16384 || bitmap.height > 16384 || bitmap.width * bitmap.height > 64 * 1024 * 1024) throw new Error(`${file.name}: image dimensions are too large.`);
+      const scale = Math.min(1, Math.sqrt(1048576 / (bitmap.width * bitmap.height)));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.floor(bitmap.width * scale));
+      canvas.height = Math.max(1, Math.floor(bitmap.height * scale));
+      const context = canvas.getContext("2d", { willReadFrequently: true });
+      if (!context) throw new Error("Local image resizing is unavailable.");
+      context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+      const rgba = context.getImageData(0, 0, canvas.width, canvas.height).data;
+      let transparent = false;
+      for (let i = 3; i < rgba.length; i += 4) if (rgba[i] !== 255) { transparent = true; break; }
+      mimeType = transparent || (imageMime === "image/png" && file.size < 512 * 1024) ? "image/png" : "image/jpeg";
+      const normalized = await new Promise<Blob>((resolve, reject) => canvas.toBlob(
+        blob => blob ? resolve(blob) : reject(new Error("Local image resizing failed.")), mimeType, 0.85));
+      if (normalized.size > MAX_IMAGE_BYTES) throw new Error(`${file.name}: normalized image exceeds 5 MiB.`);
+      bytes = new Uint8Array(await normalized.arrayBuffer());
+    } finally { bitmap.close(); }
+  } else {
+    bytes = new Uint8Array(await file.arrayBuffer());
+  }
   let binary = "";
   for (let offset = 0; offset < bytes.length; offset += 8192) binary += String.fromCharCode(...bytes.subarray(offset, offset + 8192));
   const data = btoa(binary);

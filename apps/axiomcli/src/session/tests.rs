@@ -2121,3 +2121,123 @@ fn local_history_pages_bound_escaped_bytes_and_paginate_accounting_independently
         205
     );
 }
+
+#[test]
+fn generated_and_edited_images_restore_from_their_owning_durable_tool_records() {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use sha2::{Digest, Sha256};
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("images.sqlite3");
+    let store = SessionStore::open(&path).unwrap();
+    let id = SessionId::new();
+    let turn = TurnId::new();
+    create(&store, &id);
+    begin_turn(&store, &id, &turn, None);
+    let evidence:axiom_secure_client::SecurityEvidence=serde_json::from_value(json!({
+        "state":"verified","provider_id":"chutes","model_id":"chutes:qwen-image-2.1-turbo",
+        "attestation_protocol":"synthetic-unit-fixture","e2ee_protocol":"synthetic-unit-fixture","e2ee_encryption_version":1,
+        "trust_policy_version":"unit-test","verified_at_unix_seconds":1,"model_key_fingerprint":"00".repeat(32),
+        "tls_spki_fingerprint":null,"checks":[],"provider_claims":[]
+    })).unwrap();
+    for (index, name) in [(0, "generate_image"), (1, "edit_image"), (2, "generate")] {
+        let request_id = format!("{:02x}", 0x11 * (index + 1)).repeat(16);
+        let raw = b"\x89PNG\r\n\x1a\nsynthetic-local-image";
+        let image = axiom_secure_client::GeneratedImage {
+            request_id: request_id.clone(),
+            data: STANDARD.encode(raw),
+            mime_type: "image/png".into(),
+            width: 1024,
+            height: 1024,
+            sha256: hex::encode(Sha256::digest(raw)),
+            source_image_ids: if index == 0 {
+                vec![]
+            } else {
+                vec![format!("img_{}", "11".repeat(16))]
+            },
+            chat_model_id: None,
+            evidence: evidence.clone(),
+            usage: axiom_inference::RequestUsage {
+                request_id,
+                provider_id: "chutes".into(),
+                model_id: if index == 0 {
+                    "chutes:qwen-image-2.1-turbo"
+                } else {
+                    "chutes:qwen-image-2.1-turbo-edit"
+                }
+                .into(),
+                settled: true,
+                response_verified: true,
+                ..Default::default()
+            },
+        };
+        let call_id = format!("image-call-{index}");
+        store
+            .append(&envelope(
+                &id,
+                10 + index * 3,
+                AppEvent::ToolProposed {
+                    turn_id: turn.clone(),
+                    call_id: call_id.clone(),
+                    name: name.into(),
+                    arguments: json!({"prompt":"Synthetic image"}),
+                },
+            ))
+            .unwrap();
+        store
+            .append(&envelope(
+                &id,
+                11 + index * 3,
+                AppEvent::ImageGenerated {
+                    call_id: call_id.clone(),
+                    image: Box::new(image),
+                },
+            ))
+            .unwrap();
+        store
+            .append(&envelope(
+                &id,
+                12 + index * 3,
+                AppEvent::ToolCompleted {
+                    call_id,
+                    success: true,
+                },
+            ))
+            .unwrap();
+    }
+    store
+        .append(&envelope(
+            &id,
+            20,
+            AppEvent::TurnCompleted { turn_id: turn },
+        ))
+        .unwrap();
+    drop(store);
+    let reopened = SessionStore::open(&path).unwrap();
+    let restored = reopened.load(&id).unwrap();
+    let images = restored
+        .iter()
+        .filter_map(|e| {
+            if let AppEvent::ImageGenerated { image, .. } = &e.event {
+                Some(image)
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(images.len(), 3);
+    assert_eq!(
+        images[1].source_image_ids,
+        vec![format!("img_{}", "11".repeat(16))]
+    );
+    let catalog = crate::image_tool::ImageCatalog::default();
+    for image in images {
+        catalog.add_generated(image).unwrap();
+    }
+    assert!(catalog.resolve(&format!("img_{}", "11".repeat(16))).is_ok());
+    assert!(catalog.resolve(&format!("img_{}", "22".repeat(16))).is_ok());
+    assert!(
+        crate::image_tool::ImageCatalog::default()
+            .resolve(&format!("img_{}", "22".repeat(16)))
+            .is_err()
+    );
+}

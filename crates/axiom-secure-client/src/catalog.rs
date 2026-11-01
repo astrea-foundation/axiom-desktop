@@ -12,7 +12,7 @@ use url::Url;
 
 use crate::{
     ApiCredential, ProviderRegistry, Result, SecureClientConfig, SecureClientError,
-    http::{bounded_body, pinned_client},
+    http::{bounded_body, relay_client},
     provider::ProviderContract,
 };
 
@@ -91,13 +91,7 @@ pub(crate) async fn fetch_models(
         return Err(SecureClientError::cancelled());
     }
     let endpoint = relay_endpoint(&config.relay_base_url, "/api/v1/relay/models")?;
-    let client = pinned_client(
-        &endpoint,
-        &config.endpoint_policy,
-        config.request_timeout,
-        false,
-    )
-    .await?;
+    let client = relay_client(config, &endpoint, config.request_timeout).await?;
     let response = tokio::select! {
         () = cancellation.cancelled() => return Err(SecureClientError::cancelled()),
         response = client
@@ -393,7 +387,7 @@ pub(crate) fn error_for_status(status: StatusCode) -> SecureClientError {
         ),
         402 => (
             ProviderFailureKind::InsufficientCredit,
-            "Axiom credit is exhausted",
+            crate::INSUFFICIENT_CREDIT_MESSAGE,
         ),
         404 => (
             ProviderFailureKind::ModelUnavailable,
@@ -676,6 +670,10 @@ mod tests {
         assert_eq!(
             error_for_status(StatusCode::PAYMENT_REQUIRED).kind(),
             axiom_inference::ProviderFailureKind::InsufficientCredit
+        );
+        assert_eq!(
+            error_for_status(StatusCode::PAYMENT_REQUIRED).safe_detail(),
+            crate::INSUFFICIENT_CREDIT_MESSAGE
         );
         assert_eq!(
             error_for_status(StatusCode::TOO_MANY_REQUESTS).kind(),

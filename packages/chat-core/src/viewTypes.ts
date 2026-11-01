@@ -377,6 +377,7 @@ export type ToolActivity = {
   input: unknown;
   content: unknown[];
   locations: unknown[];
+  imageProgress?: { stage: "queued" | "generating" | "finishing"; percent: number };
 };
 
 export type ClientTimelineItem = {
@@ -431,6 +432,7 @@ export interface ClientSessionState {
 }
 
 export interface ClientState {
+  imageGenerationAvailable?: boolean;
   mcp?: DesktopMcpResponse | null;
   connected: boolean;
   runtimeInstanceId: string | null;

@@ -4,7 +4,7 @@ export const MAX_PROMPT_BYTES = 4 * 1024 * 1024;
 export const MAX_ATTACHMENT_BYTES = 16 * 1024 * 1024;
 export const MAX_FILE_BYTES = 10 * 1024 * 1024;
 export const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
-export const MAX_ATTACHMENTS = 8;
+export const MAX_ATTACHMENTS = 10;
 const bytes = (text: string) => new TextEncoder().encode(text).length;
 
 export function promptBytes(text: string, attachments: readonly PromptAttachment[]): number {
@@ -14,7 +14,7 @@ export function promptBytes(text: string, attachments: readonly PromptAttachment
 /** Shared renderer/main/client validation; native validation is authoritative. */
 export function validatePrompt(text: unknown, attachments: unknown, allowEmpty = false): asserts attachments is PromptAttachment[] {
   if (typeof text !== "string" || bytes(text) > MAX_PROMPT_BYTES) throw new Error("Prompt text must fit within 4 MiB of UTF-8.");
-  if (!Array.isArray(attachments) || attachments.length > MAX_ATTACHMENTS) throw new Error("Attach at most 8 files per message.");
+  if (!Array.isArray(attachments) || attachments.length > MAX_ATTACHMENTS) throw new Error("Attach at most 10 files per message.");
   if (!allowEmpty && !text.trim() && !attachments.length) throw new Error("Write a message or attach a file.");
   let combinedText = text;
   for (const file of attachments) {

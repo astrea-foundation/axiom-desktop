@@ -593,6 +593,7 @@ impl Tool for McpTool {
         );
         let (content, truncated) = truncate(&serialized, self.max_output_bytes);
         Ok(ToolResult {
+            images: Vec::new(),
             content,
             success,
             truncated,

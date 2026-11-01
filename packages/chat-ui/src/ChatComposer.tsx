@@ -114,7 +114,7 @@ export function ChatComposer({
   const showThinkingSelector = supportedReasoningEfforts.length > 0;
   const selectedThinking = reconcileReasoningEffort(reasoningEffort, supportedReasoningEfforts);
   const canAttach = !requiresSignIn && !!selectedModel && (selectedModel.supportsImages === true || !!selectedModel.fileMimeTypes?.length);
-  const attachmentHint = !selectedModel ? 'Choose a model to attach files' : !canAttach ? `${selectedModel.providerLabel}’s ${selectedModel.shortLabel} doesn’t support attachments.` : `Attach files supported by ${selectedModel.providerLabel}’s ${selectedModel.shortLabel}`;
+  const attachmentHint = !selectedModel ? 'Choose a model to attach files' : !canAttach ? 'Choose a model that supports image or file uploads' : `Attach files supported by ${selectedModel.providerLabel}’s ${selectedModel.shortLabel}`;
   const imageMismatch = attachments?.items.some((file) => !acceptsAttachment(selectedModel, file));
   const canSend = !preparing && (Boolean(value.trim()) || Boolean(attachments?.items.length)) && !attachments?.busy && !imageMismatch && (Boolean(selectedModel) || requiresSignIn);
 
@@ -165,7 +165,7 @@ export function ChatComposer({
     <div ref={composerRoot} className="group relative w-full">
       <fieldset disabled={preparing} aria-busy={preparing || undefined} className="composer-shell relative flex min-w-0 flex-col rounded-[22px] pl-4 pr-2.5 pb-2 pt-3 backdrop-blur">
         {attachments ? <><DraftAttachments control={attachments} /><input ref={fileInput} type="file" accept={attachmentAccept(selectedModel)} multiple hidden aria-label="Choose attachments" onChange={(event) => { const files = Array.from(event.target.files ?? []); event.target.value = ""; attachments.onAddFiles(files); }} /></> : null}
-        {imageMismatch ? <p role="alert" className="mb-2 text-xs text-[var(--color-warning)]">Choose a model that supports these files, or remove the unsupported attachments.</p> : null}
+        {imageMismatch ? <p role="alert" className="mb-2 text-xs text-[var(--color-warning)]">Enable Images for image editing, or choose a model that supports these files.</p> : null}
         <div className="flex items-start gap-3">
           <Lock size={13} aria-hidden="true" className="mt-[5.5px] shrink-0 text-[var(--color-text-muted)]" />
           <textarea

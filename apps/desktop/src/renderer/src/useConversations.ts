@@ -353,7 +353,7 @@ export function useConversations(agentState: ClientState, connection: ReturnType
     }
     const files = attachmentDraft.attachments;
     if (files.some((file) => !acceptsAttachment(selectedModel, file))) {
-      setUiError("Choose a model that supports these files before sending."); return;
+      setUiError("Choose a model that supports these image or file uploads."); return;
     }
     if (files.length && !api.promptWithAttachments) { setUiError("Restart Axiom to enable attachments. Your draft was kept."); return; }
     const webEnabled = webAccess.enabled;

@@ -29,6 +29,14 @@ mac:
   hardenedRuntime: true
   gatekeeperAssess: false
   notarize: true
+  # Both native frozen runtimes are identical across the two app inputs. The
+  # universal launcher selects a child and verifies its executable pin.
+  x64ArchFiles: 'Contents/Resources/chutes/runtime/**/*'
+  # The optional frozen Chutes runtime is signed and hashed by its own native
+  # build. Re-signing it here would invalidate native.json's executable pin.
+  # afterPack verifies its signatures/team before a signed installer can proceed.
+  signIgnore:
+    - '/chutes/runtime/'
   target:
     - target: pkg
   extraResources:

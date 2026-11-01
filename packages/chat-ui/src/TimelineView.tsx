@@ -57,6 +57,9 @@ export function TimelineView({
   const presentation = presentTimeline(session.timeline);
   const sources = messageRevisionSources(session.timeline);
   const turnsByItem = new Map(session.timeline.map((item) => [item.id, item.turnId]));
+  let latestUser: ClientTimelineItem | undefined;
+  for (const item of session.timeline) if (item.kind === "user") latestUser = item;
+  const activeTurnId = session.activeTurnId ?? latestUser?.turnId;
   const turnsWithErrors = new Set(session.timeline.filter((item) => item.kind === "error" && item.turnId).map((item) => item.turnId));
   const rows = presentation.map((row) => {
     if (row.kind === "message") {
@@ -67,11 +70,13 @@ export function TimelineView({
         {row.message.role === "user" ? <StoredAttachments key={`${session.sessionId}:${row.message.id}`} threadId={session.sessionId} userItemId={row.message.id} summaries={summaries}
           initialFiles={attachmentPreviews?.get(source?.clientItemId)} /> : null}
         <MessageBubble message={row.message} revisionHasAttachments={Boolean(summaries.length)}
+        responseActive={session.running && (turnId && activeTurnId
+          ? turnId === activeTurnId : !source || source.id === latestUser?.id)}
         showFailureNotice={!turnId || !turnsWithErrors.has(turnId)}
         revisionText={source?.text} onRevise={source && onRevise ? (text) => onRevise(source.id, text) : undefined} /></div>;
     }
     if (row.kind === "tool" && row.item.tool) {
-      return <div key={row.item.tool.callId} data-timeline-kind="tool"><ToolCallCard tool={row.item.tool} /></div>;
+      return <div key={row.item.tool.callId} data-timeline-kind="tool"><ToolCallCard tool={row.item.tool} threadId={session.sessionId} responseActive={session.running} /></div>;
     }
     return <ActivityRow key={JSON.stringify([session.sessionId, row.key, row.item.text])} item={row.item} />;
   });
@@ -100,6 +105,7 @@ export function TimelineView({
       {rows}
       {session.running && !lastAlreadyShowsGeneration ? (
         <div data-timeline-kind="assistant"><MessageBubble
+          responseActive
           message={{ id: "active-generation", role: "assistant", status: "streaming", content: "" }}
         /></div>
       ) : null}
