@@ -27,7 +27,7 @@ signed input-pixel budget before work is claimed. It forwards identical multimod
 messages to tokenization and generation. Signed terminal usage must match the
 originating image pixel count.
 
-The live generation-7 / policy-12 connection passed fresh CPU/GPU/workload
+The earlier generation-7 / policy-12 connection passed fresh CPU/GPU/workload
 verification and two authenticated app turns with an attached image. The second
 turn retained the image and correctly counted three rectangles with their colors
 in order. Both six-digit OCR canaries misread a digit, so exact OCR accuracy is
@@ -35,6 +35,16 @@ not qualified. The canonical inference repository's
 [vision validation record](../../axiom-inference/docs/qa/direct-verda-vision-2026-11-03.json)
 preserves those results together with the signed release, permanent policy and
 base image-generation receipt.
+
+The current generation-8 / permanent policy-13 deployment passed fresh hardware
+and workload verification, authenticated tool calls and image generation from
+the normal composer. With Thinking On, the model generated a 1024×1024 image
+in 9,539 ms, viewed the image and completed an authenticated final reply. A
+normal Thinking On chat reached visible text in 1,788 ms and authenticated
+completion in 1,893 ms after 335 seconds since the initial proof. Its renewed
+proof predated the request. The canonical inference repository's
+[tools and latency validation record](../../axiom-inference/docs/qa/direct-verda-tools-latency-2026-11-03.json)
+preserves the signed deployment and these measurements.
 
 Tool-capable releases opt in with installed `tools: true` and
 `image_generation: true`, in addition to `vision: true`. The signed measured
@@ -71,8 +81,9 @@ AXIOMCLI_SIDECAR=/absolute/desktop/target/debug/axiomcli
 
 The direct configuration is an ordinary absolute file with private Unix
 permissions. Its strict schema contains `origin`, optional `connect_ip`,
-`model_manifest`, `issuer_key_file`, `verifier`, and optional `vision` (default
-false). The verifier object pins an
+`model_manifest`, `issuer_key_file`, `verifier`, and optional `vision`, `tools`
+and `image_generation` flags (default false). The qualified generation-8
+installation enables all three. The verifier object pins an
 absolute executable, its `binary_sha256`, the publisher public key and the
 minimum policy sequence. The issuer key is a local private PKCS#8 file with
 private Unix permissions. Keep both files outside Git and application resources.
@@ -116,6 +127,13 @@ inference. Both cached proof and admission must cover the entire new request
 deadline; request keys, nonces and grants are never reused. Explicit Refresh
 invalidates the cache and any failed exchange drops it without inference replay.
 The proof's original local verification time is retained in the privacy report.
+
+The account-owned provider checks every 20 seconds and prepares 210 seconds of
+proof and admission coverage, providing 30 seconds of headroom above a normal
+request deadline. Valid foreground cache hits do not wait for background
+renewal network calls. Dropping the provider cancels renewal. Initial proof and
+admission preparation, and the first engine request after a reboot, can still
+have startup costs. The app's normal Thinking preference remains On.
 
 Tool-capable releases support Thinking On and Off with identical template inputs
 for token counting and generation. Off disables the private reasoning template;
