@@ -1,6 +1,7 @@
 //! Native pool client. Recipient keys are accepted only by the installed verifier.
 #![forbid(unsafe_code)]
 pub mod attestation;
+pub mod direct;
 
 use anyhow::{Context, Result, ensure};
 use axiom_pool_protocol::{

@@ -26,6 +26,7 @@ impl WorkerIdentity {
         ensure!(
             self.evidence_profile == "tinfoil-gpu-v3"
                 || self.evidence_profile == "chutes-gpu-v1"
+                || self.evidence_profile == "axiom-snp-nvidia-v1"
                 || (fixture && self.evidence_profile == "test-fixture-only"),
             "unsupported worker evidence profile"
         );

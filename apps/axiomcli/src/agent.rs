@@ -1260,6 +1260,9 @@ impl AgentEngine {
             {
                 Ok(axiom_inference::ModelInfo {
                     id: settings.model.clone(),
+                    // Legacy deterministic embedders have no capability
+                    // catalog; retain their existing tool contract.
+                    supports_tools: true,
                     ..axiom_inference::ModelInfo::default()
                 })
             }
@@ -1766,6 +1769,11 @@ impl TurnRunner for AgentEngine {
             .into_iter()
             .find(|model| model.id == model_id)
             .ok_or_else(|| AxiomError::Provider("title model is no longer available".into()))?;
+        if model.provider_id == "axiom-direct" {
+            // Keep cosmetic background work off the single operator worker.
+            // Its measured revision quarantines interrupted engine work.
+            return Ok(crate::session_title::session_title(first_prompt));
+        }
         let request = title_request(&model, first_prompt);
         let (tx, mut rx) = mpsc::channel(64);
         let response = self.provider.stream(request, tx, cancellation.clone());
@@ -3553,6 +3561,9 @@ fn inference_request_for_model(
         }
     }
     let mut request = inference_request(model_id, messages, tools, thinking);
+    if !model.supports_tools {
+        request.tools.clear();
+    }
     // Some offerings expose both a mode and a numeric budget. Each wire
     // control must independently belong to that offering's capability list.
     if !model.supported_reasoning_efforts.is_empty()
@@ -5247,10 +5258,12 @@ mod engine_tests {
                 scripted.model_details = Some(vec![
                     axiom_inference::ModelInfo {
                         id: "text".into(),
+                        supports_tools: true,
                         ..Default::default()
                     },
                     axiom_inference::ModelInfo {
                         id: "vision".into(),
+                        supports_tools: true,
                         supports_images: true,
                         ..Default::default()
                     },

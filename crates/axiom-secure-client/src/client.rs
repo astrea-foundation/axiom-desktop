@@ -45,10 +45,20 @@ struct PersistedTrustPolicy {
 }
 
 impl SecureClient {
+    fn require_image_provider(&self) -> Result<()> {
+        if self.config.direct.is_some() {
+            return Err(crate::SecureClientError::capability(
+                "Image generation is not available in this Verda Desktop connection yet",
+            ));
+        }
+        Ok(())
+    }
+
     pub async fn image_capabilities(
         &self,
         cancellation: CancellationToken,
     ) -> Result<axiom_inference::ImageRuntimePolicy> {
+        self.require_image_provider()?;
         crate::providers::chutes_preview::image_capabilities(
             &self.config,
             Arc::clone(&self.credential),
@@ -95,6 +105,7 @@ impl SecureClient {
         prompt: &str,
         cancellation: CancellationToken,
     ) -> Result<crate::GeneratedImage> {
+        self.require_image_provider()?;
         crate::providers::chutes_preview::generate_image(
             &self.config,
             Arc::clone(&self.credential),
@@ -114,6 +125,7 @@ impl SecureClient {
         dimensions: Option<axiom_inference::ImageDimensions>,
         cancellation: CancellationToken,
     ) -> Result<crate::GeneratedImage> {
+        self.require_image_provider()?;
         crate::providers::chutes_preview::image_operation(
             &self.config,
             Arc::clone(&self.credential),
@@ -133,6 +145,7 @@ impl SecureClient {
         progress: tokio::sync::mpsc::Sender<axiom_inference::ImageGenerationProgress>,
         cancellation: CancellationToken,
     ) -> Result<crate::GeneratedImage> {
+        self.require_image_provider()?;
         crate::providers::chutes_preview::image_operation_with_progress(
             &self.config,
             Arc::clone(&self.credential),
@@ -152,6 +165,7 @@ impl SecureClient {
         source: &axiom_inference::ImageContent,
         cancellation: CancellationToken,
     ) -> Result<crate::GeneratedImage> {
+        self.require_image_provider()?;
         crate::providers::chutes_preview::image_operation(
             &self.config,
             Arc::clone(&self.credential),
@@ -166,6 +180,14 @@ impl SecureClient {
     }
 
     pub async fn models(&self, cancellation: CancellationToken) -> Result<Vec<ModelInfo>> {
+        if self.config.direct.is_some() {
+            if cancellation.is_cancelled() {
+                return Err(crate::SecureClientError::cancelled());
+            }
+            return self
+                .accept_catalog(Ok(crate::providers::direct::models(&self.config)))
+                .await;
+        }
         let result = catalog::fetch_models(
             &self.config,
             &self.credential,
@@ -173,7 +195,8 @@ impl SecureClient {
             &cancellation,
         )
         .await;
-        let configured_pool = crate::providers::pool::models(&self.config);
+        let mut configured_pool = crate::providers::pool::models(&self.config);
+        configured_pool.extend(crate::providers::direct::models(&self.config));
         #[cfg(debug_assertions)]
         let configured_pool = {
             let preview = crate::providers::chutes_preview::models(&self.config);

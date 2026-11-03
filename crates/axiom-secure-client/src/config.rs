@@ -30,6 +30,8 @@ pub struct SecureClientConfig {
     pub endpoint_policy: EndpointPolicy,
     /// Installed operator pins. Remote catalogs cannot set these values.
     pub pool: Option<crate::PoolClientConfig>,
+    /// Explicit operator installation; never accepted from a remote catalog.
+    pub direct: Option<axiom_pool_client::direct::DirectConfig>,
     #[cfg(feature = "test-fixture")]
     test_fixture: bool,
 }
@@ -43,6 +45,7 @@ impl SecureClientConfig {
                 "production relay URL must use HTTPS",
             ));
         }
+        let direct = crate::providers::direct::installed_config(&relay_base_url)?;
         Ok(Self {
             accept_outdated_near_tcb: Arc::new(AtomicBool::new(false)),
             relay_base_url,
@@ -55,6 +58,7 @@ impl SecureClientConfig {
             limits: SecureClientLimits::default(),
             endpoint_policy: EndpointPolicy::default(),
             pool: crate::providers::pool::installed_config()?,
+            direct,
             #[cfg(feature = "test-fixture")]
             test_fixture: false,
         })
@@ -90,6 +94,7 @@ impl SecureClientConfig {
                 allow_redirects: false,
             },
             pool: None,
+            direct: None,
             test_fixture: true,
         })
     }

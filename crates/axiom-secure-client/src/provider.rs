@@ -96,11 +96,15 @@ impl ProviderRegistry {
                 &config,
                 Arc::clone(&credential),
             )?;
+            let direct = crate::providers::direct::provider(&config)?;
             let pool = Arc::new(crate::providers::pool::PoolProvider::new(
                 config, credential,
             )) as Arc<dyn SecureProvider>;
             let providers = vec![near, tinfoil, pool];
             let mut providers = providers;
+            if let Some(direct) = direct {
+                providers.push(direct);
+            }
             if let Some(chutes) = chutes {
                 providers.push(chutes);
             }
