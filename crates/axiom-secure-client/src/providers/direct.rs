@@ -115,13 +115,48 @@ pub(crate) fn provider(config: &SecureClientConfig) -> Result<Option<Arc<dyn Sec
                 .map_err(|_| SecureClientError::configuration("invalid direct installation"))?,
         ),
         config: config.clone(),
+        warm_started: std::sync::atomic::AtomicBool::new(false),
+        warm_cancel: CancellationToken::new(),
     })))
 }
 struct DirectProvider {
     config: SecureClientConfig,
     client: Arc<DirectClient>,
+    warm_started: std::sync::atomic::AtomicBool,
+    warm_cancel: CancellationToken,
+}
+impl Drop for DirectProvider {
+    fn drop(&mut self) {
+        self.warm_cancel.cancel();
+    }
 }
 impl DirectProvider {
+    fn keep_warm(&self) {
+        if !self.config.direct.as_ref().is_some_and(|cfg| cfg.tools)
+            || self
+                .warm_started
+                .swap(true, std::sync::atomic::Ordering::AcqRel)
+        {
+            return;
+        }
+        let weak = Arc::downgrade(&self.client);
+        let cancel = self.warm_cancel.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {_=cancel.cancelled()=>break,_=tokio::time::sleep(std::time::Duration::from_secs(20))=>{}}
+                let Some(client) = weak.upgrade() else {
+                    break;
+                };
+                if let Err(error) = client.prewarm(&cancel).await {
+                    if cancel.is_cancelled() {
+                        break;
+                    }
+                    tracing::warn!(detail=%error,"direct background verification renewal failed");
+                }
+            }
+        });
+    }
+
     async fn image_policy(
         &self,
         policy: &TrustPolicy,
@@ -150,6 +185,7 @@ impl DirectProvider {
             tracing::warn!(detail=%e,"direct image preflight failed");
             SecureClientError::attestation("Verda image workload verification failed")
         })?;
+        self.keep_warm();
         if !worker.supports("image") || !worker.supports("tools") || !worker.supports("vision") {
             return Err(SecureClientError::capability(
                 "signed release does not support image generation tools",
@@ -264,7 +300,7 @@ impl DirectProvider {
             sha256: axiom_pool_protocol::sha256(&bytes),
             source_image_ids: vec![],
             chat_model_id: Some(MODEL.into()),
-            evidence: evidence(&model, policy, &worker, self.client.public_evidence().await),
+            evidence: evidence(&model, policy, &worker, worker.public_evidence()),
             usage: axiom_inference::RequestUsage {
                 request_id,
                 model_id: MODEL.into(),
@@ -367,11 +403,12 @@ impl SecureProvider for DirectProvider {
                 )
             }
         })?;
+        self.keep_warm();
         tracing::info!(
             elapsed_ms = started.elapsed().as_millis() as u64,
             "direct session prepared"
         );
-        let evidence = evidence(model, policy, &worker, client.public_evidence().await);
+        let evidence = evidence(model, policy, &worker, worker.public_evidence());
         Ok(Box::new(Session {
             client,
             worker,
@@ -589,12 +626,7 @@ impl Session {
                 "native trust policy expired before completion",
             ));
         }
-        self.evidence = evidence(
-            &self.model,
-            &self.policy,
-            &worker,
-            self.client.public_evidence().await,
-        );
+        self.evidence = evidence(&self.model, &self.policy, &worker, worker.public_evidence());
         self.worker = worker;
         if let Some(timings) = &output.direct_timings {
             tracing::info!(timings=?timings,"direct request timing");
@@ -828,6 +860,27 @@ mod tests {
                 .safe_detail()
                 .contains("not enabled")
         );
+    }
+
+    #[tokio::test]
+    async fn background_renewal_is_cancelled_when_its_account_provider_drops() {
+        let mut config = installed();
+        config.direct.as_mut().unwrap().tools = true;
+        let direct = DirectProvider {
+            client: Arc::new(DirectClient::new(config.direct.clone().unwrap()).unwrap()),
+            config,
+            warm_started: std::sync::atomic::AtomicBool::new(false),
+            warm_cancel: CancellationToken::new(),
+        };
+        let cancellation = direct.warm_cancel.clone();
+        direct.keep_warm();
+        assert!(
+            direct
+                .warm_started
+                .load(std::sync::atomic::Ordering::Acquire)
+        );
+        drop(direct);
+        assert!(cancellation.is_cancelled());
     }
 
     #[tokio::test]

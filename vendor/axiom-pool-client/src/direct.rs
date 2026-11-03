@@ -45,9 +45,11 @@ pub struct DirectConfig {
 
 pub struct DirectClient {
     config: DirectConfig,
-    public_evidence: tokio::sync::RwLock<Option<serde_json::Value>>,
-    connection: tokio::sync::Mutex<Option<(VerifiedWorker, reqwest::Client)>>,
-    admission: tokio::sync::Mutex<Option<(WorkerIdentity, u64)>>,
+    connection: tokio::sync::RwLock<Option<(VerifiedWorker, reqwest::Client)>>,
+    verification_lock: tokio::sync::Mutex<()>,
+    admission: tokio::sync::RwLock<Option<(WorkerIdentity, u64)>>,
+    renewal_lock: tokio::sync::Mutex<()>,
+    epoch: std::sync::atomic::AtomicU64,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -139,41 +141,64 @@ impl DirectClient {
         );
         Ok(Self {
             config,
-            public_evidence: tokio::sync::RwLock::new(None),
-            connection: tokio::sync::Mutex::new(None),
-            admission: tokio::sync::Mutex::new(None),
+            connection: tokio::sync::RwLock::new(None),
+            verification_lock: tokio::sync::Mutex::new(()),
+            admission: tokio::sync::RwLock::new(None),
+            renewal_lock: tokio::sync::Mutex::new(()),
+            epoch: std::sync::atomic::AtomicU64::new(0),
         })
     }
     /// Public, independently verified hardware and signed release material.
     pub async fn public_evidence(&self) -> Option<serde_json::Value> {
-        self.public_evidence.read().await.clone()
+        self.connection
+            .read()
+            .await
+            .as_ref()
+            .and_then(|(worker, _)| worker.public_evidence())
     }
     pub async fn invalidate(&self) {
-        *self.connection.lock().await = None;
-        *self.admission.lock().await = None;
-        *self.public_evidence.write().await = None;
+        self.epoch.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        *self.connection.write().await = None;
+        *self.admission.write().await = None;
     }
     async fn verified_until(
         &self,
         deadline: u64,
         cancel: &CancellationToken,
     ) -> Result<(VerifiedWorker, reqwest::Client, bool)> {
-        // Single-flight verification. Cache only public verified material and
-        // the CPU-pinned TLS transport, never request keys, grants or nonces.
-        let mut slot = self.connection.lock().await;
-        if let Some((worker, client)) = slot.as_ref()
+        // A usable proof never waits behind an independent background refresh.
+        if let Some((worker, client)) = self.connection.read().await.as_ref()
             && worker.expires_at() > deadline.saturating_add(5)
         {
             return Ok((worker.clone(), client.clone(), true));
         }
-        *slot = None;
-        let (worker, client) = self.verify_fresh(cancel).await?;
+        let _refresh = self.verification_lock.lock().await;
+        if let Some((worker, client)) = self.connection.read().await.as_ref()
+            && worker.expires_at() > deadline.saturating_add(5)
+        {
+            return Ok((worker.clone(), client.clone(), true));
+        }
+        let epoch = self.epoch.load(std::sync::atomic::Ordering::Acquire);
+        let result = self.verify_fresh(cancel).await;
+        let mut slot = self.connection.write().await;
         ensure!(
-            worker.expires_at() > deadline,
-            "fresh proof cannot cover request deadline"
+            self.epoch.load(std::sync::atomic::Ordering::Acquire) == epoch,
+            "verification invalidated during refresh"
         );
-        *slot = Some((worker.clone(), client.clone()));
-        Ok((worker, client, false))
+        match result {
+            Ok((worker, client)) => {
+                ensure!(
+                    worker.expires_at() > deadline,
+                    "fresh proof cannot cover request deadline"
+                );
+                *slot = Some((worker.clone(), client.clone()));
+                Ok((worker, client, false))
+            }
+            Err(error) => {
+                *slot = None;
+                Err(error)
+            }
+        }
     }
     async fn verify_fresh(
         &self,
@@ -245,8 +270,7 @@ impl DirectClient {
             !cfg.tools || verified.supports("tools"),
             "tools are not authorized by the signed workload release"
         );
-        *self.public_evidence.write().await = Some(public_evidence);
-        Ok((verified, client))
+        Ok((verified.with_public_evidence(public_evidence), client))
     }
     pub async fn probe(&self, cancel: &CancellationToken) -> Result<VerifiedWorker> {
         tokio::select! { _=cancel.cancelled()=>anyhow::bail!("cancelled"),
@@ -255,11 +279,22 @@ impl DirectClient {
     /// Prewarm the same bounded attestation and admission used by inference.
     /// This performs no inference and does not create a request grant.
     pub async fn prepare(&self, cancel: &CancellationToken) -> Result<VerifiedWorker> {
-        tokio::select! { _=cancel.cancelled()=>anyhow::bail!("cancelled"), result=async {
-            let (worker, client, _) = self.verified_until(now()+180,cancel).await?;
-            self.ensure_admitted(&worker,&client,now()+180).await?;
-            Ok(worker)
-        }=>result }
+        self.prepare_until(now() + 180, cancel).await
+    }
+    /// Renew with thirty seconds of extra headroom before a foreground request
+    /// would have to wait. This sends only public evidence and admission.
+    pub async fn prewarm(&self, cancel: &CancellationToken) -> Result<VerifiedWorker> {
+        self.prepare_until(now() + 210, cancel).await
+    }
+    async fn prepare_until(
+        &self,
+        deadline: u64,
+        cancel: &CancellationToken,
+    ) -> Result<VerifiedWorker> {
+        tokio::select! {_=cancel.cancelled()=>anyhow::bail!("cancelled"),result=async{
+            let (worker,client,_)=self.verified_until(deadline,cancel).await?;
+            self.ensure_admitted(&worker,&client,deadline).await?;Ok(worker)
+        }=>result}
     }
     fn issuer(&self) -> Result<ed25519_dalek::SigningKey> {
         #[cfg(unix)]
@@ -281,13 +316,19 @@ impl DirectClient {
         client: &reqwest::Client,
         deadline: u64,
     ) -> Result<bool> {
-        let mut slot = self.admission.lock().await;
-        if slot.as_ref().is_some_and(|(identity, expiry)| {
-            identity == worker.identity() && *expiry > deadline.saturating_add(5)
-        }) {
+        let covers = |value: &Option<(WorkerIdentity, u64)>| {
+            value.as_ref().is_some_and(|(identity, expiry)| {
+                identity == worker.identity() && *expiry > deadline.saturating_add(5)
+            })
+        };
+        if covers(&*self.admission.read().await) {
             return Ok(true);
         }
-        *slot = None;
+        let _renew = self.renewal_lock.lock().await;
+        if covers(&*self.admission.read().await) {
+            return Ok(true);
+        }
+        let epoch = self.epoch.load(std::sync::atomic::Ordering::Acquire);
         let expiry = worker.expires_at().min(now() + 240);
         let lease = sign(
             &Lease {
@@ -300,7 +341,16 @@ impl DirectClient {
             &self.issuer()?,
             "axiom-pool-admission-v1",
         )?;
-        admit(client, &self.config.origin, &lease).await?;
+        let result = admit(client, &self.config.origin, &lease).await;
+        let mut slot = self.admission.write().await;
+        ensure!(
+            self.epoch.load(std::sync::atomic::Ordering::Acquire) == epoch,
+            "admission invalidated during renewal"
+        );
+        if let Err(error) = result {
+            *slot = None;
+            return Err(error);
+        }
         ensure!(expiry > deadline, "admission cannot cover request deadline");
         *slot = Some((worker.identity().clone(), expiry));
         Ok(false)
@@ -584,14 +634,19 @@ mod tests {
             "model_manifest":"11".repeat(32),"issuer_key_file":"/not-read-by-probe.pem","verifier":{"binary":"/not-run","binary_sha256":"22".repeat(32),"publisher_key":"33".repeat(32),"minimum_policy_sequence":1}})).unwrap();
         let client = DirectClient::new(cfg).unwrap();
         let expiry = now() + 240;
-        *client.connection.lock().await = Some((
+        *client.connection.write().await = Some((
             VerifiedWorker::for_cache_test(f.worker.clone(), expiry),
             reqwest::Client::new(),
         ));
-        let (worker, _, reused) = client
-            .verified_until(now() + 180, &CancellationToken::new())
-            .await
-            .unwrap();
+        let pending_refresh = client.verification_lock.lock().await;
+        let (worker, _, reused) = tokio::time::timeout(
+            Duration::from_millis(100),
+            client.verified_until(now() + 180, &CancellationToken::new()),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        drop(pending_refresh);
         assert!(reused);
         assert_eq!(worker.identity(), &f.worker);
         assert_eq!(worker.expires_at(), expiry);
@@ -601,10 +656,10 @@ mod tests {
                 .await
                 .is_err()
         );
-        assert!(client.connection.lock().await.is_none());
-        *client.admission.lock().await = Some((f.worker, expiry));
+        assert!(client.connection.write().await.is_none());
+        *client.admission.write().await = Some((f.worker, expiry));
         client.invalidate().await;
-        assert!(client.admission.lock().await.is_none());
+        assert!(client.admission.write().await.is_none());
         assert!(client.public_evidence().await.is_none());
     }
 

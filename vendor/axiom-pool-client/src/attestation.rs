@@ -81,6 +81,7 @@ pub struct VerifiedWorker {
     policy_sequence: u64,
     generation: u64,
     capabilities: Vec<String>,
+    public_evidence: Option<std::sync::Arc<Value>>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -93,6 +94,15 @@ struct Appraisal {
     capabilities: Vec<String>,
 }
 impl VerifiedWorker {
+    pub fn public_evidence(&self) -> Option<Value> {
+        self.public_evidence
+            .as_ref()
+            .map(|value| value.as_ref().clone())
+    }
+    pub(crate) fn with_public_evidence(mut self, value: Value) -> Self {
+        self.public_evidence = Some(std::sync::Arc::new(value));
+        self
+    }
     pub fn verified_at(&self) -> u64 {
         self.verified_at
     }
@@ -105,6 +115,7 @@ impl VerifiedWorker {
             policy_sequence: 1,
             generation: 1,
             capabilities: vec!["chat".into()],
+            public_evidence: None,
         }
     }
     pub fn identity(&self) -> &WorkerIdentity {
@@ -197,6 +208,7 @@ impl VerifierConfig {
                 policy_sequence: 0,
                 generation: 0,
                 capabilities: Vec::new(),
+                public_evidence: None,
             });
         }
         expected.validate(false)?;
@@ -314,6 +326,7 @@ impl VerifierConfig {
             policy_sequence: appraisal.policy_sequence,
             generation: appraisal.generation,
             capabilities: appraisal.capabilities,
+            public_evidence: None,
         })
     }
 }
