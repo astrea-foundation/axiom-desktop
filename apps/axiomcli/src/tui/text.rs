@@ -172,8 +172,10 @@ pub(super) fn user_facing_provider_error(message: &str) -> String {
     if is_attestation_failure(&normalized) {
         "Secure connection could not be verified\nYour request was not sent. Run /refresh to try again or /security for details."
             .into()
-    } else if payment_required && insufficient_credit {
-        "Out of credits\nUse /topup for a Zcash deposit or /redeem for a gift code. Check credit with /balance.".into()
+    } else if (payment_required && insufficient_credit)
+        || message.contains(axiom_secure_client::INSUFFICIENT_CREDIT_MESSAGE)
+    {
+        "Insufficient balance. Top up to continue.\nUse /topup for a Zcash deposit or /redeem for a gift code. Check credit with /balance.".into()
     } else {
         message.to_owned()
     }

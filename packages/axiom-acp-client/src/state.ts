@@ -1,5 +1,7 @@
 import { EventEmitter } from "node:events";
 import { ProtocolError } from "./errors.js";
+import { publicSecurityEvidence } from "./security-evidence.js";
+import { stateSnapshot } from "./state-snapshot.js";
 import type {
   AccountStatus,
   ActivityEvent,
@@ -30,6 +32,7 @@ export type ToolActivity = {
   input: unknown;
   content: unknown[];
   locations: unknown[];
+  imageProgress?: { stage: "queued" | "generating" | "finishing"; percent: number };
 };
 
 export type ClientTimelineItem = {
@@ -61,7 +64,7 @@ export interface ClientSessionState {
   cwd: string;
   settings: ThreadSettings | null;
   security: SecurityStatus | null;
-  /** Public report from the last explicit/local preflight; never response-receipt proof. */
+  /** Public report from the actual verified session or preflight; never terminal receipt proof. */
   securityEvidence?: SecurityEvidence | null;
   securityVerificationPending?: boolean;
   securityVerificationError?: string | null;
@@ -84,6 +87,7 @@ export interface ClientSessionState {
 }
 
 export interface ClientState {
+  imageGenerationAvailable?: boolean;
   mcp?: DesktopMcpResponse | null;
   connected: boolean;
   runtimeInstanceId: string | null;
@@ -155,6 +159,17 @@ function deliveryMetadata(record: Record<string, unknown>, update: Record<string
   return candidate as DeliveryMetadata;
 }
 
+function imageProgress(value: unknown, previous?: ToolActivity["imageProgress"]): ToolActivity["imageProgress"] {
+  const progress = object(value);
+  const stages = ["queued", "generating", "finishing"] as const;
+  const stage = progress?.stage;
+  const percent = progress?.percent;
+  if (!stages.includes(stage as typeof stages[number]) || typeof percent !== "number" || !Number.isInteger(percent)
+    || percent < 0 || percent > 99 || (stage === "queued" && percent !== 0) || (stage === "finishing" && percent !== 99)
+    || (previous && (percent < previous.percent || stages.indexOf(stage as typeof stages[number]) < stages.indexOf(previous.stage)))) return previous;
+  return { stage: stage as typeof stages[number], percent };
+}
+
 function mergeTool(
   previous: ToolActivity | undefined,
   callId: string,
@@ -170,8 +185,14 @@ function mergeTool(
     kind: typeof update.kind === "string" ? update.kind : (previous?.kind ?? "other"),
     status: typeof update.status === "string" ? update.status : (previous?.status ?? "pending"),
     input: update.rawInput ?? previous?.input ?? null,
-    content: content.length > 0 ? content : (previous?.content ?? []),
+    content: content.length > 0 ? [
+      ...(["generate", "generate_image", "edit_image"].includes(previous?.name ?? "") ? previous!.content.filter(entry => {
+        const block = object(entry); const nested = object(block?.content) ?? block;
+        return nested?.type === "image" && !content.some(item => JSON.stringify(item) === JSON.stringify(entry));
+      }) : []), ...content,
+    ] : (previous?.content ?? []),
     locations: locations.length > 0 ? locations : (previous?.locations ?? []),
+    imageProgress: imageProgress(object(update.rawOutput)?.imageProgress, previous?.imageProgress),
   };
 }
 
@@ -202,6 +223,7 @@ function durableTool(item: DurableTimelineItem): ToolActivity {
     input: metadata.arguments ?? metadata.input ?? null,
     content,
     locations,
+    imageProgress: imageProgress(metadata.image_progress),
   };
 }
 
@@ -281,7 +303,7 @@ export class AxiomStateStore extends EventEmitter {
   };
 
   snapshot(): ClientState {
-    return structuredClone(this.value);
+    return stateSnapshot(this.value);
   }
 
   accountContextToken(): number {
@@ -318,6 +340,10 @@ export class AxiomStateStore extends EventEmitter {
   setDiagnostic(diagnostic: string): void {
     this.value.diagnostic = diagnostic;
     this.changed();
+  }
+
+  setImageGenerationAvailable(available: boolean): void {
+    this.value.imageGenerationAvailable = available;
   }
 
   // A different model, removed/reloaded session, account or runtime gets a new
@@ -729,7 +755,20 @@ export class AxiomStateStore extends EventEmitter {
       }
     }
     else if (event.kind === "security_changed" && sessionId) {
-      (this.value.sessions[sessionId] ??= emptySession(sessionId)).security = event.status;
+      const session = this.value.sessions[sessionId] ??= emptySession(sessionId);
+      if (event.evidence != null) {
+        const report = publicSecurityEvidence({ status: event.status, evidence: event.evidence }, session.settings?.model ?? "");
+        if (!report || report.hardExpiresAtUnixSeconds * 1000 <= Date.now()) {
+          throw new ProtocolError("The inference session returned no fresh attestation report");
+        }
+        // A request's actual session supersedes in-flight prewarm or manual work.
+        // A late result for another key must never overwrite this report.
+        this.securityContexts.set(session, {});
+        session.securityEvidence = report;
+        session.securityVerificationPending = false;
+        session.securityVerificationError = null;
+      }
+      session.security = event.status;
     }
     else if (event.kind === "request_usage_changed" && sessionId && validRequestUsage(event.usage)) {
       const session = this.value.sessions[sessionId] ??= emptySession(sessionId);

@@ -46,6 +46,11 @@ function ProofHarness() {
     acceptances: () => acceptances.current,
     update: (changes: Partial<ClientSessionState>) => setSession((current) => ({ ...current, ...changes })),
     setWeb, setScope, setModel, setDisabledReason, setShowChat,
+    finishReport: (evidence: ClientSessionState["securityEvidence"]) => {
+      setSession((current) => ({ ...current, security: evidence!.status, securityEvidence: evidence,
+        securityVerificationPending: false }));
+      pending.current?.resolve(); pending.current = null;
+    },
     finish: (fail = false, keepEvidence = false) => {
       setSession((current) => ({ ...current,
         security: { state: fail ? "failed" : "verified", detail: fail ? "The supplied quote did not verify." : null },

@@ -2658,6 +2658,13 @@ test("proxy view follows native state and sends start, restart, stop and clipboa
       const calls: unknown[] = [];
       const emit = () => { for (const listener of listeners) listener(structuredClone(state)); };
       (window as any).__proxyCalls = calls;
+      (window as any).__proxyEvidence = (responseVerified: boolean) => {
+        state = { ...state, revision: state.revision + 1, evidence: {
+          requestId: "request", modelId: "test-model", providerId: "near", protocol: "near-v3",
+          verifiedAt: Math.floor(Date.now() / 1000), fingerprint: "synthetic-key", responseVerified,
+        } as any };
+        emit();
+      };
       (window as any).axiomDesktop.proxy = {
         getState: async () => structuredClone(state),
         onState: (callback: (state: unknown) => void) => { listeners.add(callback); return () => listeners.delete(callback); },
@@ -2678,6 +2685,15 @@ test("proxy view follows native state and sends start, restart, stop and clipboa
     await page.getByText("Running", { exact: true }).waitFor();
     await page.getByRole("button", { name: "Copy token", exact: true }).click();
     await page.getByRole("button", { name: "Copied", exact: true }).waitFor();
+    await page.getByText("Completed requests", { exact: true }).first().waitFor();
+    assert.equal(await page.getByText("Verified requests", { exact: true }).count(), 0);
+    for (const responseVerified of [false, true]) {
+      await page.evaluate(value => (window as any).__proxyEvidence(value), responseVerified);
+      await page.getByRole("button", { name: "Attestation Inspect evidence from this proxy run", exact: true }).click();
+      await page.getByRole("heading", { name: "Attestation", exact: true }).waitFor();
+      assert.doesNotMatch(await page.locator("body").innerText(), /Response receipt|verified completion|Reply verified|Reply incomplete/);
+      await page.getByRole("button", { name: "Back", exact: true }).click();
+    }
     await page.getByRole("textbox", { name: "Port", exact: true }).fill("8585");
     await page.getByRole("button", { name: "Restart proxy", exact: true }).click();
     await page.getByText("http://127.0.0.1:8585/v1", { exact: true }).waitFor();
@@ -3171,7 +3187,7 @@ test("dismissing reply errors preserves failed output and allows new notices", a
     const transcript = page.getByRole("region", { name: "Chat messages" });
     await page.evaluate((reply) => (window as any).__deletionTest.setTimeline([reply], false), reply);
     const alert = transcript.getByRole("alert");
-    await alert.getByText("This reply couldn't be verified. Try again.", { exact: true }).waitFor();
+    await alert.getByText("The reply couldn’t finish. Try again.", { exact: true }).waitFor();
     await alert.getByRole("button", { name: "Dismiss notice", exact: true }).click();
     assert.equal(await alert.count(), 0);
     assert.equal(await transcript.getByText("Partial reply", { exact: true }).isVisible(), true);
@@ -3378,6 +3394,344 @@ for (const existing of [false, true]) {
   });
 }
 
+test("the composer has no Images toggle and image uploads follow the selected model", async () => {
+  for (const vision of [false, true]) {
+    const { page, errors } = await openApp("linux", false, [], "medium", vision);
+    try {
+      assert.equal(await page.getByRole("button", { name: "Images", exact: true }).count(), 0);
+      const accept = await page.locator('input[type="file"]').getAttribute("accept");
+      if (vision) assert.match(accept!, /image\/png/);
+      else assert.doesNotMatch(accept!, /image\//);
+      assert.match(accept!, /application\/pdf/, "document capability remains separate from vision");
+      await page.locator('[data-thread-id="old-thread"]').click();
+      assert.equal(await page.getByRole("button", { name: "Images", exact: true }).count(), 0);
+      assert.deepEqual(errors, []);
+    } finally { await page.close(); }
+  }
+});
+
+test("response actions stay hidden while the model prepares and runs a tool call", async () => {
+  const { page, errors } = await openApp();
+  try {
+    await page.locator('[data-thread-id="old-thread"]').click();
+    const user: ClientTimelineItem = { id: "question", turnId: "active-test-turn", kind: "user", text: "Check the result", status: "completed" };
+    const intro: ClientTimelineItem = { id: "intro", turnId: "active-test-turn", kind: "assistant", text: "I will prepare the tool call.", status: "completed" };
+    const tool: ClientTimelineItem = { id: "tool", turnId: "active-test-turn", kind: "tool", text: "", status: "in_progress", tool: {
+      callId: "tool", title: "Inspect result", name: "inspect_result", kind: "other", status: "in_progress", input: {}, content: [], locations: [],
+    } };
+    const completedTool = { ...tool, status: "completed", tool: { ...tool.tool!, status: "completed" } };
+    const final: ClientTimelineItem = { id: "answer", turnId: "active-test-turn", kind: "assistant", text: "The result is ready.", status: "completed" };
+    const stages = [[user, { ...intro, status: "streaming" }], [user, intro], [user, intro, tool], [user, intro, completedTool], [user, intro, completedTool, final]];
+    const transcript = page.getByRole("region", { name: "Chat messages" });
+    for (const timeline of stages) {
+      await page.evaluate(timeline => (window as any).__deletionTest.setTimeline(timeline, true), timeline);
+      await page.getByRole("button", { name: "Stop generating", exact: true }).waitFor();
+      assert.equal(await transcript.getByRole("button", { name: "Copy", exact: true }).count(), 0);
+      assert.equal(await transcript.getByRole("button", { name: "Regenerate", exact: true }).count(), 0);
+    }
+    await page.evaluate(() => (window as any).__deletionTest.finishTurn());
+    const copy = transcript.getByRole("button", { name: "Copy", exact: true });
+    await copy.waitFor();
+    assert.equal(await copy.count(), 1);
+    assert.equal(await copy.isEnabled(), true);
+    assert.equal(await transcript.getByRole("button", { name: "Regenerate", exact: true }).count(), 1);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("expanded thinking and tool details support mouse selection and keyboard copy", async () => {
+  const { page, errors } = await openApp();
+  try {
+    await page.locator('[data-thread-id="old-thread"]').click();
+    await page.evaluate(() => {
+      (window as any).__selectionCopies = [];
+      document.addEventListener("copy", event => {
+        const text = window.getSelection()?.toString() ?? "";
+        (window as any).__selectionCopies.push(text);
+        event.clipboardData?.setData("text/plain", text);
+        event.preventDefault();
+      });
+      (window as any).__deletionTest.setTimeline([
+        { id: "question", turnId: "turn", kind: "user", text: "Check the sample", status: "completed" },
+        { id: "thought", turnId: "turn", kind: "reasoning", text: "Selectable thinking text", status: "completed" },
+        { id: "intro", turnId: "turn", kind: "assistant", text: "I will check the sample.", status: "completed" },
+        { id: "tool", turnId: "turn", kind: "tool", text: "", status: "completed", tool: {
+          callId: "tool", title: "Inspect sample", name: "inspect_sample", kind: "other", status: "completed",
+          input: { prompt: "Selectable tool input" }, content: [{ type: "text", text: "Selectable tool output" }], locations: [],
+        } },
+        { id: "answer", turnId: "turn", kind: "assistant", text: "The sample is ready.", status: "completed" },
+      ]);
+    });
+    const thought = page.getByRole("button", { name: "Thought", exact: true });
+    const tool = page.locator('[data-tool-call-id="tool"] > button');
+    await thought.click();
+    await tool.click();
+    const contents = [
+      { locator: page.getByText("Selectable thinking text", { exact: true }), phrase: "Selectable thinking text" },
+      { locator: page.locator('[data-tool-call-id="tool"] pre'), phrase: "Selectable tool input" },
+      { locator: page.locator('[data-tool-call-id="tool"] pre'), phrase: "Selectable tool output" },
+    ];
+    for (const { locator, phrase } of contents) {
+      await locator.scrollIntoViewIfNeeded();
+      const bounds = await locator.evaluate((element, phrase) => {
+        const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+        while (walker.nextNode()) {
+          const node = walker.currentNode;
+          const start = node.textContent?.indexOf(phrase) ?? -1;
+          if (start < 0) continue;
+          const range = document.createRange();
+          range.setStart(node, start); range.setEnd(node, start + phrase.length);
+          const rect = range.getBoundingClientRect();
+          return { left: rect.left, right: rect.right, y: rect.top + rect.height / 2 };
+        }
+        throw new Error("Missing synthetic selection fixture");
+      }, phrase);
+      await page.mouse.move(bounds.left - 1, bounds.y);
+      await page.mouse.down();
+      await page.mouse.move(bounds.right + 1, bounds.y, { steps: 12 });
+      await page.mouse.up();
+      const selected = await page.evaluate(() => window.getSelection()?.toString() ?? "");
+      assert.ok(selected.includes(phrase), `mouse selects ${phrase}`);
+      await page.keyboard.press(process.platform === "darwin" ? "Meta+C" : "Control+C");
+      await page.waitForFunction(selected => (window as any).__selectionCopies.at(-1) === selected, selected);
+    }
+    assert.equal(await thought.getAttribute("aria-expanded"), "true");
+    assert.equal(await tool.getAttribute("aria-expanded"), "true");
+    if (process.env.AXIOM_TOOL_SELECTION_CAPTURE) {
+      await page.evaluate(() => window.getSelection()?.removeAllRanges());
+      await page.screenshot({ path: process.env.AXIOM_TOOL_SELECTION_CAPTURE, animations: "disabled" });
+    }
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("regenerating one image keeps the original and chat response and sends only the image identity", async()=>{
+  const {page,errors}=await openApp("linux",false,[],"medium",true,false);
+  try {
+    await page.locator('[data-thread-id="old-thread"]').click();
+    await page.evaluate(()=>{
+      const canvas=document.createElement("canvas");canvas.width=1216;canvas.height=1824;
+      const context=canvas.getContext("2d")!;context.fillStyle="#164e63";context.fillRect(0,0,1216,1824);
+      const data=canvas.toDataURL("image/png").split(",")[1]!;
+      const original={id:"original-image",turnId:"original-turn",kind:"tool",text:"",status:"completed",tool:{
+        callId:"original-image",name:"generate",title:"generate",kind:"other",status:"completed",input:{prompt:"Synthetic saved recipe",aspect_ratio:"2:3"},locations:[],
+        content:[{type:"image",mimeType:"image/png",data}],imageProgress:{stage:"finishing",percent:99},
+      }};
+      const baseline=[original,{id:"answer",turnId:"original-turn",kind:"assistant",text:"The original chat response stays intact.",status:"completed"}];
+      (window as any).__regenerateCalls=[];
+      (window as any).axiomDesktop.agent.regenerateImage=(threadId:string,callId:string)=>{
+        (window as any).__regenerateCalls.push({threadId,callId});
+        const tool={id:"new-image",turnId:"active-test-turn",kind:"tool",text:"",status:"in_progress",tool:{
+          callId:"new-image",name:"generate",title:"generate",kind:"other",status:"in_progress",input:{},locations:[],content:[],imageProgress:{stage:"generating",percent:38},
+        }};
+        (window as any).__deletionTest.setTimeline([...baseline,tool],true);
+        return new Promise(resolve=>{
+          (window as any).__finishImageRegeneration=()=>{
+            (window as any).__deletionTest.setTimeline([...baseline,{...tool,status:"completed",tool:{...tool.tool,status:"completed",content:[{type:"image",mimeType:"image/png",data}]}}],false);
+            resolve({callId:"new-image"});
+          };
+        });
+      };
+      (window as any).__deletionTest.setTimeline(baseline,false);
+    });
+    const originalImage=page.getByRole("button",{name:"View generated image",exact:true}).first().locator("img");
+    await originalImage.waitFor();
+    const originalUrl=await originalImage.getAttribute("src");
+    const regenerate=page.getByRole("button",{name:"Regenerate image",exact:true}).first();
+    await regenerate.click();
+    await page.getByText("Generating image · 38%",{exact:true}).waitFor();
+    assert.equal(await regenerate.isDisabled(),true);
+    assert.equal(await originalImage.getAttribute("src"),originalUrl);
+    assert.equal(await page.getByText("The original chat response stays intact.",{exact:true}).count(),1);
+    assert.deepEqual(await page.evaluate(()=>(window as any).__regenerateCalls),[{threadId:"old-thread",callId:"original-image"}]);
+    assert.equal((await calls(page)).filter(call=>["prompt","revise"].includes(call.method)).length,0);
+    await page.evaluate(()=>(window as any).__finishImageRegeneration());
+    await page.getByRole("button",{name:"View generated image",exact:true}).nth(1).waitFor();
+    assert.equal(await page.getByRole("progressbar").count(),0);
+    assert.equal(await originalImage.getAttribute("src"),originalUrl);
+    assert.equal(await page.getByRole("button",{name:"Regenerate image",exact:true}).count(),2);
+    assert.deepEqual(errors,[]);
+  } finally {await page.close();}
+});
+
+test("image generation percentages update live and saved images have distinct random PNG filenames", async () => {
+  const {page, errors} = await openApp("linux", false, [], "medium", true, false);
+  try {
+    await page.locator('[data-thread-id="old-thread"]').click();
+    await page.evaluate(() => {
+      (window as any).__deletionTest.setTimeline([{id: "progress", kind: "tool", text: "", status: "in_progress", tool: {
+        callId: "progress", name: "generate_image", title: "generate_image", kind: "other", status: "in_progress",
+        input: {prompt: "A synthetic test image"}, content: [], locations: [], imageProgress: {stage: "generating", percent: 38},
+      }}]);
+    });
+    await page.getByText("Generating image · 38%", {exact: true}).waitFor();
+    const bar = page.getByRole("progressbar", {name: "Image generation progress"});
+    assert.equal(await bar.getAttribute("aria-valuenow"), "38");
+    assert.equal(await page.getByRole("link", {name: "Save image", exact: true}).count(), 0);
+    if (process.env.AXIOM_IMAGE_PROGRESS_CAPTURE) await page.screenshot({path: process.env.AXIOM_IMAGE_PROGRESS_CAPTURE, animations: "disabled"});
+    await page.evaluate(() => {
+      (window as any).__deletionTest.setTimeline([{id: "progress", kind: "tool", text: "", status: "in_progress", tool: {
+        callId: "progress", name: "generate_image", title: "generate_image", kind: "other", status: "in_progress",
+        input: {}, content: [], locations: [], imageProgress: {stage: "finishing", percent: 99},
+      }}]);
+    });
+    await page.getByText("Finishing image · 99%", {exact: true}).waitFor();
+    assert.equal(await bar.getAttribute("aria-valuenow"), "99");
+    await page.evaluate(() => {
+      const canvas = document.createElement("canvas"); canvas.width = canvas.height = 1024;
+      const context = canvas.getContext("2d")!;
+      context.fillStyle = "#164e63"; context.fillRect(0, 0, 1024, 1024);
+      const data = canvas.toDataURL("image/png").split(",")[1]!;
+      (window as any).__deletionTest.setTimeline(["one", "two"].map(id => ({id, kind: "tool", text: "", status: "completed", tool: {
+        callId: id, name: "generate_image", title: "generate_image", kind: "other", status: "completed", input: {}, locations: [],
+        content: [{type: "image", mimeType: "image/png", data}], imageProgress: {stage: "finishing", percent: 99},
+      }})));
+    });
+    const links = page.getByRole("link", {name: "Save image", exact: true});
+    await links.nth(1).waitFor();
+    const names = await links.evaluateAll(elements => elements.map(element => element.getAttribute("download")));
+    for (const name of names) assert.match(name!, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.png$/);
+    assert.notEqual(names[0], names[1]);
+    assert.equal(await page.getByRole("progressbar").count(), 0);
+    assert.equal(await page.getByText(/(?:Generated|Edited) image · 100%/).count(), 0);
+    const downloaded = page.waitForEvent("download");
+    await links.first().click();
+    const firstName = (await downloaded).suggestedFilename();
+    assert.match(firstName, /^[0-9a-f-]{36}\.png$/);
+    const downloadedAgain = page.waitForEvent("download");
+    await links.first().click();
+    const secondName = (await downloadedAgain).suggestedFilename();
+    assert.match(secondName, /^[0-9a-f-]{36}\.png$/);
+    assert.notEqual(firstName, secondName, "each save gets a fresh random filename");
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("generated and edited images open the local viewer with keyboard and backdrop dismissal", async () => {
+  const { page, errors } = await openApp("linux", false, [], "medium", true, false);
+  try {
+    await page.locator('[data-thread-id="old-thread"]').click();
+    await page.evaluate(() => {
+      const canvas = document.createElement("canvas"); canvas.width = 1024; canvas.height = 1024;
+      const context = canvas.getContext("2d")!;
+      const gradient = context.createLinearGradient(0, 0, 1024, 1024);
+      gradient.addColorStop(0, "#164e63"); gradient.addColorStop(1, "#fb923c");
+      context.fillStyle = gradient; context.fillRect(0, 0, 1024, 1024);
+      context.fillStyle = "white"; context.font = "64px sans-serif"; context.fillText("Axiom image preview", 120, 510);
+      const data = canvas.toDataURL("image/png").split(",")[1]!;
+      (window as any).__deletionTest.setTimeline([{
+        id: "generated", kind: "tool", text: "generate_image", status: "completed", tool: {
+          callId: "generated", name: "generate_image", title: "generate_image", kind: "other", status: "completed",
+          input: { prompt: "A colorful image", image_id: `img_${"a".repeat(32)}` }, locations: [],
+          content: [{ type: "image", mimeType: "image/png", data }],
+        },
+      }]);
+    });
+    await page.getByText("Edited image", { exact: true }).waitFor();
+    const trigger = page.getByRole("button", { name: "View generated image", exact: true });
+    await trigger.waitFor();
+    const caption = await trigger.locator("..").locator("figcaption").innerText();
+    assert.match(caption, /Axiom · Chutes/);
+    assert.doesNotMatch(caption, /verified|E2EE/i);
+    const thumbnail = await trigger.boundingBox();
+    const source = await trigger.locator("img").getAttribute("src");
+    assert.match(source!, /^blob:/);
+    const dialog = page.getByRole("dialog", { name: "Image preview: Generated image", exact: true });
+    await trigger.focus(); await page.keyboard.press("Enter"); await dialog.waitFor();
+    const image = dialog.getByRole("img", { name: "Generated image", exact: true });
+    await page.waitForFunction(() => document.querySelector<HTMLImageElement>("dialog img")?.naturalWidth === 1024);
+    assert.equal(await image.getAttribute("src"), source);
+    const enlarged = await image.boundingBox();
+    assert.ok(enlarged && thumbnail && enlarged.width > thumbnail.width && enlarged.height > thumbnail.height);
+    await image.click(); assert.ok(await dialog.isVisible());
+    await dialog.getByRole("button", {name:"Zoom out",exact:true}).waitFor();
+    const zoomed=await image.boundingBox();
+    const fittedSide=Math.min(enlarged!.width,enlarged!.height);
+    assert.ok(zoomed && zoomed.width>=fittedSide*1.9 && zoomed.height>=fittedSide*1.9, `zoomed square ${JSON.stringify(zoomed)} must enlarge fitted content ${fittedSide}`);
+    const viewport=image.locator("../..");
+    assert.ok(await viewport.evaluate(element=>element.scrollWidth>element.clientWidth || element.scrollHeight>element.clientHeight));
+    await image.click();
+    await dialog.getByRole("button",{name:"Zoom in",exact:true}).waitFor();
+    assert.ok(Math.abs((await image.boundingBox())!.width-enlarged!.width)<1);
+    await page.keyboard.press("Escape"); await dialog.waitFor({ state: "detached" });
+    assert.ok(await trigger.evaluate(el => el === document.activeElement));
+    await trigger.click(); await dialog.waitFor();
+    await dialog.getByRole("button", { name: "Close image preview" }).click(); await dialog.waitFor({ state: "detached" });
+    await trigger.click(); await dialog.waitFor();
+    await page.mouse.click(2, 2); await dialog.waitFor({ state: "detached" });
+    assert.ok(await trigger.evaluate(el => el === document.activeElement));
+    assert.equal(await page.getByRole("link", { name: "Save image", exact: true }).getAttribute("href"), source);
+    await trigger.click(); await dialog.waitFor();
+    if (process.env.AXIOM_GENERATED_VIEWER_CAPTURE) await page.screenshot({ path: process.env.AXIOM_GENERATED_VIEWER_CAPTURE, animations: "disabled" });
+    await page.evaluate(() => (window as any).__deletionTest.setAccount("different-account"));
+    await dialog.waitFor({ state: "detached" });
+    // This fixture reloads the same synthetic timeline for either account.
+    // Its new component must still discard the previous account's Blob URL.
+    await page.waitForFunction(url => !Array.from(document.querySelectorAll("img")).some(image => image.src === url), source);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("1536-pixel local image resources survive streaming updates while the composer accepts input", async () => {
+  const { page, errors } = await openApp("linux", false, [], "medium", true, false);
+  try {
+    await page.locator('[data-thread-id="old-thread"]').click();
+    const url = await page.evaluate(async () => {
+      const canvas = document.createElement("canvas"); canvas.width = 1536; canvas.height = 1536;
+      const ctx = canvas.getContext("2d")!;
+      ctx.fillStyle = "#164e63"; ctx.fillRect(0, 0, 1536, 1536);
+      const blob = await new Promise<Blob>(resolve => canvas.toBlob(value => resolve(value!), "image/png"));
+      const imageUrl = URL.createObjectURL(blob);
+      (window as any).__imageAtobCalls = 0;
+      const original = window.atob;
+      window.atob = (text) => { (window as any).__imageAtobCalls++; return original(text); };
+      const tool = { id: "generated", kind: "tool", text: "", status: "completed", tool: {
+        callId: "generated", name: "generate_image", title: "generate_image", kind: "other", status: "completed",
+        input: {}, locations: [], content: [{ type: "image", mimeType: "image/png", imageUrl, width: 1536, height: 1536 }],
+      } };
+      (window as any).__streamLocalImage = async () => {
+        for (let n = 0; n < 50; n++) {
+          (window as any).__deletionTest.setTimeline([tool, { id: "answer", kind: "assistant", text: "Streaming text ".repeat(n + 1), status: "in_progress" }]);
+          await new Promise(resolve => setTimeout(resolve, 20));
+        }
+      };
+      (window as any).__deletionTest.setTimeline([tool]);
+      return imageUrl;
+    });
+    const trigger = page.getByRole("button", { name: "View generated image", exact: true });
+    await trigger.waitFor();
+    await page.waitForFunction(() => document.querySelector<HTMLImageElement>('[aria-label="View generated image"] img')?.naturalWidth === 1536);
+    const streaming = page.evaluate(() => (window as any).__streamLocalImage());
+    const composer = page.locator("textarea[data-chat-input]");
+    await composer.pressSequentially("Typing while images stream", { delay: 15 });
+    await streaming;
+    assert.equal(await composer.inputValue(), "Typing while images stream");
+    assert.equal(await trigger.locator("img").getAttribute("src"), url);
+    assert.equal(await page.evaluate(() => (window as any).__imageAtobCalls), 0);
+    await trigger.click();
+    const dialog = page.getByRole("dialog", { name: "Image preview: Generated image", exact: true });
+    await dialog.waitFor();
+    await page.waitForFunction(() => document.querySelector<HTMLImageElement>("dialog img")?.naturalWidth === 1536);
+    await page.keyboard.press("Escape");
+    await dialog.waitFor({ state: "detached" });
+    assert.equal(await page.getByRole("link", { name: "Save image", exact: true }).getAttribute("href"), url);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("vision uploads accept ten normalized images and reject an eleventh", async () => {
+  const { page, errors } = await openApp("linux", false, [], "medium", true, false);
+  try {
+    const files = Array.from({ length: 10 }, (_, index) => ({ name: `reference-${index}.png`, mimeType: "image/png", buffer: tinyPng }));
+    await page.locator('input[type="file"]').setInputFiles(files);
+    await page.waitForFunction(() => document.querySelectorAll("[data-attachment-card]").length === 10);
+    await page.locator('input[type="file"]').setInputFiles({ name: "extra.png", mimeType: "image/png", buffer: tinyPng });
+    await page.getByText("Attach at most 10 files per message.", { exact: true }).waitFor();
+    assert.equal(await page.locator("[data-attachment-card]").count(), 10);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
 test("image card viewer enlarges local images, fits the window, and restores keyboard focus", async () => {
   const { page, errors } = await openApp("linux", false, [], "medium", true, false);
   try {
@@ -3400,17 +3754,24 @@ test("image card viewer enlarges local images, fits the window, and restores key
     await dialog.waitFor();
     const close = dialog.getByRole("button", { name: "Close image preview" });
     const image = dialog.getByRole("img", { name: "landscape.png" });
-    await page.waitForFunction(() => document.querySelector<HTMLImageElement>("dialog img")?.naturalWidth === 1600);
-    assert.equal(await image.getAttribute("src"), `data:image/png;base64,${data}`);
+    await page.waitForFunction(() => (document.querySelector<HTMLImageElement>("dialog img")?.naturalWidth ?? 0) > 1000);
+    const normalized = await image.evaluate(element => ({ width: element.naturalWidth, height: element.naturalHeight, src: element.src }));
+    assert.ok(normalized.width < 1600 && normalized.width * normalized.height <= 1024 * 1024);
+    assert.ok(Math.abs(normalized.width / normalized.height - 16 / 9) < .005);
+    assert.match(normalized.src, /^data:image\/(png|jpeg);base64,/);
+    assert.notEqual(normalized.src, `data:image/png;base64,${data}`);
     const enlarged = await image.boundingBox();
     assert.ok(enlarged && thumbnail && enlarged.width > thumbnail.width * 3 && enlarged.height > thumbnail.height * 3);
     assert.equal(await image.evaluate((element) => getComputedStyle(element).objectFit), "contain");
-    for (const key of ["Tab", "Shift+Tab"]) {
-      await page.keyboard.press(key);
-      assert.ok(await close.evaluate((element) => element === document.activeElement));
-    }
+    await page.keyboard.press("Tab");
+    assert.ok(await dialog.getByRole("button",{name:"Zoom in",exact:true}).evaluate(element=>element===document.activeElement));
+    await page.keyboard.press("Shift+Tab");
+    assert.ok(await close.evaluate(element=>element===document.activeElement));
     await image.click();
     assert.ok(await dialog.isVisible(), "clicking the picture keeps it open");
+    await dialog.getByRole("button",{name:"Zoom out",exact:true}).waitFor();
+    await image.click();
+    await dialog.getByRole("button",{name:"Zoom in",exact:true}).waitFor();
     if (process.env.AXIOM_IMAGE_VIEWER_CAPTURE) await page.screenshot({ path: `${process.env.AXIOM_IMAGE_VIEWER_CAPTURE}/large.png`, animations: "disabled" });
     await page.setViewportSize({ width: 640, height: 500 });
     const bounds = await dialog.boundingBox();
@@ -3451,6 +3812,7 @@ test("image card viewer opens during sending and after acknowledgement without r
     await page.getByRole("button", { name: "Send", exact: true }).click();
     await page.waitForFunction(() => (window as any).__deletionTest.calls.some((call: any) => call.method === "attachments"));
     const transcript = page.getByRole("region", { name: "Chat messages", exact: true });
+    let normalizedSource: string | null = null;
     for (const acknowledged of [false, true]) {
       if (acknowledged) {
         await page.evaluate(() => (window as any).__deletionTest.releaseSetup("prompt"));
@@ -3459,7 +3821,10 @@ test("image card viewer opens during sending and after acknowledgement without r
       await transcript.getByRole("button", { name: "View image pixel.png" }).click();
       const dialog = page.getByRole("dialog", { name: "Image preview: pixel.png" });
       await dialog.waitFor();
-      assert.equal(await dialog.getByRole("img").getAttribute("src"), `data:image/png;base64,${tinyPng.toString("base64")}`);
+      const source = await dialog.getByRole("img").getAttribute("src");
+      assert.ok(source?.startsWith("data:image/png;base64,"));
+      if (normalizedSource) assert.equal(source, normalizedSource);
+      normalizedSource = source;
       await page.keyboard.press("Escape");
       await dialog.waitFor({ state: "detached" });
     }

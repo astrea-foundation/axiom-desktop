@@ -122,6 +122,7 @@ async fn check_stream_and_transcript(chunks: usize, checkpoints: usize, benchmar
                 cwd: workspace.path().to_path_buf(),
                 permission_profile: PermissionProfile::Observe,
                 web_enabled: true,
+                image_tools_available: false,
                 steering: None,
                 approval: None,
                 questions: None,

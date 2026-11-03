@@ -15,6 +15,68 @@ function fixture(t: TestContext) {
   return client;
 }
 
+test("signed Chutes staging reports require hardware, release authorization, and explicit provenance scope", () => {
+  const evidence = securityEvidence();
+  Object.assign(evidence, { providerId: "chutes-preview", modelId: "chutes-preview:qwen3.8-27b",
+    attestationProtocol: "chutes-tdx-nvidia-release-v1", e2eeProtocol: "chutes-mlkem768-desktop-v1",
+    e2eeEncryptionVersion: 1, attestationGeneration: null });
+  evidence.checks = ["Intel TDX", "NVIDIA GPU", "Chutes encryption key and fresh challenge", "Repository release authorization"]
+    .map(name => ({ name, passed: true, detail: name === "Intel TDX" ? "UpToDate" : "verified" }));
+  evidence.providerClaims = [
+    { name: "release_authority_fingerprint", value: "ab".repeat(32) },
+    { name: "release_channel", value: "staging" },
+    { name: "execution_provenance", value: "Not independently established by the Chutes evidence; release authorization is a separate claim." },
+  ];
+  const report: VerifySecurityResponse = { status: { state: "verified" }, evidence };
+  assert.equal(publicSecurityEvidence(report, evidence.modelId)!.status.state, "verified");
+  const hosted = structuredClone(report);
+  hosted.evidence!.providerId = "chutes";
+  hosted.evidence!.modelId = "chutes:qwen3.8-27b";
+  assert.equal(publicSecurityEvidence(hosted, hosted.evidence!.modelId)!.providerId, "chutes");
+  for (const check of hosted.evidence!.checks) {
+    const changed = structuredClone(hosted);
+    changed.evidence!.checks.find(value => value.name === check.name)!.passed = false;
+    assert.throws(() => publicSecurityEvidence(changed, hosted.evidence!.modelId));
+  }
+  for (let i = 0; i < evidence.checks.length; i++) {
+    const changed = structuredClone(report); changed.evidence!.checks[i]!.passed = false;
+    assert.throws(() => publicSecurityEvidence(changed, evidence.modelId));
+  }
+  const changed = structuredClone(report); changed.evidence!.providerClaims.pop();
+  assert.throws(() => publicSecurityEvidence(changed, evidence.modelId));
+});
+
+test("the explicit Chutes preview report stays degraded and cannot hide hardware failures", () => {
+  const evidence = securityEvidence();
+  evidence.status.state = "degraded";
+  evidence.providerId = "chutes-preview";
+  evidence.modelId = "chutes-preview:qwen3.8-27b";
+  evidence.attestationProtocol = "chutes-hardware-development-v1";
+  evidence.e2eeProtocol = "chutes-mlkem768-desktop-v1";
+  evidence.e2eeEncryptionVersion = 1;
+  evidence.attestationGeneration = null;
+  evidence.checks = [
+    { name: "Intel TDX", detail: "UpToDate", passed: true },
+    { name: "NVIDIA GPU", detail: "verified", passed: true },
+    { name: "Chutes encryption key and fresh challenge", detail: "quote-bound", passed: true },
+    { name: "Application provenance", detail: "unqualified development preview", passed: false },
+  ];
+  const preview: VerifySecurityResponse = { status: { state: "degraded" }, evidence };
+  assert.equal(publicSecurityEvidence(preview, evidence.modelId)!.status.state, "degraded");
+  const changed = structuredClone(preview);
+  changed.status.state = "verified"; changed.evidence!.status.state = "verified";
+  assert.throws(() => publicSecurityEvidence(changed, evidence.modelId));
+  for (const index of [0, 1, 2, 3]) {
+    const changed = structuredClone(preview);
+    changed.evidence!.checks[index]!.passed = !changed.evidence!.checks[index]!.passed;
+    assert.throws(() => publicSecurityEvidence(changed, evidence.modelId));
+  }
+  const outdated = structuredClone(preview);
+  outdated.evidence!.checks.push({ name: "Intel TDX", detail: "OutOfDate", passed: false });
+  assert.throws(() => publicSecurityEvidence(outdated, evidence.modelId));
+  assert.throws(() => publicSecurityEvidence(preview, "some-other-model"));
+});
+
 test("degraded reports retain OutOfDate and reject every other failed check", () => {
   const evidence = securityEvidence();
   evidence.status.state = "degraded";
@@ -56,6 +118,71 @@ function hold(t: Parameters<typeof fixture>[0], client: AxiomAcpClient) {
   const request = t.mock.method(client.process, "request", () => gate);
   return { resolve, reject, request };
 }
+
+function requestReport(client: AxiomAcpClient, evidence = securityEvidence(), sequence = 1) {
+  client.state.initializeRuntime("report-runtime");
+  return client.state.extensionEvent({
+    runtimeInstanceId: "report-runtime", sequence, occurredAt: new Date().toISOString(), sessionId: "thread",
+    event: { kind: "security_changed", status: evidence.status, evidence },
+  });
+}
+
+test("a request automatically attaches its actual session report to a newly created thread", async (t) => {
+  const client = fixture(t);
+  client.state.setRunning("thread", true);
+  const report = securityEvidence();
+  report.modelKeyFingerprint = "a1".repeat(32);
+  report.unexpectedSecret = "must-not-reach-renderer";
+  requestReport(client, report);
+  const session = client.getState().sessions.thread!;
+  assert.equal(session.securityEvidence?.modelKeyFingerprint, report.modelKeyFingerprint);
+  assert.equal(session.security?.state, "verified");
+  assert.doesNotMatch(JSON.stringify(session.securityEvidence), /unexpectedSecret|must-not-reach-renderer/);
+  assert.equal(session.timeline.some(item => item.terminalVerified), false);
+});
+
+test("a late preflight for an old key cannot replace the request's new key report", async (t) => {
+  const client = fixture(t);
+  const pending = hold(t, client);
+  const verification = client.verifySecurity("thread");
+  await Promise.resolve();
+  const actual = securityEvidence();
+  actual.modelKeyFingerprint = "b2".repeat(32);
+  requestReport(client, actual);
+  pending.resolve(result());
+  await assert.rejects(verification, /context changed/);
+  const session = client.getState().sessions.thread!;
+  assert.equal(session.securityEvidence?.modelKeyFingerprint, actual.modelKeyFingerprint);
+  assert.equal(session.securityVerificationPending, false);
+  assert.equal(session.securityVerificationError, null);
+});
+
+test("request reports reject a different model, expiry, or invented verification", (t) => {
+  const client = fixture(t);
+  const actual = securityEvidence();
+  for (const change of [
+    { modelId: "another-user-model" },
+    { hardExpiresAtUnixSeconds: Math.floor(Date.now() / 1000) - 1 },
+    { modelKeyFingerprint: "invalid" },
+    { checks: [{ name: "Intel TDX", passed: false, detail: "Revoked" }] },
+  ]) {
+    assert.throws(() => requestReport(client, { ...actual, ...change }, client.getState().lastSequence + 1));
+    assert.equal(client.getState().sessions.thread?.securityEvidence ?? null, null);
+    assert.notEqual(client.getState().sessions.thread?.security?.state, "verified");
+  }
+});
+
+test("an old or account-draining report never replaces the current request report", (t) => {
+  const client = fixture(t);
+  const actual = securityEvidence();
+  actual.modelKeyFingerprint = "c3".repeat(32);
+  requestReport(client, actual);
+  requestReport(client, securityEvidence()); // Duplicate sequence is ignored.
+  assert.equal(client.getState().sessions.thread?.securityEvidence?.modelKeyFingerprint, actual.modelKeyFingerprint);
+  client.state.setAccount({ revision: 2, state: "signed_out" });
+  requestReport(client, actual, 2);
+  assert.equal(client.getState().sessions.thread?.securityEvidence ?? null, null);
+});
 
 test("automatic and manual verifications retain the public report and coalesce refreshes", async (t) => {
   const client = fixture(t);

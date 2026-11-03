@@ -212,6 +212,9 @@ fn config(mode: &str, state: Option<&Path>, read_only: bool) -> McpServerConfig 
 
 fn context(temp: &TempDir) -> ToolContext {
     ToolContext {
+        model_id: "test-model".into(),
+        images: axiomcli::image_tool::ImageCatalog::default(),
+        progress: None,
         session_id: axiomcli::app::SessionId::new(),
         cwd: temp.path().to_path_buf(),
         permission_profile: PermissionProfile::Confirm,

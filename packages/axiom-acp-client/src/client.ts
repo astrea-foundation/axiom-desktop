@@ -71,6 +71,7 @@ const EXTENSION_CAPABILITIES = {
     usage: 1,
     securityEvidence: 4,
     webConsent: 1,
+    imageGeneration: 4,
     steering: 1,
     messageRevision: 1,
     attachments: 2,
@@ -156,11 +157,14 @@ export class AxiomAcpClient extends EventEmitter {
   }>();
   private readonly securityVerifications = new Map<string, { context: object; promise: Promise<VerifySecurityResponse> }>();
   private readonly pendingPrompts = new Set<{ threadId: string; cancelled: boolean }>();
+  private readonly pendingImageRequests = new Map<string, AbortController>();
   private fullResync: Promise<void> | null = null;
   private fullResyncRequired = false;
   private initialized = false;
   private supportsMessageRevision = false;
   private supportsMcp = false;
+  private supportsImageGeneration = false;
+  private supportsImageRegeneration = false;
   private supportsCryptoInvoices = false;
   private supportsAttachments = false;
   private desktopBootstrap: DesktopBootstrapResponse | null = null;
@@ -240,6 +244,9 @@ export class AxiomAcpClient extends EventEmitter {
     this.state.initializeRuntime(meta?.runtimeInstanceId);
     this.supportsMessageRevision = (meta?.features?.messageRevision ?? 0) >= 1;
     this.supportsMcp = (meta?.features?.desktopMcp ?? 0) >= 1;
+    this.supportsImageGeneration = (meta?.features?.imageGeneration ?? 0) >= 3;
+    this.supportsImageRegeneration = (meta?.features?.imageGeneration ?? 0) >= 4;
+    this.state.setImageGenerationAvailable(this.supportsImageGeneration);
     this.supportsCryptoInvoices = (meta?.features?.billing ?? 0) >= 5;
     this.supportsAttachments = (meta?.features?.attachments ?? 0) >= 2;
     this.initialized = true;
@@ -401,6 +408,27 @@ export class AxiomAcpClient extends EventEmitter {
     }
   }
 
+  async regenerateImage(threadId: string, callId: string): Promise<{ callId: string }> {
+    if (!this.supportsImageRegeneration) throw new ProtocolError("Restart Axiom to regenerate individual images.");
+    if (!callId || callId.length > 512 || !threadId || threadId.length > 128) throw new ProtocolError("Invalid image identity");
+    if (this.state.snapshot().sessions[threadId]?.running) throw new ProtocolError("Wait for the current response or stop it first.");
+    const context = this.state.accountContextToken();
+    const cancellation = new AbortController();
+    this.pendingImageRequests.set(threadId, cancellation);
+    this.state.setRunning(threadId, true);
+    try {
+      const result = await this.process.request<{ callId: string }>("_axiom/image/regenerate", { threadId, callId }, 0, cancellation.signal);
+      this.assertAccountContext(context);
+      return result;
+    } finally {
+      if (this.pendingImageRequests.get(threadId) === cancellation) this.pendingImageRequests.delete(threadId);
+      if (this.state.accountContextToken() === context) {
+        this.state.setRunning(threadId, false);
+        await this.refreshThread(threadId).catch(() => undefined);
+      }
+    }
+  }
+
   async getAttachments(threadId: string, userItemId: string): Promise<GetAttachmentsResponse> {
     if (!this.supportsAttachments) throw new ProtocolError("Restart Axiom to view attachments.");
     const context = this.state.accountContextToken();
@@ -410,6 +438,7 @@ export class AxiomAcpClient extends EventEmitter {
   }
 
   async cancel(threadId: string): Promise<void> {
+    this.pendingImageRequests.get(threadId)?.abort();
     // A prompt waiting for attestation must not start after Stop was sent.
     for (const pending of this.pendingPrompts) if (pending.threadId === threadId) pending.cancelled = true;
     try {

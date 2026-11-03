@@ -1,10 +1,13 @@
 import type { ClientSessionState, SecurityEvidence } from "@axiom/chat-core/viewTypes";
 
 export const PROOF_IDLE_AFTER_MS = 30 * 60_000;
+export const PROOF_REFRESH_RETRY_MS = 30_000;
+export const PROOF_REFRESH_MAX_RETRY_MS = 5 * 60_000;
 
 export type ProofState = "idle" | "verified" | "degraded" | "outdated" | "verifying" | "failed" | "expired" | "unavailable" | "unverified" | "development";
 
 export function outdatedTeeState(session: ClientSessionState | null, modelId: string): "outdated" | "degraded" | undefined {
+  if (modelId.startsWith("chutes-preview:") || session?.securityEvidence?.attestationProtocol === "chutes-hardware-development-v1") return undefined;
   const state = session?.security?.state;
   if (state === "outdated" || state === "degraded") return state;
   if (state === "verifying" && session?.securityEvidence?.modelId === modelId
@@ -17,12 +20,16 @@ export function proofState(session: ClientSessionState, modelId: string, now: nu
   if (session.security?.state === "failed") return "failed";
   if (session.security?.state === "outdated") return "outdated";
   if (session.security?.state === "unattested_development") return "development";
+  if (modelId.startsWith("chutes-preview:") && session.security?.state === "degraded"
+    && !session.securityEvidence) return "development";
   if (session.needsResync) return "unavailable";
   if (session.securityVerificationError) return "unavailable";
   const evidence = session.securityEvidence;
   if (session.security?.state !== "verified" && session.security?.state !== "degraded") return "unverified";
   if (!evidence || evidence.modelId !== modelId || evidence.status.state !== session.security.state) return "unavailable";
   if (!Number.isFinite(evidence.hardExpiresAtUnixSeconds) || evidence.hardExpiresAtUnixSeconds * 1000 <= now) return "expired";
+  if (evidence.attestationProtocol === "chutes-hardware-development-v1"
+    && session.security?.state === "degraded") return "development";
   return session.security.state;
 }
 
@@ -32,6 +39,18 @@ export const proofLabels: Record<ProofState, string> = {
   verified: "TEE verified", verifying: "Verifying TEE", failed: "TEE check failed",
   expired: "Report needs refresh", unavailable: "Proof unavailable", unverified: "Verify TEE", development: "Unattested dev",
 };
+
+/** Renew the selected environment report shortly before its lease expires. */
+export function proofRefreshDue(session: ClientSessionState, modelId: string, now: number): boolean {
+  const evidence = session.securityEvidence;
+  if (!evidence || evidence.modelId !== modelId) return true;
+  const expires = evidence.hardExpiresAtUnixSeconds * 1000;
+  if (!Number.isFinite(expires)) return true;
+  const lifetime = expires - evidence.verifiedAtUnixSeconds * 1000;
+  if (!Number.isFinite(lifetime) || lifetime <= 0) return true;
+  const margin = Math.min(30_000, Math.max(1000, lifetime / 2));
+  return now >= expires - margin;
+}
 
 export function verificationAge(at: number, now: number): string {
   const seconds = Math.max(0, Math.floor(now / 1000 - at));
@@ -43,6 +62,22 @@ export function verificationAge(at: number, now: number): string {
 }
 
 export function proofGroups(evidence: SecurityEvidence) {
+  if (evidence.attestationProtocol === "chutes-tdx-nvidia-release-v1") {
+    return [
+      { title: "Hardware evidence", explanation: "This device verified fresh Intel TDX and NVIDIA GPU evidence against the hardware baseline authorized by the signed release.", names: ["Intel TDX", "NVIDIA GPU"] },
+      { title: "Encryption key and freshness", explanation: "A fresh quote binds this instance’s ML-KEM encryption key and challenge before messages are encrypted to it.", names: ["Chutes encryption key and fresh challenge"] },
+      { title: "Release authority", explanation: "The installed publisher authorized this release. Signed, unexpired policy permits automatic updates under the same authority, with revocation and rollback checks.", names: ["Repository release authorization"] },
+    ].map(group => ({ ...group, checks: evidence.checks.filter(check => group.names.includes(check.name)),
+      passed: group.names.every(name => evidence.checks.some(check => check.name === name && check.passed)) }));
+  }
+  if (evidence.attestationProtocol === "chutes-hardware-development-v1") {
+    return [
+      { title: "Hardware evidence", explanation: "This device verified fresh Intel TDX and NVIDIA GPU evidence. Runtime measurements are development pins.", names: ["Intel TDX", "NVIDIA GPU"] },
+      { title: "Encryption key", explanation: "A fresh quote binds the Chutes ML-KEM encryption key and challenge before messages are encrypted to this instance.", names: ["Chutes encryption key and fresh challenge"] },
+      { title: "Application provenance", explanation: "This preview has no qualified binding between the measured runtime, our application source, and the model files. It is not a production verified model.", names: ["Application provenance"] },
+    ].map(group => ({ ...group, checks: evidence.checks.filter(check => group.names.includes(check.name)),
+      passed: group.names.every(name => evidence.checks.some(check => check.name === name && check.passed)) }));
+  }
   if (evidence.attestationProtocol === "axiom-gateway-v2") {
     return [
       { title: "Gateway hardware", explanation: "Your browser locally verified the confidential gateway’s hardware evidence.", names: ["Gateway hardware attestation"] },
@@ -73,7 +108,7 @@ export function proofGroups(evidence: SecurityEvidence) {
       names: ["Model encryption key", "Model identity", nearSession ? "Attested worker TLS key" : "Live TLS endpoint"],
     },
     {
-      title: "Freshness", explanation: "A fresh challenge prevents replayed evidence. Expiry limits reuse of this report for new requests; each reply is authenticated separately.",
+      title: "Freshness", explanation: "A fresh challenge prevents replayed evidence. This report must stay current before new model messages are sent.",
       names: ["Fresh challenge"],
     },
   ].map((group) => ({ ...group,
@@ -82,63 +117,15 @@ export function proofGroups(evidence: SecurityEvidence) {
   }));
 }
 
-type ReplyProofState = "none" | "not_received" | "pending" | "verified" | "failed" | "incomplete" | "unavailable";
-type ReplyProof = { state: ReplyProofState; label: string; verified: boolean; detail: string };
-
-/** Response authentication comes from the durable reply, never the cached report or clock. */
-export function replyProof(session: ClientSessionState): ReplyProof {
-  if (session.needsResync) return { state: "unavailable", label: "Unavailable", verified: false, detail: "Reply verification will be available after the thread reconnects and synchronizes." };
-  if (session.running) {
-    if (session.security?.state === "failed") return { state: "failed", label: "Failed", verified: false, detail: "Verification failed for the current request. Its output is not a verified reply." };
-    return { state: "pending", label: "Pending", verified: false, detail: "The reply stays provisional until its complete response is authenticated. Expiry of the cached report does not decide this reply’s verification." };
-  }
-  const last = [...session.timeline].reverse().find((item) => ["user", "assistant", "reasoning", "error"].includes(item.kind));
-  // A new user turn (including one that failed before producing text) must not
-  // inherit a previous reply's verification. Legacy items may omit turn IDs.
-  let start = session.timeline.length - 1;
-  while (start >= 0 && session.timeline[start]?.kind !== "user") start--;
-  const turn = last?.turnId ? session.timeline.filter((item) => item.turnId === last.turnId) : session.timeline.slice(start + 1);
-  const parts = turn.filter((item) => ["assistant", "reasoning"].includes(item.kind));
-  // Only authoritative admission failures can establish that no reply arrived.
-  // A first-ciphertext authentication failure also has no rendered text, so
-  // neither absence of text nor the human-readable error is sufficient. Every
-  // conversation request for this exact turn must agree; mixed, legacy and
-  // unknown failures retain the conservative failed-verification presentation.
-  const requests = last?.turnId ? session.requestUsage?.filter((request) => request.turnId === last.turnId
-    && request.purpose === "conversation") ?? [] : [];
-  const rateLimited = requests.length > 0 && requests.every((request) => request.state === "failed"
-    && request.errorCode === "RATE_LIMITED" && request.responseVerified !== true);
-  if (!parts.length && rateLimited && session.security?.state !== "failed" && turn.some((item) => item.kind === "error")) {
-    return { state: "not_received", label: "No reply received", verified: false, detail: "The request ended before a reply was received. Check the request error before trying again; no reply has been verified." };
-  }
-  if (turn.some((item) => item.kind === "error") || parts.some((item) => item.status === "failed")) return { state: "failed", label: "Failed", verified: false, detail: "No verified completion is recorded for this reply. Its text alone does not prove successful authentication." };
-  if (!parts.length) return { state: "none", label: "No reply yet", verified: false, detail: "Each reply must be authenticated to its request and verified environment. A TEE check alone does not verify a reply." };
-  const verified = parts.every((item) => item.terminalVerified === true && item.status === "completed");
-  return {
-    state: verified ? "verified" : "incomplete",
-    label: verified ? "Verified" : "Incomplete",
-    verified,
-    detail: verified && session.securityEvidence?.attestationProtocol === "axiom-gateway-v2" ? "The gateway verified the upstream provider’s encrypted response. Your browser authenticated the complete, ordered gateway stream to this request." : verified ? "The native client authenticated the complete reply to its request and verified environment using the provider’s encrypted protocol."
-      : "No verified completion is recorded for this reply. Its text alone does not prove successful authentication.",
-  };
-}
-
-/** The composer summarizes the reply; report freshness remains independently inspectable. */
+/** The composer describes environment attestation, independently of reply/tool history. */
 export function proofBadge(session: ClientSessionState, reportState: ProofState): { label: string; tone: "success" | "danger" | "warning" | "muted" } {
+  if (reportState === "failed") return { label: proofLabels.failed, tone: "danger" };
+  if (session.securityEvidence?.attestationProtocol !== "chutes-tdx-nvidia-release-v1"
+    && (session.settings?.model.startsWith("chutes-preview:") || session.securityEvidence?.attestationProtocol === "chutes-hardware-development-v1")) {
+    return { label: "Chutes dev preview", tone: "warning" };
+  }
   if (outdatedTeeState(session, session.settings?.model ?? session.securityEvidence?.modelId ?? "") === "degraded") return { label: proofLabels.degraded, tone: "warning" };
   if (reportState === "outdated") return { label: proofLabels.outdated, tone: "warning" };
-  const reply = replyProof(session);
-  if (reportState !== "idle" && reportState !== "development") {
-    switch (reply.state) {
-      case "pending": return { label: "Verifying reply", tone: "success" };
-      case "verified": return { label: "Reply verified", tone: "success" };
-      case "failed": return { label: "Reply check failed", tone: "danger" };
-      case "incomplete": return { label: "Reply incomplete", tone: "warning" };
-      case "unavailable": return { label: "Reply unavailable", tone: "muted" };
-      case "not_received": return { label: "No reply received", tone: "warning" };
-      case "none": break;
-    }
-  }
-  return { label: proofLabels[reportState], tone: reportState === "verified" ? "success" : reportState === "failed" ? "danger"
+  return { label: proofLabels[reportState], tone: reportState === "verified" ? "success"
     : reportState === "expired" || reportState === "development" ? "warning" : "muted" };
 }
