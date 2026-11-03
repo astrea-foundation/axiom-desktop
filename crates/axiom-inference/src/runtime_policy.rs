@@ -83,6 +83,10 @@ impl ImageRuntimePolicy {
             || !self.required_features.is_empty()
             || self.extensions.len() > 32
             || serde_json::to_vec(&self.extensions).map_or(true, |v| v.len() > 8192)
+            || self
+                .extensions
+                .get("reference_uses_default_size")
+                .is_some_and(|v| !v.is_boolean())
             || !(256 * 256..=MAX_GENERATED_IMAGE_PIXELS).contains(&p.max_pixels)
             || p.max_references > 5
             || p.aspect_ratios.is_empty()
@@ -147,6 +151,14 @@ impl ImageRuntimePolicy {
         Ok(())
     }
 
+    #[must_use]
+    pub fn references_use_default_size(&self) -> bool {
+        self.extensions
+            .get("reference_uses_default_size")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+    }
+
     pub fn dimensions(&self, ratio: &str) -> Result<ImageDimensions, &'static str> {
         let bad = "Unsupported image aspect ratio.";
         if !self.image.aspect_ratios.iter().any(|r| r == ratio) {
@@ -188,5 +200,26 @@ impl ImageRuntimePolicy {
     #[must_use]
     pub fn uncensored(&self, model: &str) -> bool {
         self.image.uncensored_models.iter().any(|m| m == model)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn reference_default_size_is_explicit_and_rejects_malformed_policy_values() {
+        let mut runtime = ImageRuntimePolicy::default();
+        assert!(!runtime.references_use_default_size());
+        runtime.extensions.insert(
+            "reference_uses_default_size".into(),
+            serde_json::json!(true),
+        );
+        runtime.validate().unwrap();
+        assert!(runtime.references_use_default_size());
+        runtime.extensions.insert(
+            "reference_uses_default_size".into(),
+            serde_json::json!("true"),
+        );
+        assert!(runtime.validate().is_err());
     }
 }

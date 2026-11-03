@@ -339,6 +339,10 @@ fn direct_image_runtime() -> axiom_inference::ImageRuntimePolicy {
     let mut runtime = axiom_inference::ImageRuntimePolicy::default();
     runtime.image.default_aspect_ratio = "1:1".into();
     runtime.image.uncensored_models = vec![MODEL.into()];
+    runtime.extensions.insert(
+        "reference_uses_default_size".into(),
+        serde_json::json!(true),
+    );
     runtime
 }
 impl sealed::Provider for DirectProvider {}
@@ -870,6 +874,7 @@ mod tests {
         let runtime = direct_image_runtime();
         runtime.validate().unwrap();
         assert_eq!(runtime.image.max_references, 5);
+        assert!(runtime.references_use_default_size());
         let size = runtime
             .dimensions(&runtime.image.default_aspect_ratio)
             .unwrap();

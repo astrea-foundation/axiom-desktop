@@ -60,12 +60,14 @@ Tool-capable releases opt in with installed `tools: true` and
 `image_generation: true`, in addition to `vision: true`. The signed measured
 release must authorize `tools`, `image` and `vision`. The model can invoke the
 existing `generate` tool; the image result, preview, save and regeneration paths
-use the attested Direct client. New images default to 1536×1536 square, with
+use the attested Direct client. Generation defaults to 1536×1536 square for
+both new images and reference-based requests without size/aspect arguments, with
 the measured eight-step image runtime. Other supported aspect ratios use the
 32-pixel grid within 2,359,296 total pixels. Up to five ordered references can
 come from attachments or generated images in the same conversation. Reference
 bytes stay in the encrypted request; signed usage binds their normalized pixel
 count. The adapter preserves source IDs for preview, saving and regeneration.
+Regenerate retains the original request's chosen dimensions and reference order.
 The uncensored model selects its pinned image LoRA. Document uploads remain
 unavailable.
 The VM is rented by the hour; the model has no per-token price in the account
