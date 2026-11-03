@@ -1,10 +1,15 @@
 # Direct Verda development connection
 
-The explicit operator connection registers `direct:qwen3.8-27b` as **Qwen3.8 ·
-Verda**. Account sign-in and local storage use the isolated HTTPS loopback
+The explicit operator connection registers `direct:qwen3.8-27b` as **Qwen3.8
+Uncensored**, under the **Axiom Verda** provider. Account sign-in and local storage use the isolated HTTPS loopback
 profile. Inference connects directly to the independently verified confidential
 worker; the account service never receives conversation plaintext or the
 operator issuer key.
+
+The approved guest loads `munekazu/Huihui-Qwen3.8-27B-abliterated-FP8`, pinned by
+the signed model inventory. Its exact native model ID selects Axiom's bundled
+Qwen3.8 Uncensored system prompt, including after a model switch. The compact
+model label retains “Uncensored” so the checkpoint is identifiable in the composer.
 
 This development connection supports streaming text conversations with the
 measured worker's medium reasoning template, a 32,768-token context and at most
@@ -51,7 +56,7 @@ The canonical inference repository's `scripts/direct_desktop.py` constructs a
 small launch environment from explicit `--state`, `--desktop` and
 `--account-state` paths. It does not inherit provider API credentials or Chutes
 preview settings. The existing local account backend must be running. Select
-**Qwen3.8 · Verda** after launch if the profile previously selected another model.
+**Qwen3.8 Uncensored** under Axiom Verda after launch if the profile previously selected another model.
 
 ## Verification and completion
 

@@ -83,7 +83,7 @@ pub(crate) fn models(config: &SecureClientConfig) -> Vec<ModelInfo> {
     let mut model = ModelInfo {
         id: MODEL.into(),
         label: "Qwen3.8 Uncensored · Verda".into(),
-        short_label: "Qwen3.8 · Verda".into(),
+        short_label: "Qwen3.8 Uncensored".into(),
         provider_id: ID.into(),
         provider_label: "Axiom Verda".into(),
         upstream_model: direct.model_manifest.clone(),
