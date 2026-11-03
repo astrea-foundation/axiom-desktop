@@ -5,6 +5,46 @@ OS, architecture, browser, source revision, artifact SHA-256, signing identity,
 result and limitations in the release's maintainer acceptance record. Unit tests
 and browser fixtures do not establish signed native OS acceptance.
 
+## Direct Verda rollout gates
+
+The [generation-9 / permanent-policy-14 qualification](../../axiom-inference/docs/qa/direct-verda-reference-images-2026-11-03.json)
+establishes fresh CPU/GPU/workload/key/TLS verification, authenticated text and
+vision, five-reference image generation/editing and the 1536-square default in
+the operator's macOS development connection. Its fresh QA account and separate
+profile do not establish a hosted customer rollout.
+
+Public release remains blocked on these concrete requirements:
+
+- Replace the client-held operator issuer key with production account-owned
+  reservation/grant issuance. Each grant must bind the authenticated account,
+  session, client proof key, exact approved worker and one request. Distribute
+  public trust material and the verifier to clients; keep private issuer and
+  publisher keys under operator/service control.
+- Register and select the Verda deployment through the production account API
+  and model catalog. The current installed Direct configuration explicitly
+  requires a loopback account API and an external private configuration file;
+  the development launcher and local-profile overrides are not the public
+  enrollment path.
+- Exercise real independent accounts concurrently against the production
+  authorization/routing path, including cancellation, account switching,
+  wrong-request responses, incomplete streams and worker replacement. Retain
+  strict attestation and authenticated completion throughout.
+- Establish bounded admission/queueing and clear busy handling for the intended
+  rollout. The current worker permits 65,536 reserved tokens and Desktop reserves
+  32,768 per chat, giving two simultaneous chat requests. Sustained load has not
+  been qualified; redundant capacity and draining/replacement checks are needed
+  for a production availability claim.
+- Package the independent verifier and public trust configuration for every
+  supported installer target, then qualify production sign-in, the installed
+  provider, image/reference flows, account-data preservation and updates using
+  the exact signed candidate bytes. Source-mode macOS checks do not establish
+  Windows, Intel macOS, Linux or signed-installer acceptance.
+
+Keep this gate separate from the existing managed Chutes release qualification.
+Publishing the current operator branch alone does not enroll ordinary customer
+installations into Verda. See [the Direct connection guide](direct-verda.md)
+and [release procedure](releasing.md).
+
 ## Confidential pool qualification
 
 The separate registered managed Chutes channel now has account-owned opaque
