@@ -680,7 +680,9 @@ async fn build_runner(
         config.max_tool_output_bytes,
         Arc::new(HostedSearchClient::new(auth.clone())?),
     )?;
-    if std::env::var_os("AXIOM_CHUTES_CLIENT_CONFIG_FILE").is_some() {
+    if std::env::var_os("AXIOM_CHUTES_CLIENT_CONFIG_FILE").is_some()
+        || std::env::var_os("AXIOM_DIRECT_CLIENT_CONFIG_FILE").is_some()
+    {
         tools.register(Arc::new(axiomcli::image_tool::ImageGenerationTool {
             provider: Arc::clone(&provider),
         }))?;

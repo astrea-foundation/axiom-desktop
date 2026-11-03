@@ -4,11 +4,12 @@
   "package": "axiom-pool-client",
   "files": {
     "Cargo.toml": "c415435be296a3dd5f5adb4d6a58fabe038974d9881d8166f385d40e2aa32a77",
-    "src/attestation.rs": "3b1f759dba4489befb5ebb8c7748c946c95704ae53efa4208317db4a7df7e3ba",
-    "src/direct.rs": "5d53d1579de25b4d02c5017435482d55afa570c5056df2963af7349f4067a16e",
-    "src/lib.rs": "f0498c94083bc7b486f5c02f524449c712c58a551e639b525fa867f5bc23d7a3",
-    "examples/direct-vision.rs": "becf8d79c3fcadff13aa38269a289894b77d884e1c66ccc876afa3ed2d540888",
-    "examples/direct.rs": "2b3b55f6779a2d133da78009827be70a48c9ed684a5f9c5a109fb804b9cc5d19",
-    "examples/smoke.rs": "148ba252e690a7c61dda47c3c56ad0a0fa99a27a390f77ff43f393919a9280ee"
+    "src/attestation.rs": "b51691acea48ca668e1c934155349f49d1aa27c612f4b123e5987a87eec78211",
+    "src/direct.rs": "eeb170fceab698d5a399d0643b278fda0db312db2c43925046624c1ccbaf9fdd",
+    "src/lib.rs": "92d05b0297073afc32a3c6ca606c09018d925ced1f393e091bc62b128246bf02",
+    "examples/direct-latency.rs": "9aa5da933aac3d70d8e5b9cc56cd0857e25cf21d841940228641f3e83fa188eb",
+    "examples/direct-vision.rs": "d93beb955622b5239c88a75651e5add6d745051ea9c73a5d3dc89ad69d039afd",
+    "examples/direct.rs": "16cbfc01a7a7294dff0ab0386e81743573d3389fc652d712440f24f4d17531bf",
+    "examples/smoke.rs": "24ab176b8e3853af7a140ae87c5675e1a8b04e41ae775a1fc837f8a56c4f70b2"
   }
 }

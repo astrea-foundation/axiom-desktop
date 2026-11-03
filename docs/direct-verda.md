@@ -36,10 +36,13 @@ not qualified. The canonical inference repository's
 preserves those results together with the signed release, permanent policy and
 base image-generation receipt.
 
-Tools, document uploads, image edits and Desktop image generation remain
-unavailable in this connection. The separately qualified operator client in
-the inference repository supports base image generation. Desktop image calls
-fail with an explicit capability error rather than selecting another provider.
+Tool-capable releases opt in with installed `tools: true` and
+`image_generation: true`, in addition to `vision: true`. The signed measured
+release must authorize `tools`, `image` and `vision`. The model can invoke the
+existing `generate` tool; the image result, preview, save and regeneration paths
+use the attested Direct client. New images are square, up to 1024×1024, with the
+measured eight-step image runtime. The uncensored model selects its pinned image
+LoRA. Reference-image editing and document uploads remain unavailable.
 The VM is rented by the hour; the model has no per-token price in the account
 catalog. Local account billing is independent of Verda's compute charges.
 Conversation titles use the local first-message label, keeping cosmetic
@@ -106,6 +109,18 @@ Permanent release approval does not extend hardware proof freshness. New proof
 and admission lifetimes are short and obtained automatically. A deployed worker
 that quarantines an incomplete engine execution requires operator recovery;
 the client cannot clear that condition or disable verification.
+
+Session establishment and inference share a bounded cache of verified public
+evidence and the CPU-pinned TLS transport. Prewarming prepares admission before
+inference. Both cached proof and admission must cover the entire new request
+deadline; request keys, nonces and grants are never reused. Explicit Refresh
+invalidates the cache and any failed exchange drops it without inference replay.
+The proof's original local verification time is retained in the privacy report.
+
+Tool-capable releases support Thinking On and Off with identical template inputs
+for token counting and generation. Off disables the private reasoning template;
+the existing user preference is preserved. Native timings separate verification,
+admission, first reasoning, first text and total request time.
 
 Deployment, issuer/publisher key management and measured guest recovery belong
 to the canonical inference repository's [Verda guide](../../axiom-inference/docs/direct-verda.md).

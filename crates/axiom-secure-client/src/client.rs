@@ -45,20 +45,25 @@ struct PersistedTrustPolicy {
 }
 
 impl SecureClient {
-    fn require_image_provider(&self) -> Result<()> {
-        if self.config.direct.is_some() {
-            return Err(crate::SecureClientError::capability(
-                "Image generation is not available in this Verda Desktop connection yet",
-            ));
-        }
-        Ok(())
+    fn direct_image_provider(&self) -> Result<std::sync::Arc<dyn crate::provider::SecureProvider>> {
+        self.providers
+            .by_id(crate::providers::direct::ID)
+            .ok_or_else(|| {
+                crate::SecureClientError::capability("direct image provider unavailable")
+            })
     }
 
     pub async fn image_capabilities(
         &self,
         cancellation: CancellationToken,
     ) -> Result<axiom_inference::ImageRuntimePolicy> {
-        self.require_image_provider()?;
+        if self.config.direct.is_some() {
+            let policy = self.trust_policy(cancellation.clone()).await?;
+            return self
+                .direct_image_provider()?
+                .image_capabilities(&policy, cancellation)
+                .await;
+        }
         crate::providers::chutes_preview::image_capabilities(
             &self.config,
             Arc::clone(&self.credential),
@@ -105,7 +110,11 @@ impl SecureClient {
         prompt: &str,
         cancellation: CancellationToken,
     ) -> Result<crate::GeneratedImage> {
-        self.require_image_provider()?;
+        if self.config.direct.is_some() {
+            return self
+                .image_request(chat_model_id, prompt, None, None, cancellation)
+                .await;
+        }
         crate::providers::chutes_preview::generate_image(
             &self.config,
             Arc::clone(&self.credential),
@@ -125,7 +134,21 @@ impl SecureClient {
         dimensions: Option<axiom_inference::ImageDimensions>,
         cancellation: CancellationToken,
     ) -> Result<crate::GeneratedImage> {
-        self.require_image_provider()?;
+        if self.config.direct.is_some() {
+            let references = source.into_iter().collect::<Vec<_>>();
+            return self
+                .image_request_with_progress(
+                    axiom_inference::ImageGenerationRequest {
+                        chat_model_id,
+                        prompt,
+                        references: &references,
+                        dimensions,
+                    },
+                    tokio::sync::mpsc::channel(1).0,
+                    cancellation,
+                )
+                .await;
+        }
         crate::providers::chutes_preview::image_operation(
             &self.config,
             Arc::clone(&self.credential),
@@ -145,7 +168,13 @@ impl SecureClient {
         progress: tokio::sync::mpsc::Sender<axiom_inference::ImageGenerationProgress>,
         cancellation: CancellationToken,
     ) -> Result<crate::GeneratedImage> {
-        self.require_image_provider()?;
+        if self.config.direct.is_some() {
+            let policy = self.trust_policy(cancellation.clone()).await?;
+            return self
+                .direct_image_provider()?
+                .image_request(&policy, request, Some(progress), cancellation)
+                .await;
+        }
         crate::providers::chutes_preview::image_operation_with_progress(
             &self.config,
             Arc::clone(&self.credential),
@@ -165,7 +194,17 @@ impl SecureClient {
         source: &axiom_inference::ImageContent,
         cancellation: CancellationToken,
     ) -> Result<crate::GeneratedImage> {
-        self.require_image_provider()?;
+        if self.config.direct.is_some() {
+            return self
+                .image_request(
+                    chat_model_id,
+                    prompt,
+                    Some((image_id, source)),
+                    None,
+                    cancellation,
+                )
+                .await;
+        }
         crate::providers::chutes_preview::image_operation(
             &self.config,
             Arc::clone(&self.credential),

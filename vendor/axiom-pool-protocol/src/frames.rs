@@ -97,6 +97,7 @@ pub struct FrameVerifier {
     terminal: Option<Terminal>,
     max_bytes: usize,
     image: Option<ImageState>,
+    tool_ids: std::collections::BTreeSet<String>,
     failed: bool,
 }
 struct ImageState {
@@ -152,6 +153,7 @@ impl FrameVerifier {
             key,
             terminal: None,
             image: None,
+            tool_ids: std::collections::BTreeSet::new(),
             failed: false,
         })
     }
@@ -206,6 +208,10 @@ impl FrameVerifier {
                 "receipt binding mismatch"
             );
             terminal.usage.validate(&self.binding)?;
+            ensure!(
+                (terminal.finish_reason == "tool_calls") == !self.tool_ids.is_empty(),
+                "tool completion differs from authenticated calls"
+            );
             if let Some(image) = &self.image {
                 ensure!(
                     image.bytes == image.expected_bytes
@@ -240,8 +246,19 @@ impl FrameVerifier {
                     "invalid text delta"
                 );
             }
-            // Tool calls need a complete validated tool contract; v1 does not
-            // advertise tool support until that parser is implemented.
+            "tool_call" => {
+                ensure!(
+                    self.binding.operation == crate::types::Operation::Chat
+                        && self.tool_ids.len() < crate::tools::MAX_TOOLS,
+                    "tool call operation/count limit"
+                );
+                let call: crate::tools::ToolCall = strict::decode(&serde_json::to_vec(&f.data)?)?;
+                call.validate()?;
+                ensure!(
+                    self.tool_ids.insert(call.id),
+                    "duplicate authenticated tool call"
+                );
+            }
             "usage" => {
                 let _: Usage = strict::decode(&serde_json::to_vec(&f.data)?)?;
             }

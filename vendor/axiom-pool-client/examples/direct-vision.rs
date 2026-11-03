@@ -55,6 +55,8 @@ async fn run() -> Result<()> {
     let client = DirectClient::new(config)?;
     let input = Input::Chat {
         messages: vec![Message {
+            tool_calls: vec![],
+            tool_call_id: None,
             role: "user".into(),
             content: prompt,
             images: vec![image],

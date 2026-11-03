@@ -73,8 +73,10 @@ mod tests {
     }
 }
 /// No public constructor or Deserialize: keys enter through the verifier only.
+#[derive(Clone)]
 pub struct VerifiedWorker {
     worker: WorkerIdentity,
+    verified_at: u64,
     expires_at: u64,
     policy_sequence: u64,
     generation: u64,
@@ -91,6 +93,20 @@ struct Appraisal {
     capabilities: Vec<String>,
 }
 impl VerifiedWorker {
+    pub fn verified_at(&self) -> u64 {
+        self.verified_at
+    }
+    #[cfg(test)]
+    pub(crate) fn for_cache_test(worker: WorkerIdentity, expires_at: u64) -> Self {
+        Self {
+            worker,
+            verified_at: super::now(),
+            expires_at,
+            policy_sequence: 1,
+            generation: 1,
+            capabilities: vec!["chat".into()],
+        }
+    }
     pub fn identity(&self) -> &WorkerIdentity {
         &self.worker
     }
@@ -176,6 +192,7 @@ impl VerifierConfig {
             );
             return Ok(VerifiedWorker {
                 worker: expected.clone(),
+                verified_at: super::now(),
                 expires_at: statement.expires_at,
                 policy_sequence: 0,
                 generation: 0,
@@ -292,6 +309,7 @@ impl VerifierConfig {
         );
         Ok(VerifiedWorker {
             worker: appraisal.worker,
+            verified_at: super::now(),
             expires_at: appraisal.expires_at,
             policy_sequence: appraisal.policy_sequence,
             generation: appraisal.generation,

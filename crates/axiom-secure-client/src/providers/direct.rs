@@ -65,7 +65,7 @@ pub(crate) fn installed_config(relay: &url::Url) -> Result<Option<DirectConfig>>
 
 fn capabilities(model: &mut ModelInfo, config: &SecureClientConfig) {
     model.supports_streaming = true;
-    model.supports_tools = false;
+    model.supports_tools = config.direct.as_ref().is_some_and(|direct| direct.tools);
     model.supports_parallel_tools = false;
     model.supports_images = config.direct.as_ref().is_some_and(|direct| direct.vision);
     model.file_mime_types.clear();
@@ -75,6 +75,9 @@ fn capabilities(model: &mut ModelInfo, config: &SecureClientConfig) {
     // different prompt template and invalidate the exact token accounting.
     model.supported_reasoning_efforts = vec![ReasoningEffort::Medium];
     model.supported_thinking_modes = vec![ThinkingMode::ProviderDefault, ThinkingMode::Enabled];
+    if model.supports_tools {
+        model.supported_thinking_modes.push(ThinkingMode::Disabled);
+    }
 }
 pub(crate) fn models(config: &SecureClientConfig) -> Vec<ModelInfo> {
     let Some(direct) = &config.direct else {
@@ -107,15 +110,206 @@ pub(crate) fn provider(config: &SecureClientConfig) -> Result<Option<Arc<dyn Sec
         return Ok(None);
     }
     Ok(Some(Arc::new(DirectProvider {
+        client: Arc::new(
+            DirectClient::new(config.direct.clone().unwrap())
+                .map_err(|_| SecureClientError::configuration("invalid direct installation"))?,
+        ),
         config: config.clone(),
     })))
 }
 struct DirectProvider {
     config: SecureClientConfig,
+    client: Arc<DirectClient>,
+}
+impl DirectProvider {
+    async fn image_policy(
+        &self,
+        policy: &TrustPolicy,
+        cancel: &CancellationToken,
+    ) -> Result<axiom_inference::ImageRuntimePolicy> {
+        let cfg = self
+            .config
+            .direct
+            .as_ref()
+            .ok_or_else(|| SecureClientError::configuration("direct installation missing"))?;
+        if !cfg.image_generation || !cfg.tools || !cfg.vision {
+            return Err(SecureClientError::capability(
+                "Image generation is not enabled by this installed Direct configuration",
+            ));
+        }
+        if !policy.is_valid_at(now())
+            || !policy.require_nvidia_verified
+            || !policy.require_model_binding
+            || !policy.require_live_tls_binding
+        {
+            return Err(SecureClientError::attestation(
+                "strict image attestation policy required",
+            ));
+        }
+        let worker = self.client.prepare(cancel).await.map_err(|e| {
+            tracing::warn!(detail=%e,"direct image preflight failed");
+            SecureClientError::attestation("Verda image workload verification failed")
+        })?;
+        if !worker.supports("image") || !worker.supports("tools") || !worker.supports("vision") {
+            return Err(SecureClientError::capability(
+                "signed release does not support image generation tools",
+            ));
+        }
+        let mut runtime = axiom_inference::ImageRuntimePolicy::default();
+        runtime.image.default_aspect_ratio = "1:1".into();
+        runtime.image.aspect_ratios = vec!["1:1".into()];
+        runtime.image.max_pixels = 1024 * 1024;
+        runtime.image.max_references = 0;
+        runtime.image.uncensored_models = vec![MODEL.into()];
+        runtime.validate().map_err(SecureClientError::capability)?;
+        Ok(runtime)
+    }
+    async fn generate(
+        &self,
+        policy: &TrustPolicy,
+        request: axiom_inference::ImageGenerationRequest<'_>,
+        progress: Option<mpsc::Sender<axiom_inference::ImageGenerationProgress>>,
+        cancel: CancellationToken,
+    ) -> Result<crate::GeneratedImage> {
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
+        if request.chat_model_id != MODEL
+            || request.prompt.trim().is_empty()
+            || request.prompt.len() > 8192
+            || !request.references.is_empty()
+        {
+            return Err(SecureClientError::capability(
+                "This image connection supports new images without editing references",
+            ));
+        }
+        let runtime = self.image_policy(policy, &cancel).await?;
+        let size = request.dimensions.unwrap_or(
+            runtime
+                .dimensions("1:1")
+                .map_err(SecureClientError::capability)?,
+        );
+        if size.width != size.height || !(256..=1024).contains(&size.width) || size.width % 64 != 0
+        {
+            return Err(SecureClientError::capability(
+                "This image connection supports square images from 256 to 1024 pixels in steps of 64",
+            ));
+        }
+        let started_at_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+            .to_string();
+        if let Some(tx) = &progress {
+            let _ = tx
+                .send(axiom_inference::ImageGenerationProgress {
+                    stage: axiom_inference::ImageGenerationStage::Queued,
+                    percent: 0,
+                })
+                .await;
+        }
+        let updates = progress.clone();
+        let (worker,output)=self.client.execute_with(Input::Image{
+            prompt:request.prompt.into(),uncensored:runtime.uncensored(request.chat_model_id),width:size.width,height:size.height,steps:8,seed:rand_core::RngCore::next_u32(&mut rand_core::OsRng),
+        },Limits{context_tokens:8192,output_tokens:1,input_bytes:1024*1024,output_bytes:32*1024*1024,
+            image_pixels:u64::from(size.width)*u64::from(size.height),image_steps:8,input_image_pixels:0,deadline:now()+180},None,
+            move |frame| {let updates=updates.clone();async move {
+                if let Some(tx)=updates {
+                    let update=match frame.kind.as_str(){
+                        "accepted"=>Some(axiom_inference::ImageGenerationProgress{stage:axiom_inference::ImageGenerationStage::Generating,percent:1}),
+                        "image_manifest"=>Some(axiom_inference::ImageGenerationProgress{stage:axiom_inference::ImageGenerationStage::Finishing,percent:99}),_=>None};
+                    if let Some(update)=update{let _=tx.send(update).await;}
+                }Ok(())
+            }},cancel.clone()).await.map_err(|e|{tracing::warn!(detail=%e,"direct image exchange failed");if cancel.is_cancelled(){SecureClientError::cancelled()}else{SecureClientError::attestation("Verda image response incomplete or unauthenticated; inference was not replayed")}})?;
+        if !policy.is_valid_at(now()) {
+            return Err(SecureClientError::attestation(
+                "trust policy expired before image completion",
+            ));
+        }
+        let bytes = output
+            .image
+            .ok_or_else(|| SecureClientError::attestation("verified image missing"))?;
+        let data = STANDARD.encode(&bytes);
+        axiom_pool_protocol::vision::InlineImage {
+            mime_type: "image/png".into(),
+            data: data.clone(),
+            width: size.width,
+            height: size.height,
+        }
+        .validate()
+        .map_err(|_| SecureClientError::attestation("generated PNG dimensions or bytes differ"))?;
+        let key: [u8; 32] = axiom_pool_protocol::hex_bytes(&worker.identity().identity_key, 32)
+            .map_err(|_| SecureClientError::attestation("image signing key invalid"))?
+            .try_into()
+            .map_err(|_| SecureClientError::attestation("image signing key invalid"))?;
+        let receipt: axiom_pool_protocol::types::Receipt = axiom_pool_protocol::verify(
+            &output.terminal.receipt,
+            &ed25519_dalek::VerifyingKey::from_bytes(&key)
+                .map_err(|_| SecureClientError::attestation("image signing key invalid"))?,
+            axiom_pool_protocol::RECEIPT_DOMAIN,
+        )
+        .map_err(|_| SecureClientError::attestation("image receipt invalid"))?;
+        let request_id = receipt.binding.request_id.clone();
+        let model = models(&self.config)
+            .into_iter()
+            .next()
+            .ok_or_else(|| SecureClientError::configuration("image model missing"))?;
+        if let Some(timings) = &output.direct_timings {
+            tracing::info!(timings=?timings,"direct image timing");
+        }
+        Ok(crate::GeneratedImage {
+            request_id: request_id.clone(),
+            data,
+            mime_type: "image/png".into(),
+            width: size.width,
+            height: size.height,
+            sha256: axiom_pool_protocol::sha256(&bytes),
+            source_image_ids: vec![],
+            chat_model_id: Some(MODEL.into()),
+            evidence: evidence(&model, policy, &worker, self.client.public_evidence().await),
+            usage: axiom_inference::RequestUsage {
+                request_id,
+                model_id: MODEL.into(),
+                provider_id: ID.into(),
+                state: axiom_inference::InvocationState::Completed,
+                completeness: axiom_inference::UsageCompleteness::Final,
+                cost_microusd: Some("0".into()),
+                settled: true,
+                response_verified: true,
+                started_at_ms,
+                finished_at_ms: Some(
+                    SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis()
+                        .to_string(),
+                ),
+                finish_reason: Some(output.terminal.finish_reason),
+                ..Default::default()
+            },
+        })
+    }
 }
 impl sealed::Provider for DirectProvider {}
 #[async_trait]
 impl SecureProvider for DirectProvider {
+    async fn invalidate(&self, _model: &str) {
+        self.client.invalidate().await;
+    }
+    async fn image_capabilities(
+        &self,
+        policy: &TrustPolicy,
+        cancel: CancellationToken,
+    ) -> Result<axiom_inference::ImageRuntimePolicy> {
+        self.image_policy(policy, &cancel).await
+    }
+    async fn image_request(
+        &self,
+        policy: &TrustPolicy,
+        request: axiom_inference::ImageGenerationRequest<'_>,
+        progress: Option<mpsc::Sender<axiom_inference::ImageGenerationProgress>>,
+        cancel: CancellationToken,
+    ) -> Result<crate::GeneratedImage> {
+        self.generate(policy, request, progress, cancel).await
+    }
     fn id(&self) -> &'static str {
         ID
     }
@@ -161,13 +355,9 @@ impl SecureProvider for DirectProvider {
                 "strict direct attestation policy required",
             ));
         }
-        let cfg =
-            self.config.direct.clone().ok_or_else(|| {
-                SecureClientError::configuration("direct operator not configured")
-            })?;
-        let client = DirectClient::new(cfg)
-            .map_err(|_| SecureClientError::configuration("invalid direct worker pins"))?;
-        let worker = client.probe(&cancel).await.map_err(|error| {
+        let client = Arc::clone(&self.client);
+        let started = std::time::Instant::now();
+        let worker = client.prepare(&cancel).await.map_err(|error| {
             tracing::warn!(detail = %error, "direct attestation preflight failed");
             if cancel.is_cancelled() {
                 SecureClientError::cancelled()
@@ -177,6 +367,10 @@ impl SecureProvider for DirectProvider {
                 )
             }
         })?;
+        tracing::info!(
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "direct session prepared"
+        );
         let evidence = evidence(model, policy, &worker, client.public_evidence().await);
         Ok(Box::new(Session {
             client,
@@ -188,7 +382,7 @@ impl SecureProvider for DirectProvider {
     }
 }
 struct Session {
-    client: DirectClient,
+    client: Arc<DirectClient>,
     worker: VerifiedWorker,
     evidence: SecurityEvidence,
     model: ModelInfo,
@@ -228,8 +422,11 @@ impl Session {
             .map_err(|_| SecureClientError::capability("invalid direct request"))?;
         if request.model != self.model.id
             || !self.policy.is_valid_at(now())
-            || !request.tools.is_empty()
-            || request.thinking_mode == ThinkingMode::Disabled
+            || (!request.tools.is_empty() && !self.model.supports_tools)
+            || !self
+                .model
+                .supported_thinking_modes
+                .contains(&request.thinking_mode)
             || request.sampling != SamplingParameters::default()
             || request.response_format != ResponseFormat::Text
             || request.reasoning_effort != ReasoningEffort::Medium
@@ -244,12 +441,11 @@ impl Session {
         for m in request.messages {
             if (!m.images.is_empty() && !self.model.supports_images)
                 || !m.files.is_empty()
-                || !m.tool_calls.is_empty()
-                || m.tool_call_id.is_some()
-                || m.name.is_some()
+                || ((!m.tool_calls.is_empty() || m.tool_call_id.is_some())
+                    && !self.model.supports_tools)
+                || (m.name.is_some() && m.role != ChatRole::Tool)
                 || m.refusal.is_some()
                 || m.reasoning_content.is_some()
-                || m.role == ChatRole::Tool
             {
                 return Err(SecureClientError::capability(
                     "direct worker request contains unsupported attachments or message fields",
@@ -289,16 +485,33 @@ impl Session {
                 role,
                 content: m.content,
                 images,
+                tool_calls: m
+                    .tool_calls
+                    .into_iter()
+                    .map(|call| axiom_pool_protocol::tools::ToolCall {
+                        id: call.id,
+                        kind: call.kind,
+                        function: axiom_pool_protocol::tools::FunctionCall {
+                            name: call.function.name,
+                            arguments: call.function.arguments,
+                        },
+                    })
+                    .collect(),
+                tool_call_id: m.tool_call_id,
             });
         }
-        let effort = match request.reasoning_effort {
-            ReasoningEffort::Low => "low",
-            ReasoningEffort::Medium => "medium",
-            ReasoningEffort::High => "high",
-            _ => {
-                return Err(SecureClientError::capability(
-                    "unsupported direct reasoning effort",
-                ));
+        let effort = if request.thinking_mode == ThinkingMode::Disabled {
+            "none"
+        } else {
+            match request.reasoning_effort {
+                ReasoningEffort::Low => "low",
+                ReasoningEffort::Medium => "medium",
+                ReasoningEffort::High => "high",
+                _ => {
+                    return Err(SecureClientError::capability(
+                        "unsupported direct reasoning effort",
+                    ));
+                }
             }
         };
         let max_tokens = u64::from(request.max_output_tokens.unwrap_or(4096));
@@ -311,7 +524,12 @@ impl Session {
             messages,
             max_tokens,
             reasoning_effort: effort.into(),
-            tools: vec![],
+            tools: request
+                .tools
+                .into_iter()
+                .map(serde_json::to_value)
+                .collect::<std::result::Result<_, _>>()
+                .map_err(|_| SecureClientError::capability("invalid tool contract"))?,
         };
         let limits = Limits {
             context_tokens: 32768,
@@ -378,13 +596,44 @@ impl Session {
             self.client.public_evidence().await,
         );
         self.worker = worker;
+        if let Some(timings) = &output.direct_timings {
+            tracing::info!(timings=?timings,"direct request timing");
+        }
+        let tool_calls = output
+            .tool_calls
+            .into_iter()
+            .map(|call| axiom_inference::ToolCall {
+                id: call.id,
+                kind: call.kind,
+                function: axiom_inference::FunctionCall {
+                    name: call.function.name,
+                    arguments: call.function.arguments,
+                },
+            })
+            .collect::<Vec<_>>();
         let usage = output.terminal.usage;
         let finish = if output.terminal.finish_reason == "length" {
             FinishReason::Length
+        } else if output.terminal.finish_reason == "tool_calls" {
+            FinishReason::ToolCalls
         } else {
             FinishReason::Stop
         };
         if let Some(events) = events {
+            for (index, call) in tool_calls.iter().enumerate() {
+                events
+                    .send(ProviderEvent::ToolCallDelta(
+                        axiom_inference::ToolCallDelta {
+                            index,
+                            id: Some(call.id.clone()),
+                            kind: Some(call.kind.clone()),
+                            name: Some(call.function.name.clone()),
+                            arguments: Some(call.function.arguments.clone()),
+                        },
+                    ))
+                    .await
+                    .map_err(|_| SecureClientError::cancelled())?;
+            }
             for event in [
                 ProviderEvent::SecurityEvidence(Box::new(self.evidence.clone())),
                 ProviderEvent::Usage {
@@ -408,7 +657,7 @@ impl Session {
             assistant: AssistantTurn {
                 text: output.text,
                 reasoning: reasoning.clone(),
-                tool_calls: vec![],
+                tool_calls,
             },
             reasoning,
             refusal: None,
@@ -444,7 +693,7 @@ fn evidence(
             policy.version,
             worker.policy_sequence()
         ),
-        verified_at_unix_seconds: now(),
+        verified_at_unix_seconds: worker.verified_at(),
         attestation_generation: Some(worker.generation()),
         hard_expires_at_unix_seconds: Some(worker.expires_at().min(policy.expires_at_unix_seconds)),
         model_key_fingerprint: axiom_pool_protocol::sha256(
@@ -553,6 +802,32 @@ mod tests {
         assert!(!model.supports_tools && !model.supports_parallel_tools);
         assert!(model.file_mime_types.is_empty());
         assert!(provider(&config).unwrap().unwrap().supports(&model).is_ok());
+    }
+
+    #[test]
+    fn tool_capability_requires_the_installed_contract() {
+        let mut config = installed();
+        let legacy = models(&config).remove(0);
+        config.direct.as_mut().unwrap().tools = true;
+        let model = models(&config).remove(0);
+        assert!(model.supports_tools);
+        let configured = provider(&config).unwrap().unwrap();
+        assert!(configured.supports(&model).is_ok());
+        assert!(configured.supports(&legacy).is_err());
+    }
+
+    #[tokio::test]
+    async fn image_installation_flags_are_required_before_network_or_key_access() {
+        let config = installed();
+        let configured = provider(&config).unwrap().unwrap();
+        assert!(
+            configured
+                .image_capabilities(&TrustPolicy::default(), CancellationToken::new())
+                .await
+                .unwrap_err()
+                .safe_detail()
+                .contains("not enabled")
+        );
     }
 
     #[tokio::test]

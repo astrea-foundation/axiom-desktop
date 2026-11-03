@@ -54,6 +54,8 @@ pub struct PoolClient {
     maximum_charge_microusd: u64,
 }
 pub struct VerifiedOutput {
+    pub tool_calls: Vec<axiom_pool_protocol::tools::ToolCall>,
+    pub direct_timings: Option<direct::DirectTimings>,
     pub text: String,
     pub reasoning: String,
     pub image: Option<Vec<u8>>,
@@ -510,6 +512,8 @@ impl PoolClient {
         )
         .await;
         Ok(VerifiedOutput {
+            tool_calls: Vec::new(),
+            direct_timings: None,
             text,
             reasoning,
             image,

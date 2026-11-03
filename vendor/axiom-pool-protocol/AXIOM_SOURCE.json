@@ -6,12 +6,13 @@
     "Cargo.toml": "794b301e13a2d0d0934255644f771fec524f5ea201e553a2ea6b7be050363963",
     "src/authorization.rs": "7e8b9b264a1491da53c1bb02c8d844277609ce25a8fd237bb76be1e7f94f92f3",
     "src/crypto.rs": "44d631ed676328601e0cd43a9bdec6b4af6faf33d61626cdca16615f0a12e107",
-    "src/frames.rs": "2aa7b47af60311b92c4bc790d073df14609e004a4cd34a525aedd60a0f922882",
-    "src/lib.rs": "139396ea151cc5ab8b114c5520433f6e19f5ed3cb8fcdec712168a6b89b2c34f",
+    "src/frames.rs": "d8a3c233dcfcba25ec57e7c861d1523e38ae515b92ff3bf3737381e0bac51023",
+    "src/lib.rs": "ade2c0e56ba2625de7f722ba0a341400692fca6689f9d0bee72096dbb301c5e8",
     "src/pricing.rs": "26bbb1c8fad7580e53557a1c54232d5f35a8a5cd3e4646fabb94a1d94b3f1184",
     "src/strict.rs": "e1cee46660ae266bab4c4c1e96a3b5854f9601b68e09f97b9c2d368c2093e953",
     "src/test_support.rs": "4ef68b65bc77a079643aca91c9e5fccdb6abf6edb39bd244bd2227252b355cd4",
-    "src/types.rs": "da1537c0abded86763a8310756631b2f65a1d84eb00dfb0ede9c879edce1b692",
+    "src/tools.rs": "17d8e3c620a48f7694779c78cf85ecbeaf05bac3401b7d057f61b7e524ce66bf",
+    "src/types.rs": "17b0a1427b3446a07a46caaf93269c0690086b2b988c6982527868275824510c",
     "src/vision.rs": "6e6b30969a29245c46f0a01c642e1341f4118089df87746be1c75e3bca6c196f",
     "examples/generate_vectors.rs": "574e4cfdbec81f69484b922d2b3d0acf21c61ba3f7894216e302f79812c13fdb"
   }

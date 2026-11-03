@@ -218,11 +218,16 @@ pub enum Input {
     },
     Image {
         prompt: String,
+        #[serde(default, skip_serializing_if = "is_false")]
+        uncensored: bool,
         width: u32,
         height: u32,
         steps: u32,
         seed: u32,
     },
+}
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 impl Input {
     pub fn validate(&self, binding: &Binding) -> Result<()> {
@@ -242,18 +247,33 @@ impl Input {
                     "invalid chat"
                 );
                 ensure!(
-                    ["low", "medium", "high"].contains(&reasoning_effort.as_str())
-                        && tools.is_empty(),
+                    ["low", "medium", "high", "none"].contains(&reasoning_effort.as_str()),
                     "invalid reasoning/tools"
                 );
+                crate::tools::definitions(tools)?;
                 let mut image_count = 0usize;
                 let mut image_pixels = 0u64;
                 for m in messages {
                     ensure!(
-                        ["system", "developer", "user", "assistant"].contains(&m.role.as_str())
+                        ["system", "developer", "user", "assistant", "tool"]
+                            .contains(&m.role.as_str())
                             && m.content.len() <= 3 * 1024 * 1024,
                         "invalid message"
                     );
+                    ensure!(
+                        m.tool_calls.len() <= crate::tools::MAX_TOOLS
+                            && (m.tool_calls.is_empty() || m.role == "assistant")
+                            && (m.role == "tool") == m.tool_call_id.is_some(),
+                        "invalid tool message role"
+                    );
+                    if let Some(id) = &m.tool_call_id {
+                        ensure!(crate::tools::valid_id(id), "invalid tool result id");
+                    }
+                    let mut ids = std::collections::BTreeSet::new();
+                    for call in &m.tool_calls {
+                        call.validate()?;
+                        ensure!(ids.insert(&call.id), "duplicate tool call id");
+                    }
                     ensure!(
                         m.images.is_empty() || m.role == "user",
                         "images require a user message"
@@ -309,6 +329,10 @@ pub struct Message {
     pub content: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<crate::vision::InlineImage>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<crate::tools::ToolCall>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
 }
 impl Message {
     pub fn text(role: impl Into<String>, content: impl Into<String>) -> Self {
@@ -316,6 +340,8 @@ impl Message {
             role: role.into(),
             content: content.into(),
             images: Vec::new(),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
         }
     }
 }

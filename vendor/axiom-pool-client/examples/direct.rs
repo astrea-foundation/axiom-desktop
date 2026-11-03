@@ -259,11 +259,12 @@ async fn run() -> Result<()> {
         },
     };
     let input = if cfg.operation == "chat" {
-        Input::Chat{messages:vec![Message{role:"user".into(),
+        Input::Chat{messages:vec![Message { tool_calls: vec![], tool_call_id: None,role:"user".into(),
             content:cfg.prompt.unwrap_or_else(||"Write a Python function that adds two integers, and one assert. Keep the answer short.".into()), images:vec![]}],
             max_tokens:768,reasoning_effort:"medium".into(),tools:vec![]}
     } else {
         Input::Image {
+            uncensored: false,
             prompt: cfg
                 .prompt
                 .unwrap_or_else(|| "A blue square centered on a white background.".into()),

@@ -8,6 +8,7 @@ pub mod pricing;
 pub mod strict;
 #[cfg(any(test, feature = "test-fixture"))]
 pub mod test_support;
+pub mod tools;
 pub mod types;
 pub mod vision;
 

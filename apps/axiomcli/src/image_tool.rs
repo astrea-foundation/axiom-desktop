@@ -42,6 +42,14 @@ pub(crate) fn configure_runtime_definition(
     let size = runtime
         .dimensions(&p.default_aspect_ratio)
         .expect("validated runtime default");
+    if p.max_references == 0 {
+        tool.function.parameters["properties"]["reference_image_ids"]["description"] =
+            json!("Reference editing is unavailable in this installation; omit this argument.");
+    }
+    tool.function.parameters["properties"]["aspect_ratio"]["description"] = json!(format!(
+        "Choose one of the supported aspect ratios. New images default to {}.",
+        p.default_aspect_ratio
+    ));
     tool.function.description = format!(
         "Create or change one image only when the user requests it. Images work best at higher resolutions; the native client computes the largest supported dimensions. Available aspect ratios: {}. New images default to {} at {}×{}. Use up to {} distinct conversation-local reference_image_ids; refer to them as <image1>, <image2>, etc. in order and describe what to preserve. Omit aspect_ratio to retain a reference's shape. Results appear automatically; use view_image if you want to inspect the result before answering.",
         p.aspect_ratios.join(", "),

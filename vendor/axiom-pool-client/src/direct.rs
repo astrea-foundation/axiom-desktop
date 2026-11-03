@@ -22,7 +22,7 @@ use serde_json::json;
 use std::{
     net::{IpAddr, SocketAddr},
     path::PathBuf,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tokio_util::sync::CancellationToken;
 use zeroize::Zeroizing;
@@ -37,11 +37,33 @@ pub struct DirectConfig {
     pub verifier: VerifierConfig,
     #[serde(default)]
     pub vision: bool,
+    #[serde(default)]
+    pub tools: bool,
+    #[serde(default)]
+    pub image_generation: bool,
 }
 
 pub struct DirectClient {
     config: DirectConfig,
     public_evidence: tokio::sync::RwLock<Option<serde_json::Value>>,
+    connection: tokio::sync::Mutex<Option<(VerifiedWorker, reqwest::Client)>>,
+    admission: tokio::sync::Mutex<Option<(WorkerIdentity, u64)>>,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct DirectTimings {
+    pub verification_ms: u64,
+    pub admission_ms: u64,
+    pub first_frame_ms: Option<u64>,
+    pub first_reasoning_ms: Option<u64>,
+    pub first_text_ms: Option<u64>,
+    pub total_ms: u64,
+    pub proof_reused: bool,
+    pub admission_reused: bool,
+}
+
+fn elapsed_ms(start: Instant) -> u64 {
+    start.elapsed().as_millis().try_into().unwrap_or(u64::MAX)
 }
 #[derive(Serialize)]
 struct Lease<'a> {
@@ -118,13 +140,42 @@ impl DirectClient {
         Ok(Self {
             config,
             public_evidence: tokio::sync::RwLock::new(None),
+            connection: tokio::sync::Mutex::new(None),
+            admission: tokio::sync::Mutex::new(None),
         })
     }
     /// Public, independently verified hardware and signed release material.
     pub async fn public_evidence(&self) -> Option<serde_json::Value> {
         self.public_evidence.read().await.clone()
     }
-    async fn verified(
+    pub async fn invalidate(&self) {
+        *self.connection.lock().await = None;
+        *self.admission.lock().await = None;
+        *self.public_evidence.write().await = None;
+    }
+    async fn verified_until(
+        &self,
+        deadline: u64,
+        cancel: &CancellationToken,
+    ) -> Result<(VerifiedWorker, reqwest::Client, bool)> {
+        // Single-flight verification. Cache only public verified material and
+        // the CPU-pinned TLS transport, never request keys, grants or nonces.
+        let mut slot = self.connection.lock().await;
+        if let Some((worker, client)) = slot.as_ref()
+            && worker.expires_at() > deadline.saturating_add(5)
+        {
+            return Ok((worker.clone(), client.clone(), true));
+        }
+        *slot = None;
+        let (worker, client) = self.verify_fresh(cancel).await?;
+        ensure!(
+            worker.expires_at() > deadline,
+            "fresh proof cannot cover request deadline"
+        );
+        *slot = Some((worker.clone(), client.clone()));
+        Ok((worker, client, false))
+    }
+    async fn verify_fresh(
         &self,
         cancel: &CancellationToken,
     ) -> Result<(VerifiedWorker, reqwest::Client)> {
@@ -190,12 +241,69 @@ impl DirectClient {
             !cfg.vision || verified.supports("vision"),
             "vision is not authorized by the signed workload release"
         );
+        ensure!(
+            !cfg.tools || verified.supports("tools"),
+            "tools are not authorized by the signed workload release"
+        );
         *self.public_evidence.write().await = Some(public_evidence);
         Ok((verified, client))
     }
     pub async fn probe(&self, cancel: &CancellationToken) -> Result<VerifiedWorker> {
         tokio::select! { _=cancel.cancelled()=>anyhow::bail!("cancelled"),
-        result=self.verified(cancel)=>Ok(result?.0) }
+        result=self.verified_until(now()+180,cancel)=>Ok(result?.0) }
+    }
+    /// Prewarm the same bounded attestation and admission used by inference.
+    /// This performs no inference and does not create a request grant.
+    pub async fn prepare(&self, cancel: &CancellationToken) -> Result<VerifiedWorker> {
+        tokio::select! { _=cancel.cancelled()=>anyhow::bail!("cancelled"), result=async {
+            let (worker, client, _) = self.verified_until(now()+180,cancel).await?;
+            self.ensure_admitted(&worker,&client,now()+180).await?;
+            Ok(worker)
+        }=>result }
+    }
+    fn issuer(&self) -> Result<ed25519_dalek::SigningKey> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            ensure!(
+                self.config.issuer_key_file.metadata()?.permissions().mode() & 0o077 == 0,
+                "private operator issuer key permissions required"
+            );
+        }
+        #[cfg(not(unix))]
+        anyhow::bail!("direct operator mode requires protected Unix key storage");
+        let pem = Zeroizing::new(std::fs::read_to_string(&self.config.issuer_key_file)?);
+        Ok(ed25519_dalek::SigningKey::from_pkcs8_pem(&pem)?)
+    }
+    async fn ensure_admitted(
+        &self,
+        worker: &VerifiedWorker,
+        client: &reqwest::Client,
+        deadline: u64,
+    ) -> Result<bool> {
+        let mut slot = self.admission.lock().await;
+        if slot.as_ref().is_some_and(|(identity, expiry)| {
+            identity == worker.identity() && *expiry > deadline.saturating_add(5)
+        }) {
+            return Ok(true);
+        }
+        *slot = None;
+        let expiry = worker.expires_at().min(now() + 240);
+        let lease = sign(
+            &Lease {
+                protocol: PROTOCOL,
+                worker: worker.identity(),
+                expires_at: expiry,
+                max_sequences: 4,
+                token_budget: 65536,
+            },
+            &self.issuer()?,
+            "axiom-pool-admission-v1",
+        )?;
+        admit(client, &self.config.origin, &lease).await?;
+        ensure!(expiry > deadline, "admission cannot cover request deadline");
+        *slot = Some((worker.identity().clone(), expiry));
+        Ok(false)
     }
     pub async fn execute_with<F, Fut>(
         &self,
@@ -209,8 +317,13 @@ impl DirectClient {
         F: FnMut(axiom_pool_protocol::frames::Frame) -> Fut + Send,
         Fut: std::future::Future<Output = Result<()>> + Send,
     {
-        tokio::select! { _=cancel.cancelled()=>anyhow::bail!("cancelled"),
-        result=self.execute_inner(input,limits,pinned,on_frame,&cancel)=>result }
+        let result = tokio::select! { _=cancel.cancelled()=>Err(anyhow::anyhow!("cancelled")),
+        result=self.execute_inner(input,limits,pinned,on_frame,&cancel)=>result };
+        // Discard a failed transport/session, but never replay its inference.
+        if result.is_err() {
+            self.invalidate().await;
+        }
+        result
     }
     async fn execute_inner<F, Fut>(
         &self,
@@ -224,18 +337,32 @@ impl DirectClient {
         F: FnMut(axiom_pool_protocol::frames::Frame) -> Fut + Send,
         Fut: std::future::Future<Output = Result<()>> + Send,
     {
+        let started = Instant::now();
+        let mut timings = DirectTimings::default();
         limits.validate(now())?;
         ensure!(
             limits.deadline <= now() + 180,
             "direct request deadline exceeds fresh proof window"
         );
         let image_operation = matches!(&input, Input::Image { .. });
-        let (verified, client) = self.verified(cancel).await?;
+        let (verified, client, reused) = self.verified_until(limits.deadline, cancel).await?;
+        timings.verification_ms = elapsed_ms(started);
+        timings.proof_reused = reused;
         let has_images = matches!(&input, Input::Chat { messages, .. }
             if messages.iter().any(|message| !message.images.is_empty()));
         ensure!(
             !has_images || (self.config.vision && verified.supports("vision")),
             "vision requires installed capability and fresh signed workload authorization"
+        );
+        let tool_names = match &input {
+            Input::Chat { tools, .. } => axiom_pool_protocol::tools::definitions(tools)?,
+            _ => Default::default(),
+        };
+        let has_tools = matches!(&input,Input::Chat{messages,..} if messages.iter().any(|m| !m.tool_calls.is_empty() || m.tool_call_id.is_some()))
+            || !tool_names.is_empty();
+        ensure!(
+            !has_tools || (self.config.tools && verified.supports("tools")),
+            "tools require installed and signed authorization"
         );
         let expected = verified.identity().clone();
         if let Some(previous) = pinned {
@@ -246,29 +373,12 @@ impl DirectClient {
         }
         let cfg = &self.config;
         let transport = &cfg.origin;
-        #[cfg(unix)]
-        use std::os::unix::fs::PermissionsExt;
-        #[cfg(unix)]
-        ensure!(
-            cfg.issuer_key_file.metadata()?.permissions().mode() & 0o077 == 0,
-            "private operator issuer key permissions required"
-        );
-        #[cfg(not(unix))]
-        anyhow::bail!("direct operator mode requires protected Unix key storage");
-        let pem = Zeroizing::new(std::fs::read_to_string(&cfg.issuer_key_file)?);
-        let issuer = ed25519_dalek::SigningKey::from_pkcs8_pem(&pem)?;
-        let lease = sign(
-            &Lease {
-                protocol: PROTOCOL,
-                worker: &expected,
-                expires_at: verified.expires_at().min(now() + 200),
-                max_sequences: 4,
-                token_budget: 65536,
-            },
-            &issuer,
-            "axiom-pool-admission-v1",
-        )?;
-        admit(&client, transport, &lease).await?;
+        let issuer = self.issuer()?;
+        let admission_started = Instant::now();
+        timings.admission_reused = self
+            .ensure_admitted(&verified, &client, limits.deadline)
+            .await?;
+        timings.admission_ms = elapsed_ms(admission_started);
         let key = loop {
             if let Ok(k) = p256::ecdsa::SigningKey::from_bytes((&rand::random::<[u8; 32]>()).into())
             {
@@ -361,17 +471,34 @@ impl DirectClient {
         let mut reader = context.response(nonce)?;
         let mut stream = response.bytes_stream();
         let (mut text, mut reasoning, mut image) = (String::new(), String::new(), Vec::new());
+        let mut tool_calls = Vec::new();
         while let Some(bytes) = stream.next().await {
             ensure!(verified.expires_at() > now(), "proof expired during stream");
             for fragment in bytes?.chunks(axiom_pool_protocol::MAX_FRAME) {
                 for opened in reader.push(fragment)? {
                     let frame = frames.push(&opened)?;
+                    timings
+                        .first_frame_ms
+                        .get_or_insert_with(|| elapsed_ms(started));
                     match frame.kind.as_str() {
+                        "tool_call" => {
+                            tool_calls.push(strict::decode::<axiom_pool_protocol::tools::ToolCall>(
+                                &serde_json::to_vec(&frame.data)?,
+                            )?)
+                        }
                         "text_delta" => {
+                            timings
+                                .first_text_ms
+                                .get_or_insert_with(|| elapsed_ms(started));
                             text.push_str(frame.data["text"].as_str().context("text delta")?)
                         }
-                        "reasoning_delta" => reasoning
-                            .push_str(frame.data["text"].as_str().context("reasoning delta")?),
+                        "reasoning_delta" => {
+                            timings
+                                .first_reasoning_ms
+                                .get_or_insert_with(|| elapsed_ms(started));
+                            reasoning
+                                .push_str(frame.data["text"].as_str().context("reasoning delta")?);
+                        }
                         "image_chunk" => {
                             image.extend(STANDARD.decode(
                                 frame.data["bytes_base64"].as_str().context("image bytes")?,
@@ -414,10 +541,17 @@ impl DirectClient {
             );
         } else {
             ensure!(
-                !text.is_empty() || !reasoning.is_empty(),
+                !text.is_empty() || !reasoning.is_empty() || !tool_calls.is_empty(),
                 "text response missing"
             );
         }
+        ensure!(
+            tool_calls
+                .iter()
+                .all(|call| tool_names.contains(&call.function.name)),
+            "worker returned an unadvertised tool call"
+        );
+        timings.total_ms = elapsed_ms(started);
         Ok((
             verified,
             VerifiedOutput {
@@ -425,6 +559,8 @@ impl DirectClient {
                 reasoning,
                 image: if image_operation { Some(image) } else { None },
                 terminal,
+                tool_calls,
+                direct_timings: Some(timings),
                 billing: VerifiedBilling {
                     price_version: grant.price_version,
                     charge_microusd: 0,
@@ -439,6 +575,38 @@ impl DirectClient {
 mod tests {
     use super::*;
     use std::io::{Read, Write};
+
+    #[tokio::test]
+    async fn verified_cache_covers_the_entire_deadline_and_never_falls_back_after_refresh_failure()
+    {
+        let f = axiom_pool_protocol::test_support::Fixture::new();
+        let cfg:DirectConfig=serde_json::from_value(json!({"origin":"https://worker.invalid:9","connect_ip":"127.0.0.1",
+            "model_manifest":"11".repeat(32),"issuer_key_file":"/not-read-by-probe.pem","verifier":{"binary":"/not-run","binary_sha256":"22".repeat(32),"publisher_key":"33".repeat(32),"minimum_policy_sequence":1}})).unwrap();
+        let client = DirectClient::new(cfg).unwrap();
+        let expiry = now() + 240;
+        *client.connection.lock().await = Some((
+            VerifiedWorker::for_cache_test(f.worker.clone(), expiry),
+            reqwest::Client::new(),
+        ));
+        let (worker, _, reused) = client
+            .verified_until(now() + 180, &CancellationToken::new())
+            .await
+            .unwrap();
+        assert!(reused);
+        assert_eq!(worker.identity(), &f.worker);
+        assert_eq!(worker.expires_at(), expiry);
+        assert!(
+            client
+                .verified_until(expiry, &CancellationToken::new())
+                .await
+                .is_err()
+        );
+        assert!(client.connection.lock().await.is_none());
+        *client.admission.lock().await = Some((f.worker, expiry));
+        client.invalidate().await;
+        assert!(client.admission.lock().await.is_none());
+        assert!(client.public_evidence().await.is_none());
+    }
 
     fn admission_server(statuses: &'static [u16]) -> (String, std::thread::JoinHandle<()>) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();

@@ -68,6 +68,27 @@ pub trait SecureProvider: sealed::Provider + Send + Sync {
     /// Drop public verified material after a typed rotation/protocol failure.
     /// Request private keys and nonces are never cached by provider engines.
     async fn invalidate(&self, _model_id: &str) {}
+
+    async fn image_capabilities(
+        &self,
+        _policy: &TrustPolicy,
+        _cancel: CancellationToken,
+    ) -> Result<axiom_inference::ImageRuntimePolicy> {
+        Err(SecureClientError::capability(
+            "image generation unavailable for this provider",
+        ))
+    }
+    async fn image_request(
+        &self,
+        _policy: &TrustPolicy,
+        _request: axiom_inference::ImageGenerationRequest<'_>,
+        _progress: Option<mpsc::Sender<axiom_inference::ImageGenerationProgress>>,
+        _cancel: CancellationToken,
+    ) -> Result<crate::GeneratedImage> {
+        Err(SecureClientError::capability(
+            "image generation unavailable for this provider",
+        ))
+    }
 }
 
 #[derive(Default)]
@@ -76,6 +97,9 @@ pub struct ProviderRegistry {
 }
 
 impl ProviderRegistry {
+    pub(crate) fn by_id(&self, id: &str) -> Option<Arc<dyn SecureProvider>> {
+        self.providers.get(id).cloned()
+    }
     pub fn production(
         config: crate::SecureClientConfig,
         credential: Arc<ApiCredential>,
