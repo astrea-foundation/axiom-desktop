@@ -21,8 +21,9 @@ release evidence must authorize it before image dispatch. The legacy text-only
 installation defaults to `vision: false`.
 
 Images are normalized locally to static PNG/JPEG within 1024×1024. At most eight
-images may be present in the current request context, within a 16 MiB encrypted
-payload bound. The worker rechecks full image decoding, dimensions and a separate
+images may be present in the current request context. Composer attachments retain
+their 16 MiB aggregate upload bound; the sealed protocol permits up to 36 MiB
+for normalized image references and envelope overhead. The worker rechecks full image decoding, dimensions and a separate
 signed input-pixel budget before work is claimed. It forwards identical multimodal
 messages to tokenization and generation. Signed terminal usage must match the
 originating image pixel count.
@@ -36,7 +37,7 @@ not qualified. The canonical inference repository's
 preserves those results together with the signed release, permanent policy and
 base image-generation receipt.
 
-The current generation-8 / permanent policy-13 deployment passed fresh hardware
+The earlier generation-8 / permanent policy-13 deployment passed fresh hardware
 and workload verification, authenticated tool calls and image generation from
 the normal composer. With Thinking On, the model generated a 1024×1024 image
 in 9,539 ms, viewed the image and completed an authenticated final reply. A
@@ -46,13 +47,27 @@ proof predated the request. The canonical inference repository's
 [tools and latency validation record](../../axiom-inference/docs/qa/direct-verda-tools-latency-2026-11-03.json)
 preserves the signed deployment and these measurements.
 
+Generation 9 / permanent policy 14 qualified the full image path in a fresh
+account and named QA profile. A composer request without size arguments used
+the 1536×1536 square default (12,014 ms for the image operation). Five uploaded
+references produced a verified image in 30,041 ms, an edit using the generated
+image took 8,758 ms, and Regenerate preserved all five original reference IDs
+in order and the same size (21,657 ms). Thinking stayed On. The
+[reference-image qualification record](../../axiom-inference/docs/qa/direct-verda-reference-images-2026-11-03.json)
+contains the signed deployment, image hashes and checks.
+
 Tool-capable releases opt in with installed `tools: true` and
 `image_generation: true`, in addition to `vision: true`. The signed measured
 release must authorize `tools`, `image` and `vision`. The model can invoke the
 existing `generate` tool; the image result, preview, save and regeneration paths
-use the attested Direct client. New images are square, up to 1024×1024, with the
-measured eight-step image runtime. The uncensored model selects its pinned image
-LoRA. Reference-image editing and document uploads remain unavailable.
+use the attested Direct client. New images default to 1536×1536 square, with
+the measured eight-step image runtime. Other supported aspect ratios use the
+32-pixel grid within 2,359,296 total pixels. Up to five ordered references can
+come from attachments or generated images in the same conversation. Reference
+bytes stay in the encrypted request; signed usage binds their normalized pixel
+count. The adapter preserves source IDs for preview, saving and regeneration.
+The uncensored model selects its pinned image LoRA. Document uploads remain
+unavailable.
 The VM is rented by the hour; the model has no per-token price in the account
 catalog. Local account billing is independent of Verda's compute charges.
 Conversation titles use the local first-message label, keeping cosmetic
@@ -82,7 +97,7 @@ AXIOMCLI_SIDECAR=/absolute/desktop/target/debug/axiomcli
 The direct configuration is an ordinary absolute file with private Unix
 permissions. Its strict schema contains `origin`, optional `connect_ip`,
 `model_manifest`, `issuer_key_file`, `verifier`, and optional `vision`, `tools`
-and `image_generation` flags (default false). The qualified generation-8
+and `image_generation` flags (default false). The qualified generation-9
 installation enables all three. The verifier object pins an
 absolute executable, its `binary_sha256`, the publisher public key and the
 minimum policy sequence. The issuer key is a local private PKCS#8 file with
@@ -94,6 +109,13 @@ small launch environment from explicit `--state`, `--desktop` and
 `--account-state` paths. It does not inherit provider API credentials or Chutes
 preview settings. The existing local account backend must be running. Select
 **Qwen3.8 Uncensored** under Axiom Verda after launch if the profile previously selected another model.
+
+Development QA can set `AXIOM_DESKTOP_LOCAL_PROFILE_NAME` to a distinct lowercase
+slug such as `verda-images-qa`. That gives Electron a separate profile and puts
+native databases and credentials under `.axiom-local/profiles/<name>/`, keeping
+existing conversations out of the QA runtime. The default local profile keeps
+its existing paths. Named profiles require the same explicit loopback origins
+and trusted configuration; packaged applications ignore the override.
 
 ## Verification and completion
 
