@@ -191,12 +191,7 @@ impl DirectProvider {
                 "signed release does not support image generation tools",
             ));
         }
-        let mut runtime = axiom_inference::ImageRuntimePolicy::default();
-        runtime.image.default_aspect_ratio = "1:1".into();
-        runtime.image.aspect_ratios = vec!["1:1".into()];
-        runtime.image.max_pixels = 1024 * 1024;
-        runtime.image.max_references = 0;
-        runtime.image.uncensored_models = vec![MODEL.into()];
+        let runtime = direct_image_runtime();
         runtime.validate().map_err(SecureClientError::capability)?;
         Ok(runtime)
     }
@@ -211,24 +206,44 @@ impl DirectProvider {
         if request.chat_model_id != MODEL
             || request.prompt.trim().is_empty()
             || request.prompt.len() > 8192
-            || !request.references.is_empty()
+            || request.references.len() > axiom_pool_protocol::vision::MAX_REFERENCES
         {
             return Err(SecureClientError::capability(
-                "This image connection supports new images without editing references",
+                "Provide a prompt and at most five local reference images",
             ));
         }
         let runtime = self.image_policy(policy, &cancel).await?;
         let size = request.dimensions.unwrap_or(
             runtime
-                .dimensions("1:1")
+                .dimensions(&runtime.image.default_aspect_ratio)
                 .map_err(SecureClientError::capability)?,
         );
-        if size.width != size.height || !(256..=1024).contains(&size.width) || size.width % 64 != 0
+        if size.validate().is_err()
+            || u64::from(size.width) * u64::from(size.height) > runtime.image.max_pixels
         {
             return Err(SecureClientError::capability(
-                "This image connection supports square images from 256 to 1024 pixels in steps of 64",
+                "Image dimensions exceed the installed image runtime limits",
             ));
         }
+        let mut source_image_ids = Vec::new();
+        let mut identities = std::collections::BTreeSet::new();
+        let mut references = Vec::new();
+        for (id, image) in request.references {
+            if id.is_empty() || id.len() > 128 || !identities.insert(*id) {
+                return Err(SecureClientError::capability(
+                    "invalid or duplicate local image ID",
+                ));
+            }
+            references.push(
+                axiom_pool_protocol::vision::InlineImage::from_reference_upload(
+                    &image.mime_type,
+                    &image.data,
+                )
+                .map_err(|_| SecureClientError::capability("invalid image reference"))?,
+            );
+            source_image_ids.push((*id).to_owned());
+        }
+        let input_image_pixels: u64 = references.iter().map(|image| image.pixels()).sum();
         let started_at_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -244,9 +259,9 @@ impl DirectProvider {
         }
         let updates = progress.clone();
         let (worker,output)=self.client.execute_with(Input::Image{
-            prompt:request.prompt.into(),uncensored:runtime.uncensored(request.chat_model_id),width:size.width,height:size.height,steps:8,seed:rand_core::RngCore::next_u32(&mut rand_core::OsRng),
-        },Limits{context_tokens:8192,output_tokens:1,input_bytes:1024*1024,output_bytes:32*1024*1024,
-            image_pixels:u64::from(size.width)*u64::from(size.height),image_steps:8,input_image_pixels:0,deadline:now()+180},None,
+            prompt:request.prompt.into(),references,uncensored:runtime.uncensored(request.chat_model_id),width:size.width,height:size.height,steps:8,seed:rand_core::RngCore::next_u32(&mut rand_core::OsRng),
+        },Limits{context_tokens:8192,output_tokens:1,input_bytes:axiom_pool_protocol::MAX_REQUEST as u64,output_bytes:32*1024*1024,
+            image_pixels:u64::from(size.width)*u64::from(size.height),image_steps:8,input_image_pixels,deadline:now()+180},None,
             move |frame| {let updates=updates.clone();async move {
                 if let Some(tx)=updates {
                     let update=match frame.kind.as_str(){
@@ -264,14 +279,10 @@ impl DirectProvider {
             .image
             .ok_or_else(|| SecureClientError::attestation("verified image missing"))?;
         let data = STANDARD.encode(&bytes);
-        axiom_pool_protocol::vision::InlineImage {
-            mime_type: "image/png".into(),
-            data: data.clone(),
-            width: size.width,
-            height: size.height,
-        }
-        .validate()
-        .map_err(|_| SecureClientError::attestation("generated PNG dimensions or bytes differ"))?;
+        axiom_pool_protocol::vision::validate_generated_png(&bytes, size.width, size.height)
+            .map_err(|_| {
+                SecureClientError::attestation("generated PNG dimensions or bytes differ")
+            })?;
         let key: [u8; 32] = axiom_pool_protocol::hex_bytes(&worker.identity().identity_key, 32)
             .map_err(|_| SecureClientError::attestation("image signing key invalid"))?
             .try_into()
@@ -298,7 +309,7 @@ impl DirectProvider {
             width: size.width,
             height: size.height,
             sha256: axiom_pool_protocol::sha256(&bytes),
-            source_image_ids: vec![],
+            source_image_ids,
             chat_model_id: Some(MODEL.into()),
             evidence: evidence(&model, policy, &worker, worker.public_evidence()),
             usage: axiom_inference::RequestUsage {
@@ -323,6 +334,12 @@ impl DirectProvider {
             },
         })
     }
+}
+fn direct_image_runtime() -> axiom_inference::ImageRuntimePolicy {
+    let mut runtime = axiom_inference::ImageRuntimePolicy::default();
+    runtime.image.default_aspect_ratio = "1:1".into();
+    runtime.image.uncensored_models = vec![MODEL.into()];
+    runtime
 }
 impl sealed::Provider for DirectProvider {}
 #[async_trait]
@@ -846,6 +863,19 @@ mod tests {
         let configured = provider(&config).unwrap().unwrap();
         assert!(configured.supports(&model).is_ok());
         assert!(configured.supports(&legacy).is_err());
+    }
+
+    #[test]
+    fn direct_image_contract_keeps_five_references_and_full_size_square_default() {
+        let runtime = direct_image_runtime();
+        runtime.validate().unwrap();
+        assert_eq!(runtime.image.max_references, 5);
+        let size = runtime
+            .dimensions(&runtime.image.default_aspect_ratio)
+            .unwrap();
+        assert_eq!((size.width, size.height), (1536, 1536));
+        assert!(runtime.image.aspect_ratios.contains(&"2:3".into()));
+        assert!(runtime.uncensored(MODEL));
     }
 
     #[tokio::test]

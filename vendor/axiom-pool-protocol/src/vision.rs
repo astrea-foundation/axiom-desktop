@@ -10,6 +10,32 @@ pub const MAX_IMAGE_EDGE: u32 = 1024;
 pub const MAX_IMAGE_PIXELS: u64 = 1024 * 1024;
 pub const MAX_INPUT_PIXELS: u64 = MAX_IMAGES as u64 * MAX_IMAGE_PIXELS;
 pub const MAX_IMAGE_BYTES: usize = 5 * 1024 * 1024;
+pub const MAX_REFERENCES: usize = 5;
+pub const MAX_GENERATED_PIXELS: u64 = 1536 * 1536;
+
+/// Generated output has a different bound from the smaller vision copy.
+pub fn validate_generated_png(raw: &[u8], width: u32, height: u32) -> Result<()> {
+    ensure!(
+        raw.len() <= 10 * 1024 * 1024
+            && (256..=8192).contains(&width)
+            && (256..=8192).contains(&height)
+            && width.is_multiple_of(32)
+            && height.is_multiple_of(32)
+            && u64::from(width) * u64::from(height) <= MAX_GENERATED_PIXELS,
+        "generated image resource limit"
+    );
+    let source = reader(raw, 8192, 64 * 1024 * 1024)?;
+    ensure!(
+        source.format() == Some(ImageFormat::Png),
+        "generated PNG required"
+    );
+    let image = source.decode().context("generated image decoding failed")?;
+    ensure!(
+        image.width() == width && image.height() == height,
+        "generated image dimensions differ"
+    );
+    Ok(())
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -44,6 +70,20 @@ fn reader(raw: &[u8], edge: u32, allocation: u64) -> Result<ImageReader<Cursor<&
 }
 
 impl InlineImage {
+    /// References use the private image engine's normalized PNG contract.
+    pub fn from_reference_upload(mime_type: &str, data: &str) -> Result<Self> {
+        let mut image = Self::from_upload(mime_type, data)?;
+        if image.mime_type != "image/png" {
+            let raw = decoded(&image.data)?;
+            let pixels = reader(&raw, MAX_IMAGE_EDGE, 16 * 1024 * 1024)?.decode()?;
+            let mut output = Cursor::new(Vec::new());
+            pixels.write_to(&mut output, ImageFormat::Png)?;
+            image.mime_type = "image/png".into();
+            image.data = STANDARD.encode(output.into_inner());
+        }
+        image.validate()?;
+        Ok(image)
+    }
     /// Normalize a local upload before encryption. Large images are reduced to
     /// the installed vision bounds; animation uses the first decoded frame.
     pub fn from_upload(mime_type: &str, data: &str) -> Result<Self> {

@@ -20,9 +20,14 @@ export function localProfile(options: {
   if (!loopback.has(new URL(origins.api).hostname) || !loopback.has(new URL(origins.auth).hostname)) {
     throw new Error("Local profile requires loopback API and auth origins");
   }
+  const name = environment.AXIOM_DESKTOP_LOCAL_PROFILE_NAME;
+  if (name !== undefined && !/^[a-z0-9][a-z0-9-]{0,47}$/.test(name)) {
+    throw new Error("Invalid local profile name");
+  }
+  const root = name ? join(home, ".axiom-local", "profiles", name) : join(home, ".axiom-local");
   const sidecarEnv: NodeJS.ProcessEnv = {
-    XDG_CONFIG_HOME: join(home, ".axiom-local", "config"),
-    XDG_DATA_HOME: join(home, ".axiom-local", "data"),
+    XDG_CONFIG_HOME: join(root, "config"),
+    XDG_DATA_HOME: join(root, "data"),
   };
   if (environment.AXIOM_DESKTOP_LOCAL_CREDENTIALS !== undefined) {
     if (environment.AXIOM_DESKTOP_LOCAL_CREDENTIALS !== "1") throw new Error("Invalid local credential mode");
@@ -35,5 +40,5 @@ export function localProfile(options: {
       sidecarEnv[name] = path;
     }
   }
-  return { userDataName: "Axiom Local", sidecarEnv };
+  return { userDataName: name ? `Axiom Local ${name}` : "Axiom Local", sidecarEnv };
 }

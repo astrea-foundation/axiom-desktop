@@ -71,7 +71,7 @@ impl Limits {
             "invalid byte budget"
         );
         ensure!(
-            self.image_pixels <= 1024 * 1024
+            self.image_pixels <= crate::vision::MAX_GENERATED_PIXELS
                 && self.input_image_pixels <= crate::vision::MAX_INPUT_PIXELS
                 && self.image_steps <= 8
                 && self.deadline > now
@@ -218,6 +218,8 @@ pub enum Input {
     },
     Image {
         prompt: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        references: Vec<crate::vision::InlineImage>,
         #[serde(default, skip_serializing_if = "is_false")]
         uncensored: bool,
         width: u32,
@@ -296,6 +298,7 @@ impl Input {
             }
             Self::Image {
                 prompt,
+                references,
                 width,
                 height,
                 steps,
@@ -303,19 +306,28 @@ impl Input {
             } => {
                 ensure!(
                     binding.operation == Operation::Image
-                        && binding.limits.input_image_pixels == 0
+                        && references.len() <= crate::vision::MAX_REFERENCES
                         && !prompt.is_empty()
                         && prompt.len() <= 64 * 1024
                         && *width >= 256
                         && *height >= 256
-                        && width.is_multiple_of(64)
-                        && height.is_multiple_of(64)
-                        && *width <= 1024
-                        && *height <= 1024
+                        && width.is_multiple_of(32)
+                        && height.is_multiple_of(32)
+                        && *width <= 8192
+                        && *height <= 8192
                         && u64::from(*width) * u64::from(*height) <= binding.limits.image_pixels
                         && *steps > 0
                         && u64::from(*steps) <= binding.limits.image_steps,
                     "invalid image budget"
+                );
+                let mut pixels = 0u64;
+                for image in references {
+                    ensure!(image.mime_type == "image/png", "PNG reference required");
+                    pixels += image.validate()?;
+                }
+                ensure!(
+                    pixels <= binding.limits.input_image_pixels,
+                    "references exceed grant"
                 );
             }
         }
@@ -392,7 +404,6 @@ impl Usage {
             ),
             Operation::Image => ensure!(
                 self.input_tokens == 0
-                    && self.input_image_pixels == 0
                     && self.output_tokens == 0
                     && self.cached_input_tokens == 0
                     && self.reasoning_tokens == 0

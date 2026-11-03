@@ -88,7 +88,11 @@ mod tests {
     #[test]
     fn contracts_are_closed_bounded_and_unique() {
         let tool = json!({"type":"function","function":{"name":"generate","description":"draw","parameters":{"type":"object"}}});
-        assert!(definitions(&[tool.clone()]).unwrap().contains("generate"));
+        assert!(
+            definitions(std::slice::from_ref(&tool))
+                .unwrap()
+                .contains("generate")
+        );
         assert!(definitions(&[tool.clone(), tool.clone()]).is_err());
         let mut unknown = tool;
         unknown["url"] = json!("http://untrusted");

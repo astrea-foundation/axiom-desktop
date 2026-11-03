@@ -31,6 +31,18 @@ test("packaged or ordinary profiles cannot inherit local trust overrides", () =>
   assert.deepEqual(localProfile({ packaged: false, environment: { ...environment, AXIOM_DESKTOP_LOCAL_PROFILE: "0" }, home: "/test-user" }), { sidecarEnv: {} });
 });
 
+test("named QA profiles isolate native databases, credentials and Electron storage", () => {
+  const named = {...environment, AXIOM_DESKTOP_LOCAL_PROFILE_NAME:"verda-images-qa"};
+  const result = localProfile({packaged:false,environment:named,home});
+  assert.equal(result.userDataName,"Axiom Local verda-images-qa");
+  assert.equal(result.sidecarEnv.XDG_DATA_HOME,join(home,".axiom-local","profiles","verda-images-qa","data"));
+  assert.equal(result.sidecarEnv.XDG_CONFIG_HOME,join(home,".axiom-local","profiles","verda-images-qa","config"));
+  for (const name of ["", "../other", "/absolute", "mixed/parts", "a".repeat(49)]) {
+    assert.throws(()=>localProfile({packaged:false,environment:{...named,AXIOM_DESKTOP_LOCAL_PROFILE_NAME:name},home}));
+  }
+  assert.deepEqual(localProfile({packaged:true,environment:named,home}),{sidecarEnv:{}});
+});
+
 test("local credentials are an explicit override and never inherited by packaged or ordinary profiles", () => {
   const optedIn = {...environment, AXIOM_DESKTOP_LOCAL_CREDENTIALS: "1"};
   assert.equal(localProfile({packaged:false, environment:optedIn, home}).sidecarEnv.AXIOMCLI_LOCAL_DEV_CREDENTIALS, "1");

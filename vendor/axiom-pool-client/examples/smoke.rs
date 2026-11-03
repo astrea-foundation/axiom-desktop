@@ -63,6 +63,7 @@ async fn run() -> Result<()> {
     } else {
         ensure!(cfg.operation == "image", "operation");
         Input::Image {
+            references: vec![],
             uncensored: false,
             prompt: "A blue square on a white background. Synthetic test.".into(),
             width: cfg.image_size.unwrap_or(512),

@@ -264,6 +264,7 @@ async fn run() -> Result<()> {
             max_tokens:768,reasoning_effort:"medium".into(),tools:vec![]}
     } else {
         Input::Image {
+            references: vec![],
             uncensored: false,
             prompt: cfg
                 .prompt

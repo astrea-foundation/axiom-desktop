@@ -399,7 +399,8 @@ impl DirectClient {
         timings.verification_ms = elapsed_ms(started);
         timings.proof_reused = reused;
         let has_images = matches!(&input, Input::Chat { messages, .. }
-            if messages.iter().any(|message| !message.images.is_empty()));
+            if messages.iter().any(|message| !message.images.is_empty()))
+            || matches!(&input, Input::Image { references, .. } if !references.is_empty());
         ensure!(
             !has_images || (self.config.vision && verified.supports("vision")),
             "vision requires installed capability and fresh signed workload authorization"
@@ -471,7 +472,7 @@ impl DirectClient {
                 .flat_map(|message| &message.images)
                 .map(|image| image.pixels())
                 .sum(),
-            Input::Image { .. } => 0,
+            Input::Image { references, .. } => references.iter().map(|image| image.pixels()).sum(),
         };
         let grant_doc = sign(&grant, &issuer, GRANT_DOMAIN)?;
         let token = Zeroizing::new(serde_json::to_string(&grant_doc)?);
