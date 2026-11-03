@@ -27,6 +27,15 @@ signed input-pixel budget before work is claimed. It forwards identical multimod
 messages to tokenization and generation. Signed terminal usage must match the
 originating image pixel count.
 
+The live generation-7 / policy-12 connection passed fresh CPU/GPU/workload
+verification and two authenticated app turns with an attached image. The second
+turn retained the image and correctly counted three rectangles with their colors
+in order. Both six-digit OCR canaries misread a digit, so exact OCR accuracy is
+not qualified. The canonical inference repository's
+[vision validation record](../../axiom-inference/docs/qa/direct-verda-vision-2026-11-03.json)
+preserves those results together with the signed release, permanent policy and
+base image-generation receipt.
+
 Tools, document uploads, image edits and Desktop image generation remain
 unavailable in this connection. The separately qualified operator client in
 the inference repository supports base image generation. Desktop image calls
