@@ -56,6 +56,10 @@ in order and the same size (21,657 ms). Thinking stayed On. The
 [reference-image qualification record](../../axiom-inference/docs/qa/direct-verda-reference-images-2026-11-03.json)
 contains the signed deployment, image hashes and checks.
 
+The final client check supplied five attachments with no size/aspect arguments
+and produced another authenticated 1536×1536 image (21,768 ms). A smaller
+reference therefore does not silently reduce the default generation size.
+
 Tool-capable releases opt in with installed `tools: true` and
 `image_generation: true`, in addition to `vision: true`. The signed measured
 release must authorize `tools`, `image` and `vision`. The model can invoke the
