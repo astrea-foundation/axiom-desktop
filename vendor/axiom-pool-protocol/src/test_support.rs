@@ -13,6 +13,22 @@ pub struct Fixture {
     pub worker: WorkerIdentity,
 }
 impl Fixture {
+    pub fn image(&self) -> crate::vision::InlineImage {
+        use base64::Engine as _;
+        let mut out = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            16,
+            16,
+            image::Rgb([0, 0, 255]),
+        ))
+        .write_to(&mut out, image::ImageFormat::Png)
+        .unwrap();
+        crate::vision::InlineImage::from_upload(
+            "image/png",
+            &base64::engine::general_purpose::STANDARD.encode(out.into_inner()),
+        )
+        .unwrap()
+    }
     pub fn new() -> Self {
         let issuer = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
         let worker_key = ed25519_dalek::SigningKey::from_bytes(&[8; 32]);
@@ -60,6 +76,7 @@ impl Fixture {
                     output_bytes: 1024 * 1024,
                     image_pixels: 1024 * 1024,
                     image_steps: 8,
+                    input_image_pixels: 0,
                     deadline: now + 120,
                 },
             },
@@ -74,18 +91,28 @@ impl Fixture {
         text: &str,
         now: u64,
     ) -> (SealedRequest, RequestContext, String) {
-        let binding = serde_json::to_string(&grant.binding).unwrap();
-        let payload = serde_json::to_string(&Payload {
-            binding: binding.clone(),
-            input: Input::Chat {
-                messages: vec![Message {
-                    role: "user".into(),
-                    content: text.into(),
-                }],
+        self.request_input(
+            grant,
+            Input::Chat {
+                messages: vec![Message::text("user", text)],
                 max_tokens: 128,
                 reasoning_effort: "medium".into(),
                 tools: vec![],
             },
+            now,
+        )
+    }
+
+    pub fn request_input(
+        &self,
+        grant: &Grant,
+        input: Input,
+        now: u64,
+    ) -> (SealedRequest, RequestContext, String) {
+        let binding = serde_json::to_string(&grant.binding).unwrap();
+        let payload = serde_json::to_string(&Payload {
+            binding: binding.clone(),
+            input,
         })
         .unwrap();
         let token =

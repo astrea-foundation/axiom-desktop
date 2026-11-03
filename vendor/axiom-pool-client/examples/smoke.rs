@@ -51,6 +51,7 @@ async fn run() -> Result<()> {
         Input::Chat {
             messages: vec![Message {
                 role: "user".into(),
+                images: vec![],
                 content: "Write a Python function that adds two integers. Synthetic test.".into(),
             }],
             max_tokens: 256,
@@ -77,6 +78,7 @@ async fn run() -> Result<()> {
         output_bytes: 16 * 1024 * 1024,
         image_pixels: 1024 * 1024,
         image_steps: 8,
+        input_image_pixels: 0,
         deadline: now + 600,
     };
     let prepared = client

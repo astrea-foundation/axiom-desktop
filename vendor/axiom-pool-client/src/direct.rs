@@ -35,6 +35,8 @@ pub struct DirectConfig {
     pub model_manifest: String,
     pub issuer_key_file: PathBuf,
     pub verifier: VerifierConfig,
+    #[serde(default)]
+    pub vision: bool,
 }
 
 pub struct DirectClient {
@@ -184,6 +186,10 @@ impl DirectClient {
                 cancel,
             )
             .await?;
+        ensure!(
+            !cfg.vision || verified.supports("vision"),
+            "vision is not authorized by the signed workload release"
+        );
         *self.public_evidence.write().await = Some(public_evidence);
         Ok((verified, client))
     }
@@ -225,6 +231,12 @@ impl DirectClient {
         );
         let image_operation = matches!(&input, Input::Image { .. });
         let (verified, client) = self.verified(cancel).await?;
+        let has_images = matches!(&input, Input::Chat { messages, .. }
+            if messages.iter().any(|message| !message.images.is_empty()));
+        ensure!(
+            !has_images || (self.config.vision && verified.supports("vision")),
+            "vision requires installed capability and fresh signed workload authorization"
+        );
         let expected = verified.identity().clone();
         if let Some(previous) = pinned {
             ensure!(
@@ -293,6 +305,14 @@ impl DirectClient {
         };
         grant.validate(&cfg.origin, &expected, now(), false)?;
         input.validate(&binding)?;
+        let expected_input_pixels: u64 = match &input {
+            Input::Chat { messages, .. } => messages
+                .iter()
+                .flat_map(|message| &message.images)
+                .map(|image| image.pixels())
+                .sum(),
+            Input::Image { .. } => 0,
+        };
         let grant_doc = sign(&grant, &issuer, GRANT_DOMAIN)?;
         let token = Zeroizing::new(serde_json::to_string(&grant_doc)?);
         let exact_binding = serde_json::to_string(&binding)?;
@@ -365,6 +385,10 @@ impl DirectClient {
         }
         reader.finish()?;
         let terminal = frames.finish()?;
+        ensure!(
+            terminal.usage.input_image_pixels == expected_input_pixels,
+            "authenticated input image accounting differs from the originating request"
+        );
         ensure!(
             terminal.success && verified.expires_at() > now(),
             "authenticated inference did not complete"

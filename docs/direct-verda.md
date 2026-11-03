@@ -14,8 +14,21 @@ model label retains “Uncensored” so the checkpoint is identifiable in the co
 This development connection supports streaming text conversations with the
 measured worker's medium reasoning template, a 32,768-token context and at most
 4,096 output tokens. Native requests omit tools when the offering does not
-support them. Vision, attachments, tools, image edits and Desktop image generation
-are unavailable in this connection. The separately qualified operator client in
+support them. Image understanding is an explicit installed capability: set
+`vision: true` only for a release whose signed capabilities include `vision` and
+install its digest-pinned verifier. Both native configuration and fresh verified
+release evidence must authorize it before image dispatch. The legacy text-only
+installation defaults to `vision: false`.
+
+Images are normalized locally to static PNG/JPEG within 1024×1024. At most eight
+images may be present in the current request context, within a 16 MiB encrypted
+payload bound. The worker rechecks full image decoding, dimensions and a separate
+signed input-pixel budget before work is claimed. It forwards identical multimodal
+messages to tokenization and generation. Signed terminal usage must match the
+originating image pixel count.
+
+Tools, document uploads, image edits and Desktop image generation remain
+unavailable in this connection. The separately qualified operator client in
 the inference repository supports base image generation. Desktop image calls
 fail with an explicit capability error rather than selecting another provider.
 The VM is rented by the hour; the model has no per-token price in the account
@@ -46,7 +59,8 @@ AXIOMCLI_SIDECAR=/absolute/desktop/target/debug/axiomcli
 
 The direct configuration is an ordinary absolute file with private Unix
 permissions. Its strict schema contains `origin`, optional `connect_ip`,
-`model_manifest`, `issuer_key_file`, and `verifier`. The verifier object pins an
+`model_manifest`, `issuer_key_file`, `verifier`, and optional `vision` (default
+false). The verifier object pins an
 absolute executable, its `binary_sha256`, the publisher public key and the
 minimum policy sequence. The issuer key is a local private PKCS#8 file with
 private Unix permissions. Keep both files outside Git and application resources.

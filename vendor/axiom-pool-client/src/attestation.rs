@@ -78,6 +78,7 @@ pub struct VerifiedWorker {
     expires_at: u64,
     policy_sequence: u64,
     generation: u64,
+    capabilities: Vec<String>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -86,6 +87,8 @@ struct Appraisal {
     expires_at: u64,
     policy_sequence: u64,
     generation: u64,
+    #[serde(default)]
+    capabilities: Vec<String>,
 }
 impl VerifiedWorker {
     pub fn identity(&self) -> &WorkerIdentity {
@@ -99,6 +102,12 @@ impl VerifiedWorker {
     }
     pub fn generation(&self) -> u64 {
         self.generation
+    }
+    pub fn supports(&self, capability: &str) -> bool {
+        self.capabilities.iter().any(|value| value == capability)
+    }
+    pub fn capabilities(&self) -> &[String] {
+        &self.capabilities
     }
 }
 pub async fn bounded_json(mut response: reqwest::Response, limit: usize) -> Result<Value> {
@@ -170,6 +179,7 @@ impl VerifierConfig {
                 expires_at: statement.expires_at,
                 policy_sequence: 0,
                 generation: 0,
+                capabilities: Vec::new(),
             });
         }
         expected.validate(false)?;
@@ -285,6 +295,7 @@ impl VerifierConfig {
             expires_at: appraisal.expires_at,
             policy_sequence: appraisal.policy_sequence,
             generation: appraisal.generation,
+            capabilities: appraisal.capabilities,
         })
     }
 }

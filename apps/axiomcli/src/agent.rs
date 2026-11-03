@@ -3528,7 +3528,7 @@ fn model_context_tokens(model: &axiom_inference::ModelInfo, messages: &[ChatMess
     if model.supports_images
         && !matches!(
             model.id.as_str(),
-            "chutes:qwen3.8-27b" | "chutes-preview:qwen3.8-27b"
+            "chutes:qwen3.8-27b" | "chutes-preview:qwen3.8-27b" | "direct:qwen3.8-27b"
         )
     {
         tokens
@@ -3938,30 +3938,36 @@ mod engine_tests {
     }
 
     #[test]
-    fn ten_chutes_vision_inputs_leave_the_full_output_budget() {
-        let model = axiom_inference::ModelInfo {
-            id: "chutes:qwen3.8-27b".into(),
-            provider_id: "chutes".into(),
-            supports_images: true,
-            context_window_tokens: 32768,
-            max_output_tokens: 4096,
-            ..Default::default()
-        };
-        let mut message =
-            ChatMessage::text(ChatRole::User, "Read the letters in these ten images.");
-        message.images = vec![axiom_inference::ImageContent {
+    fn qwen_vision_inputs_leave_the_full_output_budget() {
+        for (id, provider, count) in [
+            ("chutes:qwen3.8-27b", "chutes", 10),
+            ("chutes-preview:qwen3.8-27b", "chutes-preview", 10),
+            ("direct:qwen3.8-27b", "axiom-direct", 8),
+        ] {
+            let model = axiom_inference::ModelInfo {
+                id: id.into(),
+                provider_id: provider.into(),
+                supports_images: true,
+                context_window_tokens: 32768,
+                max_output_tokens: 4096,
+                ..Default::default()
+            };
+            let mut message =
+                ChatMessage::text(ChatRole::User, "Read the letters in these ten images.");
+            message.images = vec![axiom_inference::ImageContent {
             mime_type: "image/png".into(),
             data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC".into(),
-        }; 10];
-        let request = inference_request_for_model(
-            &model,
-            model.id.clone(),
-            vec![message],
-            vec![],
-            ThinkingLevel::Enabled,
-        );
-        assert_eq!(request.max_output_tokens, Some(4096));
-        assert!(model_context_tokens(&model, &request.messages) < 11000);
+        }; count];
+            let request = inference_request_for_model(
+                &model,
+                model.id.clone(),
+                vec![message],
+                vec![],
+                ThinkingLevel::Enabled,
+            );
+            assert_eq!(request.max_output_tokens, Some(4096));
+            assert!(model_context_tokens(&model, &request.messages) < 11000);
+        }
     }
 
     #[test]

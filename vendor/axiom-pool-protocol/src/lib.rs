@@ -9,6 +9,7 @@ pub mod strict;
 #[cfg(any(test, feature = "test-fixture"))]
 pub mod test_support;
 pub mod types;
+pub mod vision;
 
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};

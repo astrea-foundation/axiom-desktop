@@ -53,6 +53,8 @@ pub struct Limits {
     pub output_bytes: u64,
     pub image_pixels: u64,
     pub image_steps: u64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub input_image_pixels: u64,
     pub deadline: u64,
 }
 impl Limits {
@@ -70,6 +72,7 @@ impl Limits {
         );
         ensure!(
             self.image_pixels <= 1024 * 1024
+                && self.input_image_pixels <= crate::vision::MAX_INPUT_PIXELS
                 && self.image_steps <= 8
                 && self.deadline > now
                 && self.deadline <= now.saturating_add(600),
@@ -243,13 +246,33 @@ impl Input {
                         && tools.is_empty(),
                     "invalid reasoning/tools"
                 );
+                let mut image_count = 0usize;
+                let mut image_pixels = 0u64;
                 for m in messages {
                     ensure!(
                         ["system", "developer", "user", "assistant"].contains(&m.role.as_str())
                             && m.content.len() <= 3 * 1024 * 1024,
                         "invalid message"
                     );
+                    ensure!(
+                        m.images.is_empty() || m.role == "user",
+                        "images require a user message"
+                    );
+                    for image in &m.images {
+                        image_count += 1;
+                        ensure!(
+                            image_count <= crate::vision::MAX_IMAGES,
+                            "input image count limit"
+                        );
+                        image_pixels = image_pixels
+                            .checked_add(image.validate()?)
+                            .ok_or_else(|| anyhow::anyhow!("input image pixel overflow"))?;
+                    }
                 }
+                ensure!(
+                    image_pixels <= binding.limits.input_image_pixels,
+                    "input images exceed grant"
+                );
             }
             Self::Image {
                 prompt,
@@ -260,6 +283,7 @@ impl Input {
             } => {
                 ensure!(
                     binding.operation == Operation::Image
+                        && binding.limits.input_image_pixels == 0
                         && !prompt.is_empty()
                         && prompt.len() <= 64 * 1024
                         && *width >= 256
@@ -283,6 +307,17 @@ impl Input {
 pub struct Message {
     pub role: String,
     pub content: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<crate::vision::InlineImage>,
+}
+impl Message {
+    pub fn text(role: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            role: role.into(),
+            content: content.into(),
+            images: Vec::new(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -292,6 +327,8 @@ pub struct Usage {
     pub output_tokens: u64,
     pub image_pixels: u64,
     pub image_steps: u64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub input_image_pixels: u64,
     #[serde(default, skip_serializing_if = "is_zero")]
     pub cached_input_tokens: u64,
     #[serde(default, skip_serializing_if = "is_zero")]
@@ -318,6 +355,10 @@ impl Usage {
                 && self.image_steps <= binding.limits.image_steps,
             "usage exceeds grant"
         );
+        ensure!(
+            self.input_image_pixels <= binding.limits.input_image_pixels,
+            "input image usage exceeds grant"
+        );
         match binding.operation {
             Operation::Chat => ensure!(
                 self.image_pixels == 0 && self.image_steps == 0 && self.input_tokens > 0,
@@ -325,6 +366,7 @@ impl Usage {
             ),
             Operation::Image => ensure!(
                 self.input_tokens == 0
+                    && self.input_image_pixels == 0
                     && self.output_tokens == 0
                     && self.cached_input_tokens == 0
                     && self.reasoning_tokens == 0

@@ -203,7 +203,8 @@ async fn run() -> Result<()> {
             "{}",
             json!({"hardware_verified":true,"workload_binding_verified":true,
             "evidence_profile":expected.evidence_profile,"worker":expected,"expires_at":verified.expires_at(),
-            "policy_sequence":verified.policy_sequence()})
+            "policy_sequence":verified.policy_sequence(),"generation":verified.generation(),
+            "capabilities":verified.capabilities()})
         );
         return Ok(());
     }
@@ -253,12 +254,13 @@ async fn run() -> Result<()> {
             output_bytes: 32 * 1024 * 1024,
             image_pixels: 1024 * 1024,
             image_steps: 8,
+            input_image_pixels: 0,
             deadline: now() + 180,
         },
     };
     let input = if cfg.operation == "chat" {
         Input::Chat{messages:vec![Message{role:"user".into(),
-            content:cfg.prompt.unwrap_or_else(||"Write a Python function that adds two integers, and one assert. Keep the answer short.".into())}],
+            content:cfg.prompt.unwrap_or_else(||"Write a Python function that adds two integers, and one assert. Keep the answer short.".into()), images:vec![]}],
             max_tokens:768,reasoning_effort:"medium".into(),tools:vec![]}
     } else {
         Input::Image {

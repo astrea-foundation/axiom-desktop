@@ -63,11 +63,11 @@ pub(crate) fn installed_config(relay: &url::Url) -> Result<Option<DirectConfig>>
     Ok(Some(cfg))
 }
 
-fn capabilities(model: &mut ModelInfo) {
+fn capabilities(model: &mut ModelInfo, config: &SecureClientConfig) {
     model.supports_streaming = true;
     model.supports_tools = false;
     model.supports_parallel_tools = false;
-    model.supports_images = false;
+    model.supports_images = config.direct.as_ref().is_some_and(|direct| direct.vision);
     model.file_mime_types.clear();
     model.reasoning_replay = false;
     // This measured worker tokenizes with its installed medium template.
@@ -98,7 +98,7 @@ pub(crate) fn models(config: &SecureClientConfig) -> Vec<ModelInfo> {
         output_price_microusd_per_million_tokens: None,
         ..ModelInfo::default()
     };
-    capabilities(&mut model);
+    capabilities(&mut model, config);
     vec![model]
 }
 
@@ -130,6 +130,8 @@ impl SecureProvider for DirectProvider {
                 && m.e2ee_encryption_version == model.e2ee_encryption_version
                 && m.context_window_tokens == model.context_window_tokens
                 && m.max_output_tokens == model.max_output_tokens
+                && m.supports_images == model.supports_images
+                && m.supports_tools == model.supports_tools
         }) {
             return Err(SecureClientError::capability(
                 "unconfigured direct worker contract",
@@ -141,7 +143,7 @@ impl SecureProvider for DirectProvider {
         protocol == axiom_pool_protocol::PROTOCOL && version == 1 && profile == PROFILE
     }
     fn populate_capabilities(&self, model: &mut ModelInfo) {
-        capabilities(model);
+        capabilities(model, &self.config);
     }
     async fn establish(
         &self,
@@ -237,8 +239,10 @@ impl Session {
             ));
         }
         let mut messages = Vec::new();
+        let mut input_image_pixels = 0u64;
+        let mut input_image_count = 0usize;
         for m in request.messages {
-            if !m.images.is_empty()
+            if (!m.images.is_empty() && !self.model.supports_images)
                 || !m.files.is_empty()
                 || !m.tool_calls.is_empty()
                 || m.tool_call_id.is_some()
@@ -248,16 +252,43 @@ impl Session {
                 || m.role == ChatRole::Tool
             {
                 return Err(SecureClientError::capability(
-                    "direct worker currently accepts text conversation messages",
+                    "direct worker request contains unsupported attachments or message fields",
                 ));
             }
             let role = serde_json::to_value(m.role)
                 .ok()
                 .and_then(|v| v.as_str().map(str::to_owned))
                 .ok_or_else(|| SecureClientError::capability("invalid direct message role"))?;
+            let images = m
+                .images
+                .into_iter()
+                .map(|image| {
+                    axiom_pool_protocol::vision::InlineImage::from_upload(
+                        &image.mime_type,
+                        &image.data,
+                    )
+                    .map_err(|_| {
+                        SecureClientError::capability(
+                            "Image is invalid or exceeds the installed vision limits",
+                        )
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            input_image_count += images.len();
+            if input_image_count > axiom_pool_protocol::vision::MAX_IMAGES {
+                return Err(SecureClientError::capability(
+                    "This connection supports at most eight images in the current context",
+                ));
+            }
+            for image in &images {
+                input_image_pixels = input_image_pixels
+                    .checked_add(image.pixels())
+                    .ok_or_else(|| SecureClientError::capability("Image pixel budget exceeded"))?;
+            }
             messages.push(Message {
                 role,
                 content: m.content,
+                images,
             });
         }
         let effort = match request.reasoning_effort {
@@ -285,10 +316,11 @@ impl Session {
         let limits = Limits {
             context_tokens: 32768,
             output_tokens: max_tokens,
-            input_bytes: 3 * 1024 * 1024,
+            input_bytes: axiom_pool_protocol::MAX_REQUEST as u64,
             output_bytes: 32 * 1024 * 1024,
             image_pixels: 0,
             image_steps: 0,
+            input_image_pixels,
             deadline: now() + 180,
         };
         let subscribers = events.clone();
@@ -483,6 +515,10 @@ mod tests {
         assert!(model.supports_streaming && !model.supports_tools && !model.supports_images);
         for altered in [
             ModelInfo {
+                supports_images: true,
+                ..model.clone()
+            },
+            ModelInfo {
                 provider_base_url: "https://attacker.example".into(),
                 ..model.clone()
             },
@@ -505,6 +541,18 @@ mod tests {
         ] {
             assert!(provider.supports(&altered).is_err());
         }
+    }
+
+    #[test]
+    fn vision_requires_local_installation_and_never_advertises_tools_or_files() {
+        let mut config = installed();
+        assert!(!models(&config)[0].supports_images);
+        config.direct.as_mut().unwrap().vision = true;
+        let model = models(&config).remove(0);
+        assert!(model.supports_images);
+        assert!(!model.supports_tools && !model.supports_parallel_tools);
+        assert!(model.file_mime_types.is_empty());
+        assert!(provider(&config).unwrap().unwrap().supports(&model).is_ok());
     }
 
     #[tokio::test]

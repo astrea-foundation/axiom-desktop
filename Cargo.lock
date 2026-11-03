@@ -572,6 +572,7 @@ dependencies = [
  "ed25519-dalek 2.2.0",
  "hex",
  "hpke",
+ "image",
  "p256 0.14.0",
  "pkcs8 0.10.2",
  "rand 0.9.5",
