@@ -29,10 +29,10 @@ fn exchange_error(error: &anyhow::Error, cancelled: bool, image: bool) -> Secure
     if let Some(capacity) = error.downcast_ref::<axiom_pool_client::direct::CapacityUnavailable>() {
         let detail = match capacity {
             axiom_pool_client::direct::CapacityUnavailable::Preparation => {
-                "Verda is busy preparing a secure connection. Your request was not submitted; try again shortly."
+                "AstreaAI is busy preparing a secure connection. Your request was not submitted; try again shortly."
             }
             axiom_pool_client::direct::CapacityUnavailable::Exchange => {
-                "Verda is overloaded. Your request did not complete; it was not replayed."
+                "AstreaAI is overloaded. Your request did not complete; it was not replayed."
             }
         };
         return SecureClientError::with_code(
@@ -49,15 +49,15 @@ fn exchange_error(error: &anyhow::Error, cancelled: bool, image: bool) -> Secure
         return SecureClientError::with_code(
             axiom_inference::ProviderFailureKind::RateLimited,
             crate::error::SecureErrorCode::RateLimited,
-            "Verda is busy. Your request was not started; try again shortly.",
+            "AstreaAI is busy. Your request was not started; try again shortly.",
             false,
         )
         .with_retry_at(Some((now() + u64::from(refusal.retry_after_secs)) as i64));
     }
     SecureClientError::attestation(if image {
-        "Verda image response incomplete or unauthenticated; inference was not replayed"
+        "AstreaAI image response incomplete or unauthenticated; inference was not replayed"
     } else {
-        "Verda response incomplete or unauthenticated; inference was not replayed"
+        "AstreaAI response incomplete or unauthenticated; inference was not replayed"
     })
 }
 
@@ -124,10 +124,10 @@ pub(crate) fn models(config: &SecureClientConfig) -> Vec<ModelInfo> {
     };
     let mut model = ModelInfo {
         id: MODEL.into(),
-        label: "Qwen3.8 Uncensored · Verda".into(),
+        label: "Qwen3.8 Uncensored · AstreaAI".into(),
         short_label: "Qwen3.8 Uncensored".into(),
         provider_id: ID.into(),
-        provider_label: "Axiom Verda".into(),
+        provider_label: "AstreaAI".into(),
         upstream_model: direct.model_manifest.clone(),
         provider_base_url: direct.origin.clone(),
         e2ee_protocol: axiom_pool_protocol::PROTOCOL.into(),
@@ -230,7 +230,7 @@ impl DirectProvider {
             {
                 exchange_error(&e, false, true)
             } else {
-                SecureClientError::attestation("Verda image workload verification failed")
+                SecureClientError::attestation("AstreaAI image workload verification failed")
             }
         })?;
         self.keep_warm();
@@ -515,7 +515,7 @@ impl SecureProvider for DirectProvider {
                 exchange_error(&error, false, false)
             } else {
                 SecureClientError::attestation(
-                    "Verda workload attestation failed; no message was sent",
+                    "AstreaAI workload attestation failed; no message was sent",
                 )
             }
         })?;

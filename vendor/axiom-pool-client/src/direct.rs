@@ -75,7 +75,7 @@ pub enum CapacityUnavailable {
 }
 impl std::fmt::Display for CapacityUnavailable {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Verda capacity unavailable")
+        write!(f, "AstreaAI capacity unavailable")
     }
 }
 impl std::error::Error for CapacityUnavailable {}

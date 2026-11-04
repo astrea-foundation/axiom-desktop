@@ -5,7 +5,7 @@
   "files": {
     "Cargo.toml": "c415435be296a3dd5f5adb4d6a58fabe038974d9881d8166f385d40e2aa32a77",
     "src/attestation.rs": "0b7bca789cfbced3618e81915379108bf3081782fb54707e40caae53c7758ce9",
-    "src/direct.rs": "7f43b5116175560798a55e9354625588f2921a59e2f92e84b12854d749f5e65b",
+    "src/direct.rs": "a692c515a38a5206524b89cd19b071f07c72722c194d5392cabe51b343e07beb",
     "src/lib.rs": "92d05b0297073afc32a3c6ca606c09018d925ced1f393e091bc62b128246bf02",
     "examples/direct-latency.rs": "9aa5da933aac3d70d8e5b9cc56cd0857e25cf21d841940228641f3e83fa188eb",
     "examples/direct-vision.rs": "d93beb955622b5239c88a75651e5add6d745051ea9c73a5d3dc89ad69d039afd",

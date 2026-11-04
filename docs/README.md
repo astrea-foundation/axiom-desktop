@@ -30,7 +30,7 @@ must be recorded against the actual source revision and signed installers.
 | [Security](threat-model.md) | Provider verification, tool boundaries and trust policy |
 | [Provider discovery](provider-catalogs.md) | Catalogs and encrypted attachments |
 | [Confidential pool](inference-pool.md) | Native encryption, local profile and the Chutes admission gate |
-| [Direct Verda connection](direct-verda.md) | Operator configuration, measured SNP/NVIDIA worker and local Desktop launch |
+| [AstreaAI connection](direct-verda.md) | Operator configuration, measured SNP/NVIDIA worker and local Desktop launch |
 | [NEAR v3](protocols/near-v3.md) | Worker sessions, encryption and receipts |
 | [Tinfoil EHBP](protocols/tinfoil-ehbp-v1.md) | Router verification and authenticated completion |
 | [Development](development.md) | Build commands, checks and visual assets |

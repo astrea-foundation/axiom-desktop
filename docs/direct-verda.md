@@ -1,7 +1,7 @@
-# Direct Verda development connection
+# AstreaAI development connection
 
 The explicit operator connection registers `direct:qwen3.8-27b` as **Qwen3.8
-Uncensored**, under the **Axiom Verda** provider. Account sign-in and local storage use the isolated HTTPS loopback
+Uncensored**, under the **AstreaAI** provider. Account sign-in and local storage use the isolated HTTPS loopback
 profile. Inference connects directly to the independently verified confidential
 worker; the account service never receives conversation plaintext or the
 operator issuer key.
@@ -74,10 +74,37 @@ count. The adapter preserves source IDs for preview, saving and regeneration.
 Regenerate retains the original request's chosen dimensions and reference order.
 The uncensored model selects its pinned image LoRA. Document uploads remain
 unavailable.
-The VM is rented by the hour; the model has no per-token price in the account
-catalog. Local account billing is independent of Verda's compute charges.
+The model has no customer tariff in the account catalog. The current connection
+uses free operator grants; the operator pays the rented machine's compute bill.
 Conversation titles use the local first-message label, keeping cosmetic
 background inference off this worker.
+
+## Billing readiness
+
+The worker signs usage and binds it to the request, attempt, reservation, client
+proof key and exact worker. Receipts include input/output tokens, cached-input
+and reasoning subsets, output image pixels and steps, and input-image pixels.
+Cached tokens are included in input tokens; reasoning tokens are included in
+output tokens. Do not bill either subset twice.
+
+This operator connection is not ready for customer charging. The Direct client
+creates random account/session identifiers and a local issuer-signed
+`pool-free-preview-v1` grant with no price snapshot and a zero maximum charge.
+The worker accepts only these free grants. An image result's `settled: true` and
+zero cost describe completion of that free request, not a debit from the signed-in
+customer's balance. Chat currently forwards aggregate token counts instead of a
+complete `RequestUsage` accounting event. The common usage record also has no
+image-pixel/step fields, so the signed receipt remains the authoritative image
+measurement.
+
+Before enabling paid AstreaAI traffic, connect authenticated account/session
+reservations and service-owned grant issuance to a registered model and immutable
+price snapshot, then persist and reconcile verified receipts through the backend's
+idempotent balance ledger. The backend pool schema must also accept the current
+`input_image_pixels` field, 36 MiB request bound and 2,359,296-pixel image output;
+its existing 16 MiB / 1,048,576-pixel limits describe the older protocol. Qualify
+reservation release, cancellation, duplicate receipts and recovery before a
+customer can be charged. These remain [rollout gates](validation.md#astreaai-rollout-gates).
 
 ## Install and launch
 
@@ -114,7 +141,7 @@ The canonical inference repository's `scripts/direct_desktop.py` constructs a
 small launch environment from explicit `--state`, `--desktop` and
 `--account-state` paths. It does not inherit provider API credentials or Chutes
 preview settings. The existing local account backend must be running. Select
-**Qwen3.8 Uncensored** under Axiom Verda after launch if the profile previously selected another model.
+**Qwen3.8 Uncensored** under AstreaAI after launch if the profile previously selected another model.
 
 Development QA can set `AXIOM_DESKTOP_LOCAL_PROFILE_NAME` to a distinct lowercase
 slug such as `verda-images-qa`. That gives Electron a separate profile and puts
@@ -169,13 +196,13 @@ the existing user preference is preserved. Native timings separate verification,
 admission, first reasoning, first text and total request time.
 
 Deployment, issuer/publisher key management and measured guest recovery belong
-to the canonical inference repository's [Verda guide](../../axiom-inference/docs/direct-verda.md).
+to the canonical inference repository's [AstreaAI guide](../../axiom-inference/docs/direct-verda.md).
 
 
 Validated requests may wait in the worker's private RAM for up to 30 seconds.
 If capacity is full or the wait expires, the worker returns an encrypted refusal
 bound to the original request. Native verifies the stream through EOF and shows
-“Verda is busy. Your request was not started; try again shortly.” It preserves
+“AstreaAI is busy. Your request was not started; try again shortly.” It preserves
 verified connection preparation and does not automatically replay inference.
 An ordinary HTTP error or a refusal after output remains a verification failure.
 The worker reserves measured input plus maximum output tokens, within four
