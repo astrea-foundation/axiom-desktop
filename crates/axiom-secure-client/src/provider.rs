@@ -161,6 +161,17 @@ impl ProviderRegistry {
                 providers.push(Arc::new(crate::providers::fixture::FixtureProvider::new(
                     config, credential,
                 )) as Arc<dyn SecureProvider>);
+            } else {
+                if let Some(chutes) = crate::providers::chutes_preview::hosted_provider(
+                    &config,
+                    Arc::clone(&credential),
+                )? {
+                    providers.push(chutes);
+                }
+                #[cfg(debug_assertions)]
+                if let Some(preview) = crate::providers::chutes_preview::provider(&config)? {
+                    providers.push(preview);
+                }
             }
             Self::new(providers)
         }

@@ -7,6 +7,7 @@ points. Only the current user, SYSTEM and Administrators may have allow ACEs.
 from contextlib import contextmanager
 import os
 from pathlib import Path
+import secrets
 import stat
 import tempfile
 
@@ -75,6 +76,28 @@ if os.name == "nt":
         finally:
             kernel.CloseHandle(token)
 
+    @contextmanager
+    def _windows_attributes(*, directory):
+        current = _current_sid()
+        descriptor = P()
+        inheritance = "OICI" if directory else ""
+        sddl = "O:" + current + "D:P(A;" + inheritance + ";FA;;;" + current + ")"
+        _require(advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl, 1, ctypes.byref(descriptor), None), "private Windows state descriptor unavailable")
+        try:
+            yield SecurityAttributes(ctypes.sizeof(SecurityAttributes), descriptor, False)
+        finally:
+            kernel.LocalFree(descriptor)
+
+    def _windows_file(path, disposition):
+        with _windows_attributes(directory=False) as attributes:
+            handle = kernel.CreateFileW(str(path), 0xC0000000, 7, ctypes.byref(attributes), disposition, 0x00200080, None)
+            _require(handle != wt.HANDLE(-1).value, "private Windows state file unavailable")
+        try:
+            return msvcrt.open_osfhandle(handle, os.O_RDWR | os.O_BINARY)
+        except BaseException:
+            kernel.CloseHandle(handle)
+            raise
+
     def _windows_private(path):
         metadata = path.lstat()
         _require(not metadata.st_file_attributes & 0x400, "release state must not be a Windows reparse point")
@@ -118,15 +141,9 @@ def private_directory(path):
     elif not path.exists():
         if not path.parent.exists():
             private_directory(path.parent)
-        descriptor = P()
-        sddl = "O:" + _current_sid() + "D:P(A;OICI;FA;;;" + _current_sid() + ")"
-        _require(advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl, 1, ctypes.byref(descriptor), None), "private Windows state descriptor unavailable")
-        try:
-            attributes = SecurityAttributes(ctypes.sizeof(SecurityAttributes), descriptor, False)
+        with _windows_attributes(directory=True) as attributes:
             created = kernel.CreateDirectoryW(str(path), ctypes.byref(attributes))
             _require(created or ctypes.get_last_error() == 183, "private Windows state directory creation failed")
-        finally:
-            kernel.LocalFree(descriptor)
     check_private(path, directory=True)
 
 
@@ -135,13 +152,7 @@ def state_lock(path):
     path = Path(path)
     private_directory(path.parent)
     if os.name == "nt":
-        handle = kernel.CreateFileW(str(path), 0xC0000000, 7, None, 4, 0x00200080, None)
-        _require(handle != wt.HANDLE(-1).value, "Windows release-state lock unavailable")
-        try:
-            descriptor = msvcrt.open_osfhandle(handle, os.O_RDWR | os.O_BINARY)
-        except BaseException:
-            kernel.CloseHandle(handle)
-            raise
+        descriptor = _windows_file(path, 4)
     else:
         import fcntl
         descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
@@ -162,7 +173,13 @@ def state_lock(path):
 
 def atomic_state(path, raw):
     path = Path(path)
-    descriptor, name = tempfile.mkstemp(prefix=".release-state-", dir=path.parent)
+    if os.name == "nt":
+        # An elevated token may otherwise default new-file ownership to the
+        # Administrators group. Pin ownership and the DACL at creation time.
+        name = str(path.parent / (".release-state-" + secrets.token_hex(16)))
+        descriptor = _windows_file(name, 1)
+    else:
+        descriptor, name = tempfile.mkstemp(prefix=".release-state-", dir=path.parent)
     try:
         with os.fdopen(descriptor, "wb") as stream:
             stream.write(raw)

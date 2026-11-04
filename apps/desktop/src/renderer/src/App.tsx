@@ -50,6 +50,14 @@ export function App() {
   const catalog = useModelCatalog(agentState, navigation, setUiError);
   const { models, modelId, effectiveReasoningEffort, modelCatalogError, modelStatusLabel, updateSettings } = catalog;
   const closeAccountScreen = useCallback(() => setAccountScreen(null), []);
+  useEffect(() => {
+    if (accountScreenOpen) return;
+    const opener = accountScreenReturnFocus.current;
+    accountScreenReturnFocus.current = null;
+    // The commit has removed inert from the chat before focus is restored.
+    // A frame callback can run before that commit when rendering is deferred.
+    if (opener?.isConnected) opener.focus({ preventScroll: true });
+  }, [accountScreenOpen]);
   const account = useNativeAccount(agentState, catalog.desktopReady, catalog.refreshModels, catalog.clearModels, closeAccountScreen, setUiError);
   const { accountView, requiresSignIn, signInState, setSignInState, refreshAccount, logout, refreshBilling, cancelNativeSignIn, openSignIn, openAccountPortal } = account;
   const conversations = useConversations(agentState, connectionContext, navigation, catalog, requiresSignIn, openSignIn, setUiError);
@@ -395,12 +403,7 @@ export function App() {
           initialCategory={settingsCategory}
           updates={updates}
           runtimeInstanceId={agentState.runtimeInstanceId}
-          onClose={() => {
-            setAccountScreen(null);
-            const opener = accountScreenReturnFocus.current;
-            accountScreenReturnFocus.current = null;
-            requestAnimationFrame(() => { if (opener?.isConnected) opener.focus({ preventScroll: true }); });
-          }}
+          onClose={closeAccountScreen}
           connected={agentState.connected}
           account={agentState.account}
           onRefreshAccount={() => {
@@ -413,12 +416,7 @@ export function App() {
       ) : null}
       {accountScreen === "balance" ? (
         <BalanceScreen
-          onClose={() => {
-            setAccountScreen(null);
-            const opener = accountScreenReturnFocus.current;
-            accountScreenReturnFocus.current = null;
-            requestAnimationFrame(() => { if (opener?.isConnected) opener.focus({ preventScroll: true }); });
-          }}
+          onClose={closeAccountScreen}
           connected={agentState.connected}
           account={agentState.account}
           billing={agentState.billing}

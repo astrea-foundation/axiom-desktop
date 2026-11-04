@@ -152,6 +152,39 @@ class MeteringIdentity:
         self.lock = threading.Lock()
         self.attempted = set()
 
+    async def admit(self, request, operation, origin, *, image_steps=IMAGE_STEPS, http=None):
+        """Check the dispatched hold with its fixed controller before model use.
+
+        Only operational billing metadata leaves the TEE. HTTPS authenticates
+        the configured account service; the boot key authenticates this probe.
+        Generation ciphertext and plaintext never reach this endpoint.
+        """
+        if origin not in {"https://api.axiom.stream", "https://api-staging.axiom.stream"}:
+            raise ValueError("installed account controller required")
+        context = billing_context(request.get("billing"))
+        if (operation not in {"chat", "image", "image_edit"}
+                or not isinstance(request.get("request_id"), str)
+                or not HEX.fullmatch(request["request_id"])):
+            raise ValueError("bounded admission identity required")
+        payload = {**context, "schema": "axiom-chutes-admission-v1", "boot_id": self.boot_id,
+            "request_id": request["request_id"], "operation": operation,
+            "challenge": os.urandom(32).hex(),
+            "runtime_policy_sha256": request.get("runtime_policy_sha256"),
+            "image_steps": image_steps if operation != "chat" else None}
+        document = {"payload": payload,
+            "signature": self.key.sign(b"axiom-chutes-admission-v1\0" + canonical(payload)).hex()}
+        import httpx
+        owned = http is None
+        http = http or httpx.AsyncClient(trust_env=False, follow_redirects=False, timeout=15)
+        try:
+            response = await http.post(origin + "/api/v1/chutes/admissions", json=document)
+            if (response.status_code != 200
+                    or decode_json(response.content, 1024) != {"admitted": True, "challenge": payload["challenge"]}):
+                raise ValueError("dispatched account hold not confirmed")
+        finally:
+            if owned:
+                await http.aclose()
+
     def begin(self, context):
         billing_context(context)
         with self.lock:

@@ -1,5 +1,24 @@
 # Release acceptance
 
+The launch dependency audit updates Tokio to 1.53.3, the rustls verifier to
+0.103.16, both webpki root lists to 1.0.10, libz-sys to 1.1.31 and
+pulldown-cmark to 0.13.5. These retain the existing security audit gate.
+
+Native pool ES256 proof-key generation/signing uses P-256 0.14 and
+crypto-bigint 0.7.10, beyond the fix for
+[RUSTSEC-2026-0387](https://rustsec.org/advisories/RUSTSEC-2026-0387.html).
+Pool HPKE explicitly enables only X25519. The remaining crypto-bigint 0.5.5
+dependency is confined to public signature/certificate verification: NEAR's
+P-384 attestation verifier, Tinfoil's P-256 Fulcio/Sigstore verifiers and P-384
+SEV verifier. The pinned Tinfoil revision is
+`91e8aef8fbc34129b68de8667ece5bd9ef7b7110`; its signing keys occur only in
+tests, and its EHBP revision `93cc1fa1ad61e19f9a34fb23cb5b5d5635d3edb0`
+selects `X25519HkdfSha256` explicitly. Public signature operands contain no
+private scalar whose timing could leak. A scoped audit exception covers only
+that residual version. Remove it when these verifiers update their curve
+dependencies; any new private-key use requires a fresh review and a patched
+implementation. This exception changes no evidence or response verification.
+
 Qualify the exact promoted source revision and signed installer bytes. Record
 OS, architecture, browser, source revision, artifact SHA-256, signing identity,
 result and limitations in the release's maintainer acceptance record. Unit tests
@@ -207,6 +226,16 @@ vaults and signed installers rather than treating mocks as acceptance evidence.
 Backend rollback, payment-receiver recovery and secret management are separate
 platform operations. Coordinate their acceptance with compatible native releases;
 this document does not authorize a production reset or deployment.
+
+## NEAR completion qualification
+
+The NVIDIA signing-key download remains bounded at 1 MiB and requires the same
+certificate, signed-policy anchor, ES384 signature, nonce and passing-verdict
+checks. Qualify fresh NEAR attestation and authenticated completion against the
+compatible platform relay before release, including a reasoning-only response
+that ends at the output-token limit. Keep missing receipts, altered ciphertext,
+expired evidence and oversized key sets as rejecting cases. A successful
+attestation or posted usage charge does not establish authenticated completion.
 
 ## Dependency maintenance
 
