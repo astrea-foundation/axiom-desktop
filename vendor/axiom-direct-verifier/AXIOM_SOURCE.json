@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "canonical_repository": "https://github.com/astrea-foundation/axiom-inference",
+  "files": {
+    "LICENSE": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+    "scripts/build_direct_tools.py": "af1df698d44a45a4b408377f284a814711ff7f45cd993c0d1bb9807c37fc4850",
+    "deploy/direct/requirements.lock": "599c11d33bd3361173c8c91eb0b0f3cddb7c9766e1c851de9cd8f75e978a6c82",
+    "providers/direct/axiom_direct/__init__.py": "b7bd0def94036a14417f3c300d574e2279cb3a087e7ada5a5a01d673aa44225f",
+    "providers/direct/axiom_direct/boot_commit.py": "26e03173c60958704cd9c1be5c0c7c0f00468a15380da5f89101f051bfa9ae7b",
+    "providers/direct/axiom_direct/cli.py": "0280035ebb84471e1e5ee442688a57a067bd88c30e9abf238ce0445715eaf8ac",
+    "providers/direct/axiom_direct/collateral.py": "0205a649cacfbb9708c45f5f0e472219357986a39047c4a05c80446851821217",
+    "providers/direct/axiom_direct/collect.py": "12b4fac7c06934f904eed0d01140a83bb4018075f731cbf7f82b0b803974aed7",
+    "providers/direct/axiom_direct/comfy_engine.py": "1967b20ecfb84d92f2a1ac1fc0e118a3f1c5c407bebc99701fe929f0a579be29",
+    "providers/direct/axiom_direct/http.py": "f01c8151c96ad6e7f90c2c88b6ddb5ce78f6d5375d73e7825be2ee7d212c151a",
+    "providers/direct/axiom_direct/image_policy.py": "f3d35ce2a892bd77a476110258956c832cdfe3975d741a9c42ce381f95086258",
+    "providers/direct/axiom_direct/models.py": "1d3f16add6a3fe56b7364fa479ea0f791797e476bd495dba9dc0f22091e078cb",
+    "providers/direct/axiom_direct/nvidia.py": "05bfb4bdd661f5016d626fe24d9635f0973b7d659da1827eb789228a3d93e877",
+    "providers/direct/axiom_direct/release.py": "1a89d324036db54f76f1bec734382c8ab6cfce938218419ac1a9ef218f1285af",
+    "providers/direct/axiom_direct/runtime.py": "f1cbb5218af1793e8ede21bf82f6513952984e455930bbe9659f50d00b45671a",
+    "providers/direct/axiom_direct/runtime_policy.py": "f88611f4c453df10d3d2f9f9af7e641c52d71d06956387c80a8f6e26147a78b4",
+    "providers/direct/axiom_direct/snp.py": "2763b9de4aeea4e609e5890486ad4c0e5bc5591e4ac52092fb41a2089b5edaa5",
+    "providers/direct/axiom_direct/strict.py": "1e0db1a81bfc1157efa1d55f19ef99d2e8f1941e2f9dfc1741f0420b699fbe2c",
+    "providers/direct/axiom_direct/verify.py": "96222f74e7ff7646ebba367bc25e348513737c7ea61a9aa35a67e5e86c2fabaa",
+    "providers/direct/axiom_direct/wire.py": "34a3ec08d873634ce046723679c34708544d9524e8678fefe5b80832c0b87a76"
+  }
+}

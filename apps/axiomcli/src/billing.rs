@@ -134,13 +134,20 @@ pub struct BillingClient {
 impl BillingClient {
     pub fn new(api_base_url: &str, auth: AuthManager, timeout: Duration) -> Result<Self> {
         let api_base_url = parse_api_origin(api_base_url)?;
-        let client = Client::builder()
+        let mut builder = Client::builder()
             .timeout(timeout)
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|error| {
-                AxiomError::Config(format!("could not build the billing client: {error}"))
-            })?;
+            .redirect(reqwest::redirect::Policy::none());
+        if let Some(pem) = axiom_secure_client::local_relay_ca_pem(&api_base_url)
+            .map_err(|error| AxiomError::Config(error.safe_detail().to_owned()))?
+        {
+            builder = builder.add_root_certificate(
+                reqwest::Certificate::from_pem(&pem)
+                    .map_err(|_| AxiomError::Config("invalid local relay CA".into()))?,
+            );
+        }
+        let client = builder.build().map_err(|error| {
+            AxiomError::Config(format!("could not build the billing client: {error}"))
+        })?;
         Ok(Self {
             auth,
             client,

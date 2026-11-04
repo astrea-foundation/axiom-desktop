@@ -29,6 +29,20 @@ pub struct Terminal {
     pub usage: Usage,
     pub receipt: SignedDocument,
 }
+/// An authenticated refusal before engine dispatch. It is never a completion
+/// receipt and may only be acted on after a clean encrypted-stream EOF.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Rejection {
+    pub code: String,
+    pub retry_after_secs: u32,
+}
+impl std::fmt::Display for Rejection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "worker busy; inference was not dispatched")
+    }
+}
+impl std::error::Error for Rejection {}
 pub fn prefix_hash(request_digest: &str, nonce: &[u8]) -> Result<Sha256> {
     let mut hash = Sha256::new();
     hash.update(b"axiom-pool-response-prefix-v1\0");
@@ -77,7 +91,7 @@ impl Transcript {
             raw.len() <= crate::MAX_FRAME && self.bytes + raw.len() <= crate::MAX_RESPONSE,
             "stream limit"
         );
-        if kind == "terminal" {
+        if matches!(kind, "terminal" | "rejected") {
             self.terminal = true;
         } else {
             self.hash.update(&raw);
@@ -95,8 +109,11 @@ pub struct FrameVerifier {
     prefix: Sha256,
     key: ed25519_dalek::VerifyingKey,
     terminal: Option<Terminal>,
+    rejection: Option<Rejection>,
+    output_started: bool,
     max_bytes: usize,
     image: Option<ImageState>,
+    tool_ids: std::collections::BTreeSet<String>,
     failed: bool,
 }
 struct ImageState {
@@ -151,7 +168,10 @@ impl FrameVerifier {
             prefix: prefix_hash(request_hash, nonce)?,
             key,
             terminal: None,
+            rejection: None,
+            output_started: false,
             image: None,
+            tool_ids: std::collections::BTreeSet::new(),
             failed: false,
         })
     }
@@ -166,6 +186,7 @@ impl FrameVerifier {
     fn read(&mut self, opened: &OpenedFrame) -> Result<Frame> {
         ensure!(
             self.terminal.is_none()
+                && self.rejection.is_none()
                 && self.transcript.sequence < 65536
                 && opened.plaintext.len() <= crate::MAX_FRAME
                 && opened.plaintext.last() == Some(&b'\n'),
@@ -206,6 +227,10 @@ impl FrameVerifier {
                 "receipt binding mismatch"
             );
             terminal.usage.validate(&self.binding)?;
+            ensure!(
+                (terminal.finish_reason == "tool_calls") == !self.tool_ids.is_empty(),
+                "tool completion differs from authenticated calls"
+            );
             if let Some(image) = &self.image {
                 ensure!(
                     image.bytes == image.expected_bytes
@@ -229,7 +254,20 @@ impl FrameVerifier {
         Ok(f)
     }
     fn validate_kind(&mut self, f: &Frame) -> Result<()> {
+        if !matches!(f.kind.as_str(), "accepted" | "heartbeat" | "rejected") {
+            self.output_started = true;
+        }
         match f.kind.as_str() {
+            "rejected" => {
+                let value: Rejection = strict::decode(&serde_json::to_vec(&f.data)?)?;
+                ensure!(
+                    !self.output_started
+                        && matches!(value.code.as_str(), "WORKER_BUSY" | "QUEUE_TIMEOUT")
+                        && (1..=30).contains(&value.retry_after_secs),
+                    "invalid admission refusal"
+                );
+                self.rejection = Some(value);
+            }
             "accepted" => ensure!(f.sequence == 0, "late acceptance"),
             "heartbeat" => ensure!(f.data == json!({"provisional":true}), "invalid heartbeat"),
             "text_delta" | "reasoning_delta" => {
@@ -240,8 +278,19 @@ impl FrameVerifier {
                     "invalid text delta"
                 );
             }
-            // Tool calls need a complete validated tool contract; v1 does not
-            // advertise tool support until that parser is implemented.
+            "tool_call" => {
+                ensure!(
+                    self.binding.operation == crate::types::Operation::Chat
+                        && self.tool_ids.len() < crate::tools::MAX_TOOLS,
+                    "tool call operation/count limit"
+                );
+                let call: crate::tools::ToolCall = strict::decode(&serde_json::to_vec(&f.data)?)?;
+                call.validate()?;
+                ensure!(
+                    self.tool_ids.insert(call.id),
+                    "duplicate authenticated tool call"
+                );
+            }
             "usage" => {
                 let _: Usage = strict::decode(&serde_json::to_vec(&f.data)?)?;
             }
@@ -303,6 +352,10 @@ impl FrameVerifier {
         ensure!(!self.failed, "frame verifier failed");
         self.terminal
             .ok_or_else(|| anyhow::anyhow!("missing authenticated completion"))
+    }
+    pub fn rejection(&self) -> Result<Option<&Rejection>> {
+        ensure!(!self.failed, "frame verifier failed");
+        Ok(self.rejection.as_ref())
     }
 }
 

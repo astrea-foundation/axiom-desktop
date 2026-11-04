@@ -73,10 +73,15 @@ mod tests {
     }
 }
 /// No public constructor or Deserialize: keys enter through the verifier only.
+#[derive(Clone)]
 pub struct VerifiedWorker {
     worker: WorkerIdentity,
+    verified_at: u64,
     expires_at: u64,
     policy_sequence: u64,
+    generation: u64,
+    capabilities: Vec<String>,
+    public_evidence: Option<std::sync::Arc<Value>>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -85,8 +90,34 @@ struct Appraisal {
     expires_at: u64,
     policy_sequence: u64,
     generation: u64,
+    #[serde(default)]
+    capabilities: Vec<String>,
 }
 impl VerifiedWorker {
+    pub fn public_evidence(&self) -> Option<Value> {
+        self.public_evidence
+            .as_ref()
+            .map(|value| value.as_ref().clone())
+    }
+    pub(crate) fn with_public_evidence(mut self, value: Value) -> Self {
+        self.public_evidence = Some(std::sync::Arc::new(value));
+        self
+    }
+    pub fn verified_at(&self) -> u64 {
+        self.verified_at
+    }
+    #[cfg(test)]
+    pub(crate) fn for_cache_test(worker: WorkerIdentity, expires_at: u64) -> Self {
+        Self {
+            worker,
+            verified_at: super::now(),
+            expires_at,
+            policy_sequence: 1,
+            generation: 1,
+            capabilities: vec!["chat".into()],
+            public_evidence: None,
+        }
+    }
     pub fn identity(&self) -> &WorkerIdentity {
         &self.worker
     }
@@ -95,6 +126,15 @@ impl VerifiedWorker {
     }
     pub fn policy_sequence(&self) -> u64 {
         self.policy_sequence
+    }
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+    pub fn supports(&self, capability: &str) -> bool {
+        self.capabilities.iter().any(|value| value == capability)
+    }
+    pub fn capabilities(&self) -> &[String] {
+        &self.capabilities
     }
 }
 pub async fn bounded_json(mut response: reqwest::Response, limit: usize) -> Result<Value> {
@@ -163,8 +203,12 @@ impl VerifierConfig {
             );
             return Ok(VerifiedWorker {
                 worker: expected.clone(),
+                verified_at: super::now(),
                 expires_at: statement.expires_at,
                 policy_sequence: 0,
+                generation: 0,
+                capabilities: Vec::new(),
+                public_evidence: None,
             });
         }
         expected.validate(false)?;
@@ -173,7 +217,10 @@ impl VerifierConfig {
         // release. Never feed that evidence to the Tinfoil verifier or treat
         // a provider's `verified` flag as an Axiom workload appraisal.
         ensure!(
-            expected.evidence_profile == "tinfoil-gpu-v3",
+            matches!(
+                expected.evidence_profile.as_str(),
+                "tinfoil-gpu-v3" | "axiom-snp-nvidia-v1"
+            ),
             "Chutes workload/key attestation is not qualified for pool admission"
         );
         ensure!(
@@ -188,53 +235,62 @@ impl VerifierConfig {
                     == self.binary_sha256,
             "installed verifier digest mismatch"
         );
-        let encoded = evidence.document["device_evidence"]
-            .as_str()
-            .context("missing GPU evidence")?;
-        ensure!(encoded.len() <= 4 * 1024 * 1024, "GPU evidence limit");
-        let devices: Value = strict::decode(&STANDARD.decode(encoded)?)?;
-        let devices = devices["items"]
-            .as_array()
-            .context("GPU evidence items missing")?;
-        ensure!(devices.len() == 1, "one confidential GPU required");
-        let response = http
-            .get("https://nras.attestation.nvidia.com/.well-known/jwks.json")
-            .timeout(Duration::from_secs(20))
-            .send()
-            .await?
-            .error_for_status()?;
-        let jwks = bounded_json(response, 2 * 1024 * 1024).await?;
-        let mut nvidia = Vec::new();
-        for device in devices {
-            ensure!(
-                device["kind"] == "gpu"
-                    && device["vendor"] == "nvidia"
-                    && device["format"] == "https://tinfoil.sh/format/nvidia-gpu-evidence/v1",
-                "unsupported GPU evidence"
-            );
-            let payload = match &device["evidence"] {
-                Value::String(s) => strict::decode(s.as_bytes())?,
-                other => other.clone(),
-            };
-            ensure!(payload["nonce"] == challenge, "GPU nonce mismatch");
+        let nvidia = if expected.evidence_profile == "axiom-snp-nvidia-v1" {
+            // The pinned direct verifier validates AMD collateral and performs
+            // strict NVIDIA v4/claims-v3 appraisal itself. Never route SNP
+            // evidence through the Tinfoil/TDX parser or learn a trust root.
+            Vec::<Value>::new()
+        } else {
+            let encoded = evidence.document["device_evidence"]
+                .as_str()
+                .context("missing GPU evidence")?;
+            ensure!(encoded.len() <= 4 * 1024 * 1024, "GPU evidence limit");
+            let devices: Value = strict::decode(&STANDARD.decode(encoded)?)?;
+            let devices = devices["items"]
+                .as_array()
+                .context("GPU evidence items missing")?;
+            ensure!(devices.len() == 1, "one confidential GPU required");
             let response = http
-                .post("https://nras.attestation.nvidia.com/v3/attest/gpu")
+                .get("https://nras.attestation.nvidia.com/.well-known/jwks.json")
                 .timeout(Duration::from_secs(20))
-                .json(&payload)
                 .send()
                 .await?
                 .error_for_status()?;
-            let value = bounded_json(response, 2 * 1024 * 1024).await?;
-            ensure!(
-                value.as_array().is_some_and(|v| v.len() == 2)
-                    && value[0][0] == "JWT"
-                    && value[1].as_object().is_some_and(|v| v.len() == 1),
-                "complete NVIDIA detached EAT bundle required"
-            );
-            let jwt = value[0][1].as_str().context("NVIDIA overall JWT missing")?;
+            let jwks = bounded_json(response, 2 * 1024 * 1024).await?;
+            let mut nvidia = Vec::new();
+            for device in devices {
+                ensure!(
+                    device["kind"] == "gpu"
+                        && device["vendor"] == "nvidia"
+                        && device["format"] == "https://tinfoil.sh/format/nvidia-gpu-evidence/v1",
+                    "unsupported GPU evidence"
+                );
+                let payload = match &device["evidence"] {
+                    Value::String(s) => strict::decode(s.as_bytes())?,
+                    other => other.clone(),
+                };
+                ensure!(payload["nonce"] == challenge, "GPU nonce mismatch");
+                let response = http
+                    .post("https://nras.attestation.nvidia.com/v3/attest/gpu")
+                    .timeout(Duration::from_secs(20))
+                    .json(&payload)
+                    .send()
+                    .await?
+                    .error_for_status()?;
+                let value = bounded_json(response, 2 * 1024 * 1024).await?;
+                ensure!(
+                    value.as_array().is_some_and(|v| v.len() == 2)
+                        && value[0][0] == "JWT"
+                        && value[1].as_object().is_some_and(|v| v.len() == 1),
+                    "complete NVIDIA detached EAT bundle required"
+                );
+                let jwt = value[0][1].as_str().context("NVIDIA overall JWT missing")?;
+                nvidia.push(
+                    json!({"device_id":device["id"],"jwt":jwt,"jwks":jwks,"detached":value[1]}),
+                );
+            }
             nvidia
-                .push(json!({"device_id":device["id"],"jwt":jwt,"jwks":jwks,"detached":value[1]}));
-        }
+        };
         let current = super::now();
         let input = json!({"evidence":evidence,"context":{"challenge":challenge,"origin":expected.logical_origin,"publisher_key":self.publisher_key,"model_manifest":expected.model_manifest,"now":current,"minimum_policy_sequence":minimum_sequence.max(self.minimum_policy_sequence)},"nvidia":nvidia});
         let raw = serde_json::to_vec(&input)?;
@@ -249,7 +305,7 @@ impl VerifierConfig {
         let mut stdin = child.stdin.take().context("verifier input")?;
         stdin.write_all(&raw).await?;
         drop(stdin);
-        let output = tokio::select! {_=cancel.cancelled()=>anyhow::bail!("verification cancelled"),output=tokio::time::timeout(Duration::from_secs(30),child.wait_with_output())=>output??};
+        let output = tokio::select! {_=cancel.cancelled()=>anyhow::bail!("verification cancelled"),output=tokio::time::timeout(Duration::from_secs(60),child.wait_with_output())=>output??};
         ensure!(
             output.status.success() && output.stdout.len() <= 64 * 1024,
             "worker attestation rejected"
@@ -265,8 +321,12 @@ impl VerifierConfig {
         );
         Ok(VerifiedWorker {
             worker: appraisal.worker,
+            verified_at: super::now(),
             expires_at: appraisal.expires_at,
             policy_sequence: appraisal.policy_sequence,
+            generation: appraisal.generation,
+            capabilities: appraisal.capabilities,
+            public_evidence: None,
         })
     }
 }

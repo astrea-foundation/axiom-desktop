@@ -2,6 +2,7 @@
 /** @jsxRuntime automatic */
 import { Box } from "lucide-react";
 import axiomIcon from "@axiom/brand/assets/axiom-symbol-logo-colored.svg?url";
+import astreaIcon from "@axiom/brand/assets/astrea-symbol-logo-colored.svg?url";
 import tinfoilIcon from "./assets/tinfoil/tinfoil.svg?url";
 import alibabaIcon from "@lobehub/icons-static-svg/icons/alibaba-color.svg?url";
 import anthropicIcon from "@lobehub/icons-static-svg/icons/anthropic.svg?url";
@@ -108,6 +109,9 @@ export function ProviderBrandIcon({ providerId, providerLabel, className = "h-3.
   className?: string;
 }) {
   const normalized = normalizeCompanyName(`${providerId} ${providerLabel}`);
+  if (providerId === "axiom-direct" || hasAlias(normalized, "astreaai")) {
+    return <AssetIcon asset={{ name: "AstreaAI", src: astreaIcon }} className={className} />;
+  }
   if (providerId === "axiom" || providerId === "chutes" || providerId === "chutes-preview") {
     return <AssetIcon asset={{ name: "Axiom", src: axiomIcon }} className={className} />;
   }

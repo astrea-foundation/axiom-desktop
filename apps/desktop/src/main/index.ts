@@ -40,10 +40,6 @@ const proxy = new ProxySupervisor(async (port, accountId, token) => {
     env: createChildEnvironment(process.env, {
       AXIOM_AUTH_URL: origins.auth, AXIOM_BASE_URL: origins.api, AXIOM_PROXY_TOKEN: token,
       ...LOCAL_PROFILE.sidecarEnv,
-      ...(IS_STAGING_PROFILE ? {
-        XDG_CONFIG_HOME: join(app.getPath("home"), ".axiom-staging", "config"),
-        XDG_DATA_HOME: join(app.getPath("home"), ".axiom-staging", "data"),
-      } : {}),
     }, ["AXIOM_API_KEY"], DESKTOP_SIDECAR_INHERITED_ENV),
   });
 }, (state) => {

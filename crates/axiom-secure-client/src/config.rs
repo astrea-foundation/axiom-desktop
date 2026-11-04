@@ -30,6 +30,8 @@ pub struct SecureClientConfig {
     pub endpoint_policy: EndpointPolicy,
     /// Installed operator pins. Remote catalogs cannot set these values.
     pub pool: Option<crate::PoolClientConfig>,
+    /// Explicit operator installation; never accepted from a remote catalog.
+    pub direct: Option<axiom_pool_client::direct::DirectConfig>,
     #[cfg(feature = "test-fixture")]
     test_fixture: bool,
 }
@@ -43,6 +45,7 @@ impl SecureClientConfig {
                 "production relay URL must use HTTPS",
             ));
         }
+        let direct = crate::providers::direct::installed_config(&relay_base_url)?;
         Ok(Self {
             accept_outdated_near_tcb: Arc::new(AtomicBool::new(false)),
             relay_base_url,
@@ -55,6 +58,7 @@ impl SecureClientConfig {
             limits: SecureClientLimits::default(),
             endpoint_policy: EndpointPolicy::default(),
             pool: crate::providers::pool::installed_config()?,
+            direct,
             #[cfg(feature = "test-fixture")]
             test_fixture: false,
         })
@@ -90,6 +94,7 @@ impl SecureClientConfig {
                 allow_redirects: false,
             },
             pool: None,
+            direct: None,
             test_fixture: true,
         })
     }
@@ -143,8 +148,9 @@ impl Default for SecureClientLimits {
             attestation_quote_bytes: 256 * 1024,
             nvidia_evidence_bytes: 1024 * 1024,
             nvidia_jwt_bytes: 256 * 1024,
-            // NVIDIA publishes a rotating multi-key certificate set. Keep its
-            // download bounded while allowing the vendor's >512 KiB key set.
+            // NVIDIA publishes overlapping certificate chains during key
+            // rotation; its October 2026 set is 548,284 bytes. The bounded
+            // collection is distinct from an individual signed verdict.
             nvidia_jwks_bytes: 1024 * 1024,
             intel_collateral_bytes: 2 * 1024 * 1024,
             relay_error_bytes: 4 * 1024,

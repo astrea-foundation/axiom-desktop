@@ -42,13 +42,27 @@ pub(crate) fn configure_runtime_definition(
     let size = runtime
         .dimensions(&p.default_aspect_ratio)
         .expect("validated runtime default");
+    if p.max_references == 0 {
+        tool.function.parameters["properties"]["reference_image_ids"]["description"] =
+            json!("Reference editing is unavailable in this installation; omit this argument.");
+    }
+    tool.function.parameters["properties"]["aspect_ratio"]["description"] = json!(format!(
+        "Choose one of the supported aspect ratios. New images default to {}.",
+        p.default_aspect_ratio
+    ));
+    let reference_default = if runtime.references_use_default_size() {
+        "Omit aspect_ratio to use the same default size for new images and reference-based generation."
+    } else {
+        "Omit aspect_ratio to retain a reference's shape."
+    };
     tool.function.description = format!(
-        "Create or change one image only when the user requests it. Images work best at higher resolutions; the native client computes the largest supported dimensions. Available aspect ratios: {}. New images default to {} at {}×{}. Use up to {} distinct conversation-local reference_image_ids; refer to them as <image1>, <image2>, etc. in order and describe what to preserve. Omit aspect_ratio to retain a reference's shape. Results appear automatically; use view_image if you want to inspect the result before answering.",
+        "Create or change one image only when the user requests it. Images work best at higher resolutions; the native client computes the largest supported dimensions. Available aspect ratios: {}. New images default to {} at {}×{}. Use up to {} distinct conversation-local reference_image_ids; refer to them as <image1>, <image2>, etc. in order and describe what to preserve. {} Results appear automatically; use view_image if you want to inspect the result before answering.",
         p.aspect_ratios.join(", "),
         p.default_aspect_ratio,
         size.width,
         size.height,
-        p.max_references
+        p.max_references,
+        reference_default
     );
 }
 
@@ -447,6 +461,11 @@ impl Tool for ImageGenerationTool {
             )
         } else {
             match (args.width, args.height) {
+                (None, None) if runtime.references_use_default_size() => Some(
+                    runtime
+                        .dimensions(&runtime.image.default_aspect_ratio)
+                        .map_err(|e| AxiomError::Tool(e.into()))?,
+                ),
                 (None, None) => sources
                     .first()
                     .map(|source| {

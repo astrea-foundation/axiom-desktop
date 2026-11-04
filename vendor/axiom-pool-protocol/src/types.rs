@@ -26,6 +26,7 @@ impl WorkerIdentity {
         ensure!(
             self.evidence_profile == "tinfoil-gpu-v3"
                 || self.evidence_profile == "chutes-gpu-v1"
+                || self.evidence_profile == "axiom-snp-nvidia-v1"
                 || (fixture && self.evidence_profile == "test-fixture-only"),
             "unsupported worker evidence profile"
         );
@@ -52,6 +53,8 @@ pub struct Limits {
     pub output_bytes: u64,
     pub image_pixels: u64,
     pub image_steps: u64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub input_image_pixels: u64,
     pub deadline: u64,
 }
 impl Limits {
@@ -68,7 +71,8 @@ impl Limits {
             "invalid byte budget"
         );
         ensure!(
-            self.image_pixels <= 1024 * 1024
+            self.image_pixels <= crate::vision::MAX_GENERATED_PIXELS
+                && self.input_image_pixels <= crate::vision::MAX_INPUT_PIXELS
                 && self.image_steps <= 8
                 && self.deadline > now
                 && self.deadline <= now.saturating_add(600),
@@ -214,11 +218,18 @@ pub enum Input {
     },
     Image {
         prompt: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        references: Vec<crate::vision::InlineImage>,
+        #[serde(default, skip_serializing_if = "is_false")]
+        uncensored: bool,
         width: u32,
         height: u32,
         steps: u32,
         seed: u32,
     },
+}
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 impl Input {
     pub fn validate(&self, binding: &Binding) -> Result<()> {
@@ -238,20 +249,56 @@ impl Input {
                     "invalid chat"
                 );
                 ensure!(
-                    ["low", "medium", "high"].contains(&reasoning_effort.as_str())
-                        && tools.is_empty(),
+                    ["low", "medium", "high", "none"].contains(&reasoning_effort.as_str()),
                     "invalid reasoning/tools"
                 );
+                crate::tools::definitions(tools)?;
+                let mut image_count = 0usize;
+                let mut image_pixels = 0u64;
                 for m in messages {
                     ensure!(
-                        ["system", "developer", "user", "assistant"].contains(&m.role.as_str())
+                        ["system", "developer", "user", "assistant", "tool"]
+                            .contains(&m.role.as_str())
                             && m.content.len() <= 3 * 1024 * 1024,
                         "invalid message"
                     );
+                    ensure!(
+                        m.tool_calls.len() <= crate::tools::MAX_TOOLS
+                            && (m.tool_calls.is_empty() || m.role == "assistant")
+                            && (m.role == "tool") == m.tool_call_id.is_some(),
+                        "invalid tool message role"
+                    );
+                    if let Some(id) = &m.tool_call_id {
+                        ensure!(crate::tools::valid_id(id), "invalid tool result id");
+                    }
+                    let mut ids = std::collections::BTreeSet::new();
+                    for call in &m.tool_calls {
+                        call.validate()?;
+                        ensure!(ids.insert(&call.id), "duplicate tool call id");
+                    }
+                    ensure!(
+                        m.images.is_empty() || m.role == "user",
+                        "images require a user message"
+                    );
+                    for image in &m.images {
+                        image_count += 1;
+                        ensure!(
+                            image_count <= crate::vision::MAX_IMAGES,
+                            "input image count limit"
+                        );
+                        image_pixels = image_pixels
+                            .checked_add(image.validate()?)
+                            .ok_or_else(|| anyhow::anyhow!("input image pixel overflow"))?;
+                    }
                 }
+                ensure!(
+                    image_pixels <= binding.limits.input_image_pixels,
+                    "input images exceed grant"
+                );
             }
             Self::Image {
                 prompt,
+                references,
                 width,
                 height,
                 steps,
@@ -259,18 +306,28 @@ impl Input {
             } => {
                 ensure!(
                     binding.operation == Operation::Image
+                        && references.len() <= crate::vision::MAX_REFERENCES
                         && !prompt.is_empty()
                         && prompt.len() <= 64 * 1024
                         && *width >= 256
                         && *height >= 256
-                        && width.is_multiple_of(64)
-                        && height.is_multiple_of(64)
-                        && *width <= 1024
-                        && *height <= 1024
+                        && width.is_multiple_of(32)
+                        && height.is_multiple_of(32)
+                        && *width <= 8192
+                        && *height <= 8192
                         && u64::from(*width) * u64::from(*height) <= binding.limits.image_pixels
                         && *steps > 0
                         && u64::from(*steps) <= binding.limits.image_steps,
                     "invalid image budget"
+                );
+                let mut pixels = 0u64;
+                for image in references {
+                    ensure!(image.mime_type == "image/png", "PNG reference required");
+                    pixels += image.validate()?;
+                }
+                ensure!(
+                    pixels <= binding.limits.input_image_pixels,
+                    "references exceed grant"
                 );
             }
         }
@@ -282,6 +339,23 @@ impl Input {
 pub struct Message {
     pub role: String,
     pub content: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<crate::vision::InlineImage>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<crate::tools::ToolCall>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+}
+impl Message {
+    pub fn text(role: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            role: role.into(),
+            content: content.into(),
+            images: Vec::new(),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -291,6 +365,8 @@ pub struct Usage {
     pub output_tokens: u64,
     pub image_pixels: u64,
     pub image_steps: u64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub input_image_pixels: u64,
     #[serde(default, skip_serializing_if = "is_zero")]
     pub cached_input_tokens: u64,
     #[serde(default, skip_serializing_if = "is_zero")]
@@ -316,6 +392,10 @@ impl Usage {
                 && self.image_pixels <= binding.limits.image_pixels
                 && self.image_steps <= binding.limits.image_steps,
             "usage exceeds grant"
+        );
+        ensure!(
+            self.input_image_pixels <= binding.limits.input_image_pixels,
+            "input image usage exceeds grant"
         );
         match binding.operation {
             Operation::Chat => ensure!(

@@ -186,3 +186,4 @@ The current live worker has no configured GitHub release authority and no
 provider-authenticated image/source/model/key-custody endorsement. See the
 companion repository's `docs/release-verification.md` for the prepared workflow,
 native metadata-feed configuration and production qualification requirements.
+

@@ -355,6 +355,9 @@ impl Session {
                 .and_then(|v| v.as_str().map(str::to_owned))
                 .ok_or_else(|| SecureClientError::capability("message role"))?;
             messages.push(Message {
+                tool_calls: vec![],
+                tool_call_id: None,
+                images: vec![],
                 role,
                 content: m.content,
             });
@@ -381,6 +384,7 @@ impl Session {
             tools: vec![],
         };
         let limits = Limits {
+            input_image_pixels: 0,
             context_tokens: u64::from(self.model.context_window_tokens),
             output_tokens: max_tokens,
             input_bytes: 3 * 1024 * 1024,

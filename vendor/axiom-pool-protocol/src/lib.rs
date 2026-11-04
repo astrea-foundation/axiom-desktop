@@ -8,7 +8,9 @@ pub mod pricing;
 pub mod strict;
 #[cfg(any(test, feature = "test-fixture"))]
 pub mod test_support;
+pub mod tools;
 pub mod types;
+pub mod vision;
 
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -23,7 +25,8 @@ pub const RECEIPT_DOMAIN: &str = "axiom-pool-receipt-v1";
 pub const IDENTITY_DOMAIN: &str = "axiom-pool-identity-v1";
 pub const CONTROL_DOMAIN: &str = "axiom-pool-control-v1";
 pub const MAX_FRAME: usize = 1024 * 1024;
-pub const MAX_REQUEST: usize = 16 * 1024 * 1024;
+// Five bounded PNG references plus base64 and the signed request envelope.
+pub const MAX_REQUEST: usize = 36 * 1024 * 1024;
 pub const MAX_RESPONSE: usize = 96 * 1024 * 1024;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

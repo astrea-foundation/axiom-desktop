@@ -1546,6 +1546,27 @@
           ],
           "default": null
         },
+        "imagePixels": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "imageSteps": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "inputImagePixels": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
         "costMicrousd": {
           "type": [
             "string",

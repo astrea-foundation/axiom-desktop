@@ -16,6 +16,7 @@ base64 = "0.22"
 ed25519-dalek = { version = "2", features = ["pkcs8", "pem"] }
 hex = "0.4"
 hpke = { version = "0.13", default-features = false, features = ["alloc", "x25519"] }
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
 p256 = { version = "0.14", features = ["ecdsa"] }
 pkcs8 = { version = "0.10", features = ["pem"] }
 rand = "0.9"

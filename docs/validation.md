@@ -24,6 +24,66 @@ OS, architecture, browser, source revision, artifact SHA-256, signing identity,
 result and limitations in the release's maintainer acceptance record. Unit tests
 and browser fixtures do not establish signed native OS acceptance.
 
+## AstreaAI rollout gates
+
+The [generation-9 / permanent-policy-14 qualification](../../axiom-inference/docs/qa/direct-verda-reference-images-2026-11-03.json)
+establishes fresh CPU/GPU/workload/key/TLS verification, authenticated text and
+vision, five-reference image generation/editing and the 1536-square default in
+the operator's macOS development connection. Its fresh QA account and separate
+profile do not establish a hosted customer rollout.
+
+The [generation-12 / permanent-policy-18 qualification](../../axiom-inference/docs/qa/direct-verda-capacity-recovery-2026-11-04.json)
+adds four independent completed clients, an independent 14-request burst with
+eight authenticated completions and six authenticated capacity refusals, active
+disconnect isolation, five-reference 1536-square image regression, and a real
+VM power-off recovered by the always-on LAN watchdog. A fresh boot with new
+worker keys passed full verification and encrypted completion. These results
+qualify the private operator path rather than production account enrollment.
+
+Public release remains blocked on these concrete requirements:
+
+- Replace the client-held operator issuer key with production account-owned
+  reservation/grant issuance. Each grant must bind the authenticated account,
+  session, client proof key, exact approved worker and one request. Distribute
+  public trust material and the verifier to clients; keep private issuer and
+  publisher keys under operator/service control.
+- Register and select the AstreaAI deployment through the production account API
+  and model catalog. The current installed Direct configuration explicitly
+  requires a loopback account API and an external private configuration file;
+  the development launcher and local-profile overrides are not the public
+  enrollment path.
+- Complete customer billing: attach immutable prices and spending caps to
+  account-owned reservations, settle verified receipts once through the balance
+  ledger, and release or reconcile holds on refusal, cancellation and recovery.
+  Update the backend's older pool bounds/schema for the current 1536-square image,
+  reference-input pixel accounting and request size. Forward complete chat/image
+  usage to the native accounting UI. The current zero-charge operator grant and
+  image `settled` flag do not establish a customer debit; see
+  [billing readiness](direct-verda.md#billing-readiness).
+- Exercise real independent accounts concurrently against the production
+  authorization/routing path, including cancellation, account switching,
+  wrong-request responses, incomplete streams and worker replacement. Retain
+  strict attestation and authenticated completion throughout.
+- Qualify bounded admission/queueing and recovery under the intended customer
+  rollout. The capacity branch reserves trusted input plus maximum output tokens,
+  permits four short chats within 65,536 reserved tokens, queues at most eight
+  requests for 30 seconds, and returns an authenticated busy refusal without
+  replay. Long 32K requests can still reduce concurrency to two. Worker/queue
+  tests and an operator load test do not establish real-account routing or
+  sustained customer capacity. The external Verda watchdog is installed and recovery-qualified on
+  `salt@10.0.0.191`; redundant ready capacity is still required for a production
+  availability claim.
+- Package the independent verifier and public trust configuration for every
+  supported installer target, then qualify production sign-in, the installed
+  provider, image/reference flows, account-data preservation and updates using
+  the exact signed candidate bytes. Source-mode macOS checks do not establish
+  Windows, Intel macOS, Linux or signed-installer acceptance.
+
+Keep this gate separate from the existing managed Chutes release qualification.
+Publishing the current operator branch alone does not enroll ordinary customer
+installations into AstreaAI. See [the Direct connection guide](direct-verda.md)
+and [release procedure](releasing.md).
+
 ## Confidential pool qualification
 
 The separate registered managed Chutes channel now has account-owned opaque
@@ -36,11 +96,8 @@ deployment, actual worker callback origin and installed native bundle. Windows
 and signed installer helper packaging require separate release validation.
 The optional self-contained helper payload now has macOS Apple Silicon and
 Ubuntu 24.04 x86-64 build, relocation and stdio checks, inventory verification and a packaging hook; its
-native executable pin is checked before startup. The expanded helper workflow
-builds on Ubuntu 22.04, runs Windows x64/Windows 11 Arm checks and assembles a
-universal Mac launcher from verified native children. Windows state uses real
-ACL validation and process locking. Signed installers and native platform
-results for the expanded workflow remain separate acceptance requirements.
+native executable pin is checked before startup. Signed installer acceptance
+and older Linux/Intel macOS target builds remain separate; Windows is disabled.
 See the [helper build guide](../../axiom-inference/docs/native-helper.md).
 Warm redundant capacity and
 draining/replacement testing are required for a production availability claim.

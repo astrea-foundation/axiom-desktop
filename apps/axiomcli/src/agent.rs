@@ -1260,6 +1260,9 @@ impl AgentEngine {
             {
                 Ok(axiom_inference::ModelInfo {
                     id: settings.model.clone(),
+                    // Legacy deterministic embedders have no capability
+                    // catalog; retain their existing tool contract.
+                    supports_tools: true,
                     ..axiom_inference::ModelInfo::default()
                 })
             }
@@ -1766,6 +1769,11 @@ impl TurnRunner for AgentEngine {
             .into_iter()
             .find(|model| model.id == model_id)
             .ok_or_else(|| AxiomError::Provider("title model is no longer available".into()))?;
+        if model.provider_id == "axiom-direct" {
+            // Keep cosmetic background work off the single operator worker.
+            // Its measured revision quarantines interrupted engine work.
+            return Ok(crate::session_title::session_title(first_prompt));
+        }
         let request = title_request(&model, first_prompt);
         let (tx, mut rx) = mpsc::channel(64);
         let response = self.provider.stream(request, tx, cancellation.clone());
@@ -3520,7 +3528,7 @@ fn model_context_tokens(model: &axiom_inference::ModelInfo, messages: &[ChatMess
     if model.supports_images
         && !matches!(
             model.id.as_str(),
-            "chutes:qwen3.8-27b" | "chutes-preview:qwen3.8-27b"
+            "chutes:qwen3.8-27b" | "chutes-preview:qwen3.8-27b" | "direct:qwen3.8-27b"
         )
     {
         tokens
@@ -3553,6 +3561,9 @@ fn inference_request_for_model(
         }
     }
     let mut request = inference_request(model_id, messages, tools, thinking);
+    if !model.supports_tools {
+        request.tools.clear();
+    }
     // Some offerings expose both a mode and a numeric budget. Each wire
     // control must independently belong to that offering's capability list.
     if !model.supported_reasoning_efforts.is_empty()
@@ -3927,30 +3938,36 @@ mod engine_tests {
     }
 
     #[test]
-    fn ten_chutes_vision_inputs_leave_the_full_output_budget() {
-        let model = axiom_inference::ModelInfo {
-            id: "chutes:qwen3.8-27b".into(),
-            provider_id: "chutes".into(),
-            supports_images: true,
-            context_window_tokens: 32768,
-            max_output_tokens: 4096,
-            ..Default::default()
-        };
-        let mut message =
-            ChatMessage::text(ChatRole::User, "Read the letters in these ten images.");
-        message.images = vec![axiom_inference::ImageContent {
+    fn qwen_vision_inputs_leave_the_full_output_budget() {
+        for (id, provider, count) in [
+            ("chutes:qwen3.8-27b", "chutes", 10),
+            ("chutes-preview:qwen3.8-27b", "chutes-preview", 10),
+            ("direct:qwen3.8-27b", "axiom-direct", 8),
+        ] {
+            let model = axiom_inference::ModelInfo {
+                id: id.into(),
+                provider_id: provider.into(),
+                supports_images: true,
+                context_window_tokens: 32768,
+                max_output_tokens: 4096,
+                ..Default::default()
+            };
+            let mut message =
+                ChatMessage::text(ChatRole::User, "Read the letters in these ten images.");
+            message.images = vec![axiom_inference::ImageContent {
             mime_type: "image/png".into(),
             data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC".into(),
-        }; 10];
-        let request = inference_request_for_model(
-            &model,
-            model.id.clone(),
-            vec![message],
-            vec![],
-            ThinkingLevel::Enabled,
-        );
-        assert_eq!(request.max_output_tokens, Some(4096));
-        assert!(model_context_tokens(&model, &request.messages) < 11000);
+        }; count];
+            let request = inference_request_for_model(
+                &model,
+                model.id.clone(),
+                vec![message],
+                vec![],
+                ThinkingLevel::Enabled,
+            );
+            assert_eq!(request.max_output_tokens, Some(4096));
+            assert!(model_context_tokens(&model, &request.messages) < 11000);
+        }
     }
 
     #[test]
@@ -4478,6 +4495,9 @@ mod engine_tests {
             ("another-provider:qwen3.8-27b", false),
             ("chutes:qwen3.8-27b", true),
             ("chutes:qwen3.8-27b", true),
+            ("direct:qwen3.8-27b", true),
+            ("direct:qwen3.8-27b", true),
+            ("direct:qwen3.8-27b-other", false),
             ("tinfoil-another-model", false),
             ("chutes-preview:qwen3.8-27b", true),
             ("another-provider:qwen3.8-27b", false),
@@ -5247,10 +5267,12 @@ mod engine_tests {
                 scripted.model_details = Some(vec![
                     axiom_inference::ModelInfo {
                         id: "text".into(),
+                        supports_tools: true,
                         ..Default::default()
                     },
                     axiom_inference::ModelInfo {
                         id: "vision".into(),
+                        supports_tools: true,
                         supports_images: true,
                         ..Default::default()
                     },

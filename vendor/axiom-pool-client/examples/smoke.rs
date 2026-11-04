@@ -50,7 +50,10 @@ async fn run() -> Result<()> {
     let input = if cfg.operation == "chat" {
         Input::Chat {
             messages: vec![Message {
+                tool_calls: vec![],
+                tool_call_id: None,
                 role: "user".into(),
+                images: vec![],
                 content: "Write a Python function that adds two integers. Synthetic test.".into(),
             }],
             max_tokens: 256,
@@ -60,6 +63,8 @@ async fn run() -> Result<()> {
     } else {
         ensure!(cfg.operation == "image", "operation");
         Input::Image {
+            references: vec![],
+            uncensored: false,
             prompt: "A blue square on a white background. Synthetic test.".into(),
             width: cfg.image_size.unwrap_or(512),
             height: cfg.image_size.unwrap_or(512),
@@ -77,6 +82,7 @@ async fn run() -> Result<()> {
         output_bytes: 16 * 1024 * 1024,
         image_pixels: 1024 * 1024,
         image_steps: 8,
+        input_image_pixels: 0,
         deadline: now + 600,
     };
     let prepared = client
