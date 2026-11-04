@@ -26,6 +26,23 @@ fn exchange_error(error: &anyhow::Error, cancelled: bool, image: bool) -> Secure
     if cancelled {
         return SecureClientError::cancelled();
     }
+    if let Some(capacity) = error.downcast_ref::<axiom_pool_client::direct::CapacityUnavailable>() {
+        let detail = match capacity {
+            axiom_pool_client::direct::CapacityUnavailable::Preparation => {
+                "Verda is busy preparing a secure connection. Your request was not submitted; try again shortly."
+            }
+            axiom_pool_client::direct::CapacityUnavailable::Exchange => {
+                "Verda is overloaded. Your request did not complete; it was not replayed."
+            }
+        };
+        return SecureClientError::with_code(
+            axiom_inference::ProviderFailureKind::RateLimited,
+            crate::error::SecureErrorCode::RateLimited,
+            detail,
+            false,
+        )
+        .with_retry_at(Some((now() + 2) as i64));
+    }
     if let Some(refusal) = error.downcast_ref::<axiom_pool_protocol::frames::Rejection>() {
         // Only the request-bound encrypted refusal followed by clean EOF can
         // reach this type. Do not automatically replay an inference request.
@@ -205,7 +222,16 @@ impl DirectProvider {
         }
         let worker = self.client.prepare(cancel).await.map_err(|e| {
             tracing::warn!(detail=%e,"direct image preflight failed");
-            SecureClientError::attestation("Verda image workload verification failed")
+            if cancel.is_cancelled() {
+                SecureClientError::cancelled()
+            } else if e
+                .downcast_ref::<axiom_pool_client::direct::CapacityUnavailable>()
+                .is_some()
+            {
+                exchange_error(&e, false, true)
+            } else {
+                SecureClientError::attestation("Verda image workload verification failed")
+            }
         })?;
         self.keep_warm();
         if !worker.supports("image") || !worker.supports("tools") || !worker.supports("vision") {
@@ -482,6 +508,11 @@ impl SecureProvider for DirectProvider {
             tracing::warn!(detail = %error, "direct attestation preflight failed");
             if cancel.is_cancelled() {
                 SecureClientError::cancelled()
+            } else if error
+                .downcast_ref::<axiom_pool_client::direct::CapacityUnavailable>()
+                .is_some()
+            {
+                exchange_error(&error, false, false)
             } else {
                 SecureClientError::attestation(
                     "Verda workload attestation failed; no message was sent",
@@ -869,6 +900,16 @@ mod tests {
         );
         let cancelled = exchange_error(&error, true, false);
         assert_eq!(cancelled.code(), crate::error::SecureErrorCode::Cancelled);
+    }
+
+    #[test]
+    fn transport_backpressure_never_claims_the_request_was_not_dispatched() {
+        let error = anyhow::Error::new(axiom_pool_client::direct::CapacityUnavailable::Exchange);
+        let mapped = exchange_error(&error, false, false);
+        assert_eq!(mapped.code(), crate::error::SecureErrorCode::RateLimited);
+        assert!(!mapped.retryable());
+        assert!(mapped.safe_detail().contains("did not complete"));
+        assert!(!mapped.safe_detail().contains("not started"));
     }
 
     fn installed() -> SecureClientConfig {

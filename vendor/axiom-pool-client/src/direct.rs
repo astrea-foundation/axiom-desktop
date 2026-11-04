@@ -67,6 +67,47 @@ pub struct DirectTimings {
 fn elapsed_ms(start: Instant) -> u64 {
     start.elapsed().as_millis().try_into().unwrap_or(u64::MAX)
 }
+
+#[derive(Debug)]
+pub enum CapacityUnavailable {
+    Preparation,
+    Exchange,
+}
+impl std::fmt::Display for CapacityUnavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Verda capacity unavailable")
+    }
+}
+impl std::error::Error for CapacityUnavailable {}
+
+async fn public_challenge(
+    client: &reqwest::Client,
+    transport: &str,
+    challenge: &str,
+) -> Result<reqwest::Response> {
+    // This is a public nonce lookup, before any input/grant is sent. Retry only
+    // explicit backpressure, with a bounded stagger; never retry inference.
+    for attempt in 0..5u32 {
+        let response = client
+            .post(format!("{transport}/v1/attestation"))
+            .json(&json!({"challenge":challenge}))
+            .send()
+            .await?;
+        if matches!(response.status().as_u16(), 429 | 503) {
+            if attempt == 4 {
+                return Err(CapacityUnavailable::Preparation.into());
+            }
+            drop(response);
+            tokio::time::sleep(Duration::from_millis(
+                (1u64 << attempt) * 1000 + u64::from(rand::random::<u16>() % 500),
+            ))
+            .await;
+        } else {
+            return Ok(response.error_for_status()?);
+        }
+    }
+    unreachable!("bounded public preparation")
+}
 #[derive(Serialize)]
 struct Lease<'a> {
     protocol: &'a str,
@@ -107,7 +148,7 @@ async fn admit(
     lease: &axiom_pool_protocol::SignedDocument,
 ) -> Result<()> {
     // Only the operator lease is repeated. Each attempt runs the guest's
-    // full checks; no grant, prompt, or inference ciphertext exists yet.
+    // full checks; no grant, prompt, or inference ciphertext is sent.
     for attempt in 0..3 {
         let response = client
             .post(format!("{transport}/v1/admission"))
@@ -119,8 +160,11 @@ async fn admit(
         if status.is_success() {
             return Ok(());
         }
+        if matches!(status.as_u16(), 429 | 503) && attempt == 2 {
+            return Err(CapacityUnavailable::Preparation.into());
+        }
         ensure!(
-            status == reqwest::StatusCode::FORBIDDEN && attempt < 2,
+            matches!(status.as_u16(), 403 | 429 | 503) && attempt < 2,
             "worker rejected local full attestation or admission"
         );
         // Guest-side full appraisal fetches AMD collateral too. Its current
@@ -216,12 +260,7 @@ impl DirectClient {
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(70))
             .build()?;
-        let response = bootstrap
-            .post(format!("{transport}/v1/attestation"))
-            .json(&json!({"challenge":challenge}))
-            .send()
-            .await?
-            .error_for_status()?;
+        let response = public_challenge(&bootstrap, transport, &challenge).await?;
         let value = bounded_json(response, 8 * 1024 * 1024).await?;
         drop(bootstrap);
         let evidence: WorkerEvidence = strict::decode(&serde_json::to_vec(&value)?)?;
@@ -329,7 +368,15 @@ impl DirectClient {
             return Ok(true);
         }
         let epoch = self.epoch.load(std::sync::atomic::Ordering::Acquire);
-        let expiry = worker.expires_at().min(now() + 240);
+        let maximum = worker.expires_at().min(now() + 240);
+        // Align public lease expiries so the worker can coalesce self appraisal
+        // across customers. Never shorten coverage below the request deadline.
+        let rounded = maximum - maximum % 10;
+        let expiry = if rounded > deadline.saturating_add(5) {
+            rounded
+        } else {
+            maximum
+        };
         let lease = sign(
             &Lease {
                 protocol: PROTOCOL,
@@ -510,8 +557,13 @@ impl DirectClient {
             .post(format!("{transport}/v1/exchange"))
             .json(&sealed)
             .send()
-            .await?
-            .error_for_status()?;
+            .await?;
+        if matches!(response.status().as_u16(), 429 | 503) {
+            // Dispatch is ambiguous at the transport boundary. This error
+            // never asserts that inference was not started and never retries.
+            return Err(CapacityUnavailable::Exchange.into());
+        }
+        let response = response.error_for_status()?;
         let nonce = response
             .headers()
             .get("axiom-pool-response-nonce")
@@ -671,7 +723,10 @@ mod tests {
         assert!(client.public_evidence().await.is_none());
     }
 
-    fn admission_server(statuses: &'static [u16]) -> (String, std::thread::JoinHandle<()>) {
+    fn preparation_server(
+        path: &'static str,
+        statuses: &'static [u16],
+    ) -> (String, std::thread::JoinHandle<()>) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let origin = format!("http://{}", listener.local_addr().unwrap());
         let task = std::thread::spawn(move || {
@@ -688,7 +743,7 @@ mod tests {
                     request.extend_from_slice(&buffer[..count]);
                     if let Some(end) = request.windows(4).position(|v| v == b"\r\n\r\n") {
                         let headers = std::str::from_utf8(&request[..end]).unwrap();
-                        assert!(headers.starts_with("POST /v1/admission HTTP/1.1\r\n"));
+                        assert!(headers.starts_with(&format!("POST {path} HTTP/1.1\r\n")));
                         let length: usize = headers
                             .lines()
                             .find_map(|line| {
@@ -713,7 +768,7 @@ mod tests {
     }
 
     async fn check_admission(statuses: &'static [u16], success: bool) {
-        let (origin, server) = admission_server(statuses);
+        let (origin, server) = preparation_server("/v1/admission", statuses);
         let lease = axiom_pool_protocol::SignedDocument {
             payload: "test-only-lease".into(),
             signature: "test-only-signature".into(),
@@ -726,6 +781,40 @@ mod tests {
         .await;
         assert_eq!(result.is_ok(), success);
         server.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn public_challenge_backpressure_is_bounded_and_never_sends_inference() {
+        let (origin, server) = preparation_server("/v1/attestation", &[429, 503, 200]);
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let response = public_challenge(&client, &origin, &"aa".repeat(32))
+            .await
+            .unwrap();
+        assert_eq!(response.status().as_u16(), 200);
+        server.join().unwrap();
+    }
+    #[tokio::test]
+    async fn exhausted_public_backpressure_is_typed_but_authentication_errors_are_not_retried() {
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let (origin, server) = preparation_server("/v1/attestation", &[429, 429, 429, 429, 429]);
+        let error = public_challenge(&client, &origin, &"aa".repeat(32))
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<CapacityUnavailable>(),
+            Some(CapacityUnavailable::Preparation)
+        ));
+        server.join().unwrap();
+        let (origin, server) = preparation_server("/v1/attestation", &[401]);
+        let error = public_challenge(&client, &origin, &"aa".repeat(32))
+            .await
+            .unwrap_err();
+        assert!(error.downcast_ref::<CapacityUnavailable>().is_none());
+        server.join().unwrap();
+    }
+    #[tokio::test]
+    async fn explicit_admission_backpressure_can_recover_before_dispatch() {
+        check_admission(&[429, 200], true).await;
     }
 
     #[tokio::test]

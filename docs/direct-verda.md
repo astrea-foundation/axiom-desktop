@@ -181,3 +181,14 @@ An ordinary HTTP error or a refusal after output remains a verification failure.
 The worker reserves measured input plus maximum output tokens, within four
 sequences and 65,536 tokens; long contexts can reduce simultaneous generation.
 See the canonical guide for queue limits and external recovery operations.
+
+
+Secure connection preparation retries explicit public attestation/admission
+backpressure within fixed limits before transmitting inference. Each client
+independently verifies the manufacturer's signed AMD collateral supplied with
+the fresh report, including revocation and expiration. The worker shares these
+public endorsements in RAM and coalesces only admission appraisals that cover
+the entire signed lease. This prevents independent customers from repeatedly
+fetching identical AMD collateral. Transport backpressure after dispatch shows
+an overload error without asserting that work did not start; inference is not
+automatically replayed.
