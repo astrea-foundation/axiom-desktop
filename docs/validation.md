@@ -40,25 +40,36 @@ VM power-off recovered by the always-on LAN watchdog. A fresh boot with new
 worker keys passed full verification and encrypted completion. These results
 qualify the private operator path rather than production account enrollment.
 
+The [generation-13 / permanent-policy-19 account qualification](../../axiom-inference/docs/qa/direct-astreaai-account-staging-2026-11-04.json)
+adds service-owned issuer keys, real staging account grants and ledger charges,
+idempotent receipt settlement, account-scoped usage and an insufficient-credit
+refusal before input dispatch. Independently verified chat, vision, tools and
+five-reference 1536-square images completed, including two concurrent requests
+and a fresh verified boot after watchdog recovery. A named hosted staging
+profile also loaded its own Keychain credential after the short read deadline
+was removed. The hosted browser gateway's startup health remains unresolved.
+This qualification does not promote production or publish installers.
+
 Public release remains blocked on these concrete requirements:
 
-- Replace the client-held operator issuer key with production account-owned
+- Promote the qualified service-owned staging issuer path to production
   reservation/grant issuance. Each grant must bind the authenticated account,
   session, client proof key, exact approved worker and one request. Distribute
   public trust material and the verifier to clients; keep private issuer and
   publisher keys under operator/service control.
 - Register and select the AstreaAI deployment through the production account API
-  and model catalog. The current installed Direct configuration explicitly
-  requires a loopback account API and an external private configuration file;
-  the development launcher and local-profile overrides are not the public
-  enrollment path.
-- Complete customer billing: attach immutable prices and spending caps to
+  and model catalog. Hosted staging now accepts matching public controller,
+  issuer and price pins, with no client-held issuer key. Distribute the public
+  configuration and independent verifier through the supported installer and
+  enrollment path; development profile overrides remain preview controls.
+- Promote the qualified customer billing path: attach immutable prices and spending caps to
   account-owned reservations, settle verified receipts once through the balance
   ledger, and release or reconcile holds on refusal, cancellation and recovery.
-  Update the backend's older pool bounds/schema for the current 1536-square image,
-  reference-input pixel accounting and request size. Forward complete chat/image
-  usage to the native accounting UI. The current zero-charge operator grant and
-  image `settled` flag do not establish a customer debit; see
+  The staging backend now accepts 1536-square images, reference-input pixel
+  accounting and the larger encrypted request size, and forwards complete
+  chat/image usage to the native accounting UI. Preserve those bounds when
+  enrolling production. A zero-charge operator grant and an
+  image `settled` flag alone do not establish a customer debit; see
   [billing readiness](direct-verda.md#billing-readiness).
 - Exercise real independent accounts concurrently against the production
   authorization/routing path, including cancellation, account switching,
