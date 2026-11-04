@@ -6,6 +6,14 @@ profile. Inference connects directly to the independently verified confidential
 worker; the account service never receives conversation plaintext or the
 operator issuer key.
 
+The account-authorized staging mode uses the hosted staging API and service-issued
+grants instead. Its public installed `account` configuration binds the exact
+account API origin, issuer public key, immutable chat/image prices and a native
+spending ceiling. `issuer_key_file` must be empty in this mode. The client obtains
+an account-owned reservation and one-use grant, then sends encrypted inference
+directly to the same independently verified worker. There is no operator-signing
+fallback when account authorization, credit or price acceptance fails.
+
 The approved guest loads `munekazu/Huihui-Qwen3.8-27B-abliterated-FP8`, pinned by
 the signed model inventory. Its exact native model ID selects Axiom's bundled
 Qwen3.8 Uncensored system prompt, including after a model switch. The compact
@@ -87,22 +95,23 @@ and reasoning subsets, output image pixels and steps, and input-image pixels.
 Cached tokens are included in input tokens; reasoning tokens are included in
 output tokens. Do not bill either subset twice.
 
-This operator connection is not ready for customer charging. The Direct client
+The legacy operator connection does not charge customers. In that mode the Direct client
 creates random account/session identifiers and a local issuer-signed
 `pool-free-preview-v1` grant with no price snapshot and a zero maximum charge.
 The worker accepts only these free grants. An image result's `settled: true` and
 zero cost describe completion of that free request, not a debit from the signed-in
-customer's balance. Chat currently forwards aggregate token counts instead of a
-complete `RequestUsage` accounting event. The common usage record also has no
-image-pixel/step fields, so the signed receipt remains the authoritative image
-measurement.
+customer's balance.
 
-Before enabling paid AstreaAI traffic, connect authenticated account/session
-reservations and service-owned grant issuance to a registered model and immutable
-price snapshot, then persist and reconcile verified receipts through the backend's
-idempotent balance ledger. The backend pool schema must also accept the current
-`input_image_pixels` field, 36 MiB request bound and 2,359,296-pixel image output;
-its existing 16 MiB / 1,048,576-pixel limits describe the older protocol. Qualify
+The staging account path forwards complete chat accounting, including cached-input
+and reasoning subsets, and image pixel/step/reference counters. Costs come from
+the verified worker receipt and pinned price, and `settled` becomes true only
+after the account controller confirms receipt reconciliation. The worker also
+delivers the same receipt through its bounded private outbox. Both paths converge
+on one durable ledger debit; accounting recovery remains scoped to the signed-in
+account and does not assert that a missing response was authenticated locally.
+
+The matching backend accepts the current `input_image_pixels` field, 36 MiB
+request bound and 2,359,296-pixel image output. Before a paid rollout, qualify
 reservation release, cancellation, duplicate receipts and recovery before a
 customer can be charged. These remain [rollout gates](validation.md#astreaai-rollout-gates).
 
@@ -149,6 +158,19 @@ native databases and credentials under `.axiom-local/profiles/<name>/`, keeping
 existing conversations out of the QA runtime. The default local profile keeps
 its existing paths. Named profiles require the same explicit loopback origins
 and trusted configuration; packaged applications ignore the override.
+
+Hosted staging QA instead sets `AXIOM_DESKTOP_STAGING_PROFILE=1` with the exact
+staging API/authentication origins. An optional
+`AXIOM_DESKTOP_STAGING_PROFILE_NAME=astreaai-qa-20261104` isolates Electron and
+native storage beneath `.axiom-staging/profiles/<name>/`. The default staging
+profile retains its previous paths. Only public Direct/pool configuration paths
+are forwarded; local CA and local credential overrides are not forwarded to a
+hosted staging process. Packaged applications ignore these development profiles.
+
+`vendor/axiom-direct-verifier/AXIOM_SOURCE.json` records the canonical verifier
+source and locked Python requirements. This owned bundle lets companion measured
+gateways package the same independent verifier from the pinned native repository
+without relying on a neighboring checkout or a client-held signing key.
 
 ## Verification and completion
 

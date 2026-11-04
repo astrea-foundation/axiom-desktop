@@ -1,7 +1,7 @@
 //! Explicit local operator connection to a measured SNP/NVIDIA worker.
 use crate::{
-    EvidenceCheck, EvidenceClaim, Result, SecureClientConfig, SecureClientError, SecurityEvidence,
-    SecurityState, TrustPolicy,
+    ApiCredential, EvidenceCheck, EvidenceClaim, Result, SecureClientConfig, SecureClientError,
+    SecurityEvidence, SecurityState, TrustPolicy,
     provider::{SecureProvider, VerifiedSession, sealed},
 };
 use async_trait::async_trait;
@@ -25,6 +25,22 @@ use tokio_util::sync::CancellationToken;
 fn exchange_error(error: &anyhow::Error, cancelled: bool, image: bool) -> SecureClientError {
     if cancelled {
         return SecureClientError::cancelled();
+    }
+    if error.is::<axiom_pool_client::InsufficientCredit>() {
+        return SecureClientError::with_code(
+            axiom_inference::ProviderFailureKind::InsufficientCredit,
+            crate::error::SecureErrorCode::InsufficientCredit,
+            "Insufficient balance. Top up your Axiom balance to continue.",
+            false,
+        );
+    }
+    if error.is::<axiom_pool_client::AuthenticationRejected>() {
+        return SecureClientError::with_code(
+            axiom_inference::ProviderFailureKind::Authentication,
+            crate::error::SecureErrorCode::Authentication,
+            "Your Axiom session is no longer valid. Sign in again.",
+            false,
+        );
     }
     if let Some(capacity) = error.downcast_ref::<axiom_pool_client::direct::CapacityUnavailable>() {
         let detail = match capacity {
@@ -69,11 +85,6 @@ pub(crate) fn installed_config(relay: &url::Url) -> Result<Option<DirectConfig>>
     let Some(path) = std::env::var_os("AXIOM_DIRECT_CLIENT_CONFIG_FILE") else {
         return Ok(None);
     };
-    if !matches!(relay.host_str(), Some("localhost" | "127.0.0.1" | "[::1]")) {
-        return Err(SecureClientError::configuration(
-            "direct operator configuration requires a local account API",
-        ));
-    }
     let path = PathBuf::from(path);
     let metadata = std::fs::symlink_metadata(&path).map_err(|_| {
         SecureClientError::configuration("direct operator configuration unavailable")
@@ -97,7 +108,18 @@ pub(crate) fn installed_config(relay: &url::Url) -> Result<Option<DirectConfig>>
     })?;
     let cfg: DirectConfig = axiom_pool_protocol::strict::decode(&raw)
         .map_err(|_| SecureClientError::configuration("invalid direct operator configuration"))?;
-    DirectClient::new(cfg.clone())
+    if let Some(authority) = &cfg.account {
+        if authority.origin != relay.as_str().trim_end_matches('/') {
+            return Err(SecureClientError::configuration(
+                "AstreaAI account authority must match the signed-in account API",
+            ));
+        }
+    } else if !matches!(relay.host_str(), Some("localhost" | "127.0.0.1" | "[::1]")) {
+        return Err(SecureClientError::configuration(
+            "direct operator configuration requires a local account API",
+        ));
+    }
+    DirectClient::validate_config(&cfg)
         .map_err(|_| SecureClientError::configuration("invalid direct worker pins"))?;
     Ok(Some(cfg))
 }
@@ -135,23 +157,39 @@ pub(crate) fn models(config: &SecureClientConfig) -> Vec<ModelInfo> {
         attestation_protocol: PROFILE.into(),
         context_window_tokens: 32768,
         max_output_tokens: 4096,
-        // The operator pays for the rented machine; there is no token tariff.
-        input_price_microusd_per_million_tokens: None,
-        output_price_microusd_per_million_tokens: None,
+        input_price_microusd_per_million_tokens: direct
+            .account
+            .as_ref()
+            .map(|a| a.chat_price.input_microusd_per_million),
+        output_price_microusd_per_million_tokens: direct
+            .account
+            .as_ref()
+            .map(|a| a.chat_price.output_microusd_per_million),
         ..ModelInfo::default()
     };
     capabilities(&mut model, config);
     vec![model]
 }
 
-pub(crate) fn provider(config: &SecureClientConfig) -> Result<Option<Arc<dyn SecureProvider>>> {
+pub(crate) fn provider(
+    config: &SecureClientConfig,
+    credential: &Arc<ApiCredential>,
+) -> Result<Option<Arc<dyn SecureProvider>>> {
     if config.direct.is_none() {
         return Ok(None);
     }
+    let installed = config.direct.clone().unwrap();
+    let client = if installed.account.is_some() {
+        DirectClient::new_account(
+            installed,
+            secrecy::SecretString::from(credential.expose().to_owned()),
+        )
+    } else {
+        DirectClient::new(installed)
+    };
     Ok(Some(Arc::new(DirectProvider {
         client: Arc::new(
-            DirectClient::new(config.direct.clone().unwrap())
-                .map_err(|_| SecureClientError::configuration("invalid direct installation"))?,
+            client.map_err(|_| SecureClientError::configuration("invalid direct installation"))?,
         ),
         config: config.clone(),
         warm_started: std::sync::atomic::AtomicBool::new(false),
@@ -408,8 +446,11 @@ impl DirectProvider {
                 provider_id: ID.into(),
                 state: axiom_inference::InvocationState::Completed,
                 completeness: axiom_inference::UsageCompleteness::Final,
-                cost_microusd: Some("0".into()),
-                settled: true,
+                image_pixels: Some(receipt.usage.image_pixels.to_string()),
+                image_steps: Some(receipt.usage.image_steps.to_string()),
+                input_image_pixels: Some(receipt.usage.input_image_pixels.to_string()),
+                cost_microusd: Some(output.billing.charge_microusd.to_string()),
+                settled: output.billing.settled,
                 response_verified: true,
                 started_at_ms,
                 finished_at_ms: Some(
@@ -570,6 +611,11 @@ impl Session {
         events: Option<mpsc::Sender<ProviderEvent>>,
         cancel: CancellationToken,
     ) -> Result<InferenceResponse> {
+        let started_at_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+            .to_string();
         request
             .validate()
             .map_err(|_| SecureClientError::capability("invalid direct request"))?;
@@ -753,7 +799,45 @@ impl Session {
                 },
             })
             .collect::<Vec<_>>();
+        let receipt: axiom_pool_protocol::types::Receipt = axiom_pool_protocol::verify(
+            &output.terminal.receipt,
+            &ed25519_dalek::VerifyingKey::from_bytes(
+                &axiom_pool_protocol::hex_bytes(&self.worker.identity().identity_key, 32)
+                    .map_err(|_| SecureClientError::attestation("receipt signing key invalid"))?
+                    .try_into()
+                    .map_err(|_| SecureClientError::attestation("receipt signing key invalid"))?,
+            )
+            .map_err(|_| SecureClientError::attestation("receipt signing key invalid"))?,
+            axiom_pool_protocol::RECEIPT_DOMAIN,
+        )
+        .map_err(|_| SecureClientError::attestation("chat receipt invalid"))?;
         let usage = output.terminal.usage;
+        let accounting = axiom_inference::RequestUsage {
+            request_id: receipt.binding.request_id,
+            model_id: MODEL.into(),
+            provider_id: ID.into(),
+            context_window_tokens: Some(self.model.context_window_tokens),
+            state: axiom_inference::InvocationState::Completed,
+            completeness: axiom_inference::UsageCompleteness::Final,
+            input_tokens: Some(usage.input_tokens.to_string()),
+            cached_input_tokens: Some(usage.cached_input_tokens.to_string()),
+            output_tokens: Some(usage.output_tokens.to_string()),
+            reasoning_tokens: Some(usage.reasoning_tokens.to_string()),
+            input_image_pixels: Some(usage.input_image_pixels.to_string()),
+            cost_microusd: Some(output.billing.charge_microusd.to_string()),
+            settled: output.billing.settled,
+            response_verified: true,
+            started_at_ms,
+            finished_at_ms: Some(
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis()
+                    .to_string(),
+            ),
+            finish_reason: Some(output.terminal.finish_reason.clone()),
+            ..Default::default()
+        };
         let finish = if output.terminal.finish_reason == "length" {
             FinishReason::Length
         } else if output.terminal.finish_reason == "tool_calls" {
@@ -783,6 +867,7 @@ impl Session {
                     output_tokens: usage.output_tokens,
                 },
                 ProviderEvent::ResponseVerified,
+                ProviderEvent::Accounting(Box::new(accounting)),
             ] {
                 events
                     .send(event)
@@ -929,7 +1014,9 @@ mod tests {
     #[test]
     fn installed_direct_contract_rejects_catalog_substitution() {
         let config = installed();
-        let provider = provider(&config).unwrap().unwrap();
+        let provider = provider(&config, &Arc::new(ApiCredential::new("synthetic")))
+            .unwrap()
+            .unwrap();
         let model = models(&config).remove(0);
         assert!(provider.supports(&model).is_ok());
         assert!(model.supports_streaming && !model.supports_tools && !model.supports_images);
@@ -972,7 +1059,13 @@ mod tests {
         assert!(model.supports_images);
         assert!(!model.supports_tools && !model.supports_parallel_tools);
         assert!(model.file_mime_types.is_empty());
-        assert!(provider(&config).unwrap().unwrap().supports(&model).is_ok());
+        assert!(
+            provider(&config, &Arc::new(ApiCredential::new("synthetic")))
+                .unwrap()
+                .unwrap()
+                .supports(&model)
+                .is_ok()
+        );
     }
 
     #[test]
@@ -982,7 +1075,9 @@ mod tests {
         config.direct.as_mut().unwrap().tools = true;
         let model = models(&config).remove(0);
         assert!(model.supports_tools);
-        let configured = provider(&config).unwrap().unwrap();
+        let configured = provider(&config, &Arc::new(ApiCredential::new("synthetic")))
+            .unwrap()
+            .unwrap();
         assert!(configured.supports(&model).is_ok());
         assert!(configured.supports(&legacy).is_err());
     }
@@ -1004,7 +1099,9 @@ mod tests {
     #[tokio::test]
     async fn image_installation_flags_are_required_before_network_or_key_access() {
         let config = installed();
-        let configured = provider(&config).unwrap().unwrap();
+        let configured = provider(&config, &Arc::new(ApiCredential::new("synthetic")))
+            .unwrap()
+            .unwrap();
         assert!(
             configured
                 .image_capabilities(&TrustPolicy::default(), CancellationToken::new())
@@ -1039,7 +1136,9 @@ mod tests {
     #[tokio::test]
     async fn relaxed_policy_is_rejected_before_any_worker_contact() {
         let config = installed();
-        let provider = provider(&config).unwrap().unwrap();
+        let provider = provider(&config, &Arc::new(ApiCredential::new("synthetic")))
+            .unwrap()
+            .unwrap();
         let model = models(&config).remove(0);
         for policy in [
             TrustPolicy {

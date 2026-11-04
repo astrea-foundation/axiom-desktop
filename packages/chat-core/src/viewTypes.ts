@@ -157,6 +157,9 @@ export interface RequestUsage {
   cachedInputTokens?: string | null;
   outputTokens?: string | null;
   reasoningTokens?: string | null;
+  imagePixels?: string | null;
+  imageSteps?: string | null;
+  inputImagePixels?: string | null;
   costMicrousd?: string | null;
   settled?: boolean;
   responseVerified?: boolean;

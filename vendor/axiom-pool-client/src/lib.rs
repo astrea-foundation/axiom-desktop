@@ -26,6 +26,15 @@ use zeroize::Zeroizing;
 #[derive(Debug)]
 pub struct InsufficientCredit;
 
+#[derive(Debug)]
+pub struct AuthenticationRejected;
+impl std::fmt::Display for AuthenticationRejected {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Your Axiom session is no longer valid. Sign in again.")
+    }
+}
+impl std::error::Error for AuthenticationRejected {}
+
 impl std::fmt::Display for InsufficientCredit {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str("Insufficient balance. Top up your Axiom balance to continue.")
@@ -68,6 +77,7 @@ pub struct VerifiedBilling {
     pub charge_microusd: u64,
     pub maximum_charge_microusd: u64,
     pub pricing: Option<axiom_pool_protocol::pricing::Price>,
+    pub settled: bool,
 }
 pub struct PreparedRequest {
     grant: Grant,
@@ -128,6 +138,7 @@ impl PoolClient {
     ) -> Result<Self> {
         axiom_pool_protocol::origin(&origin, fixture)?;
         let mut http = reqwest::Client::builder()
+            .user_agent("axiom-native/1")
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(std::time::Duration::from_secs(10))
@@ -190,6 +201,12 @@ impl PoolClient {
         cancel: &CancellationToken,
     ) -> Result<Value> {
         let response = tokio::select! {_ = cancel.cancelled()=>anyhow::bail!("cancelled"),response=self.http.post(format!("{}/api/v1/pool/{route}",self.origin)).bearer_auth(self.credential.expose_secret()).json(&body).send()=>response?};
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(AuthenticationRejected.into());
+        }
+        if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            return Err(direct::CapacityUnavailable::Preparation.into());
+        }
         check_status(response.status(), "pool metadata request rejected")?;
         attestation::bounded_json(response, 8 * 1024 * 1024).await
     }
@@ -523,6 +540,7 @@ impl PoolClient {
                 charge_microusd: receipt.charge_microusd,
                 maximum_charge_microusd: grant.max_charge_microusd,
                 pricing: grant.pricing,
+                settled: false,
             },
         })
     }

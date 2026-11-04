@@ -142,11 +142,6 @@ export class AgentSidecar {
           AXIOM_BASE_URL: this.origins.api,
           ...chutesEnv,
           ...localProfile({ packaged: app.isPackaged, environment: process.env, home: app.getPath("home") }).sidecarEnv,
-          // Scope only native account storage, not Electron's OS browser lookup.
-          ...(!app.isPackaged && process.env.AXIOM_DESKTOP_STAGING_PROFILE === "1" ? {
-            XDG_CONFIG_HOME: join(app.getPath("home"), ".axiom-staging", "config"),
-            XDG_DATA_HOME: join(app.getPath("home"), ".axiom-staging", "data"),
-          } : {}),
         },
         inheritEnv: DESKTOP_SIDECAR_INHERITED_ENV,
         // API-key automation belongs to the standalone CLI, never the

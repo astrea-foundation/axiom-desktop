@@ -120,7 +120,7 @@ impl ProviderRegistry {
                 &config,
                 Arc::clone(&credential),
             )?;
-            let direct = crate::providers::direct::provider(&config)?;
+            let direct = crate::providers::direct::provider(&config, &credential)?;
             let pool = Arc::new(crate::providers::pool::PoolProvider::new(
                 config, credential,
             )) as Arc<dyn SecureProvider>;

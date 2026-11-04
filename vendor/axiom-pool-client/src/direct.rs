@@ -5,7 +5,7 @@ use crate::{
 };
 use anyhow::{Context, Result, ensure};
 use axiom_pool_protocol::{
-    GRANT_DOMAIN, PROTOCOL,
+    GRANT_DOMAIN, PROTOCOL, SignedDocument,
     authorization::{self, ClientKey},
     crypto::RequestContext,
     frames::FrameVerifier,
@@ -33,7 +33,11 @@ pub struct DirectConfig {
     pub origin: String,
     pub connect_ip: Option<IpAddr>,
     pub model_manifest: String,
+    #[serde(default)]
     pub issuer_key_file: PathBuf,
+    /// Installed public account authority. Never selected by worker evidence.
+    #[serde(default)]
+    pub account: Option<AccountAuthority>,
     pub verifier: VerifierConfig,
     #[serde(default)]
     pub vision: bool,
@@ -43,8 +47,19 @@ pub struct DirectConfig {
     pub image_generation: bool,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AccountAuthority {
+    pub origin: String,
+    pub issuer_key: String,
+    pub chat_price: axiom_pool_protocol::pricing::Price,
+    pub image_price: axiom_pool_protocol::pricing::Price,
+    pub maximum_charge_microusd: u64,
+}
+
 pub struct DirectClient {
     config: DirectConfig,
+    account: Option<crate::PoolClient>,
     connection: tokio::sync::RwLock<Option<(VerifiedWorker, reqwest::Client)>>,
     verification_lock: tokio::sync::Mutex<()>,
     admission: tokio::sync::RwLock<Option<(WorkerIdentity, u64)>>,
@@ -176,15 +191,57 @@ async fn admit(
 }
 
 impl DirectClient {
-    pub fn new(config: DirectConfig) -> Result<Self> {
+    pub fn validate_config(config: &DirectConfig) -> Result<()> {
         axiom_pool_protocol::origin(&config.origin, false)?;
         axiom_pool_protocol::hex_bytes(&config.model_manifest, 32)?;
+        if let Some(account) = &config.account {
+            axiom_pool_protocol::origin(&account.origin, false)?;
+            axiom_pool_protocol::hex_bytes(&account.issuer_key, 32)?;
+            account.chat_price.validate()?;
+            account.image_price.validate()?;
+            ensure!(
+                config.issuer_key_file.as_os_str().is_empty(),
+                "account mode must not hold an operator issuer key"
+            );
+            ensure!(
+                account.maximum_charge_microusd <= axiom_pool_protocol::pricing::MAX_MONEY,
+                "invalid account spending ceiling"
+            );
+        } else {
+            ensure!(
+                config.issuer_key_file.is_absolute(),
+                "absolute operator key path required"
+            );
+        }
+        Ok(())
+    }
+    pub fn new(config: DirectConfig) -> Result<Self> {
         ensure!(
-            config.issuer_key_file.is_absolute(),
-            "absolute operator key path required"
+            config.account.is_none(),
+            "account mode requires an authenticated credential"
         );
+        Self::construct(config, None)
+    }
+    pub fn new_account(config: DirectConfig, credential: secrecy::SecretString) -> Result<Self> {
+        Self::validate_config(&config)?;
+        let authority = config
+            .account
+            .as_ref()
+            .context("installed account authority required")?;
+        let account = crate::PoolClient::new(
+            authority.origin.clone(),
+            &authority.issuer_key,
+            credential,
+            config.verifier.clone(),
+        )?
+        .with_maximum_charge(authority.maximum_charge_microusd)?;
+        Self::construct(config, Some(account))
+    }
+    fn construct(config: DirectConfig, account: Option<crate::PoolClient>) -> Result<Self> {
+        Self::validate_config(&config)?;
         Ok(Self {
             config,
+            account,
             connection: tokio::sync::RwLock::new(None),
             verification_lock: tokio::sync::Mutex::new(()),
             admission: tokio::sync::RwLock::new(None),
@@ -332,7 +389,7 @@ impl DirectClient {
     ) -> Result<VerifiedWorker> {
         tokio::select! {_=cancel.cancelled()=>anyhow::bail!("cancelled"),result=async{
             let (worker,client,_)=self.verified_until(deadline,cancel).await?;
-            self.ensure_admitted(&worker,&client,deadline).await?;Ok(worker)
+            if self.account.is_none() { self.ensure_admitted(&worker,&client,deadline).await?; } Ok(worker)
         }=>result}
     }
     fn issuer(&self) -> Result<ed25519_dalek::SigningKey> {
@@ -414,8 +471,24 @@ impl DirectClient {
         F: FnMut(axiom_pool_protocol::frames::Frame) -> Fut + Send,
         Fut: std::future::Future<Output = Result<()>> + Send,
     {
+        let reservation = tokio::sync::Mutex::new(None::<String>);
         let result = tokio::select! { _=cancel.cancelled()=>Err(anyhow::anyhow!("cancelled")),
-        result=self.execute_inner(input,limits,pinned,on_frame,&cancel)=>result };
+        result=self.execute_inner(input,limits,pinned,on_frame,&cancel,&reservation)=>result };
+        if result.is_err()
+            && let (Some(account), Some(id)) = (&self.account, reservation.lock().await.as_ref())
+        {
+            // The controller releases unclaimed holds and fences claimed work.
+            // It never marks an uncertain execution idle or replays it.
+            let _ = tokio::time::timeout(
+                Duration::from_secs(3),
+                account.metadata(
+                    "control",
+                    json!({"reservation_id":id,"action":"cancel"}),
+                    &CancellationToken::new(),
+                ),
+            )
+            .await;
+        }
         // Discard a failed transport/session, but never replay its inference.
         if result.as_ref().is_err_and(|error| {
             error
@@ -433,6 +506,7 @@ impl DirectClient {
         pinned: Option<&VerifiedWorker>,
         mut on_frame: F,
         cancel: &CancellationToken,
+        reservation: &tokio::sync::Mutex<Option<String>>,
     ) -> Result<(VerifiedWorker, VerifiedOutput)>
     where
         F: FnMut(axiom_pool_protocol::frames::Frame) -> Fut + Send,
@@ -475,47 +549,118 @@ impl DirectClient {
         }
         let cfg = &self.config;
         let transport = &cfg.origin;
-        let issuer = self.issuer()?;
         let admission_started = Instant::now();
-        timings.admission_reused = self
-            .ensure_admitted(&verified, &client, limits.deadline)
-            .await?;
-        timings.admission_ms = elapsed_ms(admission_started);
-        let key = loop {
-            if let Ok(k) = p256::ecdsa::SigningKey::from_bytes((&rand::random::<[u8; 32]>()).into())
-            {
-                break k;
+        if self.account.is_none() {
+            timings.admission_reused = self
+                .ensure_admitted(&verified, &client, limits.deadline)
+                .await?;
+        }
+        let key = if let Some(account) = &self.account {
+            account.key.clone()
+        } else {
+            loop {
+                if let Ok(k) =
+                    p256::ecdsa::SigningKey::from_bytes((&rand::random::<[u8; 32]>()).into())
+                {
+                    break k;
+                }
             }
         };
-        let binding = Binding {
-            account: axiom_pool_protocol::random_id(),
-            account_session: axiom_pool_protocol::random_id(),
-            client_jkt: ClientKey::from_signing(&key).thumbprint()?,
-            request_id: axiom_pool_protocol::random_id(),
-            attempt_id: axiom_pool_protocol::random_id(),
-            reservation_id: axiom_pool_protocol::random_id(),
-            fencing: 1,
-            worker: expected.clone(),
-            grant_jti: axiom_pool_protocol::random_id(),
-            operation: if image_operation {
-                Operation::Image
-            } else {
-                Operation::Chat
-            },
-            limits,
+        let (grant, grant_doc) = if let Some(account) = &self.account {
+            let request_id = axiom_pool_protocol::random_id();
+            let key = ClientKey::from_signing(&key);
+            let value = account
+                .metadata(
+                    "reserve",
+                    json!({
+                        "request_id":request_id,"model_manifest":cfg.model_manifest,
+                        "operation":if image_operation {"image"} else {"chat"},"limits":limits,
+                        "client_key":key,"challenge":axiom_pool_protocol::random_challenge(),
+                        "preferred_worker":expected,"include_evidence":false
+                    }),
+                    cancel,
+                )
+                .await?;
+            let ticket: axiom_pool_protocol::types::Ticket = axiom_pool_protocol::verify(
+                &serde_json::from_value::<SignedDocument>(value["ticket"].clone())?,
+                &account.issuer_key,
+                axiom_pool_protocol::TICKET_DOMAIN,
+            )?;
+            *reservation.lock().await = Some(ticket.binding.reservation_id.clone());
+            ensure!(
+                ticket.protocol == PROTOCOL
+                    && ticket.expires_at > now()
+                    && ticket.binding.worker == expected
+                    && ticket.binding.request_id == request_id
+                    && ticket.binding.client_jkt == key.thumbprint()?
+                    && ticket.binding.limits == limits
+                    && ticket.binding.operation
+                        == if image_operation {
+                            Operation::Image
+                        } else {
+                            Operation::Chat
+                        },
+                "account reservation binding differs from the verified request"
+            );
+            let value = account
+                .metadata(
+                    "grants",
+                    json!({"reservation_id":ticket.binding.reservation_id}),
+                    cancel,
+                )
+                .await?;
+            let doc: SignedDocument = serde_json::from_value(value["grant"].clone())?;
+            let grant: Grant =
+                axiom_pool_protocol::verify(&doc, &account.issuer_key, GRANT_DOMAIN)?;
+            grant.validate(&account.origin, &expected, now(), false)?;
+            let authority = cfg.account.as_ref().context("account authority missing")?;
+            ensure!(
+                grant.binding == ticket.binding
+                    && grant.pricing.as_ref()
+                        == Some(if image_operation {
+                            &authority.image_price
+                        } else {
+                            &authority.chat_price
+                        })
+                    && grant.max_charge_microusd <= authority.maximum_charge_microusd,
+                "unaccepted account price or grant binding"
+            );
+            (grant, doc)
+        } else {
+            let binding = Binding {
+                account: axiom_pool_protocol::random_id(),
+                account_session: axiom_pool_protocol::random_id(),
+                client_jkt: ClientKey::from_signing(&key).thumbprint()?,
+                request_id: axiom_pool_protocol::random_id(),
+                attempt_id: axiom_pool_protocol::random_id(),
+                reservation_id: axiom_pool_protocol::random_id(),
+                fencing: 1,
+                worker: expected.clone(),
+                grant_jti: axiom_pool_protocol::random_id(),
+                operation: if image_operation {
+                    Operation::Image
+                } else {
+                    Operation::Chat
+                },
+                limits,
+            };
+            let grant = Grant {
+                protocol: PROTOCOL.into(),
+                issuer: cfg.origin.clone(),
+                audience: axiom_pool_protocol::AUDIENCE.into(),
+                issued_at: now(),
+                expires_at: now() + 120,
+                binding: binding.clone(),
+                price_version: "pool-free-preview-v1".into(),
+                max_charge_microusd: 0,
+                pricing: None,
+            };
+            grant.validate(&cfg.origin, &expected, now(), false)?;
+            let doc = sign(&grant, &self.issuer()?, GRANT_DOMAIN)?;
+            (grant, doc)
         };
-        let grant = Grant {
-            protocol: PROTOCOL.into(),
-            issuer: cfg.origin.clone(),
-            audience: axiom_pool_protocol::AUDIENCE.into(),
-            issued_at: now(),
-            expires_at: now() + 120,
-            binding: binding.clone(),
-            price_version: "pool-free-preview-v1".into(),
-            max_charge_microusd: 0,
-            pricing: None,
-        };
-        grant.validate(&cfg.origin, &expected, now(), false)?;
+        timings.admission_ms = elapsed_ms(admission_started);
+        let binding = grant.binding.clone();
         input.validate(&binding)?;
         let expected_input_pixels: u64 = match &input {
             Input::Chat { messages, .. } => messages
@@ -525,7 +670,6 @@ impl DirectClient {
                 .sum(),
             Input::Image { references, .. } => references.iter().map(|image| image.pixels()).sum(),
         };
-        let grant_doc = sign(&grant, &issuer, GRANT_DOMAIN)?;
         let token = Zeroizing::new(serde_json::to_string(&grant_doc)?);
         let exact_binding = serde_json::to_string(&binding)?;
         let payload = Zeroizing::new(serde_json::to_string(&Payload {
@@ -662,6 +806,16 @@ impl DirectClient {
             "worker returned an unadvertised tool call"
         );
         timings.total_ms = elapsed_ms(started);
+        let settled = if let Some(account) = &self.account {
+            tokio::time::timeout(
+                Duration::from_secs(3),
+                account.metadata("receipts", serde_json::to_value(&terminal.receipt)?, cancel),
+            )
+            .await
+            .is_ok_and(|r| r.is_ok_and(|v| v["accepted"] == true))
+        } else {
+            true
+        };
         Ok((
             verified,
             VerifiedOutput {
@@ -673,9 +827,10 @@ impl DirectClient {
                 direct_timings: Some(timings),
                 billing: VerifiedBilling {
                     price_version: grant.price_version,
-                    charge_microusd: 0,
-                    maximum_charge_microusd: 0,
-                    pricing: None,
+                    charge_microusd: receipt.charge_microusd,
+                    maximum_charge_microusd: grant.max_charge_microusd,
+                    pricing: grant.pricing,
+                    settled,
                 },
             },
         ))
@@ -685,6 +840,45 @@ impl DirectClient {
 mod tests {
     use super::*;
     use std::io::{Read, Write};
+
+    #[test]
+    fn account_installations_use_public_pins_without_an_operator_key_or_fallback() {
+        let price = serde_json::json!({"version":"staging-1","currency":"USD",
+            "input_microusd_per_million":250000,"cached_input_microusd_per_million":50000,
+            "output_microusd_per_million":1500000,"image_microusd_per_megapixel_step":0,"request_microusd":0});
+        let public = ed25519_dalek::SigningKey::from_bytes(&[7; 32]).verifying_key();
+        let cfg: DirectConfig = serde_json::from_value(serde_json::json!({
+            "origin":"https://worker.example:8443","connect_ip":null,"model_manifest":"11".repeat(32),
+            "verifier":{"binary":"/not-executed","binary_sha256":"22".repeat(32),
+                "publisher_key":"33".repeat(32),"minimum_policy_sequence":19},
+            "account":{"origin":"https://api-staging.example","issuer_key":hex::encode(public.as_bytes()),
+                "chat_price":price,"image_price":price,"maximum_charge_microusd":100000}
+        })).unwrap();
+        assert!(cfg.issuer_key_file.as_os_str().is_empty());
+        assert!(DirectClient::new(cfg.clone()).is_err());
+        assert!(
+            DirectClient::new_account(
+                cfg.clone(),
+                secrecy::SecretString::from("synthetic".to_owned())
+            )
+            .is_ok()
+        );
+        let mut private = cfg.clone();
+        private.issuer_key_file = "/must-never-be-read/operator.pem".into();
+        assert!(
+            DirectClient::new_account(private, secrecy::SecretString::from("synthetic".to_owned()))
+                .is_err()
+        );
+        let mut insecure = cfg;
+        insecure.account.as_mut().unwrap().origin = "http://api-staging.example".into();
+        assert!(
+            DirectClient::new_account(
+                insecure,
+                secrecy::SecretString::from("synthetic".to_owned())
+            )
+            .is_err()
+        );
+    }
 
     #[tokio::test]
     async fn verified_cache_covers_the_entire_deadline_and_never_falls_back_after_refresh_failure()

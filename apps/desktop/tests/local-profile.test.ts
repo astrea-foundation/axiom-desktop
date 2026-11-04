@@ -14,6 +14,30 @@ const environment = {
   CHUTES_API_KEY: "must-not-reach-sidecar",
 };
 
+test("named hosted staging profiles isolate all storage and forward public account pins only", () => {
+  const staging = { AXIOM_DESKTOP_STAGING_PROFILE: "1", AXIOM_DESKTOP_STAGING_PROFILE_NAME: "astreaai-qa-20261104",
+    AXIOM_BASE_URL: "https://api-staging.axiom.stream", AXIOM_AUTH_URL: "https://auth-staging.axiom.stream",
+    AXIOM_DIRECT_CLIENT_CONFIG_FILE: join(home, "astreaai-public.json"),
+    AXIOM_LOCAL_RELAY_CA_FILE: join(home, "must-not-pass.pem"),
+    AXIOM_DESKTOP_LOCAL_CREDENTIALS: "1", VERDA_CLIENT_SECRET: "must-not-pass" };
+  const result = localProfile({ packaged: false, environment: staging, home });
+  assert.equal(result.userDataName, "Axiom Staging astreaai-qa-20261104");
+  assert.deepEqual(result.sidecarEnv, {
+    XDG_CONFIG_HOME: join(home, ".axiom-staging", "profiles", "astreaai-qa-20261104", "config"),
+    XDG_DATA_HOME: join(home, ".axiom-staging", "profiles", "astreaai-qa-20261104", "data"),
+    AXIOM_DIRECT_CLIENT_CONFIG_FILE: staging.AXIOM_DIRECT_CLIENT_CONFIG_FILE,
+  });
+  assert.deepEqual(localProfile({ packaged: true, environment: staging, home }), { sidecarEnv: {} });
+  for (const replacement of [
+    { AXIOM_DESKTOP_STAGING_PROFILE_NAME: "../existing" },
+    { AXIOM_DIRECT_CLIENT_CONFIG_FILE: "relative.json" },
+    { AXIOM_BASE_URL: "https://api.axiom.stream", AXIOM_AUTH_URL: "https://auth.axiom.stream" },
+  ]) assert.throws(() => localProfile({ packaged: false, environment: { ...staging, ...replacement }, home }));
+  const defaultProfile = localProfile({ packaged: false, environment: { ...staging, AXIOM_DESKTOP_STAGING_PROFILE_NAME: undefined }, home });
+  assert.equal(defaultProfile.userDataName, "Axiom Staging");
+  assert.equal(defaultProfile.sidecarEnv.XDG_DATA_HOME, join(home, ".axiom-staging", "data"));
+});
+
 test("local inference profile isolates storage and passes only public trust configuration", () => {
   const result = localProfile({ packaged: false, environment, home });
   assert.equal(result.userDataName, "Axiom Local");
