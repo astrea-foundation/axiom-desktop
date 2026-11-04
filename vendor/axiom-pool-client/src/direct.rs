@@ -370,7 +370,11 @@ impl DirectClient {
         let result = tokio::select! { _=cancel.cancelled()=>Err(anyhow::anyhow!("cancelled")),
         result=self.execute_inner(input,limits,pinned,on_frame,&cancel)=>result };
         // Discard a failed transport/session, but never replay its inference.
-        if result.is_err() {
+        if result.as_ref().is_err_and(|error| {
+            error
+                .downcast_ref::<axiom_pool_protocol::frames::Rejection>()
+                .is_none()
+        }) {
             self.invalidate().await;
         }
         result
@@ -562,6 +566,9 @@ impl DirectClient {
             }
         }
         reader.finish()?;
+        if let Some(refusal) = frames.rejection()? {
+            return Err(refusal.clone().into());
+        }
         let terminal = frames.finish()?;
         ensure!(
             terminal.usage.input_image_pixels == expected_input_pixels,

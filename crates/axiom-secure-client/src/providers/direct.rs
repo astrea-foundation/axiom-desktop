@@ -22,6 +22,28 @@ use std::{
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+fn exchange_error(error: &anyhow::Error, cancelled: bool, image: bool) -> SecureClientError {
+    if cancelled {
+        return SecureClientError::cancelled();
+    }
+    if let Some(refusal) = error.downcast_ref::<axiom_pool_protocol::frames::Rejection>() {
+        // Only the request-bound encrypted refusal followed by clean EOF can
+        // reach this type. Do not automatically replay an inference request.
+        return SecureClientError::with_code(
+            axiom_inference::ProviderFailureKind::RateLimited,
+            crate::error::SecureErrorCode::RateLimited,
+            "Verda is busy. Your request was not started; try again shortly.",
+            false,
+        )
+        .with_retry_at(Some((now() + u64::from(refusal.retry_after_secs)) as i64));
+    }
+    SecureClientError::attestation(if image {
+        "Verda image response incomplete or unauthenticated; inference was not replayed"
+    } else {
+        "Verda response incomplete or unauthenticated; inference was not replayed"
+    })
+}
+
 pub const ID: &str = "axiom-direct";
 pub const MODEL: &str = "direct:qwen3.8-27b";
 const PROFILE: &str = "axiom-snp-nvidia-v1";
@@ -258,18 +280,60 @@ impl DirectProvider {
                 .await;
         }
         let updates = progress.clone();
-        let (worker,output)=self.client.execute_with(Input::Image{
-            prompt:request.prompt.into(),references,uncensored:runtime.uncensored(request.chat_model_id),width:size.width,height:size.height,steps:8,seed:rand_core::RngCore::next_u32(&mut rand_core::OsRng),
-        },Limits{context_tokens:8192,output_tokens:1,input_bytes:axiom_pool_protocol::MAX_REQUEST as u64,output_bytes:32*1024*1024,
-            image_pixels:u64::from(size.width)*u64::from(size.height),image_steps:8,input_image_pixels,deadline:now()+180},None,
-            move |frame| {let updates=updates.clone();async move {
-                if let Some(tx)=updates {
-                    let update=match frame.kind.as_str(){
-                        "accepted"=>Some(axiom_inference::ImageGenerationProgress{stage:axiom_inference::ImageGenerationStage::Generating,percent:1}),
-                        "image_manifest"=>Some(axiom_inference::ImageGenerationProgress{stage:axiom_inference::ImageGenerationStage::Finishing,percent:99}),_=>None};
-                    if let Some(update)=update{let _=tx.send(update).await;}
-                }Ok(())
-            }},cancel.clone()).await.map_err(|e|{tracing::warn!(detail=%e,"direct image exchange failed");if cancel.is_cancelled(){SecureClientError::cancelled()}else{SecureClientError::attestation("Verda image response incomplete or unauthenticated; inference was not replayed")}})?;
+        let (worker, output) = self
+            .client
+            .execute_with(
+                Input::Image {
+                    prompt: request.prompt.into(),
+                    references,
+                    uncensored: runtime.uncensored(request.chat_model_id),
+                    width: size.width,
+                    height: size.height,
+                    steps: 8,
+                    seed: rand_core::RngCore::next_u32(&mut rand_core::OsRng),
+                },
+                Limits {
+                    context_tokens: 8192,
+                    output_tokens: 1,
+                    input_bytes: axiom_pool_protocol::MAX_REQUEST as u64,
+                    output_bytes: 32 * 1024 * 1024,
+                    image_pixels: u64::from(size.width) * u64::from(size.height),
+                    image_steps: 8,
+                    input_image_pixels,
+                    deadline: now() + 180,
+                },
+                None,
+                move |frame| {
+                    let updates = updates.clone();
+                    async move {
+                        if let Some(tx) = updates {
+                            let update = match frame.kind.as_str() {
+                                "accepted" => Some(axiom_inference::ImageGenerationProgress {
+                                    stage: axiom_inference::ImageGenerationStage::Generating,
+                                    percent: 1,
+                                }),
+                                "image_manifest" => {
+                                    Some(axiom_inference::ImageGenerationProgress {
+                                        stage: axiom_inference::ImageGenerationStage::Finishing,
+                                        percent: 99,
+                                    })
+                                }
+                                _ => None,
+                            };
+                            if let Some(update) = update {
+                                let _ = tx.send(update).await;
+                            }
+                        }
+                        Ok(())
+                    }
+                },
+                cancel.clone(),
+            )
+            .await
+            .map_err(|e| {
+                tracing::warn!(detail=%e,"direct image exchange failed");
+                exchange_error(&e, cancel.is_cancelled(), true)
+            })?;
         if !policy.is_valid_at(now()) {
             return Err(SecureClientError::attestation(
                 "trust policy expired before image completion",
@@ -634,13 +698,7 @@ impl Session {
             .await
             .map_err(|error| {
                 tracing::warn!(detail = %error, "direct attested exchange failed");
-                if cancel.is_cancelled() {
-                    SecureClientError::cancelled()
-                } else {
-                    SecureClientError::attestation(
-                        "Verda response incomplete or unauthenticated; inference was not replayed",
-                    )
-                }
+                exchange_error(&error, cancel.is_cancelled(), false)
             })?;
         if !self.policy.is_valid_at(now()) {
             return Err(SecureClientError::attestation(
@@ -793,6 +851,25 @@ fn evidence(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_typed_authenticated_refusal_becomes_busy_and_is_not_auto_replayed() {
+        let error = anyhow::Error::new(axiom_pool_protocol::frames::Rejection {
+            code: "WORKER_BUSY".into(),
+            retry_after_secs: 2,
+        });
+        let busy = exchange_error(&error, false, false);
+        assert_eq!(busy.code(), crate::error::SecureErrorCode::RateLimited);
+        assert!(!busy.retryable());
+        assert!(busy.retry_at().is_some());
+        let untrusted = exchange_error(&anyhow::anyhow!("WORKER_BUSY"), false, false);
+        assert_eq!(
+            untrusted.code(),
+            crate::error::SecureErrorCode::AttestationRejected
+        );
+        let cancelled = exchange_error(&error, true, false);
+        assert_eq!(cancelled.code(), crate::error::SecureErrorCode::Cancelled);
+    }
 
     fn installed() -> SecureClientConfig {
         let mut config = SecureClientConfig::new("https://127.0.0.1:9443").unwrap();

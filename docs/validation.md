@@ -29,11 +29,14 @@ Public release remains blocked on these concrete requirements:
   authorization/routing path, including cancellation, account switching,
   wrong-request responses, incomplete streams and worker replacement. Retain
   strict attestation and authenticated completion throughout.
-- Establish bounded admission/queueing and clear busy handling for the intended
-  rollout. The current worker permits 65,536 reserved tokens and Desktop reserves
-  32,768 per chat, giving two simultaneous chat requests. Sustained load has not
-  been qualified; redundant capacity and draining/replacement checks are needed
-  for a production availability claim.
+- Qualify bounded admission/queueing and recovery under the intended customer
+  rollout. The capacity branch reserves trusted input plus maximum output tokens,
+  permits four short chats within 65,536 reserved tokens, queues at most eight
+  requests for 30 seconds, and returns an authenticated busy refusal without
+  replay. Long 32K requests can still reduce concurrency to two. Worker/queue
+  tests and an operator load test do not establish real-account routing or
+  sustained customer capacity. Recovery also needs an always-on external Verda
+  watchdog and redundant ready capacity for a production availability claim.
 - Package the independent verifier and public trust configuration for every
   supported installer target, then qualify production sign-in, the installed
   provider, image/reference flows, account-data preservation and updates using

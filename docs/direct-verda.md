@@ -170,3 +170,14 @@ admission, first reasoning, first text and total request time.
 
 Deployment, issuer/publisher key management and measured guest recovery belong
 to the canonical inference repository's [Verda guide](../../axiom-inference/docs/direct-verda.md).
+
+
+Validated requests may wait in the worker's private RAM for up to 30 seconds.
+If capacity is full or the wait expires, the worker returns an encrypted refusal
+bound to the original request. Native verifies the stream through EOF and shows
+“Verda is busy. Your request was not started; try again shortly.” It preserves
+verified connection preparation and does not automatically replay inference.
+An ordinary HTTP error or a refusal after output remains a verification failure.
+The worker reserves measured input plus maximum output tokens, within four
+sequences and 65,536 tokens; long contexts can reduce simultaneous generation.
+See the canonical guide for queue limits and external recovery operations.
