@@ -37,7 +37,6 @@ const KEYRING_SERVICE: &str = "stream.axiom.axiomcli";
 const KEYRING_ACCOUNT_PREFIX: &str = "native-refresh-token-v1";
 const MAX_TOKEN_BYTES: usize = 8 * 1024;
 const MAX_HTTP_REQUEST_BYTES: usize = 16 * 1024;
-const CREDENTIAL_INITIALIZATION_TIMEOUT: Duration = Duration::from_secs(3);
 const CREDENTIAL_OPERATION_TIMEOUT: Duration = Duration::from_secs(3);
 const CREDENTIAL_TIMEOUT_MARKER: &str =
     "timed out; the system credential store remains unavailable";
@@ -627,18 +626,9 @@ impl AuthManager {
         let initialization = tokio::task::spawn_blocking(move || {
             Self::new_with_paths(&owned_api_base_url, timeout, &owned_paths)
         });
-        match tokio::time::timeout(CREDENTIAL_INITIALIZATION_TIMEOUT, initialization).await {
-            Ok(Ok(result)) => result,
-            Ok(Err(error)) => Err(AxiomError::Storage(format!(
-                "credential initialization task failed: {error}"
-            ))),
-            Err(_) => Self::new_unavailable(
-                api_base_url,
-                timeout,
-                paths,
-                "the system credential store did not respond; Axiom is running signed out",
-            ),
-        }
+        initialization.await.map_err(|error| {
+            AxiomError::Storage(format!("credential initialization task failed: {error}"))
+        })?
     }
 
     /// Build a signed-out, process-local auth surface for the deterministic
@@ -1210,7 +1200,7 @@ impl AuthManager {
         let code_challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
         let callback_uri = format!("http://127.0.0.1:{port}/callback");
         let client_id_path = self.store.client_id_path().to_owned();
-        let client_id = bounded_credential_task("client identity", move || {
+        let client_id = credential_task("client identity", move || {
             load_or_create_client_id(&client_id_path).map_err(|error| error.to_string())
         })
         .await?;
@@ -1352,7 +1342,7 @@ impl AuthManager {
 
     async fn acquire_credential_lock(&self) -> Result<fs::File> {
         let path = self.store.refresh_lock_path().to_owned();
-        let result = bounded_credential_task("native-session coordination", move || {
+        let result = credential_task("native-session coordination", move || {
             acquire_refresh_file_lock(&path).map_err(|error| error.to_string())
         })
         .await;
@@ -1368,7 +1358,7 @@ impl AuthManager {
     ) -> Result<Option<String>> {
         let store = Arc::clone(&self.store);
         let lock = credential_lock.try_clone()?;
-        let value = bounded_credential_task("credential read", move || {
+        let value = credential_task("credential read", move || {
             let _lock_keepalive = lock;
             store.load()
         })
@@ -2279,17 +2269,16 @@ fn credential_scope(api_base_url: &Url, client_id_path: &Path) -> (String, PathB
     )
 }
 
-async fn bounded_credential_task<T, F>(label: &'static str, operation: F) -> Result<T>
+async fn credential_task<T, F>(label: &'static str, operation: F) -> Result<T>
 where
     T: Send + 'static,
     F: FnOnce() -> std::result::Result<T, String> + Send + 'static,
 {
     let task = tokio::task::spawn_blocking(operation);
-    match tokio::time::timeout(CREDENTIAL_OPERATION_TIMEOUT, task).await {
-        Ok(Ok(Ok(value))) => Ok(value),
-        Ok(Ok(Err(error))) => Err(AxiomError::Storage(error)),
-        Ok(Err(_)) => Err(AxiomError::Storage(format!("{label} task failed"))),
-        Err(_) => Err(credential_timeout_error(label)),
+    match task.await {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(error)) => Err(AxiomError::Storage(error)),
+        Err(_) => Err(AxiomError::Storage(format!("{label} task failed"))),
     }
 }
 
@@ -3823,20 +3812,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn locked_credential_coordination_times_out_and_disables_local_auth() {
+    async fn locked_credential_coordination_waits_without_disabling_local_auth() {
         let (auth, _state, store) = manager().await;
         let held = acquire_refresh_file_lock(store.refresh_lock_path())
             .expect("hold audience coordination lock");
-
-        let error = auth
-            .acquire_credential_lock()
+        let pending = auth.acquire_credential_lock();
+        tokio::pin!(pending);
+        assert!(
+            tokio::time::timeout(
+                CREDENTIAL_OPERATION_TIMEOUT + Duration::from_millis(100),
+                &mut pending
+            )
             .await
-            .expect_err("a locked audience must have a bounded wait");
-        assert!(error.to_string().contains(CREDENTIAL_TIMEOUT_MARKER));
-        assert!(auth.unavailable_detail().is_some());
-
+            .is_err()
+        );
+        assert!(auth.unavailable_detail().is_none());
         drop(held);
-        tokio::time::sleep(CREDENTIAL_OPERATION_TIMEOUT * 2).await;
+        let lock = tokio::time::timeout(Duration::from_secs(2), pending)
+            .await
+            .expect("released coordination completes")
+            .expect("credential lock");
+        drop(lock);
+        assert!(auth.unavailable_detail().is_none());
     }
 
     #[tokio::test]
@@ -3863,27 +3860,36 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn credential_read_timeout_fails_closed_without_losing_the_persisted_token() {
+    async fn credential_read_waits_for_the_store_and_keeps_the_session() {
         let (auth, _state, store) = manager().await;
-        let refresh = "read-timeout-refresh-token-with-enough-entropy";
+        let refresh = "slow-read-refresh-token-with-enough-entropy";
         *store.credential.lock().expect("credential lock") = Some(refresh.into());
         auth.shared.state.write().expect("state lock").refresh_token =
             Some(SecretString::from(refresh.to_owned()));
         store
             .load_delay_ms
             .store(stalled_credential_delay_ms(), Ordering::Release);
-
-        let error = auth
-            .access_token(Duration::ZERO, &CancellationToken::new())
+        let cancellation = CancellationToken::new();
+        let pending = auth.access_token(Duration::ZERO, &cancellation);
+        tokio::pin!(pending);
+        assert!(
+            tokio::time::timeout(
+                CREDENTIAL_OPERATION_TIMEOUT + Duration::from_millis(100),
+                &mut pending
+            )
             .await
-            .expect_err("stalled credential read must time out");
-        assert!(error.to_string().contains(CREDENTIAL_TIMEOUT_MARKER));
-        assert!(!auth.has_credential());
-        assert!(auth.unavailable_detail().is_some());
-
-        tokio::time::sleep(CREDENTIAL_OPERATION_TIMEOUT * 3).await;
+            .is_err()
+        );
+        assert!(auth.has_credential());
+        assert!(auth.unavailable_detail().is_none());
         store.load_delay_ms.store(0, Ordering::Release);
-        assert_eq!(store.load().expect("persisted token"), Some(refresh.into()));
+        tokio::time::timeout(Duration::from_secs(12), pending)
+            .await
+            .expect("slow read eventually completes")
+            .expect("valid access token");
+        assert!(auth.has_credential());
+        assert!(auth.unavailable_detail().is_none());
+        assert_eq!(store.deletes.load(Ordering::Acquire), 0);
     }
 
     #[tokio::test]
@@ -3938,13 +3944,20 @@ mod tests {
         assert!(auth.unavailable_detail().is_some());
         assert_eq!(state.revocations.load(Ordering::Acquire), 1);
 
-        let peer_error = auth
-            .acquire_credential_lock()
-            .await
-            .expect_err("late delete must retain the audience lock");
-        assert!(peer_error.to_string().contains(CREDENTIAL_TIMEOUT_MARKER));
-        tokio::time::sleep(CREDENTIAL_OPERATION_TIMEOUT * 5).await;
+        let peer = auth.acquire_credential_lock();
+        tokio::pin!(peer);
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), &mut peer)
+                .await
+                .is_err(),
+            "late delete must retain the audience lock"
+        );
         store.delete_delay_ms.store(0, Ordering::Release);
+        let peer_lock = tokio::time::timeout(Duration::from_secs(12), peer)
+            .await
+            .expect("late delete releases the lock")
+            .expect("peer credential lock");
+        drop(peer_lock);
         assert!(store.load().expect("late delete").is_none());
         let replacement = "replacement-after-delete-with-enough-entropy";
         // A fresh owner can safely save only after the supervised late delete
