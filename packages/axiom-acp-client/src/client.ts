@@ -227,7 +227,7 @@ export class AxiomAcpClient extends EventEmitter {
         version: AXIOM_ACP_CLIENT_VERSION,
         title: "Axiom Desktop",
       },
-    });
+    }, 0);
     if (expectedProductVersion !== undefined && result.agentInfo?.version !== expectedProductVersion) {
       throw new ProtocolError(`Axiom Desktop ${expectedProductVersion} requires AxiomCLI ${expectedProductVersion}; received ${result.agentInfo?.version ?? 'no version'}. Quit Axiom and all AxiomCLI sessions, then reinstall the matching release (or rebuild the development sidecar).`);
     }
@@ -616,7 +616,7 @@ export class AxiomAcpClient extends EventEmitter {
   }
 
   accountStatus(): Promise<AccountStatusResponse> {
-    return this.accountRequest("_axiom/account/status", {});
+    return this.accountRequest("_axiom/account/status", {}, 0);
   }
 
   nativeLoginStart(methodHint?: LoginMethod): Promise<NativeLoginStartResponse> {
