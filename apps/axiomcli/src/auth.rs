@@ -2246,7 +2246,29 @@ fn build_client(api_base_url: &str, timeout: Duration) -> Result<(Client, Url, U
 
 fn credential_scope(api_base_url: &Url, client_id_path: &Path) -> (String, PathBuf) {
     let audience = api_base_url.origin().ascii_serialization();
-    let digest = URL_SAFE_NO_PAD.encode(Sha256::digest(audience.as_bytes()));
+    // Named hosted previews must never read or replace the ordinary staging
+    // account's Keychain entry. Stable/default installations retain their
+    // existing origin-scoped credential and shared CLI/Desktop session.
+    let parts: Vec<_> = client_id_path.iter().collect();
+    let named_staging = cfg!(debug_assertions)
+        && audience == "https://api-staging.axiom.stream"
+        && parts.windows(3).any(|part| {
+            part[0] == ".axiom-staging"
+                && part[1] == "profiles"
+                && part[2].to_str().is_some_and(|name| {
+                    !name.is_empty()
+                        && name.len() <= 48
+                        && name
+                            .bytes()
+                            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
+                })
+        });
+    let scope = if named_staging {
+        format!("{audience}\0{}", client_id_path.display())
+    } else {
+        audience
+    };
+    let digest = URL_SAFE_NO_PAD.encode(Sha256::digest(scope.as_bytes()));
     let keyring_account = format!("{KEYRING_ACCOUNT_PREFIX}-{digest}");
     let lock_directory = client_id_path
         .parent()
@@ -3586,6 +3608,29 @@ mod tests {
         assert_eq!(store.load().expect("load").as_deref(), Some(replacement));
         assert_eq!(store.deletes.load(Ordering::Acquire), 0);
         assert!(!auth.has_credential());
+    }
+
+    #[test]
+    fn named_staging_profiles_never_use_the_default_keychain_entry() {
+        let api = Url::parse("https://api-staging.axiom.stream").unwrap();
+        let first = Path::new(
+            "/home/test/.axiom-staging/profiles/qa-a/data/axiom/shared/identity/client-id",
+        );
+        let second = Path::new(
+            "/home/test/.axiom-staging/profiles/qa-b/data/axiom/shared/identity/client-id",
+        );
+        let default = Path::new("/home/test/.axiom-staging/data/axiom/shared/identity/client-id");
+        let (a, _) = credential_scope(&api, first);
+        let (b, _) = credential_scope(&api, second);
+        let (original, _) = credential_scope(&api, default);
+        assert_ne!(a, b);
+        assert_ne!(a, original);
+        assert_ne!(b, original);
+        let production = Url::parse("https://api.axiom.stream").unwrap();
+        assert_eq!(
+            credential_scope(&production, first).0,
+            credential_scope(&production, default).0
+        );
     }
 
     #[tokio::test]

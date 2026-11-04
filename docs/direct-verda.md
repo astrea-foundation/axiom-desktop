@@ -162,7 +162,10 @@ and trusted configuration; packaged applications ignore the override.
 Hosted staging QA instead sets `AXIOM_DESKTOP_STAGING_PROFILE=1` with the exact
 staging API/authentication origins. An optional
 `AXIOM_DESKTOP_STAGING_PROFILE_NAME=astreaai-qa-20261104` isolates Electron and
-native storage beneath `.axiom-staging/profiles/<name>/`. The default staging
+native storage beneath `.axiom-staging/profiles/<name>/`. Debug builds also
+scope a named staging profile's system Keychain credential to that profile,
+so qualification never reads or replaces the ordinary staging account's token.
+The default staging
 profile retains its previous paths. Only public Direct/pool configuration paths
 are forwarded; local CA and local credential overrides are not forwarded to a
 hosted staging process. Packaged applications ignore these development profiles.
