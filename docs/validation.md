@@ -13,6 +13,14 @@ vision, five-reference image generation/editing and the 1536-square default in
 the operator's macOS development connection. Its fresh QA account and separate
 profile do not establish a hosted customer rollout.
 
+The [generation-12 / permanent-policy-18 qualification](../../axiom-inference/docs/qa/direct-verda-capacity-recovery-2026-11-04.json)
+adds four independent completed clients, an independent 14-request burst with
+eight authenticated completions and six authenticated capacity refusals, active
+disconnect isolation, five-reference 1536-square image regression, and a real
+VM power-off recovered by the always-on LAN watchdog. A fresh boot with new
+worker keys passed full verification and encrypted completion. These results
+qualify the private operator path rather than production account enrollment.
+
 Public release remains blocked on these concrete requirements:
 
 - Replace the client-held operator issuer key with production account-owned
@@ -35,8 +43,9 @@ Public release remains blocked on these concrete requirements:
   requests for 30 seconds, and returns an authenticated busy refusal without
   replay. Long 32K requests can still reduce concurrency to two. Worker/queue
   tests and an operator load test do not establish real-account routing or
-  sustained customer capacity. Recovery also needs an always-on external Verda
-  watchdog and redundant ready capacity for a production availability claim.
+  sustained customer capacity. The external Verda watchdog is installed and recovery-qualified on
+  `salt@10.0.0.191`; redundant ready capacity is still required for a production
+  availability claim.
 - Package the independent verifier and public trust configuration for every
   supported installer target, then qualify production sign-in, the installed
   provider, image/reference flows, account-data preservation and updates using
