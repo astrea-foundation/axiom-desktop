@@ -78,6 +78,40 @@ test('copies a complete helper payload without development checkout paths', asyn
   } finally { await rm(root,{recursive:true,force:true}); }
 });
 
+test('the final packaging pass validates the existing helper without copying over it', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(),'axiom-chutes-final-'));
+  try {
+    const {source} = await fixture(root);
+    const resources = path.join(root,'resources');
+    const target = await bundleRuntime(resources,source,options);
+    const before = await readFile(path.join(target,'bundle.json'));
+    assert.equal(await bundleRuntime.verifyPackagedBundle(resources,source,options),target);
+    assert.deepEqual(await readFile(path.join(target,'bundle.json')),before);
+    await assert.rejects(bundleRuntime(resources,source,options),/existing packaged/);
+    await writeFile(path.join(target,'unexpected'),'must not be removed or accepted');
+    await assert.rejects(bundleRuntime.verifyPackagedBundle(resources,source,options),/Unexpected file/);
+    assert.equal(await readFile(path.join(target,'unexpected'),'utf8'),'must not be removed or accepted');
+  } finally { await rm(root,{recursive:true,force:true}); }
+});
+
+test('final validation rejects another self-consistent helper and still requires signatures', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(),'axiom-chutes-final-binding-'));
+  try {
+    const {source,manifest} = await fixture(root);
+    const resources = path.join(root,'resources');
+    const target = await bundleRuntime(resources,source,options);
+    await assert.rejects(bundleRuntime.verifyPackagedBundle(resources,source,{...options,signed:true,teamId:'ABCDEFGHIJ'}));
+    const nativePath = path.join(target,'native.json');
+    const native = JSON.parse(await readFile(nativePath,'utf8'));
+    native.maximum_charge_microusd = 1;
+    const bytes = Buffer.from(JSON.stringify(native));await writeFile(nativePath,bytes);
+    Object.assign(manifest.files.find(row=>row.path==='native.json')!,{bytes:bytes.length,sha256:digest(bytes)});
+    await writeFile(path.join(target,'bundle.json'),JSON.stringify(manifest));
+    await bundleRuntime.validateBundle(target,options);
+    await assert.rejects(bundleRuntime.verifyPackagedBundle(resources,source,options),/differs from its validated input/);
+  } finally { await rm(root,{recursive:true,force:true}); }
+});
+
 for (const attack of ['code','extra','traversal','duplicate','symlink','inventory-symlink','architecture','channel','unsigned-runtime']) {
   test(`rejects ${attack} before installing the helper`, {
     skip: process.platform === 'win32' && ['symlink','inventory-symlink'].includes(attack),

@@ -8,7 +8,7 @@ REPOSITORY = "astrea-foundation/axiom-desktop"
 REVISION = "7c41a12b31d42aefe4f21896864a166f0d087b3a"
 VERSION = "0.1.17"
 SOURCE_RUN = 42116622051
-RECOVERY_TAG = "v0.1.17-packaging.1"
+RECOVERY_TAG = "v0.1.17-packaging.2"
 REQUIRED = {
     "live-evaluation", "linux",
     "Native macOS build (x64)", "Native macOS build (arm64)",

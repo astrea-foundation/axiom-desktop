@@ -44,6 +44,12 @@ jobs:
       with:
         ref: 7c41a12b31d42aefe4f21896864a166f0d087b3a
         fetch-depth: 0
+    - name: Load reviewed assembly hooks separately from the immutable app source
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ github.sha }}
+        path: packaging-recovery
+        persist-credentials: false
     - name: Require the exact qualified native source
       env:
         GH_TOKEN: ${{ github.token }}
@@ -135,7 +141,7 @@ jobs:
         JS
         node apps/desktop/scripts/set-release-version.mjs 0.1.17
         pnpm --filter axiom-desktop build
-        pnpm --filter axiom-desktop exec electron-builder --mac pkg --universal --publish never --config.forceCodeSigning=true --config.mac.notarize=false --config.extraMetadata.axiomUpdateChannel=stable --config.extraMetadata.axiomUpdateFormat=pkg '--config.mac.x64ArchFiles=Contents/Resources/{chutes/runtime,direct}/{**/*,**/.*,**/.*/**/*}'
+        pnpm --filter axiom-desktop exec electron-builder --mac pkg --universal --publish never --config.forceCodeSigning=true --config.mac.notarize=false --config.extraMetadata.axiomUpdateChannel=stable --config.extraMetadata.axiomUpdateFormat=pkg --config.afterPack="$PWD/packaging-recovery/apps/desktop/scripts/after-pack.cjs" '--config.mac.x64ArchFiles=Contents/Resources/{chutes/runtime,direct}/{**/*,**/.*,**/.*/**/*}'
         xcrun notarytool submit apps/desktop/dist/Axiom-0.1.17-mac-universal.pkg --apple-id "$APPLE_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
         xcrun stapler staple apps/desktop/dist/Axiom-0.1.17-mac-universal.pkg
         node scripts/package-cli.mjs --mac --universal --input target/release/universal
