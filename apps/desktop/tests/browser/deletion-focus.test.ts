@@ -3012,7 +3012,7 @@ for (const vision of [false, true]) {
       const send = page.getByRole("button", { name: "Send", exact: true });
       if (!vision) {
         assert.ok(await send.isDisabled());
-        await page.getByText("Choose a model that supports these files, or remove the unsupported attachments.").waitFor();
+        await page.getByText("Enable Images for image editing, or choose a model that supports these files.").waitFor();
       } else {
         await send.click();
         await page.waitForFunction(() => (window as any).__deletionTest.calls.some((call: any) => call.method === "attachments"));
@@ -3646,7 +3646,8 @@ test("generated and edited images open the local viewer with keyboard and backdr
     const trigger = page.getByRole("button", { name: "View generated image", exact: true });
     await trigger.waitFor();
     const caption = await trigger.locator("..").locator("figcaption").innerText();
-    assert.match(caption, /Axiom · Chutes/);
+    assert.match(caption, /Axiom/);
+    assert.doesNotMatch(caption, /Chutes|AstreaAI/, "a provider-free image fixture must not invent its source");
     assert.doesNotMatch(caption, /verified|E2EE/i);
     const thumbnail = await trigger.boundingBox();
     const source = await trigger.locator("img").getAttribute("src");
