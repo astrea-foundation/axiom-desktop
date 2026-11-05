@@ -209,6 +209,34 @@ of this updater's public contract; the native helper uses the complete installer
 
 ## CI baseline
 
+### Completing unpublished packaging from retained inputs
+
+The manual `release-packaging-recovery.yml` workflow completes the unpublished
+0.1.17 installer set from its exact qualified native source and retained build
+receipts. Dispatch the reviewed `v0.1.17-packaging.1` tag after its workflow is
+promoted to `main`. This tag records assembly recovery and is excluded from the
+normal stable-tag build trigger; the native `v0.1.17` tag remains unchanged.
+
+The recovery gate requires the original live evaluation, Linux packages, both
+Mac native inputs, both Windows native inputs, signed Windows installers and
+Windows ARM64 installation acceptance to have passed. It refuses an active or
+completed original publisher. Native receipt revisions, hashes, architecture,
+compiled update keys and exact-source CI stay mandatory.
+
+Mac assembly runs on Intel capacity and preserves the pre-signed runtimes in
+both app inputs, including hidden vendor library directories such as `.dylibs`.
+The exception stays scoped to `Contents/Resources/chutes/runtime` and
+`Contents/Resources/direct`; app code and Rust sidecars retain normal universal
+merging. Assembly checks out the immutable native source and passes this scoped
+rule through Electron's configuration argument. It repeats code signing,
+notarization, stapling and installer assessment, reuses the already accepted
+Windows/Linux bytes, and signs the complete final inventory before publication.
+The inventory continues to identify the exact qualified native source; the
+recovery workflow tag records the assembly configuration. This procedure does
+not replace bytes or metadata in a published release.
+
+### Qualifying a candidate
+
 Pull requests targeting `main` run Linux Rust and Desktop UI checks. Merging does
 not repeat those checks automatically. Native macOS/Windows validation is an
 explicit `ci.yml` dispatch with `target=native` (all four native jobs), `all`
