@@ -24,6 +24,11 @@ OS, architecture, browser, source revision, artifact SHA-256, signing identity,
 result and limitations in the release's maintainer acceptance record. Unit tests
 and browser fixtures do not establish signed native OS acceptance.
 
+Browser payment quote fixtures derive issuance and expiry from one timestamp so
+the exact 60-second validity contract remains deterministic at clock boundaries.
+The expiry assertion still advances past that interval and requires the display
+to stop showing the quote.
+
 ## AstreaAI rollout gates
 
 The [generation-9 / permanent-policy-14 qualification](../../axiom-inference/docs/qa/direct-verda-reference-images-2026-11-03.json)
