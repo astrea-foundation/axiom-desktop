@@ -37,3 +37,11 @@ It identifies the upstream provider; Tinfoil retains its trademark rights.
 Source: https://github.com/tinfoilsh/tinfoil-webapp/blob/main/public/logo-white.svg
 The upstream AGPL-3.0 license, modification notice and modified SVG source ship
 in Desktop resources under `licenses/tinfoil-logo/`.
+
+Desktop's Astrea banner reuses owner-provided artwork and field-bumper motion
+from the private Astrea Motion kit. These assets retain their original private
+asset notices and are excluded from the code's Apache-2.0 license. Provenance
+and modifications are recorded in
+`apps/desktop/src/renderer/src/assets/astrea/NOTICE.md`.
+The banner's bundled JetBrains Mono font is licensed separately under the SIL
+Open Font License 1.1, retained alongside the font as `JetBrainsMono-LICENSE.txt`.

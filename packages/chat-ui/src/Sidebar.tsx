@@ -20,7 +20,7 @@ import {
   Search,
   Shield,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { contextMenuTrigger, SidebarContextMenu, type SidebarMenuTarget } from "./SidebarContextMenu";
 import { AccountMenu, type AccountMenuProps } from "./AccountMenu";
 import { OverflowTitle } from "./OverflowTitle";
@@ -55,6 +55,7 @@ interface SidebarProps {
   billing: AccountMenuProps["billing"];
   accountId: string | null;
   connected: boolean;
+  aboveAccount?: ReactNode;
 }
 
 function ThreadRow({
@@ -201,6 +202,7 @@ export function Sidebar({
   billing,
   accountId,
   connected,
+  aboveAccount,
 }: SidebarProps) {
   const [query, setQuery] = useState("");
   const [activeDragId, setActiveDragId] = useState<string | null>(null);
@@ -276,6 +278,7 @@ export function Sidebar({
         billing={billing}
         accountId={accountId}
         connected={connected}
+        aboveAccount={aboveAccount}
       />
     </DndContext>
   );
@@ -311,6 +314,7 @@ function SidebarFrame({
   billing,
   accountId,
   connected,
+  aboveAccount,
 }: {
   folders: FolderType[];
   filtered: Thread[];
@@ -341,6 +345,7 @@ function SidebarFrame({
   billing: AccountMenuProps["billing"];
   accountId: string | null;
   connected: boolean;
+  aboveAccount?: ReactNode;
 }) {
   const { setNodeRef: setLooseRef, isOver: looseOver } = useDroppable({
     id: "folder:loose",
@@ -480,7 +485,8 @@ function SidebarFrame({
           </div>
         </div>
 
-        <div className="no-drag px-2 py-2">
+        {aboveAccount}
+        <div className="no-drag shrink-0 px-2 py-2">
           <AccountMenu account={account} accountId={accountId} connected={connected} billing={billing}
             onSignIn={onSignIn} onLogout={onLogout} onOpenSettings={onOpenSettings} onOpenBalance={onOpenBalance} onRefreshBalance={onRefreshBalance} />
         </div>
