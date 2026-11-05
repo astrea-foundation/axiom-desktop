@@ -137,6 +137,11 @@ jobs:
       - run: cargo build --locked --release -p axiomcli -p axiom-proxy
       - name: Build the native frozen production helper
         run: |
+          if [ '${{ matrix.arch }}' = x64 ]; then
+            export OPENSSL_DIR="$(brew --prefix openssl@3)"
+            export OPENSSL_STATIC=1
+            export UV_NO_CACHE=1
+          fi
           node scripts/build-chutes-bundle.mjs --channel production --output .local/chutes/bundle
           node scripts/build-direct-bundle.mjs --output .local/direct/bundle
           mkdir -p target/helper-artifact
