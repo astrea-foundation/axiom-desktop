@@ -57,7 +57,9 @@ fn exchange_error(error: &anyhow::Error, cancelled: bool, image: bool) -> Secure
             detail,
             false,
         )
-        .with_retry_at(Some((now() + 2) as i64));
+        .with_retry_at(Some(
+            i64::try_from(now().saturating_add(2)).unwrap_or(i64::MAX),
+        ));
     }
     if let Some(refusal) = error.downcast_ref::<axiom_pool_protocol::frames::Rejection>() {
         // Only the request-bound encrypted refusal followed by clean EOF can
@@ -68,7 +70,10 @@ fn exchange_error(error: &anyhow::Error, cancelled: bool, image: bool) -> Secure
             "AstreaAI is busy. Your request was not started; try again shortly.",
             false,
         )
-        .with_retry_at(Some((now() + u64::from(refusal.retry_after_secs)) as i64));
+        .with_retry_at(Some(
+            i64::try_from(now().saturating_add(u64::from(refusal.retry_after_secs)))
+                .unwrap_or(i64::MAX),
+        ));
     }
     SecureClientError::attestation(if image {
         "AstreaAI image response incomplete or unauthenticated; inference was not replayed"
@@ -82,11 +87,65 @@ pub const MODEL: &str = "direct:qwen3.8-27b";
 const PROFILE: &str = "axiom-snp-nvidia-v1";
 
 pub(crate) fn installed_config(relay: &url::Url) -> Result<Option<DirectConfig>> {
-    let Some(path) = std::env::var_os("AXIOM_DIRECT_CLIENT_CONFIG_FILE") else {
+    let (path, bundled) = if let Some(path) = std::env::var_os("AXIOM_DIRECT_CLIENT_CONFIG_FILE") {
+        (PathBuf::from(path), false)
+    } else {
+        if relay.as_str().trim_end_matches('/') != "https://api.axiom.stream" {
+            return Ok(None);
+        }
+        let executable = std::env::current_exe().map_err(|_| {
+            SecureClientError::configuration("native executable location unavailable")
+        })?;
+        let Some(path) = bundled_config(&executable)? else {
+            return Ok(None);
+        };
+        (path, true)
+    };
+    load_config(&path, bundled, relay).map(Some)
+}
+
+fn bundled_config(executable: &std::path::Path) -> Result<Option<PathBuf>> {
+    let Some(directory) = executable.parent().and_then(std::path::Path::parent) else {
         return Ok(None);
     };
-    let path = PathBuf::from(path);
-    let metadata = std::fs::symlink_metadata(&path).map_err(|_| {
+    let target = match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64") => "darwin-arm64",
+        ("macos", "x86_64") => "darwin-x64",
+        ("windows", "aarch64" | "x86_64") => "win32-x64",
+        ("linux", "x86_64") => "linux-x64",
+        _ => return Ok(None),
+    };
+    let path = directory.join("direct").join(target).join("native.json");
+    if !path.exists() {
+        return Ok(None);
+    }
+    let identity_path = directory.join("axiom-install.json");
+    let metadata = std::fs::symlink_metadata(&identity_path).map_err(|_| {
+        SecureClientError::configuration("bundled AstreaAI installation identity unavailable")
+    })?;
+    if !metadata.is_file() || metadata.len() > 16384 {
+        return Err(SecureClientError::configuration(
+            "invalid bundled AstreaAI installation identity",
+        ));
+    }
+    let identity = std::fs::read(identity_path).map_err(|_| {
+        SecureClientError::configuration("bundled AstreaAI installation identity unavailable")
+    })?;
+    let identity: serde_json::Value = serde_json::from_slice(&identity).map_err(|_| {
+        SecureClientError::configuration("invalid bundled AstreaAI installation identity")
+    })?;
+    if identity["schemaVersion"] != 1
+        || !matches!(identity["product"].as_str(), Some("cli" | "desktop"))
+    {
+        return Err(SecureClientError::configuration(
+            "unrecognized bundled AstreaAI installation",
+        ));
+    }
+    Ok(Some(path))
+}
+
+fn load_config(path: &std::path::Path, bundled: bool, relay: &url::Url) -> Result<DirectConfig> {
+    let metadata = std::fs::symlink_metadata(path).map_err(|_| {
         SecureClientError::configuration("direct operator configuration unavailable")
     })?;
     if !path.is_absolute() || !metadata.is_file() || metadata.len() > 64 * 1024 {
@@ -97,7 +156,7 @@ pub(crate) fn installed_config(relay: &url::Url) -> Result<Option<DirectConfig>>
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        if metadata.permissions().mode() & 0o077 != 0 {
+        if !bundled && metadata.permissions().mode() & 0o077 != 0 {
             return Err(SecureClientError::configuration(
                 "private direct configuration required",
             ));
@@ -106,8 +165,27 @@ pub(crate) fn installed_config(relay: &url::Url) -> Result<Option<DirectConfig>>
     let raw = std::fs::read(path).map_err(|_| {
         SecureClientError::configuration("direct operator configuration unavailable")
     })?;
-    let cfg: DirectConfig = axiom_pool_protocol::strict::decode(&raw)
+    let mut cfg: DirectConfig = axiom_pool_protocol::strict::decode(&raw)
         .map_err(|_| SecureClientError::configuration("invalid direct operator configuration"))?;
+    if bundled {
+        let binary = if cfg!(windows) {
+            "runtime/axiom-direct-verify.exe"
+        } else {
+            "runtime/axiom-direct-verify"
+        };
+        if cfg.verifier.binary != std::path::Path::new(binary)
+            || cfg.account.is_none()
+            || !cfg.issuer_key_file.as_os_str().is_empty()
+        {
+            return Err(SecureClientError::configuration(
+                "bundled AstreaAI requires a pinned verifier and account authorization",
+            ));
+        }
+        cfg.verifier.binary = path
+            .parent()
+            .ok_or_else(|| SecureClientError::configuration("invalid AstreaAI bundle path"))?
+            .join(binary);
+    }
     if let Some(authority) = &cfg.account {
         if authority.origin != relay.as_str().trim_end_matches('/') {
             return Err(SecureClientError::configuration(
@@ -121,7 +199,7 @@ pub(crate) fn installed_config(relay: &url::Url) -> Result<Option<DirectConfig>>
     }
     DirectClient::validate_config(&cfg)
         .map_err(|_| SecureClientError::configuration("invalid direct worker pins"))?;
-    Ok(Some(cfg))
+    Ok(cfg)
 }
 
 fn capabilities(model: &mut ModelInfo, config: &SecureClientConfig) {
@@ -138,6 +216,72 @@ fn capabilities(model: &mut ModelInfo, config: &SecureClientConfig) {
     model.supported_thinking_modes = vec![ThinkingMode::ProviderDefault, ThinkingMode::Enabled];
     if model.supports_tools {
         model.supported_thinking_modes.push(ThinkingMode::Disabled);
+    }
+}
+
+#[cfg(test)]
+mod installed_bundle_tests {
+    use super::*;
+
+    fn installed_config(directory: &std::path::Path) -> PathBuf {
+        let mut value: serde_json::Value =
+            serde_json::from_str(include_str!("../../../../deploy/astreaai-production.json"))
+                .unwrap();
+        if cfg!(windows) {
+            value["verifier"]["binary"] = "runtime/axiom-direct-verify.exe".into();
+        }
+        let path = directory.join("native.json");
+        std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+        path
+    }
+
+    #[test]
+    fn public_bundle_binds_its_account_origin_and_relative_verifier() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = installed_config(directory.path());
+        let origin = url::Url::parse("https://api.axiom.stream").unwrap();
+        let cfg = load_config(&path, true, &origin).unwrap();
+        assert!(cfg.verifier.binary.is_absolute());
+        assert!(cfg.issuer_key_file.as_os_str().is_empty());
+        assert!(
+            load_config(
+                &path,
+                true,
+                &url::Url::parse("https://api-staging.axiom.stream").unwrap()
+            )
+            .is_err()
+        );
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        value["verifier"]["binary"] = "../outside".into();
+        std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+        assert!(load_config(&path, true, &origin).is_err());
+        value["verifier"]["binary"] = if cfg!(windows) {
+            "runtime/axiom-direct-verify.exe"
+        } else {
+            "runtime/axiom-direct-verify"
+        }
+        .into();
+        value["issuer_key_file"] = "/private/operator.pem".into();
+        std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+        assert!(load_config(&path, true, &origin).is_err());
+    }
+
+    #[test]
+    fn bundle_discovery_requires_a_recognized_installation_identity() {
+        let directory = tempfile::tempdir().unwrap();
+        for target in ["darwin-arm64", "darwin-x64", "win32-x64", "linux-x64"] {
+            let path = directory.path().join("direct").join(target);
+            std::fs::create_dir_all(&path).unwrap();
+            installed_config(&path);
+        }
+        let executable = directory.path().join("bin/axiomcli");
+        assert!(bundled_config(&executable).is_err());
+        let identity = directory.path().join("axiom-install.json");
+        std::fs::write(&identity, br#"{"schemaVersion":1,"product":"unknown"}"#).unwrap();
+        assert!(bundled_config(&executable).is_err());
+        std::fs::write(&identity, br#"{"schemaVersion":1,"product":"desktop"}"#).unwrap();
+        assert!(bundled_config(&executable).unwrap().is_some());
     }
 }
 pub(crate) fn models(config: &SecureClientConfig) -> Vec<ModelInfo> {
@@ -220,7 +364,7 @@ impl DirectProvider {
         let cancel = self.warm_cancel.clone();
         tokio::spawn(async move {
             loop {
-                tokio::select! {_=cancel.cancelled()=>break,_=tokio::time::sleep(std::time::Duration::from_secs(20))=>{}}
+                tokio::select! {()=cancel.cancelled()=>break,()=tokio::time::sleep(std::time::Duration::from_secs(20))=>{}}
                 let Some(client) = weak.upgrade() else {
                     break;
                 };
@@ -329,7 +473,10 @@ impl DirectProvider {
             );
             source_image_ids.push((*id).to_owned());
         }
-        let input_image_pixels: u64 = references.iter().map(|image| image.pixels()).sum();
+        let input_image_pixels: u64 = references
+            .iter()
+            .map(axiom_pool_protocol::vision::InlineImage::pixels)
+            .sum();
         let started_at_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -562,7 +709,7 @@ impl SecureProvider for DirectProvider {
         })?;
         self.keep_warm();
         tracing::info!(
-            elapsed_ms = started.elapsed().as_millis() as u64,
+            elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
             "direct session prepared"
         );
         let evidence = evidence(model, policy, &worker, worker.public_evidence());

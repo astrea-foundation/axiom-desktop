@@ -162,6 +162,9 @@ impl ProviderRegistry {
                     config, credential,
                 )) as Arc<dyn SecureProvider>);
             } else {
+                if let Some(direct) = crate::providers::direct::provider(&config, &credential)? {
+                    providers.push(direct);
+                }
                 if let Some(chutes) = crate::providers::chutes_preview::hosted_provider(
                     &config,
                     Arc::clone(&credential),

@@ -15,6 +15,7 @@ apps/desktop/.electron-vite/
 *.sqlite3-wal
 .axiomcli/
 .cache/
+.local/
 
 # Editor and local development artifacts
 .idea/

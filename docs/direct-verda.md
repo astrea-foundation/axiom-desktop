@@ -1,4 +1,19 @@
-# AstreaAI development connection
+# AstreaAI connection
+
+Production installers include the frozen AstreaAI verifier and public account
+configuration. Desktop and CLI discover it from their installation resources
+when signed in to `https://api.axiom.stream`; customers do not install Python or
+provide an environment file. Each platform bundles its native verifier. macOS
+ships separate signed ARM64 and x64 runtimes; Windows ARM64 uses the signed x64
+verifier. Packaging validates the complete runtime inventory, executable digest
+and platform signatures before including it. The native client still verifies
+fresh CPU, GPU, workload, key and response evidence before accepting inference.
+
+Build the frozen verifier from a clean committed checkout with
+`node scripts/build-direct-bundle.mjs --output .local/direct/bundle`. The builder
+checks the vendored source inventory and installs only hash-locked binary wheels.
+Set `AXIOM_DIRECT_BUNDLE` to that output root when packaging. Signed production
+installers require the bundle; private issuer keys are rejected from it.
 
 The explicit operator connection registers `direct:qwen3.8-27b` as **Qwen3.8
 Uncensored**, under the **AstreaAI** provider. Account sign-in and local storage use the isolated HTTPS loopback
@@ -82,8 +97,9 @@ count. The adapter preserves source IDs for preview, saving and regeneration.
 Regenerate retains the original request's chosen dimensions and reference order.
 The uncensored model selects its pinned image LoRA. Document uploads remain
 unavailable.
-The model has no customer tariff in the account catalog. The current connection
-uses free operator grants; the operator pays the rented machine's compute bill.
+The legacy operator connection uses free operator grants. The production account
+connection uses its immutable published prices and account-owned reservations;
+customer charges come only from authenticated worker usage.
 Conversation titles use the local first-message label, keeping cosmetic
 background inference off this worker.
 

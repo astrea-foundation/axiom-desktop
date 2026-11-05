@@ -1,0 +1,65 @@
+name: AstreaAI verifier packages
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [dev, main]
+    paths:
+      - 'scripts/*direct*'
+      - 'deploy/astreaai-production.json'
+      - 'vendor/axiom-direct-verifier/**'
+      - '.github/workflows/direct-helpers.yml'
+permissions:
+  contents: read
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            target: darwin-arm64
+          - runner: macos-15-intel
+            target: darwin-x64
+          - runner: ubuntu-22.04
+            target: linux-x64
+          - runner: windows-latest
+            target: win32-x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@v6
+      - run: node --test scripts/direct-bundle.test.mjs
+      - run: node scripts/build-direct-bundle.mjs --output .local/direct/bundle
+      - run: tar -czf direct.tar.gz -C .local/direct/bundle ${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: direct-${{ matrix.target }}
+          path: direct.tar.gz
+          retention-days: 7
+          if-no-files-found: error
+  windows-arm64:
+    needs: build
+    runs-on: windows-11-arm
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/download-artifact@v4
+        with:
+          name: direct-win32-x64
+          path: .local/direct
+      - shell: pwsh
+        run: |
+          tar -xzf .local/direct/direct.tar.gz -C .local/direct
+          & .local/direct/win32-x64/runtime/axiom-direct-verify.exe --self-test
+          if ($LASTEXITCODE -ne 0) { throw 'AstreaAI verifier failed on ARM64' }
+          node -e "require('./scripts/direct-bundle.cjs').inspectBundle('.local/direct/win32-x64','win32-x64').catch(e=>{console.error(e.message);process.exit(1)})"
