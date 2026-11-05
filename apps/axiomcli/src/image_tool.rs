@@ -351,7 +351,7 @@ impl Tool for ImageGenerationTool {
         "generate"
     }
     fn description(&self) -> &'static str {
-        "Create one image with Axiom's encrypted image service only when the user requests image creation or changes. Provide a self-contained prompt and optional aspect_ratio such as 1:1, 16:9, 9:16, 3:2 or 4:3. Images work best at higher resolutions: the native client chooses the largest supported image with that exact aspect ratio on the 32-pixel grid, within 2,359,296 pixels. New images default to 2:3 portrait at 1216×1824. Available aspect ratios: 1:1, 2:3, 3:2, 3:4, 4:3, 9:16, 16:9, 1:2, 2:1, 9:21 and 21:9. To edit or use references, supply up to five exact conversation-local image IDs in reference_image_ids. In the prompt refer to them as <image1>, <image2>, etc. in that array's order; describe each reference's role and what to preserve. Without an aspect_ratio, reference-based calls preserve the first reference's output dimensions or aspect ratio within the limits. The result is displayed automatically. You may call view_image to inspect it before answering."
+        "Create one image with Axiom's encrypted image service only when the user requests image creation or changes. Provide a self-contained prompt and optional aspect_ratio such as 1:1, 16:9, 9:16, 3:2 or 4:3. Images work best at higher resolutions: the native client chooses the largest supported image with that exact aspect ratio on the 32-pixel grid, within 2,359,296 pixels. New images default to 1:1 square at 1536×1536. Available aspect ratios: 1:1, 2:3, 3:2, 3:4, 4:3, 9:16, 16:9, 1:2, 2:1, 9:21 and 21:9. To edit or use references, supply up to five exact conversation-local image IDs in reference_image_ids. In the prompt refer to them as <image1>, <image2>, etc. in that array's order; describe each reference's role and what to preserve. Without an aspect_ratio, reference-based calls preserve the first reference's output dimensions or aspect ratio within the limits. The result is displayed automatically. You may call view_image to inspect it before answering."
     }
     fn parameters(&self) -> Value {
         json!({"type":"object", "properties":{
@@ -359,8 +359,8 @@ impl Tool for ImageGenerationTool {
             "reference_image_ids":{"type":"array", "maxItems":5,"uniqueItems":true,
                 "items":{"type":"string","pattern":"^img_[0-9a-f]{32}$"},
                 "description":"Ordered references from this conversation. First is <image1>, second <image2>, etc. Omit or pass [] for text-only generation."},
-            "aspect_ratio":{"type":"string","enum":IMAGE_ASPECT_RATIOS,"default":"2:3",
-                "description":"Width:height, for example 1:1, 16:9, 9:16, 3:2 or 4:3. The client chooses the largest supported dimensions at this ratio. Omit to use 2:3 portrait for a new image or preserve the first reference's size."}},
+            "aspect_ratio":{"type":"string","enum":IMAGE_ASPECT_RATIOS,"default":"1:1",
+                "description":"Width:height, for example 1:1, 16:9, 9:16, 3:2 or 4:3. The client chooses the largest supported dimensions at this ratio. Omit to use 1536×1536 square for a new image or the signed installation default for references."}},
             "required":["prompt"], "additionalProperties":false})
     }
 
