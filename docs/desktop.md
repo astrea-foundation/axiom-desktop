@@ -354,6 +354,15 @@ Desktop login credential.
 
 ## Presentation and local integrations
 
+A compact horizontal black **RUNS ON Astrea** banner sits above the account area
+in the left sidebar, with small, muted JetBrains Mono Medium text and a branded
+Astrea lockup on one line. It eases into view and stays visible until closed.
+The field bumper loops continuously with the camera orbiting the 3D field;
+the text and logo stay steady. The Astrea logo and wordmark open `astrea.systems`
+in the system browser. The × hides it until Axiom quits and launches again,
+including across renderer reloads and closing/reopening the window. Reduced
+motion disables the video and animated transitions.
+
 Tool activity appears at its execution point between assistant segments, with
 stable IDs for live/snapshot reconciliation. Markdown, code and KaTeX render
 locally with bundled fonts. Code blocks use bundled syntax grammars and light/dark
