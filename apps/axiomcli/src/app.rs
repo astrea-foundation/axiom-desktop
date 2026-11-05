@@ -383,6 +383,9 @@ pub struct CommandEnvelope {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
+// Accounting snapshots are bounded metadata carried inline across the local
+// event channel; retaining this representation avoids per-event allocation.
+#[allow(clippy::large_enum_variant)]
 pub enum AppEvent {
     SteeringApplied {
         turn_id: TurnId,

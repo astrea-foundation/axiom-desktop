@@ -52,6 +52,12 @@ try {
     if (arch !== process.arch && arch !== 'universal') await verifyNativeInput(input, platform, arch);
     await writeFile(path.join(payload, 'axiom-install.json'), JSON.stringify({schemaVersion:1, product:'cli', format, versioned:platform==='linux'})+'\n');
     await createRequire(import.meta.url)('./package-licenses.cjs')(root, path.join(payload, 'licenses'));
+    if (process.env.AXIOM_DIRECT_BUNDLE) {
+      await createRequire(import.meta.url)('./direct-bundle.cjs').copyBundles(payload,process.env.AXIOM_DIRECT_BUNDLE,{
+        platform:{mac:'darwin',win:'win32',linux:'linux'}[platform],architecture:arch,
+        signed:!unsigned,teamId:process.env.APPLE_TEAM_ID,
+      });
+    } else if (!unsigned) throw new Error('A production AstreaAI verifier bundle is required for installers');
     if (process.env.AXIOM_CHUTES_BUNDLE) {
       await createRequire(import.meta.url)('../apps/desktop/scripts/bundle-chutes-runtime.cjs')(payload, process.env.AXIOM_CHUTES_BUNDLE, {
         platform: {mac:'darwin',win:'win32',linux:'linux'}[platform], architecture: arch,

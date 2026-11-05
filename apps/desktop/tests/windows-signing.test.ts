@@ -52,6 +52,9 @@ test('afterPack signs added Windows runtime and launcher files and propagates si
   const saved = modules.map(name => { const id=require.resolve(name); require(id); return [id, require.cache[id]!.exports] as const; });
   const signer = require('../scripts/windows-signing.cjs');
   const originalSign = signer.sign;
+  const direct = require('../../../scripts/direct-bundle.cjs');
+  const originalCopy = direct.copyBundles;
+  const originalBundle = process.env.AXIOM_DIRECT_BUNDLE;
   try {
     for (const [id] of saved) require.cache[id]!.exports = async () => {};
     mkdirSync(path.join(directory,'bin'), {recursive:true});
@@ -60,6 +63,13 @@ test('afterPack signs added Windows runtime and launcher files and propagates si
     mkdirSync(path.join(directory,'installer'), {recursive:true});
     writeFileSync(path.join(directory,'installer/windows-cli-path.ps1'),'installer fixture');
     const calls: Array<{path:string;hash:string;isNest:boolean}> = [];
+    let directCopies=0;
+    // This fixture isolates afterPack's signing orchestration. The separate
+    // direct-bundle suite validates the real inventory and signature checks.
+    process.env.AXIOM_DIRECT_BUNDLE=directory;
+    direct.copyBundles=async (_resources:string,_bundle:string,options:{signed:boolean})=>{
+      assert.equal(options.signed,directCopies<2);directCopies++;
+    };
     signer.sign = (configuration: {path:string;hash:string;isNest:boolean}) => calls.push(configuration);
     // Deliberately has no private electron-builder signing methods.
     const context = {electronPlatformName:'win32', appOutDir:directory, packager:{projectDir:desktop, getResourcesDir:()=>directory, config:{forceCodeSigning:true, extraMetadata:{axiomUpdateFormat:'exe'}}}};
@@ -71,8 +81,11 @@ test('afterPack signs added Windows runtime and launcher files and propagates si
     await assert.rejects(afterPack(context), /signing service rejected/);
     context.packager.config.forceCodeSigning=false;
     await afterPack(context);
+    assert.equal(directCopies,3);
   } finally {
     signer.sign=originalSign;
+    direct.copyBundles=originalCopy;
+    if(originalBundle===undefined)delete process.env.AXIOM_DIRECT_BUNDLE;else process.env.AXIOM_DIRECT_BUNDLE=originalBundle;
     for (const [id, exports] of saved) require.cache[id]!.exports=exports;
     rmSync(directory,{recursive:true,force:true});
   }
