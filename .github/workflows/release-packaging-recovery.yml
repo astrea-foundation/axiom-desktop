@@ -1,0 +1,259 @@
+# Assembly-only recovery. Native source/tag 0.1.17 and its receipt checks stay unchanged.
+name: Complete unpublished Axiom 0.1.17 packaging
+'on':
+  workflow_dispatch: {}
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: axiom-0.1.17-packaging-recovery
+  cancel-in-progress: false
+jobs:
+  qualify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Validate the reviewed recovery tag and retained acceptance gates
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: python3 scripts/release-packaging-recovery.py
+    - uses: actions/checkout@v4
+      with:
+        ref: 7c41a12b31d42aefe4f21896864a166f0d087b3a
+        fetch-depth: 0
+    - name: Require the exact qualified native source
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        git merge-base --is-ancestor HEAD origin/main
+        node apps/desktop/scripts/set-release-version.mjs 0.1.17 --check-only
+        python3 scripts/verify-release-ci.py 7c41a12b31d42aefe4f21896864a166f0d087b3a
+  macos:
+    name: Recover and sign retained universal Mac inputs
+    timeout-minutes: 60
+    needs: qualify
+    runs-on: macos-15-intel
+    environment: release
+    env:
+      AXIOM_UPDATE_PUBLIC_KEYS: ${{ vars.AXIOM_UPDATE_PUBLIC_KEYS }}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: 7c41a12b31d42aefe4f21896864a166f0d087b3a
+        fetch-depth: 0
+    - name: Require the exact qualified native source
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        git merge-base --is-ancestor HEAD origin/main
+        node apps/desktop/scripts/set-release-version.mjs 0.1.17 --check-only
+        python3 scripts/verify-release-ci.py 7c41a12b31d42aefe4f21896864a166f0d087b3a
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: 1.97.1
+    - uses: pnpm/action-setup@v4
+      with:
+        version: 10
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 22
+        cache: pnpm
+    - run: pnpm install --frozen-lockfile
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+    - uses: astral-sh/setup-uv@v6
+    - uses: actions/download-artifact@v4
+      with:
+        pattern: macos-helper-*
+        path: target/helper-inputs
+        github-token: ${{ github.token }}
+        run-id: 42116622051
+    - name: Unpack native helpers and install locked signing tooling
+      run: |
+        export OPENSSL_DIR="$(brew --prefix openssl@3)"
+        export OPENSSL_STATIC=1
+        export UV_NO_CACHE=1
+        python -c "import pathlib,tarfile; [tarfile.open(p).extractall(p.parent,filter='data') for p in pathlib.Path('target/helper-inputs').glob('*/helper.tar.gz')]"
+        uv sync --project vendor/axiom-chutes-helper/providers/chutes --locked --no-default-groups --group bundle
+    - uses: actions/download-artifact@v4
+      with:
+        name: macos-native-x64
+        path: target/release/x64
+        github-token: ${{ github.token }}
+        run-id: 42116622051
+    - uses: actions/download-artifact@v4
+      with:
+        name: macos-native-arm64
+        path: target/release/arm64
+        github-token: ${{ github.token }}
+        run-id: 42116622051
+    - run: node scripts/combine-macos.mjs target/release target/release/universal
+    - name: Sign and notarize both PKG installers
+      env:
+        MACOS_CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
+        MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        APPLE_ID: ${{ secrets.APPLE_ID }}
+        APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      run: |
+        set -euo pipefail
+        test -n "$AXIOM_UPDATE_PUBLIC_KEYS"
+        export CSC_KEYCHAIN="$RUNNER_TEMP/axiom-release.keychain-db"
+        password=$(openssl rand -hex 32)
+        trap 'security delete-keychain "$CSC_KEYCHAIN"; rm -f "$RUNNER_TEMP/axiom-cert.p12"' EXIT
+        printf '%s' "$MACOS_CERTIFICATE_BASE64" | base64 --decode > "$RUNNER_TEMP/axiom-cert.p12"
+        security create-keychain -p "$password" "$CSC_KEYCHAIN"
+        security set-keychain-settings -lut 21600 "$CSC_KEYCHAIN"
+        security unlock-keychain -p "$password" "$CSC_KEYCHAIN"
+        security import "$RUNNER_TEMP/axiom-cert.p12" -k "$CSC_KEYCHAIN" -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign -T /usr/bin/productbuild -T /usr/bin/pkgbuild
+        security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$CSC_KEYCHAIN"
+        security list-keychains -d user -s "$CSC_KEYCHAIN" "$HOME/Library/Keychains/login.keychain-db"
+        axiom_app_identity="$(node -e 'const {execFileSync}=require("node:child_process");const names=[...execFileSync("security",["find-identity","-v","-p","codesigning"],{encoding:"utf8"}).matchAll(/"([^"\n]+)"/g)].map(m=>m[1]);const name=names.find(n=>n.startsWith("Developer ID Application:")&&n.endsWith("("+process.env.APPLE_TEAM_ID+")"));if(!name)process.exit(1);process.stdout.write(name);')"
+        axiom_helper_python="$PWD/vendor/axiom-chutes-helper/providers/chutes/.venv/bin/python"
+        for axiom_helper_arch in x64 arm64; do
+          "$axiom_helper_python" vendor/axiom-chutes-helper/scripts/sign_chutes_helper.py --input "target/helper-inputs/macos-helper-$axiom_helper_arch/bundle" --output "target/helper-signed/$axiom_helper_arch" --codesign-identity "$axiom_app_identity"
+        done
+        "$axiom_helper_python" vendor/axiom-chutes-helper/scripts/combine_chutes_helpers.py --arm64 target/helper-signed/arm64 --x64 target/helper-signed/x64 --output target/helper-production --codesign-identity "$axiom_app_identity"
+        mkdir -p target/direct-inputs
+        cp -R target/helper-inputs/macos-helper-arm64/direct/darwin-arm64 target/direct-inputs/
+        cp -R target/helper-inputs/macos-helper-x64/direct/darwin-x64 target/direct-inputs/
+        node scripts/sign-direct-bundles.mjs --input target/direct-inputs --output target/direct-production --codesign-identity "$axiom_app_identity"
+        export AXIOM_DIRECT_BUNDLE="$PWD/target/direct-production"
+        export AXIOM_CHUTES_BUNDLE="$PWD/target/helper-production"
+        export AXIOM_CHUTES_RELEASE_CHANNEL=production
+        node --input-type=module <<'JS'
+        import assert from 'node:assert/strict';
+        import {execFileSync} from 'node:child_process';
+        import path from 'node:path';
+        const cli=path.resolve('target/release/x64/axiomcli');
+        assert.equal(execFileSync(cli,['--version'],{encoding:'utf8'}).trim(),'axiomcli 0.1.17');
+        assert.equal(execFileSync(cli,['update','--trust-keys'],{encoding:'utf8'}).trim(),process.env.AXIOM_UPDATE_PUBLIC_KEYS);
+        JS
+        node apps/desktop/scripts/set-release-version.mjs 0.1.17
+        pnpm --filter axiom-desktop build
+        pnpm --filter axiom-desktop exec electron-builder --mac pkg --universal --publish never --config.forceCodeSigning=true --config.mac.notarize=false --config.extraMetadata.axiomUpdateChannel=stable --config.extraMetadata.axiomUpdateFormat=pkg '--config.mac.x64ArchFiles=Contents/Resources/{chutes/runtime,direct}/{**/*,**/.*,**/.*/**/*}'
+        xcrun notarytool submit apps/desktop/dist/Axiom-0.1.17-mac-universal.pkg --apple-id "$APPLE_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
+        xcrun stapler staple apps/desktop/dist/Axiom-0.1.17-mac-universal.pkg
+        node scripts/package-cli.mjs --mac --universal --input target/release/universal
+        for file in apps/desktop/dist/*.pkg; do
+          pkgutil --check-signature "$file"
+          xcrun stapler validate "$file"
+          spctl --assess --type install --verbose=2 "$file"
+        done
+    - uses: actions/upload-artifact@v4
+      with:
+        name: axiom-release-mac-universal
+        retention-days: 7
+        path: apps/desktop/dist/*.pkg
+        if-no-files-found: error
+  publish:
+    needs: macos
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+      actions: read
+    env:
+      AXIOM_UPDATE_PUBLIC_KEYS: ${{ vars.AXIOM_UPDATE_PUBLIC_KEYS }}
+      AXIOM_SIGNING_PUBLISHER: ${{ vars.AXIOM_SIGNING_PUBLISHER }}
+      AXIOM_SETUP_DIRECTORY: setup
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Recheck retained source acceptance before publication
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: python3 scripts/release-packaging-recovery.py
+    - uses: actions/checkout@v4
+      with:
+        ref: 7c41a12b31d42aefe4f21896864a166f0d087b3a
+        fetch-depth: 0
+    - name: Require the exact qualified native source
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        git merge-base --is-ancestor HEAD origin/main
+        node apps/desktop/scripts/set-release-version.mjs 0.1.17 --check-only
+        python3 scripts/verify-release-ci.py 7c41a12b31d42aefe4f21896864a166f0d087b3a
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 22
+    - uses: actions/download-artifact@v4
+      with:
+        name: axiom-release-linux-x64
+        path: release
+        github-token: ${{ github.token }}
+        run-id: 42116622051
+    - uses: actions/download-artifact@v4
+      with:
+        name: axiom-release-win-universal
+        path: release
+        github-token: ${{ github.token }}
+        run-id: 42116622051
+    - uses: actions/download-artifact@v4
+      with:
+        name: axiom-release-mac-universal
+        path: release
+    - uses: actions/download-artifact@v4
+      with:
+        name: axiom-windows-setup
+        path: setup
+        github-token: ${{ github.token }}
+        run-id: 42116622051
+    - name: Sign the complete final-byte inventory
+      env:
+        AXIOM_UPDATE_SIGNING_KEY: ${{ secrets.AXIOM_UPDATE_SIGNING_KEY }}
+      run: |
+        node scripts/download-manifest.mjs release "0.1.17" signed
+        node scripts/setup-manifest.mjs setup "0.1.17" signed
+    - name: Retain verified installers for publication retries
+      uses: actions/upload-artifact@v4
+      with:
+        name: axiom-signed-release
+        retention-days: 7
+        path: |
+          release/
+          setup/
+        if-no-files-found: error
+    - name: Prepare the full offline Microsoft Store package handoff
+      run: node scripts/prepare-store-submission.mjs release setup store
+    - uses: actions/upload-artifact@v4
+      with:
+        name: windows-store-submission
+        retention-days: 30
+        path: store/
+        if-no-files-found: error
+    - name: Publish signed installers in the source repository Releases tab
+      if: vars.AXIOM_RELEASE_BUILD_ONLY != 'true'
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: node scripts/publish-github-release.mjs release --source
+    - name: Create or verify immutable GitHub draft assets
+      if: vars.AXIOM_RELEASE_BUILD_ONLY != 'true'
+      id: draft
+      env:
+        GH_TOKEN: ${{ secrets.AXIOM_RELEASES_TOKEN }}
+      run: |
+        if [ -n "$GH_TOKEN" ]; then
+          node scripts/publish-github-release.mjs release
+          echo 'published=true' >> "$GITHUB_OUTPUT"
+        else
+          echo 'Cross-repository credential is not configured; publish the axiom-signed-release artifact using the documented operator procedure.' >> "$GITHUB_STEP_SUMMARY"
+        fi
+    - name: Hand off to the promoted platform publisher
+      if: vars.AXIOM_RELEASE_BUILD_ONLY != 'true' && steps.draft.outputs.published == 'true'
+      env:
+        GH_TOKEN: ${{ secrets.AXIOM_PLATFORM_RELEASE_TOKEN }}
+      run: |
+        if [ -n "$GH_TOKEN" ]; then
+          gh workflow run release.yml --repo astrea-foundation/axiom-platform --ref main -f version="0.1.17" -f revision="$(git rev-parse HEAD)"
+        else
+          echo 'Platform dispatch credential is not configured; operator publication remains required.' >> "$GITHUB_STEP_SUMMARY"
+        fi
+    name: Publish the complete unchanged-source installer set
