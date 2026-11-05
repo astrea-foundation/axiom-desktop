@@ -2429,12 +2429,13 @@ test("balance deposit controls fit the reference window, respect reduced motion,
     await page.emulateMedia({ reducedMotion: "reduce" });
     await page.evaluate(() => {
       const address = `u1${"a".repeat(180)}`;
+      const quoteTime = Date.now();
       (window as any).__deletionTest.setBilling({
         revision: 1, postedMicrousd: 2_893_999, availableMicrousd: 2_893_999,
         trialMicrousd: 999_676, paidMicrousd: 1_894_323,
         ledgerSequence: 0, currency: "microUSD",
         zecUsdQuote: { source: "coinbase", price_microusd_per_zec: "123456789",
-          as_of: new Date().toISOString(), expires_at: new Date(Date.now() + 60_000).toISOString() },
+          as_of: new Date(quoteTime).toISOString(), expires_at: new Date(quoteTime + 60_000).toISOString() },
         paymentAccount: { network: "mainnet", asset: "ZEC", conversion_status: "none", state: "ready", valuation_enabled: true,
           address, payment_uri: `zcash:${address}`, monitoring_status: "ready", required_confirmations: "10",
           confirmed_zatoshis: "100000001", confirming_zatoshis: "1", review_required: false, deposits: [],
