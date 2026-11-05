@@ -11,7 +11,7 @@ module.exports = async function afterPack(context) {
   await writeFile(path.join(resources, 'axiom-install.json'), JSON.stringify({schemaVersion: 1, product: 'desktop', format, versioned: false}) + '\n');
   await require('../../../scripts/package-licenses.cjs')(workspace, path.join(resources, 'licenses'));
   if (process.env.AXIOM_DIRECT_BUNDLE) {
-    await require('../../../scripts/direct-bundle.cjs').copyBundles(resources,process.env.AXIOM_DIRECT_BUNDLE,{
+    await require('../../../scripts/direct-bundle.cjs').copyBundles(resources,path.resolve(workspace,process.env.AXIOM_DIRECT_BUNDLE),{
       platform:context.electronPlatformName,
       architecture:{0:'ia32',1:'x64',2:'armv7l',3:'arm64',4:'universal'}[context.arch],
       signed:context.packager.config.forceCodeSigning === true,
