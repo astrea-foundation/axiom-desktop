@@ -91,6 +91,51 @@ test('afterPack signs added Windows runtime and launcher files and propagates si
   }
 });
 
+test('afterPack finds the verifier bundle from the workspace when Electron changes directories', async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'axiom bundle root '));
+  const workspace = path.join(directory, 'workspace');
+  const projectDir = path.join(workspace, 'apps', 'desktop');
+  const resources = path.join(directory, 'resources');
+  const relativeBundle = path.join('.local', 'direct', 'bundle');
+  const absoluteBundle = path.join(workspace, relativeBundle);
+  const licensesId = require.resolve('../../../scripts/package-licenses.cjs');
+  require(licensesId);
+  const licenses = require.cache[licensesId]!.exports;
+  const direct = require('../../../scripts/direct-bundle.cjs');
+  const originalCopy = direct.copyBundles;
+  const originalBundle = process.env.AXIOM_DIRECT_BUNDLE;
+  const originalChutes = process.env.AXIOM_CHUTES_BUNDLE;
+  try {
+    mkdirSync(projectDir, {recursive: true});
+    mkdirSync(absoluteBundle, {recursive: true});
+    writeFileSync(path.join(absoluteBundle, 'resolver-fixture.txt'), 'workspace verifier fixture');
+    require.cache[licensesId]!.exports = async () => {};
+    delete process.env.AXIOM_CHUTES_BUNDLE;
+    // Inventory, architecture and signature validation remain in direct-bundle's
+    // separate suite. This boundary check performs real I/O using the path that
+    // afterPack passes to that strict copier, outside the test process's cwd.
+    direct.copyBundles = async (output: string, bundle: string) => {
+      const content = readFileSync(path.join(bundle, 'resolver-fixture.txt'), 'utf8');
+      writeFileSync(path.join(output, 'copied-verifier.txt'), content);
+    };
+    const context = {electronPlatformName: 'darwin', arch: 3, appOutDir: resources,
+      packager: {projectDir, getResourcesDir: () => resources,
+        config: {forceCodeSigning: true, extraMetadata: {axiomUpdateFormat: 'pkg'}}}};
+    const afterPack = require('../scripts/after-pack.cjs');
+    for (const bundle of [relativeBundle, absoluteBundle]) {
+      process.env.AXIOM_DIRECT_BUNDLE = bundle;
+      await afterPack(context);
+      assert.equal(readFileSync(path.join(resources, 'copied-verifier.txt'), 'utf8'), 'workspace verifier fixture');
+    }
+  } finally {
+    direct.copyBundles = originalCopy;
+    require.cache[licensesId]!.exports = licenses;
+    if (originalBundle === undefined) delete process.env.AXIOM_DIRECT_BUNDLE; else process.env.AXIOM_DIRECT_BUNDLE = originalBundle;
+    if (originalChutes === undefined) delete process.env.AXIOM_CHUTES_BUNDLE; else process.env.AXIOM_CHUTES_BUNDLE = originalChutes;
+    rmSync(directory, {recursive: true, force: true});
+  }
+});
+
 test('unpacked build input is restricted to the explicit unsigned Windows path', () => {
   for (const args of [['--win', '--arm64', '--dir'], ['--mac', '--arm64', '--unsigned', '--dir']]) {
     const result = spawnSync(process.execPath, ['scripts/package-desktop.mjs', ...args], { cwd: desktop, encoding: 'utf8' });

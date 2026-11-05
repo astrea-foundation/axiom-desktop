@@ -16,6 +16,8 @@ Intel macOS compiles the locked cryptography source using locked build tools,
 Rust and static Homebrew OpenSSL; the other platforms use upstream wheels.
 Set `AXIOM_DIRECT_BUNDLE` to that output root when packaging. Signed production
 installers require the bundle; private issuer keys are rejected from it.
+Relative bundle paths resolve from the workspace root even when Electron's
+packager changes into the Desktop directory. Absolute paths are also supported.
 
 The explicit operator connection registers `direct:qwen3.8-27b` as **Qwen3.8
 Uncensored**, under the **AstreaAI** provider. Account sign-in and local storage use the isolated HTTPS loopback
