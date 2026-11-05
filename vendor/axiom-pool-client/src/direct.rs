@@ -57,6 +57,24 @@ pub struct AccountAuthority {
     pub maximum_charge_microusd: u64,
 }
 
+/// Caller identity is carried into the signed account grant and final receipt.
+/// Omitting it preserves the standalone client's fresh random identity.
+#[derive(Clone, Copy, Default)]
+pub struct ExecutionOptions<'a> {
+    pub pinned: Option<&'a VerifiedWorker>,
+    pub request_id: Option<&'a str>,
+}
+
+fn execution_request_id(value: Option<&str>) -> Result<String> {
+    match value {
+        Some(value) => {
+            axiom_pool_protocol::hex_bytes(value, 16).context("invalid direct request identity")?;
+            Ok(value.to_owned())
+        }
+        None => Ok(axiom_pool_protocol::random_id()),
+    }
+}
+
 pub struct DirectClient {
     config: DirectConfig,
     account: Option<crate::PoolClient>,
@@ -471,9 +489,34 @@ impl DirectClient {
         F: FnMut(axiom_pool_protocol::frames::Frame) -> Fut + Send,
         Fut: std::future::Future<Output = Result<()>> + Send,
     {
+        self.execute_with_options(
+            input,
+            limits,
+            ExecutionOptions {
+                pinned,
+                request_id: None,
+            },
+            on_frame,
+            cancel,
+        )
+        .await
+    }
+
+    pub async fn execute_with_options<F, Fut>(
+        &self,
+        input: Input,
+        limits: Limits,
+        options: ExecutionOptions<'_>,
+        on_frame: F,
+        cancel: CancellationToken,
+    ) -> Result<(VerifiedWorker, VerifiedOutput)>
+    where
+        F: FnMut(axiom_pool_protocol::frames::Frame) -> Fut + Send,
+        Fut: std::future::Future<Output = Result<()>> + Send,
+    {
         let reservation = tokio::sync::Mutex::new(None::<String>);
         let result = tokio::select! { _=cancel.cancelled()=>Err(anyhow::anyhow!("cancelled")),
-        result=self.execute_inner(input,limits,pinned,on_frame,&cancel,&reservation)=>result };
+        result=self.execute_inner(input,limits,options,on_frame,&cancel,&reservation)=>result };
         if result.is_err()
             && let (Some(account), Some(id)) = (&self.account, reservation.lock().await.as_ref())
         {
@@ -503,7 +546,7 @@ impl DirectClient {
         &self,
         input: Input,
         limits: Limits,
-        pinned: Option<&VerifiedWorker>,
+        options: ExecutionOptions<'_>,
         mut on_frame: F,
         cancel: &CancellationToken,
         reservation: &tokio::sync::Mutex<Option<String>>,
@@ -515,6 +558,7 @@ impl DirectClient {
         let started = Instant::now();
         let mut timings = DirectTimings::default();
         limits.validate(now())?;
+        let request_id = execution_request_id(options.request_id)?;
         ensure!(
             limits.deadline <= now() + 180,
             "direct request deadline exceeds fresh proof window"
@@ -541,7 +585,7 @@ impl DirectClient {
             "tools require installed and signed authorization"
         );
         let expected = verified.identity().clone();
-        if let Some(previous) = pinned {
+        if let Some(previous) = options.pinned {
             ensure!(
                 previous.identity() == &expected,
                 "direct worker changed; fresh session required"
@@ -567,7 +611,6 @@ impl DirectClient {
             }
         };
         let (grant, grant_doc) = if let Some(account) = &self.account {
-            let request_id = axiom_pool_protocol::random_id();
             let key = ClientKey::from_signing(&key);
             let value = account
                 .metadata(
@@ -631,7 +674,7 @@ impl DirectClient {
                 account: axiom_pool_protocol::random_id(),
                 account_session: axiom_pool_protocol::random_id(),
                 client_jkt: ClientKey::from_signing(&key).thumbprint()?,
-                request_id: axiom_pool_protocol::random_id(),
+                request_id,
                 attempt_id: axiom_pool_protocol::random_id(),
                 reservation_id: axiom_pool_protocol::random_id(),
                 fencing: 1,
@@ -840,6 +883,25 @@ impl DirectClient {
 mod tests {
     use super::*;
     use std::io::{Read, Write};
+
+    #[test]
+    fn caller_identity_is_preserved_and_standalone_calls_receive_fresh_canonical_ids() {
+        let expected = "0123456789abcdef0123456789abcdef";
+        assert_eq!(execution_request_id(Some(expected)).unwrap(), expected);
+        let first = execution_request_id(None).unwrap();
+        let second = execution_request_id(None).unwrap();
+        assert_ne!(first, second);
+        assert!(axiom_pool_protocol::hex_bytes(&first, 16).is_ok());
+        assert!(axiom_pool_protocol::hex_bytes(&second, 16).is_ok());
+        for invalid in [
+            "",
+            "invalid",
+            "01234567-89ab-cdef-0123-456789abcdef",
+            "0123456789ABCDEF0123456789ABCDEF",
+        ] {
+            assert!(execution_request_id(Some(invalid)).is_err());
+        }
+    }
 
     #[test]
     fn account_installations_use_public_pins_without_an_operator_key_or_fallback() {

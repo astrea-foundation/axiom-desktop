@@ -11,7 +11,7 @@ use axiom_inference::{
 };
 use axiom_pool_client::{
     attestation::VerifiedWorker,
-    direct::{DirectClient, DirectConfig},
+    direct::{DirectClient, DirectConfig, ExecutionOptions},
 };
 use axiom_pool_protocol::types::{Input, Limits, Message};
 use std::{
@@ -888,12 +888,16 @@ impl Session {
             deadline: now() + 180,
         };
         let subscribers = events.clone();
+        let request_id = request.request_id.clone();
         let (worker, output) = self
             .client
-            .execute_with(
+            .execute_with_options(
                 input,
                 limits,
-                Some(&self.worker),
+                ExecutionOptions {
+                    pinned: Some(&self.worker),
+                    request_id: request_id.as_deref(),
+                },
                 move |frame| {
                     let events = subscribers.clone();
                     async move {

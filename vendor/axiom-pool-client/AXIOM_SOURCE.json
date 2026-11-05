@@ -5,7 +5,7 @@
   "files": {
     "Cargo.toml": "c415435be296a3dd5f5adb4d6a58fabe038974d9881d8166f385d40e2aa32a77",
     "src/attestation.rs": "0b7bca789cfbced3618e81915379108bf3081782fb54707e40caae53c7758ce9",
-    "src/direct.rs": "da602538e5082c897f55eaf05d45c705ead8f30bb901830d78345d89c572ac1f",
+    "src/direct.rs": "2b202b234ef36eff7efa237ea022697059f5ad2757fb6e3b82a9250be740d93d",
     "src/lib.rs": "55a49e1fbb1d1577564a14093286d3c9aa7ba727340c0ddd3e8a4ad7ba7cdee4",
     "examples/direct-account.rs": "f0407181db302ca5161c8f058f34d8a7a20d97d73be35d5dfc7706898f4dacaa",
     "examples/direct-latency.rs": "9aa5da933aac3d70d8e5b9cc56cd0857e25cf21d841940228641f3e83fa188eb",
@@ -13,5 +13,6 @@
     "examples/direct.rs": "268b3a17de56f620caf47514e208b3153d9ad9d6f1870272f2b0afb5a4762a95",
     "examples/direct_capacity.rs": "7eedc3cfeaa475b18e7847eda1ce2ee2b8a6ce0e7135c1a57ab41f5d16b1539b",
     "examples/smoke.rs": "301ec355a1dd47f422252ac9cd20b1c588edfd6bcfa4c0488426b2550670386f"
-  }
+  },
+  "source_revision": "c159f3b0a39fac7ca0759ef6b2ee3bd8785e3b95"
 }
