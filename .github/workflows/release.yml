@@ -18,9 +18,8 @@ jobs:
     environment: release
     timeout-minutes: 15
     env:
-      AXIOM_API_KEY: ${{ secrets.AXIOM_EVAL_API_KEY }}
-      AXIOM_LIVE_BASE_URL: ${{ secrets.AXIOM_EVAL_BASE_URL }}
-      AXIOM_LIVE_MODEL: ${{ secrets.AXIOM_EVAL_MODEL }}
+      AXIOM_LIVE_BASE_URL: https://api.axiom.stream
+      AXIOM_LIVE_MODEL: direct:qwen3.8-27b
     steps:
       - uses: actions/checkout@v4
         with:
@@ -40,7 +39,31 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@v6
+      - name: Prepare the installed AstreaAI verifier for the live gate
+        shell: bash
+        run: |
+          node scripts/build-direct-bundle.mjs --output .local/direct/bundle
+          node --input-type=module <<'JS'
+          import fs from 'node:fs/promises';
+          import path from 'node:path';
+          const root=path.resolve('.local/direct/bundle/linux-x64');
+          const config=JSON.parse(await fs.readFile(path.join(root,'native.json'),'utf8'));
+          config.verifier.binary=path.join(root,config.verifier.binary);
+          const file=path.resolve('.local/direct/live-eval.json');
+          await fs.writeFile(file,JSON.stringify(config),{mode:0o600});
+          await fs.appendFile(process.env.GITHUB_ENV,`AXIOM_DIRECT_CLIENT_CONFIG_FILE=${file}\n`);
+          JS
       - name: Require and run the budgeted live regression gate
+        # Configure the same public pins and standalone verifier as installers.
+        env:
+          AXIOM_API_KEY: ${{ secrets.AXIOM_EVAL_API_KEY }}
         shell: bash
         run: |
           test -n "$AXIOM_API_KEY"
