@@ -35,7 +35,18 @@ await fs.mkdir(build,{recursive:true});
 const selected=process.env.AXIOM_HELPER_PYTHON || '3.12';
 run('uv',['venv','--clear','--python',selected,environment]);
 const python=path.join(environment,process.platform==='win32'?'Scripts/python.exe':'bin/python');
-run('uv',['pip','install','--python',python,'--only-binary',':all:','--require-hashes','-r',path.join(source,'deploy/direct/requirements.lock'),'-r',path.join(root,'scripts/direct-bundle-build.lock')]);
+run('uv',['pip','install','--python',python,'--only-binary',':all:','--require-hashes','-r',path.join(root,'scripts/direct-bundle-build.lock')]);
+const install=['pip','install','--python',python,'--only-binary',':all:','--require-hashes','-r',path.join(source,'deploy/direct/requirements.lock')];
+let buildEnvironment=process.env;
+if(target==='darwin-x64') {
+  // Upstream no longer publishes Intel macOS wheels. Build the same locked
+  // cryptography source with locked build dependencies and static OpenSSL.
+  const openssl=run('brew',['--prefix','openssl@3'],{stdio:'pipe',encoding:'utf8'}).stdout.trim();
+  await fs.access(path.join(openssl,'lib/libcrypto.a'));
+  buildEnvironment={...process.env,OPENSSL_DIR:openssl,OPENSSL_STATIC:'1'};
+  install.push('--no-binary','cryptography','--no-build-isolation-package','cryptography');
+}
+run('uv',install,{env:buildEnvironment});
 run('uv',['pip','check','--python',python]);
 const command=['-m','PyInstaller','--noconfirm','--clean','--onedir','--name','axiom-direct-verify','--paths',path.join(source,'providers/direct'),'--collect-submodules','anyio','--collect-data','certifi','--distpath',path.join(build,'dist'),'--workpath',path.join(build,'work'),'--specpath',build];
 if(values.has('--codesign-identity')) command.push('--codesign-identity',values.get('--codesign-identity'));

@@ -11,7 +11,9 @@ fresh CPU, GPU, workload, key and response evidence before accepting inference.
 
 Build the frozen verifier from a clean committed checkout with
 `node scripts/build-direct-bundle.mjs --output .local/direct/bundle`. The builder
-checks the vendored source inventory and installs only hash-locked binary wheels.
+checks the vendored source inventory and installs hash-locked dependencies.
+Intel macOS compiles the locked cryptography source using locked build tools,
+Rust and static Homebrew OpenSSL; the other platforms use upstream wheels.
 Set `AXIOM_DIRECT_BUNDLE` to that output root when packaging. Signed production
 installers require the bundle; private issuer keys are rejected from it.
 
