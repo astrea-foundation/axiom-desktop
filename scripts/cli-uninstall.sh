@@ -9,7 +9,7 @@ case "$payload" in
       link="/usr/local/bin/$name"
       if [ -L "$link" ] && [ "$(readlink "$link")" = "$payload/bin/$name" ]; then rm -- "$link"; fi
     done
-    rm -rf -- "$payload/bin" "$payload/licenses"
+    rm -rf -- "$payload/bin" "$payload/licenses" "$payload/chutes"
     rm -f -- "$payload/axiom-install.json" "$payload/uninstall.sh"
     rmdir -- "$payload"
     /usr/sbin/pkgutil --forget stream.axiom.cli
@@ -24,7 +24,7 @@ case "$payload" in
     done
     for version in "$prefix"/versions/*; do
       [ -d "$version" ] && [ -f "$version/axiom-install.json" ] || continue
-      rm -rf -- "$version/bin" "$version/licenses"
+      rm -rf -- "$version/bin" "$version/licenses" "$version/chutes"
       rm -f -- "$version/axiom-install.json" "$version/uninstall.sh"
       rmdir -- "$version"
     done

@@ -24,7 +24,7 @@ use crate::{
     ApiCredential, EvidenceCheck, EvidenceClaim, Result, SecureClientConfig, SecureClientError,
     SecurityEvidence, SecurityState, TrustPolicy,
     catalog::relay_endpoint,
-    http::{bounded_body, pinned_client},
+    http::{bounded_body, relay_client},
     lease::{VerifiedMaterialCache, key_fingerprint},
     provider::{SecureProvider, VerifiedSession, sealed},
     relay::client::{RelayClient, error_for_status_body},
@@ -357,7 +357,7 @@ impl Session {
             &self.config.relay_base_url,
             "/api/v1/relay/tinfoil/chat/completions",
         )?;
-        let http = pinned_client(&endpoint, &self.config.endpoint_policy, None, false).await?;
+        let http = relay_client(&self.config, &endpoint, None).await?;
         let wire = http
             .post(endpoint)
             .bearer_auth(self.credential.expose())

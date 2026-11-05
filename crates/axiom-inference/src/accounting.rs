@@ -60,6 +60,12 @@ pub struct RequestUsage {
     #[serde(default)]
     pub reasoning_tokens: Option<String>,
     #[serde(default)]
+    pub image_pixels: Option<String>,
+    #[serde(default)]
+    pub image_steps: Option<String>,
+    #[serde(default)]
+    pub input_image_pixels: Option<String>,
+    #[serde(default)]
     pub cost_microusd: Option<String>,
     #[serde(default)]
     pub settled: bool,
@@ -98,7 +104,10 @@ impl RequestUsage {
         ) else {
             return false;
         };
-        !matches!((input, cached), (Some(i), Some(c)) if c > i)
+        parse(&self.image_pixels).is_some()
+            && parse(&self.image_steps).is_some()
+            && parse(&self.input_image_pixels).is_some()
+            && !matches!((input, cached), (Some(i), Some(c)) if c > i)
             && !matches!((output, reasoning), (Some(o), Some(r)) if r > o)
     }
 }

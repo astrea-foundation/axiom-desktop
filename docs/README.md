@@ -16,6 +16,7 @@ must be recorded against the actual source revision and signed installers.
 | [Privacy](privacy.md) | Local storage, credentials and what leaves the device |
 | [Troubleshooting](troubleshooting.md) | Diagnosis and recovery |
 | [0.1.15 release notes](releases/0.1.15.md) | First-message recovery, resilient balances and rate-limit guidance |
+| [0.1.16 release notes](releases/0.1.16.md) | Account-authorized AstreaAI and bundled attestation verifiers |
 | [0.1.14 candidate notes](releases/0.1.14.md) | Unpublished candidate; included in 0.1.15 |
 | [0.1.10 release notes](releases/0.1.10.md) | Windows setup and first-launch updates |
 | [0.1.9 release notes](releases/0.1.9.md) | Previous release |
@@ -29,6 +30,8 @@ must be recorded against the actual source revision and signed installers.
 | [ACP contract](acp-compatibility.md) | Negotiation, methods, authority and recovery |
 | [Security](threat-model.md) | Provider verification, tool boundaries and trust policy |
 | [Provider discovery](provider-catalogs.md) | Catalogs and encrypted attachments |
+| [Confidential pool](inference-pool.md) | Native encryption, local profile and the Chutes admission gate |
+| [AstreaAI connection](direct-verda.md) | Operator configuration, measured SNP/NVIDIA worker and local Desktop launch |
 | [NEAR v3](protocols/near-v3.md) | Worker sessions, encryption and receipts |
 | [Tinfoil EHBP](protocols/tinfoil-ehbp-v1.md) | Router verification and authenticated completion |
 | [Development](development.md) | Build commands, checks and visual assets |

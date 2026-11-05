@@ -16,9 +16,18 @@ mod security;
 
 pub use client::SecureClient;
 pub use config::{EndpointPolicy, SecureClientConfig, SecureClientLimits};
-pub use error::{Result, SecureClientError, SecureErrorCode};
+pub use error::{INSUFFICIENT_CREDIT_MESSAGE, Result, SecureClientError, SecureErrorCode};
+pub use http::local_relay_ca_pem;
 pub use provider::{ProviderRegistry, SecureProvider, VerifiedSession};
+pub use providers::chutes_preview::GeneratedImage;
+pub use providers::pool::{PoolClientConfig, PoolOffering};
 pub use security::{EvidenceCheck, EvidenceClaim, SecurityEvidence, SecurityState, TrustPolicy};
+
+/// Select the application's bundled model policy from an exact native model ID.
+#[must_use]
+pub fn is_uncensored_model(model_id: &str) -> bool {
+    model_id == providers::direct::MODEL || providers::chutes_preview::is_uncensored_model(model_id)
+}
 
 /// Cryptographic helpers for the deterministic process-level fixture.
 ///

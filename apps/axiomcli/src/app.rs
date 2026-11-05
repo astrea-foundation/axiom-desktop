@@ -300,6 +300,10 @@ pub enum AppCommand {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         attachments: Vec<axiom_inference::PromptAttachment>,
     },
+    StartImageGeneration {
+        session_id: SessionId,
+        turn_id: TurnId,
+    },
     CancelTurn {
         session_id: SessionId,
         turn_id: TurnId,
@@ -352,6 +356,7 @@ impl AppCommand {
             Self::CreateSession { session_id, .. }
             | Self::ResumeSession { session_id, .. }
             | Self::SubmitPrompt { session_id, .. }
+            | Self::StartImageGeneration { session_id, .. }
             | Self::CancelTurn { session_id, .. }
             | Self::FinishTurn { session_id, .. }
             | Self::FailTurn { session_id, .. }
@@ -378,6 +383,9 @@ pub struct CommandEnvelope {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
+// Accounting snapshots are bounded metadata carried inline across the local
+// event channel; retaining this representation avoids per-event allocation.
+#[allow(clippy::large_enum_variant)]
 pub enum AppEvent {
     SteeringApplied {
         turn_id: TurnId,
@@ -458,6 +466,14 @@ pub enum AppEvent {
         content: String,
         truncated: bool,
     },
+    ImageGenerated {
+        call_id: String,
+        image: Box<axiom_secure_client::GeneratedImage>,
+    },
+    ImageGenerationProgress {
+        call_id: String,
+        progress: axiom_inference::ImageGenerationProgress,
+    },
     ToolCompleted {
         call_id: String,
         success: bool,
@@ -527,6 +543,9 @@ pub enum AppEvent {
     },
     SecurityStatusChanged {
         state: SecurityStatus,
+    },
+    SecurityEvidenceUpdated {
+        evidence: Box<axiom_inference::SecurityEvidence>,
     },
     /// Every provider response contributing to this completed turn carried
     /// terminal cryptographic proof. Preflight attestation is represented by
@@ -760,6 +779,22 @@ impl Kernel {
                     },
                     AppEvent::TurnStarted { turn_id },
                 ]
+            }
+            AppCommand::StartImageGeneration {
+                session_id,
+                turn_id,
+            } => {
+                let session = self.session_mut(&session_id)?;
+                if session.lifecycle != SessionLifecycle::Ready
+                    || session.terminal_turns.contains(&turn_id)
+                {
+                    return Err(AxiomError::InvalidTransition(
+                        "image generation requires an idle session and a fresh turn".into(),
+                    ));
+                }
+                session.lifecycle = SessionLifecycle::Running;
+                session.active_turn = Some(turn_id.clone());
+                vec![AppEvent::TurnStarted { turn_id }]
             }
             AppCommand::CancelTurn {
                 session_id,

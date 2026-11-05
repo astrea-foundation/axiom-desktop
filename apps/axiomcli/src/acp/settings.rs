@@ -549,6 +549,7 @@ pub(super) async fn set_session_config_option(
             &ctx_extension_state,
             Some(&request.session_id),
             ActivityEvent::SecurityChanged {
+ evidence: None,
                 status: extension_security_status(
                     crate::app::SecurityStatus::Unverified,
                 ),

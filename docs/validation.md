@@ -1,9 +1,131 @@
 # Release acceptance
 
+The launch dependency audit updates Tokio to 1.53.3, the rustls verifier to
+0.103.16, both webpki root lists to 1.0.10, libz-sys to 1.1.31 and
+pulldown-cmark to 0.13.5. These retain the existing security audit gate.
+
+Native pool ES256 proof-key generation/signing uses P-256 0.14 and
+crypto-bigint 0.7.10, beyond the fix for
+[RUSTSEC-2026-0387](https://rustsec.org/advisories/RUSTSEC-2026-0387.html).
+Pool HPKE explicitly enables only X25519. The remaining crypto-bigint 0.5.5
+dependency is confined to public signature/certificate verification: NEAR's
+P-384 attestation verifier, Tinfoil's P-256 Fulcio/Sigstore verifiers and P-384
+SEV verifier. The pinned Tinfoil revision is
+`91e8aef8fbc34129b68de8667ece5bd9ef7b7110`; its signing keys occur only in
+tests, and its EHBP revision `93cc1fa1ad61e19f9a34fb23cb5b5d5635d3edb0`
+selects `X25519HkdfSha256` explicitly. Public signature operands contain no
+private scalar whose timing could leak. A scoped audit exception covers only
+that residual version. Remove it when these verifiers update their curve
+dependencies; any new private-key use requires a fresh review and a patched
+implementation. This exception changes no evidence or response verification.
+
 Qualify the exact promoted source revision and signed installer bytes. Record
 OS, architecture, browser, source revision, artifact SHA-256, signing identity,
 result and limitations in the release's maintainer acceptance record. Unit tests
 and browser fixtures do not establish signed native OS acceptance.
+
+## AstreaAI rollout gates
+
+The [generation-9 / permanent-policy-14 qualification](../../axiom-inference/docs/qa/direct-verda-reference-images-2026-11-03.json)
+establishes fresh CPU/GPU/workload/key/TLS verification, authenticated text and
+vision, five-reference image generation/editing and the 1536-square default in
+the operator's macOS development connection. Its fresh QA account and separate
+profile do not establish a hosted customer rollout.
+
+The [generation-12 / permanent-policy-18 qualification](../../axiom-inference/docs/qa/direct-verda-capacity-recovery-2026-11-04.json)
+adds four independent completed clients, an independent 14-request burst with
+eight authenticated completions and six authenticated capacity refusals, active
+disconnect isolation, five-reference 1536-square image regression, and a real
+VM power-off recovered by the always-on LAN watchdog. A fresh boot with new
+worker keys passed full verification and encrypted completion. These results
+qualify the private operator path rather than production account enrollment.
+
+The [generation-13 / permanent-policy-19 account qualification](../../axiom-inference/docs/qa/direct-astreaai-account-staging-2026-11-04.json)
+adds service-owned issuer keys, real staging account grants and ledger charges,
+idempotent receipt settlement, account-scoped usage and an insufficient-credit
+refusal before input dispatch. Independently verified chat, vision, tools and
+five-reference 1536-square images completed, including two concurrent requests
+and a fresh verified boot after watchdog recovery. A named hosted staging
+profile also loaded its own Keychain credential after the short read deadline
+was removed. The hosted browser gateway's startup health remains unresolved.
+This qualification does not promote production or publish installers.
+
+Public release remains blocked on these concrete requirements:
+
+- Promote the qualified service-owned staging issuer path to production
+  reservation/grant issuance. Each grant must bind the authenticated account,
+  session, client proof key, exact approved worker and one request. Distribute
+  public trust material and the verifier to clients; keep private issuer and
+  publisher keys under operator/service control.
+- Register and select the AstreaAI deployment through the production account API
+  and model catalog. Hosted staging now accepts matching public controller,
+  issuer and price pins, with no client-held issuer key. Distribute the public
+  configuration and independent verifier through the supported installer and
+  enrollment path; development profile overrides remain preview controls.
+- Promote the qualified customer billing path: attach immutable prices and spending caps to
+  account-owned reservations, settle verified receipts once through the balance
+  ledger, and release or reconcile holds on refusal, cancellation and recovery.
+  The staging backend now accepts 1536-square images, reference-input pixel
+  accounting and the larger encrypted request size, and forwards complete
+  chat/image usage to the native accounting UI. Preserve those bounds when
+  enrolling production. A zero-charge operator grant and an
+  image `settled` flag alone do not establish a customer debit; see
+  [billing readiness](direct-verda.md#billing-readiness).
+- Exercise real independent accounts concurrently against the production
+  authorization/routing path, including cancellation, account switching,
+  wrong-request responses, incomplete streams and worker replacement. Retain
+  strict attestation and authenticated completion throughout.
+- Qualify bounded admission/queueing and recovery under the intended customer
+  rollout. The capacity branch reserves trusted input plus maximum output tokens,
+  permits four short chats within 65,536 reserved tokens, queues at most eight
+  requests for 30 seconds, and returns an authenticated busy refusal without
+  replay. Long 32K requests can still reduce concurrency to two. Worker/queue
+  tests and an operator load test do not establish real-account routing or
+  sustained customer capacity. The external Verda watchdog is installed and recovery-qualified on
+  `salt@10.0.0.191`; redundant ready capacity is still required for a production
+  availability claim.
+- Package the independent verifier and public trust configuration for every
+  supported installer target, then qualify production sign-in, the installed
+  provider, image/reference flows, account-data preservation and updates using
+  the exact signed candidate bytes. Source-mode macOS checks do not establish
+  Windows, Intel macOS, Linux or signed-installer acceptance.
+
+Keep this gate separate from the existing managed Chutes release qualification.
+Publishing the current operator branch alone does not enroll ordinary customer
+installations into AstreaAI. See [the Direct connection guide](direct-verda.md)
+and [release procedure](releasing.md).
+
+## Confidential pool qualification
+
+The separate registered managed Chutes channel now has account-owned opaque
+backend routing, local vendor verification, publisher authorization, independent
+usage signatures, native cost ceilings and billing settlement. Its runtime
+trust scope is documented in the [managed guide](../../axiom-inference/docs/chutes-managed.md).
+Keep its qualification distinct from the stronger pool requirements below.
+Public staging rollout still needs the authorized source/feed and backend
+deployment, actual worker callback origin and installed native bundle. Windows
+and signed installer helper packaging require separate release validation.
+The optional self-contained helper payload now has macOS Apple Silicon and
+Ubuntu 24.04 x86-64 build, relocation and stdio checks, inventory verification and a packaging hook; its
+native executable pin is checked before startup. Signed installer acceptance
+and older Linux/Intel macOS target builds remain separate; Windows is disabled.
+See the [helper build guide](../../axiom-inference/docs/native-helper.md).
+Warm redundant capacity and
+draining/replacement testing are required for a production availability claim.
+
+The qualified Chutes pool offering remains discovery only. A separate debug-only
+interactive adapter permits local encrypted testing. Its signed staging variant
+verifies hardware, the Chutes recipient key and publisher authorization, with
+execution provenance explicitly outside that claim. Before enabling production
+custom pool inference or claiming exact application/model execution, verify the exact application/model
+release and Rust boot-key endorsement against accepted runtime measurements;
+implement and qualify native/controller verification and instance routing;
+exercise actual two-account concurrent traffic, replacement, cancellation,
+stream truncation/reordering and authenticated completion on the admitted GPU.
+The local native test-account flow has been exercised; the hosted local auth
+frontend and production account flow still need an interactive qualification pass.
+Hardware diagnostics and deterministic encrypted fixtures do not satisfy these
+requirements. See [the pool guide](inference-pool.md).
 
 ## Automated checks
 
@@ -21,6 +143,79 @@ successful renderer build or source-mode launch does not establish that the
 packaged main process can start.
 
 ## Interactive qualification
+
+Signed [backend runtime settings](../../axiom-inference/docs/runtime-updates.md)
+now drive image tool defaults/ratios, model-specific LoRA policy, sampling
+validation and hosted deployment selection. Native stdio regressions cover
+changes on a reused helper, substituted policy bindings and unsupported settings
+rejected before dispatch. Initial runtime-capable worker, backend migration and
+installed-helper live qualification remain deployment requirements. The October
+30 GPU record below covers the previous fixed policy.
+
+The development `imageGeneration@3` contract exposes `generate` with up to five
+ordered references and uses the ComfyUI image engine. The October 29 policy
+restores the pinned uncensored LoRA at 0.9 for the exact uncensored model IDs.
+Native helper tests cover alternating model policies on one reused helper and
+rejecting missing or substituted adapter metadata. Regeneration tests preserve
+the original model's policy after a model switch. The
+[October 30 live qualification](../../axiom-inference/docs/qa/image-lora09-b-2026-10-30.json)
+records the deployed private GPU image and installed standalone helper, fresh
+hardware checks, uncensored/base/uncensored generations, five references,
+authenticated progress and exact base-model restoration. These checks used
+synthetic fixtures without opening personal threads or images. Native
+checks cover reference order, five-reference to text-only transitions, duplicate
+and foreign IDs, bounded conditioning copies, output dimensions and optional
+viewing. Broader co-resident load, encrypted multi-account qualification and
+signed installer acceptance remain release requirements for the new build.
+The October 27 evidence below covers the
+previous engine and tool contract.
+
+The [October 28 Comfy qualification](../../axiom-inference/docs/qa/comfy-implementation-2026-10-28.json)
+records five successful private GPU checks, including ordered five-reference
+conditioning, a following text-only request, generated-reference editing and
+two-account isolation. A local Desktop check also completed `generate`, optional
+`view_image`, authenticated chat completion and signed settlement using the
+standalone helper. Managed-request expiry regression checks cover the 15-minute
+deadline, account isolation, no-charge late receipts and safe native admission
+errors; the [expiry validation record](../../axiom-inference/docs/qa/chutes-request-expiry-2026-10-28.json)
+includes background recovery and the updated standalone-helper Desktop run.
+These development results do not replace public staging or signed
+installer acceptance.
+
+The unified `imageGeneration@2` tool and automatic vision-model gating replace
+the earlier Images toggle. Native regression checks cover generation/edit
+dispatch, conversation reference isolation, model switching, unavailable tools
+and nonvision upload rejection. Renderer checks cover toggle removal and the
+generated-image viewer. The
+[October 27 live source-mode qualification](../../axiom-inference/docs/qa/chutes-vision-staging-live-2026-10-27.json)
+records a fresh verified Chutes worker, ordered ten-image vision with streaming,
+no image creation during an analysis-only request, 1536-square generation and
+edits from both source types, signed billing and the full-image viewer. It also
+checks local development credentials across rebuilds and restarts. Installed
+app checks, cross-platform release validation and broader load tests remain
+release requirements; source-mode qualification does not replace them.
+
+Generated-image presentation checks also cover one-time binary IPC payloads,
+stable Blob URLs through streaming updates, account/runtime resource revocation,
+late bootstrap recovery, 1536-pixel viewing while typing, and cancellable inline
+decoding that yields to UI tasks. These local transport checks do not change
+provider attestation, authenticated completion, original image bytes or size caps.
+
+Optional `view_image` inspection has native regression coverage for uploaded,
+generated and edited images, generation followed by viewing before the final
+answer, tool-batch ordering, persisted restoration, malformed/foreign references,
+decode failures, cancellation, model/service gating and the ten-image context
+limit. Vision-copy checks include transparent images and generated PNGs larger
+than the upload byte limit. The October 27 live record predates this viewing
+tool; live model selection of the new tool remains a separate qualification.
+
+Image-progress checks cover authenticated request/sequence binding, rounded
+sampling percentages, truncation and forged-update rejection, queue cancellation,
+clean transport completion, native propagation and durable tool metadata. Browser
+checks cover percentage bars, the 99%-to-100% completion boundary, and distinct
+random filenames for generated images and repeated Save actions. The matching
+worker/backend/helper rollout and actual GPU preview-progress behavior still
+require live qualification; local encrypted fixtures do not establish it.
 
 | Area | Required evidence |
 |---|---|
@@ -42,6 +237,16 @@ vaults and signed installers rather than treating mocks as acceptance evidence.
 Backend rollback, payment-receiver recovery and secret management are separate
 platform operations. Coordinate their acceptance with compatible native releases;
 this document does not authorize a production reset or deployment.
+
+## NEAR completion qualification
+
+The NVIDIA signing-key download remains bounded at 1 MiB and requires the same
+certificate, signed-policy anchor, ES384 signature, nonce and passing-verdict
+checks. Qualify fresh NEAR attestation and authenticated completion against the
+compatible platform relay before release, including a reasoning-only response
+that ends at the output-token limit. Keep missing receipts, altered ciphertext,
+expired evidence and oversized key sets as rejecting cases. A successful
+attestation or posted usage charge does not establish authenticated completion.
 
 ## Dependency maintenance
 

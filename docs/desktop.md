@@ -40,6 +40,13 @@ Open the account menu and choose **Balance** to view credit and top up with main
 Zcash. **5% off** means $9.50 of Zcash buys $10 of credit, using the rate at
 confirmation. The reusable address stays available.
 
+When there is too little available credit to start a request, chat and image
+errors say **Insufficient balance. Top up your Axiom balance to continue.**
+Open **Balance** to add credit or redeem a gift code. Existing request holds can
+reduce available credit even when the displayed account balance is positive.
+The CLI gives `/topup`, `/redeem` and `/balance` guidance for the same failure;
+the local proxy returns HTTP 402 with `insufficient_credit` and the top-up message.
+
 Balance refreshes reuse a ready address instead of provisioning it again. A
 temporary deposit-service failure leaves validated credit visible while an
 unfinished address remains pending. If the balance read itself fails, the screen
@@ -157,6 +164,52 @@ after Stop can start normally when no older queued message needs review.
 
 ## Images and files
 
+Image creation and editing are automatically available to vision-capable chat
+models when the native image service is installed. There is no Images toggle.
+Ask the model to create an image or edit an uploaded or earlier generated image;
+an upload or request to describe it does not by itself request generation.
+The model uses `generate` for both operations, with up to five optional reference
+images. It refers to them as `<image1>`, `<image2>`, etc. in the order supplied
+to the tool. The image service uses ComfyUI inside the encrypted worker.
+Images from Qwen3.8 Uncensored use the pinned uncensored LoRA at strength 0.9;
+other chat models use the base image model. The model can optionally call
+`view_image` to inspect an uploaded or generated result before finishing its
+turn, including deciding whether a correction is needed. Click a generated or edited
+image to view it in the larger viewer; Escape, the close button or a backdrop
+click closes it. Click the image to zoom in, scroll to move around the larger
+image, and click again to fit it in the viewer. Enter or Space on the image
+performs the same zoom toggle. Right-click the image in the viewer to choose Save image as…
+and select a destination. Save image also remains available beneath the result;
+each save suggests a fresh random PNG filename. Image generation and editing show a
+live percentage and progress bar. Queued work displays 0%; finishing stays at
+99% until the verified result is ready; the percentage and bar then disappear. Nonvision
+models cannot use image tools or accept new image uploads.
+
+Each generated image has its own Regenerate button. It reruns only that image's
+stored prompt, reference images in their original order, output dimensions,
+and original model's image settings when saved provenance is available,
+with a fresh seed. It adds a new image while keeping the original and the chat
+response. It performs no chat-model or title-generation request. Progress and
+Stop apply to this image job; regeneration never automatically retries after a
+failure or account/runtime change.
+
+The default policy lets the model choose `aspect_ratio` from `1:1`, `2:3`, `3:2`, `3:4`, `4:3`, `9:16`,
+`16:9`, `1:2`, `2:1`, `9:21`, and `21:9`. The default for new images is **2:3**.
+Native code selects the largest exact ratio on the supported 32-pixel grid,
+within 2,359,296 pixels. This gives 1216×1824 for 2:3, 1536×1536 for 1:1, and
+2048×1152 for 16:9. Without a ratio, references retain their existing sizing rules.
+
+For a runtime-capable backend, signed settings supply the current default,
+ratio list, reference limit, sampling and model-specific adapter policy. The
+native tool definition is updated for each turn; generic model instructions
+defer to it. See [backend runtime updates](../../axiom-inference/docs/runtime-updates.md)
+for supported bounds and initial rollout requirements.
+
+Copy and Regenerate appear after the full response turn finishes, including any
+tool calls; an introductory message or completed tool-call segment does not
+end the turn. Expanded tool details and thinking text support selection and
+copying with the usual keyboard shortcuts or the right-click Copy menu.
+
 Use Attach, paste an image, or drop files anywhere in the main chat panel,
 including its empty space and transcript. A drop indicator marks the panel;
 the sidebar and Proxy view do not attach files. Image and file icons
@@ -228,44 +281,44 @@ subsets, settlement state, elapsed time and other thread charges. Tab reaches th
 disclosure; Escape closes the panel and returns focus to the meter. Partial or
 unavailable usage and reports from a different model remain visible above it.
 
-The privacy badge summarizes the latest reply: **Verifying reply** with a green
-shield while streaming, **Reply verified** with a checkmark only after native authenticated completion,
-or **Reply incomplete** / **Reply check failed** when completion is absent
-or fails. A newer turn cannot inherit an older reply's verification. Expiry or
-renewal of the cached attestation report does not change a reply's verification.
-An authoritative rate-limit rejection before any reply shows **No reply received**.
-Unknown errors, failed TEE checks and response-authentication failures retain the
-failure warning; this label never marks a request verified or resends it.
-Before any reply, the badge summarizes the report instead; an expired report
-shows **Report needs refresh**.
+The privacy badge describes the selected server environment and encrypted
+connection. It shows **TEE verified**, **Verifying TEE**, or the actual report
+state. Reply history, thought segments, image tools, rate limits and cancellations
+do not determine this badge. Messages, image captions, the local proxy and the
+privacy inspector do not display per-reply verification verdicts. Request errors
+remain visible as ordinary errors.
 
-Click the badge to inspect **Latest reply verification** separately from the
-**Cached attestation report**. The question-mark button beside **TEE verified**
-in the report explains TEE protection and the check of the
-server’s hardware in plain language. Hover, focus or click it to show the help;
-Escape dismisses the help before closing the report. Refresh requests
-fresh evidence when allowed. Editing a nonempty message while signed in starts
-verification for the selected model, including on the welcome screen before a
-thread exists. Only the model ID crosses the verification IPC boundary. Draft
-text is never part of this request. Valid reports and checks already in progress
-are reused; Enter waits for that work and native inference checks freshness again.
-Failed warmups back off from 30 seconds to five minutes and require another edit
-to retry. Opening a thread, focus changes and timers do not request verification.
-After 30 minutes without user interaction or a running reply, the badge shows
-neutral `Idle`. Activity wakes the display without issuing verification requests.
-Reply verification remains available in the inspector while idle.
-A failed or blocked refresh cannot extend a report or mark it verified;
-native inference always enforces fresh proof independently of this display.
-Reports show hardware, encryption-key, freshness and source-provenance checks
-for the selected provider. Tinfoil reports router
-verification, and NEAR v3 identifies an attested
-worker TLS key rather than claiming the client observed the backend's socket.
-Provisional streamed text becomes verified only after authenticated completion;
-cancelled/incomplete output retains that status even if billing later settles.
+Click the badge to inspect **Environment attestation**. The question-mark button
+beside **TEE verified** explains TEE protection and the server hardware check in
+plain language. Hover, focus or click it to show the help; Escape dismisses the
+help before closing the report. The inspector contains hardware, encryption-key,
+freshness and source-provenance checks for the selected provider. Tinfoil reports
+router verification, and NEAR v3 identifies an attested worker TLS key.
+
+Reports renew automatically for the selected model while the window is active,
+visible and online. Renewal starts up to thirty seconds before expiry, capped
+at half the report lifetime for short leases, with a minimum one-second margin.
+Missing or expired reports refresh on opening an active thread or returning
+from idle. One refresh
+runs at a time; failures retry with backoff from thirty seconds to five minutes.
+Verification waits for an active reply to finish and for a disconnected thread
+to synchronize. An outdated TEE still requires explicit user consent; automatic
+refresh never accepts that warning. Manual **Refresh** remains available.
+
+Editing a nonempty message while signed in also starts verification for the
+selected model, including on the welcome screen before a thread exists. Only the
+model ID crosses the verification IPC boundary; draft text is never sent as part
+of this check. Valid reports and in-flight checks are reused. Enter waits for
+that work, and native inference checks freshness before sending model messages.
+
+After thirty minutes without user interaction or a running reply, the badge
+shows neutral **Idle** and automatic renewal pauses. Activity or returning to the
+window resumes renewal. Hidden and offline windows also pause automatic work.
+A failed or blocked refresh never extends a report or marks it verified.
+
 Unexpected stream endings show one short notice, with the technical reason under
 **Details**. A turn's error notice replaces the duplicate warning below its reply.
-Stopping a reply yourself does not show an error banner. These presentation
-choices do not change completion verification or mark partial replies successful.
+Stopping a reply yourself does not show an error banner.
 Reply notices and the top error banners have an **×** button to dismiss them.
 Dismissal hides the current notice in the open view; a new or changed error is
 shown again. It does not delete conversation records or change a failed reply's

@@ -1,4 +1,4 @@
-use std::{path::Path, process::Stdio, time::Duration};
+use std::{collections::VecDeque, path::Path, process::Stdio, sync::Arc, time::Duration};
 
 use axiomcli::{
     app::{AppCommand, Origin, PermissionProfile, Runtime, SessionId, ThinkingLevel},
@@ -8,15 +8,27 @@ use axiomcli::{
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use tokio::{
-    io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader, Lines},
+    io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, BufReader, Lines},
     process::{Child, ChildStdin, ChildStdout, Command},
+    sync::Mutex,
+    task::JoinHandle,
 };
+
+type StderrTail = Arc<Mutex<VecDeque<Vec<u8>>>>;
 
 struct AcpProcess {
     child: Child,
     stdin: Option<ChildStdin>,
     stdout: Lines<BufReader<ChildStdout>>,
+    stderr: StderrTail,
+    stderr_task: JoinHandle<()>,
     _state: Option<TempDir>,
+}
+
+impl Drop for AcpProcess {
+    fn drop(&mut self) {
+        self.stderr_task.abort();
+    }
 }
 
 async fn seed_session_settings(
@@ -134,10 +146,30 @@ impl AcpProcess {
         let mut child = command.spawn().expect("spawn ACP");
         let stdin = child.stdin.take().expect("stdin");
         let stdout = BufReader::new(child.stdout.take().expect("stdout")).lines();
+        // Windows pipes can fill after only a few KiB. Drain diagnostics so
+        // they cannot block the protocol, retaining a bounded failure tail.
+        let mut diagnostic_pipe = child.stderr.take().expect("stderr");
+        let stderr: StderrTail = Arc::new(Mutex::new(VecDeque::new()));
+        let captured = Arc::clone(&stderr);
+        let stderr_task = tokio::spawn(async move {
+            let mut buffer = [0_u8; 4096];
+            while let Ok(length) = diagnostic_pipe.read(&mut buffer).await {
+                if length == 0 {
+                    break;
+                }
+                let mut tail = captured.lock().await;
+                tail.push_back(buffer[..length].to_vec());
+                while tail.len() > 4 {
+                    tail.pop_front();
+                }
+            }
+        });
         Self {
             child,
             stdin: Some(stdin),
             stdout,
+            stderr,
+            stderr_task,
             _state: state,
         }
     }
@@ -159,9 +191,17 @@ impl AcpProcess {
     }
 
     async fn read(&mut self) -> Value {
-        let line = tokio::time::timeout(Duration::from_secs(5), self.stdout.next_line())
-            .await
-            .expect("ACP output timeout")
+        let Ok(output) =
+            tokio::time::timeout(Duration::from_secs(5), self.stdout.next_line()).await
+        else {
+            let bytes: Vec<u8> = self.stderr.lock().await.iter().flatten().copied().collect();
+            panic!(
+                "ACP output timeout; process status: {:?}; stderr: {}",
+                self.child.try_wait(),
+                String::from_utf8_lossy(&bytes)
+            );
+        };
+        let line = output
             .expect("read ACP output")
             .expect("unexpected ACP EOF");
         serde_json::from_str(&line)

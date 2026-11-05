@@ -680,6 +680,14 @@ async fn build_runner(
         config.max_tool_output_bytes,
         Arc::new(HostedSearchClient::new(auth.clone())?),
     )?;
+    if std::env::var_os("AXIOM_CHUTES_CLIENT_CONFIG_FILE").is_some()
+        || std::env::var_os("AXIOM_DIRECT_CLIENT_CONFIG_FILE").is_some()
+    {
+        tools.register(Arc::new(axiomcli::image_tool::ImageGenerationTool {
+            provider: Arc::clone(&provider),
+        }))?;
+        tools.register(Arc::new(axiomcli::image_tool::ViewImageTool))?;
+    }
     if frontend == FrontendKind::Cli {
         for tool in
             axiomcli::mcp::connect_tools(&config.mcp_servers, config.max_tool_output_bytes).await?
@@ -847,6 +855,7 @@ async fn run_headless(
         cwd,
         permission_profile: profile,
         web_enabled: true,
+        image_tools_available: true,
         steering: None,
         approval: None,
         questions: None,

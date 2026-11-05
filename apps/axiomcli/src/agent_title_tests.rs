@@ -11,6 +11,7 @@ struct TitleProvider {
     output: &'static str,
     fail: bool,
     block: bool,
+    direct: bool,
     started: Notify,
     requests: Mutex<Vec<InferenceRequest>>,
 }
@@ -21,6 +22,7 @@ impl TitleProvider {
             output,
             fail,
             block,
+            direct: false,
             started: Notify::new(),
             requests: Mutex::new(vec![]),
         }
@@ -32,6 +34,11 @@ impl InferenceProvider for TitleProvider {
     async fn models(&self, _: CancellationToken) -> Result<Vec<ModelInfo>> {
         Ok(vec![ModelInfo {
             id: "test".into(),
+            provider_id: if self.direct {
+                "axiom-direct".into()
+            } else {
+                String::new()
+            },
             ..Default::default()
         }])
     }
@@ -92,6 +99,56 @@ impl InferenceProvider for TitleProvider {
 
 fn engine(provider: Arc<TitleProvider>) -> AgentEngine {
     AgentEngine::new(provider, Arc::new(ToolRegistry::new()), "test", 2)
+}
+
+#[tokio::test]
+async fn direct_titles_stay_local_and_do_not_dispatch_background_inference() {
+    let mut provider = TitleProvider::new("should not be sent", false, false);
+    provider.direct = true;
+    let provider = Arc::new(provider);
+    let engine = engine(provider.clone());
+    let (tx, mut rx) = mpsc::channel(16);
+    let title = engine
+        .generate_title("test", "Hello from Verda", tx, CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(title, "Hello from Verda");
+    assert!(provider.requests.lock().await.is_empty());
+    assert!(rx.recv().await.is_none());
+}
+
+#[test]
+fn text_only_model_omits_tools_without_changing_supported_models() {
+    let tools = vec![crate::provider::ToolDefinition {
+        kind: "function".into(),
+        function: axiom_inference::FunctionDefinition {
+            name: "read".into(),
+            description: "Read a file".into(),
+            parameters: serde_json::json!({"type":"object","properties":{}}),
+            strict: None,
+        },
+    }];
+    let mut model = ModelInfo {
+        id: "direct:qwen3.8-27b".into(),
+        ..Default::default()
+    };
+    let request = inference_request_for_model(
+        &model,
+        model.id.clone(),
+        vec![],
+        tools.clone(),
+        ThinkingLevel::ProviderDefault,
+    );
+    assert!(request.tools.is_empty());
+    model.supports_tools = true;
+    let request = inference_request_for_model(
+        &model,
+        model.id.clone(),
+        vec![],
+        tools.clone(),
+        ThinkingLevel::ProviderDefault,
+    );
+    assert_eq!(request.tools, tools);
 }
 
 #[test]

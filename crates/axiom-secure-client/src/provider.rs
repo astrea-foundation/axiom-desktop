@@ -68,6 +68,27 @@ pub trait SecureProvider: sealed::Provider + Send + Sync {
     /// Drop public verified material after a typed rotation/protocol failure.
     /// Request private keys and nonces are never cached by provider engines.
     async fn invalidate(&self, _model_id: &str) {}
+
+    async fn image_capabilities(
+        &self,
+        _policy: &TrustPolicy,
+        _cancel: CancellationToken,
+    ) -> Result<axiom_inference::ImageRuntimePolicy> {
+        Err(SecureClientError::capability(
+            "image generation unavailable for this provider",
+        ))
+    }
+    async fn image_request(
+        &self,
+        _policy: &TrustPolicy,
+        _request: axiom_inference::ImageGenerationRequest<'_>,
+        _progress: Option<mpsc::Sender<axiom_inference::ImageGenerationProgress>>,
+        _cancel: CancellationToken,
+    ) -> Result<crate::GeneratedImage> {
+        Err(SecureClientError::capability(
+            "image generation unavailable for this provider",
+        ))
+    }
 }
 
 #[derive(Default)]
@@ -76,6 +97,9 @@ pub struct ProviderRegistry {
 }
 
 impl ProviderRegistry {
+    pub(crate) fn by_id(&self, id: &str) -> Option<Arc<dyn SecureProvider>> {
+        self.providers.get(id).cloned()
+    }
     pub fn production(
         config: crate::SecureClientConfig,
         credential: Arc<ApiCredential>,
@@ -87,9 +111,36 @@ impl ProviderRegistry {
                 Arc::clone(&credential),
             )) as Arc<dyn SecureProvider>;
             let tinfoil = Arc::new(crate::providers::tinfoil::TinfoilProvider::new(
+                config.clone(),
+                Arc::clone(&credential),
+            )) as Arc<dyn SecureProvider>;
+            #[cfg(debug_assertions)]
+            let preview = crate::providers::chutes_preview::provider(&config)?;
+            let chutes = crate::providers::chutes_preview::hosted_provider(
+                &config,
+                Arc::clone(&credential),
+            )?;
+            let direct = crate::providers::direct::provider(&config, &credential)?;
+            let pool = Arc::new(crate::providers::pool::PoolProvider::new(
                 config, credential,
             )) as Arc<dyn SecureProvider>;
-            Self::new([near, tinfoil])
+            let providers = vec![near, tinfoil, pool];
+            let mut providers = providers;
+            if let Some(direct) = direct {
+                providers.push(direct);
+            }
+            if let Some(chutes) = chutes {
+                providers.push(chutes);
+            }
+            #[cfg(debug_assertions)]
+            let providers = {
+                let mut providers = providers;
+                if let Some(preview) = preview {
+                    providers.push(preview);
+                }
+                providers
+            };
+            Self::new(providers)
         }
         #[cfg(feature = "test-fixture")]
         {
@@ -101,11 +152,29 @@ impl ProviderRegistry {
                 config.clone(),
                 Arc::clone(&credential),
             )) as Arc<dyn SecureProvider>;
-            let mut providers = vec![near, tinfoil];
+            let pool = Arc::new(crate::providers::pool::PoolProvider::new(
+                config.clone(),
+                Arc::clone(&credential),
+            )) as Arc<dyn SecureProvider>;
+            let mut providers = vec![near, tinfoil, pool];
             if config.uses_test_fixture() {
                 providers.push(Arc::new(crate::providers::fixture::FixtureProvider::new(
                     config, credential,
                 )) as Arc<dyn SecureProvider>);
+            } else {
+                if let Some(direct) = crate::providers::direct::provider(&config, &credential)? {
+                    providers.push(direct);
+                }
+                if let Some(chutes) = crate::providers::chutes_preview::hosted_provider(
+                    &config,
+                    Arc::clone(&credential),
+                )? {
+                    providers.push(chutes);
+                }
+                #[cfg(debug_assertions)]
+                if let Some(preview) = crate::providers::chutes_preview::provider(&config)? {
+                    providers.push(preview);
+                }
             }
             Self::new(providers)
         }

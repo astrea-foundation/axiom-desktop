@@ -28,6 +28,13 @@ pub(crate) fn describe_tool(
     cwd: Option<&Path>,
 ) -> String {
     let label = match name {
+        "view_image" => phased(
+            phase,
+            "Viewing image",
+            "Viewed image",
+            "Failed to view image",
+        )
+        .into(),
         "read_file" => describe_path_action(arguments, "path", phase, cwd, PathAction::Read),
         "list_files" => describe_path_action(arguments, "path", phase, cwd, PathAction::List),
         "inspect_metadata" => {

@@ -2,6 +2,16 @@ use axiom_inference::ProviderFailureKind;
 
 pub type Result<T> = std::result::Result<T, SecureClientError>;
 
+pub const INSUFFICIENT_CREDIT_MESSAGE: &str =
+    "Insufficient balance. Top up your Axiom balance to continue.";
+
+const fn balance_detail(kind: ProviderFailureKind, detail: &'static str) -> &'static str {
+    match kind {
+        ProviderFailureKind::InsufficientCredit => INSUFFICIENT_CREDIT_MESSAGE,
+        _ => detail,
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum SecureErrorCode {
@@ -75,7 +85,7 @@ impl SecureClientError {
         Self {
             kind,
             code: default_code(kind),
-            safe_detail,
+            safe_detail: balance_detail(kind, safe_detail),
             retryable: default_retryable(kind),
             retry_at: None,
         }
@@ -91,7 +101,7 @@ impl SecureClientError {
         Self {
             kind,
             code,
-            safe_detail,
+            safe_detail: balance_detail(kind, safe_detail),
             retryable,
             retry_at: None,
         }

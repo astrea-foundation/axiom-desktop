@@ -22,6 +22,7 @@ pub struct SecureClient {
     config: SecureClientConfig,
     credential: Arc<ApiCredential>,
     providers: ProviderRegistry,
+    image_sessions: crate::providers::chutes_preview::ImageSessionCache,
     catalog_cache: RwLock<Option<CachedCatalog>>,
     trust_policy: RwLock<CachedTrustPolicy>,
 }
@@ -44,6 +45,33 @@ struct PersistedTrustPolicy {
 }
 
 impl SecureClient {
+    fn direct_image_provider(&self) -> Result<std::sync::Arc<dyn crate::provider::SecureProvider>> {
+        self.providers
+            .by_id(crate::providers::direct::ID)
+            .ok_or_else(|| {
+                crate::SecureClientError::capability("direct image provider unavailable")
+            })
+    }
+
+    pub async fn image_capabilities(
+        &self,
+        cancellation: CancellationToken,
+    ) -> Result<axiom_inference::ImageRuntimePolicy> {
+        if self.config.direct.is_some() {
+            let policy = self.trust_policy(cancellation.clone()).await?;
+            return self
+                .direct_image_provider()?
+                .image_capabilities(&policy, cancellation)
+                .await;
+        }
+        crate::providers::chutes_preview::image_capabilities(
+            &self.config,
+            Arc::clone(&self.credential),
+            &self.image_sessions,
+            cancellation,
+        )
+        .await
+    }
     pub fn new(config: SecureClientConfig, credential: ApiCredential) -> Result<Self> {
         if credential.is_empty() {
             return Err(crate::SecureClientError::configuration(
@@ -57,6 +85,7 @@ impl SecureClient {
             config,
             credential,
             providers,
+            image_sessions: crate::providers::chutes_preview::ImageSessionCache::default(),
             catalog_cache: RwLock::new(None),
             trust_policy: RwLock::new(CachedTrustPolicy {
                 policy: trust_policy,
@@ -75,7 +104,129 @@ impl SecureClient {
             .await
     }
 
+    pub async fn generate_image(
+        &self,
+        chat_model_id: &str,
+        prompt: &str,
+        cancellation: CancellationToken,
+    ) -> Result<crate::GeneratedImage> {
+        if self.config.direct.is_some() {
+            return self
+                .image_request(chat_model_id, prompt, None, None, cancellation)
+                .await;
+        }
+        crate::providers::chutes_preview::generate_image(
+            &self.config,
+            Arc::clone(&self.credential),
+            &self.image_sessions,
+            chat_model_id,
+            prompt,
+            cancellation,
+        )
+        .await
+    }
+
+    pub async fn image_request(
+        &self,
+        chat_model_id: &str,
+        prompt: &str,
+        source: Option<(&str, &axiom_inference::ImageContent)>,
+        dimensions: Option<axiom_inference::ImageDimensions>,
+        cancellation: CancellationToken,
+    ) -> Result<crate::GeneratedImage> {
+        if self.config.direct.is_some() {
+            let references = source.into_iter().collect::<Vec<_>>();
+            return self
+                .image_request_with_progress(
+                    axiom_inference::ImageGenerationRequest {
+                        chat_model_id,
+                        prompt,
+                        references: &references,
+                        dimensions,
+                    },
+                    tokio::sync::mpsc::channel(1).0,
+                    cancellation,
+                )
+                .await;
+        }
+        crate::providers::chutes_preview::image_operation(
+            &self.config,
+            Arc::clone(&self.credential),
+            &self.image_sessions,
+            chat_model_id,
+            prompt,
+            source,
+            dimensions,
+            cancellation,
+        )
+        .await
+    }
+
+    pub async fn image_request_with_progress(
+        &self,
+        request: axiom_inference::ImageGenerationRequest<'_>,
+        progress: tokio::sync::mpsc::Sender<axiom_inference::ImageGenerationProgress>,
+        cancellation: CancellationToken,
+    ) -> Result<crate::GeneratedImage> {
+        if self.config.direct.is_some() {
+            let policy = self.trust_policy(cancellation.clone()).await?;
+            return self
+                .direct_image_provider()?
+                .image_request(&policy, request, Some(progress), cancellation)
+                .await;
+        }
+        crate::providers::chutes_preview::image_operation_with_progress(
+            &self.config,
+            Arc::clone(&self.credential),
+            &self.image_sessions,
+            request,
+            Some(progress),
+            cancellation,
+        )
+        .await
+    }
+
+    pub async fn edit_image(
+        &self,
+        chat_model_id: &str,
+        image_id: &str,
+        prompt: &str,
+        source: &axiom_inference::ImageContent,
+        cancellation: CancellationToken,
+    ) -> Result<crate::GeneratedImage> {
+        if self.config.direct.is_some() {
+            return self
+                .image_request(
+                    chat_model_id,
+                    prompt,
+                    Some((image_id, source)),
+                    None,
+                    cancellation,
+                )
+                .await;
+        }
+        crate::providers::chutes_preview::image_operation(
+            &self.config,
+            Arc::clone(&self.credential),
+            &self.image_sessions,
+            chat_model_id,
+            prompt,
+            Some((image_id, source)),
+            None,
+            cancellation,
+        )
+        .await
+    }
+
     pub async fn models(&self, cancellation: CancellationToken) -> Result<Vec<ModelInfo>> {
+        if self.config.direct.is_some() {
+            if cancellation.is_cancelled() {
+                return Err(crate::SecureClientError::cancelled());
+            }
+            return self
+                .accept_catalog(Ok(crate::providers::direct::models(&self.config)))
+                .await;
+        }
         let result = catalog::fetch_models(
             &self.config,
             &self.credential,
@@ -83,6 +234,36 @@ impl SecureClient {
             &cancellation,
         )
         .await;
+        let mut configured_pool = crate::providers::pool::models(&self.config);
+        configured_pool.extend(crate::providers::direct::models(&self.config));
+        #[cfg(debug_assertions)]
+        let configured_pool = {
+            let preview = crate::providers::chutes_preview::models(&self.config);
+            if preview.is_empty() {
+                configured_pool
+            } else {
+                preview
+            }
+        };
+        let result = match result {
+            Ok(mut models) => {
+                for model in configured_pool {
+                    if !models.iter().any(|item| item.id == model.id) {
+                        models.push(model);
+                    }
+                }
+                Ok(models)
+            }
+            // Locally pinned discovery remains useful when no other provider
+            // is configured. Inference still requires fresh worker admission.
+            Err(error)
+                if !configured_pool.is_empty()
+                    && error.kind() != axiom_inference::ProviderFailureKind::Cancelled =>
+            {
+                Ok(configured_pool)
+            }
+            Err(error) => Err(error),
+        };
         self.accept_catalog(result).await
     }
 

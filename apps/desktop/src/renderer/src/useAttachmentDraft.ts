@@ -35,7 +35,7 @@ export function useAttachmentDraft(accountId: string | null, threadId: string | 
   const addFiles = async (files: File[]) => {
     if (processing.current.has(scope)) return;
     const previous = drafts.current.get(scope) ?? [];
-    if (previous.length + files.length > MAX_ATTACHMENTS) { report("Attach at most 8 files per message."); return; }
+    if (previous.length + files.length > MAX_ATTACHMENTS) { report("Attach at most 10 files per message."); return; }
     processing.current.add(scope); changed((value) => value + 1);
     try {
       const added: PromptAttachment[] = [];

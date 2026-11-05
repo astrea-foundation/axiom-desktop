@@ -34,6 +34,12 @@
     "getAttachmentsResponse": {
       "$ref": "#/$defs/GetAttachmentsResponse"
     },
+    "regenerateImageRequest": {
+      "$ref": "#/$defs/RegenerateImageRequest"
+    },
+    "regenerateImageResponse": {
+      "$ref": "#/$defs/RegenerateImageResponse"
+    },
     "deliveryMetadata": {
       "$ref": "#/$defs/DeliveryMetadata"
     },
@@ -230,6 +236,8 @@
     "promptMetadata",
     "getAttachmentsRequest",
     "getAttachmentsResponse",
+    "regenerateImageRequest",
+    "regenerateImageResponse",
     "deliveryMetadata",
     "listThreadsRequest",
     "listThreadsResponse",
@@ -867,6 +875,14 @@
           "maximum": 65535,
           "default": 0
         },
+        "imageGeneration": {
+          "description": "Version 2 exposes one image tool automatically for vision models.",
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535,
+          "default": 0
+        },
         "steering": {
           "type": "integer",
           "format": "uint16",
@@ -1158,6 +1174,33 @@
       },
       "required": [
         "attachments"
+      ]
+    },
+    "RegenerateImageRequest": {
+      "type": "object",
+      "properties": {
+        "threadId": {
+          "type": "string"
+        },
+        "callId": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "threadId",
+        "callId"
+      ]
+    },
+    "RegenerateImageResponse": {
+      "type": "object",
+      "properties": {
+        "callId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "callId"
       ]
     },
     "DeliveryMetadata": {
@@ -1497,6 +1540,27 @@
           "default": null
         },
         "reasoningTokens": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "imagePixels": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "imageSteps": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "inputImagePixels": {
           "type": [
             "string",
             "null"
@@ -3434,6 +3498,17 @@
           "properties": {
             "status": {
               "$ref": "#/$defs/SecurityStatus"
+            },
+            "evidence": {
+              "description": "Public report from the locally verified session for this request.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SecurityEvidence"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "kind": {
               "type": "string",

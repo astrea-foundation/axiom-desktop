@@ -80,6 +80,13 @@ a manually entered automation key. Its separate API-key management UI intentiona
 shows a newly created automation key once for copying; it is not the native
 session token and must not be retained in account snapshots or diagnostics.
 
+Credential initialization and reads wait asynchronously for the OS store,
+including a locked Keychain or an outstanding system prompt. A slow read does
+not sign the account out. Desktop waits for that startup/account response while
+its interface remains responsive; closing the app or cancelling an account
+request still stops that request. Actual store errors fail closed. Token
+persistence and deletion retain their supervised failure and cleanup rules.
+
 Account billing and payment-provider credentials remain backend-owned. Desktop
 receives bounded credit/deposit metadata and an indicative current ZEC/USD quote. It never receives wallet custody or grants the model
 transaction authority. Currency valuation is distinct from a currency conversion.

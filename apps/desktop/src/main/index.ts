@@ -19,6 +19,8 @@ import { UpdateService } from "./update-service";
 import { updateIdentity } from "./update-identity";
 import { nativeUpdates } from "./native-updates";
 import { claimFirstLaunchUpdate } from "./first-launch-update";
+import { localProfile } from "./local-profile";
+import { installPageContextMenu } from "./page-context-menu";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -27,6 +29,7 @@ const WINDOW_HEIGHT = 860;
 const BACKGROUND = "#f2f2f4";
 const BACKGROUND_DARK = "#141416";
 const IS_STAGING_PROFILE = !app.isPackaged && process.env.AXIOM_DESKTOP_STAGING_PROFILE === "1";
+const LOCAL_PROFILE = localProfile({ packaged: app.isPackaged, environment: process.env, home: app.getPath("home") });
 // TODO(brand): confirm the legal line before release.
 const COPYRIGHT = "© 2026 Astrea Foundation";
 const proxy = new ProxySupervisor(async (port, accountId, token) => {
@@ -36,10 +39,7 @@ const proxy = new ProxySupervisor(async (port, accountId, token) => {
     cwd: app.getPath("home"), windowsHide: true, stdio: "pipe",
     env: createChildEnvironment(process.env, {
       AXIOM_AUTH_URL: origins.auth, AXIOM_BASE_URL: origins.api, AXIOM_PROXY_TOKEN: token,
-      ...(IS_STAGING_PROFILE ? {
-        XDG_CONFIG_HOME: join(app.getPath("home"), ".axiom-staging", "config"),
-        XDG_DATA_HOME: join(app.getPath("home"), ".axiom-staging", "data"),
-      } : {}),
+      ...LOCAL_PROFILE.sidecarEnv,
     }, ["AXIOM_API_KEY"], DESKTOP_SIDECAR_INHERITED_ENV),
   });
 }, (state) => {
@@ -60,6 +60,9 @@ if (IS_STAGING_PROFILE) {
     authUrl: process.env.AXIOM_AUTH_URL, apiUrl: process.env.AXIOM_BASE_URL });
   if (origins.api !== STAGING_API_ORIGIN) throw new Error("Staging profile requires staging service origins");
   app.setPath("userData", join(app.getPath("appData"), "Axiom Staging"));
+}
+if (LOCAL_PROFILE.userDataName) {
+  app.setPath("userData", join(app.getPath("appData"), LOCAL_PROFILE.userDataName));
 }
 // Electron 37 derives X11 WM_CLASS from this name, not --class. Keep it stable
 // across profiles; staging already has isolated userData above.
@@ -131,7 +134,7 @@ function installAgentIpc(): void {
   agentHandle("proxy:copy-token", (_event, accountId: unknown, runtimeId: unknown) => {
     clipboard.writeText(proxy.copyToken(boundedString(accountId, "account ID", 128), boundedString(runtimeId, "runtime ID", 128)));
   });
-  agentHandle("agent:state", () => sidecar.state());
+  agentHandle("agent:state", (event) => sidecar.rendererState(event.sender));
   agentHandle("agent:usage-summary", async (_event, accountId: unknown, period: unknown = "all_time", timezone: unknown = "UTC") => {
     const id = boundedString(accountId, "account ID", 128);
     if (period !== "week" && period !== "month" && period !== "all_time") throw new Error("Invalid usage period");
@@ -165,6 +168,8 @@ function installAgentIpc(): void {
   });
   agentHandle("agent:attachments", (_event, threadId: unknown, userItemId: unknown) =>
     sidecar.getAttachments(boundedString(threadId, "thread ID", 128), boundedString(userItemId, "user message ID", 512)));
+  agentHandle("agent:image-regenerate", (_event, threadId: unknown, callId: unknown) =>
+    sidecar.regenerateImage(boundedString(threadId, "thread ID", 128), boundedString(callId, "image call ID", 512)));
   agentHandle("agent:prompt-revise", (_event, sessionId: unknown, text: unknown, userItemId: unknown, expectedRevision: unknown, webEnabled: unknown, revision: unknown, mcpRevision: unknown) => {
     if (typeof webEnabled !== "boolean") throw new Error("webEnabled must be a boolean");
     if (typeof text !== "string") throw new Error("Invalid prompt input");
@@ -470,6 +475,7 @@ function createWindow(): BrowserWindow {
 
   window.setMenuBarVisibility(false);
   installApplicationMenu();
+  installPageContextMenu(window, app.getPath("downloads"), (items) => Menu.buildFromTemplate(items));
   if (PLATFORM_PREVIEW && process.platform === "darwin") window.setWindowButtonVisibility(false);
 
   window.on("ready-to-show", () => {

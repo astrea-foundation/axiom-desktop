@@ -28,6 +28,10 @@ pub struct SecureClientConfig {
     pub trust_policy_refresh_interval: Duration,
     pub limits: SecureClientLimits,
     pub endpoint_policy: EndpointPolicy,
+    /// Installed operator pins. Remote catalogs cannot set these values.
+    pub pool: Option<crate::PoolClientConfig>,
+    /// Explicit operator installation; never accepted from a remote catalog.
+    pub direct: Option<axiom_pool_client::direct::DirectConfig>,
     #[cfg(feature = "test-fixture")]
     test_fixture: bool,
 }
@@ -41,6 +45,7 @@ impl SecureClientConfig {
                 "production relay URL must use HTTPS",
             ));
         }
+        let direct = crate::providers::direct::installed_config(&relay_base_url)?;
         Ok(Self {
             accept_outdated_near_tcb: Arc::new(AtomicBool::new(false)),
             relay_base_url,
@@ -52,6 +57,8 @@ impl SecureClientConfig {
             trust_policy_refresh_interval: Duration::from_secs(300),
             limits: SecureClientLimits::default(),
             endpoint_policy: EndpointPolicy::default(),
+            pool: crate::providers::pool::installed_config()?,
+            direct,
             #[cfg(feature = "test-fixture")]
             test_fixture: false,
         })
@@ -86,6 +93,8 @@ impl SecureClientConfig {
                 reject_local_addresses: false,
                 allow_redirects: false,
             },
+            pool: None,
+            direct: None,
             test_fixture: true,
         })
     }
@@ -139,7 +148,10 @@ impl Default for SecureClientLimits {
             attestation_quote_bytes: 256 * 1024,
             nvidia_evidence_bytes: 1024 * 1024,
             nvidia_jwt_bytes: 256 * 1024,
-            nvidia_jwks_bytes: 256 * 1024,
+            // NVIDIA publishes overlapping certificate chains during key
+            // rotation; its October 2026 set is 548,284 bytes. The bounded
+            // collection is distinct from an individual signed verdict.
+            nvidia_jwks_bytes: 1024 * 1024,
             intel_collateral_bytes: 2 * 1024 * 1024,
             relay_error_bytes: 4 * 1024,
             // A completion receipt contains the bounded 32 MiB provider
@@ -262,6 +274,34 @@ mod tests {
                 "{rejected}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn rotated_nvidia_key_collection_fits_while_oversized_collections_still_fail() {
+        let limits = SecureClientLimits::default();
+        let observed = reqwest::Response::from(
+            http::Response::builder()
+                .body(vec![b' '; 548_284])
+                .expect("observed collection size"),
+        );
+        assert_eq!(
+            bounded_body(observed, limits.nvidia_jwks_bytes)
+                .await
+                .unwrap()
+                .len(),
+            548_284
+        );
+        assert_eq!(limits.nvidia_jwt_bytes, 256 * 1024);
+        let oversized = reqwest::Response::from(
+            http::Response::builder()
+                .body(vec![b' '; 1024 * 1024 + 1])
+                .expect("oversized key collection"),
+        );
+        assert!(
+            bounded_body(oversized, limits.nvidia_jwks_bytes)
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]

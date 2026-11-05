@@ -128,7 +128,24 @@ jobs:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - uses: astral-sh/setup-uv@v6
+      - name: Build and sign the frozen helper before its executable is pinned
+        env:
+          AXIOM_HELPER_PYTHON: python
+        run: node scripts/build-chutes-bundle.mjs --channel production --output .local/chutes/bundle --windows-sign-script apps/desktop/scripts/sign-windows.ps1
+      - name: Build and sign the pinned AstreaAI verifier
+        env:
+          AXIOM_HELPER_PYTHON: python
+        run: node scripts/build-direct-bundle.mjs --output .local/direct/bundle --windows-sign-script apps/desktop/scripts/sign-windows.ps1
       - name: Build and sign combined Desktop and CLI installers
+        env:
+          AXIOM_CHUTES_BUNDLE: .local/chutes/bundle
+          AXIOM_CHUTES_RELEASE_CHANNEL: production
+          AXIOM_DIRECT_BUNDLE: .local/direct/bundle
         shell: pwsh
         run: |
           choco install nsis --version=3.11 --no-progress -y

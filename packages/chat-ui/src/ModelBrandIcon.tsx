@@ -1,6 +1,8 @@
 /** @jsxRuntime automatic */
 /** @jsxRuntime automatic */
 import { Box } from "lucide-react";
+import axiomIcon from "@axiom/brand/assets/axiom-symbol-logo-colored.svg?url";
+import astreaIcon from "@axiom/brand/assets/astrea-symbol-logo-colored.svg?url";
 import tinfoilIcon from "./assets/tinfoil/tinfoil.svg?url";
 import alibabaIcon from "@lobehub/icons-static-svg/icons/alibaba-color.svg?url";
 import anthropicIcon from "@lobehub/icons-static-svg/icons/anthropic.svg?url";
@@ -57,7 +59,8 @@ function hasAlias(value: string, alias: string): boolean {
 }
 
 function resolveBrand(value: string): BrandAsset | null {
-  const normalized = normalizeCompanyName(value);
+  // Qwen appends the version directly to its family name, e.g. Qwen3.8.
+  const normalized = normalizeCompanyName(value).replace(/\bqwen(?=[0-9])/g, "qwen ");
   return MODEL_BRANDS.find(({ aliases }) => aliases.some((alias) => hasAlias(normalized, alias)))
     ?.asset ?? null;
 }
@@ -106,6 +109,12 @@ export function ProviderBrandIcon({ providerId, providerLabel, className = "h-3.
   className?: string;
 }) {
   const normalized = normalizeCompanyName(`${providerId} ${providerLabel}`);
+  if (providerId === "axiom-direct" || hasAlias(normalized, "astreaai")) {
+    return <AssetIcon asset={{ name: "AstreaAI", src: astreaIcon }} className={className} />;
+  }
+  if (providerId === "axiom" || providerId === "chutes" || providerId === "chutes-preview") {
+    return <AssetIcon asset={{ name: "Axiom", src: axiomIcon }} className={className} />;
+  }
   if (hasAlias(normalized, "tinfoil")) {
     return <AssetIcon asset={{ name: "Tinfoil", src: tinfoilIcon, monochrome: true }} className={className} />;
   }

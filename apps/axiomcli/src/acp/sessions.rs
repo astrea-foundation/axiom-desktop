@@ -24,6 +24,11 @@ pub(super) fn initialize(
     ));
     let mut extensions =
         ExtensionCapabilities::agent(ctx_extension_state.runtime_instance_id.clone());
+    if std::env::var_os("AXIOM_CHUTES_CLIENT_CONFIG_FILE").is_none()
+        && std::env::var_os("AXIOM_DIRECT_CLIENT_CONFIG_FILE").is_none()
+    {
+        extensions.features.image_generation = 0;
+    }
     if context.frontend != FrontendKind::DesktopChat {
         extensions.features.desktop_mcp = 0;
     }

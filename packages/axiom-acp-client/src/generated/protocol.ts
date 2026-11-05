@@ -68,6 +68,10 @@ export type ActivityEvent =
     }
   | {
       status: SecurityStatus;
+      /**
+       * Public report from the locally verified session for this request.
+       */
+      evidence?: SecurityEvidence | null;
       kind: "security_changed";
       [k: string]: unknown;
     }
@@ -137,6 +141,8 @@ export interface ProtocolSchema {
   promptMetadata: PromptMetadata;
   getAttachmentsRequest: GetAttachmentsRequest;
   getAttachmentsResponse: GetAttachmentsResponse;
+  regenerateImageRequest: RegenerateImageRequest;
+  regenerateImageResponse: RegenerateImageResponse;
   deliveryMetadata: DeliveryMetadata;
   listThreadsRequest: ListThreadsRequest;
   listThreadsResponse: ListThreadsResponse;
@@ -314,6 +320,10 @@ export interface FeatureVersions {
   usage?: number;
   securityEvidence?: number;
   webConsent?: number;
+  /**
+   * Version 2 exposes one image tool automatically for vision models.
+   */
+  imageGeneration?: number;
   steering?: number;
   messageRevision?: number;
   attachments?: number;
@@ -400,6 +410,14 @@ export interface GetAttachmentsRequest {
 }
 export interface GetAttachmentsResponse {
   attachments: PromptAttachment[];
+  [k: string]: unknown;
+}
+export interface RegenerateImageRequest {
+  threadId: string;
+  callId: string;
+}
+export interface RegenerateImageResponse {
+  callId: string;
   [k: string]: unknown;
 }
 /**
@@ -499,6 +517,9 @@ export interface RequestUsage {
   cachedInputTokens?: string | null;
   outputTokens?: string | null;
   reasoningTokens?: string | null;
+  imagePixels?: string | null;
+  imageSteps?: string | null;
+  inputImagePixels?: string | null;
   costMicrousd?: string | null;
   settled?: boolean;
   responseVerified?: boolean;

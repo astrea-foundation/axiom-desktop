@@ -1452,7 +1452,7 @@ pub(super) fn security_overlay_lines(
         Line::from(Span::styled(
             match report {
                 ReportStatus::Verified => {
-                    "Current TEE report verified locally. Reply completion is verified separately."
+                    "Current TEE environment and encryption key verified locally."
                 }
                 ReportStatus::Expired => {
                     "This report has expired. Renewal resumes when active and available; press R to retry."
@@ -1585,7 +1585,11 @@ pub(super) fn security_summary_lines(
 
     lines.push(Line::from(""));
     lines.push(section_line("Verification checks", theme));
-    for check in &evidence.checks {
+    for check in evidence
+        .checks
+        .iter()
+        .filter(|check| check.label != "Signed receipt")
+    {
         lines.push(Line::from(vec![
             Span::styled(
                 if check.passed { "✓ " } else { "× " },

@@ -33,8 +33,10 @@ impl ClientSource for NativeClient {
                     "Sign in and restart the proxy",
                 )
             })?;
-            if self.auth.credential_source() != CredentialSource::SystemKeyring
-                || self.auth.active_account_id().as_deref() != Some(&self.account_id)
+            if !matches!(
+                self.auth.credential_source(),
+                CredentialSource::SystemKeyring | CredentialSource::LocalDevelopmentFile
+            ) || self.auth.active_account_id().as_deref() != Some(&self.account_id)
             {
                 self.shutdown.cancel();
                 return Err(SecureClientError::new(
