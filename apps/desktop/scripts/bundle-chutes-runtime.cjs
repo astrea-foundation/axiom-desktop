@@ -104,5 +104,17 @@ async function bundleChutesRuntime(resources, source, options) {
   return target;
 }
 
+async function verifyPackagedBundle(resources, source, options) {
+  const target = path.join(resources, 'chutes');
+  if (!(await lstat(target)).isDirectory()) throw new Error('Packaged Chutes runtime must be an ordinary directory');
+  await validateBundle(source, options);
+  await validateBundle(target, options);
+  if (!(await readFile(path.join(source,'bundle.json'))).equals(await readFile(path.join(target,'bundle.json')))) {
+    throw new Error('Packaged Chutes runtime differs from its validated input');
+  }
+  return target;
+}
+
 module.exports = bundleChutesRuntime;
 module.exports.validateBundle = validateBundle;
+module.exports.verifyPackagedBundle = verifyPackagedBundle;
