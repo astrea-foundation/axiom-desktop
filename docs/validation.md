@@ -251,6 +251,22 @@ late bootstrap recovery, 1536-pixel viewing while typing, and cancellable inline
 decoding that yields to UI tasks. These local transport checks do not change
 provider attestation, authenticated completion, original image bytes or size caps.
 
+Before releasing cross-provider AstreaAI image support, qualify verified
+1536-square generation and ordered five-reference editing from vision-capable
+Tinfoil and NEAR chats. Check that image provenance and regeneration retain the
+originating chat model while image evidence and settled usage identify AstreaAI.
+Hosted browser support also requires a newly measured gateway whose shared
+client pin includes the same routing fix; updating the browser alone does not
+update the image-provider implementation inside the gateway.
+The image worker also needs a newly measured build with the Comfy parameter
+restoration fix. Qualify alternating uncensored/base requests in one long-lived
+engine, including 1536-square output and five ordered references; a cold-start
+image alone does not exercise adapter restoration. The isolated GPU result in
+the [local image qualification](../../axiom-inference/docs/qa/cross-provider-images-local-2026-11-05.json)
+does not establish production attestation or cross-provider image acceptance.
+Exercise both progress-reporting and progress-free native image APIs; completion
+must not wait for a progress consumer that the caller never requested.
+
 Optional `view_image` inspection has native regression coverage for uploaded,
 generated and edited images, generation followed by viewing before the final
 answer, tool-batch ordering, persisted restoration, malformed/foreign references,
