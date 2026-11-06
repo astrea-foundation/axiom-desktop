@@ -136,6 +136,10 @@ impl SecureClient {
     ) -> Result<crate::GeneratedImage> {
         if self.config.direct.is_some() {
             let references = source.into_iter().collect::<Vec<_>>();
+            let (progress, receiver) = tokio::sync::mpsc::channel(1);
+            // A temporary tuple can keep its unread receiver alive across await,
+            // blocking the second update. This API has no progress consumer.
+            drop(receiver);
             return self
                 .image_request_with_progress(
                     axiom_inference::ImageGenerationRequest {
@@ -144,7 +148,7 @@ impl SecureClient {
                         references: &references,
                         dimensions,
                     },
-                    tokio::sync::mpsc::channel(1).0,
+                    progress,
                     cancellation,
                 )
                 .await;
@@ -560,6 +564,79 @@ mod tests {
             .unwrap(),
         );
         config
+    }
+
+    struct ImageProgressFixture;
+    impl crate::provider::sealed::Provider for ImageProgressFixture {}
+    #[async_trait::async_trait]
+    impl crate::provider::SecureProvider for ImageProgressFixture {
+        fn id(&self) -> &'static str {
+            crate::providers::direct::ID
+        }
+        fn supports(&self, _: &ModelInfo) -> Result<()> {
+            Ok(())
+        }
+        fn supports_contract(&self, _: &str, _: u16, _: &str) -> bool {
+            true
+        }
+        fn populate_capabilities(&self, _: &mut ModelInfo) {}
+        async fn establish(
+            &self,
+            _: &ModelInfo,
+            _: &TrustPolicy,
+            _: CancellationToken,
+        ) -> Result<Box<dyn VerifiedSession>> {
+            Err(crate::SecureClientError::capability("image fixture only"))
+        }
+        async fn image_request(
+            &self,
+            _: &TrustPolicy,
+            _: axiom_inference::ImageGenerationRequest<'_>,
+            progress: Option<tokio::sync::mpsc::Sender<axiom_inference::ImageGenerationProgress>>,
+            _: CancellationToken,
+        ) -> Result<crate::GeneratedImage> {
+            if let Some(progress) = progress {
+                for percent in [0, 1, 99] {
+                    let _ = progress
+                        .send(axiom_inference::ImageGenerationProgress {
+                            stage: match percent {
+                                0 => axiom_inference::ImageGenerationStage::Queued,
+                                99 => axiom_inference::ImageGenerationStage::Finishing,
+                                _ => axiom_inference::ImageGenerationStage::Generating,
+                            },
+                            percent,
+                        })
+                        .await;
+                }
+            }
+            Err(crate::SecureClientError::capability(
+                "image fixture completed",
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn image_request_without_progress_cannot_stall_on_unconsumed_updates() {
+        let config = installed_direct_config("https://relay.example");
+        let mut client = SecureClient::new(config, ApiCredential::new("synthetic")).unwrap();
+        client.providers = ProviderRegistry::new([
+            Arc::new(ImageProgressFixture) as Arc<dyn crate::provider::SecureProvider>
+        ])
+        .unwrap();
+        client.trust_policy.write().await.refreshed_at = Some(Instant::now());
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            client.image_request(
+                "tinfoil-model",
+                "A dog",
+                None,
+                None,
+                CancellationToken::new(),
+            ),
+        )
+        .await
+        .expect("image API must complete without a progress consumer");
+        assert_eq!(result.unwrap_err().safe_detail(), "image fixture completed");
     }
 
     async fn catalog_server(

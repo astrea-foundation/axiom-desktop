@@ -258,6 +258,8 @@ originating chat model while image evidence and settled usage identify AstreaAI.
 Hosted browser support also requires a newly measured gateway whose shared
 client pin includes the same routing fix; updating the browser alone does not
 update the image-provider implementation inside the gateway.
+Exercise both progress-reporting and progress-free native image APIs; completion
+must not wait for a progress consumer that the caller never requested.
 
 Optional `view_image` inspection has native regression coverage for uploaded,
 generated and edited images, generation followed by viewing before the final
