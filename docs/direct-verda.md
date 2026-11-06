@@ -151,7 +151,7 @@ signed-OS interactive flows; retain the
 
 ## Install and launch
 
-Production customers install [Desktop or AxiomCLI 0.1.17](https://axiom.stream/downloads)
+Production customers install [Desktop or AxiomCLI 0.1.18](https://axiom.stream/downloads)
 and sign in to their normal production account. The signed package supplies the
 verifier and public trust configuration automatically. Select **Qwen3.8
 Uncensored** under **AstreaAI**. The source/operator commands below are for an
