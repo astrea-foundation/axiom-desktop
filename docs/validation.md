@@ -2,7 +2,7 @@
 
 The launch dependency audit updates Tokio to 1.53.3, the rustls verifier to
 0.103.16, both webpki root lists to 1.0.10, libz-sys to 1.1.31 and
-pulldown-cmark to 0.13.5. These retain the existing security audit gate.
+pulldown-cmark to 0.13.6. These retain the existing security audit gate.
 
 Native pool ES256 proof-key generation/signing uses P-256 0.14 and
 crypto-bigint 0.7.10, beyond the fix for
@@ -52,53 +52,64 @@ refusal before input dispatch. Independently verified chat, vision, tools and
 five-reference 1536-square images completed, including two concurrent requests
 and a fresh verified boot after watchdog recovery. A named hosted staging
 profile also loaded its own Keychain credential after the short read deadline
-was removed. The hosted browser gateway's startup health remains unresolved.
-This qualification does not promote production or publish installers.
+was removed. That record predates the browser startup repair and production
+promotion; it does not itself establish either result.
 
-Public release remains blocked on these concrete requirements:
+The [production qualification](../../axiom-inference/docs/qa/direct-astreaai-production-2026-11-05.json)
+records generation 13 / permanent policy 20, the production account service and
+the independently verified generation-3 browser gateway. Public worker,
+controller, issuer and immutable price pins are distributed to clients; the
+issuer private key stays on the account-service host. Account-owned grants bind
+the session, client proof key, approved worker and request. Native chat now keeps
+the same request identity through reservation, encrypted execution and receipt
+reconciliation.
 
-- Promote the qualified service-owned staging issuer path to production
-  reservation/grant issuance. Each grant must bind the authenticated account,
-  session, client proof key, exact approved worker and one request. Distribute
-  public trust material and the verifier to clients; keep private issuer and
-  publisher keys under operator/service control.
-- Register and select the AstreaAI deployment through the production account API
-  and model catalog. Hosted staging now accepts matching public controller,
-  issuer and price pins, with no client-held issuer key. Distribute the public
-  configuration and independent verifier through the supported installer and
-  enrollment path; development profile overrides remain preview controls.
-- Promote the qualified customer billing path: attach immutable prices and spending caps to
-  account-owned reservations, settle verified receipts once through the balance
-  ledger, and release or reconcile holds on refusal, cancellation and recovery.
-  The staging backend now accepts 1536-square images, reference-input pixel
-  accounting and the larger encrypted request size, and forwards complete
-  chat/image usage to the native accounting UI. Preserve those bounds when
-  enrolling production. A zero-charge operator grant and an
-  image `settled` flag alone do not establish a customer debit; see
-  [billing readiness](direct-verda.md#billing-readiness).
-- Exercise real independent accounts concurrently against the production
-  authorization/routing path, including cancellation, account switching,
-  wrong-request responses, incomplete streams and worker replacement. Retain
-  strict attestation and authenticated completion throughout.
-- Qualify bounded admission/queueing and recovery under the intended customer
-  rollout. The capacity branch reserves trusted input plus maximum output tokens,
-  permits four short chats within 65,536 reserved tokens, queues at most eight
-  requests for 30 seconds, and returns an authenticated busy refusal without
-  replay. Long 32K requests can still reduce concurrency to two. Worker/queue
-  tests and an operator load test do not establish real-account routing or
-  sustained customer capacity. The external Verda watchdog is installed and recovery-qualified on
-  `salt@10.0.0.191`; redundant ready capacity is still required for a production
-  availability claim.
-- Package the independent verifier and public trust configuration for every
-  supported installer target, then qualify production sign-in, the installed
-  provider, image/reference flows, account-data preservation and updates using
-  the exact signed candidate bytes. Source-mode macOS checks do not establish
-  Windows, Intel macOS, Linux or signed-installer acceptance.
+Two independent production accounts completed encrypted requests concurrently.
+Foreign status and receipt access failed, another account received no usage
+records, duplicate settlement added no debit, and an account without credit was
+refused before input dispatch. Twelve metadata-only reservations were admitted;
+the next returned HTTP 429 with Retry-After. All twelve were cancelled without
+dispatch or balance changes. The final API startup guard was deployed after a
+fenced zero-request drain and checks worker context/output caps before enrollment.
 
-Keep this gate separate from the existing managed Chutes release qualification.
-Publishing the current operator branch alone does not enroll ordinary customer
-installations into AstreaAI. See [the Direct connection guide](direct-verda.md)
-and [release procedure](releasing.md).
+The production browser completed five-reference 1536-square generation, optional
+image viewing, saving and regeneration with the original prompt, dimensions and
+reference order. Authenticated image usage included normalized input pixels,
+2,359,296 output pixels and the immutable $0.008 request price. Only newly created
+synthetic accounts and profiles were used; existing user chats were not read.
+
+The enabled watchdog on `salt@10.0.0.191` now verifies the production origin and
+policy 20. Its rental API credential remains outside the GPU VM. Earlier actual
+power-off recovery produced a new verified boot and authenticated completion.
+The production backend also has a persistent container restart policy. The
+single shared GPU was drained out of staging before production enrollment.
+
+Desktop 0.1.17 at `7c41a12b31d42aefe4f21896864a166f0d087b3a` passed exact-source
+Rust, UI and all four native CI jobs. Its release gate completed three production
+Observe investigations with the frozen verifier and one tool call each. The
+recorded times were 34,147, 11,319 and 8,705 ms. The 0.1.16 candidate was never
+published; 0.1.17 fixes its workspace-relative verifier path. Assembly-only Mac
+recovery preserves the same qualified native source and receipts; see the
+[release procedure](releasing.md#completing-unpublished-packaging-from-retained-inputs).
+Signed publication and exact distributed-package acceptance remain pending.
+
+Retain these limits and remaining interactive requirements:
+
+- Four short executions share 65,536 reserved tokens, with at most eight waiters
+  for 30 seconds and one image execution. Long 32K requests can reduce concurrency
+  to two. The bounded account tests do not establish sustained customer throughput.
+- A single GPU cannot serve during a full VM recovery. Warm redundant capacity
+  and actual failover qualification remain necessary for continuous availability.
+- Signed native sign-in, account switching, all image/reference interactions,
+  data-preserving upgrades and failure recovery on every supported OS remain
+  subject to the interactive acceptance matrix below. CI, packaging and a
+  successful CLI completion cover their stated scope only.
+- Keep cancellation, recipient/request binding, stream ordering/completion,
+  fresh evidence and receipt checks strict during account changes and replacement.
+  Permanent workload policy does not waive fresh hardware or response checks.
+
+These AstreaAI results are separate from managed Chutes qualification. See
+[the Direct connection guide](direct-verda.md) and [release procedure](releasing.md).
 
 ## Confidential pool qualification
 
