@@ -211,6 +211,13 @@ of this updater's public contract; the native helper uses the complete installer
 
 ### Completing unpublished packaging from retained inputs
 
+The one-time 0.1.17 recovery completed with assembly tag
+`v0.1.17-packaging.3`. Its signed public inventory still identifies the qualified
+native source `7c41a12b31d42aefe4f21896864a166f0d087b3a`. Preserve the published
+bytes; publication retries reuse the retained signed release or public assets.
+Future installer corrections require the normal new-version release procedure.
+The recovery details below document the assembly provenance.
+
 The manual `release-packaging-recovery.yml` workflow completes the unpublished
 0.1.17 installer set from its exact qualified native source and retained build
 receipts. Dispatch the reviewed `v0.1.17-packaging.3` tag after its workflow is
