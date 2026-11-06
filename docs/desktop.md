@@ -171,6 +171,10 @@ an upload or request to describe it does not by itself request generation.
 The model uses `generate` for both operations, with up to five optional reference
 images. It refers to them as `<image1>`, `<image2>`, etc. in the order supplied
 to the tool. The image service uses ComfyUI inside the encrypted worker.
+With AstreaAI installed, vision-capable NEAR and Tinfoil chats use that same
+attested image service while keeping their selected chat model. Image receipts
+and billing identify the AstreaAI worker; saved image provenance retains the
+originating chat model for regeneration.
 Images from Qwen3.8 Uncensored use the pinned uncensored LoRA at strength 0.9;
 other chat models use the base image model. The model can optionally call
 `view_image` to inspect an uploaded or generated result before finishing its

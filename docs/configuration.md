@@ -151,8 +151,9 @@ quality. Reference-based calls without an aspect ratio preserve the first
 reference's output dimensions or aspect ratio within the limits.
 
 Vision-capable chat models automatically receive the shared `generate`
-and `view_image` tools when the managed Chutes image adapter is installed and
-`imageGeneration@3` is negotiated. There is no Images toggle. `generate` requires a `prompt`; optional
+and `view_image` tools when the AstreaAI or managed Chutes image adapter is
+installed and `imageGeneration@4` is negotiated. The chat provider and image
+provider may differ. There is no Images toggle. `generate` requires a `prompt`; optional
 `reference_image_ids` select up to five ordered conversation-owned images for
 editing or composition. Refer to them in the prompt as `<image1>`, `<image2>`,
 etc. in array order. Omitting references creates a new image. Invalid references fail

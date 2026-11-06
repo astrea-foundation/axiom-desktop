@@ -101,6 +101,26 @@ using its bundled verifier and automatically discovered public configuration.
 Its isolated test fixture remained unchanged. The publisher verified every
 installer on both mirrors before activating the website and channel.
 
+Desktop and CLI 0.1.18 restore additive NEAR AI, Tinfoil and AstreaAI discovery.
+The public signed manifest identifies source
+`5d520d672b2303f15fbd14ee0862c28ad5af9154`; exact-source Rust, UI and all four
+native checks passed. The normal release passed its live evaluation, retained
+native-build receipts, Windows ARM64 installer acceptance and Mac signing and
+notarization. Installed Mac launch passed on Intel and Apple Silicon. The Mac
+signing job alone was retried after a notarization-ticket network failure;
+successful native and Windows inputs were retained.
+
+All eight public installer entries and lengths were checked. The actual
+downloaded Mac package passed its SHA-256, Developer ID installer signature,
+stapled notarization ticket, bundled CLI and verifier signatures, and automatic
+installed configuration discovery. Its bundled client found all twelve models
+and completed encrypted synthetic replies with NEAR, Tinfoil and AstreaAI in
+11,543, 4,645 and 7,422 ms respectively. No external operator configuration or
+existing user profile was used. Browser gateway generation six separately passed
+fresh independent attestation and authenticated replies from all three providers.
+The provider completion-notification fix is included in the gateway's shared
+client pin; the immutable 0.1.18 Desktop tag remains unchanged.
+
 The full retained-input Mac reproduction also verified the original native
 receipts and reproduced Electron's nested Python-framework plist rewrite. The
 final assembly adds complete frozen runtimes after the universal merge, preserving
@@ -230,6 +250,22 @@ stable Blob URLs through streaming updates, account/runtime resource revocation,
 late bootstrap recovery, 1536-pixel viewing while typing, and cancellable inline
 decoding that yields to UI tasks. These local transport checks do not change
 provider attestation, authenticated completion, original image bytes or size caps.
+
+Before releasing cross-provider AstreaAI image support, qualify verified
+1536-square generation and ordered five-reference editing from vision-capable
+Tinfoil and NEAR chats. Check that image provenance and regeneration retain the
+originating chat model while image evidence and settled usage identify AstreaAI.
+Hosted browser support also requires a newly measured gateway whose shared
+client pin includes the same routing fix; updating the browser alone does not
+update the image-provider implementation inside the gateway.
+The image worker also needs a newly measured build with the Comfy parameter
+restoration fix. Qualify alternating uncensored/base requests in one long-lived
+engine, including 1536-square output and five ordered references; a cold-start
+image alone does not exercise adapter restoration. The isolated GPU result in
+the [local image qualification](../../axiom-inference/docs/qa/cross-provider-images-local-2026-11-05.json)
+does not establish production attestation or cross-provider image acceptance.
+Exercise both progress-reporting and progress-free native image APIs; completion
+must not wait for a progress consumer that the caller never requested.
 
 Optional `view_image` inspection has native regression coverage for uploaded,
 generated and edited images, generation followed by viewing before the final

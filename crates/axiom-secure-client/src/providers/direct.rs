@@ -433,8 +433,15 @@ impl DirectProvider {
         cancel: CancellationToken,
     ) -> Result<crate::GeneratedImage> {
         use base64::{Engine as _, engine::general_purpose::STANDARD};
-        if request.chat_model_id != MODEL
-            || request.prompt.trim().is_empty()
+        if request.chat_model_id.trim().is_empty()
+            || request.chat_model_id.len() > 256
+            || request.chat_model_id.chars().any(char::is_control)
+        {
+            return Err(SecureClientError::capability(
+                "Choose a valid chat model before generating an image",
+            ));
+        }
+        if request.prompt.trim().is_empty()
             || request.prompt.len() > 8192
             || request.references.len() > axiom_pool_protocol::vision::MAX_REFERENCES
         {
@@ -585,7 +592,7 @@ impl DirectProvider {
             height: size.height,
             sha256: axiom_pool_protocol::sha256(&bytes),
             source_image_ids,
-            chat_model_id: Some(MODEL.into()),
+            chat_model_id: Some(request.chat_model_id.into()),
             evidence: evidence(&model, policy, &worker, worker.public_evidence()),
             usage: axiom_inference::RequestUsage {
                 request_id,
@@ -1245,6 +1252,8 @@ mod tests {
         assert_eq!((size.width, size.height), (1536, 1536));
         assert!(runtime.image.aspect_ratios.contains(&"2:3".into()));
         assert!(runtime.uncensored(MODEL));
+        assert!(!runtime.uncensored("tinfoil-deepseek-v4-1-flash"));
+        assert!(!runtime.uncensored("glm-5-3-flash"));
     }
 
     #[tokio::test]
@@ -1261,6 +1270,60 @@ mod tests {
                 .safe_detail()
                 .contains("not enabled")
         );
+    }
+
+    #[tokio::test]
+    async fn image_requests_keep_chat_provider_independent_of_the_image_installation() {
+        let config = installed();
+        let configured = provider(&config, &Arc::new(ApiCredential::new("synthetic")))
+            .unwrap()
+            .unwrap();
+        for chat_model_id in [MODEL, "tinfoil-deepseek-v4-1-flash", "glm-5-3-flash"] {
+            let error = configured
+                .image_request(
+                    &TrustPolicy::default(),
+                    axiom_inference::ImageGenerationRequest {
+                        chat_model_id,
+                        prompt: "A dog in a garden",
+                        references: &[],
+                        dimensions: None,
+                    },
+                    None,
+                    CancellationToken::new(),
+                )
+                .await
+                .unwrap_err();
+            assert!(
+                error.safe_detail().contains("not enabled"),
+                "{chat_model_id} must reach image-installation validation: {}",
+                error.safe_detail()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn image_requests_reject_invalid_chat_identity_before_key_access() {
+        let config = installed();
+        let configured = provider(&config, &Arc::new(ApiCredential::new("synthetic")))
+            .unwrap()
+            .unwrap();
+        for chat_model_id in ["", " ", "near\nmodel", &"a".repeat(257)] {
+            let error = configured
+                .image_request(
+                    &TrustPolicy::default(),
+                    axiom_inference::ImageGenerationRequest {
+                        chat_model_id,
+                        prompt: "A dog",
+                        references: &[],
+                        dimensions: None,
+                    },
+                    None,
+                    CancellationToken::new(),
+                )
+                .await
+                .unwrap_err();
+            assert!(error.safe_detail().contains("valid chat model"));
+        }
     }
 
     #[tokio::test]
