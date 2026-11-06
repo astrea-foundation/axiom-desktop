@@ -87,6 +87,12 @@ including its terminal marker and usage. Deltas remain provisional until the nat
 client verifies the transcript and receipt; missing, changed, reordered or truncated
 responses never produce successful completion.
 
+After receipt/transcript verification, terminal run completion and transport EOF,
+the shared provider emits `ResponseVerified`. Downstream encrypted relays require
+both that event and the successful stream result before emitting their own
+authenticated terminal. Provisional output, a receipt without run completion,
+cancellation and a truncated connection never emit that signal.
+
 A non-streaming result may contain authenticated encrypted reasoning without
 answer text when its generation budget ends. The relay and native client retain
 that reasoning with the provider's `length` finish reason, after the same receipt,

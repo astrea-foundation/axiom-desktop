@@ -1731,7 +1731,9 @@ async fn emit_verified_events(
     for event in events {
         send(sink, event, cancellation).await?;
     }
-    Ok(())
+    // Called only after transcript/receipt verification, run completion and EOF.
+    // Downstream relays require this signal as well as a successful stream result.
+    send(sink, ProviderEvent::ResponseVerified, cancellation).await
 }
 
 fn append_bounded(target: &mut String, fragment: &str) -> Result<()> {
@@ -2845,6 +2847,10 @@ mod tests {
         assert!(matches!(
             output.recv().await,
             Some(ProviderEvent::Finished(FinishReason::ToolCalls))
+        ));
+        assert!(matches!(
+            output.try_recv(),
+            Ok(ProviderEvent::ResponseVerified)
         ));
         assert!(output.try_recv().is_err());
     }
