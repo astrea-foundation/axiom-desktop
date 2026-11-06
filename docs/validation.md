@@ -258,6 +258,12 @@ originating chat model while image evidence and settled usage identify AstreaAI.
 Hosted browser support also requires a newly measured gateway whose shared
 client pin includes the same routing fix; updating the browser alone does not
 update the image-provider implementation inside the gateway.
+The image worker also needs a newly measured build with the Comfy parameter
+restoration fix. Qualify alternating uncensored/base requests in one long-lived
+engine, including 1536-square output and five ordered references; a cold-start
+image alone does not exercise adapter restoration. The isolated GPU result in
+the [local image qualification](../../axiom-inference/docs/qa/cross-provider-images-local-2026-11-05.json)
+does not establish production attestation or cross-provider image acceptance.
 Exercise both progress-reporting and progress-free native image APIs; completion
 must not wait for a progress consumer that the caller never requested.
 
