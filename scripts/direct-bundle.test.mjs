@@ -35,7 +35,7 @@ test('runtime inventory rejects symlinks outside its root',{skip:process.platfor
   const {root}=await fixture(t);await fs.symlink(os.tmpdir(),path.join(root,'outside'));
   await assert.rejects(bundle.inventory(root),/escapes its bundle/);
 });
-test('each thin macOS packaging hook retains both verifier architectures for universal merge',async t=>{
+test('standalone Mac bundle copies retain both provided verifier architectures',async t=>{
   const source=await fs.mkdtemp(path.join(os.tmpdir(),'axiom-direct-universal-'));
   const resources=await fs.mkdtemp(path.join(os.tmpdir(),'axiom-direct-resources-'));
   t.after(()=>fs.rm(source,{recursive:true,force:true}));t.after(()=>fs.rm(resources,{recursive:true,force:true}));

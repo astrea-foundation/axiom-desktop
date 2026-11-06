@@ -1,21 +1,32 @@
-const { copyFile, chmod, mkdir, writeFile } = require('node:fs/promises');
+const { copyFile, chmod, lstat, mkdir, writeFile } = require('node:fs/promises');
 const path = require('node:path');
 
 module.exports = async function afterPack(context) {
   const root = context.packager.projectDir;
   const workspace = path.resolve(root, '../..');
   const resources = context.packager.getResourcesDir(context.appOutDir);
-  // Electron invokes afterPack again after merging the two already populated apps.
-  // Revalidate the exact signed resources in that final tree without replacing them.
-  const mergedMac = context.electronPlatformName === 'darwin' && context.arch === 4;
+  // Electron's merger rewrites every nested Info.plist. Keep frozen runtimes
+  // out of its temporary app inputs, then copy their exact signed bytes once
+  // into the final universal app before signing it. Ordinary thin builds copy
+  // normally, including when a command also asks for a universal target.
+  const architecture = {1:'x64',3:'arm64'}[context.arch];
+  const universalTarget = context.packager.packagerOptions?.targets?.get(context.packager.platform)?.has(4);
+  const deferRuntimes = context.electronPlatformName === 'darwin' && architecture && universalTarget &&
+    path.resolve(context.appOutDir) === path.resolve(context.packager.computeAppOutDir(context.outDir,4)+`-${architecture}-temp`);
   const format = context.packager.config.extraMetadata?.axiomUpdateFormat;
   if (!['exe', 'pkg', 'AppImage', 'deb', 'pacman'].includes(format)) throw new Error('Package must declare its update installation format');
   await mkdir(resources, {recursive: true});
   await writeFile(path.join(resources, 'axiom-install.json'), JSON.stringify({schemaVersion: 1, product: 'desktop', format, versioned: false}) + '\n');
   await require('../../../scripts/package-licenses.cjs')(workspace, path.join(resources, 'licenses'));
+  if (deferRuntimes) {
+    for (const name of ['direct','chutes']) {
+      try { await lstat(path.join(resources,name)); throw new Error('Frozen runtimes must be added after the universal merge'); }
+      catch(error) { if(error.code !== 'ENOENT') throw error; }
+    }
+  }
   if (process.env.AXIOM_DIRECT_BUNDLE) {
     const direct = require('../../../scripts/direct-bundle.cjs');
-    await direct[mergedMac ? 'verifyBundles' : 'copyBundles'](resources,path.resolve(workspace,process.env.AXIOM_DIRECT_BUNDLE),{
+    if (!deferRuntimes) await direct.copyBundles(resources,path.resolve(workspace,process.env.AXIOM_DIRECT_BUNDLE),{
       platform:context.electronPlatformName,
       architecture:{0:'ia32',1:'x64',2:'armv7l',3:'arm64',4:'universal'}[context.arch],
       signed:context.packager.config.forceCodeSigning === true,
@@ -24,9 +35,9 @@ module.exports = async function afterPack(context) {
   } else if (context.packager.config.forceCodeSigning === true) {
     throw new Error('A production AstreaAI verifier bundle is required for signed installers');
   }
-  if (process.env.AXIOM_CHUTES_BUNDLE) {
+  if (process.env.AXIOM_CHUTES_BUNDLE && !deferRuntimes) {
     const chutes = require('./bundle-chutes-runtime.cjs');
-    await (mergedMac ? chutes.verifyPackagedBundle : chutes)(resources, process.env.AXIOM_CHUTES_BUNDLE, {
+    await chutes(resources, process.env.AXIOM_CHUTES_BUNDLE, {
       platform: context.electronPlatformName,
       architecture: {0:'ia32',1:'x64',2:'armv7l',3:'arm64',4:'universal'}[context.arch],
       channel: process.env.AXIOM_CHUTES_RELEASE_CHANNEL || 'production',
