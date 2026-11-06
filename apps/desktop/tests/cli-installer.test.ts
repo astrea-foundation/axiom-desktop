@@ -1,12 +1,36 @@
 import assert from 'node:assert/strict';
 import {spawnSync} from 'node:child_process';
-import {mkdtempSync,mkdirSync,readFileSync,writeFileSync,copyFileSync,rmSync,readlinkSync,existsSync} from 'node:fs';
+import {mkdtempSync,mkdirSync,readFileSync,writeFileSync,copyFileSync,rmSync,readlinkSync,existsSync,symlinkSync,realpathSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import test from 'node:test';
+import {copyCliPayload} from '../../../scripts/cli-payload.mjs';
 
 const root=fileURLToPath(new URL('../../..',import.meta.url));
+test('standalone Mac runtimes resolve framework links after the build tree is removed', {skip:process.platform==='win32'},async()=>{
+  const directory=mkdtempSync(path.join(tmpdir(),'axiom cli relocation '));
+  const payload=path.join(directory,'build-payload'),installed=path.join(directory,'installed');
+  try {
+    for(const arch of ['arm64','x64']) {
+      const runtime=path.join(payload,'direct',`darwin-${arch}`,'runtime','_internal');
+      const framework=path.join(runtime,'Python.framework');
+      mkdirSync(path.join(framework,'Versions/3.12'),{recursive:true});
+      writeFileSync(path.join(framework,'Versions/3.12/Python'),`immutable signed-library fixture ${arch}`);
+      symlinkSync('3.12',path.join(framework,'Versions/Current'),'dir');
+      symlinkSync('Versions/Current/Python',path.join(framework,'Python'));
+      symlinkSync('Python.framework/Python',path.join(runtime,'Python'));
+    }
+    await copyCliPayload(payload,installed);
+    rmSync(payload,{recursive:true});
+    for(const arch of ['arm64','x64']) {
+      const python=path.join(installed,'direct',`darwin-${arch}`,'runtime','_internal','Python');
+      assert.equal(readlinkSync(python),'Python.framework/Python');
+      assert.ok(realpathSync(python).startsWith(realpathSync(installed)+path.sep));
+      assert.equal(readFileSync(python,'utf8'),`immutable signed-library fixture ${arch}`);
+    }
+  } finally {rmSync(directory,{recursive:true,force:true});}
+});
 test('standalone installer activates CLI and proxy together, preserves old version/data, rejects damaged upgrades and uninstalls', {skip:process.platform!=='linux'},()=>{
   const directory=mkdtempSync(path.join(tmpdir(),'axiom installer $literal '));
   const prefix=path.join(directory,'installed'), commands=path.join(directory,'commands');
