@@ -1,5 +1,5 @@
 import { Check, ExternalLink, LoaderCircle, X } from "lucide-react";
-import type { SignInState } from "../signInFlow";
+import { signInErrorPresentation, type SignInState } from "../signInFlow";
 
 interface SignInStatusProps {
   state: Exclude<SignInState, { kind: "closed" }>;
@@ -9,6 +9,7 @@ interface SignInStatusProps {
 
 export function SignInStatus({ state, onCancel, onRetry }: SignInStatusProps) {
   const actionClass = "inline-flex shrink-0 items-center gap-1.5 rounded-full bg-[var(--surface-button-secondary)] px-3 py-1.5 text-[11.5px] text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--surface-button-secondary-hover)]";
+  const error = state.kind === "error" ? signInErrorPresentation(state.message) : null;
 
   return (
     <section
@@ -26,14 +27,22 @@ export function SignInStatus({ state, onCancel, onRetry }: SignInStatusProps) {
             {state.kind === "starting" ? "Opening your browser…"
               : state.kind === "waiting" ? "Continue in your browser"
                 : state.kind === "success" ? "You’re signed in"
-                  : "Sign-in didn’t finish"}
+                  : error?.title}
           </p>
           {state.kind === "waiting" ? (
             <p className="mt-1 text-[11.5px] text-[var(--color-text-secondary)]">
               Match this code:<span className="ml-1 whitespace-nowrap font-mono font-medium tracking-wider text-[var(--color-text-primary)]">{state.login.userCode}</span>
             </p>
-          ) : state.kind === "error" ? (
-            <p className="mt-1 break-words text-[11.5px] text-[var(--color-danger-strong)]">{state.message}</p>
+          ) : error ? (
+            <>
+              <p className="mt-1 break-words text-[11.5px] text-[var(--color-danger-strong)]">{error.message}</p>
+              {error.technicalDetails ? (
+                <details className="mt-2 text-[11.5px] text-[var(--color-text-secondary)]">
+                  <summary className="cursor-pointer hover:text-[var(--color-text-primary)]">Technical details</summary>
+                  <p className="mt-2 whitespace-pre-wrap break-words font-mono text-[11px]">{error.technicalDetails}</p>
+                </details>
+              ) : null}
+            </>
           ) : null}
         </div>
       </div>
