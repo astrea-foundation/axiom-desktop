@@ -160,6 +160,14 @@ the retained `release/` and `setup/` through the operator commands above and
 dispatch the platform publisher on `main`. Clear the variable after publication.
 Do not rebuild or resign qualified files for this handoff.
 
+Exercise a model-generated image tool call from the retained signed installation
+without configuration-file environment overrides. The installed secure provider
+must discover its bundled AstreaAI configuration and register `generate` and
+`view_image` from that loaded configuration. A legacy Chutes environment variable
+must not be required. Verify the authenticated image result and settled usage
+before publishing; version and ordinary chat checks cannot substitute for this
+test.
+
 `scripts/prepare-store-submission.mjs release setup store` prepares the private
 `windows-store-submission` workflow artifact: the exact full offline EXE URL,
 hash, silent arguments, certification notes and remaining acceptance fields.
