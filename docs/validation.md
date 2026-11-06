@@ -279,6 +279,8 @@ its advertised image-generation capability to match the registered tool.
 Verify the standalone Mac package after extraction or installation, including
 relative Python-framework links, bundled verifier signatures and a fresh worker
 proof. Build-directory paths must not survive in installed runtime symlinks.
+Exercise the standalone CLI through its installed command symlink as well as
+the physical executable; both must discover the same pinned local configuration.
 
 Optional `view_image` inspection has native regression coverage for uploaded,
 generated and edited images, generation followed by viewing before the final
