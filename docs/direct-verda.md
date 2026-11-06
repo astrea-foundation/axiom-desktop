@@ -106,6 +106,10 @@ come from attachments or generated images in the same conversation. Reference
 bytes stay in the encrypted request; signed usage binds their normalized pixel
 count. The adapter preserves source IDs for preview, saving and regeneration.
 Regenerate retains the original request's chosen dimensions and reference order.
+The requesting chat may use any supported vision-capable provider, including
+NEAR or Tinfoil. Its model ID is image provenance, not a selector for the image
+worker. AstreaAI still verifies its own worker, keys, signed image result and
+account-owned usage; image evidence and billing remain attributed to AstreaAI.
 The uncensored model selects its pinned image LoRA. Document uploads remain
 unavailable.
 The legacy operator connection uses free operator grants. The production account
