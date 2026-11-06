@@ -219,14 +219,8 @@ impl SecureClient {
     }
 
     pub async fn models(&self, cancellation: CancellationToken) -> Result<Vec<ModelInfo>> {
-        if self.config.direct.is_some() {
-            if cancellation.is_cancelled() {
-                return Err(crate::SecureClientError::cancelled());
-            }
-            return self
-                .accept_catalog(Ok(crate::providers::direct::models(&self.config)))
-                .await;
-        }
+        // Installed AstreaAI pins add an offering to the shared catalog; they
+        // must not suppress discovery of the other registered providers.
         let result = catalog::fetch_models(
             &self.config,
             &self.credential,
@@ -549,6 +543,111 @@ impl std::fmt::Debug for SecureClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn installed_direct_config(relay: &str) -> SecureClientConfig {
+        let mut config = SecureClientConfig::new("https://relay.example").unwrap();
+        config.relay_base_url = url::Url::parse(relay).unwrap();
+        config.endpoint_policy.require_https = false;
+        config.endpoint_policy.reject_local_addresses = false;
+        config.request_timeout = std::time::Duration::from_secs(2);
+        config.direct = Some(
+            serde_json::from_value(serde_json::json!({
+                "origin":"https://worker.example:8443", "connect_ip":null,
+                "model_manifest":"aa".repeat(32), "issuer_key_file":"/private/operator.pem",
+                "verifier":{"binary":"/installed/verifier", "binary_sha256":"bb".repeat(32),
+                    "publisher_key":"cc".repeat(32), "minimum_policy_sequence":20}
+            }))
+            .unwrap(),
+        );
+        config
+    }
+
+    async fn catalog_server(
+        status: &str,
+        body: serde_json::Value,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let relay = format!("http://{}", listener.local_addr().unwrap());
+        let body = body.to_string();
+        let response = format!(
+            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                let mut buffer = [0; 1024];
+                let count = socket.read(&mut buffer).await.unwrap();
+                assert!(count > 0 && request.len() + count <= 16 * 1024);
+                request.extend_from_slice(&buffer[..count]);
+            }
+            assert!(request.starts_with(b"GET /api/v1/relay/models HTTP/1.1\r\n"));
+            socket.write_all(response.as_bytes()).await.unwrap();
+        });
+        (relay, server)
+    }
+
+    #[tokio::test]
+    async fn installed_astreaai_keeps_near_and_tinfoil_in_the_catalog() {
+        let mut near = serde_json::json!({
+            "relay_contract_version":2, "id":"near-model", "label":"NEAR model",
+            "short_label":"NEAR model", "model":"model/upstream",
+            "base_url":"https://worker.near.ai/v1", "provider":"near",
+            "provider_label":"NEAR AI", "e2ee_protocol":"near-v3",
+            "e2ee_encryption_version":2, "attestation_protocol":"near-tdx-nvidia-v2",
+            "context_window_tokens":32768, "max_output_tokens":4096,
+            "input_price_microusd_per_million_tokens":250_000,
+            "output_price_microusd_per_million_tokens":1_500_000
+        });
+        let mut tinfoil = near.clone();
+        tinfoil["id"] = "tinfoil-model".into();
+        tinfoil["label"] = "Tinfoil model".into();
+        tinfoil["short_label"] = "Tinfoil model".into();
+        tinfoil["provider"] = "tinfoil".into();
+        tinfoil["provider_label"] = "Tinfoil".into();
+        tinfoil["model"] = "gpt-oss-120b".into();
+        tinfoil["base_url"] = "https://inference.tinfoil.sh/v1".into();
+        tinfoil["e2ee_protocol"] = "tinfoil-ehbp-v1".into();
+        tinfoil["e2ee_encryption_version"] = 1.into();
+        tinfoil["attestation_protocol"] = "tinfoil-snp-sigstore-v1".into();
+        near["supports_tools"] = true.into();
+        let (relay, server) = catalog_server("200 OK", serde_json::json!([near, tinfoil])).await;
+        let client =
+            SecureClient::new(installed_direct_config(&relay), ApiCredential::new("test")).unwrap();
+        let models = client.models(CancellationToken::new()).await.unwrap();
+        assert_eq!(
+            models
+                .iter()
+                .map(|model| model.provider_id.as_str())
+                .collect::<Vec<_>>(),
+            ["near", "tinfoil", "axiom-direct"]
+        );
+        for model in &models {
+            client.providers.resolve(model).unwrap();
+        }
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn installed_astreaai_survives_catalog_outages_but_respects_cancellation() {
+        let (relay, server) =
+            catalog_server("503 Service Unavailable", serde_json::json!({})).await;
+        let client =
+            SecureClient::new(installed_direct_config(&relay), ApiCredential::new("test")).unwrap();
+        let models = client.models(CancellationToken::new()).await.unwrap();
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].provider_id, "axiom-direct");
+        server.await.unwrap();
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        assert_eq!(
+            client.models(cancelled).await.unwrap_err().kind(),
+            axiom_inference::ProviderFailureKind::Cancelled
+        );
+    }
 
     #[tokio::test]
     async fn rejected_or_withdrawn_catalogs_cannot_return_after_a_later_outage() {

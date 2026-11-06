@@ -9,6 +9,13 @@ verifier. Packaging validates the complete runtime inventory, executable digest
 and platform signatures before including it. The native client still verifies
 fresh CPU, GPU, workload, key and response evidence before accepting inference.
 
+AstreaAI is additive to the normal model catalog. Installing its verifier must
+preserve the NEAR AI and Tinfoil offerings discovered through the account API.
+Each offering retains its own locally verified attestation and E2EE protocol;
+selecting another provider does not route that request through AstreaAI. If the
+remote catalog is unavailable, the locally pinned AstreaAI offering remains
+discoverable and still requires fresh worker admission before inference.
+
 Build the frozen verifier from a clean committed checkout with
 `node scripts/build-direct-bundle.mjs --output .local/direct/bundle`. The builder
 checks the vendored source inventory and installs hash-locked dependencies.
@@ -144,7 +151,7 @@ signed-OS interactive flows; retain the
 
 ## Install and launch
 
-Production customers install [Desktop or AxiomCLI 0.1.17](https://axiom.stream/downloads)
+Production customers install [Desktop or AxiomCLI 0.1.18](https://axiom.stream/downloads)
 and sign in to their normal production account. The signed package supplies the
 verifier and public trust configuration automatically. Select **Qwen3.8
 Uncensored** under **AstreaAI**. The source/operator commands below are for an
