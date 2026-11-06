@@ -272,6 +272,11 @@ pub trait QuestionHandler: Send + Sync {
 /// Adapter-independent execution of one already-accepted turn.
 #[async_trait]
 pub trait TurnRunner: Send + Sync {
+    /// Whether this runner registered the configured local image service.
+    fn supports_image_generation(&self) -> bool {
+        false
+    }
+
     /// User-triggered image work runs exactly one stored image tool request,
     /// without a chat-model request or replaying the enclosing user prompt.
     async fn regenerate_image(
@@ -1743,6 +1748,13 @@ impl AgentEngine {
 
 #[async_trait]
 impl TurnRunner for AgentEngine {
+    fn supports_image_generation(&self) -> bool {
+        matches!(
+            self.tools.access("generate"),
+            Ok(crate::policy::ToolAccess::Image)
+        )
+    }
+
     async fn accept_outdated_tee(
         &self,
         model: &str,
@@ -5226,6 +5238,31 @@ mod engine_tests {
             event,
             AppEvent::ProgressUpdated { message, .. } if message.starts_with("Agent step")
         )));
+    }
+
+    #[test]
+    fn image_capability_follows_registered_service_tool() {
+        let provider = Arc::new(ScriptedProvider::new(vec![]));
+        let engine = AgentEngine::new(
+            provider.clone(),
+            Arc::new(ToolRegistry::new()),
+            "synthetic-vision-model",
+            3,
+        );
+        assert!(!engine.supports_image_generation());
+        let mut tools = ToolRegistry::new();
+        tools
+            .register(Arc::new(crate::image_tool::ImageGenerationTool {
+                provider: provider.clone(),
+            }))
+            .unwrap();
+        let runner: Arc<dyn TurnRunner> = Arc::new(AgentEngine::new(
+            provider,
+            Arc::new(tools),
+            "synthetic-vision-model",
+            3,
+        ));
+        assert!(runner.supports_image_generation());
     }
 
     #[tokio::test]

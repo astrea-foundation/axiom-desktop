@@ -267,6 +267,16 @@ does not establish production attestation or cross-provider image acceptance.
 Exercise both progress-reporting and progress-free native image APIs; completion
 must not wait for a progress consumer that the caller never requested.
 
+Image-tool registration must follow the secure provider's loaded local image
+configuration, including automatic installed-bundle discovery. Qualify an actual
+model-generated `generate` call from the signed installation with neither
+`AXIOM_DIRECT_CLIENT_CONFIG_FILE` nor `AXIOM_CHUTES_CLIENT_CONFIG_FILE` set.
+Include the standalone CLI layout and a Desktop layout without legacy Chutes
+configuration. Catalog discovery and encrypted chat alone do not prove the image
+tools are registered. Keep a candidate unpublished if this check fails.
+Also initialize the installed ACP runtime without those overrides and require
+its advertised image-generation capability to match the registered tool.
+
 Optional `view_image` inspection has native regression coverage for uploaded,
 generated and edited images, generation followed by viewing before the final
 answer, tool-batch ordering, persisted restoration, malformed/foreign references,

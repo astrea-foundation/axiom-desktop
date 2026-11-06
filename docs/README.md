@@ -18,6 +18,7 @@ must be recorded against the actual source revision and signed installers.
 | [0.1.15 release notes](releases/0.1.15.md) | First-message recovery, resilient balances and rate-limit guidance |
 | [0.1.17 release notes](releases/0.1.17.md) | Account-authorized AstreaAI, bundled verifiers and installer path handling |
 | [0.1.18 release notes](releases/0.1.18.md) | Restore NEAR AI and Tinfoil alongside AstreaAI |
+| [0.1.20 release notes](releases/0.1.20.md) | Cross-provider images and installed image-tool discovery |
 | [0.1.16 candidate notes](releases/0.1.16.md) | Unpublished candidate; included in 0.1.17 |
 | [0.1.14 candidate notes](releases/0.1.14.md) | Unpublished candidate; included in 0.1.15 |
 | [0.1.10 release notes](releases/0.1.10.md) | Windows setup and first-launch updates |

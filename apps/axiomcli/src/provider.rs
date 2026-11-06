@@ -32,6 +32,12 @@ pub struct ProviderSecurityVerification {
 
 #[async_trait]
 pub trait InferenceProvider: Send + Sync {
+    /// Trusted local image-service configuration, including installed bundles.
+    /// Remote model metadata cannot enable an unconfigured image service.
+    fn has_image_service(&self) -> bool {
+        false
+    }
+
     async fn image_capabilities(
         &self,
         _cancellation: CancellationToken,
@@ -309,6 +315,11 @@ impl std::fmt::Debug for SecureAxiomProvider {
 
 #[async_trait]
 impl InferenceProvider for SecureAxiomProvider {
+    fn has_image_service(&self) -> bool {
+        self.config.direct.is_some()
+            || std::env::var_os("AXIOM_CHUTES_CLIENT_CONFIG_FILE").is_some()
+    }
+
     async fn image_capabilities(
         &self,
         cancellation: CancellationToken,
@@ -1329,6 +1340,23 @@ mod tests {
             vec![ChatMessage::text(ChatRole::User, "hello")],
             Vec::new(),
         )
+    }
+
+    #[test]
+    fn installed_direct_configuration_exposes_image_service() {
+        let mut provider = SecureAxiomProvider::new(
+            "https://api.axiom.stream",
+            "synthetic-image-service-fixture".to_owned(),
+            Duration::from_secs(1),
+        )
+        .expect("provider");
+        // Bundled discovery populates this field without an operator env var.
+        provider.config.direct = Some(
+            serde_json::from_str(include_str!("../../../deploy/astreaai-production.json"))
+                .expect("public installed configuration"),
+        );
+        let provider: Arc<dyn InferenceProvider> = Arc::new(provider);
+        assert!(provider.has_image_service());
     }
 
     #[test]
