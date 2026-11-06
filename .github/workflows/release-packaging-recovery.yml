@@ -98,6 +98,12 @@ jobs:
         github-token: ${{ github.token }}
         run-id: 42116622051
     - run: node scripts/combine-macos.mjs target/release target/release/universal
+    - name: Use reliable HTTPS for Intel Mac notarization validation
+      run: |
+        # Same Intel runner workaround as the accepted platform publisher.
+        # Preserve full Apple validation over TLS/TCP: actions/runner-images#14924.
+        printf '%s\n' 'block return out quick proto udp from any to any port 443' | sudo pfctl -f -
+        sudo pfctl -E
     - name: Sign and notarize both PKG installers
       env:
         MACOS_CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
@@ -141,7 +147,7 @@ jobs:
         JS
         node apps/desktop/scripts/set-release-version.mjs 0.1.17
         pnpm --filter axiom-desktop build
-        pnpm --filter axiom-desktop exec electron-builder --mac pkg --universal --publish never --config.forceCodeSigning=true --config.mac.notarize=false --config.extraMetadata.axiomUpdateChannel=stable --config.extraMetadata.axiomUpdateFormat=pkg --config.afterPack="$PWD/packaging-recovery/apps/desktop/scripts/after-pack.cjs" '--config.mac.x64ArchFiles=Contents/Resources/{chutes/runtime,direct}/{**/*,**/.*,**/.*/**/*}'
+        pnpm --filter axiom-desktop exec electron-builder --mac pkg --universal --publish never --config.forceCodeSigning=true --config.mac.notarize=false --config.extraMetadata.axiomUpdateChannel=stable --config.extraMetadata.axiomUpdateFormat=pkg --config.afterPack="$PWD/packaging-recovery/apps/desktop/scripts/after-pack.cjs"
         xcrun notarytool submit apps/desktop/dist/Axiom-0.1.17-mac-universal.pkg --apple-id "$APPLE_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
         xcrun stapler staple apps/desktop/dist/Axiom-0.1.17-mac-universal.pkg
         node scripts/package-cli.mjs --mac --universal --input target/release/universal
