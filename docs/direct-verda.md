@@ -25,8 +25,8 @@ profile. Inference connects directly to the independently verified confidential
 worker; the account service never receives conversation plaintext or the
 operator issuer key.
 
-The account-authorized staging mode uses the hosted staging API and service-issued
-grants instead. Its public installed `account` configuration binds the exact
+The account-authorized production mode uses `https://api.axiom.stream` and
+service-issued grants. Its public installed `account` configuration binds the exact
 account API origin, issuer public key, immutable chat/image prices and a native
 spending ceiling. `issuer_key_file` must be empty in this mode. The client obtains
 an account-owned reservation and one-use grant, then sends encrypted inference
@@ -38,7 +38,7 @@ the signed model inventory. Its exact native model ID selects Axiom's bundled
 Qwen3.8 Uncensored system prompt, including after a model switch. The compact
 model label retains “Uncensored” so the checkpoint is identifiable in the composer.
 
-This development connection supports streaming text conversations with the
+This connection supports streaming text conversations with the
 measured worker's medium reasoning template, a 32,768-token context and at most
 4,096 output tokens. Native requests omit tools when the offering does not
 support them. Image understanding is an explicit installed capability: set
@@ -122,7 +122,7 @@ The worker accepts only these free grants. An image result's `settled: true` and
 zero cost describe completion of that free request, not a debit from the signed-in
 customer's balance.
 
-The staging account path forwards complete chat accounting, including cached-input
+The account path forwards complete chat accounting, including cached-input
 and reasoning subsets, and image pixel/step/reference counters. Costs come from
 the verified worker receipt and pinned price, and `settled` becomes true only
 after the account controller confirms receipt reconciliation. The worker also
@@ -130,12 +130,25 @@ delivers the same receipt through its bounded private outbox. Both paths converg
 on one durable ledger debit; accounting recovery remains scoped to the signed-in
 account and does not assert that a missing response was authenticated locally.
 
-The matching backend accepts the current `input_image_pixels` field, 36 MiB
-request bound and 2,359,296-pixel image output. Before a paid rollout, qualify
-reservation release, cancellation, duplicate receipts and recovery before a
-customer can be charged. These remain [rollout gates](validation.md#astreaai-rollout-gates).
+The production backend accepts the current `input_image_pixels` field, 36 MiB
+request bound and 2,359,296-pixel image output. The
+[production qualification](../../axiom-inference/docs/qa/direct-astreaai-production-2026-11-05.json)
+records concurrent account-owned completions, wrong-account refusal, idempotent
+settlement, a zero-credit refusal before dispatch, cancelled metadata-only
+reservations and the exact five-reference image charge. Immutable production
+prices are `astreaai-chat-20261105-v1` ($0.25/M input, $0.05/M cached input and
+$1.50/M output, including reasoning) and `astreaai-image-20261105-v1` ($0.008 per
+generated image). These checks do not establish sustained throughput or all
+signed-OS interactive flows; retain the
+[remaining acceptance requirements](validation.md#astreaai-rollout-gates).
 
 ## Install and launch
+
+Production customers install [Desktop or AxiomCLI 0.1.17](https://axiom.stream/downloads)
+and sign in to their normal production account. The signed package supplies the
+verifier and public trust configuration automatically. Select **Qwen3.8
+Uncensored** under **AstreaAI**. The source/operator commands below are for an
+isolated development connection.
 
 Build this branch normally, retaining the current development version:
 
