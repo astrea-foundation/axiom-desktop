@@ -276,6 +276,9 @@ configuration. Catalog discovery and encrypted chat alone do not prove the image
 tools are registered. Keep a candidate unpublished if this check fails.
 Also initialize the installed ACP runtime without those overrides and require
 its advertised image-generation capability to match the registered tool.
+Verify the standalone Mac package after extraction or installation, including
+relative Python-framework links, bundled verifier signatures and a fresh worker
+proof. Build-directory paths must not survive in installed runtime symlinks.
 
 Optional `view_image` inspection has native regression coverage for uploaded,
 generated and edited images, generation followed by viewing before the final

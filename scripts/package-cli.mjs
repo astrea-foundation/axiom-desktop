@@ -4,6 +4,7 @@ import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {verifyNativeInput} from './native-input.mjs';
+import {copyCliPayload} from './cli-payload.mjs';
 import {spawnSync} from 'node:child_process';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
@@ -106,7 +107,13 @@ try {
     const packageRoot = path.join(temporary,'root');
     const installed = path.join(packageRoot,'usr/local/lib/axiom-cli');
     await mkdir(path.dirname(installed),{recursive:true});
-    await import('node:fs/promises').then(fs=>fs.cp(payload,installed,{recursive:true}));
+    await copyCliPayload(payload,installed);
+    const runtimeOptions = {platform:'darwin',architecture:arch,signed:!unsigned,
+      teamId:process.env.APPLE_TEAM_ID,channel:process.env.AXIOM_CHUTES_RELEASE_CHANNEL || 'production'};
+    if (process.env.AXIOM_DIRECT_BUNDLE) await createRequire(import.meta.url)('./direct-bundle.cjs').verifyBundles(
+      installed,process.env.AXIOM_DIRECT_BUNDLE,runtimeOptions);
+    if (process.env.AXIOM_CHUTES_BUNDLE) await createRequire(import.meta.url)('../apps/desktop/scripts/bundle-chutes-runtime.cjs').verifyPackagedBundle(
+      installed,process.env.AXIOM_CHUTES_BUNDLE,runtimeOptions);
     const scripts = path.join(temporary,'scripts'); await mkdir(scripts);
     await writeFile(path.join(scripts,'preinstall'), '#!/bin/sh\nset -eu\nfor n in axiomcli axiom-proxy; do p=/usr/local/bin/$n; if [ -e "$p" ] || [ -L "$p" ]; then [ -L "$p" ] && [ "$(readlink "$p")" = "/usr/local/lib/axiom-cli/bin/$n" ] || { echo "$p belongs to another installation" >&2; exit 1; }; fi; done\n');
     await writeFile(path.join(scripts,'postinstall'), '#!/bin/sh\nset -eu\nmkdir -p /usr/local/bin\nfor n in axiomcli axiom-proxy; do ln -sfn /usr/local/lib/axiom-cli/bin/$n /usr/local/bin/$n; done\n');
