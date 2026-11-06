@@ -105,6 +105,12 @@ pub(crate) fn installed_config(relay: &url::Url) -> Result<Option<DirectConfig>>
 }
 
 fn bundled_config(executable: &std::path::Path) -> Result<Option<PathBuf>> {
+    // Unix may report the command symlink rather than its installed target.
+    // The installer places its trust bundle beside the actual binary.
+    #[cfg(unix)]
+    let executable = executable
+        .canonicalize()
+        .map_err(|_| SecureClientError::configuration("native executable location unavailable"))?;
     let Some(directory) = executable.parent().and_then(std::path::Path::parent) else {
         return Ok(None);
     };
@@ -223,6 +229,18 @@ fn capabilities(model: &mut ModelInfo, config: &SecureClientConfig) {
 mod installed_bundle_tests {
     use super::*;
 
+    fn installed_executable(directory: &std::path::Path) -> PathBuf {
+        for target in ["darwin-arm64", "darwin-x64", "win32-x64", "linux-x64"] {
+            let path = directory.join("direct").join(target);
+            std::fs::create_dir_all(&path).unwrap();
+            installed_config(&path);
+        }
+        let executable = directory.join("bin/axiomcli");
+        std::fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        std::fs::write(&executable, b"synthetic executable fixture").unwrap();
+        executable
+    }
+
     fn installed_config(directory: &std::path::Path) -> PathBuf {
         let mut value: serde_json::Value =
             serde_json::from_str(include_str!("../../../../deploy/astreaai-production.json"))
@@ -270,18 +288,31 @@ mod installed_bundle_tests {
     #[test]
     fn bundle_discovery_requires_a_recognized_installation_identity() {
         let directory = tempfile::tempdir().unwrap();
-        for target in ["darwin-arm64", "darwin-x64", "win32-x64", "linux-x64"] {
-            let path = directory.path().join("direct").join(target);
-            std::fs::create_dir_all(&path).unwrap();
-            installed_config(&path);
-        }
-        let executable = directory.path().join("bin/axiomcli");
+        let executable = installed_executable(directory.path());
         assert!(bundled_config(&executable).is_err());
         let identity = directory.path().join("axiom-install.json");
         std::fs::write(&identity, br#"{"schemaVersion":1,"product":"unknown"}"#).unwrap();
         assert!(bundled_config(&executable).is_err());
         std::fs::write(&identity, br#"{"schemaVersion":1,"product":"desktop"}"#).unwrap();
         assert!(bundled_config(&executable).unwrap().is_some());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn command_symlink_discovers_the_actual_installation_bundle() {
+        let directory = tempfile::tempdir().unwrap();
+        let resources = directory.path().join("lib/axiom-cli");
+        let executable = installed_executable(&resources);
+        std::fs::write(
+            resources.join("axiom-install.json"),
+            br#"{"schemaVersion":1,"product":"cli"}"#,
+        )
+        .unwrap();
+        let command = directory.path().join("bin/axiomcli");
+        std::fs::create_dir_all(command.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink("../lib/axiom-cli/bin/axiomcli", &command).unwrap();
+        let expected = bundled_config(&executable).unwrap().unwrap();
+        assert_eq!(bundled_config(&command).unwrap(), Some(expected));
     }
 }
 pub(crate) fn models(config: &SecureClientConfig) -> Vec<ModelInfo> {
