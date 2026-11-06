@@ -213,7 +213,7 @@ of this updater's public contract; the native helper uses the complete installer
 
 The manual `release-packaging-recovery.yml` workflow completes the unpublished
 0.1.17 installer set from its exact qualified native source and retained build
-receipts. Dispatch the reviewed `v0.1.17-packaging.2` tag after its workflow is
+receipts. Dispatch the reviewed `v0.1.17-packaging.3` tag after its workflow is
 promoted to `main`. This tag records assembly recovery and is excluded from the
 normal stable-tag build trigger; the native `v0.1.17` tag remains unchanged.
 
@@ -223,17 +223,15 @@ Windows ARM64 installation acceptance to have passed. It refuses an active or
 completed original publisher. Native receipt revisions, hashes, architecture,
 compiled update keys and exact-source CI stay mandatory.
 
-Mac assembly runs on Intel capacity and preserves the pre-signed runtimes in
-both app inputs, including hidden vendor library directories such as `.dylibs`.
-The exception stays scoped to `Contents/Resources/chutes/runtime` and
-`Contents/Resources/direct`; app code and Rust sidecars retain normal universal
-merging. Assembly checks out the immutable native source and passes this scoped
-rule through Electron's configuration argument. A separate checkout of the
-reviewed assembly tag supplies the packaging hooks. Electron's final universal
-hook revalidates both already copied runtimes against their exact input
-inventories and signatures without copying over them; thin-app hooks retain
-their strict no-replacement copies. The app and native source checkout stays
-unchanged. Recovery repeats code signing,
+Mac assembly runs on Intel capacity. A separate checkout of the reviewed
+assembly tag supplies the packaging hooks while the app and native source
+checkout stays unchanged. The temporary x64/ARM64 app inputs omit frozen
+runtimes: Electron rewrites nested `Info.plist` files and would invalidate their
+recorded hashes and signatures. The final universal hook copies both complete
+signed runtime trees after the merge and before app signing, with the existing
+inventory, architecture, signature and no-replacement checks. Ordinary thin
+builds and standalone CLI packaging retain their normal strict copies. App code
+and Rust sidecars retain normal universal merging. Recovery repeats code signing,
 notarization, stapling and installer assessment, reuses the already accepted
 Windows/Linux bytes, and signs the complete final inventory before publication.
 The inventory continues to identify the exact qualified native source; the
