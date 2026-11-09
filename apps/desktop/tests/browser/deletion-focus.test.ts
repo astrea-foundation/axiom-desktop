@@ -3717,8 +3717,8 @@ test("generated and edited images open the local viewer with keyboard and backdr
     const trigger = page.getByRole("button", { name: "View generated image", exact: true });
     await trigger.waitFor();
     const caption = await trigger.locator("..").locator("figcaption").innerText();
-    assert.match(caption, /Axiom/);
-    assert.doesNotMatch(caption, /AstreaAI|Tinfoil|NEAR AI/, "a provider-free image fixture must not invent its source");
+    assert.match(caption, /AstreaAI/);
+    assert.doesNotMatch(caption, /Axiom|Tinfoil|NEAR AI/, "image captions identify the AstreaAI image service independently of the chat model");
     assert.doesNotMatch(caption, /verified|E2EE/i);
     const thumbnail = await trigger.boundingBox();
     const source = await trigger.locator("img").getAttribute("src");

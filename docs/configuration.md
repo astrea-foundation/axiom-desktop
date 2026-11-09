@@ -189,8 +189,10 @@ retain their own model capability checks. Image tools work independently of
 Web and Agent mode and never grant local or Web permissions. Image work starts
 through the LLM tool loop or an explicit per-image Regenerate action. The latter
 runs only the stored image request in a new image-only turn, preserving the chat
-prompt, original image, and later messages. The UI renders verified results and offers Save
-image. Click a generated or edited image to open the full-image viewer. Uploaded
+prompt, original image, and later messages. The UI renders verified results with an
+AstreaAI attribution and offers Save image. In Desktop, right-click an image in the
+chat or full-image viewer to copy the image to the system clipboard or save it.
+Click a generated or edited image to open the full-image viewer. Uploaded
 and previous generated/edited images can be edited; each edit keeps its source
 and creates a new result. Saved legacy `edit_image` results remain readable.
 The installed AstreaAI image adapter is required even when the chat model uses

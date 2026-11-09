@@ -183,8 +183,10 @@ turn, including deciding whether a correction is needed. Click a generated or ed
 image to view it in the larger viewer; Escape, the close button or a backdrop
 click closes it. Click the image to zoom in, scroll to move around the larger
 image, and click again to fit it in the viewer. Enter or Space on the image
-performs the same zoom toggle. Right-click the image in the viewer to choose Save image as…
-and select a destination. Save image also remains available beneath the result;
+performs the same zoom toggle. Right-click an image in the chat or viewer to choose
+Copy image, which puts the image itself on the system clipboard, or Save image as…
+to select a destination. Generated images are attributed to AstreaAI beneath the result.
+Save image also remains available beneath the result;
 each save suggests a fresh random PNG filename. Image generation and editing show a
 live percentage and progress bar. Queued work displays 0%; finishing stays at
 99% until the verified result is ready; the percentage and bar then disappear. Nonvision
