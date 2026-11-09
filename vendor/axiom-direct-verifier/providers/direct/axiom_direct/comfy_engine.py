@@ -157,7 +157,9 @@ class ComfyRecipe:
                 if max(w, h) > 8192 or w * h > 1152 ** 2:
                     raise ValueError("reference conditioning geometry limit")
                 images[f"image_{i}"] = self.torch.from_numpy(np.array(image.convert("RGBA"), dtype=np.float32) / 255.0).unsqueeze(0)
-        with self.torch.inference_mode():
+        # LoRA switching restores parameter backups on the next request. Those
+        # tensors need version counters; inference_mode makes them unrestorable.
+        with self.torch.no_grad():
             return self._sample(value, images, report)
 
     def _sample(self, value, images, report):

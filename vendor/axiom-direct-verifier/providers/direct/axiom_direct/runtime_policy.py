@@ -113,25 +113,3 @@ def runtime_binding(request):
         return {}
     request_runtime(request)
     return {"runtime_policy_sha256": request["runtime_policy_sha256"]}
-
-
-def verify_worker_runtime(request):
-    """Verify once before admission; queued jobs retain their own immutable snapshot."""
-    runtime = request_runtime(request)
-    if runtime is None:
-        return None
-    import os
-    from pathlib import Path
-    from .publisher import PublisherAuthority, verify_metadata, verify_document, MANIFEST_DOMAIN
-    from .release import RollbackState
-    authority_file = os.environ.get("AXIOM_RUNTIME_AUTHORITY_FILE")
-    state_file = os.environ.get("AXIOM_RUNTIME_STATE_FILE")
-    _require(authority_file and state_file, "worker runtime authority is not installed")
-    authority = PublisherAuthority.load(Path(authority_file))
-    expected_chute = os.environ.get("AXIOM_RUNTIME_CHUTE_ID")
-    if expected_chute:
-        manifest, _ = verify_document(authority, request["runtime_policy"]["manifest"], MANIFEST_DOMAIN)
-        _require(manifest.get("chute_id") == expected_chute, "runtime policy selects another worker deployment")
-    release = verify_metadata(authority, canonical(request["runtime_policy"]), RollbackState(Path(state_file)))
-    _require(release.runtime == runtime, "runtime release differs")
-    return runtime

@@ -3196,7 +3196,7 @@ test("model picker filters by catalog tags, hosts, capabilities and tag search",
   const catalog = { models: [
     model("tinfoil-deepseek-v4-1-flash", "DeepSeek V4.1 Flash", "tinfoil", [cheap, tag("fast", "Fast", "blue", 20)]),
     model("tinfoil-kimi-k3", "Kimi K3", "tinfoil", [tag("intelligent", "Intelligent", "violet", 30)]),
-    model("near-qwen", "Qwen3.6 35B", "near", [cheap], true),
+    model("near-qwen", "Qwen3.6 35B", "near", [cheap, tag("uncensored", "Uncensored", "pink", 50)], true),
     model("near-minimax", "MiniMax M3", "near", [tag("new", "New", "orange", 1000)]),
   ] } as unknown as ListModelsResponse;
   const { page, errors } = await openApp("linux", false, [], "provider_default", false, true, catalog, "auto");
@@ -3206,7 +3206,7 @@ test("model picker filters by catalog tags, hosts, capabilities and tag search",
     const tags = picker.getByRole("group", { name: "Filter by tag" });
     const rows = picker.getByRole("group", { name: "Models" }).getByRole("button");
     const status = picker.locator('[aria-live="polite"]');
-    assert.deepEqual(await tags.getByRole("button").allInnerTexts(), ["Cheap", "Fast", "Intelligent", "New"]);
+    assert.deepEqual(await tags.getByRole("button").allInnerTexts(), ["Uncensored", "Cheap", "Fast", "Intelligent", "New"]);
     assert.equal(await rows.count(), 4);
     assert.match(await rows.first().innerText(), /Tinfoil\s*Cheap\s*Fast/);
 
