@@ -237,6 +237,17 @@ limit. Vision-copy checks include transparent images and generated PNGs larger
 than the upload byte limit. The October 27 live record predates this viewing
 tool; live model selection of the new tool remains a separate qualification.
 
+Synthetic native context checks cover model-specific image allowances after
+restore and in the token guard, new views added to the last reported context count,
+new uploads that cross AstreaAI's eight-image context cap, view refusals at that
+cap, model switches from larger image histories, byte-triggered compaction below the
+token threshold, attachment order and Unicode text across bounded summary stages,
+encoded attachment and message bounds including summary overhead, and reasoning
+output space before the visible summary. Existing failure/cancellation checks
+retain original context until all summary stages succeed. These fixtures do not
+establish live-provider or packaged Desktop acceptance of the context-accounting
+changes.
+
 Image-progress checks cover authenticated request/sequence binding, rounded
 sampling percentages, truncation and forged-update rejection, queue cancellation,
 clean transport completion, native propagation and durable tool metadata. Browser

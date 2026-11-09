@@ -260,8 +260,12 @@ Already-performed file edits and other tool side effects are not rolled back.
 
 Compaction uses encrypted, tool-free model requests to build successor context.
 Automatic compaction follows the selected model's advertised capacity and local
-limits. The runtime summarizes older history in bounded stages and keeps a usable
-recent tail; summaries persist for resume. Cancellation never marks unfinished
+limits. The byte limit includes encoded attachments and can trigger compaction
+while the last reported token count is below the token threshold. The runtime
+budgets native image/file inputs as well as text in each summary stage, leaving
+room for previous summaries and output, including reasoning. It summarizes older
+history in bounded stages and keeps a usable recent tail; summaries persist for
+resume. Cancellation never marks unfinished
 compaction successful. Compaction is model-generated and is not a guarantee of
 perfect recall. The original local journal remains available independently of
 the compacted model context.
@@ -271,6 +275,13 @@ the compacted model context.
 The composer meter displays provider-reported input/output usage for the **last
 completed conversation request**, with that request's model capacity and effective
 compaction threshold. The 85% threshold controls when history is compacted.
+New uploads and successful `view_image` observations count toward the next
+request's context; the meter updates when the provider reports that request.
+Image generation alone does not add visual input to the chat model. Encoded
+image/file bytes also have an independent native memory limit, which can cause
+compaction before the displayed token threshold is reached. New uploads also
+compact existing images when needed to stay within the selected chat model's
+image context cap, including AstreaAI's eight-image limit.
 Tinfoil uses upstream's remaining-context generation default. Other protocols
 use the advertised output ceiling and estimated remaining request space (including
 tools/images and a margin). Exact tokenization and final context enforcement belong
