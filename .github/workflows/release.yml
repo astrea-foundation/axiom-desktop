@@ -254,7 +254,7 @@ jobs:
           done
       - name: Generate and view an authenticated image from both signed installations
         env:
-          AXIOM_API_KEY: ${{ secrets.AXIOM_ASTREAAI_EVAL_API_KEY }}
+          AXIOM_INSTALLED_NATIVE_QA: ${{ secrets.AXIOM_INSTALLED_NATIVE_QA }}
         run: |
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
