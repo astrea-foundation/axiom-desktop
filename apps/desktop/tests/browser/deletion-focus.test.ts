@@ -1188,7 +1188,8 @@ for (const platform of ["linux", "win32", "darwin"]) {
       const queue = page.getByRole("region", { name: "Message queue", exact: true });
       await queue.getByText("Restored after reconnect. Review and send when ready.", { exact: true }).waitFor();
       assert.equal((await calls(page)).filter((call) => call.method === "prompt").length, 0);
-      await queue.getByRole("button", { name: "Cancel queued message", exact: true }).click();
+      const cancel = queue.getByRole("button", { name: "Cancel queued message", exact: true });
+      await cancel.focus(); await page.keyboard.press("Enter");
       await queue.waitFor({ state: "hidden" });
       assert.deepEqual(errors, []);
     } finally { await page.close(); }
