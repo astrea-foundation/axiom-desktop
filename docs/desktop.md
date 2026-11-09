@@ -288,6 +288,7 @@ thread. Saved images remain in local history; an expired reference may need to
 be attached again for another edit. A completed or cancelled response refreshes
 thread state after any older timeline fetch, so a stale running snapshot cannot
 leave the composer waiting indefinitely.
+Late generated titles update the sidebar without reopening an unloaded thread.
 
 ## Usage and verification
 
