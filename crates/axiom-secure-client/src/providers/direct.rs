@@ -322,6 +322,14 @@ pub(crate) fn models(config: &SecureClientConfig) -> Vec<ModelInfo> {
     let mut model = ModelInfo {
         id: MODEL.into(),
         label: "Qwen3.8 Uncensored · AstreaAI".into(),
+        // Locally pinned offering: carries its own tag so image policy follows
+        // the same catalog-tag rule as relay offerings.
+        tags: vec![axiom_inference::ModelTag {
+            id: axiom_inference::UNCENSORED_MODEL_TAG.into(),
+            label: "Uncensored".into(),
+            tone: axiom_inference::ModelTagTone::Pink,
+            position: 50,
+        }],
         short_label: "Qwen3.8 Uncensored".into(),
         provider_id: ID.into(),
         provider_label: "AstreaAI".into(),
@@ -460,6 +468,7 @@ impl DirectProvider {
         &self,
         policy: &TrustPolicy,
         request: axiom_inference::ImageGenerationRequest<'_>,
+        uncensored: bool,
         progress: Option<mpsc::Sender<axiom_inference::ImageGenerationProgress>>,
         cancel: CancellationToken,
     ) -> Result<crate::GeneratedImage> {
@@ -535,7 +544,7 @@ impl DirectProvider {
                 Input::Image {
                     prompt: request.prompt.into(),
                     references,
-                    uncensored: runtime.uncensored(request.chat_model_id),
+                    uncensored,
                     width: size.width,
                     height: size.height,
                     steps: 8,
@@ -678,10 +687,12 @@ impl SecureProvider for DirectProvider {
         &self,
         policy: &TrustPolicy,
         request: axiom_inference::ImageGenerationRequest<'_>,
+        uncensored: bool,
         progress: Option<mpsc::Sender<axiom_inference::ImageGenerationProgress>>,
         cancel: CancellationToken,
     ) -> Result<crate::GeneratedImage> {
-        self.generate(policy, request, progress, cancel).await
+        self.generate(policy, request, uncensored, progress, cancel)
+            .await
     }
     fn id(&self) -> &'static str {
         ID
@@ -1282,9 +1293,12 @@ mod tests {
             .unwrap();
         assert_eq!((size.width, size.height), (1536, 1536));
         assert!(runtime.image.aspect_ratios.contains(&"2:3".into()));
-        assert!(runtime.uncensored(MODEL));
-        assert!(!runtime.uncensored("tinfoil-deepseek-v4-1-flash"));
-        assert!(!runtime.uncensored("glm-5-3-flash"));
+        let config = installed();
+        assert!(
+            models(&config)
+                .iter()
+                .all(|model| model.has_tag(axiom_inference::UNCENSORED_MODEL_TAG))
+        );
     }
 
     #[tokio::test]
@@ -1319,6 +1333,7 @@ mod tests {
                         references: &[],
                         dimensions: None,
                     },
+                    false,
                     None,
                     CancellationToken::new(),
                 )
@@ -1348,6 +1363,7 @@ mod tests {
                         references: &[],
                         dimensions: None,
                     },
+                    false,
                     None,
                     CancellationToken::new(),
                 )

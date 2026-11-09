@@ -196,11 +196,6 @@ impl ImageRuntimePolicy {
         size.validate().map_err(|_| bad)?;
         Ok(size)
     }
-
-    #[must_use]
-    pub fn uncensored(&self, model: &str) -> bool {
-        self.image.uncensored_models.iter().any(|m| m == model)
-    }
 }
 
 #[cfg(test)]

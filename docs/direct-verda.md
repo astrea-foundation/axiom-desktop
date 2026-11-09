@@ -41,8 +41,9 @@ directly to the same independently verified worker. There is no operator-signing
 fallback when account authorization, credit or price acceptance fails.
 
 The approved guest loads `munekazu/Huihui-Qwen3.8-27B-abliterated-FP8`, pinned by
-the signed model inventory. Its exact native model ID selects Axiom's bundled
-Qwen3.8 Uncensored system prompt, including after a model switch. The compact
+the signed model inventory. Its exact native model ID adds the Qwen3.8
+Uncensored identity line to Axiom's uncensored system prompt, including after a
+model switch. The compact
 model label retains “Uncensored” so the checkpoint is identifiable in the composer.
 
 This connection supports streaming text conversations with the

@@ -39,26 +39,22 @@ const MAX_PIPE: usize = 40 * 1024 * 1024;
 const HOSTED_ID: &str = "chutes";
 const HOSTED_MODEL: &str = "chutes:qwen3.8-27b";
 
-/// Model policy is selected by the native runtime, never by image-tool arguments.
+/// Bundled Qwen3.8 Uncensored offerings, used for their model identity prompt.
+/// Image adapter policy follows the chat model's catalog tag instead.
 #[must_use]
 pub fn is_uncensored_model(model_id: &str) -> bool {
     matches!(model_id, HOSTED_MODEL | MODEL)
 }
 
-fn image_operation_request(
-    request_id: &str,
-    prompt: &str,
-    edit: bool,
-    chat_model_id: &str,
-) -> Value {
+/// `uncensored` is the client's decision from the chat model's catalog tags,
+/// never an image-tool argument.
+fn image_operation_request(request_id: &str, prompt: &str, edit: bool, uncensored: bool) -> Value {
     json!({"op": if edit { "image_edit" } else { "image" },
-        "request_id": request_id, "prompt": prompt, "uncensored": is_uncensored_model(chat_model_id)})
+        "request_id": request_id, "prompt": prompt, "uncensored": uncensored})
 }
 
-fn runtime_image_lora(runtime: &axiom_inference::ImageRuntimePolicy, model: &str) -> Value {
-    if runtime.uncensored(model)
-        && let Some(lora) = &runtime.image.lora
-    {
+fn runtime_image_lora(runtime: &axiom_inference::ImageRuntimePolicy, uncensored: bool) -> Value {
+    if uncensored && let Some(lora) = &runtime.image.lora {
         json!({"name":lora.name,"sha256":lora.sha256,"strength":lora.strength})
     } else {
         Value::Null
@@ -66,8 +62,8 @@ fn runtime_image_lora(runtime: &axiom_inference::ImageRuntimePolicy, model: &str
 }
 
 #[cfg(test)]
-fn expected_image_lora(model: &str) -> Value {
-    runtime_image_lora(&axiom_inference::ImageRuntimePolicy::default(), model)
+fn expected_image_lora(uncensored: bool) -> Value {
+    runtime_image_lora(&axiom_inference::ImageRuntimePolicy::default(), uncensored)
 }
 
 #[derive(Clone, Deserialize, PartialEq, Eq)]
@@ -193,6 +189,12 @@ pub(crate) fn models(config: &SecureClientConfig) -> Vec<ModelInfo> {
         short_label: "Qwen3.8 Uncensored".into(),
         provider_id: ID.into(),
         provider_label: "Chutes local staging".into(),
+        tags: vec![axiom_inference::ModelTag {
+            id: axiom_inference::UNCENSORED_MODEL_TAG.into(),
+            label: "Uncensored".into(),
+            tone: axiom_inference::ModelTagTone::Pink,
+            position: 50,
+        }],
         upstream_model: "Qwen3.8-27B-Uncensored".into(),
         provider_base_url: "https://api.chutes.ai".into(),
         e2ee_protocol: PROTOCOL.into(),
@@ -432,6 +434,7 @@ pub(crate) async fn generate_image(
     sessions: &ImageSessionCache,
     chat_model_id: &str,
     prompt: &str,
+    uncensored: bool,
     cancel: CancellationToken,
 ) -> Result<GeneratedImage> {
     image_operation(
@@ -442,6 +445,7 @@ pub(crate) async fn generate_image(
         prompt,
         None,
         None,
+        uncensored,
         cancel,
     )
     .await
@@ -459,6 +463,7 @@ pub(crate) async fn image_operation(
     prompt: &str,
     source: Option<(&str, &axiom_inference::ImageContent)>,
     dimensions: Option<axiom_inference::ImageDimensions>,
+    uncensored: bool,
     cancel: CancellationToken,
 ) -> Result<GeneratedImage> {
     let references = source.into_iter().collect::<Vec<_>>();
@@ -472,6 +477,7 @@ pub(crate) async fn image_operation(
             references: &references,
             dimensions,
         },
+        uncensored,
         None,
         cancel,
     )
@@ -483,6 +489,7 @@ pub(crate) async fn image_operation_with_progress(
     credential: Arc<ApiCredential>,
     sessions: &ImageSessionCache,
     request: axiom_inference::ImageGenerationRequest<'_>,
+    uncensored: bool,
     progress: Option<mpsc::Sender<axiom_inference::ImageGenerationProgress>>,
     cancel: CancellationToken,
 ) -> Result<GeneratedImage> {
@@ -490,7 +497,7 @@ pub(crate) async fn image_operation_with_progress(
         SecureClientError::capability("encrypted image generation is not installed")
     })?;
     image_operation_on_installation(
-        config, credential, sessions, native, request, progress, cancel,
+        config, credential, sessions, native, request, uncensored, progress, cancel,
     )
     .await
 }
@@ -584,12 +591,17 @@ pub(crate) async fn image_capabilities(
     Ok(runtime)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "installation-scoped image request with the client's tag-derived adapter decision"
+)]
 async fn image_operation_on_installation(
     config: &SecureClientConfig,
     credential: Arc<ApiCredential>,
     sessions: &ImageSessionCache,
     native: NativeConfig,
     request: axiom_inference::ImageGenerationRequest<'_>,
+    uncensored: bool,
     progress: Option<mpsc::Sender<axiom_inference::ImageGenerationProgress>>,
     cancel: CancellationToken,
 ) -> Result<GeneratedImage> {
@@ -704,8 +716,7 @@ async fn image_operation_on_installation(
     OsRng.fill_bytes(&mut identity);
     let request_id = hex::encode(identity);
     let mut operation =
-        image_operation_request(&request_id, prompt, !references.is_empty(), chat_model_id);
-    operation["uncensored"] = json!(runtime.uncensored(chat_model_id));
+        image_operation_request(&request_id, prompt, !references.is_empty(), uncensored);
     if let Some(digest) = &hardware.runtime_policy_sha256 {
         operation["runtime_policy_sha256"] = json!(digest);
     }
@@ -730,9 +741,9 @@ async fn image_operation_on_installation(
         || reply["request_id"] != request_id
         || reply["model_id"] != model.id
         || reply["mime_type"] != "image/png"
-        || reply["uncensored"] != runtime.uncensored(chat_model_id)
+        || reply["uncensored"] != uncensored
         || reply.get("lora").is_none()
-        || reply["lora"] != runtime_image_lora(&runtime, chat_model_id)
+        || reply["lora"] != runtime_image_lora(&runtime, uncensored)
         || reply.get("runtime_policy_sha256").and_then(Value::as_str)
             != hardware.runtime_policy_sha256.as_deref()
         || dimensions
@@ -1922,31 +1933,31 @@ mod tests {
     }
 
     #[test]
-    fn image_generation_selects_the_fixed_lora_only_for_the_exact_uncensored_model() {
+    fn image_generation_selects_the_fixed_lora_only_from_the_client_tag_decision() {
         for edit in [false, true] {
-            for (model, expected) in [
-                (HOSTED_MODEL, true),
-                ("near:qwen3.8-27b", false),
-                ("tinfoil:qwen3.8-27b", false),
-                (MODEL, true),
-                ("chutes:qwen3.8-27b-extra", false),
-                ("uncensored", false),
-                ("", false),
-                (HOSTED_MODEL, true),
-                ("near:glm", false),
-            ] {
-                let request = image_operation_request("test", "A blue mug", edit, model);
+            for uncensored in [false, true] {
+                let request = image_operation_request("test", "A blue mug", edit, uncensored);
                 assert_eq!(request["op"], if edit { "image_edit" } else { "image" });
-                assert_eq!(is_uncensored_model(model), expected);
-                assert_eq!(request["uncensored"], expected);
-                if expected {
-                    assert_eq!(expected_image_lora(model)["strength"], 0.9);
+                assert_eq!(request["uncensored"], uncensored);
+                if uncensored {
+                    assert_eq!(expected_image_lora(true)["strength"], 0.9);
                 } else {
-                    assert_eq!(expected_image_lora(model), Value::Null);
+                    assert_eq!(expected_image_lora(false), Value::Null);
                 }
                 assert!(request.get("lora").is_none());
                 assert!(request.get("strength").is_none());
             }
+        }
+        // The bundled offerings keep their Qwen identity prompt by exact ID.
+        for (model, expected) in [
+            (HOSTED_MODEL, true),
+            (MODEL, true),
+            ("near:qwen3.8-27b", false),
+            ("chutes:qwen3.8-27b-extra", false),
+            ("uncensored", false),
+            ("", false),
+        ] {
+            assert_eq!(is_uncensored_model(model), expected);
         }
     }
 

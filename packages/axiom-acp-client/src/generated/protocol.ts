@@ -585,6 +585,25 @@ export interface ModelInfo {
   autoCompactThresholdTokens: number;
   inputPriceMicrousdPerMillionTokens?: number | null;
   outputPriceMicrousdPerMillionTokens?: number | null;
+  /**
+   * Catalog tags, sorted by position then ID.
+   */
+  tags?: ModelTag[];
+  [k: string]: unknown;
+}
+/**
+ * Backend-curated model label. Tags filter and annotate model lists, and the
+ * native runtime uses the `uncensored` tag to select the uncensored image
+ * adapter. Tags never affect routing, pricing, attestation or availability.
+ */
+export interface ModelTag {
+  id: string;
+  label: string;
+  /**
+   * Color vocabulary for model tags.
+   */
+  tone?: "gray" | "green" | "blue" | "violet" | "amber" | "pink" | "orange" | "teal" | "red";
+  position?: number;
   [k: string]: unknown;
 }
 export interface GetProfilePreferencesRequest {

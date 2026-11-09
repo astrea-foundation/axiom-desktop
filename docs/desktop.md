@@ -175,8 +175,9 @@ With AstreaAI installed, vision-capable NEAR and Tinfoil chats use that same
 attested image service while keeping their selected chat model. Image receipts
 and billing identify the AstreaAI worker; saved image provenance retains the
 originating chat model for regeneration.
-Images from Qwen3.8 Uncensored use the pinned uncensored LoRA at strength 0.9;
-other chat models use the base image model. The model can optionally call
+Images from chat models with the catalog's **Uncensored** tag (such as the
+abliterated DeepSeek V4.1 Flash and Qwen3.8 Uncensored) use the pinned uncensored
+LoRA at strength 0.9; other chat models use the base image model. The model can optionally call
 `view_image` to inspect an uploaded or generated result before finishing its
 turn, including deciding whether a correction is needed. Click a generated or edited
 image to view it in the larger viewer; Escape, the close button or a backdrop
@@ -218,8 +219,9 @@ Use Attach, paste an image, or drop files anywhere in the main chat panel,
 including its empty space and transcript. A drop indicator marks the panel;
 the sidebar and Proxy view do not attach files. Image and file icons
 in the model picker show the selected model's current capabilities; hover or use
-the accessible label for their meaning. See [catalog discovery](provider-catalogs.md)
-for refreshes and unavailable models.
+the accessible label for their meaning. The picker can filter by catalog tag,
+host and upload support; see [catalog discovery](provider-catalogs.md#model-tags-and-picker-filters)
+for tags, refreshes and unavailable models.
 
 Images are original PNG/JPEG/WebP/GIF bytes. File-capable Tinfoil models accept
 text/code, Markdown, CSV, HTML, JSON, XML, PDF and Office Open XML files
@@ -297,7 +299,8 @@ beside **TEE verified** explains TEE protection and the server hardware check in
 plain language. Hover, focus or click it to show the help; Escape dismisses the
 help before closing the report. The inspector contains hardware, encryption-key,
 freshness and source-provenance checks for the selected provider. Tinfoil reports
-router verification, and NEAR v3 identifies an attested worker TLS key.
+router verification, and NEAR v3 identifies an attested worker TLS key and, on
+the gateway route, the attested NEAR gateway's key, TLS key and workload.
 
 Reports renew automatically for the selected model while the window is active,
 visible and online. Renewal starts up to thirty seconds before expiry, capped

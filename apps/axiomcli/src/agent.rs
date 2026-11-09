@@ -39,14 +39,23 @@ pub const APP_EVENT_QUEUE_CAPACITY: usize = 256;
 /// the single-thread Tokio runtimes used by embedders and tests as well.
 const RESTORE_COOPERATION_INTERVAL: usize = 128;
 
-/// Shared product behavior plus the native Desktop capability profile.
+/// Shared product behavior, the native Desktop capability profile, and what
+/// Axiom is and how Desktop protects conversations.
 pub const DESKTOP_CHAT_SYSTEM_PROMPT: &str = concat!(
     include_str!("../../../packages/chat-core/prompts/chat.md"),
     "\n",
     include_str!("../prompts/desktop-chat.md"),
+    "\n",
+    include_str!("../prompts/desktop-product.md"),
 );
 
-const QWEN_UNCENSORED_SYSTEM_PROMPT: &str =
+/// Axiom is an uncensored chat product: every model receives this behavior
+/// policy. Tool availability, Web consent and approvals still govern actions.
+const UNCENSORED_SYSTEM_PROMPT: &str =
+    include_str!("../../../packages/chat-core/prompts/uncensored.md");
+
+/// Name used by the bundled Qwen3.8 Uncensored offerings.
+const QWEN_UNCENSORED_IDENTITY_PROMPT: &str =
     include_str!("../../../packages/chat-core/prompts/qwen3.8-uncensored.md");
 
 /// Upper bound also enforced by the CLI before a launch-time system prompt is
@@ -200,21 +209,33 @@ pub fn reconcile_new_session_settings(
     Ok(reconcile_model_settings(selected, preferred_thinking))
 }
 
+/// Upstream identity of the default model: NEAR's attested, abliterated
+/// `DeepSeek-V4.1-Flash-1017`. When the catalog withdraws it, Tinfoil's
+/// `deepseek-v4-1-flash` and then the remaining provider order take over.
+const DEFAULT_MODEL: (&str, &str) = ("near", "deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated");
+const FALLBACK_DEFAULT_MODEL: (&str, &str) = ("tinfoil", "deepseek-v4-1-flash");
+
 /// Order discovered offerings for new-session defaults and model pickers.
 /// This preference never creates an offering or authorizes a provider protocol.
 pub(crate) fn compare_model_preference(
     left: &axiom_inference::ModelInfo,
     right: &axiom_inference::ModelInfo,
 ) -> std::cmp::Ordering {
-    fn key(model: &axiom_inference::ModelInfo) -> (u8, &str, bool, &str) {
+    fn key(model: &axiom_inference::ModelInfo) -> (u8, u8, &str, &str) {
+        let identity = (model.provider_id.as_str(), model.upstream_model.as_str());
+        let pinned = if identity == DEFAULT_MODEL {
+            0
+        } else if identity == FALLBACK_DEFAULT_MODEL {
+            1
+        } else {
+            2
+        };
         let priority = match model.provider_id.as_str() {
             "tinfoil" => 0,
             "near" => 1,
             _ => 2,
         };
-        let preferred =
-            model.provider_id == "tinfoil" && model.upstream_model == "deepseek-v4-1-flash";
-        (priority, &model.provider_id, !preferred, &model.id)
+        (pinned, priority, &model.provider_id, &model.id)
     }
     key(left).cmp(&key(right))
 }
@@ -3851,11 +3872,13 @@ fn system_prompt(
             )
         },
     );
+    prompt.push_str("\n\n");
+    prompt.push_str(UNCENSORED_SYSTEM_PROMPT.trim());
     // Select from trusted native model state on every refresh. Never persist a
-    // model-specific policy as shared instructions for later model selections.
+    // model-specific identity as shared instructions for later model selections.
     if axiom_secure_client::is_uncensored_model(&settings.model) {
         prompt.push_str("\n\n");
-        prompt.push_str(QWEN_UNCENSORED_SYSTEM_PROMPT.trim());
+        prompt.push_str(QWEN_UNCENSORED_IDENTITY_PROMPT.trim());
     }
     let _ = write!(
         prompt,
@@ -4340,6 +4363,73 @@ mod engine_tests {
     }
 
     #[tokio::test]
+    async fn abliterated_deepseek_is_the_default_and_tinfoil_deepseek_the_fallback() {
+        let model = |id: &str, provider: &str, upstream: &str| axiom_inference::ModelInfo {
+            id: id.into(),
+            provider_id: provider.into(),
+            upstream_model: upstream.into(),
+            ..axiom_inference::ModelInfo::default()
+        };
+        let models = vec![
+            model("a-near", "near", "glm-5.3-flash"),
+            model("tinfoil-deepseek", "tinfoil", "deepseek-v4-1-flash"),
+            model(
+                "deepseek-v4-1-flash-1017-abliterated",
+                "near",
+                "deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated",
+            ),
+            // Same upstream name from another provider is not the default.
+            model(
+                "other-abliterated",
+                "other",
+                "deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated",
+            ),
+        ];
+        let engine = AgentEngine::new(
+            Arc::new(CatalogOnlyProvider {
+                models: models.clone(),
+            }),
+            Arc::new(ToolRegistry::new()),
+            "auto",
+            1,
+        );
+        assert_eq!(
+            engine
+                .available_models(CancellationToken::new())
+                .await
+                .unwrap(),
+            [
+                "deepseek-v4-1-flash-1017-abliterated",
+                "tinfoil-deepseek",
+                "a-near",
+                "other-abliterated"
+            ]
+        );
+        for (catalog, saved, expected) in [
+            (models.clone(), None, "deepseek-v4-1-flash-1017-abliterated"),
+            (models.clone(), Some("a-near"), "a-near"),
+            (
+                models
+                    .iter()
+                    .filter(|model| model.id != "deepseek-v4-1-flash-1017-abliterated")
+                    .cloned()
+                    .collect(),
+                None,
+                "tinfoil-deepseek",
+            ),
+        ] {
+            let resolved = reconcile_new_session_settings(
+                catalog,
+                saved,
+                "auto",
+                ThinkingLevel::ProviderDefault,
+            )
+            .unwrap();
+            assert_eq!(resolved.model, expected);
+        }
+    }
+
+    #[tokio::test]
     async fn tinfoil_default_and_catalog_order_preserve_explicit_model_choices() {
         let model = |id: &str, provider: &str, upstream: &str| axiom_inference::ModelInfo {
             id: id.into(),
@@ -4495,6 +4585,28 @@ mod engine_tests {
     }
 
     #[test]
+    fn desktop_prompt_explains_axiom_and_its_desktop_privacy_boundaries() {
+        let product = include_str!("../prompts/desktop-product.md").trim();
+        assert!(DESKTOP_CHAT_SYSTEM_PROMPT.contains(product));
+        for expected in [
+            "AxiomAI is an AI company within Astrea",
+            "Trusted Execution Environment (TEE)",
+            "TEE verified",
+            "stored locally on the user's device",
+            "neither is end-to-end encrypted",
+        ] {
+            assert!(product.contains(expected), "missing {expected}");
+        }
+        // Web-app specifics must not leak into the Desktop description.
+        for web_only in ["bottom right", "Saved web chats", "confidential gateway"] {
+            assert!(
+                !DESKTOP_CHAT_SYSTEM_PROMPT.contains(web_only),
+                "web-only claim {web_only}"
+            );
+        }
+    }
+
+    #[test]
     fn uncensored_policy_tracks_model_switches_without_leaking_or_accumulating() {
         let cwd = std::path::Path::new("test-chat");
         let mut settings = SessionSettings {
@@ -4524,9 +4636,16 @@ mod engine_tests {
             );
             let prompt = &messages[0].content;
             assert_eq!(
-                prompt.matches(QWEN_UNCENSORED_SYSTEM_PROMPT.trim()).count(),
+                prompt.matches(UNCENSORED_SYSTEM_PROMPT.trim()).count(),
+                1,
+                "every model gets the uncensored policy exactly once ({model})"
+            );
+            assert_eq!(
+                prompt
+                    .matches(QWEN_UNCENSORED_IDENTITY_PROMPT.trim())
+                    .count(),
                 usize::from(uncensored),
-                "wrong behavior after selecting {model}"
+                "wrong identity after selecting {model}"
             );
             assert!(prompt.contains(DESKTOP_CHAT_SYSTEM_PROMPT.trim()));
             assert!(prompt.contains(
