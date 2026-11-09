@@ -3143,7 +3143,7 @@ mod tests {
                         "sh",
                         &[
                             "-c",
-                            "(sleep 1; printf survived > aborted-future-child-survived) & wait",
+                            "(printf ready > aborted-future-child-ready; while [ ! -e release-aborted-future-child ]; do sleep 0.02; done; printf survived > aborted-future-child-survived) & wait",
                         ],
                     ),
                     CancellationToken::new(),
@@ -3152,14 +3152,23 @@ mod tests {
         });
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
-        while registry.active_count() == 0 && tokio::time::Instant::now() < deadline {
+        while (registry.active_count() == 0
+            || !root.path().join("aborted-future-child-ready").exists())
+            && tokio::time::Instant::now() < deadline
+        {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         assert_eq!(registry.active_count(), 1);
+        assert!(root.path().join("aborted-future-child-ready").exists());
         run.abort();
         assert!(run.await.expect_err("task was aborted").is_cancelled());
         assert_eq!(registry.active_count(), 0);
 
+        // Release the child's work only after abort and guard destruction.
+        // A loaded host can delay the test task beyond a fixed child sleep;
+        // that must not turn work done before cancellation into a cleanup failure.
+        std::fs::write(root.path().join("release-aborted-future-child"), "go")
+            .expect("release child after abort");
         tokio::time::sleep(Duration::from_millis(1100)).await;
         assert!(!root.path().join("aborted-future-child-survived").exists());
     }
