@@ -193,8 +193,8 @@ The renderer receives neither this configuration nor the private key.
 
 The canonical inference repository's `scripts/direct_desktop.py` constructs a
 small launch environment from explicit `--state`, `--desktop` and
-`--account-state` paths. It does not inherit provider API credentials or Chutes
-preview settings. The existing local account backend must be running. Select
+`--account-state` paths. It does not inherit provider API credentials or other
+provider settings. The existing local account backend must be running. Select
 **Qwen3.8 Uncensored** under AstreaAI after launch if the profile previously selected another model.
 
 Development QA can set `AXIOM_DESKTOP_LOCAL_PROFILE_NAME` to a distinct lowercase

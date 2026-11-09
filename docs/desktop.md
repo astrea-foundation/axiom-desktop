@@ -199,16 +199,15 @@ Stop apply to this image job; regeneration never automatically retries after a
 failure or account/runtime change.
 
 The default policy lets the model choose `aspect_ratio` from `1:1`, `2:3`, `3:2`, `3:4`, `4:3`, `9:16`,
-`16:9`, `1:2`, `2:1`, `9:21`, and `21:9`. The default for new images is **2:3**.
+`16:9`, `1:2`, `2:1`, `9:21`, and `21:9`. The default for new images is **1:1**.
 Native code selects the largest exact ratio on the supported 32-pixel grid,
-within 2,359,296 pixels. This gives 1216×1824 for 2:3, 1536×1536 for 1:1, and
-2048×1152 for 16:9. Without a ratio, references retain their existing sizing rules.
+within 2,359,296 pixels. This gives 1536×1536 for 1:1, 1216×1824 for 2:3, and
+2048×1152 for 16:9. Without a ratio, reference-based requests use the same
+default size.
 
-For a runtime-capable backend, signed settings supply the current default,
-ratio list, reference limit, sampling and model-specific adapter policy. The
-native tool definition is updated for each turn; generic model instructions
-defer to it. See [backend runtime updates](../../axiom-inference/docs/runtime-updates.md)
-for supported bounds and initial rollout requirements.
+The installed AstreaAI client supplies the current default, ratio list and
+reference limit. The native tool definition is updated for each turn; generic
+model instructions defer to it.
 
 Copy and Regenerate appear after the full response turn finishes, including any
 tool calls; an introductory message or completed tool-call segment does not

@@ -16,19 +16,6 @@ The [update architecture](updates.md) describes installation ownership and
 recovery. [Release acceptance](validation.md) covers signed OS qualification;
 [repository setup](repository-setup.md) lists Actions credentials and settings.
 
-The optional managed Chutes provider uses a prebuilt standalone client payload.
-Set `AXIOM_CHUTES_BUNDLE` to its target-specific directory and explicitly set
-`AXIOM_CHUTES_RELEASE_CHANNEL=staging` for staging; production is the default.
-The packaging hook validates its exact inventory, native architecture, public
-authority and executable pin before copying it to `resources/chutes`. Signed
-macOS packages require the payload's native code to be signed by `APPLE_TEAM_ID`
-before its inventory is generated. Electron excludes that runtime from its own
-signing walk to preserve the executable hash. Use the
-[helper build guide](../../axiom-inference/docs/native-helper.md), including
-dependency notices, and retain signed installer acceptance as a separate check.
-An ad-hoc payload fails signed packaging. Windows and universal helper bundles
-are not yet qualified; omit the optional provider for those targets.
-
 ## Supported platforms
 
 | Target | Desktop installer | Standalone CLI + proxy installer |
@@ -163,8 +150,7 @@ Do not rebuild or resign qualified files for this handoff.
 Exercise a model-generated image tool call from the retained signed installation
 without configuration-file environment overrides. The installed secure provider
 must discover its bundled AstreaAI configuration and register `generate` and
-`view_image` from that loaded configuration. A legacy Chutes environment variable
-must not be required. Verify the authenticated image result and settled usage
+`view_image` from that loaded configuration. Verify the authenticated image result and settled usage
 before publishing; version and ordinary chat checks cannot substitute for this
 test.
 

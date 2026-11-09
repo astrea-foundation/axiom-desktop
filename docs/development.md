@@ -38,14 +38,10 @@ origins are rejected. See [service-origins.ts](../apps/desktop/src/main/service-
 and [configuration](configuration.md).
 
 The [confidential pool guide](inference-pool.md) describes the isolated local
-profile, per-process loopback CA, installed model pins and native preflight.
-The current Chutes offering fails application/key attestation before inference;
-a successful hardware diagnostic does not permit a production verified Desktop chat.
-The separate explicit debug adapter permits encrypted interactive Chutes testing.
-An unsigned configuration retains its yellow development label. An independently
-pinned staging publisher with valid signed metadata enables scoped TEE and
-release-authority verification and automatic signed updates. See the pool
-guide for its native configuration and local account workflow.
+profile, per-process loopback CA and installed model pins. A successful hardware
+diagnostic does not permit a production verified Desktop chat. The
+[AstreaAI connection guide](direct-verda.md) covers the local AstreaAI launch
+workflow.
 
 ## Checks
 
