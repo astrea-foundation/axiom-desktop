@@ -560,9 +560,9 @@ impl StoredTimelineItem {
             client_item_id: self.client_item_id,
             external_id: self.external_id,
             content: self.content,
-            metadata: serde_json::from_str(&self.metadata).map_err(|error| {
-                AxiomError::Storage(format!("invalid timeline metadata: {error}"))
-            })?,
+            metadata: serde_json::from_str(&self.metadata).unwrap_or_else(|_| {
+                serde_json::json!({"recovery_warning":"Saved message details were unavailable; text was preserved."})
+            }),
             created_at: self.created_at,
             updated_at: self.updated_at,
         })
@@ -705,17 +705,25 @@ pub(super) fn query_prompt_attachments(
         params![id.to_string(), item_id], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?)),
     ).map_err(storage_error)?;
     if let Some(payload) = payload {
-        let attachments: Vec<axiom_inference::PromptAttachment> = serde_json::from_str(&payload)?;
-        axiom_inference::validate_stored_prompt(&text, &attachments)
-            .map_err(|error| AxiomError::Storage(error.to_string()))?;
+        let values = serde_json::from_str::<Vec<Value>>(&payload).unwrap_or_default();
+        let mut attachments = Vec::new();
+        for value in values {
+            let Ok(attachment) = serde_json::from_value(value) else {
+                continue;
+            };
+            attachments.push(attachment);
+            if axiom_inference::validate_stored_prompt(&text, &attachments).is_err() {
+                attachments.pop();
+            }
+        }
         Ok(attachments)
-    } else if serde_json::from_str::<Value>(&metadata)?
+    } else if serde_json::from_str::<Value>(&metadata)
+        .unwrap_or_default()
         .get("attachments")
         .is_some()
     {
-        Err(AxiomError::Storage(
-            "Stored attachment contents are missing; the message cannot be replayed.".into(),
-        ))
+        tracing::warn!(%id, "missing saved attachment contents omitted from runtime context");
+        Ok(Vec::new())
     } else {
         Ok(Vec::new())
     }

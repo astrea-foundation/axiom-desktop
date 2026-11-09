@@ -272,6 +272,23 @@ compaction successful. Compaction is model-generated and is not a guarantee of
 perfect recall. The original local journal remains available independently of
 the compacted model context.
 
+If automatic pre-turn summarization fails, the runtime keeps the complete new
+message and continues with a short, partial text excerpt of older context. A
+notice explains that older context and media were omitted. Cancellation still
+stops the turn. Original saved messages remain separate from this model context.
+On restore, missing or invalid old attachments and image details are omitted
+instead of blocking the entire conversation. Interrupted tool calls receive an
+unknown-outcome marker; recovery does not execute them. Older file formats that
+the newly selected model cannot read are omitted from context while their text
+remains available. New uploads still require a compatible model.
+
+The image tools keep a bounded catalog of recent conversation references. Older
+references expire as new images arrive, allowing further generation in the same
+thread. Saved images remain in local history; an expired reference may need to
+be attached again for another edit. A completed or cancelled response refreshes
+thread state after any older timeline fetch, so a stale running snapshot cannot
+leave the composer waiting indefinitely.
+
 ## Usage and verification
 
 The composer meter displays provider-reported input/output usage for the **last

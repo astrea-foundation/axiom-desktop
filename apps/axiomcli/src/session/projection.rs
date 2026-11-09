@@ -146,7 +146,17 @@ pub(super) fn project_runtime_events(
                     text: item.content.clone(),
                 },
             ),
-            TimelineItemKind::ToolCall => project_tool(&mut projection, item, turn_id)?,
+            TimelineItemKind::ToolCall => {
+                let checkpoint = projection.events.len();
+                if project_tool(&mut projection, item, turn_id.clone()).is_err() {
+                    projection.events.truncate(checkpoint);
+                    let mut recovered = item.clone();
+                    recovered.metadata = json!({"name":item.metadata.get("name").and_then(Value::as_str).unwrap_or("tool"),"arguments":{}});
+                    recovered.content = "Saved tool details or image data were unavailable. The original result could not be restored; do not assume the operation succeeded or repeat it automatically.".into();
+                    recovered.status = TimelineItemStatus::Failed;
+                    project_tool(&mut projection, &recovered, turn_id)?;
+                }
+            }
             TimelineItemKind::Plan => project_plan(&mut projection, item)?,
             TimelineItemKind::Notice => project_notice(&mut projection, item),
             TimelineItemKind::UserMessage

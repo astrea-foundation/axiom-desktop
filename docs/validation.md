@@ -206,6 +206,14 @@ late bootstrap recovery, 1536-pixel viewing while typing, and cancellable inline
 decoding that yields to UI tasks. These local transport checks do not change
 provider attestation, authenticated completion, original image bytes or size caps.
 
+Chat recovery regressions cover missing attachment payloads, damaged image
+metadata, unavailable historical image views, interrupted tool replies, bounded
+image-reference expiration, incompatible historical files after a model switch,
+and failed automatic summarization before a new prompt. Client completion checks
+also delay an older running snapshot across send, edit and image regeneration,
+then require a fresh ready snapshot. These checks preserve normal provider
+verification and never replay an interrupted image job or local tool action.
+
 Before releasing cross-provider AstreaAI image support, qualify verified
 1536-square generation and ordered five-reference editing from vision-capable
 Tinfoil and NEAR chats. Check that image provenance and regeneration retain the

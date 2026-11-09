@@ -10,7 +10,7 @@ use rusqlite::{Connection, params};
 use serde_json::{Value, json};
 
 use crate::{
-    AxiomError, Result,
+    Result,
     app::{EventEnvelope, SessionId},
     audit::redact_value,
 };
@@ -83,8 +83,8 @@ impl SessionStore {
 impl SessionStore {
     pub fn load(&self, id: &SessionId) -> Result<Vec<EventEnvelope>> {
         let outcome = self.load_recovering(id)?;
-        if let Some(warning) = outcome.warnings.first() {
-            return Err(AxiomError::Storage(warning.clone()));
+        for warning in &outcome.warnings {
+            tracing::warn!(%id, %warning, "saved conversation recovered with partial context");
         }
         Ok(outcome.events)
     }
@@ -97,7 +97,8 @@ impl SessionStore {
             .prepare(
                 "SELECT id, thread_id, turn_id, sequence, kind, status, client_item_id,
                         external_id, content, metadata, created_at, updated_at
-                 FROM timeline_items WHERE thread_id=?1 ORDER BY sequence ASC LIMIT ?2",
+                 FROM (SELECT * FROM timeline_items WHERE thread_id=?1 ORDER BY sequence DESC LIMIT ?2)
+                 ORDER BY sequence ASC",
             )
             .map_err(storage_error)?;
         let stored = statement
@@ -117,7 +118,7 @@ impl SessionStore {
             .collect::<Result<Vec<_>>>()?;
         let mut warnings = Vec::new();
         if items.len() > MAX_TIMELINE_ITEMS_PER_LOAD {
-            items.pop();
+            items.remove(0);
             warnings.push(format!(
                 "thread {id} exceeds the {MAX_TIMELINE_ITEMS_PER_LOAD}-item runtime restore limit"
             ));

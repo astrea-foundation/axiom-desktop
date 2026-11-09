@@ -89,16 +89,11 @@ impl std::fmt::Debug for ImageCatalog {
 
 impl ImageCatalog {
     pub fn ensure_output_capacity(&self) -> Result<()> {
-        let images = self
+        let mut images = self
             .0
             .lock()
             .map_err(|_| AxiomError::Storage("image catalog unavailable".into()))?;
-        if images.len() >= 256
-            || images.values().map(|a| a.image.data.len()).sum::<usize>() + 14_000_000
-                > 64 * 1024 * 1024
-        {
-            return Err(AxiomError::Tool("This conversation has reached its local image limit. Start a new thread before generating another image.".into()));
-        }
+        retain_image_capacity(&mut images, 14_000_000);
         Ok(())
     }
     fn insert(&self, mut asset: LocalImage) -> Result<String> {
@@ -120,14 +115,15 @@ impl ImageCatalog {
             }
             return Ok(asset.id);
         }
-        if images.len() >= 256
-            || images.values().map(|a| a.image.data.len()).sum::<usize>() + asset.image.data.len()
-                > 64 * 1024 * 1024
-        {
-            return Err(AxiomError::Tool("This conversation has reached its local image limit. Start a new thread for more images.".into()));
-        }
+        let position = images
+            .values()
+            .map(|image| image.position)
+            .max()
+            .unwrap_or(0)
+            + 1;
+        retain_image_capacity(&mut images, asset.image.data.len());
         let id = asset.id.clone();
-        asset.position = images.len() + 1;
+        asset.position = position;
         images.insert(id.clone(), asset);
         Ok(id)
     }
@@ -226,6 +222,28 @@ impl ImageCatalog {
         let mut ordered = images.values().collect::<Vec<_>>();
         ordered.sort_by_key(|a| a.position);
         Ok(serde_json::to_string(&ordered.into_iter().map(|a|json!({"image_id":a.id,"name":a.name,"origin":a.origin,"position":a.position,"source_image_ids":a.source_image_ids})).collect::<Vec<_>>())?)
+    }
+}
+
+// This is a bounded working catalog, not the saved conversation. Expiring an
+// older reference must not prevent future messages or image jobs in this thread.
+fn retain_image_capacity(images: &mut BTreeMap<String, LocalImage>, bytes: usize) {
+    while images.len() >= 256
+        || images
+            .values()
+            .map(|image| image.image.data.len())
+            .sum::<usize>()
+            + bytes
+            > 64 * 1024 * 1024
+    {
+        let Some(oldest) = images
+            .values()
+            .min_by_key(|image| image.position)
+            .map(|image| image.id.clone())
+        else {
+            break;
+        };
+        images.remove(&oldest);
     }
 }
 
@@ -772,6 +790,21 @@ pub(crate) mod tests {
                 ..Default::default()
             },
         }
+    }
+
+    #[test]
+    fn old_image_references_expire_without_exhausting_the_conversation() {
+        let catalog = ImageCatalog::default();
+        let mut image = generated_fixture();
+        for index in 0..270 {
+            image.request_id = format!("{index:032x}");
+            image.usage.request_id.clone_from(&image.request_id);
+            catalog.ensure_output_capacity().unwrap();
+            catalog.add_generated(&image).unwrap();
+        }
+        assert!(catalog.resolve(&format!("img_{:032x}", 0)).is_err());
+        assert!(catalog.resolve(&format!("img_{:032x}", 269)).is_ok());
+        assert_eq!(catalog.0.lock().unwrap().len(), 256);
     }
 
     #[tokio::test]
