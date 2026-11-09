@@ -123,7 +123,7 @@ export async function verifyInstalledImage(binary, installer, output, version, s
     const imageGenerationVersion = initialized.agentCapabilities?._meta?.axiom?.features?.imageGeneration;
     if (imageGenerationVersion !== 4) throw new Error('Installed image tools were not registered from the bundled configuration');
     const account = await request('_axiom/account/status', {});
-    if (account.status.state !== 'valid') throw new Error('Installed production account is unavailable');
+    if (account.status.state !== 'valid') throw new Error(`Installed production account is unavailable (${account.status.state})`);
     if (account.status.account?.id !== nativeQa.accountId || account.status.session?.credentialStore !== 'system credential store') {
       throw new Error('Installed acceptance must use its own native-session account and OS credential store');
     }
