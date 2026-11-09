@@ -70,6 +70,7 @@ pub(super) fn list_models(
                     .input_price_microusd_per_million_tokens,
                 output_price_microusd_per_million_tokens: model
                     .output_price_microusd_per_million_tokens,
+                tags: model.tags.into_iter().map(Into::into).collect(),
                 thinking_levels,
             })
         })

@@ -1,6 +1,6 @@
 import type { PromptAttachment } from "./viewTypes";
 
-export type { ProviderModel, ReasoningEffort } from "./models";
+export type { ModelTag, ModelTagTone, ProviderModel, ReasoningEffort } from "./models";
 export type ChatRole = "user" | "assistant";
 
 export type MessageStatus = "complete" | "streaming" | "pending" | "failed" | "interrupted" | "cancelled";

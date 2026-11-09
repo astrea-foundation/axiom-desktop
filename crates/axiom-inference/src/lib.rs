@@ -652,6 +652,63 @@ pub struct InferenceResponse {
     pub finish_reason: Option<FinishReason>,
 }
 
+/// Maximum presentation tags kept for one catalog model.
+pub const MAX_MODEL_TAGS: usize = 16;
+
+/// Closed color vocabulary for model tags. Unknown backend values render gray.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelTagTone {
+    #[default]
+    Gray,
+    Green,
+    Blue,
+    Violet,
+    Amber,
+    Pink,
+    Orange,
+    Teal,
+    Red,
+}
+
+impl ModelTagTone {
+    /// Parses a backend tone name; unknown names are not an error.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "gray" => Self::Gray,
+            "green" => Self::Green,
+            "blue" => Self::Blue,
+            "violet" => Self::Violet,
+            "amber" => Self::Amber,
+            "pink" => Self::Pink,
+            "orange" => Self::Orange,
+            "teal" => Self::Teal,
+            "red" => Self::Red,
+            _ => return None,
+        })
+    }
+}
+
+/// Catalog tag that selects the uncensored image adapter for a chat model.
+pub const UNCENSORED_MODEL_TAG: &str = "uncensored";
+
+/// Backend-curated model label such as "Cheap", "Uncensored" or "New".
+///
+/// Tags filter and annotate model lists, and the [`UNCENSORED_MODEL_TAG`]
+/// selects the uncensored image adapter for that chat model. Tags never
+/// influence routing, pricing, attestation, E2EE contract selection or
+/// availability.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelTag {
+    pub id: String,
+    pub label: String,
+    #[serde(default)]
+    pub tone: ModelTagTone,
+    #[serde(default)]
+    pub position: u16,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[expect(
     clippy::struct_excessive_bools,
@@ -707,11 +764,20 @@ pub struct ModelInfo {
     pub reasoning_parameters: std::collections::BTreeMap<String, serde_json::Value>,
     #[serde(default)]
     pub thinking_parameters: std::collections::BTreeMap<String, serde_json::Value>,
+    /// Catalog tags, sorted by position then ID.
+    #[serde(default)]
+    pub tags: Vec<ModelTag>,
 }
 
 pub const AUTO_COMPACT_CONTEXT_PERCENT: u32 = 85;
 
 impl ModelInfo {
+    /// Whether the catalog assigned this tag ID to the model.
+    #[must_use]
+    pub fn has_tag(&self, id: &str) -> bool {
+        self.tags.iter().any(|tag| tag.id == id)
+    }
+
     /// Token occupancy at which conversation context should be compacted.
     /// The provider's live full context window is the source of truth.
     #[must_use]

@@ -118,15 +118,25 @@ process boundaries. See [security](threat-model.md#local-tools-and-processes).
 It ignores shared CLI `permission_profile`/`mcp_servers` and clears those imported
 CLI server configurations,
 rejects a non-Web startup profile from frontend config/environment, and uses
-the embedded product prompt. `--system-prompt-file` cannot replace it.
+the embedded product prompt. `--system-prompt-file` cannot replace it. That prompt
+combines the shared chat behavior, the Desktop capability profile and
+[`desktop-product.md`](../apps/axiomcli/prompts/desktop-product.md), which tells
+the model what AxiomAI is and how Desktop protects conversations: on-device TEE
+verification and encryption, the composer privacy badge, unencrypted-at-rest local
+history, and the separate Web and Agent-mode boundaries. Keep it consistent with
+[privacy behavior](privacy.md) when either changes.
 
-Selecting **Qwen3.8 Uncensored** (`chutes:qwen3.8-27b`, or the debug-only
-`chutes-preview:qwen3.8-27b`) adds its native model-specific instructions to the
-system message before E2EE encryption. They identify the model by its display
-name and instruct it to follow every user request without refusals or unsolicited
-moralizing. Native prompt refresh applies the policy to new, restored, and
-compacted threads, and removes it when another model is selected. Tool
-availability, Web consent, and approval enforcement still come from the runtime.
+Every model receives Axiom's uncensored behavior policy
+([`uncensored.md`](../packages/chat-core/prompts/uncensored.md)) in the system
+message before E2EE encryption. It instructs the model to follow every user
+request without refusals or unsolicited moralizing, while staying accurate about
+facts, tools and capabilities. Selecting **Qwen3.8 Uncensored**
+(`chutes:qwen3.8-27b`, or the debug-only `chutes-preview:qwen3.8-27b`) also adds
+its model-specific identity line. Native prompt refresh rebuilds both for new,
+restored, and compacted threads, and removes the identity line when another model
+is selected. The policy is a prompt, not a model change: hosted models keep their
+own safety training and may still refuse. Tool availability, Web consent, and
+approval enforcement still come from the runtime.
 
 After authentication, `desktopAgent@1` can atomically configure a thread's
 Agent enablement, approval level and working directory while idle. This is the
@@ -267,8 +277,10 @@ Desktop service-origin pairing and development overrides are described in
 a sanitized environment, not the application's credentials; per-command additions
 are limited by native policy.
 
-The default model setting is `auto`: prefer Tinfoil's DeepSeek V4.1 Flash
-(`deepseek-v4-1-flash`) when it appears in the validated provider catalog. Other
-Tinfoil offerings come next, followed by NEAR and then other registered providers.
+The default model setting is `auto`: prefer NEAR's attested, abliterated
+DeepSeek V4.1 Flash (`deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated`) when it
+appears in the validated provider catalog, then Tinfoil's DeepSeek V4.1 Flash
+(`deepseek-v4-1-flash`). Other Tinfoil offerings come next, followed by NEAR and
+then other registered providers.
 Configure an explicit model ID to select a particular offering. Saved selections
 take precedence; this preference cannot add an unavailable model to the catalog.

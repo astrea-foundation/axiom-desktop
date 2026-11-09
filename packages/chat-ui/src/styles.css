@@ -602,6 +602,23 @@ input {
   filter: brightness(0);
   opacity: 0.8;
 }
+
+/* Model picker tags. Tones are a closed vocabulary from the model catalog;
+   pill text mixes toward the theme's primary text so it stays readable. */
+[data-model-tag-tone] { --model-tag: #86868e; }
+[data-model-tag-tone="green"] { --model-tag: #2f9e6b; }
+[data-model-tag-tone="blue"] { --model-tag: #0d93d6; }
+[data-model-tag-tone="violet"] { --model-tag: #7c5cf0; }
+[data-model-tag-tone="amber"] { --model-tag: #d98b0b; }
+[data-model-tag-tone="pink"] { --model-tag: #d6457f; }
+[data-model-tag-tone="orange"] { --model-tag: #ff7653; }
+[data-model-tag-tone="teal"] { --model-tag: #14a39a; }
+[data-model-tag-tone="red"] { --model-tag: #e5484d; }
+.model-tag-dot { background: var(--model-tag); }
+.model-tag-pill {
+  background: color-mix(in srgb, var(--model-tag) 14%, transparent);
+  color: color-mix(in srgb, var(--model-tag) 76%, var(--color-text-primary));
+}
 :root[data-theme="dark"] .brand-mono {
   filter: brightness(0) invert(1);
 }

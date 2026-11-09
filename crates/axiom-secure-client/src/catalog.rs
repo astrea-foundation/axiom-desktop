@@ -3,7 +3,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use axiom_inference::{ModelInfo, ReasoningEffort};
+use axiom_inference::{MAX_MODEL_TAGS, ModelInfo, ModelTag, ModelTagTone, ReasoningEffort};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -23,6 +23,10 @@ const MAX_MODEL_TOKENS: u32 = 16 * 1024 * 1024;
 // $1,000,000 per million tokens. This is intentionally far above real catalog
 // rates while remaining well inside JavaScript's exact integer range.
 const MAX_MODEL_PRICE_MICROUSD_PER_MILLION_TOKENS: u64 = 1_000_000_000_000;
+const MAX_CATALOG_TAG_ENTRIES: usize = 64;
+const MAX_TAG_ID_BYTES: usize = 32;
+const MAX_TAG_LABEL_CHARS: usize = 32;
+const MAX_TAG_POSITION: u64 = 10_000;
 
 #[derive(Clone, Deserialize, Serialize)]
 struct CatalogE2eeContract {
@@ -79,6 +83,20 @@ struct CatalogModel {
     thinking_parameters: std::collections::BTreeMap<String, Value>,
     #[serde(default)]
     e2ee_contracts: Vec<CatalogE2eeContract>,
+    /// Catalog tags. Kept as raw JSON so a malformed tag never
+    /// quarantines its model; see `catalog_tags`.
+    #[serde(default)]
+    tags: Value,
+}
+
+#[derive(Deserialize)]
+struct CatalogTag {
+    id: String,
+    label: String,
+    #[serde(default)]
+    tone: Option<String>,
+    #[serde(default)]
+    position: Option<u64>,
 }
 
 pub(crate) async fn fetch_models(
@@ -246,6 +264,7 @@ fn validate_models(
         let provider_url = config
             .endpoint_policy
             .validate_provider_url(&item.base_url)?;
+        let tags = catalog_tags(&item.id, &item.tags);
         let mut model = ModelInfo {
             id: item.id,
             label: item.label,
@@ -270,6 +289,7 @@ fn validate_models(
             file_mime_types: item.file_mime_types,
             reasoning_parameters: item.reasoning_parameters,
             thinking_parameters: item.thinking_parameters,
+            tags,
             ..ModelInfo::default()
         };
         if let Err(error) = providers.validate_model(&mut model) {
@@ -289,6 +309,71 @@ fn validate_models(
         ));
     }
     Ok(output)
+}
+
+/// Tags filter the picker and the `uncensored` tag selects the uncensored image
+/// adapter. Malformed entries are dropped one by one and never affect the
+/// model's provider contract or availability.
+fn catalog_tags(model_id: &str, raw: &Value) -> Vec<ModelTag> {
+    let entries = match raw {
+        Value::Null => return Vec::new(),
+        Value::Array(entries) if entries.len() <= MAX_CATALOG_TAG_ENTRIES => entries,
+        _ => {
+            tracing::debug!(model = model_id, "invalid model tag list was ignored");
+            return Vec::new();
+        }
+    };
+    let mut seen = BTreeSet::new();
+    let mut tags = Vec::new();
+    for entry in entries {
+        let Ok(tag) = CatalogTag::deserialize(entry) else {
+            tracing::debug!(model = model_id, "malformed model tag was ignored");
+            continue;
+        };
+        let label = tag.label.trim();
+        let valid = valid_tag_id(&tag.id)
+            && !label.is_empty()
+            && label.chars().count() <= MAX_TAG_LABEL_CHARS
+            && !label.chars().any(char::is_control)
+            && tag
+                .position
+                .is_none_or(|position| position <= MAX_TAG_POSITION);
+        if !valid || !seen.insert(tag.id.clone()) {
+            tracing::debug!(
+                model = model_id,
+                "invalid or duplicate model tag was ignored"
+            );
+            continue;
+        }
+        tags.push(ModelTag {
+            label: label.to_owned(),
+            tone: tag
+                .tone
+                .as_deref()
+                .and_then(ModelTagTone::parse)
+                .unwrap_or_default(),
+            position: u16::try_from(tag.position.unwrap_or(0)).unwrap_or(u16::MAX),
+            id: tag.id,
+        });
+    }
+    tags.sort_by(|left, right| {
+        left.position
+            .cmp(&right.position)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    tags.truncate(MAX_MODEL_TAGS);
+    tags
+}
+
+fn valid_tag_id(value: &str) -> bool {
+    value.len() <= MAX_TAG_ID_BYTES
+        && value
+            .bytes()
+            .next()
+            .is_some_and(|first| first.is_ascii_lowercase() || first.is_ascii_digit())
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
 }
 
 fn contract_candidates(item: &CatalogModel) -> Option<Vec<ProviderContract>> {
@@ -473,6 +558,7 @@ mod tests {
             output_price_microusd_per_million_tokens: Some(1_320_000),
             supported_reasoning_efforts: vec!["medium".into()],
             e2ee_contracts: Vec::new(),
+            tags: Value::Null,
         }
     }
 
@@ -574,6 +660,68 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn catalog_tags_are_sorted_bounded_and_never_quarantine_their_model() {
+        let config = config();
+        let providers = ProviderRegistry::production(
+            config.clone(),
+            Arc::new(ApiCredential::new("test-credential")),
+        )
+        .unwrap();
+        let mut tagged = model("tagged");
+        tagged.tags = serde_json::json!([
+            {"id": "new", "label": "New", "tone": "orange", "position": 1000},
+            {"id": "cheap", "label": " Cheap ", "tone": "green", "position": 10},
+            {"id": "Bad ID", "label": "Bad", "position": 1},
+            {"id": "cheap", "label": "Duplicate", "position": 0},
+            {"id": "empty", "label": "   "},
+            {"id": "control", "label": "Line\nbreak"},
+            {"id": "far", "label": "Far", "position": 10_001},
+            {"id": "negative", "label": "Negative", "position": -1},
+            "cheap",
+            {"id": "fast", "label": "Fast", "tone": "neon", "position": 20},
+            {"id": "future", "label": "Future", "position": 30, "icon": "spark"}
+        ]);
+        let mut malformed_list = model("malformed-list");
+        malformed_list.tags = serde_json::json!({"cheap": true});
+        let mut many = model("many");
+        many.tags = Value::Array(
+            (0..20)
+                .rev()
+                .map(|index| serde_json::json!({"id": format!("tag-{index:02}"), "label": "Tag", "position": index}))
+                .collect(),
+        );
+
+        let mut legacy = wire(model("legacy-backend"));
+        legacy.as_object_mut().unwrap().remove("tags");
+        let models = validate_models(
+            vec![wire(tagged), wire(malformed_list), wire(many), legacy],
+            &config,
+            &providers,
+        )
+        .unwrap();
+        assert_eq!(models.len(), 4);
+        let summary = models[0]
+            .tags
+            .iter()
+            .map(|tag| (tag.id.as_str(), tag.label.as_str(), tag.tone, tag.position))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            summary,
+            vec![
+                ("cheap", "Cheap", ModelTagTone::Green, 10),
+                ("fast", "Fast", ModelTagTone::Gray, 20),
+                ("future", "Future", ModelTagTone::Gray, 30),
+                ("new", "New", ModelTagTone::Orange, 1000),
+            ]
+        );
+        assert!(models[1].tags.is_empty());
+        assert_eq!(models[2].tags.len(), MAX_MODEL_TAGS);
+        assert_eq!(models[2].tags[0].id, "tag-00");
+        assert_eq!(models[2].tags[MAX_MODEL_TAGS - 1].id, "tag-15");
+        assert!(models[3].tags.is_empty());
     }
 
     #[test]

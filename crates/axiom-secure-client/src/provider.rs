@@ -78,10 +78,12 @@ pub trait SecureProvider: sealed::Provider + Send + Sync {
             "image generation unavailable for this provider",
         ))
     }
+    /// `uncensored` is the client's catalog-tag decision for the chat model.
     async fn image_request(
         &self,
         _policy: &TrustPolicy,
         _request: axiom_inference::ImageGenerationRequest<'_>,
+        _uncensored: bool,
         _progress: Option<mpsc::Sender<axiom_inference::ImageGenerationProgress>>,
         _cancel: CancellationToken,
     ) -> Result<crate::GeneratedImage> {

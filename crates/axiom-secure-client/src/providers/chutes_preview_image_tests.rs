@@ -114,6 +114,9 @@ impl Fixture {
                 references: &[],
                 dimensions,
             },
+            // Production derives this from the chat model's catalog tag; the
+            // fixture models are the bundled uncensored offerings or not.
+            is_uncensored_model(model),
             stream.then_some(progress),
             cancel,
         )

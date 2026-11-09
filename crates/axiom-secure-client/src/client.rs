@@ -104,6 +104,31 @@ impl SecureClient {
             .await
     }
 
+    /// Whether the chat model's catalog tags select the uncensored image
+    /// adapter. Uses the accepted catalog, refreshing it when absent or stale;
+    /// an unknown chat model uses the standard adapter.
+    async fn uncensored_image_policy(
+        &self,
+        chat_model_id: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<bool> {
+        let tagged = |models: &[ModelInfo]| {
+            models
+                .iter()
+                .find(|model| model.id == chat_model_id)
+                .is_some_and(|model| model.has_tag(axiom_inference::UNCENSORED_MODEL_TAG))
+        };
+        {
+            let cache = self.catalog_cache.read().await;
+            if let Some(cached) = cache.as_ref()
+                && cached.fetched_at.elapsed() <= self.config.catalog_max_stale
+            {
+                return Ok(tagged(&cached.models));
+            }
+        }
+        Ok(tagged(&self.models(cancellation.clone()).await?))
+    }
+
     pub async fn generate_image(
         &self,
         chat_model_id: &str,
@@ -115,12 +140,16 @@ impl SecureClient {
                 .image_request(chat_model_id, prompt, None, None, cancellation)
                 .await;
         }
+        let uncensored = self
+            .uncensored_image_policy(chat_model_id, &cancellation)
+            .await?;
         crate::providers::chutes_preview::generate_image(
             &self.config,
             Arc::clone(&self.credential),
             &self.image_sessions,
             chat_model_id,
             prompt,
+            uncensored,
             cancellation,
         )
         .await
@@ -153,6 +182,9 @@ impl SecureClient {
                 )
                 .await;
         }
+        let uncensored = self
+            .uncensored_image_policy(chat_model_id, &cancellation)
+            .await?;
         crate::providers::chutes_preview::image_operation(
             &self.config,
             Arc::clone(&self.credential),
@@ -161,6 +193,7 @@ impl SecureClient {
             prompt,
             source,
             dimensions,
+            uncensored,
             cancellation,
         )
         .await
@@ -172,11 +205,14 @@ impl SecureClient {
         progress: tokio::sync::mpsc::Sender<axiom_inference::ImageGenerationProgress>,
         cancellation: CancellationToken,
     ) -> Result<crate::GeneratedImage> {
+        let uncensored = self
+            .uncensored_image_policy(request.chat_model_id, &cancellation)
+            .await?;
         if self.config.direct.is_some() {
             let policy = self.trust_policy(cancellation.clone()).await?;
             return self
                 .direct_image_provider()?
-                .image_request(&policy, request, Some(progress), cancellation)
+                .image_request(&policy, request, uncensored, Some(progress), cancellation)
                 .await;
         }
         crate::providers::chutes_preview::image_operation_with_progress(
@@ -184,6 +220,7 @@ impl SecureClient {
             Arc::clone(&self.credential),
             &self.image_sessions,
             request,
+            uncensored,
             Some(progress),
             cancellation,
         )
@@ -209,6 +246,9 @@ impl SecureClient {
                 )
                 .await;
         }
+        let uncensored = self
+            .uncensored_image_policy(chat_model_id, &cancellation)
+            .await?;
         crate::providers::chutes_preview::image_operation(
             &self.config,
             Arc::clone(&self.credential),
@@ -217,6 +257,7 @@ impl SecureClient {
             prompt,
             Some((image_id, source)),
             None,
+            uncensored,
             cancellation,
         )
         .await
@@ -592,6 +633,7 @@ mod tests {
             &self,
             _: &TrustPolicy,
             _: axiom_inference::ImageGenerationRequest<'_>,
+            _: bool,
             progress: Option<tokio::sync::mpsc::Sender<axiom_inference::ImageGenerationProgress>>,
             _: CancellationToken,
         ) -> Result<crate::GeneratedImage> {
@@ -616,6 +658,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn image_adapter_policy_follows_the_chat_models_uncensored_catalog_tag() {
+        let config = installed_direct_config("https://relay.example");
+        let client = SecureClient::new(config, ApiCredential::new("synthetic")).unwrap();
+        let tag = |id: &str| axiom_inference::ModelTag {
+            id: id.into(),
+            label: id.into(),
+            tone: axiom_inference::ModelTagTone::default(),
+            position: 0,
+        };
+        *client.catalog_cache.write().await = Some(CachedCatalog {
+            fetched_at: Instant::now(),
+            models: vec![
+                ModelInfo {
+                    id: "deepseek-v4-1-flash-1017-abliterated".into(),
+                    tags: vec![tag("cheap"), tag("uncensored")],
+                    ..ModelInfo::default()
+                },
+                ModelInfo {
+                    id: "tinfoil-deepseek-v4-1-flash".into(),
+                    tags: vec![tag("cheap")],
+                    ..ModelInfo::default()
+                },
+            ],
+        });
+        let cancel = CancellationToken::new();
+        for (chat_model, expected) in [
+            ("deepseek-v4-1-flash-1017-abliterated", true),
+            ("tinfoil-deepseek-v4-1-flash", false),
+            ("withdrawn-model", false),
+        ] {
+            assert_eq!(
+                client
+                    .uncensored_image_policy(chat_model, &cancel)
+                    .await
+                    .unwrap(),
+                expected,
+                "{chat_model}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn image_request_without_progress_cannot_stall_on_unconsumed_updates() {
         let config = installed_direct_config("https://relay.example");
         let mut client = SecureClient::new(config, ApiCredential::new("synthetic")).unwrap();
@@ -624,6 +708,13 @@ mod tests {
         ])
         .unwrap();
         client.trust_policy.write().await.refreshed_at = Some(Instant::now());
+        *client.catalog_cache.write().await = Some(CachedCatalog {
+            fetched_at: Instant::now(),
+            models: vec![ModelInfo {
+                id: "tinfoil-model".into(),
+                ..ModelInfo::default()
+            }],
+        });
         let result = tokio::time::timeout(
             std::time::Duration::from_millis(100),
             client.image_request(
