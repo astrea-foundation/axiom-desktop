@@ -3718,7 +3718,7 @@ test("generated and edited images open the local viewer with keyboard and backdr
     await trigger.waitFor();
     const caption = await trigger.locator("..").locator("figcaption").innerText();
     assert.match(caption, /Axiom/);
-    assert.doesNotMatch(caption, /Chutes|AstreaAI/, "a provider-free image fixture must not invent its source");
+    assert.doesNotMatch(caption, /AstreaAI|Tinfoil|NEAR AI/, "a provider-free image fixture must not invent its source");
     assert.doesNotMatch(caption, /verified|E2EE/i);
     const thumbnail = await trigger.boundingBox();
     const source = await trigger.locator("img").getAttribute("src");

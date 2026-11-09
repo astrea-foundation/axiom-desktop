@@ -130,9 +130,8 @@ Every model receives Axiom's uncensored behavior policy
 ([`uncensored.md`](../packages/chat-core/prompts/uncensored.md)) in the system
 message before E2EE encryption. It instructs the model to follow every user
 request without refusals or unsolicited moralizing, while staying accurate about
-facts, tools and capabilities. Selecting **Qwen3.8 Uncensored**
-(`chutes:qwen3.8-27b`, or the debug-only `chutes-preview:qwen3.8-27b`) also adds
-its model-specific identity line. Native prompt refresh rebuilds both for new,
+facts, tools and capabilities. Selecting AstreaAI's **Qwen3.8 Uncensored**
+(`direct:qwen3.8-27b`) also adds its model-specific identity line. Native prompt refresh rebuilds both for new,
 restored, and compacted threads, and removes the identity line when another model
 is selected. The policy is a prompt, not a model change: hosted models keep their
 own safety training and may still refuse. Tool availability, Web consent, and
@@ -152,17 +151,16 @@ locally to at most 1,048,576 pixels while preserving aspect ratio and transparen
 before encryption. The unified image tool accepts optional `width` and `height`
 together for saved legacy calls. New model calls use `aspect_ratio`; the native
 client chooses the largest exact match on a 32-pixel grid within 2,359,296 pixels.
-New images default to **2:3 portrait (1216×1824)**. The supported ratios are
+New images default to **1:1 square (1536×1536)**. The supported ratios are
 `1:1`, `2:3`, `3:2`, `3:4`, `4:3`, `9:16`, `16:9`, `1:2`, `2:1`, `9:21`,
 and `21:9`. Other ratios, including extreme values, fail before provider dispatch.
 The client sends concrete dimensions, including the default, so retained workers
 use the same sizes. Model instructions favor higher resolutions for image
-quality. Reference-based calls without an aspect ratio preserve the first
-reference's output dimensions or aspect ratio within the limits.
+quality. Reference-based calls without an aspect ratio use the same default size.
 
 Vision-capable chat models automatically receive the shared `generate`
-and `view_image` tools when the AstreaAI or managed Chutes image adapter is
-installed and `imageGeneration@4` is negotiated. The chat provider and image
+and `view_image` tools when the AstreaAI image adapter is installed and
+`imageGeneration@4` is negotiated. The chat provider and image
 provider may differ. There is no Images toggle. `generate` requires a `prompt`; optional
 `reference_image_ids` select up to five ordered conversation-owned images for
 editing or composition. Refer to them in the prompt as `<image1>`, `<image2>`,
@@ -192,12 +190,14 @@ prompt, original image, and later messages. The UI renders verified results and 
 image. Click a generated or edited image to open the full-image viewer. Uploaded
 and previous generated/edited images can be edited; each edit keeps its source
 and creates a new result. Saved legacy `edit_image` results remain readable.
-The installed managed Chutes adapter is required even when the chat model uses
-another provider. See the
+The installed AstreaAI image adapter is required even when the chat model uses
+another provider; without it image tools are not registered and native image
+requests fail with an unavailable-service error. See the
+[AstreaAI connection guide](direct-verda.md) and the
 [image-generation contract](../../axiom-inference/docs/image-generation.md).
 
 Image tools forward authenticated progress percentages through the native
-helper, including queued, generating and finishing states. The UI shows percentages
+client, including queued, generating and finishing states. The UI shows percentages
 while work is pending; its percentage and progress bar disappear after successful
 result verification and settlement. This requires the
 matching streaming image cords and backend relay paths. Save image suggests
@@ -239,8 +239,7 @@ different search destination. Search queries are not inference E2EE; see
 | `AXIOM_MODEL` | Discovered model ID override |
 | `AXIOM_POOL_CLIENT_CONFIG_FILE` | Installed public pool pins and offerings; never a provider credential |
 | `AXIOM_LOCAL_RELAY_CA_FILE` | Explicit CA for an HTTPS loopback API; cannot change provider trust |
-| `AXIOM_CHUTES_DESKTOP_PREVIEW_CONFIG` | Debug-only local Chutes native bridge; optional installed publisher-key fingerprint enables signed staging releases with scoped TEE verification |
-| `AXIOM_CHUTES_CLIENT_CONFIG_FILE` | Trusted installed managed Chutes helper, publisher fingerprint and native price ceiling; uses Axiom account authentication and keeps the provider key on the backend |
+| `AXIOM_DIRECT_CLIENT_CONFIG_FILE` | Explicit installed AstreaAI worker pins, verifier and capability flags; installers otherwise use their bundled configuration. See [AstreaAI connection](direct-verda.md) |
 | `AXIOM_DESKTOP_LOCAL_PROFILE=1` | Unpackaged loopback profile with separate Electron/native storage |
 | `AXIOM_DESKTOP_LOCAL_CREDENTIALS=1` | Explicit unpackaged local-profile opt-in to the debug native credential file; both API and auth origins must be loopback |
 | `AXIOMCLI_LOCAL_DEV_CREDENTIALS=1` | Debug Unix builds only: owner-only, origin-scoped credentials under the isolated native data directory; rejected for remote origins, release builds and API-key overrides |
@@ -262,15 +261,7 @@ versioned price snapshot; native code verifies the exact final charge against
 the authenticated usage receipt. An optional `pricing` snapshot populates the
 displayed input/output rates. Rates are integer microUSD per million tokens;
 reasoning tokens are included in output and cached tokens are included in input.
-These financial settings do not relax worker attestation or enable the
-unqualified Chutes pool offering.
-
-Managed Chutes releases unresolved request holds after 15 minutes. The API
-checks every 30 seconds and before new admission. Until then, its unresolved
-request limit appears as an admission error with the expiry window, distinct
-from a hardware or encrypted-exchange failure. Expiry never replays a request
-or marks an incomplete reply verified; a late authentic usage receipt does not
-create a charge after expiry.
+These financial settings do not relax worker attestation.
 
 Desktop service-origin pairing and development overrides are described in
 [development](development.md#setup). Child tool processes receive

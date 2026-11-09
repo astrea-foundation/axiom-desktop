@@ -9,6 +9,7 @@ case "$payload" in
       link="/usr/local/bin/$name"
       if [ -L "$link" ] && [ "$(readlink "$link")" = "$payload/bin/$name" ]; then rm -- "$link"; fi
     done
+    # The legacy runtime directory remains after upgrades from releases through 0.1.20.
     rm -rf -- "$payload/bin" "$payload/licenses" "$payload/chutes"
     rm -f -- "$payload/axiom-install.json" "$payload/uninstall.sh"
     rmdir -- "$payload"
@@ -24,6 +25,7 @@ case "$payload" in
     done
     for version in "$prefix"/versions/*; do
       [ -d "$version" ] && [ -f "$version/axiom-install.json" ] || continue
+      # Versions through 0.1.20 also installed the retired provider runtime.
       rm -rf -- "$version/bin" "$version/licenses" "$version/chutes"
       rm -f -- "$version/axiom-install.json" "$version/uninstall.sh"
       rmdir -- "$version"

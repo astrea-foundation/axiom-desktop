@@ -13,7 +13,7 @@ const catalog = [
   model("tinfoil-kimi-k3-1-pro", "tinfoil", "kimi-k3-1-pro"),
   model("tinfoil-deepseek-v4-1-flash", "tinfoil", "deepseek-v4-1-flash"),
   model("deepseek-v4-1-flash-1017-abliterated", "near", "deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated"),
-  model("chutes:qwen3.8-27b", "chutes", "Qwen3.8-27B-Uncensored"),
+  model("direct:qwen3.8-27b", "axiom-direct", "Qwen3.8-27B-Uncensored"),
 ];
 const order = (models: ProviderModel[]) => [...models].sort(compareModelPreference).map((entry) => entry.id);
 
@@ -23,7 +23,7 @@ test("NEAR's abliterated DeepSeek is the default, with Tinfoil's DeepSeek as the
     "tinfoil-deepseek-v4-1-flash",
     "tinfoil-kimi-k3-1-pro",
     "glm-5-3-flash",
-    "chutes:qwen3.8-27b",
+    "direct:qwen3.8-27b",
   ]);
   assert.equal(order(catalog.filter((entry) => entry.providerId !== "near" || !entry.model.includes("abliterated")))[0], "tinfoil-deepseek-v4-1-flash");
   // The same upstream name from another provider is not the default.

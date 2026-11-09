@@ -758,15 +758,15 @@ pub(crate) mod tests {
             source_image_ids: Vec::new(),
             chat_model_id: None,
             evidence: serde_json::from_value(json!({
-                "state":"verified", "provider_id":"chutes", "model_id":"chutes:qwen-image-2.1-turbo",
+                "state":"verified", "provider_id":"axiom-direct", "model_id":"direct:qwen3.8-27b",
                 "attestation_protocol":"synthetic-unit-fixture", "e2ee_protocol":"synthetic-unit-fixture",
                 "e2ee_encryption_version":1, "trust_policy_version":"unit-test", "verified_at_unix_seconds":1,
                 "model_key_fingerprint":"00".repeat(32), "tls_spki_fingerprint":null, "checks":[], "provider_claims":[]
             })).unwrap(),
             usage: axiom_inference::RequestUsage {
                 request_id,
-                provider_id: "chutes".into(),
-                model_id: "chutes:qwen-image-2.1-turbo".into(),
+                provider_id: "axiom-direct".into(),
+                model_id: "direct:qwen3.8-27b".into(),
                 settled: true,
                 response_verified: true,
                 ..Default::default()
@@ -1160,12 +1160,7 @@ pub(crate) mod tests {
             .unwrap();
         let image_id = id(&context.images);
         let mut expected = Vec::new();
-        for model in [
-            "chutes:qwen3.8-27b",
-            "near:glm",
-            "chutes-preview:qwen3.8-27b",
-            "tinfoil:qwen",
-        ] {
+        for model in ["direct:qwen3.8-27b", "near:glm", "tinfoil:qwen"] {
             context.model_id = model.into();
             for editing in [false, true] {
                 let tool = &generate;
@@ -1182,7 +1177,7 @@ pub(crate) mod tests {
                 for extra in [
                     json!({"uncensored":true}),
                     json!({"lora":"uncensored.safetensors"}),
-                    json!({"model_id":"chutes:qwen3.8-27b"}),
+                    json!({"model_id":"direct:qwen3.8-27b"}),
                 ] {
                     let mut overridden = args.clone();
                     overridden

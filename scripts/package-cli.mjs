@@ -59,13 +59,6 @@ try {
         signed:!unsigned,teamId:process.env.APPLE_TEAM_ID,
       });
     } else if (!unsigned) throw new Error('A production AstreaAI verifier bundle is required for installers');
-    if (process.env.AXIOM_CHUTES_BUNDLE) {
-      await createRequire(import.meta.url)('../apps/desktop/scripts/bundle-chutes-runtime.cjs')(payload, process.env.AXIOM_CHUTES_BUNDLE, {
-        platform: {mac:'darwin',win:'win32',linux:'linux'}[platform], architecture: arch,
-        channel: process.env.AXIOM_CHUTES_RELEASE_CHANNEL || 'production', signed: !unsigned,
-        teamId: process.env.APPLE_TEAM_ID,
-      });
-    }
     if (platform !== 'win') {
       await copyFile(path.join(root,'scripts/cli-uninstall.sh'),path.join(payload,'uninstall.sh'));
       await chmod(path.join(payload,'uninstall.sh'),0o755);
@@ -108,12 +101,9 @@ try {
     const installed = path.join(packageRoot,'usr/local/lib/axiom-cli');
     await mkdir(path.dirname(installed),{recursive:true});
     await copyCliPayload(payload,installed);
-    const runtimeOptions = {platform:'darwin',architecture:arch,signed:!unsigned,
-      teamId:process.env.APPLE_TEAM_ID,channel:process.env.AXIOM_CHUTES_RELEASE_CHANNEL || 'production'};
+    const runtimeOptions = {platform:'darwin',architecture:arch,signed:!unsigned,teamId:process.env.APPLE_TEAM_ID};
     if (process.env.AXIOM_DIRECT_BUNDLE) await createRequire(import.meta.url)('./direct-bundle.cjs').verifyBundles(
       installed,process.env.AXIOM_DIRECT_BUNDLE,runtimeOptions);
-    if (process.env.AXIOM_CHUTES_BUNDLE) await createRequire(import.meta.url)('../apps/desktop/scripts/bundle-chutes-runtime.cjs').verifyPackagedBundle(
-      installed,process.env.AXIOM_CHUTES_BUNDLE,runtimeOptions);
     const scripts = path.join(temporary,'scripts'); await mkdir(scripts);
     await writeFile(path.join(scripts,'preinstall'), '#!/bin/sh\nset -eu\nfor n in axiomcli axiom-proxy; do p=/usr/local/bin/$n; if [ -e "$p" ] || [ -L "$p" ]; then [ -L "$p" ] && [ "$(readlink "$p")" = "/usr/local/lib/axiom-cli/bin/$n" ] || { echo "$p belongs to another installation" >&2; exit 1; }; fi; done\n');
     await writeFile(path.join(scripts,'postinstall'), '#!/bin/sh\nset -eu\nmkdir -p /usr/local/bin\nfor n in axiomcli axiom-proxy; do ln -sfn /usr/local/lib/axiom-cli/bin/$n /usr/local/bin/$n; done\n');

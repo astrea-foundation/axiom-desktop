@@ -15,68 +15,6 @@ function fixture(t: TestContext) {
   return client;
 }
 
-test("signed Chutes staging reports require hardware, release authorization, and explicit provenance scope", () => {
-  const evidence = securityEvidence();
-  Object.assign(evidence, { providerId: "chutes-preview", modelId: "chutes-preview:qwen3.8-27b",
-    attestationProtocol: "chutes-tdx-nvidia-release-v1", e2eeProtocol: "chutes-mlkem768-desktop-v1",
-    e2eeEncryptionVersion: 1, attestationGeneration: null });
-  evidence.checks = ["Intel TDX", "NVIDIA GPU", "Chutes encryption key and fresh challenge", "Repository release authorization"]
-    .map(name => ({ name, passed: true, detail: name === "Intel TDX" ? "UpToDate" : "verified" }));
-  evidence.providerClaims = [
-    { name: "release_authority_fingerprint", value: "ab".repeat(32) },
-    { name: "release_channel", value: "staging" },
-    { name: "execution_provenance", value: "Not independently established by the Chutes evidence; release authorization is a separate claim." },
-  ];
-  const report: VerifySecurityResponse = { status: { state: "verified" }, evidence };
-  assert.equal(publicSecurityEvidence(report, evidence.modelId)!.status.state, "verified");
-  const hosted = structuredClone(report);
-  hosted.evidence!.providerId = "chutes";
-  hosted.evidence!.modelId = "chutes:qwen3.8-27b";
-  assert.equal(publicSecurityEvidence(hosted, hosted.evidence!.modelId)!.providerId, "chutes");
-  for (const check of hosted.evidence!.checks) {
-    const changed = structuredClone(hosted);
-    changed.evidence!.checks.find(value => value.name === check.name)!.passed = false;
-    assert.throws(() => publicSecurityEvidence(changed, hosted.evidence!.modelId));
-  }
-  for (let i = 0; i < evidence.checks.length; i++) {
-    const changed = structuredClone(report); changed.evidence!.checks[i]!.passed = false;
-    assert.throws(() => publicSecurityEvidence(changed, evidence.modelId));
-  }
-  const changed = structuredClone(report); changed.evidence!.providerClaims.pop();
-  assert.throws(() => publicSecurityEvidence(changed, evidence.modelId));
-});
-
-test("the explicit Chutes preview report stays degraded and cannot hide hardware failures", () => {
-  const evidence = securityEvidence();
-  evidence.status.state = "degraded";
-  evidence.providerId = "chutes-preview";
-  evidence.modelId = "chutes-preview:qwen3.8-27b";
-  evidence.attestationProtocol = "chutes-hardware-development-v1";
-  evidence.e2eeProtocol = "chutes-mlkem768-desktop-v1";
-  evidence.e2eeEncryptionVersion = 1;
-  evidence.attestationGeneration = null;
-  evidence.checks = [
-    { name: "Intel TDX", detail: "UpToDate", passed: true },
-    { name: "NVIDIA GPU", detail: "verified", passed: true },
-    { name: "Chutes encryption key and fresh challenge", detail: "quote-bound", passed: true },
-    { name: "Application provenance", detail: "unqualified development preview", passed: false },
-  ];
-  const preview: VerifySecurityResponse = { status: { state: "degraded" }, evidence };
-  assert.equal(publicSecurityEvidence(preview, evidence.modelId)!.status.state, "degraded");
-  const changed = structuredClone(preview);
-  changed.status.state = "verified"; changed.evidence!.status.state = "verified";
-  assert.throws(() => publicSecurityEvidence(changed, evidence.modelId));
-  for (const index of [0, 1, 2, 3]) {
-    const changed = structuredClone(preview);
-    changed.evidence!.checks[index]!.passed = !changed.evidence!.checks[index]!.passed;
-    assert.throws(() => publicSecurityEvidence(changed, evidence.modelId));
-  }
-  const outdated = structuredClone(preview);
-  outdated.evidence!.checks.push({ name: "Intel TDX", detail: "OutOfDate", passed: false });
-  assert.throws(() => publicSecurityEvidence(outdated, evidence.modelId));
-  assert.throws(() => publicSecurityEvidence(preview, "some-other-model"));
-});
-
 test("degraded reports retain OutOfDate and reject every other failed check", () => {
   const evidence = securityEvidence();
   evidence.status.state = "degraded";

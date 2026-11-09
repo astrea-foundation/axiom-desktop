@@ -38,9 +38,9 @@ of the model brand icon and name; hovering the provider symbol shows its name.
 AstreaAI uses the official blue Astrea symbol from `astrea.systems`, bundled as
 an SVG without the wordmark. The same artwork appears in the model picker and
 composer, while Qwen retains its model family icon.
-The Axiom-hosted Chutes offering uses Axiom's colored provider symbol and the
-Qwen family icon for Qwen3.8 Uncensored. Qwen names with an attached version
-number resolve to the same family artwork in the model picker and composer.
+Axiom-hosted offerings use Axiom's colored provider symbol. Qwen3.8 Uncensored
+uses the Qwen family icon; Qwen names with an attached version number resolve
+to the same family artwork in the model picker and composer.
 The native image tools derive their adapter policy from the actual selected
 chat model for each turn: a model carrying the catalog's `uncensored` tag (for
 example the abliterated DeepSeek V4.1 Flash or Qwen3.8 Uncensored) requests the

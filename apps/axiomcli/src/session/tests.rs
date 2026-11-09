@@ -2134,7 +2134,7 @@ fn generated_and_edited_images_restore_from_their_owning_durable_tool_records() 
     create(&store, &id);
     begin_turn(&store, &id, &turn, None);
     let evidence:axiom_secure_client::SecurityEvidence=serde_json::from_value(json!({
-        "state":"verified","provider_id":"chutes","model_id":"chutes:qwen-image-2.1-turbo",
+        "state":"verified","provider_id":"axiom-direct","model_id":"direct:qwen3.8-27b",
         "attestation_protocol":"synthetic-unit-fixture","e2ee_protocol":"synthetic-unit-fixture","e2ee_encryption_version":1,
         "trust_policy_version":"unit-test","verified_at_unix_seconds":1,"model_key_fingerprint":"00".repeat(32),
         "tls_spki_fingerprint":null,"checks":[],"provider_claims":[]
@@ -2158,13 +2158,8 @@ fn generated_and_edited_images_restore_from_their_owning_durable_tool_records() 
             evidence: evidence.clone(),
             usage: axiom_inference::RequestUsage {
                 request_id,
-                provider_id: "chutes".into(),
-                model_id: if index == 0 {
-                    "chutes:qwen-image-2.1-turbo"
-                } else {
-                    "chutes:qwen-image-2.1-turbo-edit"
-                }
-                .into(),
+                provider_id: "axiom-direct".into(),
+                model_id: "direct:qwen3.8-27b".into(),
                 settled: true,
                 response_verified: true,
                 ..Default::default()

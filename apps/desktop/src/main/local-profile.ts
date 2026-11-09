@@ -53,7 +53,7 @@ export function localProfile(options: {
     if (environment.AXIOM_DESKTOP_LOCAL_CREDENTIALS !== "1") throw new Error("Invalid local credential mode");
     sidecarEnv.AXIOMCLI_LOCAL_DEV_CREDENTIALS = "1";
   }
-  for (const name of ["AXIOM_POOL_CLIENT_CONFIG_FILE", "AXIOM_DIRECT_CLIENT_CONFIG_FILE", "AXIOM_LOCAL_RELAY_CA_FILE", "AXIOM_CHUTES_DESKTOP_PREVIEW_CONFIG", "AXIOM_CHUTES_CLIENT_CONFIG_FILE"] as const) {
+  for (const name of ["AXIOM_POOL_CLIENT_CONFIG_FILE", "AXIOM_DIRECT_CLIENT_CONFIG_FILE", "AXIOM_LOCAL_RELAY_CA_FILE"] as const) {
     const path = environment[name];
     if (path !== undefined) {
       if (!isAbsolute(path)) throw new Error(`${name} requires an absolute path`);
