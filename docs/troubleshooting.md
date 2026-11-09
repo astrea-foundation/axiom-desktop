@@ -13,6 +13,16 @@ vault; a locked or denied vault cannot fall back to a plaintext token file.
 If a loopback callback is blocked, the pending native flow can still complete
 through PKCE polling. Keep the login flow open until completion or cancellation.
 
+On macOS, `stream.axiom.axiomcli` is the native login's Keychain item. A saved
+session restore requires one password read; startup item discovery and writing
+the rotated token do not read the password again. Keychain may separately ask
+to trust a changed executable and its signing partition. If **Always Allow**
+does not persist, check the exact requesting helper's signature and whether a
+host is timing out and replacing that process while its dialog remains open.
+An ad hoc development helper has a different code identity after rebuilding;
+certificate-signed previews must use a consistent signing identity. Do not
+delete login credentials or grant all applications access to work around this.
+
 Desktop preserves the native sign-in failure reason in its error banner, including
 TLS connection causes. Version 0.1.7 can hide failures while starting sign-in behind
 the generic `Internal error` message. A failed start can happen before a request

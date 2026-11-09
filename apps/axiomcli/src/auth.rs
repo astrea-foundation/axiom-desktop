@@ -33,6 +33,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{AxiomError, Result};
 
+#[cfg(target_os = "macos")]
+mod macos_keychain;
+
 const KEYRING_SERVICE: &str = "stream.axiom.axiomcli";
 const KEYRING_ACCOUNT_PREFIX: &str = "native-refresh-token-v1";
 const MAX_TOKEN_BYTES: usize = 8 * 1024;
@@ -166,8 +169,19 @@ pub trait AccessTokenSource: Send + Sync {
     ) -> Result<AccessTokenLease>;
 }
 
+enum InitialCredential {
+    Loaded(Option<String>),
+    /// A metadata lookup found an item; defer decrypting it until refresh owns
+    /// the process-shared lock, rather than reading the password twice.
+    #[cfg(target_os = "macos")]
+    Deferred,
+}
+
 trait CredentialStore: Send + Sync {
     fn source(&self) -> CredentialSource;
+    fn initial_credential(&self) -> std::result::Result<InitialCredential, String> {
+        self.load().map(InitialCredential::Loaded)
+    }
     fn load(&self) -> std::result::Result<Option<String>, String>;
     fn save(&self, credential: &str) -> std::result::Result<(), String>;
     fn delete(&self) -> std::result::Result<(), String>;
@@ -194,6 +208,15 @@ impl CredentialStore for KeyringStore {
         CredentialSource::SystemKeyring
     }
 
+    #[cfg(target_os = "macos")]
+    fn initial_credential(&self) -> std::result::Result<InitialCredential, String> {
+        if macos_keychain::contains(KEYRING_SERVICE, &self.account_name)? {
+            Ok(InitialCredential::Deferred)
+        } else {
+            Ok(InitialCredential::Loaded(None))
+        }
+    }
+
     fn load(&self) -> std::result::Result<Option<String>, String> {
         match self.entry()?.get_password() {
             Ok(value) => Ok(Some(value)),
@@ -205,6 +228,12 @@ impl CredentialStore for KeyringStore {
     }
 
     fn save(&self, credential: &str) -> std::result::Result<(), String> {
+        #[cfg(target_os = "macos")]
+        {
+            macos_keychain::save(KEYRING_SERVICE, &self.account_name, credential.as_bytes())
+                .map_err(|error| format!("could not write the system credential store: {error}"))
+        }
+        #[cfg(not(target_os = "macos"))]
         self.entry()?
             .set_password(credential)
             .map_err(|error| format!("could not write the system credential store: {error}"))
@@ -546,6 +575,7 @@ struct CachedAccessToken {
 struct AuthState {
     automation_key: Option<SecretString>,
     refresh_token: Option<SecretString>,
+    refresh_token_pending: bool,
     access_token: Option<CachedAccessToken>,
     account: Option<AccountProfile>,
     session: Option<NativeSessionStatus>,
@@ -568,6 +598,7 @@ impl std::fmt::Debug for AuthState {
                 "refresh_token",
                 &self.refresh_token.as_ref().map(|_| "[REDACTED]"),
             )
+            .field("refresh_token_pending", &self.refresh_token_pending)
             .field(
                 "access_token",
                 &self.access_token.as_ref().map(|_| "[REDACTED]"),
@@ -586,6 +617,13 @@ impl std::fmt::Debug for AuthState {
 struct AuthShared {
     state: RwLock<AuthState>,
     operations: Arc<AsyncMutex<()>>,
+}
+
+/// The observed credential and the lock that keeps cooperating CLI/Desktop
+/// processes from changing it until this rotation commits. Do not log it.
+struct CredentialSnapshot {
+    value: Option<String>,
+    lock: fs::File,
 }
 
 #[derive(Clone)]
@@ -655,6 +693,7 @@ impl AuthManager {
             AuthState {
                 automation_key: None,
                 refresh_token: None,
+                refresh_token_pending: false,
                 access_token: None,
                 account: None,
                 session: None,
@@ -702,6 +741,7 @@ impl AuthManager {
                 AuthState {
                     automation_key: Some(SecretString::from(value)),
                     refresh_token: None,
+                    refresh_token_pending: false,
                     access_token: None,
                     account: None,
                     session: None,
@@ -762,8 +802,13 @@ impl AuthManager {
             })
         };
         let _credential_lock = acquire_refresh_file_lock(keyring.refresh_lock_path())?;
-        match keyring.load() {
-            Ok(token) => {
+        match keyring.initial_credential() {
+            Ok(initial) => {
+                let (token, refresh_token_pending) = match initial {
+                    InitialCredential::Loaded(token) => (token, false),
+                    #[cfg(target_os = "macos")]
+                    InitialCredential::Deferred => (None, true),
+                };
                 let refresh_token = if let Some(value) = token {
                     if validate_token_shape(&value, "stored refresh token").is_ok() {
                         Some(SecretString::from(value))
@@ -792,6 +837,7 @@ impl AuthManager {
                     AuthState {
                         automation_key: None,
                         refresh_token,
+                        refresh_token_pending,
                         access_token: None,
                         account: None,
                         session: None,
@@ -836,6 +882,7 @@ impl AuthManager {
             AuthState {
                 automation_key: None,
                 refresh_token: None,
+                refresh_token_pending: false,
                 access_token: None,
                 account: None,
                 session: None,
@@ -877,6 +924,8 @@ impl AuthManager {
         self
     }
 
+    /// Includes a stored credential awaiting its first protected read. Actual
+    /// authorization still requires a successfully validated account session.
     #[must_use]
     pub fn has_credential(&self) -> bool {
         let state = self
@@ -884,7 +933,9 @@ impl AuthManager {
             .state
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.automation_key.is_some() || state.refresh_token.is_some()
+        state.automation_key.is_some()
+            || state.refresh_token.is_some()
+            || state.refresh_token_pending
     }
 
     #[must_use]
@@ -1019,16 +1070,17 @@ impl AuthManager {
             .await
         {
             Ok(lease) => lease,
-            Err(_) if !self.has_credential() => {
-                return VersionedValidationStatus {
-                    status: ValidationStatus::Expired,
-                    revision: self.current_revision(),
-                };
-            }
             Err(error) => {
+                let status = if let Some(detail) = self.unavailable_detail() {
+                    ValidationStatus::Unavailable(detail)
+                } else if !self.has_credential() {
+                    ValidationStatus::Expired
+                } else {
+                    ValidationStatus::Unavailable(error.to_string())
+                };
                 return VersionedValidationStatus {
-                    status: ValidationStatus::Unavailable(error.to_string()),
-                    revision,
+                    status,
+                    revision: self.current_revision(),
                 };
             }
         };
@@ -1184,6 +1236,7 @@ impl AuthManager {
                     return Err(error);
                 }
             };
+            self.resolve_pending_credential(persisted.as_deref());
             if persisted != self.refresh_token_value() {
                 self.adopt_external_credential(persisted)?;
             }
@@ -1369,6 +1422,29 @@ impl AuthManager {
         Ok(value)
     }
 
+    async fn acquire_credential_snapshot(&self) -> Result<CredentialSnapshot> {
+        let lock = self.acquire_credential_lock().await?;
+        match self.load_persisted_credential(&lock).await {
+            Ok(value) => Ok(CredentialSnapshot { value, lock }),
+            Err(error) => {
+                self.clear_local_authorization(Some(error.to_string()));
+                Err(error)
+            }
+        }
+    }
+
+    fn resolve_pending_credential(&self, credential: Option<&str>) {
+        let mut state = self
+            .shared
+            .state
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.refresh_token_pending {
+            state.refresh_token = credential.map(|value| SecretString::from(value.to_owned()));
+            state.refresh_token_pending = false;
+        }
+    }
+
     async fn save_persisted_credential(
         &self,
         credential: String,
@@ -1449,6 +1525,7 @@ impl AuthManager {
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.refresh_token = credential.map(SecretString::from);
+        state.refresh_token_pending = false;
         state.access_token = None;
         state.account = None;
         state.session = None;
@@ -1514,8 +1591,8 @@ impl AuthManager {
         force_identity_generation: bool,
     ) -> Result<AccountStatus> {
         let expected_refresh = self.refresh_token_value();
-        let credential_lock = match self.acquire_credential_lock().await {
-            Ok(lock) => lock,
+        let snapshot = match self.acquire_credential_snapshot().await {
+            Ok(snapshot) => snapshot,
             Err(error) => {
                 let _ = self
                     .client
@@ -1530,7 +1607,7 @@ impl AuthManager {
             bundle,
             force_identity_generation,
             expected_refresh.as_deref(),
-            &credential_lock,
+            &snapshot,
         )
         .await
     }
@@ -1540,8 +1617,9 @@ impl AuthManager {
         bundle: SessionBundle,
         force_identity_generation: bool,
         expected_refresh: Option<&str>,
-        credential_lock: &fs::File,
+        snapshot: &CredentialSnapshot,
     ) -> Result<AccountStatus> {
+        let credential_lock = &snapshot.lock;
         if let Err(error) = validate_bundle(&bundle) {
             let _ = self
                 .client
@@ -1579,22 +1657,10 @@ impl AuthManager {
                 "Axiom changed accounts during native-session rotation".into(),
             ));
         }
-        let persisted = match self.load_persisted_credential(credential_lock).await {
-            Ok(persisted) => persisted,
-            Err(error) => {
-                // A login/rotation has already issued a new server session,
-                // but it is unsafe to overwrite a credential whose current
-                // value cannot be compared under the audience lock.
-                let _ = self
-                    .client
-                    .delete(self.endpoint("/api/v1/auth/session"))
-                    .bearer_auth(bundle.access_token.expose_secret())
-                    .send()
-                    .await;
-                self.clear_local_authorization(Some(error.to_string()));
-                return Err(error);
-            }
-        };
+        // This exact value was read with the same lock held continuously
+        // through the request. A second password read cannot discover a peer
+        // rotation here and would ask macOS to approve the same secret again.
+        let persisted = snapshot.value.clone();
         if persisted.as_deref() != expected_refresh {
             let _ = self
                 .client
@@ -1646,6 +1712,7 @@ impl AuthManager {
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.refresh_token = Some(bundle.refresh_token);
+        state.refresh_token_pending = false;
         state.access_token = Some(CachedAccessToken {
             token: bundle.access_token,
             expires_at: bundle.access_expires_at,
@@ -1721,6 +1788,7 @@ impl AuthManager {
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.refresh_token = None;
+        state.refresh_token_pending = false;
         state.access_token = None;
         state.account = None;
         state.session = None;
@@ -1732,14 +1800,10 @@ impl AuthManager {
     }
 
     async fn refresh_under_lock(&self, allow_external_change: bool) -> Result<AccessTokenLease> {
-        let credential_lock = self.acquire_credential_lock().await?;
-        let persisted = match self.load_persisted_credential(&credential_lock).await {
-            Ok(persisted) => persisted,
-            Err(error) => {
-                self.clear_local_authorization(Some(error.to_string()));
-                return Err(error);
-            }
-        };
+        let snapshot = self.acquire_credential_snapshot().await?;
+        let credential_lock = &snapshot.lock;
+        let persisted = snapshot.value.clone();
+        self.resolve_pending_credential(persisted.as_deref());
         let local_refresh = self.refresh_token_value();
         let changed_externally = persisted != local_refresh;
         let previous_account = self.active_account_id();
@@ -1771,7 +1835,7 @@ impl AuthManager {
                 let clear_error = self
                     .delete_if_matches_and_clear_under_credential_lock(
                         Some(&refresh),
-                        &credential_lock,
+                        credential_lock,
                     )
                     .await
                     .err();
@@ -1785,14 +1849,14 @@ impl AuthManager {
         };
         if response.status() == StatusCode::UNAUTHORIZED {
             let _ = self
-                .delete_if_matches_and_clear_under_credential_lock(Some(&refresh), &credential_lock)
+                .delete_if_matches_and_clear_under_credential_lock(Some(&refresh), credential_lock)
                 .await;
             return Err(authentication_required());
         }
         if !response.status().is_success() {
             let status = response.status();
             let clear_error = self
-                .delete_if_matches_and_clear_under_credential_lock(Some(&refresh), &credential_lock)
+                .delete_if_matches_and_clear_under_credential_lock(Some(&refresh), credential_lock)
                 .await
                 .err();
             let suffix = clear_error.map_or_else(String::new, |failure| {
@@ -1804,7 +1868,7 @@ impl AuthManager {
         }
         let Ok(response) = response.json::<RefreshResponse>().await else {
             let _ = self
-                .delete_if_matches_and_clear_under_credential_lock(Some(&refresh), &credential_lock)
+                .delete_if_matches_and_clear_under_credential_lock(Some(&refresh), credential_lock)
                 .await;
             return Err(AxiomError::Protocol(
                 "invalid session refresh response".into(),
@@ -1812,7 +1876,7 @@ impl AuthManager {
         };
         let Some(bundle) = response.bundle() else {
             let _ = self
-                .delete_if_matches_and_clear_under_credential_lock(Some(&refresh), &credential_lock)
+                .delete_if_matches_and_clear_under_credential_lock(Some(&refresh), credential_lock)
                 .await;
             return Err(AxiomError::Protocol(
                 "session refresh omitted rotated tokens".into(),
@@ -1826,7 +1890,7 @@ impl AuthManager {
             // to work registered against the previous account's local store.
             self.adopt_external_credential(Some(refresh.clone()))?;
         }
-        self.commit_bundle_under_credential_lock(bundle, false, Some(&refresh), &credential_lock)
+        self.commit_bundle_under_credential_lock(bundle, false, Some(&refresh), &snapshot)
             .await?;
         if switched_account && !allow_external_change {
             return Err(account_changed());
@@ -2817,6 +2881,7 @@ mod tests {
         credential: Mutex<Option<String>>,
         client_id_path: PathBuf,
         refresh_lock_path: PathBuf,
+        loads: AtomicUsize,
         saves: AtomicUsize,
         deletes: AtomicUsize,
         fail_load: AtomicBool,
@@ -2833,6 +2898,7 @@ mod tests {
         }
 
         fn load(&self) -> std::result::Result<Option<String>, String> {
+            self.loads.fetch_add(1, Ordering::AcqRel);
             std::thread::sleep(Duration::from_millis(
                 self.load_delay_ms.load(Ordering::Acquire),
             ));
@@ -2883,6 +2949,9 @@ mod tests {
         refreshes: AtomicUsize,
         refresh_inputs: Mutex<Vec<String>>,
         refresh_failure: AtomicUsize,
+        hold_refresh: AtomicBool,
+        refresh_started: tokio::sync::Notify,
+        refresh_release: tokio::sync::Notify,
         session_account_id: Mutex<Option<String>>,
         cancelled: AtomicBool,
         revocations: AtomicUsize,
@@ -2977,6 +3046,10 @@ mod tests {
                     .to_owned(),
             );
         let count = state.refreshes.fetch_add(1, Ordering::AcqRel) + 1;
+        state.refresh_started.notify_one();
+        if state.hold_refresh.load(Ordering::Acquire) {
+            state.refresh_release.notified().await;
+        }
         match state.refresh_failure.load(Ordering::Acquire) {
             1 => {
                 return (
@@ -3114,6 +3187,9 @@ mod tests {
             refreshes: AtomicUsize::new(0),
             refresh_inputs: Mutex::new(Vec::new()),
             refresh_failure: AtomicUsize::new(0),
+            hold_refresh: AtomicBool::new(false),
+            refresh_started: tokio::sync::Notify::new(),
+            refresh_release: tokio::sync::Notify::new(),
             session_account_id: Mutex::new(None),
             cancelled: AtomicBool::new(false),
             revocations: AtomicUsize::new(0),
@@ -3151,6 +3227,7 @@ mod tests {
             credential: Mutex::new(None),
             client_id_path: directory.join("client-id"),
             refresh_lock_path: directory.join("native-session.lock"),
+            loads: AtomicUsize::new(0),
             saves: AtomicUsize::new(0),
             deletes: AtomicUsize::new(0),
             fail_load: AtomicBool::new(false),
@@ -3169,6 +3246,7 @@ mod tests {
             AuthState {
                 automation_key: None,
                 refresh_token: None,
+                refresh_token_pending: false,
                 access_token: None,
                 account: None,
                 session: None,
@@ -3312,6 +3390,7 @@ mod tests {
             AuthState {
                 automation_key: None,
                 refresh_token: Some(SecretString::from(refresh_token.to_owned())),
+                refresh_token_pending: false,
                 access_token: None,
                 account: None,
                 session: None,
@@ -3336,6 +3415,7 @@ mod tests {
         let state = AuthState {
             automation_key: None,
             refresh_token: Some(SecretString::from("refresh-super-secret".to_owned())),
+            refresh_token_pending: false,
             access_token: Some(CachedAccessToken {
                 token: SecretString::from("access-super-secret".to_owned()),
                 expires_at: Utc::now(),
@@ -3449,6 +3529,91 @@ mod tests {
         let debug = format!("{auth:?}");
         assert!(!debug.contains("refresh-token"));
         assert!(!debug.contains("access-token"));
+    }
+
+    #[tokio::test]
+    async fn saved_session_restore_reads_the_password_once_and_keeps_the_rotation_lock() {
+        let (auth, server, store) = manager().await;
+        *store.credential.lock().unwrap() = Some("saved-refresh-token-with-enough-entropy".into());
+        // macOS initialization found the item reference without decrypting it.
+        auth.shared.state.write().unwrap().refresh_token_pending = true;
+        assert!(auth.has_credential());
+        server.hold_refresh.store(true, Ordering::Release);
+        let pending = tokio::spawn({
+            let auth = auth.clone();
+            async move { auth.validate().await }
+        });
+        tokio::time::timeout(Duration::from_secs(2), server.refresh_started.notified())
+            .await
+            .unwrap();
+        let peer_lock = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(store.refresh_lock_path())
+            .unwrap();
+        assert!(
+            fs2::FileExt::try_lock_exclusive(&peer_lock).is_err(),
+            "a peer must not rotate the observed credential while refresh is in flight"
+        );
+        server.refresh_release.notify_one();
+        assert!(matches!(pending.await.unwrap(), ValidationStatus::Valid(_)));
+        assert_eq!(store.loads.load(Ordering::Acquire), 1);
+        assert_eq!(store.saves.load(Ordering::Acquire), 1);
+        assert_eq!(server.refreshes.load(Ordering::Acquire), 1);
+        assert!(fs2::FileExt::try_lock_exclusive(&peer_lock).is_ok());
+        drop(peer_lock);
+        assert!(!auth.shared.state.read().unwrap().refresh_token_pending);
+        assert!(matches!(auth.validate().await, ValidationStatus::Valid(_)));
+        assert_eq!(
+            store.loads.load(Ordering::Acquire),
+            1,
+            "cached account validation must not ask for the same password again"
+        );
+    }
+
+    #[tokio::test]
+    async fn denied_initial_restore_stays_unavailable_without_retrying_or_deleting() {
+        let (auth, server, store) = manager().await;
+        *store.credential.lock().unwrap() = Some("saved-refresh-token-with-enough-entropy".into());
+        auth.shared.state.write().unwrap().refresh_token_pending = true;
+        store.fail_load.store(true, Ordering::Release);
+        for _ in 0..2 {
+            let ValidationStatus::Unavailable(detail) = auth.validate().await else {
+                panic!("a denied keychain read must retain its failure reason");
+            };
+            assert!(detail.contains("locked keyring read failure"));
+        }
+        assert_eq!(store.loads.load(Ordering::Acquire), 1);
+        assert_eq!(store.saves.load(Ordering::Acquire), 0);
+        assert_eq!(store.deletes.load(Ordering::Acquire), 0);
+        assert_eq!(server.refreshes.load(Ordering::Acquire), 0);
+        assert!(!auth.has_credential());
+    }
+
+    #[tokio::test]
+    async fn a_session_removed_after_metadata_lookup_is_not_refreshed_or_recreated() {
+        let (auth, server, store) = manager().await;
+        auth.shared.state.write().unwrap().refresh_token_pending = true;
+        assert!(matches!(auth.validate().await, ValidationStatus::Expired));
+        assert_eq!(store.loads.load(Ordering::Acquire), 1);
+        assert_eq!(store.saves.load(Ordering::Acquire), 0);
+        assert_eq!(server.refreshes.load(Ordering::Acquire), 0);
+        assert!(!auth.has_credential());
+    }
+
+    #[tokio::test]
+    async fn native_login_cannot_replace_a_credential_awaiting_its_first_read() {
+        let (auth, _, store) = manager().await;
+        *store.credential.lock().unwrap() = Some("saved-refresh-token-with-enough-entropy".into());
+        auth.shared.state.write().unwrap().refresh_token_pending = true;
+        let error = auth.start_native_login(None).await.unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("sign out of the current Axiom account")
+        );
+        assert_eq!(store.loads.load(Ordering::Acquire), 1);
+        assert_eq!(store.saves.load(Ordering::Acquire), 0);
     }
 
     #[tokio::test]
