@@ -10,14 +10,17 @@ function localImageUrl(url: string): boolean {
   return url.startsWith("blob:") || /^data:image\/(png|jpeg|webp|gif);base64,/i.test(url);
 }
 
-type PageContext = Pick<ContextMenuParams, "mediaType" | "hasImageContents" | "srcURL" | "isEditable" | "selectionText" | "editFlags">;
+type PageContext = Pick<ContextMenuParams, "x" | "y" | "mediaType" | "hasImageContents" | "srcURL" | "isEditable" | "selectionText" | "editFlags">;
 
-export function pageContextMenu(params: PageContext, contents: Pick<WebContents, "downloadURL">): MenuItemConstructorOptions[] {
+export function pageContextMenu(params: PageContext, contents: Pick<WebContents, "copyImageAt" | "downloadURL">): MenuItemConstructorOptions[] {
   const items: MenuItemConstructorOptions[] = [];
   if (params.mediaType === "image" && params.hasImageContents && localImageUrl(params.srcURL)) {
     // Chromium keeps the image in this document's session. No image bytes,
     // renderer file paths or additional network fetches cross an IPC endpoint.
-    items.push({ label: "Save image as…", click: () => contents.downloadURL(params.srcURL) });
+    items.push(
+      { label: "Copy image", click: () => contents.copyImageAt(params.x, params.y) },
+      { label: "Save image as…", click: () => contents.downloadURL(params.srcURL) },
+    );
   }
   if (params.isEditable || params.selectionText) {
     if (items.length) items.push({ type: "separator" });

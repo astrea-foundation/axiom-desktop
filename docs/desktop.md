@@ -183,8 +183,10 @@ turn, including deciding whether a correction is needed. Click a generated or ed
 image to view it in the larger viewer; Escape, the close button or a backdrop
 click closes it. Click the image to zoom in, scroll to move around the larger
 image, and click again to fit it in the viewer. Enter or Space on the image
-performs the same zoom toggle. Right-click the image in the viewer to choose Save image as…
-and select a destination. Save image also remains available beneath the result;
+performs the same zoom toggle. Right-click an image in the chat or viewer to choose
+Copy image, which puts the image itself on the system clipboard, or Save image as…
+to select a destination. Generated images are attributed to AstreaAI beneath the result.
+Save image also remains available beneath the result;
 each save suggests a fresh random PNG filename. Image generation and editing show a
 live percentage and progress bar. Queued work displays 0%; finishing stays at
 99% until the verified result is ready; the percentage and bar then disappear. Nonvision
@@ -269,6 +271,23 @@ resume. Cancellation never marks unfinished
 compaction successful. Compaction is model-generated and is not a guarantee of
 perfect recall. The original local journal remains available independently of
 the compacted model context.
+
+If automatic pre-turn summarization fails, the runtime keeps the complete new
+message and continues with a short, partial text excerpt of older context. A
+notice explains that older context and media were omitted. Cancellation still
+stops the turn. Original saved messages remain separate from this model context.
+On restore, missing or invalid old attachments and image details are omitted
+instead of blocking the entire conversation. Interrupted tool calls receive an
+unknown-outcome marker; recovery does not execute them. Older file formats that
+the newly selected model cannot read are omitted from context while their text
+remains available. New uploads still require a compatible model.
+
+The image tools keep a bounded catalog of recent conversation references. Older
+references expire as new images arrive, allowing further generation in the same
+thread. Saved images remain in local history; an expired reference may need to
+be attached again for another edit. A completed or cancelled response refreshes
+thread state after any older timeline fetch, so a stale running snapshot cannot
+leave the composer waiting indefinitely.
 
 ## Usage and verification
 

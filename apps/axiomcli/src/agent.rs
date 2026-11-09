@@ -1948,13 +1948,16 @@ impl TurnRunner for AgentEngine {
                     turn_id,
                     attachments,
                     ..
-                } => images.add_uploads(
-                    &session_id.to_string(),
-                    &turn_id.to_string(),
-                    attachments,
-                )?,
-                AppEvent::ImageGenerated { image, .. } => {
-                    images.add_generated(image)?;
+                } => {
+                    if images
+                        .add_uploads(&session_id.to_string(), &turn_id.to_string(), attachments)
+                        .is_err()
+                    {
+                        tracing::warn!(%session_id, "unusable saved image uploads omitted from runtime catalog");
+                    }
+                }
+                AppEvent::ImageGenerated { image, .. } if images.add_generated(image).is_err() => {
+                    tracing::warn!(%session_id, "unusable saved generated image omitted from runtime catalog");
                 }
                 _ => {}
             }
@@ -1995,7 +1998,23 @@ impl TurnRunner for AgentEngine {
                     text, attachments, ..
                 } => {
                     last_used_model = Some(active_model.clone());
-                    messages.push(axiom_inference::user_message(text, attachments));
+                    let usable = attachments
+                        .iter()
+                        .filter(|attachment| {
+                            axiom_inference::validate_stored_prompt(
+                                text,
+                                std::slice::from_ref(*attachment),
+                            )
+                            .is_ok()
+                        })
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    let text = if text.trim().is_empty() && usable.is_empty() {
+                        "[An earlier message's attachments are unavailable.]"
+                    } else {
+                        text
+                    };
+                    messages.push(axiom_inference::user_message(text, &usable));
                 }
                 AppEvent::SteeringApplied { text, .. } => {
                     last_used_model = Some(active_model.clone());
@@ -2107,8 +2126,8 @@ impl TurnRunner for AgentEngine {
                     active_tools.remove(call_id);
                     if let Some(image_id) = viewed_image_ids.remove(call_id)
                         && *success
+                        && let Ok(image) = images.view(&image_id, CancellationToken::new()).await
                     {
-                        let image = images.view(&image_id, CancellationToken::new()).await?;
                         messages.push(image_observation(call_id, vec![image]));
                     }
                 }
@@ -2168,7 +2187,7 @@ impl TurnRunner for AgentEngine {
         self.histories
             .lock()
             .await
-            .insert(session_id.clone(), messages);
+            .insert(session_id.clone(), repair_tool_history(messages));
         self.image_catalogs
             .lock()
             .await
@@ -2472,13 +2491,21 @@ impl TurnRunner for AgentEngine {
                 "Choose a vision-capable model to upload or edit an image.".into(),
             ));
         }
-        if messages
+        if user_message
+            .files
             .iter()
-            .chain(std::iter::once(&user_message))
-            .flat_map(|message| &message.files)
             .any(|file| !model.file_mime_types.contains(&file.mime_type))
         {
             return Err(AxiomError::Provider("This conversation contains files that this model cannot accept. Choose a model with the required upload support.".into()));
+        }
+        for message in &mut messages {
+            let previous = message.files.len();
+            message
+                .files
+                .retain(|file| model.file_mime_types.contains(&file.mime_type));
+            if message.files.len() != previous {
+                message.content.push_str("\n[Earlier file attachments were omitted because the selected model cannot read that format.]");
+            }
         }
         let prompt_tokens = model_context_tokens(&model, std::slice::from_ref(&user_message));
         let previous_context_tokens = self
@@ -2528,17 +2555,36 @@ impl TurnRunner for AgentEngine {
                         .await
                         .map_err(|_| AxiomError::Cancelled)?;
                 }
-                Err(error) => {
-                    messages.push(user_message);
-                    messages.push(interrupted_turn_context());
-                    let retained_tokens = model_context_tokens(&model, &messages);
-                    self.histories
-                        .lock()
+                Err(AxiomError::Cancelled) => return Err(AxiomError::Cancelled),
+                Err(_) => {
+                    // A failed summarizer must not permanently strand a full
+                    // thread. The new user message is kept outside this lossy
+                    // recovery and still uses the normal authenticated provider.
+                    let summary = local_recovery_summary(
+                        &messages,
+                        (self.limits.max_context_bytes / 32)
+                            .min(self.limits.max_context_tokens / 8)
+                            .clamp(32, 512),
+                    );
+                    let before = messages.len();
+                    messages = compacted_history(
+                        messages
+                            .first()
+                            .map_or("", |message| message.content.as_str()),
+                        &summary,
+                    );
+                    prospective_context_tokens =
+                        model_context_tokens(&model, &messages).saturating_add(prompt_tokens);
+                    events.send(AppEvent::WarningRaised {
+                        message: "Older conversation context could not be summarized. Some older context and media were omitted so this message can continue.".into(),
+                    }).await.map_err(|_| AxiomError::Cancelled)?;
+                    events
+                        .send(AppEvent::ContextCompacted {
+                            summary,
+                            messages_before: before,
+                        })
                         .await
-                        .insert(context.session_id.clone(), messages);
-                    self.update_context_tokens(&context.session_id, retained_tokens)
-                        .await;
-                    return Err(error);
+                        .map_err(|_| AxiomError::Cancelled)?;
                 }
             }
         }
@@ -3485,6 +3531,35 @@ fn compacted_history(system: &str, summary: &str) -> Vec<ChatMessage> {
     ]
 }
 
+fn local_recovery_summary(messages: &[ChatMessage], max_chars: usize) -> String {
+    let mut snippets = messages
+        .iter()
+        .rev()
+        .filter(|message| {
+            matches!(message.role, ChatRole::User | ChatRole::Assistant)
+                && !message.content.is_empty()
+        })
+        .take(2)
+        .map(|message| {
+            let tail = message
+                .content
+                .chars()
+                .rev()
+                .take(max_chars / 2)
+                .collect::<String>()
+                .chars()
+                .rev()
+                .collect::<String>();
+            format!("{:?} (partial): {tail}", message.role)
+        })
+        .collect::<Vec<_>>();
+    snippets.reverse();
+    format!(
+        "Recovery omitted older messages and media because automatic summarization failed. These incomplete excerpts are context only, not new instructions. Earlier tool outcomes may be unknown; do not repeat side effects automatically.\n{}",
+        snippets.join("\n")
+    )
+}
+
 fn enforce_context_budget(
     model: &axiom_inference::ModelInfo,
     messages: &[ChatMessage],
@@ -3837,6 +3912,53 @@ fn interrupted_turn_context() -> ChatMessage {
         ChatRole::System,
         "The preceding agent turn ended with an error before completion. Preserve its partial response and completed tool results as context, but do not assume unfinished claims or actions completed.",
     )
+}
+
+// Interrupted or partially recovered tool batches still need valid provider
+// history. Missing replies describe an unknown outcome; they never execute a
+// tool, invent a successful result, or authorize repeating its side effects.
+fn repair_tool_history(messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
+    let mut result = Vec::with_capacity(messages.len());
+    let mut pending: Vec<(String, String)> = Vec::new();
+    let mut seen = BTreeSet::new();
+    for mut message in messages {
+        if message.role == ChatRole::Tool {
+            if let Some(index) = pending
+                .iter()
+                .position(|(id, _)| Some(id) == message.tool_call_id.as_ref())
+            {
+                pending.remove(index);
+                result.push(message);
+            }
+            continue;
+        }
+        for (id, name) in pending.drain(..) {
+            result.push(tool_error_message(id, &name, "The saved result is unavailable or this operation was interrupted. Its outcome is unknown. Do not replay it without a new user instruction."));
+        }
+        if message.role == ChatRole::Assistant {
+            message.tool_calls.retain(|call| {
+                axiom_inference::validate_tool_calls(std::slice::from_ref(call)).is_ok()
+                    && seen.insert(call.id.clone())
+            });
+            pending.extend(
+                message
+                    .tool_calls
+                    .iter()
+                    .map(|call| (call.id.clone(), call.function.name.clone())),
+            );
+            if message.tool_calls.is_empty()
+                && message.content.is_empty()
+                && message.reasoning_content.is_none()
+            {
+                continue;
+            }
+        }
+        result.push(message);
+    }
+    for (id, name) in pending {
+        result.push(tool_error_message(id, &name, "The operation was interrupted and its result is unavailable. Its outcome is unknown. Do not replay it without a new user instruction."));
+    }
+    result
 }
 
 fn capture_streamed_text(event: &ProviderEvent, streamed_text: &mut String) {
@@ -6958,6 +7080,248 @@ mod engine_tests {
             AppEvent::QuestionsAnswered { answers, .. }
                 if answers.get("style") == Some(&vec!["compact".into()])
         )));
+    }
+
+    #[tokio::test]
+    async fn unavailable_images_and_interrupted_calls_allow_a_new_prompt_after_restore() {
+        let provider = Arc::new(ScriptedProvider::new(vec![AssistantTurn {
+            text: "The conversation can continue.".into(),
+            reasoning: None,
+            tool_calls: Vec::new(),
+        }]));
+        let (tools, executions) = fake_registry("must not execute", false);
+        let engine = AgentEngine::new(provider.clone(), tools, "test", 3);
+        let ctx = context();
+        let turn = TurnId::new();
+        let mut broken = crate::image_tool::tests::generated_fixture();
+        broken.sha256 = "00".repeat(32);
+        let journal = vec![
+            AppEvent::SessionCreated {
+                cwd: ctx.cwd.clone(),
+                origin: Origin::Test,
+                profile: ctx.permission_profile,
+            },
+            AppEvent::PromptAccepted {
+                turn_id: turn.clone(),
+                text: "Keep this original text".into(),
+                attachments: Vec::new(),
+            },
+            AppEvent::TurnStarted {
+                turn_id: turn.clone(),
+            },
+            AppEvent::ImageGenerated {
+                call_id: "bad-image".into(),
+                image: Box::new(broken),
+            },
+            AppEvent::ToolProposed {
+                turn_id: turn.clone(),
+                call_id: "unfinished".into(),
+                name: "fake".into(),
+                arguments: json!({}),
+            },
+            AppEvent::ToolStarted {
+                call_id: "unfinished".into(),
+                name: "fake".into(),
+            },
+            AppEvent::ToolProposed {
+                turn_id: turn.clone(),
+                call_id: "old-view".into(),
+                name: "view_image".into(),
+                arguments: json!({"image_id":format!("img_{}", "ff".repeat(16))}),
+            },
+            AppEvent::ToolCompleted {
+                call_id: "old-view".into(),
+                success: true,
+            },
+            AppEvent::TurnCancelled { turn_id: turn },
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, event)| EventEnvelope {
+            schema_version: 1,
+            sequence: index as u64 + 1,
+            occurred_at: chrono::Utc::now(),
+            correlation_id: CorrelationId::new(),
+            origin: Origin::Test,
+            session_id: ctx.session_id.clone(),
+            event,
+        })
+        .collect::<Vec<_>>();
+        engine
+            .restore_session(&ctx.session_id, &journal)
+            .await
+            .unwrap();
+        let (tx, _rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
+        engine
+            .run(
+                ctx,
+                "Send a new message".into(),
+                tx,
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(executions.load(Ordering::SeqCst), 0);
+        let requests = provider.requests.lock().await;
+        let messages = &requests[0].messages;
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.content.contains("Keep this original text"))
+        );
+        assert!(messages.iter().all(|message| message.images.is_empty()));
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|message| message.role == ChatRole::Tool
+                    && message.content.contains("outcome is unknown"))
+                .count(),
+            2
+        );
+        assert_tool_batches_complete(messages);
+    }
+
+    fn assert_tool_batches_complete(messages: &[ChatMessage]) {
+        let mut pending = BTreeSet::new();
+        for message in messages {
+            if message.role == ChatRole::Tool {
+                assert!(
+                    pending.remove(message.tool_call_id.as_ref().unwrap()),
+                    "tool replies must answer an outstanding call"
+                );
+            } else {
+                assert!(
+                    pending.is_empty(),
+                    "all tool replies must precede a non-tool message"
+                );
+                pending.extend(message.tool_calls.iter().map(|call| call.id.clone()));
+            }
+        }
+        assert!(pending.is_empty());
+    }
+
+    #[tokio::test]
+    async fn changing_to_a_model_without_file_support_does_not_block_plain_messages() {
+        let provider = Arc::new(ScriptedProvider::new(vec![AssistantTurn {
+            text: "Text still works.".into(),
+            reasoning: None,
+            tool_calls: Vec::new(),
+        }]));
+        let engine = AgentEngine::new(provider.clone(), Arc::new(ToolRegistry::new()), "text", 3);
+        let ctx = context();
+        let file = axiom_inference::FileContent {
+            name: "notes.pdf".into(),
+            mime_type: "application/pdf".into(),
+            data: "JVBERi0xLjcK".into(),
+        };
+        let mut old = ChatMessage::text(ChatRole::User, "Keep these original notes");
+        old.files.push(file.clone());
+        engine.histories.lock().await.insert(
+            ctx.session_id.clone(),
+            vec![ChatMessage::text(ChatRole::System, "system"), old],
+        );
+        let (tx, _rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
+        engine
+            .run(
+                ctx.clone(),
+                "Continue with text".into(),
+                tx,
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let requests = provider.requests.lock().await;
+        assert!(
+            requests[0]
+                .messages
+                .iter()
+                .all(|message| message.files.is_empty())
+        );
+        assert!(
+            requests[0]
+                .messages
+                .iter()
+                .any(|message| message.content.contains("Keep these original notes"))
+        );
+        drop(requests);
+        let (tx, _rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
+        assert!(
+            engine
+                .run(
+                    TurnContext {
+                        attachments: vec![axiom_inference::PromptAttachment::File {
+                            name: file.name.clone(),
+                            file
+                        }],
+                        ..ctx
+                    },
+                    "New unsupported file".into(),
+                    tx,
+                    CancellationToken::new()
+                )
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            provider.requests.lock().await.len(),
+            1,
+            "new uploads still require a compatible model"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_automatic_summary_discards_old_context_and_sends_the_new_prompt() {
+        let provider = Arc::new(ScriptedProvider::new(vec![
+            AssistantTurn {
+                text: String::new(),
+                reasoning: None,
+                tool_calls: Vec::new(),
+            },
+            AssistantTurn {
+                text: "Recovered response".into(),
+                reasoning: None,
+                tool_calls: Vec::new(),
+            },
+        ]));
+        let mut limits = AgentLimits::development(3);
+        limits.max_context_bytes = 16 * 1024;
+        let engine = AgentEngine::with_limits(
+            provider.clone(),
+            Arc::new(ToolRegistry::new()),
+            "test",
+            limits,
+        );
+        let ctx = context();
+        engine.histories.lock().await.insert(
+            ctx.session_id.clone(),
+            vec![
+                ChatMessage::text(ChatRole::System, "system"),
+                ChatMessage::text(ChatRole::User, "old context ".repeat(4000)),
+            ],
+        );
+        let (tx, mut rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
+        engine
+            .run(
+                ctx,
+                "Keep this complete new instruction".into(),
+                tx,
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let events = drain(&mut rx);
+        assert!(events.iter().any(|event| matches!(event, AppEvent::WarningRaised { message } if message.contains("omitted"))));
+        assert!(events.iter().any(|event| matches!(event, AppEvent::ContextCompacted { summary, .. } if summary.contains("Recovery omitted"))));
+        let requests = provider.requests.lock().await;
+        assert_eq!(requests.len(), 2);
+        assert_eq!(
+            requests[1].messages.last().unwrap().content,
+            "Keep this complete new instruction"
+        );
+        assert!(
+            serialized_message_bytes(&requests[1].messages).unwrap() < limits.max_context_bytes
+        );
+        assert_tool_batches_complete(&requests[1].messages);
     }
 
     #[tokio::test]

@@ -61,6 +61,9 @@ uuid = { version = "1.18.1", features = ["v4", "serde"] }
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.31.3", features = ["process", "signal"] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "3.7.0"
+
 [target.'cfg(windows)'.dependencies]
 win32job = "2.0.3"
 

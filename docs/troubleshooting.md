@@ -13,6 +13,23 @@ vault; a locked or denied vault cannot fall back to a plaintext token file.
 If a loopback callback is blocked, the pending native flow can still complete
 through PKCE polling. Keep the login flow open until completion or cancellation.
 
+On macOS, `stream.axiom.axiomcli` is the native login's Keychain item. A saved
+session restore requires one password read; startup item discovery and writing
+the rotated token do not read the password again. Keychain may separately ask
+to trust a changed executable and its signing partition. If **Always Allow**
+does not persist, check the exact requesting helper's signature and whether a
+host is timing out and replacing that process while its dialog remains open.
+An ad hoc development helper has a different code identity after rebuilding;
+certificate-signed previews must use a consistent signing identity. Do not
+delete login credentials or grant all applications access to work around this.
+
+Background ACP hosts must use `axiomcli acp --no-keychain-ui`. On macOS this
+disables Keychain interaction before authentication initializes, for that
+process only. A locked or unapproved item returns unavailable instead of opening
+a dialog that can survive the host's probe timeout. Explicit user sign-in and
+ordinary Desktop/CLI launches omit this flag. Older clients reject the unknown
+flag before reading any credential; hosts must not retry without it.
+
 Desktop preserves the native sign-in failure reason in its error banner, including
 TLS connection causes. Version 0.1.7 can hide failures while starting sign-in behind
 the generic `Internal error` message. A failed start can happen before a request
@@ -125,6 +142,12 @@ The composer's lock icon indicates encrypted model conversations and does not
 disable typing.
 
 Incomplete turns are marked interrupted after restart; tools are not replayed.
+An unavailable saved attachment, damaged image result, or incomplete tool reply
+is omitted or marked unknown in model context so usable text can still be loaded,
+edited and sent. The original saved rows are retained. If automatic summarization
+fails before a new message, Axiom uses a short partial excerpt of older text and
+keeps the complete new message; a notice explains the context loss. Expired image
+tool references can be attached again without starting a new conversation.
 Accounting reconciliation cannot turn incomplete text into a verified response.
 Export with `sessions export` while the database can still be read. Unknown,
 malformed or newer schemas are rejected; there is no general `sessions prune`
