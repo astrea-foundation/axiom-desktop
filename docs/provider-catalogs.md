@@ -8,8 +8,11 @@ origins or a new encryption protocol.
 
 The backend refreshes provider metadata every five minutes by default and stops
 using a failed source after 30 minutes. Successful refreshes replace all entries,
-including withdrawals. NEAR requires an exact ready, verifiable model/direct-worker
-intersection; aliases cannot redirect saved conversations. Tinfoil uses its public
+including withdrawals. NEAR offerings must be ready (or an operator-approved
+preview) and verifiable; the backend routes them through NEAR's attested cloud
+gateway (`near-tdx-nvidia-gateway-v1`), and the native client still accepts the
+direct-worker contract from backends that advertise it. Aliases cannot redirect
+saved conversations. Tinfoil uses its public
 API chat catalog and fixed attested router. Prices, limits, reasoning controls and
 capabilities refresh together. The [native catalog parser](../crates/axiom-secure-client/src/catalog.rs)
 validates the offered contract before use.

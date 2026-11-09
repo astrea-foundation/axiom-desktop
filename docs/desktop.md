@@ -299,7 +299,8 @@ beside **TEE verified** explains TEE protection and the server hardware check in
 plain language. Hover, focus or click it to show the help; Escape dismisses the
 help before closing the report. The inspector contains hardware, encryption-key,
 freshness and source-provenance checks for the selected provider. Tinfoil reports
-router verification, and NEAR v3 identifies an attested worker TLS key.
+router verification, and NEAR v3 identifies an attested worker TLS key and, on
+the gateway route, the attested NEAR gateway's key, TLS key and workload.
 
 Reports renew automatically for the selected model while the window is active,
 visible and online. Renewal starts up to thirty seconds before expiry, capped
