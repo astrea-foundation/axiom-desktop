@@ -23,6 +23,13 @@ An ad hoc development helper has a different code identity after rebuilding;
 certificate-signed previews must use a consistent signing identity. Do not
 delete login credentials or grant all applications access to work around this.
 
+Background ACP hosts must use `axiomcli acp --no-keychain-ui`. On macOS this
+disables Keychain interaction before authentication initializes, for that
+process only. A locked or unapproved item returns unavailable instead of opening
+a dialog that can survive the host's probe timeout. Explicit user sign-in and
+ordinary Desktop/CLI launches omit this flag. Older clients reject the unknown
+flag before reading any credential; hosts must not retry without it.
+
 Desktop preserves the native sign-in failure reason in its error banner, including
 TLS connection causes. Version 0.1.7 can hide failures while starting sign-in behind
 the generic `Internal error` message. A failed start can happen before a request

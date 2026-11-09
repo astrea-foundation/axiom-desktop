@@ -103,6 +103,9 @@ enum Command {
         /// Select the policy, storage, prompt, and workspace contract for the ACP client.
         #[arg(long, value_enum, default_value_t = FrontendKind::Cli)]
         frontend: FrontendKind,
+        /// Refuse macOS Keychain dialogs in a disposable background probe.
+        #[arg(long)]
+        no_keychain_ui: bool,
     },
     /// Check configuration and local dependencies.
     Doctor,
@@ -221,6 +224,26 @@ enum SessionAction {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    // Set this before constructing authentication: protocol discovery can be
+    // a short-lived background process. An OS dialog must never outlive that
+    // owner or repeatedly ask the user to approve an already-exited helper.
+    // This only suppresses UI; denied credentials still fail closed. Normal
+    // Desktop, CLI and explicit browser sign-in retain interactive Keychain.
+    #[cfg(target_os = "macos")]
+    let _keychain_ui = if matches!(
+        &cli.command,
+        Some(Command::Acp {
+            no_keychain_ui: true,
+            ..
+        })
+    ) {
+        Some(
+            security_framework::os::macos::keychain::SecKeychain::disable_user_interaction()
+                .context("could not disable Keychain dialogs for the background probe")?,
+        )
+    } else {
+        None
+    };
     if let Some(Command::Update(arguments)) = cli.command {
         // Update helpers must survive shutdown of the process being replaced.
         return axiomcli::updates::command(arguments).await;
@@ -236,7 +259,7 @@ async fn main() -> anyhow::Result<()> {
         return axiomcli::proxy::run(arguments, account_id).await;
     }
     let frontend = match &cli.command {
-        Some(Command::Acp { frontend }) => *frontend,
+        Some(Command::Acp { frontend, .. }) => *frontend,
         _ => FrontendKind::Cli,
     };
     anyhow::ensure!(
@@ -407,7 +430,7 @@ async fn main() -> anyhow::Result<()> {
             )
             .await
         }
-        Command::Acp { frontend } => axiomcli::acp::serve_stdio(
+        Command::Acp { frontend, .. } => axiomcli::acp::serve_stdio(
             build_runner(&config, &auth, system_prompt.as_deref(), frontend).await?,
             config.clone(),
             Some(account_store),
