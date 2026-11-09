@@ -9,6 +9,11 @@ verifier. Packaging validates the complete runtime inventory, executable digest
 and platform signatures before including it. The native client still verifies
 fresh CPU, GPU, workload, key and response evidence before accepting inference.
 
+The 0.1.21 installer configuration pins policy sequence 22 as its minimum.
+Fresh production qualification verifies generation 15 with that policy, including
+the `chat`, `image`, `tools` and `vision` capabilities. Older policy documents
+cannot undo the revocations already included in this release's minimum.
+
 AstreaAI is additive to the normal model catalog. Installing its verifier must
 preserve the NEAR AI and Tinfoil offerings discovered through the account API.
 Each offering retains its own locally verified attestation and E2EE protocol;

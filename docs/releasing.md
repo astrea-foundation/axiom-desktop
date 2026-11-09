@@ -154,6 +154,16 @@ must discover its bundled AstreaAI configuration and register `generate` and
 before publishing; version and ordinary chat checks cannot substitute for this
 test.
 
+The macOS signing job installs each signed PKG on its disposable runner and runs
+`scripts/verify-installed-image.mjs` against the installed CLI. An isolated profile
+and the protected release evaluation credential keep this check separate from
+maintainer accounts. The child process inherits no provider configuration or test
+overrides. It must register image tools, generate and view one image, finish ready,
+and report authenticated, final, settled image usage. The private
+`signed-installation-image-acceptance` artifact binds the installer and installed
+binary hashes to the generated image and usage receipt. Publication depends on
+this check; downloading the signed inventory does not replace it.
+
 `scripts/prepare-store-submission.mjs release setup store` prepares the private
 `windows-store-submission` workflow artifact: the exact full offline EXE URL,
 hash, silent arguments, certification notes and remaining acceptance fields.
