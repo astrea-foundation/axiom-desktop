@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 // @ts-expect-error Release scripts run directly in Node without generated declarations.
-import { installedEnvironment, verifiedImageUsage } from '../../../scripts/verify-installed-image.mjs';
+import { installedEnvironment, verifiedImageUsage, verifyImageTools } from '../../../scripts/verify-installed-image.mjs';
 
 test('signed installation acceptance uses isolated profiles and drops provider overrides', () => {
   const source = { HOME: '/home/operator', PATH: '/usr/bin', AXIOM_API_KEY: 'automation-test',
@@ -31,4 +31,16 @@ test('image acceptance requires authenticated completion and settlement independ
     { completeness: 'partial' }, { costMicrousd: null }, { providerId: 'fixture' }]) {
     assert.throws(() => verifiedImageUsage([{ ...image, ...incomplete }]), /authenticated, final, settled/);
   }
+});
+
+test('a proposed or failed image view cannot satisfy signed-installation acceptance', () => {
+  const generation = { title: 'Creating image · generate', status: 'completed' };
+  const view = { title: 'Viewing image · view_image', status: 'completed' };
+  verifyImageTools([generation, view]);
+  for (const status of ['pending', 'in_progress', 'failed', undefined]) {
+    assert.throws(() => verifyImageTools([generation, { ...view, status }]), /successfully complete/);
+    assert.throws(() => verifyImageTools([{ ...generation, status }, view]), /successfully complete/);
+  }
+  assert.throws(() => verifyImageTools([generation]), /successfully complete/);
+  assert.throws(() => verifyImageTools([generation, generation, view]), /successfully complete/);
 });

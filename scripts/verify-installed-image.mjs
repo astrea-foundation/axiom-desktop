@@ -30,6 +30,15 @@ export function verifiedImageUsage(requests) {
   return usage;
 }
 
+export function verifyImageTools(calls) {
+  const generation = calls.filter(call => call.title.endsWith(' · generate'));
+  const viewing = calls.filter(call => call.title.endsWith(' · view_image'));
+  if (generation.length !== 1 || generation[0].status !== 'completed'
+      || !viewing.some(call => call.status === 'completed')) {
+    throw new Error('Installed session must successfully complete one generation and image viewing');
+  }
+}
+
 export async function verifyInstalledImage(binary, installer, output, version, source = process.env) {
   if (!/^\d+\.\d+\.\d+$/.test(version ?? '')) throw new Error('A stable release version is required');
   output = path.resolve(output);
@@ -41,7 +50,7 @@ export async function verifyInstalledImage(binary, installer, output, version, s
   const child = spawn(binary, ['acp', '--frontend', 'cli', ...(process.platform === 'darwin' ? ['--no-keychain-ui'] : [])],
     { cwd: output, env: environment, stdio: ['pipe', 'pipe', 'pipe'] });
   let buffer = '', sequence = 0, sessionId, closed = false;
-  const pending = new Map(), images = new Map(), tools = new Set();
+  const pending = new Map(), images = new Map(), tools = new Map();
   const send = message => child.stdin.write(JSON.stringify(message) + '\n');
   function fail(error) {
     for (const item of pending.values()) { clearTimeout(item.timeout); item.reject(error); }
@@ -78,7 +87,11 @@ export async function verifyInstalledImage(binary, installer, output, version, s
           send({ jsonrpc: '2.0', id: message.id, result: { outcome: { outcome: 'cancelled' } } });
         } else if (message.method === 'session/update' && message.params?.sessionId === sessionId) {
           const update = message.params.update;
-          if (update?.sessionUpdate === 'tool_call' && typeof update.title === 'string') tools.add(update.title);
+          if (update?.sessionUpdate === 'tool_call' && typeof update.title === 'string') {
+            tools.set(update.toolCallId, { id: update.toolCallId, title: update.title, status: update.status });
+          } else if (update?.sessionUpdate === 'tool_call_update' && tools.has(update.toolCallId) && update.status) {
+            tools.get(update.toolCallId).status = update.status;
+          }
           findImages(update);
         } else if (message.id !== undefined && !message.method && pending.has(message.id)) {
           const entry = pending.get(message.id); pending.delete(message.id); clearTimeout(entry.timeout);
@@ -123,16 +136,19 @@ export async function verifyInstalledImage(binary, installer, output, version, s
     const page = await request('_axiom/thread/timeline', { threadId: sessionId, limit: 500 });
     findImages(page.items);
     if (result.stopReason !== 'end_turn' || page.thread.lifecycle !== 'ready' || page.activeTurnId) throw new Error('Installed image turn did not finish ready');
-    if (images.size !== 1 || ![...tools].some(name => name.includes('generate')) || ![...tools].some(name => name.includes('view_image'))) {
+    if (images.size !== 1) {
       throw new Error('Installed session did not generate and view exactly one image');
     }
+    const toolStates = [...tools.values()];
+    verifyImageTools(toolStates);
     const usage = verifiedImageUsage(page.requestUsage ?? []);
     const receipt = { version, revision: source.AXIOM_QUALIFIED_NATIVE_REVISION ?? source.GITHUB_SHA ?? null,
       acceptanceRevision: source.GITHUB_SHA ?? null, installedVersion,
       installer: { name: path.basename(installer), sha256: sha256(readFileSync(installer)) },
       binary: { path: binary, sha256: sha256(readFileSync(binary)) },
       configurationSource: 'installed-bundle', credentialSource: 'native-session-keychain', model, imageGenerationVersion, sessionId,
-      lifecycle: page.thread.lifecycle, stopReason: result.stopReason, tools: [...tools], images: [...images.values()], usage };
+      lifecycle: page.thread.lifecycle, stopReason: result.stopReason, tools: toolStates.map(call => call.title),
+      toolStates, images: [...images.values()], usage };
     writeFileSync(path.join(output, 'receipt.json'), JSON.stringify(receipt, null, 2) + '\n', { mode: 0o600 });
     console.log(JSON.stringify({ verified: true, version, installer: receipt.installer, images: receipt.images, settled: usage.settled, responseVerified: usage.responseVerified }));
     return receipt;
