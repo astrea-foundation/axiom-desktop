@@ -72,7 +72,7 @@ export function countModels(
   return models.reduce((count, model) => count + Number(matchesModelFilters(model, next)), 0);
 }
 
-/** Every tag in the catalog once, ordered by position, then label. */
+/** Every catalog tag once, with Uncensored first, then catalog position and label. */
 export function catalogTags(models: readonly ProviderModel[]): ModelTag[] {
   const tags = new Map<string, ModelTag>();
   for (const model of models) {
@@ -81,7 +81,8 @@ export function catalogTags(models: readonly ProviderModel[]): ModelTag[] {
       if (!existing || tag.position < existing.position) tags.set(tag.id, tag);
     }
   }
-  return [...tags.values()].sort((left, right) => left.position - right.position
+  return [...tags.values()].sort((left, right) => Number(right.id === "uncensored") - Number(left.id === "uncensored")
+    || left.position - right.position
     || left.label.localeCompare(right.label)
     || left.id.localeCompare(right.id));
 }

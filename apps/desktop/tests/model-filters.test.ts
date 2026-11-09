@@ -80,7 +80,7 @@ test("search matches names, upstream models, hosts and tag labels", () => {
 });
 
 test("filter options come from the catalog and counts preview the next selection", () => {
-  assert.deepEqual(catalogTags(catalog).map((entry) => entry.id), ["cheap", "intelligent", "uncensored", "new"]);
+  assert.deepEqual(catalogTags(catalog).map((entry) => entry.id), ["uncensored", "cheap", "intelligent", "new"]);
   assert.deepEqual(catalogHosts(catalog), [
     { id: "tinfoil", label: "Tinfoil" },
     { id: "near", label: "NEAR AI" },

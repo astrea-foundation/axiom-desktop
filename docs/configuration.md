@@ -146,7 +146,9 @@ explicit Web consent independently of Agent permissions. See [Desktop](desktop.m
 
 ## Image generation and editing
 
-Vision uploads accept up to ten images per request. Desktop resizes each image
+Vision uploads accept up to ten images per request within the selected provider's
+context limit; AstreaAI chat permits eight images across the current context.
+Desktop resizes each image
 locally to at most 1,048,576 pixels while preserving aspect ratio and transparency
 before encryption. The unified image tool accepts optional `width` and `height`
 together for saved legacy calls. New model calls use `aspect_ratio`; the native
@@ -177,7 +179,8 @@ image. Generated results are displayed to the user but are not automatically
 added to the model's visual context. Vision copies preserve aspect ratio and
 transparency, correct orientation, and fit within 1,048,576 pixels; originals
 remain available for editing, viewing and saving. Viewed images count toward
-the ten-image context limit. Successful views are restored from their tool
+the selected chat model's image context limit, including AstreaAI's eight-image
+cap. Successful views are restored from their tool
 records and conversation-local references without storing another image copy.
 
 Native code withholds and rejects image tools for nonvision models, including
@@ -220,7 +223,16 @@ Provider request timeouts do not expire human approval/question cards. Those
 waits end on an answer, cancellation/disconnect, or an enabled whole-turn limit.
 
 Automatic compaction is based on 85% of the selected model's advertised context
-capacity, capped by local limits. Unsupported reasoning levels fail locally.
+capacity, capped by local limits. The independent `max_context_bytes` guard
+includes encoded image/file data, so image-heavy conversations can compact
+below the token threshold. Base64 byte length is not a text-token count.
+New uploads also compact existing history before exceeding the selected model's
+image context cap (eight images for AstreaAI chat).
+Uploads and successful `view_image` observations use the selected model's visual
+allowance in both automatic compaction and the native token guard. After restore,
+the next turn recomputes that allowance using current model metadata. Generated
+images add visual context only when viewed. Unsupported reasoning levels fail
+locally.
 `minimal`, `low`, `medium`, `high`, and `xhigh` are the application enum; a model
 may expose only a subset. See [CLI](cli.md) for remembered model/thinking settings.
 

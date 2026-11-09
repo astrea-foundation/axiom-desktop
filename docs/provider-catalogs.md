@@ -71,8 +71,9 @@ The `uncensored` tag also selects the uncensored image adapter (see above), so
 the backend's tag assignments decide that content policy. Tags never affect
 routing, pricing, attestation, contract selection or availability.
 
-The Desktop picker shows one flat list in provider preference order. Tag filters
-combine with AND; host filters (from each entry's provider) combine with OR; the
+The Desktop picker shows one flat list in provider preference order. Uncensored
+is the first tag filter; the remaining tags follow catalog position and label.
+Tag filters combine with AND; host filters (from each entry's provider) combine with OR; the
 image and file toggles appear only when some, but not all, offerings accept that
 input. Search also matches tag labels. Filters that would leave no models are
 disabled, and filters reset each time the picker opens. Rows show the host and up

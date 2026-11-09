@@ -1394,7 +1394,44 @@ impl AgentEngine {
         } else {
             String::new()
         };
-        let parts = compaction_inputs(&conversation[..recent_start], budget / 2)?;
+        // Hidden reasoning and visible text share the output-token limit.
+        // A short summary must not starve reasoning before it can emit text.
+        let mut output_limit = u32::try_from(summary_limit / 4).unwrap_or(u32::MAX).max(1);
+        if !model.supported_reasoning_efforts.is_empty()
+            || model
+                .supported_thinking_modes
+                .contains(&axiom_inference::ThinkingMode::Enabled)
+        {
+            output_limit = output_limit.max(4096);
+        }
+        if model.max_output_tokens > 0 {
+            output_limit = output_limit.min(model.max_output_tokens);
+        }
+        // Text fragment bytes alone do not bound native visual/file tokens.
+        // Compaction may use the full window, reserving prior summary, output,
+        // focus, instructions/template overhead and the request safety margin.
+        let capacity = if model.context_window_tokens > 0 {
+            usize::try_from(model.context_window_tokens)
+                .unwrap_or(usize::MAX)
+                .min(self.limits.max_context_tokens)
+        } else {
+            self.limits.max_context_tokens
+        };
+        let input_tokens = capacity
+            .saturating_sub(summary_limit.div_ceil(COMPACTION_BYTES_PER_TOKEN))
+            .saturating_sub(usize::try_from(output_limit).unwrap_or(usize::MAX))
+            .saturating_sub(focus.len().div_ceil(COMPACTION_BYTES_PER_TOKEN))
+            .saturating_sub(1024.min(capacity / 4))
+            .saturating_sub((capacity / 100).max(1));
+        let parts = compaction_inputs(
+            model,
+            &conversation[..recent_start],
+            budget / 2,
+            input_tokens,
+            summary_limit
+                .saturating_add(focus.len())
+                .saturating_add(1024),
+        )?;
         let mut summary = String::new();
         for (index, part) in parts.iter().enumerate() {
             let transcript = &part.transcript;
@@ -1413,7 +1450,7 @@ impl AgentEngine {
                         ChatRole::User,
                         format!(
                             "{focus}\nAim for at most {} characters. Fragment {} of {}.\n<previous-summary>\n{summary}\n</previous-summary>\n<conversation-fragment>\n{transcript}\n</conversation-fragment>",
-                            summary_limit / 2,
+                            summary_limit / 4,
                             index + 1,
                             parts.len()
                         ),
@@ -1432,7 +1469,6 @@ impl AgentEngine {
                 Vec::new(),
                 settings.thinking,
             );
-            let output_limit = u32::try_from(summary_limit / 4).unwrap_or(u32::MAX).max(1);
             request.max_output_tokens = Some(
                 request
                     .max_output_tokens
@@ -2129,7 +2165,6 @@ impl TurnRunner for AgentEngine {
         // Restore the complete post-compaction journal. A large restored
         // context must go through normal staged compaction before inference;
         // pruning here would silently discard facts on restart or Stop.
-        let restored_context_tokens = estimated_context_tokens(&messages);
         self.histories
             .lock()
             .await
@@ -2138,8 +2173,9 @@ impl TurnRunner for AgentEngine {
             .lock()
             .await
             .insert(session_id.clone(), images);
-        self.update_context_tokens(session_id, restored_context_tokens)
-            .await;
+        // Restore has no live model metadata. Recompute on the next turn
+        // instead of caching the generic 8192-token allowance for every image.
+        self.context_tokens.lock().await.remove(session_id);
         self.settings
             .lock()
             .await
@@ -2459,7 +2495,14 @@ impl TurnRunner for AgentEngine {
             prospective_context_tokens >= u64::try_from(limit).unwrap_or(u64::MAX)
         }) || serialized_message_bytes(&model_messages(&model, &messages))?.saturating_add(
             serialized_message_bytes(&model_messages(&model, std::slice::from_ref(&user_message)))?,
-        ) > self.limits.max_context_bytes)
+        ) > self.limits.max_context_bytes
+            || model.supports_images
+                && messages
+                    .iter()
+                    .chain(std::iter::once(&user_message))
+                    .map(|message| message.images.len())
+                    .sum::<usize>()
+                    > model_context_image_limit(&model))
             && messages.len() > 1
         {
             match self
@@ -2570,6 +2613,7 @@ impl TurnRunner for AgentEngine {
             }
             step = step.saturating_add(1);
             enforce_context_budget(
+                &model,
                 &model_messages(&model, &messages),
                 self.limits.max_context_bytes,
                 self.limits.max_context_tokens,
@@ -2900,11 +2944,12 @@ impl TurnRunner for AgentEngine {
                 };
                 let tool_images = std::mem::take(&mut tool_result.images);
                 if tool_result.success && !tool_images.is_empty() {
-                    if image_count.saturating_add(tool_images.len())
-                        > axiom_inference::MAX_ATTACHMENTS
-                    {
+                    let image_limit = model_context_image_limit(&model);
+                    if image_count.saturating_add(tool_images.len()) > image_limit {
                         tool_result.success = false;
-                        tool_result.content = "Cannot view another image: the model context already contains the maximum of ten images. Compact the conversation before viewing more images.".into();
+                        tool_result.content = format!(
+                            "Cannot view another image: the model context already contains the maximum of {image_limit} images. Compact the conversation before viewing more images."
+                        );
                         tool_result.events.clear();
                     } else {
                         image_count += tool_images.len();
@@ -3067,6 +3112,11 @@ impl TurnRunner for AgentEngine {
                     .await;
             }
             if !image_observations.is_empty() {
+                // The last provider report covers the history before these
+                // observations. Add their cost even when the whole-history
+                // estimate is smaller than the provider's reported count.
+                known_context_tokens = known_context_tokens
+                    .saturating_add(model_context_tokens(&model, &image_observations));
                 messages.extend(image_observations);
                 known_context_tokens =
                     known_context_tokens.max(model_context_tokens(&model, &messages));
@@ -3278,7 +3328,23 @@ struct CompactionInput {
     files: Vec<axiom_inference::FileContent>,
 }
 
-fn compaction_inputs(messages: &[ChatMessage], max_bytes: usize) -> Result<Vec<CompactionInput>> {
+fn compaction_inputs(
+    model: &axiom_inference::ModelInfo,
+    messages: &[ChatMessage],
+    max_bytes: usize,
+    max_input_tokens: usize,
+    overhead_bytes: usize,
+) -> Result<Vec<CompactionInput>> {
+    let max_bytes = max_bytes
+        .min(max_input_tokens.saturating_mul(COMPACTION_BYTES_PER_TOKEN))
+        .min(axiom_inference::MAX_MESSAGE_TEXT_BYTES.saturating_sub(overhead_bytes));
+    if max_bytes < 4 {
+        return Err(AxiomError::Provider(
+            "Compaction instructions exceed the request budget; original context was retained."
+                .into(),
+        ));
+    }
+    let attachment_bytes = axiom_inference::MAX_ATTACHMENT_BYTES.saturating_sub(overhead_bytes);
     let text_part = |transcript| CompactionInput {
         transcript,
         images: Vec::new(),
@@ -3300,17 +3366,85 @@ fn compaction_inputs(messages: &[ChatMessage], max_bytes: usize) -> Result<Vec<C
         let mut text_message = message.clone();
         let images = std::mem::take(&mut text_message.images);
         let files = std::mem::take(&mut text_message.files);
-        let mut parts = compaction_transcripts(&[text_message], max_bytes)?.into_iter();
-        if let Some(first) = parts.next() {
+        let image_count = images.len();
+        let file_count = files.len();
+        let mut images = images.into_iter().peekable();
+        let mut files = files.into_iter().peekable();
+        let transcript = serde_json::to_string(&[text_message])?;
+        let mut remaining = transcript.as_str();
+        let mut image_offset = 0;
+        let mut file_offset = 0;
+        while images.peek().is_some() || files.peek().is_some() {
+            // Leave room for the attachment association and a text fragment.
+            let media_budget = max_input_tokens.saturating_sub(256);
+            let mut media_tokens = 0_usize;
+            let mut media_bytes = 0_usize;
+            let mut input_images = Vec::new();
+            let mut input_files = Vec::new();
+            let image_tokens = image_context_tokens(model);
+            while images.peek().is_some_and(|image| {
+                media_bytes.saturating_add(image.data.len()) <= attachment_bytes.saturating_sub(256)
+            }) && media_tokens.saturating_add(image_tokens) <= media_budget
+                && input_images.len() < model_context_image_limit(model)
+            {
+                media_bytes = media_bytes.saturating_add(images.peek().unwrap().data.len());
+                input_images.extend(images.next());
+                media_tokens = media_tokens.saturating_add(image_tokens);
+            }
+            while images.peek().is_none()
+                && files.peek().is_some_and(|file| {
+                    media_bytes.saturating_add(file.data.len())
+                        <= attachment_bytes.saturating_sub(256)
+                })
+                && media_tokens.saturating_add(8192) <= media_budget
+            {
+                media_bytes = media_bytes.saturating_add(files.peek().unwrap().data.len());
+                input_files.extend(files.next());
+                media_tokens = media_tokens.saturating_add(8192);
+            }
+            if input_images.is_empty() && input_files.is_empty() {
+                return Err(AxiomError::Provider("An attachment exceeds the compaction request budget; original context was retained.".into()));
+            }
+            let prefix = format!(
+                "Native attachments for conversation message {}. Images {}..{} of {}; files {}..{} of {} (zero-based, end-exclusive). These belong to the same serialized message, which may span fragments.\n",
+                index + 1,
+                image_offset,
+                image_offset + input_images.len(),
+                image_count,
+                file_offset,
+                file_offset + input_files.len(),
+                file_count,
+            );
+            let text_budget = max_bytes
+                .min(
+                    max_input_tokens
+                        .saturating_sub(media_tokens)
+                        .saturating_mul(COMPACTION_BYTES_PER_TOKEN),
+                )
+                .min(attachment_bytes.saturating_sub(media_bytes))
+                .saturating_sub(prefix.len());
+            let mut end = text_budget.min(remaining.len());
+            while !remaining.is_char_boundary(end) {
+                end -= 1;
+            }
+            image_offset += input_images.len();
+            file_offset += input_files.len();
             result.push(CompactionInput {
-                transcript: format!(
-                    "The files attached to this fragment belong to this message.\n{first}"
-                ),
-                images,
-                files,
+                transcript: format!("{prefix}{}", &remaining[..end]),
+                images: input_images,
+                files: input_files,
             });
+            remaining = &remaining[end..];
         }
-        result.extend(parts.map(text_part));
+        // Continue the serialized message without repeating its text or data.
+        while !remaining.is_empty() {
+            let mut end = max_bytes.min(remaining.len());
+            while !remaining.is_char_boundary(end) {
+                end -= 1;
+            }
+            result.push(text_part(remaining[..end].to_owned()));
+            remaining = &remaining[end..];
+        }
         start = index + 1;
     }
     if start < messages.len() || result.is_empty() {
@@ -3352,6 +3486,7 @@ fn compacted_history(system: &str, summary: &str) -> Vec<ChatMessage> {
 }
 
 fn enforce_context_budget(
+    model: &axiom_inference::ModelInfo,
     messages: &[ChatMessage],
     max_bytes: usize,
     max_tokens: usize,
@@ -3383,7 +3518,7 @@ fn enforce_context_budget(
             )
     });
     let estimated_tokens =
-        usize::try_from(estimated_context_tokens(messages)).unwrap_or(usize::MAX);
+        usize::try_from(model_context_tokens(model, messages)).unwrap_or(usize::MAX);
     if bytes > max_bytes || estimated_tokens > max_tokens {
         Err(AxiomError::Provider(format!(
             "turn context exceeded its budget ({bytes}/{max_bytes} bytes, approximately {estimated_tokens}/{max_tokens} tokens)"
@@ -3558,20 +3693,31 @@ fn model_messages(
 
 fn model_context_tokens(model: &axiom_inference::ModelInfo, messages: &[ChatMessage]) -> u64 {
     let tokens = estimated_context_tokens(messages);
-    if model.supports_images && model.id != "direct:qwen3.8-27b" {
-        tokens
+    tokens.saturating_sub(
+        messages
+            .iter()
+            .map(|m| m.images.len() as u64 * (8192 - image_context_tokens(model) as u64))
+            .sum::<u64>(),
+    )
+}
+
+fn image_context_tokens(model: &axiom_inference::ModelInfo) -> usize {
+    if !model.supports_images {
+        0
+    } else if model.id == "direct:qwen3.8-27b" {
+        1024
     } else {
-        let per_image = if model.supports_images {
-            8192 - 1024
-        } else {
-            8192
-        };
-        tokens.saturating_sub(
-            messages
-                .iter()
-                .map(|m| m.images.len() as u64 * per_image)
-                .sum::<u64>(),
-        )
+        8192
+    }
+}
+
+fn model_context_image_limit(model: &axiom_inference::ModelInfo) -> usize {
+    // AstreaAI's attested vision protocol bounds the whole request to eight
+    // images, including prior uploads and optional generated-image views.
+    if model.provider_id == "axiom-direct" || model.id == "direct:qwen3.8-27b" {
+        8
+    } else {
+        axiom_inference::MAX_ATTACHMENTS
     }
 }
 
@@ -3888,6 +4034,10 @@ fn system_prompt(
 mod title_tests;
 
 #[cfg(test)]
+#[path = "agent_context_tests.rs"]
+mod context_tests;
+
+#[cfg(test)]
 mod engine_tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -3909,11 +4059,15 @@ mod engine_tests {
         };
         let mut message = ChatMessage::text(ChatRole::User, "look at this");
         message.images.push(image.clone());
-        let parts = compaction_inputs(&[message.clone()], 4096).unwrap();
+        let model = axiom_inference::ModelInfo {
+            supports_images: true,
+            ..Default::default()
+        };
+        let parts = compaction_inputs(&model, &[message.clone()], 4096, 10_000, 1024).unwrap();
         assert_eq!(parts[0].images, vec![image.clone()]);
         assert!(!parts[0].transcript.contains(&image.data));
-        assert!(enforce_context_budget(&[message.clone()], 10, 100_000).is_err());
-        assert!(enforce_context_budget(&[message], 1000, 100).is_err());
+        assert!(enforce_context_budget(&model, &[message.clone()], 10, 100_000).is_err());
+        assert!(enforce_context_budget(&model, &[message], 1000, 100).is_err());
     }
 
     #[test]
@@ -3925,7 +4079,14 @@ mod engine_tests {
         };
         let mut message = ChatMessage::text(ChatRole::User, "summarize");
         message.files.push(file.clone());
-        let parts = compaction_inputs(&[message], 4096).unwrap();
+        let parts = compaction_inputs(
+            &axiom_inference::ModelInfo::default(),
+            &[message],
+            4096,
+            10_000,
+            1024,
+        )
+        .unwrap();
         assert_eq!(parts[0].files, vec![file.clone()]);
         assert!(!parts[0].transcript.contains(&file.data));
     }
@@ -5848,7 +6009,7 @@ mod engine_tests {
             .await
             .unwrap();
         let events = drain(&mut rx);
-        assert!(events.iter().any(|event| matches!(event, AppEvent::ToolOutput { content, .. } if content.contains("maximum of ten images"))));
+        assert!(events.iter().any(|event| matches!(event, AppEvent::ToolOutput { content, .. } if content.contains("maximum of 10 images"))));
         assert!(
             events
                 .iter()
