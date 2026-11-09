@@ -29,6 +29,8 @@ test('both installed products reuse the rotated native credential without reseed
     prepareNativeReleaseQa(source, cli, fixture.version, run);
     assert.equal(calls.length, seeded, 'the consumed refresh token must never be restored over its replacement');
     assert.equal(calls.filter(call => call.input?.includes('add-generic-password')).length, 1);
+    assert(calls.some(call => call.input?.startsWith('default-keychain -d user -s ')),
+      'native credential lookup selects the default User-domain keychain, independently of its search list');
     assert(calls.every(call => !call.args.join(' ').includes(fixture.refreshToken)), 'secrets must not enter argv');
     for (const environment of [desktop, cli]) assert.equal(readFileSync(path.join(environment.XDG_DATA_HOME, 'axiom/shared/identity/client-id'), 'utf8').trim(), fixture.clientId);
     assert(!readFileSync(path.join(root, 'axiom-installed-native-qa.json'), 'utf8').includes(fixture.refreshToken));

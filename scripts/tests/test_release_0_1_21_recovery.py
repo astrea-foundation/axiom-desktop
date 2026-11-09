@@ -54,5 +54,41 @@ class RecoveryTests(unittest.TestCase):
                 module.validate_source(self.run, 42, jobs)
 
 
+class SignedMacTests(unittest.TestCase):
+    def setUp(self):
+        self.run = {"id": module.SIGNED_MAC_RUN, "head_sha": module.SIGNED_MAC_REVISION,
+                    "head_branch": "v0.1.21-packaging.1", "event": "workflow_dispatch", "workflow_id": 43,
+                    "repository": {"full_name": module.REPOSITORY}, "run_attempt": 1,
+                    "status": "completed", "conclusion": "failure"}
+        self.jobs = [{"name": "qualify", "conclusion": "success"},
+                     {"name": "Recover and qualify signed Mac installers", "conclusion": "failure", "steps": [
+                         {"name": "Sign and notarize both PKG installers", "conclusion": "success"},
+                         {"name": "Generate and view an authenticated image from both signed installations", "conclusion": "failure"},
+                     ]}, {"name": "publish-draft", "conclusion": "skipped"}]
+
+    def test_accepts_the_retained_signed_mac_attempt(self):
+        module.validate_signed_mac(self.run, 43, self.jobs)
+
+    def test_rejects_another_signed_mac_attempt(self):
+        for key, value in [("id", 1), ("head_sha", "b" * 40), ("head_branch", "dev"),
+                           ("event", "push"), ("workflow_id", 13), ("run_attempt", 2),
+                           ("status", "in_progress"), ("conclusion", "success"),
+                           ("repository", {"full_name": "other/repo"})]:
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                module.validate_signed_mac(dict(self.run, **{key: value}), 43, self.jobs)
+
+    def test_rejects_unqualified_mac_signatures_or_a_running_publisher(self):
+        for index in range(len(self.jobs)):
+            jobs = copy.deepcopy(self.jobs)
+            jobs[index]["conclusion"] = None
+            with self.subTest(job=index), self.assertRaises(ValueError):
+                module.validate_signed_mac(self.run, 43, jobs)
+        for index in range(len(self.jobs[1]["steps"])):
+            jobs = copy.deepcopy(self.jobs)
+            jobs[1]["steps"][index]["conclusion"] = "skipped"
+            with self.subTest(step=index), self.assertRaises(ValueError):
+                module.validate_signed_mac(self.run, 43, jobs)
+
+
 if __name__ == "__main__":
     unittest.main()

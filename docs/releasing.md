@@ -164,7 +164,8 @@ native authorization/PKCE exchange. Its JSON contains `version`, `accountId`,
 native account sessions and cannot substitute for this credential.
 
 The harness accepts only a disposable GitHub-hosted macOS runner, creates a
-separate temporary Keychain, and installs that session's client identity in each
+separate temporary Keychain, makes it the runner's default User-domain Keychain,
+and installs that session's client identity in each
 isolated profile. Desktop and standalone CLI share the rotating Keychain entry;
 the original refresh token is seeded once, never restored after rotation. If a
 run consumes the token before failing, authorize a fresh QA native session before
@@ -229,14 +230,17 @@ of this updater's public contract; the native helper uses the complete installer
 ### Completing unpublished packaging from retained inputs
 
 The one-time `release-0.1.21-recovery.yml` workflow uses the reviewed
-`v0.1.21-packaging.1` assembly tag to correct the installed-image acceptance
+`v0.1.21-packaging.2` acceptance tag to correct the installed-image acceptance
 authentication. It retains native source/tag
 `0cea3d47db3a75c1cab7495af930bc864604a6fc` and the accepted Windows/Linux bytes from
 run `42696233901`. The guard requires that exact original attempt's successful
 native builds, live evaluation, Windows signing and ARM64 installation, and Mac
 signing/notarization; only its failed image acceptance and skipped publisher are
-recoverable. The Mac packages are assembled from the retained receipt-bound
-inputs, signed and notarized, then both installed products must generate and view
+recoverable. Signed Mac packages from assembly run `42709923710` are retained
+unchanged after correcting the fixture's default User-domain Keychain selection.
+That exact run's source qualification, signing and notarization must have passed
+and publication must have been skipped. All platforms reuse their retained signed
+installers. Both installed Mac products must then generate and view
 an authenticated image using their bundled configuration and native session.
 The receipt records the native source revision and separate acceptance revision.
 Publication still requires this gate and the complete signed inventory. No

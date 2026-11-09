@@ -53,6 +53,9 @@ export function prepareNativeReleaseQa(source, environment, version, run = (args
       `unlock-keychain -p ${quoted(password)} ${quoted(keychain)}`,
       `add-generic-password -A -a ${quoted(account)} -s ${quoted(service)} -w ${quoted(fixture.refreshToken)} ${quoted(keychain)}`,
       `list-keychains -d user -s ${quoted(keychain)}`,
+      // Both native metadata lookup and apple-native-keyring-store select the
+      // default User-domain keychain, independently of the search list.
+      `default-keychain -d user -s ${quoted(keychain)}`,
     ];
     try {
       // Secrets travel on stdin, never argv or release logs.
