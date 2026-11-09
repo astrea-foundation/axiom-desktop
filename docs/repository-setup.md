@@ -26,10 +26,11 @@ environment secrets. The names below match the workflow exactly.
 | `AXIOM_EVAL_API_KEY` | An Axiom automation API key for the funded release evaluation account. It is not a NEAR or Tinfoil provider key. |
 | `AXIOM_EVAL_BASE_URL` | Relay HTTPS base URL used by the live release gate. The current workflow reads it as a secret even though the URL is not confidential. |
 | `AXIOM_EVAL_MODEL` | Available model ID for the live attested E2EE gate. The current workflow reads it as a secret even though the model ID is not confidential. |
+| `AXIOM_INSTALLED_NATIVE_QA` | Fresh dedicated QA native-session JSON for the installed image check: `version`, `accountId`, `clientId`, `refreshToken`, `sessionId`. Provision through normal native authorization before each release run; revoke after qualification. Automation API keys cannot replace native account authentication. See [installed image qualification](releasing.md#build-and-publish). |
 | `AXIOM_RELEASES_TOKEN` | Fine-grained GitHub credential with Contents write on the public installer distribution repository. Needed for automated mirror publication. |
 | `AXIOM_PLATFORM_RELEASE_TOKEN` | Fine-grained GitHub credential with Actions write on the private platform repository. Needed to dispatch its publisher workflow. |
 
-The first nine entries are required for the current signed release pipeline.
+The signing, live evaluation and native-session QA entries are required for the current signed release pipeline.
 The final two enable automatic cross-repository publication; without them, the
 workflow retains signed artifacts for the documented operator handoff.
 
