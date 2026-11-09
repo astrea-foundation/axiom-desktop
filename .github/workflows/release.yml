@@ -252,6 +252,34 @@ jobs:
             xcrun stapler validate "$file"
             spctl --assess --type install --verbose=2 "$file"
           done
+      - name: Generate and view an authenticated image from both signed installations
+        env:
+          AXIOM_API_KEY: ${{ secrets.AXIOM_ASTREAAI_EVAL_API_KEY }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          desktop="apps/desktop/dist/Axiom-$version-mac-universal.pkg"
+          standalone="apps/desktop/dist/AxiomCLI-$version-mac-universal.pkg"
+          sudo installer -pkg "$desktop" -target /
+          node scripts/verify-installed-image.mjs /Applications/Axiom.app/Contents/Resources/bin/axiomcli "$desktop" "$RUNNER_TEMP/installed-image-desktop" "$version"
+          # Switch CLI registration only on this disposable acceptance runner.
+          link=/usr/local/bin/axiomcli
+          test -L "$link"
+          test "$(readlink "$link")" = /Applications/Axiom.app/Contents/Resources/bin/axiomcli
+          sudo rm "$link"
+          sudo installer -pkg "$standalone" -target /
+          node scripts/verify-installed-image.mjs /usr/local/lib/axiom-cli/bin/axiomcli "$standalone" "$RUNNER_TEMP/installed-image-cli" "$version"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: signed-installation-image-acceptance
+          retention-days: 7
+          path: |
+            ${{ runner.temp }}/installed-image-desktop/receipt.json
+            ${{ runner.temp }}/installed-image-desktop/image-*.png
+            ${{ runner.temp }}/installed-image-cli/receipt.json
+            ${{ runner.temp }}/installed-image-cli/image-*.png
+          if-no-files-found: warn
       - uses: actions/upload-artifact@v4
         with:
           name: axiom-release-mac-universal
