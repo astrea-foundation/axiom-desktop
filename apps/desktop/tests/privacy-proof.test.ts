@@ -9,57 +9,6 @@ const session = (): ClientSessionState => ({
   configOptions: [], interactions: [], running: false, needsResync: false, threadRevision: 0, lastTimelineSequence: 0,
 });
 
-test("signed Chutes releases show TEE verification with separate application provenance scope", () => {
-  const current = session();
-  const evidence = current.securityEvidence!;
-  evidence.attestationProtocol = "chutes-tdx-nvidia-release-v1";
-  evidence.checks = ["Intel TDX", "NVIDIA GPU", "Chutes encryption key and fresh challenge", "Repository release authorization"]
-    .map(name => ({ name, passed: true, detail: "verified" }));
-  current.settings = { model: "chutes-preview:qwen3.8-27b", thinkingLevel: "medium", permissionProfile: "chat" };
-  assert.equal(proofState(current, "test-model", Date.now()), "verified");
-  assert.deepEqual(proofBadge(current, "verified"), { label: "TEE verified", tone: "success" });
-  assert.deepEqual(proofGroups(evidence).map(group => group.passed), [true, true, true]);
-  assert.ok(proofGroups(evidence).every(group => !/running application matches/i.test(group.explanation)));
-  assert.equal(proofState(current, "test-model", evidence.hardExpiresAtUnixSeconds * 1000), "expired");
-});
-
-test("Chutes hardware preview stays visibly development-only after an authenticated reply", () => {
-  const current = session();
-  current.security = { state: "degraded" };
-  current.securityEvidence!.status.state = "degraded";
-  current.securityEvidence!.attestationProtocol = "chutes-hardware-development-v1";
-  current.securityEvidence!.checks = [
-    { name: "Intel TDX", detail: "UpToDate", passed: true },
-    { name: "NVIDIA GPU", detail: "verified", passed: true },
-    { name: "Chutes encryption key and fresh challenge", detail: "quote-bound", passed: true },
-    { name: "Application provenance", detail: "unqualified development preview", passed: false },
-  ];
-  current.timeline = [{ id: "answer", turnId: "turn", kind: "assistant", text: "Authenticated preview", status: "completed", terminalVerified: true }];
-  assert.equal(proofState(current, "test-model", Date.now()), "development");
-  assert.equal(outdatedTeeState(current, "test-model"), undefined);
-  assert.deepEqual(proofBadge(current, "development"), { label: "Chutes dev preview", tone: "warning" });
-  assert.deepEqual(proofGroups(current.securityEvidence!).map(group => group.passed), [true, true, false]);
-  assert.equal(proofState(current, "other-model", Date.now()), "unavailable");
-  assert.equal(proofState(current, "test-model", current.securityEvidence!.hardExpiresAtUnixSeconds * 1000), "expired");
-  current.securityVerificationError = "Hardware unavailable";
-  assert.equal(proofState(current, "test-model", Date.now()), "unavailable");
-});
-
-test("preview admission without an inspected report never shows the NEAR consent warning", () => {
-  const current = session();
-  current.security = { state: "degraded" };
-  current.securityEvidence = null;
-  current.settings = { model: "chutes-preview:qwen3.8-27b", thinkingLevel: "medium", permissionProfile: "chat" };
-  assert.equal(outdatedTeeState(current, current.settings.model), undefined);
-  assert.equal(proofState(current, current.settings.model, Date.now()), "development");
-  assert.deepEqual(proofBadge(current, "development"), { label: "Chutes dev preview", tone: "warning" });
-  current.security = { state: "unverified" };
-  current.timeline = [{ id: "answer", turnId: "turn", kind: "assistant", text: "Cached preview reply", status: "completed", terminalVerified: true }];
-  assert.deepEqual(proofBadge(current, "unverified"), { label: "Chutes dev preview", tone: "warning" });
-  current.timeline.push({ id: "error", turnId: "turn", kind: "error", text: "Request failed", status: "failed" });
-  assert.equal(proofBadge(current, "failed").tone, "danger");
-});
-
 test("outdated and accepted degraded environments stay yellow even with an authenticated reply", () => {
   const current = session();
   current.security = { state: "outdated" };
@@ -177,8 +126,7 @@ test("rate limits and reply bookkeeping do not change the environment badge", ()
 
 test("report explanations cover the recipient environment without reply verdicts", () => {
   const report = securityEvidence();
-  for (const protocol of ["near-tdx-nvidia-v1", "near-tdx-nvidia-v2", "tinfoil-snp-sigstore-v1",
-    "chutes-tdx-nvidia-release-v1", "chutes-hardware-development-v1", "axiom-gateway-v2"]) {
+  for (const protocol of ["near-tdx-nvidia-v1", "near-tdx-nvidia-v2", "tinfoil-snp-sigstore-v1", "axiom-gateway-v2"]) {
     report.attestationProtocol = protocol;
     for (const group of proofGroups(report)) {
       assert.doesNotMatch(group.explanation, /repl(?:y|ies)|stream order|completion/i);

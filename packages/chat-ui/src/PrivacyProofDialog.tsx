@@ -103,8 +103,6 @@ export function PrivacyProofDialog({ session, model, modelId, state, now, webEna
   const providerLabel = evidence ? model?.providerId === evidence.providerId ? model.providerLabel : evidence.providerId : model?.providerLabel;
   const gateway = evidence?.attestationProtocol === "axiom-gateway-v2";
   const verified = state === "verified";
-  const hardwareVerified = state === "development"
-    && evidence?.attestationProtocol === "chutes-hardware-development-v1";
   const groups = evidence ? proofGroups(evidence) : [];
   useLayoutEffect(() => {
     mounted.current = true;
@@ -165,27 +163,23 @@ export function PrivacyProofDialog({ session, model, modelId, state, now, webEna
             {verified ? <ShieldCheck size={21} aria-hidden="true" /> : state === "failed" ? <ShieldX size={21} aria-hidden="true" /> : <Shield size={21} aria-hidden="true" />}
           </div>
           <div className="min-w-0 flex-1">
-            {verified ? <VerifiedStatus gateway={gateway} /> : <p role="status" className="text-[15px] font-medium">{hardwareVerified ? "Hardware verified · code unverified" : proofLabels[state]}</p>}
+            {verified ? <VerifiedStatus gateway={gateway} /> : <p role="status" className="text-[15px] font-medium">{proofLabels[state]}</p>}
             <p className="mt-0.5 flex flex-wrap gap-x-3 text-[12px] text-[var(--color-text-secondary)] [overflow-wrap:anywhere]"><span>{model?.shortLabel ?? modelId}</span>{providerLabel ? <span>{providerLabel}</span> : null}</p>
           </div>
         </div>
-        <p id={`${id}-description`} className="mb-2 mt-4 text-[13px] leading-[21px] text-[var(--color-text-secondary)]">{session.securityEvidence?.attestationProtocol === "chutes-hardware-development-v1" && state === "development" ? "Local development preview: Intel TDX, NVIDIA GPU evidence, and the Chutes encryption key were checked on this device. Messages are encrypted to this instance. Application provenance and model-file binding are still unqualified." : gateway && state === "verified" ? "Your browser verified the gateway’s hardware and workload. Upstream provider evidence is checked by this gateway for every request." : explanation[state]}</p>
+        <p id={`${id}-description`} className="mb-2 mt-4 text-[13px] leading-[21px] text-[var(--color-text-secondary)]">{gateway && state === "verified" ? "Your browser verified the gateway’s hardware and workload. Upstream provider evidence is checked by this gateway for every request." : explanation[state]}</p>
         {evidence ? <p className="mb-4 text-[11.5px] text-[var(--color-text-tertiary)]">
-          {verified || state === "degraded" || hardwareVerified ? "Report checked locally" : "Previous report checked"}{" "}
+          {verified || state === "degraded" ? "Report checked locally" : "Previous report checked"}{" "}
           <time dateTime={new Date(evidence.verifiedAtUnixSeconds * 1000).toISOString()} title={new Date(evidence.verifiedAtUnixSeconds * 1000).toLocaleString()}>{verificationAge(evidence.verifiedAtUnixSeconds, now)}</time>
         </p> : null}
         {evidence ? <div className="-mx-3">
           {groups.map((group) => <Disclosure key={group.title} title={group.title} verified={verified && group.passed}
-            value={group.passed ? verified ? "Verified" : hardwareVerified ? "Passed" : "Passed at check" : "Not established"}>
+            value={group.passed ? verified ? "Verified" : "Passed at check" : "Not established"}>
             <p className="mb-2">{group.explanation}</p>
             {group.checks.map((check) => <div key={check.name} className="flex items-start justify-between gap-3 py-1"><span>{check.name}</span><span className="min-w-0 text-right text-[var(--color-text-tertiary)] [overflow-wrap:anywhere]">{check.detail}</span></div>)}
             {group.title === "Freshness" ? <p className="mt-2">{evidence.hardExpiresAtUnixSeconds * 1000 <= now ? "Expired" : "Expires"} {new Date(evidence.hardExpiresAtUnixSeconds * 1000).toLocaleString()}</p> : null}
           </Disclosure>)}
         </div> : <p className="mb-3 mt-4 rounded-[11px] bg-[var(--wash-row)] px-3 py-3 text-[12px] text-[var(--color-text-tertiary)]">{state === "verifying" ? "The report will appear when verification finishes." : "No report available for this model."}</p>}
-        {evidence?.attestationProtocol === "chutes-tdx-nvidia-release-v1" ? <div className="mt-4 rounded-[11px] bg-[var(--wash-row)] p-3 text-[12px] leading-[19px] text-[var(--color-text-secondary)]">
-          <strong className="text-[var(--color-text-primary)]">Verification scope</strong>
-          <p className="mt-1">TEE hardware, encryption and the release authority are verified. Eligible signed updates are accepted automatically. Chutes manages the confidential runtime and application deployment.</p>
-        </div> : null}
         {gateway ? <div className="mt-4 rounded-[11px] bg-[var(--wash-row)] p-3 text-[12px]"><strong>Upstream provider</strong><p className="mt-1 text-[var(--color-text-secondary)]">{model?.providerLabel ?? "Provider"} verification is required for each request inside the verified gateway. This gateway report does not attest the selected model directly.</p></div> : null}
         {evidence ? <details className="group/technical mt-3 border-t border-[var(--color-border)] pt-3">
           <summary className="flex cursor-pointer list-none items-center gap-2 rounded-lg py-1.5 text-[12px] text-[var(--color-text-secondary)] [&::-webkit-details-marker]:hidden">

@@ -50,56 +50,19 @@ const dialog = (page: Page) => page.getByRole("dialog", { name: "Privacy proof",
 const count = (page: Page) => page.evaluate(() => (window as any).__privacyTest.calls());
 const capture = async (page: Page, name: string) => { if (captures) await page.screenshot({ path: `${captures}/${name}.png` }); };
 
-test("Chutes automatically obtains missing reports and keeps code provenance unverified", async () => {
+test("missing reports are obtained automatically without interrupting a running reply", async () => {
   const { page, errors } = await open("dark");
   try {
-    await page.evaluate(() => {
-      const test = (window as any).__privacyTest;
-      test.setModel("chutes-preview:qwen3.8-27b");
-      test.update({ settings: { model: "chutes-preview:qwen3.8-27b", thinkingLevel: "medium", permissionProfile: "web" },
-        security: { state: "degraded" }, securityEvidence: null });
-    });
+    await page.evaluate(() => (window as any).__privacyTest.update({ securityEvidence: null }));
     await page.waitForFunction(() => (window as any).__privacyTest.calls() === 1);
-    const evidence = securityEvidence();
-    Object.assign(evidence, { status: { state: "degraded" }, modelId: "chutes-preview:qwen3.8-27b",
-      providerId: "chutes-preview", attestationProtocol: "chutes-hardware-development-v1",
-      e2eeProtocol: "chutes-mlkem768-desktop-v1", attestationGeneration: null });
-    evidence.checks = [
-      { name: "Intel TDX", detail: "UpToDate", passed: true },
-      { name: "NVIDIA GPU", detail: "verified", passed: true },
-      { name: "Chutes encryption key and fresh challenge", detail: "quote-bound", passed: true },
-      { name: "Application provenance", detail: "unqualified development preview", passed: false },
-    ];
-    await page.evaluate(report => (window as any).__privacyTest.finishReport(report), evidence);
+    await page.evaluate(report => (window as any).__privacyTest.finishReport(report), securityEvidence());
     await proofButton(page).click();
-    await dialog(page).getByText("Hardware verified · code unverified", { exact: true }).waitFor();
-    await dialog(page).getByText("Not established", { exact: true }).waitFor();
+    await dialog(page).getByText("TEE verified", { exact: true }).waitFor();
     assert.equal(await page.getByText("No report available for this model.", { exact: true }).count(), 0);
-    assert.equal(await page.getByText("TEE verified", { exact: true }).count(), 0);
     assert.equal(await count(page), 1, "opening a fresh report adds no verification request");
     await page.keyboard.press("Escape");
     await page.evaluate(() => (window as any).__privacyTest.update({ securityEvidence: null, running: true }));
     assert.equal(await count(page), 1, "a running reply cannot be interrupted by report refresh");
-    assert.deepEqual(errors, []);
-  } finally { await page.close(); }
-});
-
-test("signed Chutes staging shows verified hardware and release authority with explicit scope", async () => {
-  const { page, errors } = await open("dark");
-  try {
-    const evidence = securityEvidence();
-    Object.assign(evidence, { providerId: "chutes-preview", attestationProtocol: "chutes-tdx-nvidia-release-v1",
-      e2eeProtocol: "chutes-mlkem768-desktop-v1", attestationGeneration: null });
-    evidence.checks = ["Intel TDX", "NVIDIA GPU", "Chutes encryption key and fresh challenge", "Repository release authorization"]
-      .map(name => ({ name, passed: true, detail: name === "Intel TDX" ? "UpToDate" : "verified" }));
-    evidence.providerClaims = [{ name: "execution_provenance", value: "Not independently established by the Chutes evidence; release authorization is a separate claim." }];
-    await page.evaluate(report => (window as any).__privacyTest.update({ security: { state: "verified" }, securityEvidence: report }), evidence);
-    await proofButton(page).click();
-    await dialog(page).getByText("TEE verified", { exact: true }).waitFor();
-    await dialog(page).getByText("Release authority", { exact: true }).waitFor();
-    await dialog(page).getByText("Verification scope", { exact: true }).waitFor();
-    await dialog(page).getByText(/Chutes manages the confidential runtime and application deployment/).waitFor();
-    assert.equal(await dialog(page).getByText("Verified", { exact: true }).count(), 3);
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
 });
@@ -336,13 +299,14 @@ test("reply history does not change the environment badge or add reply verdicts"
   } finally { await page.close(); }
 });
 
-test("managed Chutes reports automatically renew before expiry without duplicate requests", async () => {
+test("managed reports automatically renew before expiry without duplicate requests", async () => {
   const { page, errors } = await open("dark", true);
   try {
-    const model = "chutes:qwen3.8-27b";
+    const model = "tinfoil-deepseek-v4-1-flash";
     const report = securityEvidence(await page.evaluate(() => Date.now()));
-    Object.assign(report, { modelId: model, providerId: "chutes", attestationProtocol: "chutes-tdx-nvidia-release-v1" });
-    report.checks = ["Intel TDX", "NVIDIA GPU", "Chutes encryption key and fresh challenge", "Repository release authorization"]
+    Object.assign(report, { modelId: model, providerId: "tinfoil", attestationProtocol: "tinfoil-snp-sigstore-v1",
+      e2eeProtocol: "tinfoil-ehbp-v1" });
+    report.checks = ["AMD SEV-SNP router attestation", "Measured router matches Sigstore build provenance", "Live TLS identity and attested HPKE key"]
       .map(name => ({ name, passed: true, detail: "verified" }));
     await page.evaluate(({ model, report }) => {
       (window as any).__privacyTest.setModel(model);
