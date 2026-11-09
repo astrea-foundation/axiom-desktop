@@ -27,18 +27,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn chutes_metadata_cannot_be_promoted_to_a_verified_pool_worker() {
-        let worker = WorkerIdentity {
-            worker_id: "11".repeat(16),
-            boot_id: "22".repeat(32),
-            encryption_key: "33".repeat(32),
-            identity_key: "44".repeat(32),
-            model_manifest: "55".repeat(32),
-            logical_origin: "https://api.chutes.ai".into(),
-            evidence_profile: "chutes-gpu-v1".into(),
-            deployment_digest: "66".repeat(32),
-        };
-        worker.validate(false).unwrap();
+    async fn unqualified_evidence_profiles_cannot_become_verified_pool_workers() {
         let config: VerifierConfig = serde_json::from_value(json!({
             "binary": "/does-not-exist",
             "binary_sha256": "77".repeat(32),
@@ -50,26 +39,46 @@ mod tests {
             payload: String::new(),
             signature: String::new(),
         };
-        let evidence = WorkerEvidence {
-            protocol: PROTOCOL.into(),
-            challenge: "99".repeat(32),
-            identity: empty.clone(),
-            document: json!({"verified": true, "workload_binding_verified": true}),
-            manifest: empty.clone(),
-            policy: empty,
-        };
-        let result = config
-            .verify(
-                &reqwest::Client::new(),
-                evidence,
-                &"99".repeat(32),
-                &worker,
-                1,
-                &CancellationToken::new(),
-            )
-            .await;
-        assert!(result.is_err());
-        assert!(result.err().unwrap().to_string().contains("not qualified"));
+        // "chutes-gpu-v1" is a retired profile; it must be rejected like any
+        // other unknown profile, even with provider-supplied `verified` flags.
+        for profile in ["chutes-gpu-v1", "test-fixture-only", "ordinary-tls"] {
+            let worker = WorkerIdentity {
+                worker_id: "11".repeat(16),
+                boot_id: "22".repeat(32),
+                encryption_key: "33".repeat(32),
+                identity_key: "44".repeat(32),
+                model_manifest: "55".repeat(32),
+                logical_origin: "https://worker.example".into(),
+                evidence_profile: profile.into(),
+                deployment_digest: "66".repeat(32),
+            };
+            assert!(worker.validate(false).is_err());
+            let evidence = WorkerEvidence {
+                protocol: PROTOCOL.into(),
+                challenge: "99".repeat(32),
+                identity: empty.clone(),
+                document: json!({"verified": true, "workload_binding_verified": true}),
+                manifest: empty.clone(),
+                policy: empty.clone(),
+            };
+            let result = config
+                .verify(
+                    &reqwest::Client::new(),
+                    evidence,
+                    &"99".repeat(32),
+                    &worker,
+                    1,
+                    &CancellationToken::new(),
+                )
+                .await;
+            assert!(
+                result
+                    .err()
+                    .unwrap()
+                    .to_string()
+                    .contains("unsupported worker evidence profile")
+            );
+        }
     }
 }
 /// No public constructor or Deserialize: keys enter through the verifier only.
@@ -212,16 +221,16 @@ impl VerifierConfig {
             });
         }
         expected.validate(false)?;
-        // Structural recognition is not a trust decision. Chutes quotes bind
-        // its ML-KEM key, not this worker's HPKE/identity keys or signed model
-        // release. Never feed that evidence to the Tinfoil verifier or treat
-        // a provider's `verified` flag as an Axiom workload appraisal.
+        // Structural recognition is not a trust decision. Only profiles whose
+        // evidence binds this worker's HPKE/identity keys and signed model
+        // release are admitted; a provider's `verified` flag is never an Axiom
+        // workload appraisal.
         ensure!(
             matches!(
                 expected.evidence_profile.as_str(),
                 "tinfoil-gpu-v3" | "axiom-snp-nvidia-v1"
             ),
-            "Chutes workload/key attestation is not qualified for pool admission"
+            "worker evidence profile is not qualified for pool admission"
         );
         ensure!(
             evidence.protocol == PROTOCOL && evidence.challenge == challenge,

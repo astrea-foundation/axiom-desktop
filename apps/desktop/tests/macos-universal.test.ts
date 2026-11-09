@@ -17,8 +17,6 @@ const matches = (file: string) => minimatch(file, config.mac.x64ArchFiles, {matc
 
 test('universal packaging preserves pre-signed runtime libraries in hidden vendor directories', () => {
   for (const file of [
-    'Contents/Resources/chutes/runtime/arm64/_internal/PIL/.dylibs/libXau.6.dylib',
-    'Contents/Resources/chutes/runtime/x64/_internal/PIL/.dylibs/libjpeg.8.dylib',
     'Contents/Resources/direct/darwin-arm64/runtime/_internal/PIL/.dylibs/libXau.6.dylib',
     'Contents/Resources/direct/darwin-x64/runtime/_internal/libcrypto.3.dylib',
     'Contents/Resources/direct/darwin-arm64/runtime/axiom-direct-verify',
@@ -38,19 +36,18 @@ test('runtime preservation does not exempt the app or Rust sidecars from univers
 test('universal temporary apps defer frozen runtimes while final and ordinary thin apps copy strictly', async () => {
   const directory=await mkdtemp(path.join(os.tmpdir(),'axiom-mac-hook-'));
   const direct=require('../../../scripts/direct-bundle.cjs');
-  const chutesPath=require.resolve('../scripts/bundle-chutes-runtime.cjs');
   const licensesPath=require.resolve('../../../scripts/package-licenses.cjs');
-  const originalChutes=require(chutesPath),originalLicenses=require(licensesPath);
+  const originalLicenses=require(licensesPath);
   const originalCopy=direct.copyBundles;
-  const previous={direct:process.env.AXIOM_DIRECT_BUNDLE,chutes:process.env.AXIOM_CHUTES_BUNDLE};
+  const previous=process.env.AXIOM_DIRECT_BUNDLE;
   const calls:string[]=[];
   const record=(name:string)=>async (_resources:string,_source:string,options:{architecture:string,signed:boolean})=>{
     assert.equal(options.signed,true);calls.push(name+' '+options.architecture);
   };
   try {
-    direct.copyBundles=record('copy direct');require.cache[chutesPath]!.exports=record('copy chutes');
+    direct.copyBundles=record('copy direct');
     require.cache[licensesPath]!.exports=async()=>{};
-    process.env.AXIOM_DIRECT_BUNDLE=directory;process.env.AXIOM_CHUTES_BUNDLE=directory;
+    process.env.AXIOM_DIRECT_BUNDLE=directory;
     const options=createRequire(require.resolve('electron-builder'))('./builder.js').normalizeOptions({mac:['pkg'],universal:true,x64:true});
     const {Platform}=builder('./index.js');
     const {PlatformPackager}=builder('./platformPackager.js');
@@ -63,21 +60,19 @@ test('universal temporary apps defer frozen runtimes while final and ordinary th
     context.arch=3;context.appOutDir=universal+'-arm64-temp';await afterPack(context);
     assert.deepEqual(calls,[],'frozen frameworks must never enter the universal merger');
     context.arch=4;context.appOutDir=universal;await afterPack(context);
-    assert.deepEqual(calls,['copy direct universal','copy chutes universal']);
+    assert.deepEqual(calls,['copy direct universal']);
     context.arch=1;context.appOutDir=packager.computeAppOutDir(outDir,1);await afterPack(context);
-    assert.deepEqual(calls.slice(-2),['copy direct x64','copy chutes x64'],'a mixed x64/universal command still includes runtimes in its ordinary x64 app');
+    assert.deepEqual(calls.slice(-1),['copy direct x64'],'a mixed x64/universal command still includes runtimes in its ordinary x64 app');
     context.arch=4;context.appOutDir=universal;
     direct.copyBundles=async()=>{throw new Error('verifier inventory rejected');};
     await assert.rejects(afterPack(context),/verifier inventory rejected/);
-    direct.copyBundles=record('copy direct');require.cache[chutesPath]!.exports=async()=>{throw new Error('helper signature rejected');};
-    await assert.rejects(afterPack(context),/helper signature rejected/);
+    direct.copyBundles=record('copy direct');
     context.arch=1;context.appOutDir=universal+'-x64-temp';
     await mkdir(path.join(packager.getResourcesDir(context.appOutDir),'direct'),{recursive:true});
     await assert.rejects(afterPack(context),/Frozen runtimes must be added after the universal merge/);
   } finally {
-    direct.copyBundles=originalCopy;require.cache[chutesPath]!.exports=originalChutes;require.cache[licensesPath]!.exports=originalLicenses;
-    if(previous.direct===undefined)delete process.env.AXIOM_DIRECT_BUNDLE;else process.env.AXIOM_DIRECT_BUNDLE=previous.direct;
-    if(previous.chutes===undefined)delete process.env.AXIOM_CHUTES_BUNDLE;else process.env.AXIOM_CHUTES_BUNDLE=previous.chutes;
+    direct.copyBundles=originalCopy;require.cache[licensesPath]!.exports=originalLicenses;
+    if(previous===undefined)delete process.env.AXIOM_DIRECT_BUNDLE;else process.env.AXIOM_DIRECT_BUNDLE=previous;
     await rm(directory,{recursive:true,force:true});
   }
 });

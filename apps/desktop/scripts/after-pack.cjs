@@ -19,10 +19,8 @@ module.exports = async function afterPack(context) {
   await writeFile(path.join(resources, 'axiom-install.json'), JSON.stringify({schemaVersion: 1, product: 'desktop', format, versioned: false}) + '\n');
   await require('../../../scripts/package-licenses.cjs')(workspace, path.join(resources, 'licenses'));
   if (deferRuntimes) {
-    for (const name of ['direct','chutes']) {
-      try { await lstat(path.join(resources,name)); throw new Error('Frozen runtimes must be added after the universal merge'); }
-      catch(error) { if(error.code !== 'ENOENT') throw error; }
-    }
+    try { await lstat(path.join(resources,'direct')); throw new Error('Frozen runtimes must be added after the universal merge'); }
+    catch(error) { if(error.code !== 'ENOENT') throw error; }
   }
   if (process.env.AXIOM_DIRECT_BUNDLE) {
     const direct = require('../../../scripts/direct-bundle.cjs');
@@ -34,16 +32,6 @@ module.exports = async function afterPack(context) {
     });
   } else if (context.packager.config.forceCodeSigning === true) {
     throw new Error('A production AstreaAI verifier bundle is required for signed installers');
-  }
-  if (process.env.AXIOM_CHUTES_BUNDLE && !deferRuntimes) {
-    const chutes = require('./bundle-chutes-runtime.cjs');
-    await chutes(resources, process.env.AXIOM_CHUTES_BUNDLE, {
-      platform: context.electronPlatformName,
-      architecture: {0:'ia32',1:'x64',2:'armv7l',3:'arm64',4:'universal'}[context.arch],
-      channel: process.env.AXIOM_CHUTES_RELEASE_CHANNEL || 'production',
-      signed: context.packager.config.forceCodeSigning === true,
-      teamId: process.env.APPLE_TEAM_ID,
-    });
   }
   if (context.electronPlatformName === 'win32') {
     await mkdir(path.join(resources, 'launchers'), {recursive: true});

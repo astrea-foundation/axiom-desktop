@@ -1,6 +1,6 @@
 [package]
 name = "axiomcli"
-version = "0.1.20"
+version = "0.1.21"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
@@ -38,8 +38,8 @@ open = "5.3.6"
 pulldown-cmark = { version = "0.13.4", default-features = false }
 ratatui = "0.30.2"
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "query", "rustls", "stream"] }
-rmcp = { version = "3.1.4", default-features = false, features = ["client", "server", "transport-child-process", "transport-io"] }
-rusqlite = { version = "0.40.2", features = ["bundled", "chrono", "uuid"] }
+rmcp = { version = "3.9.0", default-features = false, features = ["client", "server", "transport-child-process", "transport-io"] }
+rusqlite = { version = "0.41.1", features = ["bundled", "chrono", "uuid"] }
 secrecy = "0.10.3"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
@@ -60,6 +60,9 @@ uuid = { version = "1.18.1", features = ["v4", "serde"] }
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.31.3", features = ["process", "signal"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "3.7.0"
 
 [target.'cfg(windows)'.dependencies]
 win32job = "2.0.3"

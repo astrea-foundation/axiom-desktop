@@ -39,14 +39,23 @@ pub const APP_EVENT_QUEUE_CAPACITY: usize = 256;
 /// the single-thread Tokio runtimes used by embedders and tests as well.
 const RESTORE_COOPERATION_INTERVAL: usize = 128;
 
-/// Shared product behavior plus the native Desktop capability profile.
+/// Shared product behavior, the native Desktop capability profile, and what
+/// Axiom is and how Desktop protects conversations.
 pub const DESKTOP_CHAT_SYSTEM_PROMPT: &str = concat!(
     include_str!("../../../packages/chat-core/prompts/chat.md"),
     "\n",
     include_str!("../prompts/desktop-chat.md"),
+    "\n",
+    include_str!("../prompts/desktop-product.md"),
 );
 
-const QWEN_UNCENSORED_SYSTEM_PROMPT: &str =
+/// Axiom is an uncensored chat product: every model receives this behavior
+/// policy. Tool availability, Web consent and approvals still govern actions.
+const UNCENSORED_SYSTEM_PROMPT: &str =
+    include_str!("../../../packages/chat-core/prompts/uncensored.md");
+
+/// Name used by the bundled Qwen3.8 Uncensored offerings.
+const QWEN_UNCENSORED_IDENTITY_PROMPT: &str =
     include_str!("../../../packages/chat-core/prompts/qwen3.8-uncensored.md");
 
 /// Upper bound also enforced by the CLI before a launch-time system prompt is
@@ -200,21 +209,33 @@ pub fn reconcile_new_session_settings(
     Ok(reconcile_model_settings(selected, preferred_thinking))
 }
 
+/// Upstream identity of the default model: NEAR's attested, abliterated
+/// `DeepSeek-V4.1-Flash-1017`. When the catalog withdraws it, Tinfoil's
+/// `deepseek-v4-1-flash` and then the remaining provider order take over.
+const DEFAULT_MODEL: (&str, &str) = ("near", "deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated");
+const FALLBACK_DEFAULT_MODEL: (&str, &str) = ("tinfoil", "deepseek-v4-1-flash");
+
 /// Order discovered offerings for new-session defaults and model pickers.
 /// This preference never creates an offering or authorizes a provider protocol.
 pub(crate) fn compare_model_preference(
     left: &axiom_inference::ModelInfo,
     right: &axiom_inference::ModelInfo,
 ) -> std::cmp::Ordering {
-    fn key(model: &axiom_inference::ModelInfo) -> (u8, &str, bool, &str) {
+    fn key(model: &axiom_inference::ModelInfo) -> (u8, u8, &str, &str) {
+        let identity = (model.provider_id.as_str(), model.upstream_model.as_str());
+        let pinned = if identity == DEFAULT_MODEL {
+            0
+        } else if identity == FALLBACK_DEFAULT_MODEL {
+            1
+        } else {
+            2
+        };
         let priority = match model.provider_id.as_str() {
             "tinfoil" => 0,
             "near" => 1,
             _ => 2,
         };
-        let preferred =
-            model.provider_id == "tinfoil" && model.upstream_model == "deepseek-v4-1-flash";
-        (priority, &model.provider_id, !preferred, &model.id)
+        (pinned, priority, &model.provider_id, &model.id)
     }
     key(left).cmp(&key(right))
 }
@@ -1373,7 +1394,44 @@ impl AgentEngine {
         } else {
             String::new()
         };
-        let parts = compaction_inputs(&conversation[..recent_start], budget / 2)?;
+        // Hidden reasoning and visible text share the output-token limit.
+        // A short summary must not starve reasoning before it can emit text.
+        let mut output_limit = u32::try_from(summary_limit / 4).unwrap_or(u32::MAX).max(1);
+        if !model.supported_reasoning_efforts.is_empty()
+            || model
+                .supported_thinking_modes
+                .contains(&axiom_inference::ThinkingMode::Enabled)
+        {
+            output_limit = output_limit.max(4096);
+        }
+        if model.max_output_tokens > 0 {
+            output_limit = output_limit.min(model.max_output_tokens);
+        }
+        // Text fragment bytes alone do not bound native visual/file tokens.
+        // Compaction may use the full window, reserving prior summary, output,
+        // focus, instructions/template overhead and the request safety margin.
+        let capacity = if model.context_window_tokens > 0 {
+            usize::try_from(model.context_window_tokens)
+                .unwrap_or(usize::MAX)
+                .min(self.limits.max_context_tokens)
+        } else {
+            self.limits.max_context_tokens
+        };
+        let input_tokens = capacity
+            .saturating_sub(summary_limit.div_ceil(COMPACTION_BYTES_PER_TOKEN))
+            .saturating_sub(usize::try_from(output_limit).unwrap_or(usize::MAX))
+            .saturating_sub(focus.len().div_ceil(COMPACTION_BYTES_PER_TOKEN))
+            .saturating_sub(1024.min(capacity / 4))
+            .saturating_sub((capacity / 100).max(1));
+        let parts = compaction_inputs(
+            model,
+            &conversation[..recent_start],
+            budget / 2,
+            input_tokens,
+            summary_limit
+                .saturating_add(focus.len())
+                .saturating_add(1024),
+        )?;
         let mut summary = String::new();
         for (index, part) in parts.iter().enumerate() {
             let transcript = &part.transcript;
@@ -1392,7 +1450,7 @@ impl AgentEngine {
                         ChatRole::User,
                         format!(
                             "{focus}\nAim for at most {} characters. Fragment {} of {}.\n<previous-summary>\n{summary}\n</previous-summary>\n<conversation-fragment>\n{transcript}\n</conversation-fragment>",
-                            summary_limit / 2,
+                            summary_limit / 4,
                             index + 1,
                             parts.len()
                         ),
@@ -1411,7 +1469,6 @@ impl AgentEngine {
                 Vec::new(),
                 settings.thinking,
             );
-            let output_limit = u32::try_from(summary_limit / 4).unwrap_or(u32::MAX).max(1);
             request.max_output_tokens = Some(
                 request
                     .max_output_tokens
@@ -1891,13 +1948,16 @@ impl TurnRunner for AgentEngine {
                     turn_id,
                     attachments,
                     ..
-                } => images.add_uploads(
-                    &session_id.to_string(),
-                    &turn_id.to_string(),
-                    attachments,
-                )?,
-                AppEvent::ImageGenerated { image, .. } => {
-                    images.add_generated(image)?;
+                } => {
+                    if images
+                        .add_uploads(&session_id.to_string(), &turn_id.to_string(), attachments)
+                        .is_err()
+                    {
+                        tracing::warn!(%session_id, "unusable saved image uploads omitted from runtime catalog");
+                    }
+                }
+                AppEvent::ImageGenerated { image, .. } if images.add_generated(image).is_err() => {
+                    tracing::warn!(%session_id, "unusable saved generated image omitted from runtime catalog");
                 }
                 _ => {}
             }
@@ -1938,7 +1998,23 @@ impl TurnRunner for AgentEngine {
                     text, attachments, ..
                 } => {
                     last_used_model = Some(active_model.clone());
-                    messages.push(axiom_inference::user_message(text, attachments));
+                    let usable = attachments
+                        .iter()
+                        .filter(|attachment| {
+                            axiom_inference::validate_stored_prompt(
+                                text,
+                                std::slice::from_ref(*attachment),
+                            )
+                            .is_ok()
+                        })
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    let text = if text.trim().is_empty() && usable.is_empty() {
+                        "[An earlier message's attachments are unavailable.]"
+                    } else {
+                        text
+                    };
+                    messages.push(axiom_inference::user_message(text, &usable));
                 }
                 AppEvent::SteeringApplied { text, .. } => {
                     last_used_model = Some(active_model.clone());
@@ -2050,8 +2126,8 @@ impl TurnRunner for AgentEngine {
                     active_tools.remove(call_id);
                     if let Some(image_id) = viewed_image_ids.remove(call_id)
                         && *success
+                        && let Ok(image) = images.view(&image_id, CancellationToken::new()).await
                     {
-                        let image = images.view(&image_id, CancellationToken::new()).await?;
                         messages.push(image_observation(call_id, vec![image]));
                     }
                 }
@@ -2108,17 +2184,17 @@ impl TurnRunner for AgentEngine {
         // Restore the complete post-compaction journal. A large restored
         // context must go through normal staged compaction before inference;
         // pruning here would silently discard facts on restart or Stop.
-        let restored_context_tokens = estimated_context_tokens(&messages);
         self.histories
             .lock()
             .await
-            .insert(session_id.clone(), messages);
+            .insert(session_id.clone(), repair_tool_history(messages));
         self.image_catalogs
             .lock()
             .await
             .insert(session_id.clone(), images);
-        self.update_context_tokens(session_id, restored_context_tokens)
-            .await;
+        // Restore has no live model metadata. Recompute on the next turn
+        // instead of caching the generic 8192-token allowance for every image.
+        self.context_tokens.lock().await.remove(session_id);
         self.settings
             .lock()
             .await
@@ -2415,13 +2491,21 @@ impl TurnRunner for AgentEngine {
                 "Choose a vision-capable model to upload or edit an image.".into(),
             ));
         }
-        if messages
+        if user_message
+            .files
             .iter()
-            .chain(std::iter::once(&user_message))
-            .flat_map(|message| &message.files)
             .any(|file| !model.file_mime_types.contains(&file.mime_type))
         {
             return Err(AxiomError::Provider("This conversation contains files that this model cannot accept. Choose a model with the required upload support.".into()));
+        }
+        for message in &mut messages {
+            let previous = message.files.len();
+            message
+                .files
+                .retain(|file| model.file_mime_types.contains(&file.mime_type));
+            if message.files.len() != previous {
+                message.content.push_str("\n[Earlier file attachments were omitted because the selected model cannot read that format.]");
+            }
         }
         let prompt_tokens = model_context_tokens(&model, std::slice::from_ref(&user_message));
         let previous_context_tokens = self
@@ -2438,7 +2522,14 @@ impl TurnRunner for AgentEngine {
             prospective_context_tokens >= u64::try_from(limit).unwrap_or(u64::MAX)
         }) || serialized_message_bytes(&model_messages(&model, &messages))?.saturating_add(
             serialized_message_bytes(&model_messages(&model, std::slice::from_ref(&user_message)))?,
-        ) > self.limits.max_context_bytes)
+        ) > self.limits.max_context_bytes
+            || model.supports_images
+                && messages
+                    .iter()
+                    .chain(std::iter::once(&user_message))
+                    .map(|message| message.images.len())
+                    .sum::<usize>()
+                    > model_context_image_limit(&model))
             && messages.len() > 1
         {
             match self
@@ -2464,17 +2555,36 @@ impl TurnRunner for AgentEngine {
                         .await
                         .map_err(|_| AxiomError::Cancelled)?;
                 }
-                Err(error) => {
-                    messages.push(user_message);
-                    messages.push(interrupted_turn_context());
-                    let retained_tokens = model_context_tokens(&model, &messages);
-                    self.histories
-                        .lock()
+                Err(AxiomError::Cancelled) => return Err(AxiomError::Cancelled),
+                Err(_) => {
+                    // A failed summarizer must not permanently strand a full
+                    // thread. The new user message is kept outside this lossy
+                    // recovery and still uses the normal authenticated provider.
+                    let summary = local_recovery_summary(
+                        &messages,
+                        (self.limits.max_context_bytes / 32)
+                            .min(self.limits.max_context_tokens / 8)
+                            .clamp(32, 512),
+                    );
+                    let before = messages.len();
+                    messages = compacted_history(
+                        messages
+                            .first()
+                            .map_or("", |message| message.content.as_str()),
+                        &summary,
+                    );
+                    prospective_context_tokens =
+                        model_context_tokens(&model, &messages).saturating_add(prompt_tokens);
+                    events.send(AppEvent::WarningRaised {
+                        message: "Older conversation context could not be summarized. Some older context and media were omitted so this message can continue.".into(),
+                    }).await.map_err(|_| AxiomError::Cancelled)?;
+                    events
+                        .send(AppEvent::ContextCompacted {
+                            summary,
+                            messages_before: before,
+                        })
                         .await
-                        .insert(context.session_id.clone(), messages);
-                    self.update_context_tokens(&context.session_id, retained_tokens)
-                        .await;
-                    return Err(error);
+                        .map_err(|_| AxiomError::Cancelled)?;
                 }
             }
         }
@@ -2549,6 +2659,7 @@ impl TurnRunner for AgentEngine {
             }
             step = step.saturating_add(1);
             enforce_context_budget(
+                &model,
                 &model_messages(&model, &messages),
                 self.limits.max_context_bytes,
                 self.limits.max_context_tokens,
@@ -2879,11 +2990,12 @@ impl TurnRunner for AgentEngine {
                 };
                 let tool_images = std::mem::take(&mut tool_result.images);
                 if tool_result.success && !tool_images.is_empty() {
-                    if image_count.saturating_add(tool_images.len())
-                        > axiom_inference::MAX_ATTACHMENTS
-                    {
+                    let image_limit = model_context_image_limit(&model);
+                    if image_count.saturating_add(tool_images.len()) > image_limit {
                         tool_result.success = false;
-                        tool_result.content = "Cannot view another image: the model context already contains the maximum of ten images. Compact the conversation before viewing more images.".into();
+                        tool_result.content = format!(
+                            "Cannot view another image: the model context already contains the maximum of {image_limit} images. Compact the conversation before viewing more images."
+                        );
                         tool_result.events.clear();
                     } else {
                         image_count += tool_images.len();
@@ -3046,6 +3158,11 @@ impl TurnRunner for AgentEngine {
                     .await;
             }
             if !image_observations.is_empty() {
+                // The last provider report covers the history before these
+                // observations. Add their cost even when the whole-history
+                // estimate is smaller than the provider's reported count.
+                known_context_tokens = known_context_tokens
+                    .saturating_add(model_context_tokens(&model, &image_observations));
                 messages.extend(image_observations);
                 known_context_tokens =
                     known_context_tokens.max(model_context_tokens(&model, &messages));
@@ -3257,7 +3374,23 @@ struct CompactionInput {
     files: Vec<axiom_inference::FileContent>,
 }
 
-fn compaction_inputs(messages: &[ChatMessage], max_bytes: usize) -> Result<Vec<CompactionInput>> {
+fn compaction_inputs(
+    model: &axiom_inference::ModelInfo,
+    messages: &[ChatMessage],
+    max_bytes: usize,
+    max_input_tokens: usize,
+    overhead_bytes: usize,
+) -> Result<Vec<CompactionInput>> {
+    let max_bytes = max_bytes
+        .min(max_input_tokens.saturating_mul(COMPACTION_BYTES_PER_TOKEN))
+        .min(axiom_inference::MAX_MESSAGE_TEXT_BYTES.saturating_sub(overhead_bytes));
+    if max_bytes < 4 {
+        return Err(AxiomError::Provider(
+            "Compaction instructions exceed the request budget; original context was retained."
+                .into(),
+        ));
+    }
+    let attachment_bytes = axiom_inference::MAX_ATTACHMENT_BYTES.saturating_sub(overhead_bytes);
     let text_part = |transcript| CompactionInput {
         transcript,
         images: Vec::new(),
@@ -3279,17 +3412,85 @@ fn compaction_inputs(messages: &[ChatMessage], max_bytes: usize) -> Result<Vec<C
         let mut text_message = message.clone();
         let images = std::mem::take(&mut text_message.images);
         let files = std::mem::take(&mut text_message.files);
-        let mut parts = compaction_transcripts(&[text_message], max_bytes)?.into_iter();
-        if let Some(first) = parts.next() {
+        let image_count = images.len();
+        let file_count = files.len();
+        let mut images = images.into_iter().peekable();
+        let mut files = files.into_iter().peekable();
+        let transcript = serde_json::to_string(&[text_message])?;
+        let mut remaining = transcript.as_str();
+        let mut image_offset = 0;
+        let mut file_offset = 0;
+        while images.peek().is_some() || files.peek().is_some() {
+            // Leave room for the attachment association and a text fragment.
+            let media_budget = max_input_tokens.saturating_sub(256);
+            let mut media_tokens = 0_usize;
+            let mut media_bytes = 0_usize;
+            let mut input_images = Vec::new();
+            let mut input_files = Vec::new();
+            let image_tokens = image_context_tokens(model);
+            while images.peek().is_some_and(|image| {
+                media_bytes.saturating_add(image.data.len()) <= attachment_bytes.saturating_sub(256)
+            }) && media_tokens.saturating_add(image_tokens) <= media_budget
+                && input_images.len() < model_context_image_limit(model)
+            {
+                media_bytes = media_bytes.saturating_add(images.peek().unwrap().data.len());
+                input_images.extend(images.next());
+                media_tokens = media_tokens.saturating_add(image_tokens);
+            }
+            while images.peek().is_none()
+                && files.peek().is_some_and(|file| {
+                    media_bytes.saturating_add(file.data.len())
+                        <= attachment_bytes.saturating_sub(256)
+                })
+                && media_tokens.saturating_add(8192) <= media_budget
+            {
+                media_bytes = media_bytes.saturating_add(files.peek().unwrap().data.len());
+                input_files.extend(files.next());
+                media_tokens = media_tokens.saturating_add(8192);
+            }
+            if input_images.is_empty() && input_files.is_empty() {
+                return Err(AxiomError::Provider("An attachment exceeds the compaction request budget; original context was retained.".into()));
+            }
+            let prefix = format!(
+                "Native attachments for conversation message {}. Images {}..{} of {}; files {}..{} of {} (zero-based, end-exclusive). These belong to the same serialized message, which may span fragments.\n",
+                index + 1,
+                image_offset,
+                image_offset + input_images.len(),
+                image_count,
+                file_offset,
+                file_offset + input_files.len(),
+                file_count,
+            );
+            let text_budget = max_bytes
+                .min(
+                    max_input_tokens
+                        .saturating_sub(media_tokens)
+                        .saturating_mul(COMPACTION_BYTES_PER_TOKEN),
+                )
+                .min(attachment_bytes.saturating_sub(media_bytes))
+                .saturating_sub(prefix.len());
+            let mut end = text_budget.min(remaining.len());
+            while !remaining.is_char_boundary(end) {
+                end -= 1;
+            }
+            image_offset += input_images.len();
+            file_offset += input_files.len();
             result.push(CompactionInput {
-                transcript: format!(
-                    "The files attached to this fragment belong to this message.\n{first}"
-                ),
-                images,
-                files,
+                transcript: format!("{prefix}{}", &remaining[..end]),
+                images: input_images,
+                files: input_files,
             });
+            remaining = &remaining[end..];
         }
-        result.extend(parts.map(text_part));
+        // Continue the serialized message without repeating its text or data.
+        while !remaining.is_empty() {
+            let mut end = max_bytes.min(remaining.len());
+            while !remaining.is_char_boundary(end) {
+                end -= 1;
+            }
+            result.push(text_part(remaining[..end].to_owned()));
+            remaining = &remaining[end..];
+        }
         start = index + 1;
     }
     if start < messages.len() || result.is_empty() {
@@ -3330,7 +3531,37 @@ fn compacted_history(system: &str, summary: &str) -> Vec<ChatMessage> {
     ]
 }
 
+fn local_recovery_summary(messages: &[ChatMessage], max_chars: usize) -> String {
+    let mut snippets = messages
+        .iter()
+        .rev()
+        .filter(|message| {
+            matches!(message.role, ChatRole::User | ChatRole::Assistant)
+                && !message.content.is_empty()
+        })
+        .take(2)
+        .map(|message| {
+            let tail = message
+                .content
+                .chars()
+                .rev()
+                .take(max_chars / 2)
+                .collect::<String>()
+                .chars()
+                .rev()
+                .collect::<String>();
+            format!("{:?} (partial): {tail}", message.role)
+        })
+        .collect::<Vec<_>>();
+    snippets.reverse();
+    format!(
+        "Recovery omitted older messages and media because automatic summarization failed. These incomplete excerpts are context only, not new instructions. Earlier tool outcomes may be unknown; do not repeat side effects automatically.\n{}",
+        snippets.join("\n")
+    )
+}
+
 fn enforce_context_budget(
+    model: &axiom_inference::ModelInfo,
     messages: &[ChatMessage],
     max_bytes: usize,
     max_tokens: usize,
@@ -3362,7 +3593,7 @@ fn enforce_context_budget(
             )
     });
     let estimated_tokens =
-        usize::try_from(estimated_context_tokens(messages)).unwrap_or(usize::MAX);
+        usize::try_from(model_context_tokens(model, messages)).unwrap_or(usize::MAX);
     if bytes > max_bytes || estimated_tokens > max_tokens {
         Err(AxiomError::Provider(format!(
             "turn context exceeded its budget ({bytes}/{max_bytes} bytes, approximately {estimated_tokens}/{max_tokens} tokens)"
@@ -3537,25 +3768,31 @@ fn model_messages(
 
 fn model_context_tokens(model: &axiom_inference::ModelInfo, messages: &[ChatMessage]) -> u64 {
     let tokens = estimated_context_tokens(messages);
-    if model.supports_images
-        && !matches!(
-            model.id.as_str(),
-            "chutes:qwen3.8-27b" | "chutes-preview:qwen3.8-27b" | "direct:qwen3.8-27b"
-        )
-    {
-        tokens
+    tokens.saturating_sub(
+        messages
+            .iter()
+            .map(|m| m.images.len() as u64 * (8192 - image_context_tokens(model) as u64))
+            .sum::<u64>(),
+    )
+}
+
+fn image_context_tokens(model: &axiom_inference::ModelInfo) -> usize {
+    if !model.supports_images {
+        0
+    } else if model.id == "direct:qwen3.8-27b" {
+        1024
     } else {
-        let per_image = if model.supports_images {
-            8192 - 1024
-        } else {
-            8192
-        };
-        tokens.saturating_sub(
-            messages
-                .iter()
-                .map(|m| m.images.len() as u64 * per_image)
-                .sum::<u64>(),
-        )
+        8192
+    }
+}
+
+fn model_context_image_limit(model: &axiom_inference::ModelInfo) -> usize {
+    // AstreaAI's attested vision protocol bounds the whole request to eight
+    // images, including prior uploads and optional generated-image views.
+    if model.provider_id == "axiom-direct" || model.id == "direct:qwen3.8-27b" {
+        8
+    } else {
+        axiom_inference::MAX_ATTACHMENTS
     }
 }
 
@@ -3675,6 +3912,53 @@ fn interrupted_turn_context() -> ChatMessage {
         ChatRole::System,
         "The preceding agent turn ended with an error before completion. Preserve its partial response and completed tool results as context, but do not assume unfinished claims or actions completed.",
     )
+}
+
+// Interrupted or partially recovered tool batches still need valid provider
+// history. Missing replies describe an unknown outcome; they never execute a
+// tool, invent a successful result, or authorize repeating its side effects.
+fn repair_tool_history(messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
+    let mut result = Vec::with_capacity(messages.len());
+    let mut pending: Vec<(String, String)> = Vec::new();
+    let mut seen = BTreeSet::new();
+    for mut message in messages {
+        if message.role == ChatRole::Tool {
+            if let Some(index) = pending
+                .iter()
+                .position(|(id, _)| Some(id) == message.tool_call_id.as_ref())
+            {
+                pending.remove(index);
+                result.push(message);
+            }
+            continue;
+        }
+        for (id, name) in pending.drain(..) {
+            result.push(tool_error_message(id, &name, "The saved result is unavailable or this operation was interrupted. Its outcome is unknown. Do not replay it without a new user instruction."));
+        }
+        if message.role == ChatRole::Assistant {
+            message.tool_calls.retain(|call| {
+                axiom_inference::validate_tool_calls(std::slice::from_ref(call)).is_ok()
+                    && seen.insert(call.id.clone())
+            });
+            pending.extend(
+                message
+                    .tool_calls
+                    .iter()
+                    .map(|call| (call.id.clone(), call.function.name.clone())),
+            );
+            if message.tool_calls.is_empty()
+                && message.content.is_empty()
+                && message.reasoning_content.is_none()
+            {
+                continue;
+            }
+        }
+        result.push(message);
+    }
+    for (id, name) in pending {
+        result.push(tool_error_message(id, &name, "The operation was interrupted and its result is unavailable. Its outcome is unknown. Do not replay it without a new user instruction."));
+    }
+    result
 }
 
 fn capture_streamed_text(event: &ProviderEvent, streamed_text: &mut String) {
@@ -3851,11 +4135,13 @@ fn system_prompt(
             )
         },
     );
+    prompt.push_str("\n\n");
+    prompt.push_str(UNCENSORED_SYSTEM_PROMPT.trim());
     // Select from trusted native model state on every refresh. Never persist a
-    // model-specific policy as shared instructions for later model selections.
+    // model-specific identity as shared instructions for later model selections.
     if axiom_secure_client::is_uncensored_model(&settings.model) {
         prompt.push_str("\n\n");
-        prompt.push_str(QWEN_UNCENSORED_SYSTEM_PROMPT.trim());
+        prompt.push_str(QWEN_UNCENSORED_IDENTITY_PROMPT.trim());
     }
     let _ = write!(
         prompt,
@@ -3868,6 +4154,10 @@ fn system_prompt(
 #[cfg(test)]
 #[path = "agent_title_tests.rs"]
 mod title_tests;
+
+#[cfg(test)]
+#[path = "agent_context_tests.rs"]
+mod context_tests;
 
 #[cfg(test)]
 mod engine_tests {
@@ -3891,11 +4181,15 @@ mod engine_tests {
         };
         let mut message = ChatMessage::text(ChatRole::User, "look at this");
         message.images.push(image.clone());
-        let parts = compaction_inputs(&[message.clone()], 4096).unwrap();
+        let model = axiom_inference::ModelInfo {
+            supports_images: true,
+            ..Default::default()
+        };
+        let parts = compaction_inputs(&model, &[message.clone()], 4096, 10_000, 1024).unwrap();
         assert_eq!(parts[0].images, vec![image.clone()]);
         assert!(!parts[0].transcript.contains(&image.data));
-        assert!(enforce_context_budget(&[message.clone()], 10, 100_000).is_err());
-        assert!(enforce_context_budget(&[message], 1000, 100).is_err());
+        assert!(enforce_context_budget(&model, &[message.clone()], 10, 100_000).is_err());
+        assert!(enforce_context_budget(&model, &[message], 1000, 100).is_err());
     }
 
     #[test]
@@ -3907,7 +4201,14 @@ mod engine_tests {
         };
         let mut message = ChatMessage::text(ChatRole::User, "summarize");
         message.files.push(file.clone());
-        let parts = compaction_inputs(&[message], 4096).unwrap();
+        let parts = compaction_inputs(
+            &axiom_inference::ModelInfo::default(),
+            &[message],
+            4096,
+            10_000,
+            1024,
+        )
+        .unwrap();
         assert_eq!(parts[0].files, vec![file.clone()]);
         assert!(!parts[0].transcript.contains(&file.data));
     }
@@ -3951,35 +4252,29 @@ mod engine_tests {
 
     #[test]
     fn qwen_vision_inputs_leave_the_full_output_budget() {
-        for (id, provider, count) in [
-            ("chutes:qwen3.8-27b", "chutes", 10),
-            ("chutes-preview:qwen3.8-27b", "chutes-preview", 10),
-            ("direct:qwen3.8-27b", "axiom-direct", 8),
-        ] {
-            let model = axiom_inference::ModelInfo {
-                id: id.into(),
-                provider_id: provider.into(),
-                supports_images: true,
-                context_window_tokens: 32768,
-                max_output_tokens: 4096,
-                ..Default::default()
-            };
-            let mut message =
-                ChatMessage::text(ChatRole::User, "Read the letters in these ten images.");
-            message.images = vec![axiom_inference::ImageContent {
+        let model = axiom_inference::ModelInfo {
+            id: "direct:qwen3.8-27b".into(),
+            provider_id: "axiom-direct".into(),
+            supports_images: true,
+            context_window_tokens: 32768,
+            max_output_tokens: 4096,
+            ..Default::default()
+        };
+        let mut message =
+            ChatMessage::text(ChatRole::User, "Read the letters in these eight images.");
+        message.images = vec![axiom_inference::ImageContent {
             mime_type: "image/png".into(),
             data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC".into(),
-        }; count];
-            let request = inference_request_for_model(
-                &model,
-                model.id.clone(),
-                vec![message],
-                vec![],
-                ThinkingLevel::Enabled,
-            );
-            assert_eq!(request.max_output_tokens, Some(4096));
-            assert!(model_context_tokens(&model, &request.messages) < 11000);
-        }
+        }; 8];
+        let request = inference_request_for_model(
+            &model,
+            model.id.clone(),
+            vec![message],
+            vec![],
+            ThinkingLevel::Enabled,
+        );
+        assert_eq!(request.max_output_tokens, Some(4096));
+        assert!(model_context_tokens(&model, &request.messages) < 11000);
     }
 
     #[test]
@@ -4340,6 +4635,73 @@ mod engine_tests {
     }
 
     #[tokio::test]
+    async fn abliterated_deepseek_is_the_default_and_tinfoil_deepseek_the_fallback() {
+        let model = |id: &str, provider: &str, upstream: &str| axiom_inference::ModelInfo {
+            id: id.into(),
+            provider_id: provider.into(),
+            upstream_model: upstream.into(),
+            ..axiom_inference::ModelInfo::default()
+        };
+        let models = vec![
+            model("a-near", "near", "glm-5.3-flash"),
+            model("tinfoil-deepseek", "tinfoil", "deepseek-v4-1-flash"),
+            model(
+                "deepseek-v4-1-flash-1017-abliterated",
+                "near",
+                "deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated",
+            ),
+            // Same upstream name from another provider is not the default.
+            model(
+                "other-abliterated",
+                "other",
+                "deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated",
+            ),
+        ];
+        let engine = AgentEngine::new(
+            Arc::new(CatalogOnlyProvider {
+                models: models.clone(),
+            }),
+            Arc::new(ToolRegistry::new()),
+            "auto",
+            1,
+        );
+        assert_eq!(
+            engine
+                .available_models(CancellationToken::new())
+                .await
+                .unwrap(),
+            [
+                "deepseek-v4-1-flash-1017-abliterated",
+                "tinfoil-deepseek",
+                "a-near",
+                "other-abliterated"
+            ]
+        );
+        for (catalog, saved, expected) in [
+            (models.clone(), None, "deepseek-v4-1-flash-1017-abliterated"),
+            (models.clone(), Some("a-near"), "a-near"),
+            (
+                models
+                    .iter()
+                    .filter(|model| model.id != "deepseek-v4-1-flash-1017-abliterated")
+                    .cloned()
+                    .collect(),
+                None,
+                "tinfoil-deepseek",
+            ),
+        ] {
+            let resolved = reconcile_new_session_settings(
+                catalog,
+                saved,
+                "auto",
+                ThinkingLevel::ProviderDefault,
+            )
+            .unwrap();
+            assert_eq!(resolved.model, expected);
+        }
+    }
+
+    #[tokio::test]
     async fn tinfoil_default_and_catalog_order_preserve_explicit_model_choices() {
         let model = |id: &str, provider: &str, upstream: &str| axiom_inference::ModelInfo {
             id: id.into(),
@@ -4495,6 +4857,28 @@ mod engine_tests {
     }
 
     #[test]
+    fn desktop_prompt_explains_axiom_and_its_desktop_privacy_boundaries() {
+        let product = include_str!("../prompts/desktop-product.md").trim();
+        assert!(DESKTOP_CHAT_SYSTEM_PROMPT.contains(product));
+        for expected in [
+            "AxiomAI is an AI company within Astrea",
+            "Trusted Execution Environment (TEE)",
+            "TEE verified",
+            "stored locally on the user's device",
+            "neither is end-to-end encrypted",
+        ] {
+            assert!(product.contains(expected), "missing {expected}");
+        }
+        // Web-app specifics must not leak into the Desktop description.
+        for web_only in ["bottom right", "Saved web chats", "confidential gateway"] {
+            assert!(
+                !DESKTOP_CHAT_SYSTEM_PROMPT.contains(web_only),
+                "web-only claim {web_only}"
+            );
+        }
+    }
+
+    #[test]
     fn uncensored_policy_tracks_model_switches_without_leaking_or_accumulating() {
         let cwd = std::path::Path::new("test-chat");
         let mut settings = SessionSettings {
@@ -4505,13 +4889,11 @@ mod engine_tests {
         let mut messages = compacted_history("Previous system prompt", "Keep this summary");
         for (model, uncensored) in [
             ("another-provider:qwen3.8-27b", false),
-            ("chutes:qwen3.8-27b", true),
-            ("chutes:qwen3.8-27b", true),
             ("direct:qwen3.8-27b", true),
             ("direct:qwen3.8-27b", true),
             ("direct:qwen3.8-27b-other", false),
             ("tinfoil-another-model", false),
-            ("chutes-preview:qwen3.8-27b", true),
+            ("direct:qwen3.8-27b", true),
             ("another-provider:qwen3.8-27b", false),
         ] {
             settings.model = model.into();
@@ -4524,9 +4906,16 @@ mod engine_tests {
             );
             let prompt = &messages[0].content;
             assert_eq!(
-                prompt.matches(QWEN_UNCENSORED_SYSTEM_PROMPT.trim()).count(),
+                prompt.matches(UNCENSORED_SYSTEM_PROMPT.trim()).count(),
+                1,
+                "every model gets the uncensored policy exactly once ({model})"
+            );
+            assert_eq!(
+                prompt
+                    .matches(QWEN_UNCENSORED_IDENTITY_PROMPT.trim())
+                    .count(),
                 usize::from(uncensored),
-                "wrong behavior after selecting {model}"
+                "wrong identity after selecting {model}"
             );
             assert!(prompt.contains(DESKTOP_CHAT_SYSTEM_PROMPT.trim()));
             assert!(prompt.contains(
@@ -5392,13 +5781,13 @@ mod engine_tests {
                 ..Default::default()
             },
             axiom_inference::ModelInfo {
-                id: "chutes:qwen3.8-27b".into(),
+                id: "direct:qwen3.8-27b".into(),
                 supports_images: true,
                 ..Default::default()
             },
         ]);
         let mut image = generated_fixture();
-        image.chat_model_id = Some("chutes:qwen3.8-27b".into());
+        image.chat_model_id = Some("direct:qwen3.8-27b".into());
         scripted.generated_image = Some(image);
         let provider = Arc::new(scripted);
         let mut tools = ToolRegistry::new();
@@ -5421,7 +5810,7 @@ mod engine_tests {
                 ctx.clone(),
                 "fresh-image-call".into(),
                 args.clone(),
-                Some("chutes:qwen3.8-27b".into()),
+                Some("direct:qwen3.8-27b".into()),
                 tx,
                 CancellationToken::new(),
             )
@@ -5742,7 +6131,7 @@ mod engine_tests {
             .await
             .unwrap();
         let events = drain(&mut rx);
-        assert!(events.iter().any(|event| matches!(event, AppEvent::ToolOutput { content, .. } if content.contains("maximum of ten images"))));
+        assert!(events.iter().any(|event| matches!(event, AppEvent::ToolOutput { content, .. } if content.contains("maximum of 10 images"))));
         assert!(
             events
                 .iter()
@@ -6691,6 +7080,248 @@ mod engine_tests {
             AppEvent::QuestionsAnswered { answers, .. }
                 if answers.get("style") == Some(&vec!["compact".into()])
         )));
+    }
+
+    #[tokio::test]
+    async fn unavailable_images_and_interrupted_calls_allow_a_new_prompt_after_restore() {
+        let provider = Arc::new(ScriptedProvider::new(vec![AssistantTurn {
+            text: "The conversation can continue.".into(),
+            reasoning: None,
+            tool_calls: Vec::new(),
+        }]));
+        let (tools, executions) = fake_registry("must not execute", false);
+        let engine = AgentEngine::new(provider.clone(), tools, "test", 3);
+        let ctx = context();
+        let turn = TurnId::new();
+        let mut broken = crate::image_tool::tests::generated_fixture();
+        broken.sha256 = "00".repeat(32);
+        let journal = vec![
+            AppEvent::SessionCreated {
+                cwd: ctx.cwd.clone(),
+                origin: Origin::Test,
+                profile: ctx.permission_profile,
+            },
+            AppEvent::PromptAccepted {
+                turn_id: turn.clone(),
+                text: "Keep this original text".into(),
+                attachments: Vec::new(),
+            },
+            AppEvent::TurnStarted {
+                turn_id: turn.clone(),
+            },
+            AppEvent::ImageGenerated {
+                call_id: "bad-image".into(),
+                image: Box::new(broken),
+            },
+            AppEvent::ToolProposed {
+                turn_id: turn.clone(),
+                call_id: "unfinished".into(),
+                name: "fake".into(),
+                arguments: json!({}),
+            },
+            AppEvent::ToolStarted {
+                call_id: "unfinished".into(),
+                name: "fake".into(),
+            },
+            AppEvent::ToolProposed {
+                turn_id: turn.clone(),
+                call_id: "old-view".into(),
+                name: "view_image".into(),
+                arguments: json!({"image_id":format!("img_{}", "ff".repeat(16))}),
+            },
+            AppEvent::ToolCompleted {
+                call_id: "old-view".into(),
+                success: true,
+            },
+            AppEvent::TurnCancelled { turn_id: turn },
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, event)| EventEnvelope {
+            schema_version: 1,
+            sequence: index as u64 + 1,
+            occurred_at: chrono::Utc::now(),
+            correlation_id: CorrelationId::new(),
+            origin: Origin::Test,
+            session_id: ctx.session_id.clone(),
+            event,
+        })
+        .collect::<Vec<_>>();
+        engine
+            .restore_session(&ctx.session_id, &journal)
+            .await
+            .unwrap();
+        let (tx, _rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
+        engine
+            .run(
+                ctx,
+                "Send a new message".into(),
+                tx,
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(executions.load(Ordering::SeqCst), 0);
+        let requests = provider.requests.lock().await;
+        let messages = &requests[0].messages;
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.content.contains("Keep this original text"))
+        );
+        assert!(messages.iter().all(|message| message.images.is_empty()));
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|message| message.role == ChatRole::Tool
+                    && message.content.contains("outcome is unknown"))
+                .count(),
+            2
+        );
+        assert_tool_batches_complete(messages);
+    }
+
+    fn assert_tool_batches_complete(messages: &[ChatMessage]) {
+        let mut pending = BTreeSet::new();
+        for message in messages {
+            if message.role == ChatRole::Tool {
+                assert!(
+                    pending.remove(message.tool_call_id.as_ref().unwrap()),
+                    "tool replies must answer an outstanding call"
+                );
+            } else {
+                assert!(
+                    pending.is_empty(),
+                    "all tool replies must precede a non-tool message"
+                );
+                pending.extend(message.tool_calls.iter().map(|call| call.id.clone()));
+            }
+        }
+        assert!(pending.is_empty());
+    }
+
+    #[tokio::test]
+    async fn changing_to_a_model_without_file_support_does_not_block_plain_messages() {
+        let provider = Arc::new(ScriptedProvider::new(vec![AssistantTurn {
+            text: "Text still works.".into(),
+            reasoning: None,
+            tool_calls: Vec::new(),
+        }]));
+        let engine = AgentEngine::new(provider.clone(), Arc::new(ToolRegistry::new()), "text", 3);
+        let ctx = context();
+        let file = axiom_inference::FileContent {
+            name: "notes.pdf".into(),
+            mime_type: "application/pdf".into(),
+            data: "JVBERi0xLjcK".into(),
+        };
+        let mut old = ChatMessage::text(ChatRole::User, "Keep these original notes");
+        old.files.push(file.clone());
+        engine.histories.lock().await.insert(
+            ctx.session_id.clone(),
+            vec![ChatMessage::text(ChatRole::System, "system"), old],
+        );
+        let (tx, _rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
+        engine
+            .run(
+                ctx.clone(),
+                "Continue with text".into(),
+                tx,
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let requests = provider.requests.lock().await;
+        assert!(
+            requests[0]
+                .messages
+                .iter()
+                .all(|message| message.files.is_empty())
+        );
+        assert!(
+            requests[0]
+                .messages
+                .iter()
+                .any(|message| message.content.contains("Keep these original notes"))
+        );
+        drop(requests);
+        let (tx, _rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
+        assert!(
+            engine
+                .run(
+                    TurnContext {
+                        attachments: vec![axiom_inference::PromptAttachment::File {
+                            name: file.name.clone(),
+                            file
+                        }],
+                        ..ctx
+                    },
+                    "New unsupported file".into(),
+                    tx,
+                    CancellationToken::new()
+                )
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            provider.requests.lock().await.len(),
+            1,
+            "new uploads still require a compatible model"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_automatic_summary_discards_old_context_and_sends_the_new_prompt() {
+        let provider = Arc::new(ScriptedProvider::new(vec![
+            AssistantTurn {
+                text: String::new(),
+                reasoning: None,
+                tool_calls: Vec::new(),
+            },
+            AssistantTurn {
+                text: "Recovered response".into(),
+                reasoning: None,
+                tool_calls: Vec::new(),
+            },
+        ]));
+        let mut limits = AgentLimits::development(3);
+        limits.max_context_bytes = 16 * 1024;
+        let engine = AgentEngine::with_limits(
+            provider.clone(),
+            Arc::new(ToolRegistry::new()),
+            "test",
+            limits,
+        );
+        let ctx = context();
+        engine.histories.lock().await.insert(
+            ctx.session_id.clone(),
+            vec![
+                ChatMessage::text(ChatRole::System, "system"),
+                ChatMessage::text(ChatRole::User, "old context ".repeat(4000)),
+            ],
+        );
+        let (tx, mut rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
+        engine
+            .run(
+                ctx,
+                "Keep this complete new instruction".into(),
+                tx,
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let events = drain(&mut rx);
+        assert!(events.iter().any(|event| matches!(event, AppEvent::WarningRaised { message } if message.contains("omitted"))));
+        assert!(events.iter().any(|event| matches!(event, AppEvent::ContextCompacted { summary, .. } if summary.contains("Recovery omitted"))));
+        let requests = provider.requests.lock().await;
+        assert_eq!(requests.len(), 2);
+        assert_eq!(
+            requests[1].messages.last().unwrap().content,
+            "Keep this complete new instruction"
+        );
+        assert!(
+            serialized_message_bytes(&requests[1].messages).unwrap() < limits.max_context_bytes
+        );
+        assert_tool_batches_complete(&requests[1].messages);
     }
 
     #[tokio::test]

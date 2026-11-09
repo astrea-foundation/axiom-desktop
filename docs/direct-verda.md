@@ -9,6 +9,11 @@ verifier. Packaging validates the complete runtime inventory, executable digest
 and platform signatures before including it. The native client still verifies
 fresh CPU, GPU, workload, key and response evidence before accepting inference.
 
+The 0.1.21 installer configuration pins policy sequence 22 as its minimum.
+Fresh production qualification verifies generation 15 with that policy, including
+the `chat`, `image`, `tools` and `vision` capabilities. Older policy documents
+cannot undo the revocations already included in this release's minimum.
+
 AstreaAI is additive to the normal model catalog. Installing its verifier must
 preserve the NEAR AI and Tinfoil offerings discovered through the account API.
 Each offering retains its own locally verified attestation and E2EE protocol;
@@ -41,8 +46,9 @@ directly to the same independently verified worker. There is no operator-signing
 fallback when account authorization, credit or price acceptance fails.
 
 The approved guest loads `munekazu/Huihui-Qwen3.8-27B-abliterated-FP8`, pinned by
-the signed model inventory. Its exact native model ID selects Axiom's bundled
-Qwen3.8 Uncensored system prompt, including after a model switch. The compact
+the signed model inventory. Its exact native model ID adds the Qwen3.8
+Uncensored identity line to Axiom's uncensored system prompt, including after a
+model switch. The compact
 model label retains “Uncensored” so the checkpoint is identifiable in the composer.
 
 This connection supports streaming text conversations with the
@@ -192,8 +198,8 @@ The renderer receives neither this configuration nor the private key.
 
 The canonical inference repository's `scripts/direct_desktop.py` constructs a
 small launch environment from explicit `--state`, `--desktop` and
-`--account-state` paths. It does not inherit provider API credentials or Chutes
-preview settings. The existing local account backend must be running. Select
+`--account-state` paths. It does not inherit provider API credentials or other
+provider settings. The existing local account backend must be running. Select
 **Qwen3.8 Uncensored** under AstreaAI after launch if the profile previously selected another model.
 
 Development QA can set `AXIOM_DESKTOP_LOCAL_PROFILE_NAME` to a distinct lowercase

@@ -713,6 +713,74 @@ fn begin_turn(
 }
 
 #[test]
+fn missing_attachments_and_broken_image_records_keep_text_loadable_and_editable() {
+    for corrupt_metadata in [false, true] {
+        let store = SessionStore::in_memory().unwrap();
+        let id = SessionId::new();
+        let turn = TurnId::new();
+        create(&store, &id);
+        begin_turn(&store, &id, &turn, Some("original"));
+        for (sequence, event) in [
+            AppEvent::ToolProposed {
+                turn_id: turn.clone(),
+                call_id: "image".into(),
+                name: "generate".into(),
+                arguments: json!({"prompt":"Synthetic image"}),
+            },
+            AppEvent::ImageGenerated {
+                call_id: "image".into(),
+                image: Box::new(crate::image_tool::tests::generated_fixture()),
+            },
+            AppEvent::ToolCompleted {
+                call_id: "image".into(),
+                success: true,
+            },
+            AppEvent::TurnCompleted {
+                turn_id: turn.clone(),
+            },
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            store
+                .append(&envelope(&id, sequence as u64 + 4, event))
+                .unwrap();
+        }
+        let user_id: String = {
+            let connection = store.lock().unwrap();
+            connection.execute("UPDATE timeline_items SET metadata='{\"attachments\":[{\"kind\":\"image\"}]}' WHERE thread_id=?1 AND kind='user_message'", [id.to_string()]).unwrap();
+            connection.execute(if corrupt_metadata {
+                "UPDATE timeline_items SET metadata='broken json' WHERE thread_id=?1 AND kind='tool_call'"
+            } else {
+                "UPDATE timeline_items SET metadata=json_remove(metadata,'$.content') WHERE thread_id=?1 AND kind='tool_call'"
+            }, [id.to_string()]).unwrap();
+            connection
+                .query_row(
+                    "SELECT id FROM timeline_items WHERE thread_id=?1 AND kind='user_message'",
+                    [id.to_string()],
+                    |row| row.get(0),
+                )
+                .unwrap()
+        };
+        let history = store.load(&id).unwrap();
+        assert!(history.iter().any(|event| matches!(&event.event, AppEvent::PromptAccepted { text, attachments, .. } if text=="hello" && attachments.is_empty())));
+        assert!(
+            !history
+                .iter()
+                .any(|event| matches!(event.event, AppEvent::ImageGenerated { .. }))
+        );
+        assert!(store.prompt_attachments(&id, &user_id).unwrap().is_empty());
+        let revision = axiom_acp_extension::PromptRevision {
+            user_item_id: user_id,
+            expected_revision: store.thread_summary(&id).unwrap().revision,
+        };
+        assert!(store.history_before_user_message(&id, &revision).is_ok());
+        assert!(store.thread_snapshot(&id, None, 100).is_ok());
+        begin_turn(&store, &id, &TurnId::new(), Some("after-recovery"));
+    }
+}
+
+#[test]
 fn timeline_sequence_uniqueness_also_supplies_the_pagination_index() {
     let store = SessionStore::in_memory().unwrap();
     let id = SessionId::new();
@@ -2134,7 +2202,7 @@ fn generated_and_edited_images_restore_from_their_owning_durable_tool_records() 
     create(&store, &id);
     begin_turn(&store, &id, &turn, None);
     let evidence:axiom_secure_client::SecurityEvidence=serde_json::from_value(json!({
-        "state":"verified","provider_id":"chutes","model_id":"chutes:qwen-image-2.1-turbo",
+        "state":"verified","provider_id":"axiom-direct","model_id":"direct:qwen3.8-27b",
         "attestation_protocol":"synthetic-unit-fixture","e2ee_protocol":"synthetic-unit-fixture","e2ee_encryption_version":1,
         "trust_policy_version":"unit-test","verified_at_unix_seconds":1,"model_key_fingerprint":"00".repeat(32),
         "tls_spki_fingerprint":null,"checks":[],"provider_claims":[]
@@ -2158,13 +2226,8 @@ fn generated_and_edited_images_restore_from_their_owning_durable_tool_records() 
             evidence: evidence.clone(),
             usage: axiom_inference::RequestUsage {
                 request_id,
-                provider_id: "chutes".into(),
-                model_id: if index == 0 {
-                    "chutes:qwen-image-2.1-turbo"
-                } else {
-                    "chutes:qwen-image-2.1-turbo-edit"
-                }
-                .into(),
+                provider_id: "axiom-direct".into(),
+                model_id: "direct:qwen3.8-27b".into(),
                 settled: true,
                 response_verified: true,
                 ..Default::default()

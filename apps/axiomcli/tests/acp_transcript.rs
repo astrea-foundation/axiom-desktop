@@ -116,9 +116,28 @@ impl AcpProcess {
         frontend: Option<&str>,
         persistence_failure: Option<&str>,
     ) -> Self {
+        Self::spawn_with_args(
+            runner,
+            state_path,
+            state,
+            frontend,
+            persistence_failure,
+            &[],
+        )
+    }
+
+    fn spawn_with_args(
+        runner: &str,
+        state_path: &Path,
+        state: Option<TempDir>,
+        frontend: Option<&str>,
+        persistence_failure: Option<&str>,
+        extra_args: &[&str],
+    ) -> Self {
         let mut command = Command::new(env!("CARGO_BIN_EXE_axiomcli"));
         command
             .arg("acp")
+            .args(extra_args)
             .env("AXIOMCLI_TEST_RUNNER", runner)
             .env("XDG_CONFIG_HOME", state_path.join("config"))
             .env("XDG_DATA_HOME", state_path.join("data"))
@@ -1849,6 +1868,35 @@ async fn concurrent_loads_share_a_canonical_in_flight_reservation() {
         "{responses:?}"
     );
     acp.close().await;
+}
+
+#[tokio::test]
+async fn noninteractive_keychain_probe_initializes_and_reports_signed_out_without_a_chat() {
+    let state = tempfile::tempdir().unwrap();
+    let path = state.path().to_path_buf();
+    let mut acp = AcpProcess::spawn_with_args(
+        "echo",
+        &path,
+        Some(state),
+        None,
+        None,
+        &["--no-keychain-ui"],
+    );
+    acp.initialize_extension().await;
+    acp.send(&json!({
+        "jsonrpc": "2.0", "id": 2, "method": "_axiom/account/status", "params": {}
+    }))
+    .await;
+    let response = acp.response(2).await;
+    assert_eq!(response["result"]["status"]["state"], "signed_out");
+    drop(acp.stdin.take());
+    assert!(
+        tokio::time::timeout(Duration::from_secs(5), acp.child.wait())
+            .await
+            .unwrap()
+            .unwrap()
+            .success()
+    );
 }
 
 #[tokio::test]

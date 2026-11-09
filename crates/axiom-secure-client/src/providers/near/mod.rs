@@ -22,6 +22,14 @@ pub(crate) const PROVIDER_ID: &str = "near";
 pub(crate) const E2EE_PROTOCOL: &str = "near-v3";
 pub(crate) const ENCRYPTION_VERSION: u16 = 2;
 pub(crate) const ATTESTATION_PROTOCOL: &str = "near-tdx-nvidia-v2";
+/// NEAR's attested cloud gateway routes to a separately attested worker. The
+/// client verifies both TDX quotes and the worker's NVIDIA evidence; receipts
+/// stay signed by the worker key over the exact request and response bytes.
+pub(crate) const GATEWAY_ATTESTATION_PROTOCOL: &str = "near-tdx-nvidia-gateway-v1";
+
+pub(crate) fn supports_attestation_protocol(protocol: &str) -> bool {
+    protocol == ATTESTATION_PROTOCOL || protocol == GATEWAY_ATTESTATION_PROTOCOL
+}
 
 pub(crate) struct NearProvider {
     config: SecureClientConfig,
@@ -58,7 +66,7 @@ impl SecureProvider for NearProvider {
         if model.provider_id != PROVIDER_ID
             || model.e2ee_protocol != E2EE_PROTOCOL
             || model.e2ee_encryption_version != ENCRYPTION_VERSION
-            || model.attestation_protocol != ATTESTATION_PROTOCOL
+            || !supports_attestation_protocol(&model.attestation_protocol)
         {
             return Err(SecureClientError::capability(
                 "model does not match the compiled NEAR provider contract",
@@ -80,7 +88,7 @@ impl SecureProvider for NearProvider {
     ) -> bool {
         e2ee_protocol == E2EE_PROTOCOL
             && e2ee_encryption_version == ENCRYPTION_VERSION
-            && attestation_protocol == ATTESTATION_PROTOCOL
+            && supports_attestation_protocol(attestation_protocol)
     }
 
     fn populate_capabilities(&self, model: &mut ModelInfo) {
@@ -337,6 +345,23 @@ mod tests {
             ..ModelInfo::default()
         };
         assert!(provider.supports(&valid).is_ok());
+        let gateway = ModelInfo {
+            provider_base_url: "https://cloud-api.near.ai/v1".into(),
+            attestation_protocol: GATEWAY_ATTESTATION_PROTOCOL.into(),
+            ..valid.clone()
+        };
+        assert!(provider.supports(&gateway).is_ok());
+        assert!(provider.supports_contract(
+            E2EE_PROTOCOL,
+            ENCRYPTION_VERSION,
+            ATTESTATION_PROTOCOL
+        ));
+        assert!(provider.supports_contract(
+            E2EE_PROTOCOL,
+            ENCRYPTION_VERSION,
+            GATEWAY_ATTESTATION_PROTOCOL
+        ));
+        assert!(!provider.supports_contract(E2EE_PROTOCOL, ENCRYPTION_VERSION, "near-tdx-v1"));
 
         for mutated in [
             ModelInfo {

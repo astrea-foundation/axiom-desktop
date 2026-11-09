@@ -69,6 +69,7 @@ Section "Uninstall"
   RMDir /r "$INSTDIR\bin"
   RMDir /r "$INSTDIR\launchers"
   RMDir /r "$INSTDIR\licenses"
+  ; Upgrades from releases through 0.1.20 can retain the retired provider runtime.
   RMDir /r "$INSTDIR\chutes"
   Delete "$INSTDIR\axiom-install.json"
   Delete "$INSTDIR\windows-cli-path.ps1"

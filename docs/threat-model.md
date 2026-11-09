@@ -37,14 +37,16 @@ cannot authorize an unsupported protocol or unverified public key.
 | Provider | Registered contract | Authentication boundary |
 |---|---|---|
 | NEAR | `near-v3`, encryption `2`, `near-tdx-nvidia-v2` | Fresh challenged direct-worker evidence, locally verified Intel/NVIDIA and key/manifest bindings; Ed25519 receipt for exact request/response/model |
+| NEAR (gateway) | `near-v3`, encryption `2`, `near-tdx-nvidia-gateway-v1` | Same worker evidence and receipt, plus a fresh challenged, locally verified Intel TDX quote and manifest for NEAR's cloud gateway, whose attested TLS key the backend pins |
 | Tinfoil | `tinfoil-ehbp-v1`, encryption `1`, `tinfoil-snp-sigstore-v1` | Pinned verifier checks SNP router/build/TLS/HPKE binding; request-bound encrypted response and authenticated completion |
 
 Provider-specific wire details live in
 [NEAR v3](protocols/near-v3.md) and [Tinfoil EHBP](protocols/tinfoil-ehbp-v1.md).
 
-NEAR v3's client verifies an **attested worker TLS key**. The backend pins its
-own live worker connection; the native client does not claim to have observed
-that socket. Tinfoil verifies the measured router and its worker-verification
+NEAR v3's client verifies an **attested worker TLS key**. On the direct route the
+backend pins its own live worker connection; on the gateway route it pins the
+attested gateway's TLS key and the gateway forwards ciphertext to the worker. The
+native client does not claim to have observed either socket. Tinfoil verifies the measured router and its worker-verification
 chain, not independent local quotes for every GPU. Neither claim is independent
 proof of arbitrary model weights/source code beyond the accepted protocol.
 

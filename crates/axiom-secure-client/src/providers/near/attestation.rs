@@ -206,6 +206,13 @@ pub(crate) async fn verify_model(
     config
         .endpoint_policy
         .validate_provider_url(&model.provider_base_url)?;
+    let attestation_protocol = model.attestation_protocol.as_str();
+    if !super::supports_attestation_protocol(attestation_protocol) {
+        return Err(SecureClientError::attestation(
+            "model selected an unsupported NEAR attestation contract",
+        ));
+    }
+    let gateway_route = attestation_protocol == super::GATEWAY_ATTESTATION_PROTOCOL;
     let mut nonce = [0_u8; 32];
     OsRng.fill_bytes(&mut nonce);
     let wire: WorkerSessionEnvelope = crate::relay::client::RelayClient::new(config, credential)
@@ -214,13 +221,13 @@ pub(crate) async fn verify_model(
             &hex::encode(nonce),
             super::E2EE_PROTOCOL,
             super::ENCRYPTION_VERSION,
-            super::ATTESTATION_PROTOCOL,
+            attestation_protocol,
             cancellation,
         )
         .await?;
     if wire.provider != super::PROVIDER_ID
         || wire.model_id != model.id
-        || wire.attestation_protocol != super::ATTESTATION_PROTOCOL
+        || wire.attestation_protocol != attestation_protocol
     {
         return Err(SecureClientError::attestation(
             "NEAR worker session contract is invalid",
@@ -240,6 +247,12 @@ pub(crate) async fn verify_model(
         .to_owned();
     let lease = serde_json::from_value(wire.evidence.get("lease").cloned().unwrap_or(Value::Null))
         .map_err(|_| SecureClientError::attestation("NEAR worker session lease is invalid"))?;
+    let gateway = parse_gateway_evidence(
+        wire.evidence.get("gateway"),
+        gateway_route,
+        &nonce,
+        config.limits.attestation_quote_bytes,
+    )?;
     let report: AttestationReport = serde_json::from_value(normalize_report(wire.evidence)?)
         .map_err(|_| SecureClientError::attestation("NEAR worker evidence schema is invalid"))?;
     validate_report_identity(&report, &nonce, &model.upstream_model, "ed25519")?;
@@ -264,18 +277,41 @@ pub(crate) async fn verify_model(
         .ok_or_else(|| SecureClientError::attestation("attestation omitted NVIDIA evidence"))?;
     // The relay transports untrusted evidence. Local vendor signature, challenge,
     // workload and key checks authenticate it; a server 'verified' flag does not.
-    let (intel, ()) = tokio::select! {
+    let gateway_intel = async {
+        match &gateway {
+            Some(gateway) => verify_intel(
+                &gateway.quote,
+                gateway.key.as_bytes(),
+                &gateway.tls_fingerprint,
+                &nonce,
+                &gateway.manifest,
+                config,
+            )
+            .await
+            .map(Some),
+            None => Ok(None),
+        }
+    };
+    let (intel, (), gateway_intel) = tokio::select! {
         () = cancellation.cancelled() => return Err(SecureClientError::cancelled()),
         result = async {
             tokio::try_join!(
                 verify_intel(&quote, model_key.as_bytes(), &tls_fingerprint, &nonce, &manifest, config),
                 verify_nvidia(nvidia_payload, &nonce, config, &policy.nvidia_anchor_sha256),
+                gateway_intel,
             )
         } => result?,
     };
     let outdated_accepted = accept_intel_status(&intel.status, policy, config).inspect_err(|_| {
         tracing::warn!(status = %intel.status, advisory_ids = ?intel.advisory_ids, "NEAR Intel TDX rejected by policy");
     })?;
+    let gateway_outdated_accepted = match &gateway_intel {
+        Some(gateway_intel) => accept_intel_status(&gateway_intel.status, policy, config)
+            .inspect_err(|_| {
+                tracing::warn!(status = %gateway_intel.status, advisory_ids = ?gateway_intel.advisory_ids, "NEAR gateway Intel TDX rejected by policy");
+            })?,
+        None => false,
+    };
     if !policy.require_nvidia_verified {
         return Err(SecureClientError::configuration(
             "near-v3 requires NVIDIA verification",
@@ -283,6 +319,7 @@ pub(crate) async fn verify_model(
     }
     let mut evidence = build_evidence(
         &model.id,
+        attestation_protocol,
         policy,
         model_key,
         &tls_fingerprint,
@@ -302,6 +339,14 @@ pub(crate) async fn verify_model(
             name: "outdated_tcb_accepted".into(),
             value: "Accepted by user for this provider until restart".into(),
         });
+    }
+    if let (Some(gateway), Some(gateway_intel)) = (&gateway, &gateway_intel) {
+        add_gateway_evidence(
+            &mut evidence,
+            gateway,
+            gateway_intel,
+            gateway_outdated_accepted,
+        );
     }
     evidence.checks.push(check(
         "response_signature",
@@ -676,6 +721,7 @@ fn decode_certificate(encoded: &str) -> Result<Vec<u8>> {
 
 fn build_evidence(
     model_id: &str,
+    attestation_protocol: &str,
     policy: &TrustPolicy,
     model_key: Ed25519PublicKey,
     tls_fingerprint: &[u8; 32],
@@ -686,7 +732,7 @@ fn build_evidence(
         state: SecurityState::Verified,
         provider_id: super::PROVIDER_ID.into(),
         model_id: model_id.into(),
-        attestation_protocol: super::ATTESTATION_PROTOCOL.into(),
+        attestation_protocol: attestation_protocol.into(),
         e2ee_protocol: super::E2EE_PROTOCOL.into(),
         e2ee_encryption_version: super::ENCRYPTION_VERSION,
         trust_policy_version: policy.version.clone(),
@@ -721,6 +767,126 @@ fn build_evidence(
             },
         ],
         workload_manifest: Some(workload_manifest),
+    }
+}
+
+/// Gateway evidence relayed by the backend for `near-tdx-nvidia-gateway-v1`.
+/// Its quote is verified locally with the same Intel path as the worker's.
+struct GatewayEvidence {
+    key: Ed25519PublicKey,
+    tls_fingerprint: [u8; 32],
+    quote: Vec<u8>,
+    manifest: String,
+}
+
+#[derive(Deserialize)]
+struct GatewayWire {
+    signing_algo: String,
+    signing_address: String,
+    nonce: String,
+    tls_fingerprint: String,
+    intel_quote: String,
+    app_compose: String,
+}
+
+/// The gateway attestation is required exactly for the gateway contract, so a
+/// direct-worker session can never silently gain an unverified router.
+fn parse_gateway_evidence(
+    value: Option<&Value>,
+    required: bool,
+    nonce: &[u8; 32],
+    quote_limit: usize,
+) -> Result<Option<GatewayEvidence>> {
+    let value = match (value, required) {
+        (None, false) => return Ok(None),
+        (Some(_), false) => {
+            return Err(SecureClientError::attestation(
+                "direct NEAR evidence must not include a gateway attestation",
+            ));
+        }
+        (None, true) => {
+            return Err(SecureClientError::attestation(
+                "gateway-routed NEAR evidence omitted the gateway attestation",
+            ));
+        }
+        (Some(value), true) => value,
+    };
+    let wire = GatewayWire::deserialize(value)
+        .map_err(|_| SecureClientError::attestation("NEAR gateway evidence schema is invalid"))?;
+    if wire.signing_algo != "ed25519" {
+        return Err(SecureClientError::attestation(
+            "NEAR gateway attestation must use Ed25519",
+        ));
+    }
+    let key = Ed25519PublicKey::from_hex(&wire.signing_address)
+        .map_err(|_| SecureClientError::attestation("NEAR gateway key is invalid"))?;
+    if decode_hex_32(&wire.nonce, "NEAR gateway nonce is invalid")? != *nonce {
+        return Err(SecureClientError::attestation(
+            "NEAR gateway attestation nonce does not match the challenge",
+        ));
+    }
+    let tls_fingerprint = decode_hex_32(
+        &wire.tls_fingerprint,
+        "NEAR gateway TLS fingerprint is invalid",
+    )?;
+    let quote = decode_quote(&wire.intel_quote, quote_limit)?;
+    if wire.app_compose.is_empty() {
+        return Err(SecureClientError::attestation(
+            "NEAR gateway attestation omitted its workload manifest",
+        ));
+    }
+    Ok(Some(GatewayEvidence {
+        key,
+        tls_fingerprint,
+        quote,
+        manifest: wire.app_compose,
+    }))
+}
+
+fn add_gateway_evidence(
+    evidence: &mut SecurityEvidence,
+    gateway: &GatewayEvidence,
+    intel: &IntelEvidence,
+    outdated_accepted: bool,
+) {
+    let mut gateway_tdx = check("gateway_tdx", "NEAR gateway (Intel TDX)", &intel.status);
+    gateway_tdx.passed = !outdated_accepted;
+    evidence.checks.push(gateway_tdx);
+    evidence.checks.push(check(
+        "gateway_tls_binding",
+        "Attested gateway TLS key",
+        "quote-bound",
+    ));
+    evidence.checks.push(check(
+        "gateway_workload_manifest",
+        "Gateway workload manifest",
+        "quote-bound",
+    ));
+    for (name, value) in [
+        ("route", "near-gateway".to_owned()),
+        ("gateway_signing_key", gateway.key.to_hex()),
+        (
+            "gateway_tls_spki_sha256",
+            hex::encode(gateway.tls_fingerprint),
+        ),
+        ("gateway_intel_mr_td", intel.mr_td.clone()),
+        (
+            "gateway_workload_manifest_sha256",
+            intel.compose_hash.clone(),
+        ),
+        ("gateway_intel_advisory_ids", intel.advisory_ids.join(",")),
+    ] {
+        evidence.provider_claims.push(EvidenceClaim {
+            name: name.into(),
+            value,
+        });
+    }
+    if outdated_accepted {
+        evidence.state = SecurityState::Degraded;
+        evidence.provider_claims.push(EvidenceClaim {
+            name: "gateway_outdated_tcb_accepted".into(),
+            value: "Accepted by user for this provider until restart".into(),
+        });
     }
 }
 
@@ -986,6 +1152,92 @@ mod tests {
     }
 
     #[test]
+    fn live_gateway_report_vectors_use_the_production_verifier() {
+        #[derive(serde::Deserialize)]
+        struct Vectors {
+            report_data_vectors: Vec<GatewayVector>,
+        }
+        #[derive(serde::Deserialize)]
+        struct GatewayVector {
+            name: String,
+            signing_key_hex: String,
+            tls_fingerprint_hex: String,
+            nonce_hex: String,
+            report_data_hex: String,
+            valid: bool,
+        }
+        let vectors: Vectors = serde_json::from_str(include_str!(
+            "../../../../../fixtures/e2ee/near-gateway-v1.json"
+        ))
+        .unwrap();
+        assert!(
+            vectors
+                .report_data_vectors
+                .iter()
+                .any(|vector| vector.valid)
+        );
+        for vector in vectors.report_data_vectors {
+            let report = hex::decode(vector.report_data_hex).unwrap();
+            let key = hex::decode(vector.signing_key_hex).unwrap();
+            let tls =
+                <[u8; 32]>::try_from(hex::decode(vector.tls_fingerprint_hex).unwrap()).unwrap();
+            let nonce = <[u8; 32]>::try_from(hex::decode(vector.nonce_hex).unwrap()).unwrap();
+            assert_eq!(
+                verify_report_data(&report, &key, &tls, &nonce).is_ok(),
+                vector.valid,
+                "{}",
+                vector.name
+            );
+        }
+    }
+
+    #[test]
+    fn gateway_evidence_is_required_exactly_for_the_gateway_contract() {
+        let nonce = [7_u8; 32];
+        let valid = serde_json::json!({
+            "signing_algo": "ed25519",
+            "signing_address": "40599fb284f43953bb356b09080fd803c960fc10285ad90eca462ca711ad4acb",
+            "nonce": hex::encode(nonce),
+            "tls_fingerprint": "ab".repeat(32),
+            "intel_quote": "00".repeat(16),
+            "app_compose": "{\"services\":{}}",
+            "intel_status": "UpToDate"
+        });
+        let parsed = parse_gateway_evidence(Some(&valid), true, &nonce, 64)
+            .unwrap()
+            .unwrap();
+        assert_eq!(parsed.key.to_hex(), valid["signing_address"]);
+        assert_eq!(parsed.tls_fingerprint, [0xab; 32]);
+        assert_eq!(parsed.quote, vec![0; 16]);
+
+        assert!(
+            parse_gateway_evidence(None, false, &nonce, 64)
+                .unwrap()
+                .is_none()
+        );
+        assert!(parse_gateway_evidence(None, true, &nonce, 64).is_err());
+        assert!(parse_gateway_evidence(Some(&valid), false, &nonce, 64).is_err());
+        assert!(parse_gateway_evidence(Some(&valid), true, &[8; 32], 64).is_err());
+        assert!(parse_gateway_evidence(Some(&valid), true, &nonce, 8).is_err());
+        for (field, value) in [
+            ("signing_algo", serde_json::json!("ecdsa")),
+            ("signing_address", serde_json::json!("not-a-key")),
+            ("nonce", serde_json::json!("00".repeat(32))),
+            ("tls_fingerprint", serde_json::json!("ab".repeat(31))),
+            ("intel_quote", serde_json::json!("")),
+            ("app_compose", serde_json::json!("")),
+            ("tls_fingerprint", serde_json::Value::Null),
+        ] {
+            let mut mutated = valid.clone();
+            mutated[field] = value;
+            assert!(
+                parse_gateway_evidence(Some(&mutated), true, &nonce, 64).is_err(),
+                "{field} mutation must be rejected"
+            );
+        }
+    }
+
+    #[test]
     fn authoritative_report_vectors_use_the_production_verifier() {
         #[derive(serde::Deserialize)]
         struct Vectors {
@@ -1248,6 +1500,8 @@ mod tests {
             id: std::env::var("AXIOM_NEAR_MODEL_ID").expect("AXIOM_NEAR_MODEL_ID is required"),
             upstream_model,
             provider_base_url: base_url,
+            attestation_protocol: std::env::var("AXIOM_NEAR_ATTESTATION_PROTOCOL")
+                .unwrap_or_else(|_| super::super::ATTESTATION_PROTOCOL.into()),
             ..Default::default()
         };
         let (verified, _, _) = Box::pin(verify_model(

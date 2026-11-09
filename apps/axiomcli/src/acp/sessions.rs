@@ -456,8 +456,8 @@ pub(super) async fn load_session(
                     ));
                 }
             }
-            if let Some(warning) = loaded.warnings.first() {
-                return Err(agent_client_protocol::util::internal_error(warning.clone()));
+            for warning in &loaded.warnings {
+                send_text(&connection, &external_id, format!("[recovery] {warning}. Older context was omitted so this conversation can continue."))?;
             }
             let restored_model = model_for_resume(&loaded.events, &ctx_default_model);
             let restored_thinking = thinking_for_resume(&loaded.events, ctx_default_thinking);

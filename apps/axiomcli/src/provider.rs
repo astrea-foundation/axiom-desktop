@@ -317,7 +317,6 @@ impl std::fmt::Debug for SecureAxiomProvider {
 impl InferenceProvider for SecureAxiomProvider {
     fn has_image_service(&self) -> bool {
         self.config.direct.is_some()
-            || std::env::var_os("AXIOM_CHUTES_CLIENT_CONFIG_FILE").is_some()
     }
 
     async fn image_capabilities(

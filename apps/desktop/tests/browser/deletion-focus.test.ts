@@ -1188,7 +1188,8 @@ for (const platform of ["linux", "win32", "darwin"]) {
       const queue = page.getByRole("region", { name: "Message queue", exact: true });
       await queue.getByText("Restored after reconnect. Review and send when ready.", { exact: true }).waitFor();
       assert.equal((await calls(page)).filter((call) => call.method === "prompt").length, 0);
-      await queue.getByRole("button", { name: "Cancel queued message", exact: true }).click();
+      const cancel = queue.getByRole("button", { name: "Cancel queued message", exact: true });
+      await cancel.focus(); await page.keyboard.press("Enter");
       await queue.waitFor({ state: "hidden" });
       assert.deepEqual(errors, []);
     } finally { await page.close(); }
@@ -3140,12 +3141,16 @@ for (const remembered of ["auto", "near-glm"]) test(`Tinfoil default, provider o
     await control.waitFor();
     await control.click();
     const picker = page.getByRole("dialog", { name: "Choose a model" });
-    const tabs = picker.getByRole("tab");
-    assert.match(await tabs.nth(0).innerText(), /^Tinfoil/);
-    assert.match(await tabs.nth(1).innerText(), /^NEAR AI/);
-    assert.equal(await tabs.nth(remembered === "auto" ? 0 : 1).getAttribute("aria-selected"), "true");
-    await tabs.nth(0).click();
-    const choices = picker.getByRole("tabpanel").getByRole("button");
+    const hosts = picker.getByRole("group", { name: "Filter by host" }).getByRole("button");
+    assert.match(await hosts.nth(0).innerText(), /^All/);
+    assert.match(await hosts.nth(1).innerText(), /^Tinfoil/);
+    assert.match(await hosts.nth(2).innerText(), /^NEAR AI/);
+    const list = picker.getByRole("group", { name: "Models" });
+    assert.ok((await list.locator('[aria-current="true"]').innerText()).startsWith(currentLabel));
+    await hosts.nth(1).click();
+    assert.equal(await hosts.nth(1).getAttribute("aria-pressed"), "true");
+    const choices = list.getByRole("button");
+    assert.equal(await choices.count(), 2);
     assert.match(await choices.first().innerText(), /^DeepSeek V4.1 Flash/);
     await choices.first().click();
     const selected = page.getByRole("button", { name: "DeepSeek V4.1 Flash", exact: true });
@@ -3158,6 +3163,71 @@ for (const remembered of ["auto", "near-glm"]) test(`Tinfoil default, provider o
     await page.locator("textarea[data-chat-input]").fill("Keep the chosen model");
     await page.evaluate(() => window.dispatchEvent(new Event("focus")));
     assert.equal(await selected.isVisible(), true);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("new sessions default to NEAR's abliterated DeepSeek and fall back to Tinfoil's DeepSeek", async () => {
+  const model = (id: string, label: string, providerId: string, upstreamModel: string) => ({
+    id, label, shortLabel: label, providerId, providerLabel: providerId === "near" ? "NEAR AI" : "Tinfoil",
+    upstreamModel, thinkingLevels: [], contextWindowTokens: 32768, maxOutputTokens: 8192,
+    autoCompactThresholdTokens: 27853, supportsImages: false, fileMimeTypes: [],
+    inputPriceMicrousdPerMillionTokens: 300000, outputPriceMicrousdPerMillionTokens: 1200000,
+  });
+  const tinfoil = model("tinfoil-deepseek-v4-1-flash", "DeepSeek V4.1 Flash", "tinfoil", "deepseek-v4-1-flash");
+  const abliterated = model("deepseek-v4-1-flash-1017-abliterated", "DeepSeek V4.1 Flash Abliterated", "near", "deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated");
+  for (const [models, expected] of [[[tinfoil, abliterated], "DeepSeek V4.1 Flash Abliterated"], [[tinfoil], "DeepSeek V4.1 Flash"]] as const) {
+    const { page, errors } = await openApp("linux", false, [], "provider_default", false, true, { models: [...models] } as unknown as ListModelsResponse, "auto");
+    try {
+      await page.getByRole("button", { name: expected, exact: true }).waitFor();
+      assert.deepEqual(errors, []);
+    } finally { await page.close(); }
+  }
+});
+
+test("model picker filters by catalog tags, hosts, capabilities and tag search", async () => {
+  const tag = (id: string, label: string, tone: string, position: number) => ({ id, label, tone, position });
+  const cheap = tag("cheap", "Cheap", "green", 10);
+  const model = (id: string, label: string, providerId: string, tags: ReturnType<typeof tag>[], supportsImages = false) => ({
+    id, label, shortLabel: label, providerId, providerLabel: providerId === "near" ? "NEAR AI" : "Tinfoil",
+    upstreamModel: id, thinkingLevels: [], contextWindowTokens: 32768, maxOutputTokens: 8192,
+    autoCompactThresholdTokens: 27853, supportsImages, fileMimeTypes: [],
+    inputPriceMicrousdPerMillionTokens: 500000, outputPriceMicrousdPerMillionTokens: 2000000, tags,
+  });
+  const catalog = { models: [
+    model("tinfoil-deepseek-v4-1-flash", "DeepSeek V4.1 Flash", "tinfoil", [cheap, tag("fast", "Fast", "blue", 20)]),
+    model("tinfoil-kimi-k3", "Kimi K3", "tinfoil", [tag("intelligent", "Intelligent", "violet", 30)]),
+    model("near-qwen", "Qwen3.6 35B", "near", [cheap, tag("uncensored", "Uncensored", "pink", 50)], true),
+    model("near-minimax", "MiniMax M3", "near", [tag("new", "New", "orange", 1000)]),
+  ] } as unknown as ListModelsResponse;
+  const { page, errors } = await openApp("linux", false, [], "provider_default", false, true, catalog, "auto");
+  try {
+    await page.getByRole("button", { name: "DeepSeek V4.1 Flash", exact: true }).click();
+    const picker = page.getByRole("dialog", { name: "Choose a model" });
+    const tags = picker.getByRole("group", { name: "Filter by tag" });
+    const rows = picker.getByRole("group", { name: "Models" }).getByRole("button");
+    const status = picker.locator('[aria-live="polite"]');
+    assert.deepEqual(await tags.getByRole("button").allInnerTexts(), ["Uncensored", "Cheap", "Fast", "Intelligent", "New"]);
+    assert.equal(await rows.count(), 4);
+    assert.match(await rows.first().innerText(), /Tinfoil\s*Cheap\s*Fast/);
+
+    await tags.getByRole("button", { name: "Cheap", exact: true }).click();
+    assert.equal(await rows.count(), 2);
+    assert.equal(await tags.getByRole("button", { name: "Intelligent", exact: true }).isDisabled(), true);
+    await picker.getByRole("button", { name: "Only models that accept images", exact: true }).click();
+    assert.equal(await rows.count(), 1);
+    assert.match(await rows.first().innerText(), /^Qwen3.6 35B/);
+    assert.match(await status.innerText(), /^1 model · Cheap \+ Images$/);
+    await page.evaluate(() => document.getAnimations().forEach(animation => animation.finish()));
+    await picker.screenshot({ path: "/tmp/axiom-tagged-picker-filtered.png" });
+
+    await picker.getByRole("button", { name: "Clear filters", exact: true }).click();
+    assert.equal(await rows.count(), 4);
+    await page.evaluate(() => document.getAnimations().forEach(animation => animation.finish()));
+    await picker.screenshot({ path: "/tmp/axiom-tagged-picker.png" });
+    await picker.getByRole("textbox", { name: "Search models" }).fill("new");
+    assert.equal(await rows.count(), 1);
+    assert.match(await rows.first().innerText(), /^MiniMax M3/);
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
 });
@@ -3181,7 +3251,8 @@ test("catalog refresh withdraws saved models and shows Tinfoil upload icons", as
     assert.ok(await page.getByRole("button", { name: "Send", exact: true }).isDisabled());
     await unavailable.click();
     const picker = page.getByRole("dialog", {name: "Choose a model"});
-    await picker.getByRole("tab", { name: /Tinfoil/ }).waitFor();
+    await picker.getByRole("button", { name: /New vision/ }).waitFor();
+    assert.equal(await picker.getByRole("group", { name: "Filter by host" }).count(), 0, "a single host needs no host filter");
     assert.equal(await picker.getByRole("img", {name:"Image uploads"}).count(), 1);
     assert.equal(await picker.getByRole("img", {name:"File uploads"}).count(), 1);
     const logo = picker.locator('img[title="Tinfoil"]');
@@ -3647,8 +3718,8 @@ test("generated and edited images open the local viewer with keyboard and backdr
     const trigger = page.getByRole("button", { name: "View generated image", exact: true });
     await trigger.waitFor();
     const caption = await trigger.locator("..").locator("figcaption").innerText();
-    assert.match(caption, /Axiom/);
-    assert.doesNotMatch(caption, /Chutes|AstreaAI/, "a provider-free image fixture must not invent its source");
+    assert.match(caption, /AstreaAI/);
+    assert.doesNotMatch(caption, /Axiom|Tinfoil|NEAR AI/, "image captions identify the AstreaAI image service independently of the chat model");
     assert.doesNotMatch(caption, /verified|E2EE/i);
     const thumbnail = await trigger.boundingBox();
     const source = await trigger.locator("img").getAttribute("src");

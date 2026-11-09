@@ -959,18 +959,9 @@ pub(super) async fn prompt(
     let preflight: crate::Result<()> = async {
         axiom_inference::validate_prompt(&prompt, &attachments)
             .map_err(|error| crate::AxiomError::Protocol(error.to_string()))?;
-        let mut file_types = attachments.iter().filter_map(|attachment| match attachment {
+        let file_types = attachments.iter().filter_map(|attachment| match attachment {
             axiom_inference::PromptAttachment::File { file, .. } => Some(file.mime_type.clone()), _ => None,
         }).collect::<Vec<_>>();
-        if let Some(history) = revision_history.as_ref() {
-            for event in history.iter().rev().take_while(|event| !matches!(event.event, AppEvent::ContextCompacted { .. })) {
-                if let AppEvent::PromptAccepted { attachments, .. } = &event.event {
-                    file_types.extend(attachments.iter().filter_map(|attachment| match attachment {
-                        axiom_inference::PromptAttachment::File { file, .. } => Some(file.mime_type.clone()), _ => None,
-                    }));
-                }
-            }
-        }
         if !file_types.is_empty() {
             let models = ctx_runner.available_model_details(work.cancellation.child_token()).await?;
             if !models.iter().any(|model| model.id == session_model && file_types.iter().all(|mime| model.file_mime_types.contains(mime))) {
@@ -1138,6 +1129,7 @@ pub(super) async fn prompt(
         let (events_tx, mut events_rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
         let display_cwd = cwd.clone();
         let mut terminalized = false;
+        let mut restore_after_turn = false;
         let mut task_result: agent_client_protocol::Result<_> = async {
             let mcp = if let Some(expected) = mcp_revision {
                 let store = task_store.as_ref().expect("desktop store").bind_active_account().map_err(agent_error)?;
@@ -1211,6 +1203,7 @@ pub(super) async fn prompt(
                 }
             };
             if result.is_err() {
+                restore_after_turn = true;
                 work.cancellation.cancel();
                 title_cancellation.cancel();
             }
@@ -1290,17 +1283,17 @@ pub(super) async fn prompt(
         }
         .await;
 
-        if matches!(task_result, Ok(protocol::StopReason::Cancelled))
+        if (restore_after_turn || task_result.is_err() || matches!(task_result, Ok(protocol::StopReason::Cancelled)))
             && let Some(store) = &task_store
         {
-            // Stop drops the runner future promptly to close upstream.
+            // Stop or an error can drop the runner before its history commit.
             // Rebuild its context from the committed journal before
             // releasing this thread; the dropped future may not have
             // saved the accepted prompt or its interrupted response.
             task_result = async {
                 let history = store.load(&internal_id).map_err(agent_error)?;
                 task_runner.restore_session(&internal_id, &history).await.map_err(agent_error)?;
-                Ok(protocol::StopReason::Cancelled)
+                task_result
             }.await;
         }
 

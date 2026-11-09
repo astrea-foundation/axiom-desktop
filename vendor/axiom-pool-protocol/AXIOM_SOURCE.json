@@ -12,7 +12,7 @@
     "src/strict.rs": "e1cee46660ae266bab4c4c1e96a3b5854f9601b68e09f97b9c2d368c2093e953",
     "src/test_support.rs": "4ef68b65bc77a079643aca91c9e5fccdb6abf6edb39bd244bd2227252b355cd4",
     "src/tools.rs": "6698e2f818fdacf00befc5e3e20dc8efe2b254f3b8cbe2273df8c3564c06fd21",
-    "src/types.rs": "4461ae299053f4499b5c92d0860ac3d64a318db564754d8631571b2a738e7a46",
+    "src/types.rs": "ddefa6c62e1dc248ce1270eb16c1767c1fc87d2f11f12675441c0e5ce74ff1cf",
     "src/vision.rs": "47d1acbd8460d4909dbc160fba6b87f35ba2aee7305706d6eec28621d9ed00dc",
     "examples/generate_vectors.rs": "574e4cfdbec81f69484b922d2b3d0acf21c61ba3f7894216e302f79812c13fdb"
   }

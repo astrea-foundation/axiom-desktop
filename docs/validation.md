@@ -1,5 +1,14 @@
 # Release acceptance
 
+The 0.1.21 release audit updates rusqlite to 0.41.1 with libsqlite3-sys 0.39.1
+(SQLite 3.54.1), addressing RUSTSEC-2026-0459 in the bundled database engine.
+The MCP SDK moves to rmcp 3.9.0, covering RUSTSEC-2026-0457, RUSTSEC-2026-0461
+and RUSTSEC-2026-0462. The dependency audit remains required without new advisory
+exceptions. Existing conversation storage and MCP behavior must pass native
+regression tests with these versions.
+The workspace minimum Rust version is 1.89 for the patched database crate;
+the pinned CI and release toolchain remains Rust 1.97.1.
+
 The launch dependency audit updates Tokio to 1.53.3, the rustls verifier to
 0.103.16, both webpki root lists to 1.0.10, libz-sys to 1.1.31 and
 pulldown-cmark to 0.13.6. These retain the existing security audit gate.
@@ -23,6 +32,13 @@ Qualify the exact promoted source revision and signed installer bytes. Record
 OS, architecture, browser, source revision, artifact SHA-256, signing identity,
 result and limitations in the release's maintainer acceptance record. Unit tests
 and browser fixtures do not establish signed native OS acceptance.
+
+macOS native-session regressions cover a single password read per restore,
+continuous CLI/Desktop rotation locking, denied reads without repeated attempts,
+and in-place writes in an isolated Keychain fixture. Signed macOS acceptance must
+still verify that **Always Allow** survives quit/relaunch and shared CLI/Desktop
+use. Ad hoc development binaries do not establish approval persistence for the
+certificate-signed installer.
 
 Browser payment quote fixtures derive issuance and expiry from one timestamp so
 the exact 60-second validity contract remains deterministic at clock boundaries.
@@ -142,32 +158,13 @@ Retain these limits and remaining interactive requirements:
   fresh evidence and receipt checks strict during account changes and replacement.
   Permanent workload policy does not waive fresh hardware or response checks.
 
-These AstreaAI results are separate from managed Chutes qualification. See
-[the Direct connection guide](direct-verda.md) and [release procedure](releasing.md).
+See [the Direct connection guide](direct-verda.md) and [release procedure](releasing.md).
 
 ## Confidential pool qualification
 
-The separate registered managed Chutes channel now has account-owned opaque
-backend routing, local vendor verification, publisher authorization, independent
-usage signatures, native cost ceilings and billing settlement. Its runtime
-trust scope is documented in the [managed guide](../../axiom-inference/docs/chutes-managed.md).
-Keep its qualification distinct from the stronger pool requirements below.
-Public staging rollout still needs the authorized source/feed and backend
-deployment, actual worker callback origin and installed native bundle. Windows
-and signed installer helper packaging require separate release validation.
-The optional self-contained helper payload now has macOS Apple Silicon and
-Ubuntu 24.04 x86-64 build, relocation and stdio checks, inventory verification and a packaging hook; its
-native executable pin is checked before startup. Signed installer acceptance
-and older Linux/Intel macOS target builds remain separate; Windows is disabled.
-See the [helper build guide](../../axiom-inference/docs/native-helper.md).
-Warm redundant capacity and
-draining/replacement testing are required for a production availability claim.
-
-The qualified Chutes pool offering remains discovery only. A separate debug-only
-interactive adapter permits local encrypted testing. Its signed staging variant
-verifies hardware, the Chutes recipient key and publisher authorization, with
-execution provenance explicitly outside that claim. Before enabling production
-custom pool inference or claiming exact application/model execution, verify the exact application/model
+The `axiom-pool` provider admits only installed `tinfoil-gpu-v3` offerings with
+an installed verifier. Before enabling production custom pool inference or
+claiming exact application/model execution, verify the exact application/model
 release and Rust boot-key endorsement against accepted runtime measurements;
 implement and qualify native/controller verification and instance routing;
 exercise actual two-account concurrent traffic, replacement, cancellation,
@@ -194,62 +191,37 @@ packaged main process can start.
 
 ## Interactive qualification
 
-Signed [backend runtime settings](../../axiom-inference/docs/runtime-updates.md)
-now drive image tool defaults/ratios, model-specific LoRA policy, sampling
-validation and hosted deployment selection. Native stdio regressions cover
-changes on a reused helper, substituted policy bindings and unsupported settings
-rejected before dispatch. Initial runtime-capable worker, backend migration and
-installed-helper live qualification remain deployment requirements. The October
-30 GPU record below covers the previous fixed policy.
-
-The development `imageGeneration@3` contract exposes `generate` with up to five
-ordered references and uses the ComfyUI image engine. The October 29 policy
-restores the pinned uncensored LoRA at 0.9 for the exact uncensored model IDs.
-Native helper tests cover alternating model policies on one reused helper and
-rejecting missing or substituted adapter metadata. Regeneration tests preserve
-the original model's policy after a model switch. The
-[October 30 live qualification](../../axiom-inference/docs/qa/image-lora09-b-2026-10-30.json)
-records the deployed private GPU image and installed standalone helper, fresh
-hardware checks, uncensored/base/uncensored generations, five references,
-authenticated progress and exact base-model restoration. These checks used
-synthetic fixtures without opening personal threads or images. Native
-checks cover reference order, five-reference to text-only transitions, duplicate
-and foreign IDs, bounded conditioning copies, output dimensions and optional
-viewing. Broader co-resident load, encrypted multi-account qualification and
-signed installer acceptance remain release requirements for the new build.
-The October 27 evidence below covers the
-previous engine and tool contract.
-
-The [October 28 Comfy qualification](../../axiom-inference/docs/qa/comfy-implementation-2026-10-28.json)
-records five successful private GPU checks, including ordered five-reference
-conditioning, a following text-only request, generated-reference editing and
-two-account isolation. A local Desktop check also completed `generate`, optional
-`view_image`, authenticated chat completion and signed settlement using the
-standalone helper. Managed-request expiry regression checks cover the 15-minute
-deadline, account isolation, no-charge late receipts and safe native admission
-errors; the [expiry validation record](../../axiom-inference/docs/qa/chutes-request-expiry-2026-10-28.json)
-includes background recovery and the updated standalone-helper Desktop run.
-These development results do not replace public staging or signed
-installer acceptance.
+Image tools use only the installed AstreaAI image adapter. Its runtime fixes
+the 1:1 default, the supported ratios and the eight-step schedule, and the chat
+model's catalog `uncensored` tag selects the pinned image LoRA. Regeneration
+preserves the original model's policy after a model switch. Native checks cover
+reference order, five-reference to text-only transitions, duplicate and foreign
+IDs, bounded conditioning copies, output dimensions and optional viewing.
+Broader co-resident load, encrypted multi-account qualification and signed
+installer acceptance remain release requirements. AstreaAI image
+qualification records are in [the Direct connection guide](direct-verda.md).
 
 The unified `imageGeneration@2` tool and automatic vision-model gating replace
 the earlier Images toggle. Native regression checks cover generation/edit
 dispatch, conversation reference isolation, model switching, unavailable tools
 and nonvision upload rejection. Renderer checks cover toggle removal and the
-generated-image viewer. The
-[October 27 live source-mode qualification](../../axiom-inference/docs/qa/chutes-vision-staging-live-2026-10-27.json)
-records a fresh verified Chutes worker, ordered ten-image vision with streaming,
-no image creation during an analysis-only request, 1536-square generation and
-edits from both source types, signed billing and the full-image viewer. It also
-checks local development credentials across rebuilds and restarts. Installed
-app checks, cross-platform release validation and broader load tests remain
-release requirements; source-mode qualification does not replace them.
+generated-image viewer. Installed app checks, cross-platform release validation
+and broader load tests remain release requirements; source-mode qualification
+does not replace them.
 
 Generated-image presentation checks also cover one-time binary IPC payloads,
 stable Blob URLs through streaming updates, account/runtime resource revocation,
 late bootstrap recovery, 1536-pixel viewing while typing, and cancellable inline
 decoding that yields to UI tasks. These local transport checks do not change
 provider attestation, authenticated completion, original image bytes or size caps.
+
+Chat recovery regressions cover missing attachment payloads, damaged image
+metadata, unavailable historical image views, interrupted tool replies, bounded
+image-reference expiration, incompatible historical files after a model switch,
+and failed automatic summarization before a new prompt. Client completion checks
+also delay an older running snapshot across send, edit and image regeneration,
+then require a fresh ready snapshot. These checks preserve normal provider
+verification and never replay an interrupted image job or local tool action.
 
 Before releasing cross-provider AstreaAI image support, qualify verified
 1536-square generation and ordered five-reference editing from vision-capable
@@ -269,12 +241,11 @@ must not wait for a progress consumer that the caller never requested.
 
 Image-tool registration must follow the secure provider's loaded local image
 configuration, including automatic installed-bundle discovery. Qualify an actual
-model-generated `generate` call from the signed installation with neither
-`AXIOM_DIRECT_CLIENT_CONFIG_FILE` nor `AXIOM_CHUTES_CLIENT_CONFIG_FILE` set.
-Include the standalone CLI layout and a Desktop layout without legacy Chutes
-configuration. Catalog discovery and encrypted chat alone do not prove the image
+model-generated `generate` call from the signed installation without
+`AXIOM_DIRECT_CLIENT_CONFIG_FILE` set. Include the standalone CLI layout and a
+Desktop layout. Catalog discovery and encrypted chat alone do not prove the image
 tools are registered. Keep a candidate unpublished if this check fails.
-Also initialize the installed ACP runtime without those overrides and require
+Also initialize the installed ACP runtime without that override and require
 its advertised image-generation capability to match the registered tool.
 Verify the standalone Mac package after extraction or installation, including
 relative Python-framework links, bundled verifier signatures and a fresh worker
@@ -290,12 +261,23 @@ limit. Vision-copy checks include transparent images and generated PNGs larger
 than the upload byte limit. The October 27 live record predates this viewing
 tool; live model selection of the new tool remains a separate qualification.
 
+Synthetic native context checks cover model-specific image allowances after
+restore and in the token guard, new views added to the last reported context count,
+new uploads that cross AstreaAI's eight-image context cap, view refusals at that
+cap, model switches from larger image histories, byte-triggered compaction below the
+token threshold, attachment order and Unicode text across bounded summary stages,
+encoded attachment and message bounds including summary overhead, and reasoning
+output space before the visible summary. Existing failure/cancellation checks
+retain original context until all summary stages succeed. These fixtures do not
+establish live-provider or packaged Desktop acceptance of the context-accounting
+changes.
+
 Image-progress checks cover authenticated request/sequence binding, rounded
 sampling percentages, truncation and forged-update rejection, queue cancellation,
 clean transport completion, native propagation and durable tool metadata. Browser
 checks cover percentage bars, the 99%-to-100% completion boundary, and distinct
 random filenames for generated images and repeated Save actions. The matching
-worker/backend/helper rollout and actual GPU preview-progress behavior still
+worker/backend rollout and actual GPU preview-progress behavior still
 require live qualification; local encrypted fixtures do not establish it.
 
 | Area | Required evidence |

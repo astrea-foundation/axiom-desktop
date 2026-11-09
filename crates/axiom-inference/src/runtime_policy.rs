@@ -58,10 +58,7 @@ impl Default for ImageRuntimePolicy {
                     1.0, 0.978_453, 0.95418, 0.926_626, 0.89508, 0.845_148, 0.704_534, 0.414_568,
                     0.0,
                 ],
-                uncensored_models: vec![
-                    "chutes:qwen3.8-27b".into(),
-                    "chutes-preview:qwen3.8-27b".into(),
-                ],
+                uncensored_models: vec![],
                 lora: Some(RuntimeLora {
                     name: "uncensored.safetensors".into(),
                     sha256: "83aba822ad8ee10a1e836828f5088259d93bce7b5f3419b46dbc0258c2be46a9"
@@ -195,11 +192,6 @@ impl ImageRuntimePolicy {
         };
         size.validate().map_err(|_| bad)?;
         Ok(size)
-    }
-
-    #[must_use]
-    pub fn uncensored(&self, model: &str) -> bool {
-        self.image.uncensored_models.iter().any(|m| m == model)
     }
 }
 

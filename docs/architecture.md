@@ -70,6 +70,14 @@ bounded account metadata and opaque login handles, never native access/refresh
 tokens. Desktop removes `AXIOM_API_KEY` from its sidecar environment; standalone
 CLI/proxy automation may use that explicit environment override.
 
+On macOS, startup checks for the origin-scoped Keychain item by reference without
+decrypting its password. The first restore reads the refresh token once while
+holding the CLI/Desktop coordination lock continuously through server rotation
+and persistence. Commit reuses that locked observation, and the macOS writer
+updates the existing item in place without reading the old password again.
+The item keeps its existing access controls and shared service/account identity.
+A denied read remains unavailable and is not retried by account-status polling.
+
 The hosted account ID is an opaque identifier, independent of email, wallet or
 installation identity. Login identities and wallet signatures are never provider
 E2EE key material. Implementation: [auth.rs](../apps/axiomcli/src/auth.rs),

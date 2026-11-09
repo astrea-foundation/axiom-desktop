@@ -1877,6 +1877,13 @@
           ],
           "format": "uint64",
           "minimum": 0
+        },
+        "tags": {
+          "description": "Catalog tags, sorted by position then ID.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ModelTag"
+          }
         }
       },
       "required": [
@@ -1890,6 +1897,48 @@
         "contextWindowTokens",
         "maxOutputTokens",
         "autoCompactThresholdTokens"
+      ]
+    },
+    "ModelTag": {
+      "description": "Backend-curated model label. Tags filter and annotate model lists, and the\nnative runtime uses the `uncensored` tag to select the uncensored image\nadapter. Tags never affect routing, pricing, attestation or availability.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "tone": {
+          "$ref": "#/$defs/ModelTagTone",
+          "default": "gray"
+        },
+        "position": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535,
+          "default": 0
+        }
+      },
+      "required": [
+        "id",
+        "label"
+      ]
+    },
+    "ModelTagTone": {
+      "description": "Color vocabulary for model tags.",
+      "type": "string",
+      "enum": [
+        "gray",
+        "green",
+        "blue",
+        "violet",
+        "amber",
+        "pink",
+        "orange",
+        "teal",
+        "red"
       ]
     },
     "GetProfilePreferencesRequest": {

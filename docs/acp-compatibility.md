@@ -180,6 +180,8 @@ renderer from sending a file shape to an older process. Timeline metadata contai
 only summaries; `thread/attachments` reads original inputs under the active account
 guard. Revisions preserve attachments and recheck model support. Model discovery
 adds `fileMimeTypes`; `supportsImages` remains separate. See [direct uploads](desktop.md#images-and-files).
+Model discovery also adds optional catalog `tags` (`id`, `label`,
+`tone`, `position`); see [model tags](provider-catalogs.md#model-tags-and-picker-filters).
 
 `imageGeneration@3` exposes `generate` and `view_image` automatically for a
 vision-capable selected model when the native image service is installed. A

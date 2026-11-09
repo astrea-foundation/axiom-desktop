@@ -469,6 +469,64 @@ pub struct SecurityEvidence {
     pub workload_manifest: Option<String>,
 }
 
+/// Color vocabulary for model tags.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelTagTone {
+    #[default]
+    Gray,
+    Green,
+    Blue,
+    Violet,
+    Amber,
+    Pink,
+    Orange,
+    Teal,
+    Red,
+}
+
+impl From<axiom_inference::ModelTagTone> for ModelTagTone {
+    fn from(tone: axiom_inference::ModelTagTone) -> Self {
+        use axiom_inference::ModelTagTone as Source;
+        match tone {
+            Source::Gray => Self::Gray,
+            Source::Green => Self::Green,
+            Source::Blue => Self::Blue,
+            Source::Violet => Self::Violet,
+            Source::Amber => Self::Amber,
+            Source::Pink => Self::Pink,
+            Source::Orange => Self::Orange,
+            Source::Teal => Self::Teal,
+            Source::Red => Self::Red,
+        }
+    }
+}
+
+/// Backend-curated model label. Tags filter and annotate model lists, and the
+/// native runtime uses the `uncensored` tag to select the uncensored image
+/// adapter. Tags never affect routing, pricing, attestation or availability.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelTag {
+    pub id: String,
+    pub label: String,
+    #[serde(default)]
+    pub tone: ModelTagTone,
+    #[serde(default)]
+    pub position: u16,
+}
+
+impl From<axiom_inference::ModelTag> for ModelTag {
+    fn from(tag: axiom_inference::ModelTag) -> Self {
+        Self {
+            id: tag.id,
+            label: tag.label,
+            tone: tag.tone.into(),
+            position: tag.position,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelInfo {
@@ -490,6 +548,9 @@ pub struct ModelInfo {
     pub input_price_microusd_per_million_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_price_microusd_per_million_tokens: Option<u64>,
+    /// Catalog tags, sorted by position then ID.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<ModelTag>,
 }
 
 /// Last provider-reported conversation request, not a measurement of the next

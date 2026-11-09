@@ -71,7 +71,7 @@ function GeneratedToolImage({image, onRegenerate, regenerationDisabled}: {image:
     </div> : null}
     {regenerationError ? <p role="alert" className="mt-1 text-[12px] text-[var(--color-danger-strong)]">{regenerationError}</p> : null}
     <figcaption className="mt-2 flex items-center justify-between text-[11px] text-[var(--color-text-tertiary)]">
-      <span>Axiom</span><a href={source.url} download={downloadName}
+      <span>AstreaAI</span><a href={source.url} download={downloadName}
         onClick={event => { event.currentTarget.download = `${crypto.randomUUID()}.png`; }} className="hover:underline">Save image</a>
     </figcaption>
     {preview === source.url ? <ImagePreviewDialog name="Generated image" src={source.url} onClose={() => setPreview(null)} /> : null}

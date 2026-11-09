@@ -16,19 +16,6 @@ The [update architecture](updates.md) describes installation ownership and
 recovery. [Release acceptance](validation.md) covers signed OS qualification;
 [repository setup](repository-setup.md) lists Actions credentials and settings.
 
-The optional managed Chutes provider uses a prebuilt standalone client payload.
-Set `AXIOM_CHUTES_BUNDLE` to its target-specific directory and explicitly set
-`AXIOM_CHUTES_RELEASE_CHANNEL=staging` for staging; production is the default.
-The packaging hook validates its exact inventory, native architecture, public
-authority and executable pin before copying it to `resources/chutes`. Signed
-macOS packages require the payload's native code to be signed by `APPLE_TEAM_ID`
-before its inventory is generated. Electron excludes that runtime from its own
-signing walk to preserve the executable hash. Use the
-[helper build guide](../../axiom-inference/docs/native-helper.md), including
-dependency notices, and retain signed installer acceptance as a separate check.
-An ad-hoc payload fails signed packaging. Windows and universal helper bundles
-are not yet qualified; omit the optional provider for those targets.
-
 ## Supported platforms
 
 | Target | Desktop installer | Standalone CLI + proxy installer |
@@ -163,10 +150,19 @@ Do not rebuild or resign qualified files for this handoff.
 Exercise a model-generated image tool call from the retained signed installation
 without configuration-file environment overrides. The installed secure provider
 must discover its bundled AstreaAI configuration and register `generate` and
-`view_image` from that loaded configuration. A legacy Chutes environment variable
-must not be required. Verify the authenticated image result and settled usage
+`view_image` from that loaded configuration. Verify the authenticated image result and settled usage
 before publishing; version and ordinary chat checks cannot substitute for this
 test.
+
+The macOS signing job installs each signed PKG on its disposable runner and runs
+`scripts/verify-installed-image.mjs` against the installed CLI. An isolated profile
+and the protected release evaluation credential keep this check separate from
+maintainer accounts. The child process inherits no provider configuration or test
+overrides. It must register image tools, generate and view one image, finish ready,
+and report authenticated, final, settled image usage. The private
+`signed-installation-image-acceptance` artifact binds the installer and installed
+binary hashes to the generated image and usage receipt. Publication depends on
+this check; downloading the signed inventory does not replace it.
 
 `scripts/prepare-store-submission.mjs release setup store` prepares the private
 `windows-store-submission` workflow artifact: the exact full offline EXE URL,

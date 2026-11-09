@@ -403,7 +403,7 @@ export class AxiomAcpClient extends EventEmitter {
     } finally {
       if (this.state.accountContextToken() === accountContext) {
         this.state.setRunning(threadId, false);
-        await this.refreshThread(threadId).catch(() => undefined);
+        await this.refreshThread(threadId, true).catch(() => undefined);
       }
     }
   }
@@ -424,7 +424,7 @@ export class AxiomAcpClient extends EventEmitter {
       if (this.pendingImageRequests.get(threadId) === cancellation) this.pendingImageRequests.delete(threadId);
       if (this.state.accountContextToken() === context) {
         this.state.setRunning(threadId, false);
-        await this.refreshThread(threadId).catch(() => undefined);
+        await this.refreshThread(threadId, true).catch(() => undefined);
       }
     }
   }
@@ -544,11 +544,19 @@ export class AxiomAcpClient extends EventEmitter {
     return result;
   }
 
-  refreshThread(threadId: string): Promise<GetThreadTimelineResponse> {
+  refreshThread(threadId: string, afterInFlight = false): Promise<GetThreadTimelineResponse> {
     const accountContext = this.state.accountContextToken();
     const refreshKey = `${accountContext}:${threadId}`;
     const existing = this.refreshingThreads.get(refreshKey);
-    if (existing) return existing;
+    if (existing) {
+      if (!afterInFlight) return existing;
+      // A snapshot started during a turn can still report it as running after
+      // its RPC has completed. Terminal cleanup needs a later native snapshot.
+      return existing.catch(() => undefined).then(() => {
+        this.assertAccountContext(accountContext);
+        return this.refreshThread(threadId);
+      });
+    }
     const refresh = this.fetchTimeline(threadId, accountContext)
       .finally(() => this.refreshingThreads.delete(refreshKey));
     this.refreshingThreads.set(refreshKey, refresh);

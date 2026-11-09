@@ -7,7 +7,6 @@ export const PROOF_REFRESH_MAX_RETRY_MS = 5 * 60_000;
 export type ProofState = "idle" | "verified" | "degraded" | "outdated" | "verifying" | "failed" | "expired" | "unavailable" | "unverified" | "development";
 
 export function outdatedTeeState(session: ClientSessionState | null, modelId: string): "outdated" | "degraded" | undefined {
-  if (modelId.startsWith("chutes-preview:") || session?.securityEvidence?.attestationProtocol === "chutes-hardware-development-v1") return undefined;
   const state = session?.security?.state;
   if (state === "outdated" || state === "degraded") return state;
   if (state === "verifying" && session?.securityEvidence?.modelId === modelId
@@ -20,16 +19,12 @@ export function proofState(session: ClientSessionState, modelId: string, now: nu
   if (session.security?.state === "failed") return "failed";
   if (session.security?.state === "outdated") return "outdated";
   if (session.security?.state === "unattested_development") return "development";
-  if (modelId.startsWith("chutes-preview:") && session.security?.state === "degraded"
-    && !session.securityEvidence) return "development";
   if (session.needsResync) return "unavailable";
   if (session.securityVerificationError) return "unavailable";
   const evidence = session.securityEvidence;
   if (session.security?.state !== "verified" && session.security?.state !== "degraded") return "unverified";
   if (!evidence || evidence.modelId !== modelId || evidence.status.state !== session.security.state) return "unavailable";
   if (!Number.isFinite(evidence.hardExpiresAtUnixSeconds) || evidence.hardExpiresAtUnixSeconds * 1000 <= now) return "expired";
-  if (evidence.attestationProtocol === "chutes-hardware-development-v1"
-    && session.security?.state === "degraded") return "development";
   return session.security.state;
 }
 
@@ -62,22 +57,6 @@ export function verificationAge(at: number, now: number): string {
 }
 
 export function proofGroups(evidence: SecurityEvidence) {
-  if (evidence.attestationProtocol === "chutes-tdx-nvidia-release-v1") {
-    return [
-      { title: "Hardware evidence", explanation: "This device verified fresh Intel TDX and NVIDIA GPU evidence against the hardware baseline authorized by the signed release.", names: ["Intel TDX", "NVIDIA GPU"] },
-      { title: "Encryption key and freshness", explanation: "A fresh quote binds this instance’s ML-KEM encryption key and challenge before messages are encrypted to it.", names: ["Chutes encryption key and fresh challenge"] },
-      { title: "Release authority", explanation: "The installed publisher authorized this release. Signed, unexpired policy permits automatic updates under the same authority, with revocation and rollback checks.", names: ["Repository release authorization"] },
-    ].map(group => ({ ...group, checks: evidence.checks.filter(check => group.names.includes(check.name)),
-      passed: group.names.every(name => evidence.checks.some(check => check.name === name && check.passed)) }));
-  }
-  if (evidence.attestationProtocol === "chutes-hardware-development-v1") {
-    return [
-      { title: "Hardware evidence", explanation: "This device verified fresh Intel TDX and NVIDIA GPU evidence. Runtime measurements are development pins.", names: ["Intel TDX", "NVIDIA GPU"] },
-      { title: "Encryption key", explanation: "A fresh quote binds the Chutes ML-KEM encryption key and challenge before messages are encrypted to this instance.", names: ["Chutes encryption key and fresh challenge"] },
-      { title: "Application provenance", explanation: "This preview has no qualified binding between the measured runtime, our application source, and the model files. It is not a production verified model.", names: ["Application provenance"] },
-    ].map(group => ({ ...group, checks: evidence.checks.filter(check => group.names.includes(check.name)),
-      passed: group.names.every(name => evidence.checks.some(check => check.name === name && check.passed)) }));
-  }
   if (evidence.attestationProtocol === "axiom-gateway-v2") {
     return [
       { title: "Gateway hardware", explanation: "Your browser locally verified the confidential gateway’s hardware evidence.", names: ["Gateway hardware attestation"] },
@@ -120,10 +99,6 @@ export function proofGroups(evidence: SecurityEvidence) {
 /** The composer describes environment attestation, independently of reply/tool history. */
 export function proofBadge(session: ClientSessionState, reportState: ProofState): { label: string; tone: "success" | "danger" | "warning" | "muted" } {
   if (reportState === "failed") return { label: proofLabels.failed, tone: "danger" };
-  if (session.securityEvidence?.attestationProtocol !== "chutes-tdx-nvidia-release-v1"
-    && (session.settings?.model.startsWith("chutes-preview:") || session.securityEvidence?.attestationProtocol === "chutes-hardware-development-v1")) {
-    return { label: "Chutes dev preview", tone: "warning" };
-  }
   if (outdatedTeeState(session, session.settings?.model ?? session.securityEvidence?.modelId ?? "") === "degraded") return { label: proofLabels.degraded, tone: "warning" };
   if (reportState === "outdated") return { label: proofLabels.outdated, tone: "warning" };
   return { label: proofLabels[reportState], tone: reportState === "verified" ? "success"
