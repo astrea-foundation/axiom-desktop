@@ -1,5 +1,14 @@
 # Release acceptance
 
+The 0.1.21 release audit updates rusqlite to 0.41.1 with libsqlite3-sys 0.39.1
+(SQLite 3.54.1), addressing RUSTSEC-2026-0459 in the bundled database engine.
+The MCP SDK moves to rmcp 3.9.0, covering RUSTSEC-2026-0457, RUSTSEC-2026-0461
+and RUSTSEC-2026-0462. The dependency audit remains required without new advisory
+exceptions. Existing conversation storage and MCP behavior must pass native
+regression tests with these versions.
+The workspace minimum Rust version is 1.89 for the patched database crate;
+the pinned CI and release toolchain remains Rust 1.97.1.
+
 The launch dependency audit updates Tokio to 1.53.3, the rustls verifier to
 0.103.16, both webpki root lists to 1.0.10, libz-sys to 1.1.31 and
 pulldown-cmark to 0.13.6. These retain the existing security audit gate.
