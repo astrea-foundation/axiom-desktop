@@ -3558,12 +3558,7 @@ fn model_messages(
 
 fn model_context_tokens(model: &axiom_inference::ModelInfo, messages: &[ChatMessage]) -> u64 {
     let tokens = estimated_context_tokens(messages);
-    if model.supports_images
-        && !matches!(
-            model.id.as_str(),
-            "chutes:qwen3.8-27b" | "chutes-preview:qwen3.8-27b" | "direct:qwen3.8-27b"
-        )
-    {
+    if model.supports_images && model.id != "direct:qwen3.8-27b" {
         tokens
     } else {
         let per_image = if model.supports_images {
@@ -3974,35 +3969,29 @@ mod engine_tests {
 
     #[test]
     fn qwen_vision_inputs_leave_the_full_output_budget() {
-        for (id, provider, count) in [
-            ("chutes:qwen3.8-27b", "chutes", 10),
-            ("chutes-preview:qwen3.8-27b", "chutes-preview", 10),
-            ("direct:qwen3.8-27b", "axiom-direct", 8),
-        ] {
-            let model = axiom_inference::ModelInfo {
-                id: id.into(),
-                provider_id: provider.into(),
-                supports_images: true,
-                context_window_tokens: 32768,
-                max_output_tokens: 4096,
-                ..Default::default()
-            };
-            let mut message =
-                ChatMessage::text(ChatRole::User, "Read the letters in these ten images.");
-            message.images = vec![axiom_inference::ImageContent {
+        let model = axiom_inference::ModelInfo {
+            id: "direct:qwen3.8-27b".into(),
+            provider_id: "axiom-direct".into(),
+            supports_images: true,
+            context_window_tokens: 32768,
+            max_output_tokens: 4096,
+            ..Default::default()
+        };
+        let mut message =
+            ChatMessage::text(ChatRole::User, "Read the letters in these eight images.");
+        message.images = vec![axiom_inference::ImageContent {
             mime_type: "image/png".into(),
             data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC".into(),
-        }; count];
-            let request = inference_request_for_model(
-                &model,
-                model.id.clone(),
-                vec![message],
-                vec![],
-                ThinkingLevel::Enabled,
-            );
-            assert_eq!(request.max_output_tokens, Some(4096));
-            assert!(model_context_tokens(&model, &request.messages) < 11000);
-        }
+        }; 8];
+        let request = inference_request_for_model(
+            &model,
+            model.id.clone(),
+            vec![message],
+            vec![],
+            ThinkingLevel::Enabled,
+        );
+        assert_eq!(request.max_output_tokens, Some(4096));
+        assert!(model_context_tokens(&model, &request.messages) < 11000);
     }
 
     #[test]
@@ -4617,13 +4606,11 @@ mod engine_tests {
         let mut messages = compacted_history("Previous system prompt", "Keep this summary");
         for (model, uncensored) in [
             ("another-provider:qwen3.8-27b", false),
-            ("chutes:qwen3.8-27b", true),
-            ("chutes:qwen3.8-27b", true),
             ("direct:qwen3.8-27b", true),
             ("direct:qwen3.8-27b", true),
             ("direct:qwen3.8-27b-other", false),
             ("tinfoil-another-model", false),
-            ("chutes-preview:qwen3.8-27b", true),
+            ("direct:qwen3.8-27b", true),
             ("another-provider:qwen3.8-27b", false),
         ] {
             settings.model = model.into();
@@ -5511,13 +5498,13 @@ mod engine_tests {
                 ..Default::default()
             },
             axiom_inference::ModelInfo {
-                id: "chutes:qwen3.8-27b".into(),
+                id: "direct:qwen3.8-27b".into(),
                 supports_images: true,
                 ..Default::default()
             },
         ]);
         let mut image = generated_fixture();
-        image.chat_model_id = Some("chutes:qwen3.8-27b".into());
+        image.chat_model_id = Some("direct:qwen3.8-27b".into());
         scripted.generated_image = Some(image);
         let provider = Arc::new(scripted);
         let mut tools = ToolRegistry::new();
@@ -5540,7 +5527,7 @@ mod engine_tests {
                 ctx.clone(),
                 "fresh-image-call".into(),
                 args.clone(),
-                Some("chutes:qwen3.8-27b".into()),
+                Some("direct:qwen3.8-27b".into()),
                 tx,
                 CancellationToken::new(),
             )

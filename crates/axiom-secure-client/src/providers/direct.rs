@@ -1234,7 +1234,7 @@ mod tests {
                 ..model.clone()
             },
             ModelInfo {
-                attestation_protocol: "chutes-gpu-v1".into(),
+                attestation_protocol: "unqualified-gpu-v1".into(),
                 ..model.clone()
             },
             ModelInfo {

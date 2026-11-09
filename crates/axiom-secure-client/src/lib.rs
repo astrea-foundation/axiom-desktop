@@ -19,14 +19,14 @@ pub use config::{EndpointPolicy, SecureClientConfig, SecureClientLimits};
 pub use error::{INSUFFICIENT_CREDIT_MESSAGE, Result, SecureClientError, SecureErrorCode};
 pub use http::local_relay_ca_pem;
 pub use provider::{ProviderRegistry, SecureProvider, VerifiedSession};
-pub use providers::chutes_preview::GeneratedImage;
+pub use providers::images::GeneratedImage;
 pub use providers::pool::{PoolClientConfig, PoolOffering};
 pub use security::{EvidenceCheck, EvidenceClaim, SecurityEvidence, SecurityState, TrustPolicy};
 
 /// Select the application's bundled model policy from an exact native model ID.
 #[must_use]
 pub fn is_uncensored_model(model_id: &str) -> bool {
-    model_id == providers::direct::MODEL || providers::chutes_preview::is_uncensored_model(model_id)
+    model_id == providers::direct::MODEL
 }
 
 /// Cryptographic helpers for the deterministic process-level fixture.
@@ -71,6 +71,19 @@ impl std::fmt::Debug for ApiCredential {
 #[cfg(test)]
 mod tests {
     use super::ApiCredential;
+
+    #[test]
+    fn bundled_model_policy_matches_only_the_exact_installed_model_id() {
+        for (model, expected) in [
+            ("direct:qwen3.8-27b", true),
+            ("direct:qwen3.8-27b-extra", false),
+            ("near:qwen3.8-27b", false),
+            ("uncensored", false),
+            ("", false),
+        ] {
+            assert_eq!(super::is_uncensored_model(model), expected, "{model}");
+        }
+    }
 
     #[test]
     fn credential_debug_is_redacted() {

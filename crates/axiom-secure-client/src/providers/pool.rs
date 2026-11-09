@@ -24,7 +24,6 @@ use tokio_util::sync::CancellationToken;
 
 pub const ID: &str = "axiom-pool";
 pub const ATTESTATION: &str = "tinfoil-gpu-v3";
-const CHUTES_UNQUALIFIED: &str = "chutes-gpu-v1";
 
 fn default_attestation() -> String {
     ATTESTATION.into()
@@ -36,7 +35,7 @@ pub struct PoolOffering {
     pub label: String,
     pub context_tokens: u32,
     pub output_tokens: u32,
-    /// Discovery metadata only. Chutes cannot establish a verified session.
+    /// The only qualified pool profile; installed configuration rejects others.
     #[serde(default = "default_attestation")]
     pub attestation_protocol: String,
     #[serde(default)]
@@ -50,8 +49,7 @@ pub struct PoolOffering {
 #[serde(deny_unknown_fields)]
 pub struct PoolClientConfig {
     pub issuer_key: String,
-    /// Required for qualified providers. Discovery-only Chutes installs no
-    /// fabricated verifier binary, publisher key, or release measurement.
+    /// Required for every installed offering; a missing verifier is rejected.
     #[serde(default)]
     pub verifier: Option<VerifierConfig>,
     pub models: Vec<PoolOffering>,
@@ -86,10 +84,7 @@ pub(crate) fn installed_config() -> Result<Option<PoolClientConfig>> {
             || model.output_tokens == 0
             || model.output_tokens > 32768
             || model.output_tokens > model.context_tokens
-            || !matches!(
-                model.attestation_protocol.as_str(),
-                ATTESTATION | CHUTES_UNQUALIFIED
-            )
+            || model.attestation_protocol != ATTESTATION
             || model.maximum_charge_microusd > axiom_pool_protocol::pricing::MAX_MONEY
             || model
                 .pricing
@@ -99,12 +94,7 @@ pub(crate) fn installed_config() -> Result<Option<PoolClientConfig>> {
             return Err(SecureClientError::configuration("invalid pool offering"));
         }
     }
-    if cfg
-        .models
-        .iter()
-        .any(|model| model.attestation_protocol == ATTESTATION)
-        && cfg.verifier.is_none()
-    {
+    if cfg.verifier.is_none() {
         return Err(SecureClientError::configuration(
             "qualified pool offering requires an installed verifier",
         ));
@@ -188,6 +178,7 @@ impl SecureProvider for PoolProvider {
             || model.e2ee_protocol != axiom_pool_protocol::PROTOCOL
             || model.e2ee_encryption_version != 1
             || model.provider_base_url != origin
+            || model.attestation_protocol != ATTESTATION
             || !models(&self.config).iter().any(|m| {
                 m.id == model.id
                     && m.upstream_model == model.upstream_model
@@ -217,11 +208,6 @@ impl SecureProvider for PoolProvider {
         self.supports(model)?;
         if cancel.is_cancelled() {
             return Err(SecureClientError::cancelled());
-        }
-        if model.attestation_protocol == CHUTES_UNQUALIFIED {
-            return Err(SecureClientError::attestation(
-                "Chutes hardware attestation is available, but the Axiom application, model, and worker-key binding is not qualified. No message was sent.",
-            ));
         }
         if !policy.is_valid_at(now())
             || policy.accepted_intel_statuses != ["UpToDate"]
@@ -640,7 +626,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn chutes_discovery_cannot_construct_a_verified_session_or_send_messages() {
+    async fn unqualified_offerings_cannot_construct_a_verified_session_or_send_messages() {
         let mut config = SecureClientConfig::new("https://127.0.0.1:1").unwrap();
         config.pool = Some(
             serde_json::from_value(serde_json::json!({
@@ -653,29 +639,32 @@ mod tests {
                 },
                 "models": [{
                     "model_manifest": "aa".repeat(32),
-                    "label": "Chutes discovery only",
+                    "label": "Unqualified offering",
                     "context_tokens": 32768,
                     "output_tokens": 4096,
-                    "attestation_protocol": CHUTES_UNQUALIFIED
+                    "attestation_protocol": "unqualified-gpu-v1"
                 }]
             }))
             .unwrap(),
         );
         let model = models(&config).remove(0);
         let provider = PoolProvider::new(config, Arc::new(ApiCredential::new("test-only")));
-        assert!(provider.supports(&model).is_ok());
+        assert!(provider.supports(&model).is_err());
         // An untrusted remote catalog cannot register an unsupported protocol.
-        assert!(!provider.supports_contract(axiom_pool_protocol::PROTOCOL, 1, CHUTES_UNQUALIFIED));
+        assert!(!provider.supports_contract(
+            axiom_pool_protocol::PROTOCOL,
+            1,
+            "unqualified-gpu-v1"
+        ));
         let result = provider
             .establish(&model, &TrustPolicy::default(), CancellationToken::new())
             .await;
         let Err(error) = result else {
-            panic!("unqualified Chutes session accepted")
+            panic!("unqualified pool session accepted")
         };
         assert_eq!(
             error.kind(),
-            axiom_inference::ProviderFailureKind::AttestationRejected
+            axiom_inference::ProviderFailureKind::CapabilityMismatch
         );
-        assert!(error.safe_detail().contains("No message was sent"));
     }
 }

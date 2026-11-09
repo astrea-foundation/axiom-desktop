@@ -269,7 +269,7 @@ mod tests {
             format!("img_{}", "bb".repeat(16)),
         ];
         let mut original = generated_fixture();
-        original.chat_model_id = Some("chutes:qwen3.8-27b".into());
+        original.chat_model_id = Some("direct:qwen3.8-27b".into());
         original.source_image_ids = refs.clone();
         let arguments = json!({"prompt":"Use <image1> with the colors of <image2>","reference_image_ids":refs,"aspect_ratio":"1:1"});
         for event in [
@@ -318,7 +318,7 @@ mod tests {
             .unwrap();
         let history = store.load(&id).unwrap();
         let (replay, origin_model) = recipe(&history, "original-image").unwrap();
-        assert_eq!(origin_model.as_deref(), Some("chutes:qwen3.8-27b"));
+        assert_eq!(origin_model.as_deref(), Some("direct:qwen3.8-27b"));
         assert_eq!(
             replay,
             json!({"prompt":arguments["prompt"],"reference_image_ids":refs,"width":1536,"height":1536})
