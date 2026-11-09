@@ -93,6 +93,27 @@ test("late generated titles update the sidebar without replacing chat or recency
   assert.equal(store.snapshot().sessions.thread!.title, "My manual title");
 });
 
+test("late title updates keep unloaded threads unloaded and preserve newer renames", () => {
+  const store = new AxiomStateStore();
+  const snapshot = page(1, "Original response");
+  store.setCatalog([snapshot.thread]);
+  store.replaceTimeline([snapshot]);
+  store.removeSession("thread");
+  const title = (revision: number, text: string) => ({
+    sessionId: "thread", _meta: { axiom: { threadRevision: revision, lastTimelineSequence: 1 } },
+    update: { sessionUpdate: "session_info_update", title: text },
+  });
+  assert.equal(store.standardUpdate(title(2, "Generated title")), null);
+  assert.equal(store.snapshot().catalog[0]!.title, "Generated title");
+  assert.equal(store.snapshot().sessions.thread, undefined);
+  store.applyThreadRename({ ...snapshot.thread, revision: 4, title: "Manual title" });
+  store.standardUpdate(title(3, "Stale generated title"));
+  assert.equal(store.snapshot().catalog[0]!.title, "Manual title");
+  assert.equal(store.snapshot().sessions.thread, undefined);
+  store.replaceTimeline([{ ...snapshot, thread: { ...snapshot.thread, revision: 4, title: "Manual title" } }]);
+  assert.equal(store.snapshot().sessions.thread!.timeline[0]!.text, "Original response");
+});
+
 test("steering identity survives snapshots and separates same-turn assistant segments", () => {
   const store = new AxiomStateStore();
   store.replaceTimeline([{ ...page(1, "Before the update."), activeTurnId: "turn" }]);

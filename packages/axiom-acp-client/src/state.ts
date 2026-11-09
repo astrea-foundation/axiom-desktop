@@ -574,8 +574,20 @@ export class AxiomStateStore extends EventEmitter {
     if (!record || typeof record.sessionId !== "string") return null;
     const update = object(record.update);
     if (!update) return null;
-    const session = (this.value.sessions[record.sessionId] ??= emptySession(record.sessionId));
     const metadata = deliveryMetadata(record, update);
+    const type = String(update.sessionUpdate ?? "");
+    if (type === "session_info_update" && !this.value.sessions[record.sessionId]) {
+      // Background title generation may finish after the UI unloads a thread.
+      // Metadata can update its sidebar row without reopening empty chat state.
+      const summary = this.value.catalog.find(thread => thread.threadId === record.sessionId);
+      if (summary && typeof update.title === "string" && (!metadata || metadata.threadRevision >= summary.revision)) {
+        summary.title = update.title;
+        if (metadata) summary.revision = Math.max(summary.revision, metadata.threadRevision);
+        this.changed();
+      }
+      return null;
+    }
+    const session = (this.value.sessions[record.sessionId] ??= emptySession(record.sessionId));
     if (metadata) {
       if (metadata.threadRevision < session.threadRevision) return null;
       if (session.threadRevision > 0 && metadata.threadRevision > session.threadRevision + 1) {
@@ -587,7 +599,6 @@ export class AxiomStateStore extends EventEmitter {
       if (metadata.lastUserMessageAt !== undefined) session.lastUserMessageAt = metadata.lastUserMessageAt;
     }
 
-    const type = String(update.sessionUpdate ?? "");
     if (type === "user_message_chunk" || type === "agent_message_chunk" || type === "agent_thought_chunk") {
       if (metadata && metadata.threadRevision <= (this.textRevisions.get(record.sessionId) ?? -1)) {
         return session.needsResync ? record.sessionId : null;
