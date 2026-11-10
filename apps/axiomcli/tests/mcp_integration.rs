@@ -71,6 +71,21 @@ impl ServerHandler for FixtureServer {
         if self.mode == "duplicate" {
             tools.push(self.tool());
         }
+        if self.mode.starts_with("sibling_") {
+            let reconnected = self.state.as_ref().is_some_and(|path| path.exists());
+            if self.mode != "sibling_removed" || !reconnected {
+                let property = if reconnected {
+                    json!({"value":{"type":"integer"}})
+                } else {
+                    json!({"value":{"type":"string"}})
+                };
+                tools.push(Tool::new(
+                    "sibling",
+                    "sibling tool",
+                    object_schema(&property),
+                ));
+            }
+        }
         Ok(ListToolsResult {
             tools,
             ..Default::default()
@@ -83,7 +98,7 @@ impl ServerHandler for FixtureServer {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
         match self.mode.as_str() {
-            "crash_once" | "schema_drift" => {
+            "crash_once" | "schema_drift" | "sibling_changed" | "sibling_removed" => {
                 let state = self.state.as_ref().expect("state path");
                 if !state.exists() {
                     std::fs::write(state, b"called").expect("write marker");
@@ -111,6 +126,13 @@ impl ServerHandler for FixtureServer {
             }
             "slow" => context.ct.cancelled().await,
             _ => {}
+        }
+        if request.name == "sibling" && self.mode.starts_with("sibling_") {
+            std::fs::write(
+                self.state.as_ref().unwrap().with_extension("dispatched"),
+                b"unsafe call",
+            )
+            .unwrap();
         }
         let value = request
             .arguments
@@ -431,5 +453,55 @@ async fn explicit_environment_values_never_reach_tool_results_or_debug_output() 
     assert!(result.content.contains("[REDACTED]"));
     for tool in tools {
         tool.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn reconnect_revalidates_sibling_schema_and_removal() {
+    for mode in ["sibling_changed", "sibling_removed"] {
+        let temp = TempDir::new().unwrap();
+        let marker = temp.path().join("generation");
+        let mut config = config(mode, Some(&marker), true);
+        config.read_only_tools.push("sibling".into());
+        let tools = connect_tools(&[config], 4096).await.unwrap();
+        let a = tools
+            .iter()
+            .find(|tool| tool.name().ends_with("__echo"))
+            .unwrap();
+        let b = tools
+            .iter()
+            .find(|tool| tool.name().ends_with("__sibling"))
+            .unwrap();
+        let first = a
+            .execute(
+                &context(&temp),
+                json!({"value":"a"}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(first.success, "unchanged A may reconnect");
+        assert_eq!(
+            serde_json::from_str::<Value>(&first.content).unwrap()["connection_generation"],
+            2
+        );
+        let second = b
+            .execute(
+                &context(&temp),
+                json!({"value":"old schema"}),
+                CancellationToken::new(),
+            )
+            .await;
+        let error = second.unwrap_err().to_string();
+        assert!(
+            error.contains(if mode == "sibling_removed" {
+                "no longer advertises"
+            } else {
+                "changed the schema"
+            }),
+            "{error}"
+        );
+        assert!(!marker.with_extension("dispatched").exists());
+        a.shutdown().await;
     }
 }
