@@ -79,10 +79,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y bubblewrap libarchive-tools libfuse2 rpm
       - if: runner.os == 'Windows'
         run: choco install nsis --version=3.11 --no-progress -y
-      - run: cargo test -p axiom-installation -p axiomcli --all-features --locked
-      - run: pnpm --filter axiom-desktop typecheck
-      - run: pnpm --filter axiom-desktop test
-      - run: node --test scripts/direct-bundle.test.mjs scripts/verify-candidate.test.mjs
+      # Source tests already passed the exact-revision gate. Validate newly
+      # built verifier and installer bytes here without repeating those suites.
       - name: Build and self-test the bundled native verifier
         run: node scripts/build-direct-bundle.mjs --output .local/direct/bundle
       - run: cargo build --locked --release -p axiomcli -p axiom-proxy
