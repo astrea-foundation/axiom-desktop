@@ -162,6 +162,7 @@ struct FileReadScope<'a> {
     authorization: &'a dyn EffectAuthorizer,
     cancellation: CancellationToken,
     decisions: BTreeMap<PathBuf, bool>,
+    request_approval: bool,
 }
 
 impl<'a> FileReadScope<'a> {
@@ -175,7 +176,18 @@ impl<'a> FileReadScope<'a> {
             authorization,
             cancellation,
             decisions: BTreeMap::new(),
+            request_approval: true,
         })
+    }
+
+    fn noninteractive(
+        context: &ToolContext,
+        authorization: &'a dyn EffectAuthorizer,
+        cancellation: CancellationToken,
+    ) -> Result<Self> {
+        let mut scope = Self::new(context, authorization, cancellation)?;
+        scope.request_approval = false;
+        Ok(scope)
     }
 
     async fn resolve(&mut self, path: &std::path::Path) -> Result<Option<PathBuf>> {
@@ -190,17 +202,19 @@ impl<'a> FileReadScope<'a> {
         if let Some(allowed) = self.decisions.get(&path) {
             return Ok(allowed.then_some(path));
         }
-        let allowed = match self
-            .authorization
-            .authorize(
-                Effect::FileRead { path: path.clone() },
-                self.cancellation.clone(),
-            )
-            .await
-        {
-            Ok(()) => true,
-            Err(AxiomError::PermissionDenied(_)) => false,
-            Err(error) => return Err(error),
+        let effect = Effect::FileRead { path: path.clone() };
+        let allowed = if self.request_approval {
+            match self
+                .authorization
+                .authorize(effect, self.cancellation.clone())
+                .await
+            {
+                Ok(()) => true,
+                Err(AxiomError::PermissionDenied(_)) => false,
+                Err(error) => return Err(error),
+            }
+        } else {
+            self.authorization.immediately_allows(effect)
         };
         self.decisions.insert(path.clone(), allowed);
         Ok(allowed.then_some(path))
@@ -247,6 +261,15 @@ impl SessionChanges {
         authorization: &dyn EffectAuthorizer,
         cancellation: CancellationToken,
     ) -> Result<()> {
+        let mut scope = FileReadScope::noninteractive(context, authorization, cancellation)?;
+        self.capture_baseline(context, &mut scope).await
+    }
+
+    async fn capture_baseline(
+        &self,
+        context: &ToolContext,
+        scope: &mut FileReadScope<'_>,
+    ) -> Result<()> {
         if self
             .sessions
             .lock()
@@ -255,8 +278,7 @@ impl SessionChanges {
         {
             return Ok(());
         }
-        let mut scope = FileReadScope::new(context, authorization, cancellation)?;
-        let (baseline, truncated) = snapshot_workspace(&mut scope).await?;
+        let (baseline, truncated) = snapshot_workspace(scope).await?;
         self.sessions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -284,8 +306,10 @@ impl SessionChanges {
                 .cloned()
         };
         let Some(state) = state else {
-            self.ensure_baseline(context, authorization, cancellation)
-                .await?;
+            // An explicit diff inspection retains normal foreground approvals,
+            // including its first snapshot. Eager pre-edit capture never asks.
+            let mut scope = FileReadScope::new(context, authorization, cancellation)?;
+            self.capture_baseline(context, &mut scope).await?;
             return Ok((Vec::new(), String::new(), false));
         };
         if state.root.as_deref() != Some(context.cwd.as_path()) {
@@ -2986,6 +3010,110 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn eager_baseline_skips_unrelated_ask_file_without_prompting() {
+        use crate::policy::{
+            EffectAuthorizer, EffectClass, ExecutionAuthorizer, PolicyRule, RuleAction,
+        };
+        for profile in [PermissionProfile::Confirm, PermissionProfile::FullAccess] {
+            let root = tempdir().unwrap();
+            std::fs::write(root.path().join("public.txt"), "public before\n").unwrap();
+            std::fs::write(
+                root.path().join("private.txt"),
+                "private content must not enter eager baseline\n",
+            )
+            .unwrap();
+            let protected = root.path().canonicalize().unwrap().join("private.txt");
+            let context = ToolContext {
+                model_id: "test-model".into(),
+                session_id: SessionId::new(),
+                cwd: root.path().into(),
+                permission_profile: profile,
+                images: crate::image_tool::ImageCatalog::default(),
+                progress: None,
+            };
+            let approval = Arc::new(FileApproval::default());
+            let authorization = ExecutionAuthorizer {
+                policy: PolicyEngine::for_workspace_with_rules(
+                    root.path(),
+                    vec![PolicyRule {
+                        action: RuleAction::Ask,
+                        effect: Some(EffectClass::FileRead),
+                        resource_prefix: Some(protected.to_string_lossy().into()),
+                        reason: None,
+                    }],
+                )
+                .unwrap(),
+                profile,
+                approval: Some(approval.clone()),
+                events: None,
+            };
+            let registry = test_registry(4096).unwrap();
+            let edited = registry
+                .execute_authorized(
+                    "replace_text",
+                    &context,
+                    json!({"path":"public.txt","old":"public before","new":"public after"}),
+                    CancellationToken::new(),
+                    &authorization,
+                )
+                .await
+                .unwrap();
+            assert!(edited.success);
+            assert_eq!(
+                std::fs::read_to_string(root.path().join("public.txt")).unwrap(),
+                "public after\n"
+            );
+            assert!(
+                approval.paths.lock().unwrap().is_empty(),
+                "background capture must never request private-file approval"
+            );
+            {
+                let sessions = registry.changes.sessions.lock().unwrap();
+                let baseline = &sessions[&context.session_id].baseline;
+                assert_eq!(
+                    baseline
+                        .get(std::path::Path::new("public.txt"))
+                        .map(String::as_str),
+                    Some("public before")
+                );
+                assert!(!baseline.contains_key(std::path::Path::new("private.txt")));
+                assert!(
+                    baseline
+                        .values()
+                        .all(|content| !content.contains("private content"))
+                );
+            }
+            // The ordinary foreground read still goes through its declared
+            // FileRead effect and receives the explicit ask approval.
+            let args = json!({"path":"private.txt"});
+            for effect in registry.effects("read_file", &context, &args).unwrap() {
+                authorization
+                    .authorize(effect, CancellationToken::new())
+                    .await
+                    .unwrap();
+            }
+            let read = registry
+                .execute_authorized(
+                    "read_file",
+                    &context,
+                    args,
+                    CancellationToken::new(),
+                    &authorization,
+                )
+                .await
+                .unwrap();
+            assert!(read.content.contains("private content"));
+            assert_eq!(*approval.paths.lock().unwrap(), vec![protected]);
+            assert!(
+                !registry.changes.sessions.lock().unwrap()[&context.session_id]
+                    .baseline
+                    .contains_key(std::path::Path::new("private.txt")),
+                "foreground approval must not silently backfill skipped baseline content"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn file_policy_covers_git_and_session_diffs_before_any_content_read() {
         use crate::policy::{EffectClass, ExecutionAuthorizer, PolicyRule, RuleAction};
         for action in [RuleAction::Deny, RuleAction::Ask] {
@@ -3056,8 +3184,13 @@ mod tests {
             );
 
             registry
-                .changes
-                .ensure_baseline(&context, &authorization, CancellationToken::new())
+                .execute_authorized(
+                    "view_session_diff",
+                    &context,
+                    json!({}),
+                    CancellationToken::new(),
+                    &authorization,
+                )
                 .await
                 .unwrap();
             {
@@ -3067,7 +3200,7 @@ mod tests {
                         .baseline
                         .contains_key(std::path::Path::new("ordinary.txt")),
                     action == RuleAction::Ask,
-                    "denied content must never enter an eager baseline"
+                    "denied content must never enter a foreground baseline"
                 );
             }
             std::fs::write(&protected, "protected after session baseline\n").unwrap();
