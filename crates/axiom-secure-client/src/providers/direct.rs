@@ -1207,12 +1207,13 @@ mod tests {
     }
 
     fn installed() -> SecureClientConfig {
+        let fixture_root = std::env::temp_dir();
         let mut config = SecureClientConfig::new("https://127.0.0.1:9443").unwrap();
         config.direct = Some(
             serde_json::from_value(serde_json::json!({
                 "origin":"https://worker.example:8443", "connect_ip":null,
-                "model_manifest":"aa".repeat(32), "issuer_key_file":"/private/operator.pem",
-                "verifier":{"binary":"/installed/verifier", "binary_sha256":"bb".repeat(32),
+                "model_manifest":"aa".repeat(32), "issuer_key_file":fixture_root.join("axiom-test-operator.pem"),
+                "verifier":{"binary":fixture_root.join("axiom-test-verifier"), "binary_sha256":"bb".repeat(32),
                     "publisher_key":"cc".repeat(32), "minimum_policy_sequence":10}
             }))
             .unwrap(),
