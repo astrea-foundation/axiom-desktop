@@ -13,6 +13,14 @@ handles passkey, Google, password and wallet authentication. Native login creden
 outside the renderer. Signing out closes the active account store and invalidates
 pending account operations.
 
+Open **Settings → Account → Factory reset Axiom…** to start fresh on this
+computer. The control is also available while signed out or disconnected. Type
+`RESET` and confirm to stop active work, delete local chats and managed files,
+settings, cached app data, and saved Axiom/MCP credentials, then restart for a
+fresh sign-in. This also removes local data shared with AxiomCLI. Online accounts,
+balances, hosted API keys and files outside Axiom are kept. Close other CLI
+windows first. See [recovery and deletion scope](troubleshooting.md#completely-reset-local-data).
+
 Conversations and folders are account-local. Folder names are labels, not file
 paths. Rename and Delete use in-app dialogs; batch deletion is confirmed against
 the exact native selection. Deleting a conversation does not remove workspace files.

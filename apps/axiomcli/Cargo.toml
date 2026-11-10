@@ -34,6 +34,7 @@ globset = "0.4.20"
 ignore = "0.4.33"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
 keyring = "4.1.6"
+keyring-core = "1.0.0"
 open = "5.3.6"
 pulldown-cmark = { version = "0.13.4", default-features = false }
 ratatui = "0.30.2"

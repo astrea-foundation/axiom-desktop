@@ -12,6 +12,7 @@ pub mod billing;
 pub mod config;
 pub mod desktop_mcp;
 pub mod error;
+pub mod factory_reset;
 pub mod image_tool;
 pub mod mcp;
 pub mod paths;

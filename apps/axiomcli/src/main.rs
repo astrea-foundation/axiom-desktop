@@ -77,6 +77,8 @@ struct Cli {
 enum Command {
     /// Download, verify, install and restart an installed Axiom release.
     Update(axiomcli::updates::Arguments),
+    /// Permanently delete all local Axiom data and saved credentials. Stop Axiom first.
+    FactoryReset(axiomcli::factory_reset::Arguments),
     /// Run the account-bound secure loopback proxy under Desktop supervision.
     DesktopProxy {
         #[arg(long)]
@@ -246,10 +248,18 @@ async fn main() -> anyhow::Result<()> {
     };
     if let Some(Command::Update(arguments)) = cli.command {
         // Update helpers must survive shutdown of the process being replaced.
+        let paths = AxiomPaths::discover().context("failed to resolve Axiom platform paths")?;
+        let _reset_lease = axiomcli::factory_reset::runtime_lease(&paths)?;
         return axiomcli::updates::command(arguments).await;
+    }
+    if let Some(Command::FactoryReset(arguments)) = cli.command {
+        // Recovery must work without loading configuration, account or databases.
+        return axiomcli::factory_reset::command(&arguments);
     }
     install_descendant_cleanup();
     let _installation_lease = axiomcli::updates::lease()?;
+    let paths = AxiomPaths::discover().context("failed to resolve Axiom platform paths")?;
+    let _reset_lease = axiomcli::factory_reset::runtime_lease(&paths)?;
     // The proxy owns no chat store, tools, agent configuration or system prompt.
     if let Some(Command::DesktopProxy {
         account_id,
@@ -271,7 +281,6 @@ async fn main() -> anyhow::Result<()> {
         .as_deref()
         .map(load_system_prompt_file)
         .transpose()?;
-    let paths = AxiomPaths::discover().context("failed to resolve Axiom platform paths")?;
     paths
         .prepare()
         .context("failed to prepare Axiom platform paths")?;
@@ -335,6 +344,9 @@ async fn main() -> anyhow::Result<()> {
         resume: None,
     }) {
         Command::Update(_) => unreachable!("update is handled before agent initialization"),
+        Command::FactoryReset(_) => {
+            unreachable!("factory reset is handled before agent initialization")
+        }
         Command::DesktopProxy { .. } => {
             unreachable!("desktop proxy is handled before agent initialization")
         }
