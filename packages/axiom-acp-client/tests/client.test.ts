@@ -16,7 +16,7 @@ import {
 import { AcpError } from "../src/errors.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const binary = resolve(
+const binary = process.env.AXIOMCLI_TEST_BINARY ?? resolve(
   here,
   "../../../target/debug",
   process.platform === "win32" ? "axiomcli.exe" : "axiomcli",
@@ -158,6 +158,30 @@ test("production client negotiates, streams, and controls standard ACP settings"
   } finally {
     await client.close();
   }
+});
+
+test("SDK prompt text remains literal and application commands require an explicit call", async () => {
+  const { client, workspace } = await fixture();
+  try {
+    const created = await client.newSession(workspace);
+    const sent: Array<{ method: string; params: unknown }> = [];
+    const request = client.process.request.bind(client.process);
+    client.process.request = async <T>(method: string, params: unknown, timeoutMs?: number, signal?: AbortSignal): Promise<T> => {
+      if (method === "session/prompt" || method === "_axiom/session/command") sent.push({ method, params });
+      return request<T>(method, params, timeoutMs, signal);
+    };
+    await client.prompt(created.sessionId, "/logout", "literal-slash");
+    assert.equal(sent[0]?.method, "session/prompt");
+    assert.ok(client.getState().sessions[created.sessionId]?.timeline.some((item) => item.kind === "user" && item.text === "/logout"));
+    await client.invokeCommand(created.sessionId, "/help");
+    assert.deepEqual(sent[1], { method: "_axiom/session/command", params: { sessionId: created.sessionId, command: "/help" } });
+    await assert.rejects(client.invokeCommand(created.sessionId, "ordinary text"), /explicit slash command/);
+    // Older sidecars still interpret leading slashes in session/prompt. Fail
+    // before dispatch rather than letting a version mismatch run a command.
+    (client as unknown as { supportsCommandInvocation: boolean }).supportsCommandInvocation = false;
+    await assert.rejects(client.prompt(created.sessionId, "/logout", "legacy-sidecar"), /Restart Axiom/);
+    assert.equal(sent.length, 2);
+  } finally { await client.close(); }
 });
 
 test("every SDK prompt sends a strict explicit web choice without inheriting previous consent", async () => {

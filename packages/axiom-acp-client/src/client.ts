@@ -79,6 +79,7 @@ const EXTENSION_CAPABILITIES = {
     attachments: 2,
     compaction: 1,
     activity: 1,
+    commandInvocation: 1,
   },
 } as const;
 
@@ -164,6 +165,7 @@ export class AxiomAcpClient extends EventEmitter {
   private fullResyncRequired = false;
   private initialized = false;
   private supportsMessageRevision = false;
+  private supportsCommandInvocation = false;
   private supportsMcp = false;
   private supportsImageGeneration = false;
   private supportsImageRegeneration = false;
@@ -245,6 +247,7 @@ export class AxiomAcpClient extends EventEmitter {
     // user starts a chat. Publish the handshake identity first so that event
     // cannot masquerade as a restart and invalidate an in-flight submission.
     this.state.initializeRuntime(meta?.runtimeInstanceId);
+    this.supportsCommandInvocation = (meta?.features?.commandInvocation ?? 0) >= 1;
     this.supportsMessageRevision = (meta?.features?.messageRevision ?? 0) >= 1;
     this.supportsMcp = (meta?.features?.desktopMcp ?? 0) >= 1;
     this.supportsImageGeneration = (meta?.features?.imageGeneration ?? 0) >= 3;
@@ -372,7 +375,22 @@ export class AxiomAcpClient extends EventEmitter {
     return { ...result, sessionId: threadId };
   }
 
+  /** Invoke a deliberately selected application control. Never route pasted prompt text here. */
+  async invokeCommand(threadId: string, command: string): Promise<PromptResult> {
+    if (!this.supportsCommandInvocation) throw new ProtocolError("Restart Axiom to enable explicit commands.");
+    if (!command.trimStart().startsWith("/") || Buffer.byteLength(command, "utf8") > 4 * 1024 * 1024) {
+      throw new ProtocolError("Expected an explicit slash command");
+    }
+    const accountContext = this.state.accountContextToken();
+    const result = await this.process.request<PromptResult>("_axiom/session/command", { sessionId: threadId, command }, 0);
+    this.assertAccountContext(accountContext);
+    return result;
+  }
+
   async prompt(threadId: string, text: string, clientItemId: string, webEnabled = false, agentRevision = this.state.snapshot().sessions[threadId]?.desktopAgent?.revision ?? 0, revision?: { userItemId: string; expectedRevision: number }, attachments: PromptAttachment[] = [], mcpRevision?: number): Promise<PromptResult> {
+    if (!this.supportsCommandInvocation && text.trimStart().startsWith("/")) {
+      throw new ProtocolError("Restart Axiom before sending literal text beginning with a slash.");
+    }
     if (revision && (!this.supportsMessageRevision || !revision.userItemId || revision.userItemId.length > 512
       || !Number.isSafeInteger(revision.expectedRevision) || revision.expectedRevision < 0)) {
       throw new ProtocolError("Restart Axiom before editing or regenerating messages.");

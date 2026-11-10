@@ -28,6 +28,9 @@
     "promptMetadata": {
       "$ref": "#/$defs/PromptMetadata"
     },
+    "sessionCommandRequest": {
+      "$ref": "#/$defs/SessionCommandRequest"
+    },
     "getAttachmentsRequest": {
       "$ref": "#/$defs/GetAttachmentsRequest"
     },
@@ -240,6 +243,7 @@
     "desktopBootstrapRequest",
     "desktopBootstrapResponse",
     "promptMetadata",
+    "sessionCommandRequest",
     "getAttachmentsRequest",
     "getAttachmentsResponse",
     "regenerateImageRequest",
@@ -933,6 +937,14 @@
           "minimum": 0,
           "maximum": 65535,
           "default": 0
+        },
+        "commandInvocation": {
+          "description": "Explicit application command invocation; prompt text stays literal.",
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535,
+          "default": 0
         }
       }
     },
@@ -1161,6 +1173,24 @@
         "name",
         "mimeType",
         "data"
+      ]
+    },
+    "SessionCommandRequest": {
+      "description": "Application controls selected explicitly by the client. Never infer this\nrequest from ordinary pasted or submitted prompt text.",
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "command": {
+          "description": "A slash command selected intentionally, such as `/thinking high`.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "sessionId",
+        "command"
       ]
     },
     "GetAttachmentsRequest": {

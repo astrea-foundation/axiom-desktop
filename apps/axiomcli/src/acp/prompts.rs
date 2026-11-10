@@ -37,6 +37,42 @@ pub(super) async fn prompt(
     responder: Responder<protocol::PromptResponse>,
     connection: &ConnectionTo<Client>,
 ) -> agent_client_protocol::Result<()> {
+    prompt_with_invocation(context, request, responder, connection, false).await
+}
+
+pub(super) async fn invoke_command(
+    context: &ServerContext,
+    request: extension::SessionCommandRequest,
+    responder: Responder<protocol::PromptResponse>,
+    connection: &ConnectionTo<Client>,
+) -> agent_client_protocol::Result<()> {
+    if !extension_enabled(
+        &context.extension_state,
+        ExtensionFeature::CommandInvocation,
+    ) {
+        return responder.respond_with_error(extension_not_negotiated());
+    }
+    if request.command.len() > axiom_inference::MAX_MESSAGE_TEXT_BYTES
+        || slash::parse(&request.command).is_none()
+    {
+        return responder.respond_with_internal_error("Expected an explicit slash command");
+    }
+    let prompt = protocol::PromptRequest::new(
+        protocol::SessionId::new(request.session_id),
+        vec![protocol::ContentBlock::Text(protocol::TextContent::new(
+            request.command,
+        ))],
+    );
+    prompt_with_invocation(context, prompt, responder, connection, true).await
+}
+
+async fn prompt_with_invocation(
+    context: &ServerContext,
+    request: protocol::PromptRequest,
+    responder: Responder<protocol::PromptResponse>,
+    connection: &ConnectionTo<Client>,
+    explicit_command: bool,
+) -> agent_client_protocol::Result<()> {
     let ctx_account_transition = context.account_transition.clone();
     let ctx_account_work = context.account_work.clone();
     let ctx_auth = context.auth.clone();
@@ -89,19 +125,22 @@ pub(super) async fn prompt(
         return responder.respond_with_internal_error(error.to_string());
     }
     let session_id = request.session_id.clone();
-    // Edited user text is data, including a leading slash.
-    let command = match if message_revision.is_some() || !attachments.is_empty() {
-        None
-    } else {
-        slash::parse(&prompt)
-    } {
-        Some(Ok(command)) => Some(command),
-        Some(Err(error)) => {
-            send_text(connection, &session_id, format!("Command error: {error}"))?;
-            return responder.respond(protocol::PromptResponse::new(protocol::StopReason::EndTurn));
-        }
-        None => None,
-    };
+    // Prompt text is always data. Only the dedicated negotiated command
+    // request can enter application-control routing.
+    let command =
+        match if !explicit_command || message_revision.is_some() || !attachments.is_empty() {
+            None
+        } else {
+            slash::parse(&prompt)
+        } {
+            Some(Ok(command)) => Some(command),
+            Some(Err(error)) => {
+                send_text(connection, &session_id, format!("Command error: {error}"))?;
+                return responder
+                    .respond(protocol::PromptResponse::new(protocol::StopReason::EndTurn));
+            }
+            None => None,
+        };
     let deterministic_test_runner = cfg!(debug_assertions)
         && std::env::var("AXIOMCLI_TEST_RUNNER").is_ok_and(|value| !value.trim().is_empty());
     if command.is_none() && !ctx_auth.has_credential() && !deterministic_test_runner {

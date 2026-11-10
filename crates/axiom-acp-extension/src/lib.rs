@@ -88,6 +88,8 @@ pub struct FeatureVersions {
     pub attachments: u16,
     pub compaction: u16,
     pub activity: u16,
+    /// Explicit application command invocation; prompt text stays literal.
+    pub command_invocation: u16,
 }
 
 impl FeatureVersions {
@@ -114,6 +116,7 @@ impl FeatureVersions {
             attachments: 2,
             compaction: 1,
             activity: 1,
+            command_invocation: 1,
         }
     }
 }
@@ -138,6 +141,19 @@ pub struct DesktopBootstrapResponse {
     /// thinking level is `medium`; afterward these are the last-used values.
     pub new_thread_settings: ProfilePreferences,
 }
+
+/// Application controls selected explicitly by the client. Never infer this
+/// request from ordinary pasted or submitted prompt text.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcRequest)]
+#[request(method = "_axiom/session/command", response = SessionCommandResponse)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SessionCommandRequest {
+    pub session_id: String,
+    /// A slash command selected intentionally, such as `/thinking high`.
+    pub command: String,
+}
+
+pub type SessionCommandResponse = agent_client_protocol::schema::v1::PromptResponse;
 
 /// Metadata Axiom Desktop attaches beneath the standard ACP `_meta.axiom`
 /// namespace when submitting a user message.
@@ -1451,6 +1467,7 @@ pub struct ProtocolSchema {
     pub desktop_bootstrap_request: DesktopBootstrapRequest,
     pub desktop_bootstrap_response: DesktopBootstrapResponse,
     pub prompt_metadata: PromptMetadata,
+    pub session_command_request: SessionCommandRequest,
     pub get_attachments_request: GetAttachmentsRequest,
     pub get_attachments_response: GetAttachmentsResponse,
     pub regenerate_image_request: RegenerateImageRequest,
