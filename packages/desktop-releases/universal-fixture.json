@@ -1,0 +1,106 @@
+{
+  "publicKey": "472fc07904d54dfb720e7557ff79215018da4b5f810fe0f4aaa4759ad78f3441",
+  "release": {
+    "schemaVersion": 3,
+    "version": "0.2.0",
+    "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sequence": 100,
+    "signing": "signed",
+    "downloads": [
+      {
+        "name": "Axiom-0.2.0-mac-universal.pkg",
+        "product": "desktop",
+        "platform": "mac",
+        "arch": "universal",
+        "format": "pkg",
+        "bytes": 20,
+        "sha256": "b6f9ec53e2e8c6eb6a35deac7c3e8a2d4833c22be6ceb2096d66d02e217dff64",
+        "url": "https://cdn.axiom.stream/downloads/0.2.0/Axiom-0.2.0-mac-universal.pkg",
+        "githubUrl": "https://github.com/astrea-foundation/axiom-releases/releases/download/v0.2.0/Axiom-0.2.0-mac-universal.pkg"
+      },
+      {
+        "name": "Axiom-0.2.0-win-universal.exe",
+        "product": "desktop",
+        "platform": "win",
+        "arch": "universal",
+        "format": "exe",
+        "bytes": 20,
+        "sha256": "b6f9ec53e2e8c6eb6a35deac7c3e8a2d4833c22be6ceb2096d66d02e217dff64",
+        "url": "https://cdn.axiom.stream/downloads/0.2.0/Axiom-0.2.0-win-universal.exe",
+        "githubUrl": "https://github.com/astrea-foundation/axiom-releases/releases/download/v0.2.0/Axiom-0.2.0-win-universal.exe"
+      },
+      {
+        "name": "Axiom-0.2.0-linux-x64.AppImage",
+        "product": "desktop",
+        "platform": "linux",
+        "arch": "x64",
+        "format": "AppImage",
+        "bytes": 20,
+        "sha256": "b6f9ec53e2e8c6eb6a35deac7c3e8a2d4833c22be6ceb2096d66d02e217dff64",
+        "url": "https://cdn.axiom.stream/downloads/0.2.0/Axiom-0.2.0-linux-x64.AppImage",
+        "githubUrl": "https://github.com/astrea-foundation/axiom-releases/releases/download/v0.2.0/Axiom-0.2.0-linux-x64.AppImage"
+      },
+      {
+        "name": "Axiom-0.2.0-linux-x64.deb",
+        "product": "desktop",
+        "platform": "linux",
+        "arch": "x64",
+        "format": "deb",
+        "bytes": 20,
+        "sha256": "b6f9ec53e2e8c6eb6a35deac7c3e8a2d4833c22be6ceb2096d66d02e217dff64",
+        "url": "https://cdn.axiom.stream/downloads/0.2.0/Axiom-0.2.0-linux-x64.deb",
+        "githubUrl": "https://github.com/astrea-foundation/axiom-releases/releases/download/v0.2.0/Axiom-0.2.0-linux-x64.deb"
+      },
+      {
+        "name": "Axiom-0.2.0-linux-x64.pkg.tar.xz",
+        "product": "desktop",
+        "platform": "linux",
+        "arch": "x64",
+        "format": "pacman",
+        "bytes": 20,
+        "sha256": "b6f9ec53e2e8c6eb6a35deac7c3e8a2d4833c22be6ceb2096d66d02e217dff64",
+        "url": "https://cdn.axiom.stream/downloads/0.2.0/Axiom-0.2.0-linux-x64.pkg.tar.xz",
+        "githubUrl": "https://github.com/astrea-foundation/axiom-releases/releases/download/v0.2.0/Axiom-0.2.0-linux-x64.pkg.tar.xz"
+      }
+    ],
+    "cliDownloads": [
+      {
+        "name": "AxiomCLI-0.2.0-mac-universal.pkg",
+        "product": "cli",
+        "platform": "mac",
+        "arch": "universal",
+        "format": "pkg",
+        "bytes": 20,
+        "sha256": "b6f9ec53e2e8c6eb6a35deac7c3e8a2d4833c22be6ceb2096d66d02e217dff64",
+        "url": "https://cdn.axiom.stream/downloads/0.2.0/AxiomCLI-0.2.0-mac-universal.pkg",
+        "githubUrl": "https://github.com/astrea-foundation/axiom-releases/releases/download/v0.2.0/AxiomCLI-0.2.0-mac-universal.pkg"
+      },
+      {
+        "name": "AxiomCLI-0.2.0-win-universal.exe",
+        "product": "cli",
+        "platform": "win",
+        "arch": "universal",
+        "format": "exe",
+        "bytes": 20,
+        "sha256": "b6f9ec53e2e8c6eb6a35deac7c3e8a2d4833c22be6ceb2096d66d02e217dff64",
+        "url": "https://cdn.axiom.stream/downloads/0.2.0/AxiomCLI-0.2.0-win-universal.exe",
+        "githubUrl": "https://github.com/astrea-foundation/axiom-releases/releases/download/v0.2.0/AxiomCLI-0.2.0-win-universal.exe"
+      },
+      {
+        "name": "AxiomCLI-0.2.0-linux-x64.sh",
+        "product": "cli",
+        "platform": "linux",
+        "arch": "x64",
+        "format": "sh",
+        "bytes": 20,
+        "sha256": "b6f9ec53e2e8c6eb6a35deac7c3e8a2d4833c22be6ceb2096d66d02e217dff64",
+        "url": "https://cdn.axiom.stream/downloads/0.2.0/AxiomCLI-0.2.0-linux-x64.sh",
+        "githubUrl": "https://github.com/astrea-foundation/axiom-releases/releases/download/v0.2.0/AxiomCLI-0.2.0-linux-x64.sh"
+      }
+    ],
+    "signature": {
+      "keyId": "78fcec0d2bf47e7d",
+      "value": "ZH1zut4aB50FoeqvkBXE1lQPixsKo0TfvhQAaPoOQisOC8fpcmf4egkBADOl5A/qsSCblIvXDUGxacftRarKDg=="
+    }
+  }
+}

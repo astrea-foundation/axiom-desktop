@@ -1,0 +1,127 @@
+!ifndef BUILD_UNINSTALLER
+  ; electron-builder compiles the uninstaller separately with warnings as errors.
+  Var axiomFreshInstall
+!endif
+
+!macro axiomNormalizeInstallDir
+  ; Earlier native updaters passed canonical Win32 namespaces and quoted /D.
+  ; ShellLink cannot create shortcuts for those paths. Keep the same directory
+  ; while restoring the ordinary path before registration and shortcut creation.
+  StrCpy $R0 "$INSTDIR" 1
+  ${if} $R0 == '$\"'
+    StrCpy $INSTDIR "$INSTDIR" "" 1
+  ${endif}
+  StrCpy $R0 "$INSTDIR" 1 -1
+  ${if} $R0 == '$\"'
+    StrLen $R0 "$INSTDIR"
+    IntOp $R0 $R0 - 1
+    StrCpy $INSTDIR "$INSTDIR" $R0
+  ${endif}
+  StrCpy $R0 "$INSTDIR" 8
+  ${if} $R0 == "\\?\UNC\"
+    StrCpy $INSTDIR "$INSTDIR" "" 8
+    StrCpy $INSTDIR "\\$INSTDIR"
+  ${else}
+    StrCpy $R0 "$INSTDIR" 4
+    ${if} $R0 == "\\?\"
+      StrCpy $INSTDIR "$INSTDIR" "" 4
+    ${endif}
+  ${endif}
+!macroend
+
+!macro axiomRepairInstallRegistration hive
+  ; Old clients also stored the namespace in registry paths used by the old
+  ; uninstaller. Repair those equivalent paths before invoking that uninstaller.
+  StrCpy $R4 "$INSTDIR"
+  ReadRegStr $R5 ${hive} "${INSTALL_REGISTRY_KEY}" "InstallLocation"
+  ${if} $R5 != ""
+    StrCpy $INSTDIR "$R5"
+    !insertmacro axiomNormalizeInstallDir
+    ${if} $INSTDIR != $R5
+      WriteRegStr ${hive} "${INSTALL_REGISTRY_KEY}" "InstallLocation" "$INSTDIR"
+      ReadRegStr $R7 ${hive} "${UNINSTALL_REGISTRY_KEY}" "UninstallString"
+      StrCpy $R8 '$\"$R5\Uninstall Axiom.exe$\"'
+      StrLen $R9 "$R8"
+      StrCpy $R6 "$R7" $R9
+      ${if} $R6 == $R8
+        StrCpy $R7 "$R7" "" $R9
+        WriteRegStr ${hive} "${UNINSTALL_REGISTRY_KEY}" "UninstallString" '$\"$INSTDIR\Uninstall Axiom.exe$\"$R7'
+      ${endif}
+    ${endif}
+  ${endif}
+  StrCpy $INSTDIR "$R4"
+!macroend
+
+!macro customInit
+  !insertmacro axiomNormalizeInstallDir
+  !insertmacro axiomRepairInstallRegistration HKCU
+  ${if} ${UAC_IsAdmin}
+    !insertmacro axiomRepairInstallRegistration HKLM
+  ${endif}
+  ; Inspect installation ownership before NSIS writes its new registry entries.
+  ; Existing Desktop installations, including versions predating this feature,
+  ; must not unexpectedly start installing updates on their next launch.
+  StrCpy $axiomFreshInstall "1"
+  ReadRegStr $R0 HKCU "${INSTALL_REGISTRY_KEY}" "InstallLocation"
+  ReadRegStr $R1 HKLM "${INSTALL_REGISTRY_KEY}" "InstallLocation"
+  ${if} $R0 != ""
+    StrCpy $axiomFreshInstall "0"
+  ${endif}
+  ${if} $R1 != ""
+    StrCpy $axiomFreshInstall "0"
+  ${endif}
+!macroend
+
+!macro axiomNativePowerShell
+  ; NSIS runs as x86. Use native PowerShell on x64/ARM64 Windows instead of
+  ; the emulated SysWOW64 host.
+  StrCpy $R3 "$SYSDIR\WindowsPowerShell\v1.0\powershell.exe"
+  IfFileExists "$WINDIR\sysnative\WindowsPowerShell\v1.0\powershell.exe" 0 +2
+    StrCpy $R3 "$WINDIR\sysnative\WindowsPowerShell\v1.0\powershell.exe"
+!macroend
+
+!macro customInstall
+  ; A silent elevated machine upgrade can select its mode again after onInit.
+  StrCpy $R4 "$INSTDIR"
+  !insertmacro axiomNormalizeInstallDir
+  ${if} $INSTDIR != $R4
+    StrCpy $appExe "$INSTDIR\${APP_EXECUTABLE_FILENAME}"
+    StrCpy $keepShortcuts "false"
+    !insertmacro registryAddInstallInfo
+    !insertmacro setLinkVars
+    !insertmacro addStartMenuLink $keepShortcuts
+    !insertmacro addDesktopLink $keepShortcuts
+    StrCpy $launchLink "$appExe"
+  ${endif}
+  ${if} $axiomFreshInstall == "1"
+    FileOpen $R0 "$INSTDIR\resources\axiom-first-launch.json" w
+    FileWrite $R0 '{$\"schemaVersion$\":1}'
+    FileClose $R0
+  ${endif}
+  StrCpy $R0 "User"
+  ${if} $installMode == "all"
+    StrCpy $R0 "Machine"
+  ${endIf}
+  !insertmacro axiomNativePowerShell
+  nsExec::ExecToStack /TIMEOUT=30000 '"$R3" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\resources\installer\windows-cli-path.ps1" -Action Install -BinPath "$INSTDIR\resources\launchers" -Scope $R0'
+  Pop $R1
+  Pop $R2
+  SendMessage 0xffff 0x001A 0 "STR:Environment" /TIMEOUT=5000
+  ${if} $R1 != "0"
+    MessageBox MB_OK|MB_ICONEXCLAMATION "Axiom was installed, but the CLI could not be added to PATH. Run axiomcli.cmd from $INSTDIR\resources\launchers, or add that directory to PATH." /SD IDOK
+  ${endIf}
+!macroend
+
+!macro customUnInstall
+  StrCpy $R0 "User"
+  ${if} $installMode == "all"
+    StrCpy $R0 "Machine"
+  ${endIf}
+  IfFileExists "$INSTDIR\resources\installer\windows-cli-path.ps1" 0 axiom_cli_path_done
+  !insertmacro axiomNativePowerShell
+  nsExec::ExecToStack /TIMEOUT=30000 '"$R3" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\resources\installer\windows-cli-path.ps1" -Action Remove -BinPath "$INSTDIR\resources\launchers" -Scope $R0'
+  Pop $R1
+  Pop $R2
+  SendMessage 0xffff 0x001A 0 "STR:Environment" /TIMEOUT=5000
+  axiom_cli_path_done:
+!macroend
