@@ -32,6 +32,12 @@ the same provider preference order. Explicit configuration and remembered model
 choices take precedence. This is a default-selection preference, not an
 availability list; models are never substituted based on aliases or similar names.
 
+An account that still needs to accept the current policies receives a catalog
+authorization error directing it to the hosted account page. Locally installed
+AstreaAI offerings must not hide this error by appearing as the entire catalog.
+After the user reviews and accepts the policies, returning focus to Desktop
+refreshes discovery. Catalog errors never display backend-supplied text or URLs.
+
 Image and file icons replace capability words in Desktop. Tinfoil uses its official
 provider symbol. The composer model control shows the provider symbol to the left
 of the model brand icon and name; hovering the provider symbol shows its name.
