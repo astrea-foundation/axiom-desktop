@@ -24,6 +24,15 @@ fn now() -> Result<u64> {
     Ok(SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs())
 }
 
+fn fresh_at_return(result: Result<Value>) -> Result<Value> {
+    let accepted = result?;
+    ensure!(
+        number(&accepted["expires_at"])? > now()?,
+        "evidence expired during appraisal"
+    );
+    Ok(accepted)
+}
+
 struct Prepared {
     value: Value,
     manifest: Value,
@@ -212,7 +221,7 @@ pub async fn verify(raw: &[u8]) -> Result<Value> {
             "nonce":prepared.value["context"]["challenge"],"arch":gpu["arch"],"claims_version":"3.0",
             "evidence_list":[{"evidence":gpu["evidence"],"certificate":gpu["certificate"]}]
         })).send().await?).await?;
-        prepared.finish(&jwks,&bundle,now()?)
+        fresh_at_return(prepared.finish(&jwks, &bundle, now()?))
     }).await?
 }
 /// An offline transport adapter can supply vendor responses, but cannot bypass
@@ -223,12 +232,7 @@ pub fn verify_with_vendor(raw: &[u8], jwks: &[u8], bundle: &[u8]) -> Result<Valu
         "vendor response bound"
     );
     let prepared = Prepared::new(raw, now()?)?;
-    let accepted = prepared.finish(&json::decode(jwks)?, &json::decode(bundle)?, now()?)?;
-    ensure!(
-        number(&accepted["expires_at"])? > now()?,
-        "evidence expired during appraisal"
-    );
-    Ok(accepted)
+    fresh_at_return(prepared.finish(&json::decode(jwks)?, &json::decode(bundle)?, now()?))
 }
 /// Deterministic cryptographic check for packaged native executables.
 pub fn self_test() -> Result<()> {
