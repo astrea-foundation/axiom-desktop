@@ -74,3 +74,21 @@ export function signInErrorMessage(error: unknown): string {
     "Browser sign-in could not be completed. Please try again.",
   );
 }
+
+export function signInErrorPresentation(message: string): {
+  title: string;
+  message: string;
+  technicalDetails?: string;
+} {
+  // This cause identifies invalid TLS data, not the component that sent it.
+  // Only a failed start establishes that browser authorization has not begun.
+  if (message.includes("could not start login:")
+    && message.includes("received corrupt message of type InvalidContentType")) {
+    return {
+      title: "Couldn’t connect securely",
+      message: "Axiom received an invalid response while establishing a secure connection, so browser sign-in could not start. Check any VPN, proxy, or network filter, or try another network such as a phone hotspot.",
+      technicalDetails: message,
+    };
+  }
+  return { title: "Sign-in didn’t finish", message };
+}

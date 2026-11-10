@@ -31,9 +31,14 @@ ordinary Desktop/CLI launches omit this flag. Older clients reject the unknown
 flag before reading any credential; hosts must not retry without it.
 
 Desktop preserves the native sign-in failure reason in its error banner, including
-TLS connection causes. Version 0.1.7 can hide failures while starting sign-in behind
-the generic `Internal error` message. A failed start can happen before a request
-reaches the account service, so server logs alone cannot identify it.
+TLS connection causes. When starting sign-in fails with `InvalidContentType`,
+the banner says **Couldn’t connect securely**, explains that browser sign-in could
+not start, and suggests checking VPN, proxy or network-filter settings or trying
+another network. Expand **Technical details** for the original native error.
+This explanation does not identify which component sent the invalid data.
+Version 0.1.7 can hide failures while starting sign-in behind the generic
+`Internal error` message. A failed start can happen before a request reaches the
+account service, so server logs alone cannot identify it.
 
 If sign-in and the update check both fail to connect, compare the same check on
 another network (for example, a phone hotspot). On macOS, run the bundled native

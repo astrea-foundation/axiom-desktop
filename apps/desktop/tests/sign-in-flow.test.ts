@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { accountPresentation, desktopErrorMessage, signInErrorMessage } from "../src/renderer/src/signInFlow.js";
+import { accountPresentation, desktopErrorMessage, signInErrorMessage, signInErrorPresentation } from "../src/renderer/src/signInFlow.js";
 
 test("account presentation distinguishes startup, sign-in, revocation, and outages", () => {
   assert.equal(accountPresentation(false, false, null).kind, "starting");
@@ -50,4 +50,35 @@ test("sign-in errors remove IPC wrapping while preserving useful detail", () => 
     ),
     "catalog mismatch",
   );
+});
+
+test("invalid TLS data while starting sign-in explains the stage and preserves diagnostics", () => {
+  const nativeError = "provider error: could not start login: error sending request: client error (Connect): received corrupt message of type InvalidContentType";
+  const message = signInErrorMessage(new Error(
+    `Error invoking remote method 'agent:native-login-start': AcpError: ${nativeError}`,
+  ));
+  const error = signInErrorPresentation(message);
+  assert.equal(error.title, "Couldn’t connect securely");
+  assert.match(error.message, /invalid response.*secure connection/);
+  assert.match(error.message, /browser sign-in could not start/);
+  assert.match(error.message, /VPN, proxy, or network filter/);
+  assert.match(error.message, /another network.*phone hotspot/);
+  assert.doesNotMatch(error.message, /InvalidContentType|provider error/);
+  assert.equal(error.technicalDetails, nativeError);
+});
+
+test("other sign-in failures retain their reason without assuming invalid TLS or a failed start", () => {
+  for (const message of [
+    "authorization expired",
+    "could not start login: operation timed out",
+    "could not start login: invalid peer certificate: UnknownIssuer",
+    "Axiom rejected the login request with HTTP 503 Service Unavailable",
+    "could not complete login: received corrupt message of type InvalidContentType",
+    "could not start login: invalid HTTP Content-Type",
+  ]) {
+    assert.deepEqual(signInErrorPresentation(message), {
+      title: "Sign-in didn’t finish",
+      message,
+    });
+  }
 });
