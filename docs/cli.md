@@ -232,7 +232,11 @@ axiomcli plans --cwd /absolute/path/to/project list
 The implemented session subcommands are list, show, export, rename, archive and
 unarchive. Interactive deletion uses `/delete`; ACP uses preview/confirm.
 There is no `sessions prune` command. Export supports omitting prompts/tool
-output and a bounded `--max-items` count. Local recovery never replays interrupted
+output and a bounded `--max-items` count. Omission removes associated metadata,
+including tool images, diffs and arguments, prompt attachment summaries, and
+mixed summaries/notices. Prompt omission also removes generated titles. Exports
+apply credential redaction; the local authoritative conversation retains exact
+content. Local recovery never replays interrupted
 tool side effects. The TUI warns about interrupted operations and recovery
 problems, not ordinary file edits. Recorded edits remain in the task history;
 resume neither adds nor displays the legacy workspace-change summary warning.

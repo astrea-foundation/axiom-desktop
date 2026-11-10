@@ -166,6 +166,7 @@ async fn restoring_images_uses_the_selected_models_visual_token_allowance() {
     let ctx = context();
     let journal = vec![EventEnvelope {
         schema_version: 1,
+        turn_id: None,
         sequence: 1,
         occurred_at: chrono::Utc::now(),
         correlation_id: crate::app::CorrelationId::new(),

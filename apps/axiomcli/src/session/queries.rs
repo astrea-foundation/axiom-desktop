@@ -446,6 +446,9 @@ impl SessionStore {
         let turn = turn.ok_or_else(|| {
             AxiomError::InvalidTransition("Choose the message that started this turn.".into())
         })?;
+        if let Some(events) = super::model_history::before_turn(&*self.lock()?, id, &turn)? {
+            return Ok(events);
+        }
         let mut events = self.load(id)?;
         let boundary = events.iter().position(|event| matches!(&event.event, AppEvent::PromptAccepted { turn_id, .. } if turn_id.to_string() == turn))
             .ok_or_else(|| AxiomError::Storage("The original prompt is unavailable.".into()))?;

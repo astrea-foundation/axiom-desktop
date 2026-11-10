@@ -191,6 +191,7 @@ impl RuntimeProjection {
         self.sequence = self.sequence.saturating_add(1);
         self.events.push(EventEnvelope {
             schema_version: 1,
+            turn_id: None,
             sequence: self.sequence,
             occurred_at,
             correlation_id: CorrelationId::new(),

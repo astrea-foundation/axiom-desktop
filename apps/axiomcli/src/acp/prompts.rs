@@ -823,6 +823,7 @@ pub(super) async fn prompt(
                     let (events_tx, mut events_rx) =
                         mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
                     let task_result: agent_client_protocol::Result<_> = async {
+                        let _context_operation = task_store.as_ref().map(|store| store.claim_context_operation(&internal_id)).transpose().map_err(agent_error)?;
                         let compact = task_runner.compact(
                             &internal_id,
                             focus,
@@ -1169,7 +1170,7 @@ pub(super) async fn prompt(
                     event = events_rx.recv() => {
                         let Some(event) = event else { continue };
                         let envelope = task_runtime
-                            .emit(internal_id.clone(), event.clone())
+                            .emit_for_turn(internal_id.clone(), &turn_id, event.clone())
                             .await
                             .map_err(agent_error)?;
                         let revision = match &task_store {
@@ -1209,7 +1210,7 @@ pub(super) async fn prompt(
             }
             while let Ok(event) = events_rx.try_recv() {
                 let envelope = task_runtime
-                    .emit(internal_id.clone(), event.clone())
+                    .emit_for_turn(internal_id.clone(), &turn_id, event.clone())
                     .await
                     .map_err(agent_error)?;
                 let revision = match &task_store {

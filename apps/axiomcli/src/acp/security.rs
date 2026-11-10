@@ -297,6 +297,11 @@ pub(super) async fn compact(
         let _account_guard = account_guard;
         let connection = task_connection;
         let task_result: agent_client_protocol::Result<_> = async {
+            let _context_operation = ctx_store
+                .as_ref()
+                .map(|store| store.claim_context_operation(&internal_id))
+                .transpose()
+                .map_err(agent_error)?;
             send_extension_activity(
                 &connection,
                 &ctx_extension_state,

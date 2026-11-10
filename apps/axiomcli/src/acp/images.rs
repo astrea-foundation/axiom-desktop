@@ -228,7 +228,7 @@ pub(super) async fn regenerate(
                     result = &mut run => break result,
                     event = events_rx.recv() => {
                         let Some(event) = event else { continue };
-                        let envelope = runtime.emit(internal_id.clone(), event.clone()).await.map_err(agent_error)?;
+                        let envelope = runtime.emit_for_turn(internal_id.clone(), &turn_id, event.clone()).await.map_err(agent_error)?;
                         let revision = account.store.append(&envelope).map_err(agent_error)?;
                         account.publish(|| send_event(&connection_task, &external_id, event, EventDelivery {
                             cwd: Some(&cwd), extension_state: Some(&extension), correlation_id: Some(envelope.correlation_id.to_string()), revision: Some(&revision), client_item_id: None,
@@ -239,7 +239,7 @@ pub(super) async fn regenerate(
                 }
             };
             while let Ok(event) = events_rx.try_recv() {
-                let envelope = runtime.emit(internal_id.clone(), event.clone()).await.map_err(agent_error)?;
+                let envelope = runtime.emit_for_turn(internal_id.clone(), &turn_id, event.clone()).await.map_err(agent_error)?;
                 let revision = account.store.append(&envelope).map_err(agent_error)?;
                 account.publish(|| send_event(&connection_task, &external_id, event, EventDelivery {
                     cwd: Some(&cwd), extension_state: Some(&extension), correlation_id: Some(envelope.correlation_id.to_string()), revision: Some(&revision), client_item_id: None,
