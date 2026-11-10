@@ -21,11 +21,12 @@ selecting another provider does not route that request through AstreaAI. If the
 remote catalog is unavailable, the locally pinned AstreaAI offering remains
 discoverable and still requires fresh worker admission before inference.
 
-Build the frozen verifier from a clean committed checkout with
+Build the native Rust verifier from a clean committed checkout with
 `node scripts/build-direct-bundle.mjs --output .local/direct/bundle`. The builder
-checks the vendored source inventory and installs hash-locked dependencies.
-Intel macOS compiles the locked cryptography source using locked build tools,
-Rust and static Homebrew OpenSSL; the other platforms use upstream wheels.
+checks the vendored source inventory, compiles the locked Cargo dependency graph
+and verifies the executable in a clean environment. Node, Rust and the native
+platform linker are required; the verifier has no Python or OpenSSL runtime.
+Native Windows ARM64 is supported alongside x64 and both Mac architectures.
 Set `AXIOM_DIRECT_BUNDLE` to that output root when packaging. Signed production
 installers require the bundle; private issuer keys are rejected from it.
 Relative bundle paths resolve from the workspace root even when Electron's
