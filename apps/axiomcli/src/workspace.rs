@@ -11,7 +11,7 @@ use std::{
     time::Duration,
 };
 
-use git2::{DiffFormat, Repository, StatusOptions};
+use git2::{DiffFormat, DiffOptions, Repository, StatusOptions};
 use globset::Glob;
 use ignore::WalkBuilder;
 use serde::{Deserialize, Serialize};
@@ -381,7 +381,7 @@ impl Workspace {
             }
             let relative = self.relative(&path);
             let Ok(read) = self.read_resolved(
-                path,
+                &path,
                 1,
                 100_000,
                 usize::try_from(max_file_bytes).unwrap_or(usize::MAX),
@@ -445,7 +445,7 @@ impl Workspace {
                 Err(error) => return Err(error),
             }
             let relative = self.relative(&path);
-            let Ok(read) = self.read_resolved(path, 1, 100_000, 2 * 1024 * 1024) else {
+            let Ok(read) = self.read_resolved(&path, 1, 100_000, 2 * 1024 * 1024) else {
                 continue;
             };
             let lines: Vec<_> = read.content.lines().collect();
@@ -502,11 +502,76 @@ impl Workspace {
         Ok(retained)
     }
 
-    pub fn inspect_git(
+    pub async fn inspect_git(
         &self,
         max_status: usize,
         max_commits: usize,
         max_diff_bytes: usize,
+        authorization: &dyn EffectAuthorizer,
+        cancellation: CancellationToken,
+    ) -> Result<GitInspection> {
+        // Enumerating index/tree names does not open worktree content. Authorize
+        // them before libgit2 status hashing or diff generation can read bytes.
+        let candidates = self.git_read_candidates()?;
+        let mut allowed = Vec::new();
+        for path in candidates {
+            let Ok(resolved) = self.resolve_for_write(&path) else {
+                continue;
+            };
+            match authorization
+                .authorize(Effect::FileRead { path: resolved }, cancellation.clone())
+                .await
+            {
+                Ok(()) => allowed.push(path),
+                Err(AxiomError::PermissionDenied(_)) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        self.inspect_git_paths(max_status, max_commits, max_diff_bytes, &allowed)
+    }
+
+    fn git_read_candidates(&self) -> Result<Vec<PathBuf>> {
+        let repository = Repository::discover(&self.root)
+            .map_err(|error| AxiomError::Tool(format!("not a Git repository: {error}")))?;
+        let workdir = repository
+            .workdir()
+            .ok_or_else(|| AxiomError::Tool("bare Git repositories are not supported".into()))?
+            .canonicalize()?;
+        if self.root != workdir {
+            return Err(AxiomError::OutsideWorkspace(workdir));
+        }
+        let mut paths = std::collections::BTreeSet::new();
+        for entry in repository.index()?.iter() {
+            if let Ok(path) = std::str::from_utf8(&entry.path) {
+                paths.insert(PathBuf::from(path));
+            }
+        }
+        if let Ok(head) = repository.head()
+            && let Ok(tree) = head.peel_to_tree()
+        {
+            tree.walk(git2::TreeWalkMode::PreOrder, |prefix, entry| {
+                if entry.kind() != Some(git2::ObjectType::Tree)
+                    && let Ok(name) = entry.name()
+                {
+                    paths.insert(PathBuf::from(format!("{prefix}{name}")));
+                }
+                git2::TreeWalkResult::Ok
+            })?;
+        }
+        for path in self.glob("**/*", 10_000, false)? {
+            if self.root.join(&path).is_file() {
+                paths.insert(path);
+            }
+        }
+        Ok(paths.into_iter().collect())
+    }
+
+    fn inspect_git_paths(
+        &self,
+        max_status: usize,
+        max_commits: usize,
+        max_diff_bytes: usize,
+        allowed: &[PathBuf],
     ) -> Result<GitInspection> {
         let repository = Repository::discover(&self.root)
             .map_err(|error| AxiomError::Tool(format!("not a Git repository: {error}")))?;
@@ -531,16 +596,27 @@ impl Workspace {
         options
             .include_untracked(true)
             .recurse_untracked_dirs(true)
-            .include_ignored(false);
-        let statuses = repository
-            .statuses(Some(&mut options))?
-            .iter()
-            .take(max_status)
-            .map(|entry| GitStatusEntry {
-                path: PathBuf::from(entry.path().unwrap_or("(non-utf8 path)")),
-                status: format!("{:?}", entry.status()),
-            })
-            .collect();
+            .include_ignored(false)
+            .exclude_submodules(true)
+            .disable_pathspec_match(true);
+        for path in allowed {
+            options.pathspec(path);
+        }
+        // Empty pathspec means all files to libgit2, so do not call it at all
+        // when no worktree files were authorized.
+        let statuses = if allowed.is_empty() {
+            Vec::new()
+        } else {
+            repository
+                .statuses(Some(&mut options))?
+                .iter()
+                .take(max_status)
+                .map(|entry| GitStatusEntry {
+                    path: PathBuf::from(entry.path().unwrap_or("(non-utf8 path)")),
+                    status: format!("{:?}", entry.status()),
+                })
+                .collect()
+        };
 
         let mut recent_commits = Vec::new();
         if let Ok(mut walk) = repository.revwalk()
@@ -568,29 +644,40 @@ impl Workspace {
             .head()
             .ok()
             .and_then(|head| head.peel_to_tree().ok());
-        let diff = repository.diff_tree_to_workdir(head_tree.as_ref(), None)?;
+        let mut diff_options = DiffOptions::new();
+        diff_options
+            .disable_pathspec_match(true)
+            .ignore_submodules(true);
+        for path in allowed {
+            diff_options.pathspec(path);
+        }
         let output = std::cell::RefCell::new(Vec::new());
         let truncated = std::cell::Cell::new(false);
-        diff.print(DiffFormat::Patch, |_delta, _hunk, line| {
-            let mut output = output.borrow_mut();
-            let available = max_diff_bytes.saturating_sub(output.len());
-            if available == 0 {
-                truncated.set(true);
-                return true;
-            }
-            let prefix = matches!(line.origin(), '+' | '-' | ' ').then_some(line.origin() as u8);
-            let content = line.content();
-            let total = content.len().saturating_add(usize::from(prefix.is_some()));
-            if let Some(prefix) = prefix
-                && output.len() < max_diff_bytes
-            {
-                output.push(prefix);
-            }
-            let remaining = max_diff_bytes.saturating_sub(output.len());
-            output.extend_from_slice(&content[..content.len().min(remaining)]);
-            truncated.set(truncated.get() || total > available);
-            true
-        })?;
+        if !allowed.is_empty() {
+            let diff =
+                repository.diff_tree_to_workdir(head_tree.as_ref(), Some(&mut diff_options))?;
+            diff.print(DiffFormat::Patch, |_delta, _hunk, line| {
+                let mut output = output.borrow_mut();
+                let available = max_diff_bytes.saturating_sub(output.len());
+                if available == 0 {
+                    truncated.set(true);
+                    return true;
+                }
+                let prefix =
+                    matches!(line.origin(), '+' | '-' | ' ').then_some(line.origin() as u8);
+                let content = line.content();
+                let total = content.len().saturating_add(usize::from(prefix.is_some()));
+                if let Some(prefix) = prefix
+                    && output.len() < max_diff_bytes
+                {
+                    output.push(prefix);
+                }
+                let remaining = max_diff_bytes.saturating_sub(output.len());
+                output.extend_from_slice(&content[..content.len().min(remaining)]);
+                truncated.set(truncated.get() || total > available);
+                true
+            })?;
+        }
         let diff = String::from_utf8_lossy(&output.into_inner()).into_owned();
         Ok(GitInspection {
             branch,
@@ -610,7 +697,7 @@ impl Workspace {
         max_bytes: usize,
     ) -> Result<FileRead> {
         self.read_resolved(
-            self.resolve_existing(path)?,
+            &self.resolve_existing(path)?,
             start_line,
             max_lines,
             max_bytes,
@@ -619,26 +706,26 @@ impl Workspace {
 
     // Do not resolve again after authorization: a replacement symlink must not
     // redirect an approved path to a different file.
-    fn read_resolved(
+    pub(crate) fn read_resolved(
         &self,
-        path: PathBuf,
+        path: &Path,
         start_line: usize,
         max_lines: usize,
         max_bytes: usize,
     ) -> Result<FileRead> {
         const MAX_INSPECT_BYTES: u64 = 8 * 1024 * 1024;
-        let mut file = open_verified(&path, &self.root)?;
+        let mut file = open_verified(path, &self.root)?;
         let metadata = file.metadata()?;
         if !metadata.is_file() {
             return Err(AxiomError::Tool(format!(
                 "special file cannot be read: {}",
-                self.relative(&path).display()
+                self.relative(path).display()
             )));
         }
         if metadata.len() > MAX_INSPECT_BYTES {
             return Err(AxiomError::Tool(format!(
                 "large file omitted: {} is {} bytes (limit {MAX_INSPECT_BYTES}); inspect metadata or select a smaller source file",
-                self.relative(&path).display(),
+                self.relative(path).display(),
                 metadata.len()
             )));
         }
@@ -647,7 +734,7 @@ impl Workspace {
         if bytes.iter().take(8192).any(|byte| *byte == 0) {
             return Err(AxiomError::Tool(format!(
                 "binary file cannot be read as text: {}",
-                self.relative(&path).display()
+                self.relative(path).display()
             )));
         }
         let sha256 = digest(&bytes);
@@ -655,7 +742,7 @@ impl Workspace {
             .map_err(|_| {
             AxiomError::Tool(format!(
                 "text file is not valid UTF-8: {}",
-                self.relative(&path).display()
+                self.relative(path).display()
             ))
         })?;
         let start_line = start_line.max(1);
@@ -673,7 +760,7 @@ impl Workspace {
         let content = truncate_utf8(&selected, max_bytes, &mut truncated);
         let line_count = content.lines().count();
         Ok(FileRead {
-            path: self.relative(&path),
+            path: self.relative(path),
             content,
             start_line,
             end_line: start_line.saturating_add(line_count.saturating_sub(1)),
@@ -2470,8 +2557,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn git_inspection_uses_library_and_returns_bounded_status_diff_and_log() {
+    #[tokio::test]
+    async fn git_inspection_uses_library_and_returns_bounded_status_diff_and_log() {
         let root = tempdir().expect("root");
         let repository = Repository::init(root.path()).expect("repository");
         std::fs::write(root.path().join("tracked.txt"), "old\n").expect("tracked");
@@ -2496,7 +2583,16 @@ mod tests {
         std::fs::write(root.path().join("tracked.txt"), "new\n").expect("modify");
         std::fs::write(root.path().join("untracked.txt"), "new\n").expect("untracked");
         let workspace = Workspace::new(root.path()).expect("workspace");
-        let inspection = workspace.inspect_git(10, 5, 32).expect("inspect");
+        let authorization = crate::policy::ExecutionAuthorizer {
+            policy: crate::policy::PolicyEngine::for_workspace(root.path()).unwrap(),
+            profile: crate::app::PermissionProfile::FullAccess,
+            approval: None,
+            events: None,
+        };
+        let inspection = workspace
+            .inspect_git(10, 5, 32, &authorization, CancellationToken::new())
+            .await
+            .expect("inspect");
         assert!(inspection.head.is_some());
         assert_eq!(inspection.recent_commits[0].summary, "initial fixture");
         assert!(
@@ -2730,8 +2826,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn structured_diff_and_git_diff_agree_on_changed_lines() {
+    #[tokio::test]
+    async fn structured_diff_and_git_diff_agree_on_changed_lines() {
         let root = tempdir().expect("root");
         let repository = Repository::init(root.path()).expect("repository");
         std::fs::write(root.path().join("file.txt"), "old\n").expect("file");
@@ -2759,7 +2855,16 @@ mod tests {
                 4096,
             )
             .expect("patch");
-        let git = workspace.inspect_git(10, 1, 4096).expect("git diff");
+        let authorization = crate::policy::ExecutionAuthorizer {
+            policy: crate::policy::PolicyEngine::for_workspace(root.path()).unwrap(),
+            profile: crate::app::PermissionProfile::FullAccess,
+            approval: None,
+            events: None,
+        };
+        let git = workspace
+            .inspect_git(10, 1, 4096, &authorization, CancellationToken::new())
+            .await
+            .expect("git diff");
         for line in ["-old", "+new content"] {
             assert!(outcome.diff.contains(line), "structured {line}");
             assert!(git.diff.contains(line), "git {line}: {:?}", git.diff);
