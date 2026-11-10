@@ -76,6 +76,22 @@ holding the CLI/Desktop coordination lock continuously through server rotation
 and persistence. Commit reuses that locked observation, and the macOS writer
 updates the existing item in place without reading the old password again.
 The item keeps its existing access controls and shared service/account identity.
+The protected entry is an `axc1_` envelope containing the rotating refresh token
+and an independently random 32-byte recovery attempt. It is still one OS
+credential item, using the existing origin/profile scope. Legacy bare tokens
+upgrade under the same process-shared lock before a request is dispatched.
+Transport timeouts, 5xx and malformed responses retain the same durable attempt;
+a different CLI/Desktop process reloads it under that lock. The API may return
+the exact original rotation for two minutes while all session/token bounds are
+valid and the successor remains unused. Retries never extend expiration or
+create another family branch. A different attempt, late retry or successor reuse
+retains family revocation; HTTP 401 clears the matching local credential.
+Successful rotation replaces the entry with the successor and a fresh attempt.
+Install compatible platform migration/API support before shipping this native
+client; an old API rejects the new request field and the native client keeps its
+entry for a later compatible retry. This envelope is opaque to older native
+versions, so do not downgrade a profile with a saved current session.
+
 A denied read remains unavailable and is not retried by account-status polling.
 
 The hosted account ID is an opaque identifier, independent of email, wallet or
