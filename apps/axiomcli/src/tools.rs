@@ -17,7 +17,9 @@ use crate::{
         AppEvent, FileDiff, PermissionProfile, QuestionRequest, QuestionSpec, SessionId, TaskItem,
     },
     planning::PlanArtifact,
-    policy::{Effect, ToolAccess, normalized_executable_name},
+    policy::{
+        DenyDynamicEffects, Effect, EffectAuthorizer, ToolAccess, normalized_executable_name,
+    },
     provider::{FunctionDefinition, ToolDefinition},
     web::{SafeFetcher, SearchProvider},
     workspace::{EditIntent, ProcessManager, ProcessRequest, StructuredPatch, Workspace},
@@ -106,6 +108,16 @@ pub trait Tool: Send + Sync {
         arguments: Value,
         cancellation: CancellationToken,
     ) -> Result<ToolResult>;
+
+    async fn execute_authorized(
+        &self,
+        context: &ToolContext,
+        arguments: Value,
+        cancellation: CancellationToken,
+        _authorization: &dyn EffectAuthorizer,
+    ) -> Result<ToolResult> {
+        self.execute(context, arguments, cancellation).await
+    }
 
     /// Stop any native resources owned by this tool before its front end
     /// disconnects. Most tools are stateless; process-backed adapters override
@@ -437,12 +449,24 @@ impl ToolRegistry {
         arguments: Value,
         cancellation: CancellationToken,
     ) -> Result<ToolResult> {
+        self.execute_authorized(name, context, arguments, cancellation, &DenyDynamicEffects)
+            .await
+    }
+
+    pub async fn execute_authorized(
+        &self,
+        name: &str,
+        context: &ToolContext,
+        arguments: Value,
+        cancellation: CancellationToken,
+        authorization: &dyn EffectAuthorizer,
+    ) -> Result<ToolResult> {
         if tracks_workspace_changes(name) {
             self.changes.ensure_baseline(context);
         }
         let result = self
             .tool(name)?
-            .execute(context, arguments, cancellation)
+            .execute_authorized(context, arguments, cancellation, authorization)
             .await?;
         self.changes.record(&context.session_id, &result);
         Ok(result)
@@ -869,12 +893,27 @@ impl Tool for SelectContext {
         arguments: Value,
         _cancellation: CancellationToken,
     ) -> Result<ToolResult> {
+        self.execute_authorized(context, arguments, _cancellation, &DenyDynamicEffects)
+            .await
+    }
+
+    async fn execute_authorized(
+        &self,
+        context: &ToolContext,
+        arguments: Value,
+        cancellation: CancellationToken,
+        authorization: &dyn EffectAuthorizer,
+    ) -> Result<ToolResult> {
         let args: ContextArgs = parse(self.name(), arguments)?;
-        let ranges = workspace(context)?.select_context(
-            &args.query,
-            args.max_files.clamp(1, 32),
-            self.max_bytes,
-        )?;
+        let ranges = workspace(context)?
+            .select_context(
+                &args.query,
+                args.max_files.clamp(1, 32),
+                self.max_bytes,
+                authorization,
+                cancellation,
+            )
+            .await?;
         Ok(ToolResult::success(serde_json::to_string_pretty(&ranges)?))
     }
 }
@@ -1050,10 +1089,28 @@ impl Tool for SearchText {
         arguments: Value,
         _cancellation: CancellationToken,
     ) -> Result<ToolResult> {
+        self.execute_authorized(context, arguments, _cancellation, &DenyDynamicEffects)
+            .await
+    }
+
+    async fn execute_authorized(
+        &self,
+        context: &ToolContext,
+        arguments: Value,
+        cancellation: CancellationToken,
+        authorization: &dyn EffectAuthorizer,
+    ) -> Result<ToolResult> {
         let args: SearchArgs = parse(self.name(), arguments)?;
         Ok(ToolResult::success(
             workspace(context)?
-                .search(&args.query, 200, 2 * 1024 * 1024)?
+                .search(
+                    &args.query,
+                    200,
+                    2 * 1024 * 1024,
+                    authorization,
+                    cancellation,
+                )
+                .await?
                 .join("\n"),
         ))
     }
@@ -1904,8 +1961,22 @@ impl Tool for FetchUrl {
         arguments: Value,
         cancellation: CancellationToken,
     ) -> Result<ToolResult> {
+        self.execute_authorized(_context, arguments, cancellation, &DenyDynamicEffects)
+            .await
+    }
+
+    async fn execute_authorized(
+        &self,
+        _context: &ToolContext,
+        arguments: Value,
+        cancellation: CancellationToken,
+        authorization: &dyn EffectAuthorizer,
+    ) -> Result<ToolResult> {
         let args: FetchArgs = parse(self.name(), arguments)?;
-        let result = self.fetcher.fetch(&args.url, cancellation).await?;
+        let result = self
+            .fetcher
+            .fetch_authorized(&args.url, cancellation, authorization)
+            .await?;
         Ok(ToolResult {
             images: Vec::new(),
             content: serde_json::to_string_pretty(&result)?,
@@ -2639,6 +2710,124 @@ mod tests {
             [AppEvent::TaskListUpdated { items }, AppEvent::ProgressUpdated { completed: Some(1), total: Some(2), .. }]
                 if items.len() == 2
         ));
+    }
+
+    #[derive(Default)]
+    struct FileApproval {
+        paths: Mutex<Vec<PathBuf>>,
+    }
+
+    #[async_trait]
+    impl crate::policy::ApprovalHandler for FileApproval {
+        async fn request(
+            &self,
+            request: crate::policy::ApprovalRequest,
+            _: CancellationToken,
+        ) -> Result<crate::policy::ApprovalResponse> {
+            if let Effect::FileRead { path } = request.effect {
+                self.paths.lock().unwrap().push(path);
+            }
+            assert!(
+                !request.allow_session_grants,
+                "explicit ask cannot be cached"
+            );
+            Ok(crate::policy::ApprovalResponse {
+                choice: crate::policy::ApprovalChoice::AllowOnce,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn file_policy_covers_direct_search_and_context_reads() {
+        use crate::policy::{
+            EffectAuthorizer, EffectClass, ExecutionAuthorizer, PolicyRule, RuleAction,
+        };
+        let root = tempdir().unwrap();
+        std::fs::write(root.path().join("ordinary.txt"), "unique protected needle").unwrap();
+        std::fs::write(root.path().join("allowed.txt"), "public needle").unwrap();
+        let protected = root.path().canonicalize().unwrap().join("ordinary.txt");
+        let registry = test_registry(4096).unwrap();
+        for profile in [
+            PermissionProfile::Observe,
+            PermissionProfile::Confirm,
+            PermissionProfile::FullAccess,
+        ] {
+            let context = ToolContext {
+                model_id: "test-model".into(),
+                session_id: SessionId::new(),
+                cwd: root.path().into(),
+                permission_profile: profile,
+                images: crate::image_tool::ImageCatalog::default(),
+                progress: None,
+            };
+            for action in [RuleAction::Deny, RuleAction::Ask] {
+                let approvals = Arc::new(FileApproval::default());
+                let authorization = ExecutionAuthorizer {
+                    policy: PolicyEngine::for_workspace_with_rules(
+                        root.path(),
+                        vec![PolicyRule {
+                            action,
+                            effect: Some(EffectClass::FileRead),
+                            resource_prefix: Some(protected.to_string_lossy().into()),
+                            reason: None,
+                        }],
+                    )
+                    .unwrap(),
+                    profile,
+                    approval: Some(approvals.clone()),
+                    events: None,
+                };
+                for (name, args) in [
+                    ("read_file", json!({"path":"ordinary.txt"})),
+                    ("search_text", json!({"query":"needle"})),
+                    ("select_context", json!({"query":"needle"})),
+                ] {
+                    // Mirror the agent's preflight, then use the same policy for
+                    // resources that become known only inside aggregate tools.
+                    let mut preflight = Ok(());
+                    for effect in registry.effects(name, &context, &args).unwrap() {
+                        if let Err(error) = authorization
+                            .authorize(effect, CancellationToken::new())
+                            .await
+                        {
+                            preflight = Err(error);
+                            break;
+                        }
+                    }
+                    let result = match preflight {
+                        Ok(()) => {
+                            registry
+                                .execute_authorized(
+                                    name,
+                                    &context,
+                                    args,
+                                    CancellationToken::new(),
+                                    &authorization,
+                                )
+                                .await
+                        }
+                        Err(error) => Err(error),
+                    };
+                    if action == RuleAction::Deny {
+                        if name == "read_file" {
+                            assert!(result.is_err());
+                        } else {
+                            let result = result.unwrap();
+                            assert!(!result.content.contains("unique protected"));
+                            assert!(result.content.contains("public needle"));
+                        }
+                    } else {
+                        assert!(
+                            result.unwrap().content.contains("unique protected"),
+                            "{name}"
+                        );
+                    }
+                }
+                let paths = approvals.paths.lock().unwrap();
+                assert_eq!(paths.len(), if action == RuleAction::Ask { 3 } else { 0 });
+                assert!(paths.iter().all(|path| path == &protected));
+            }
+        }
     }
 
     #[test]

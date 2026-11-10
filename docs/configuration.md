@@ -142,7 +142,13 @@ servers from shared CLI configuration.
 | `full_access` | Exposed tools run without routine approval prompts |
 
 All profiles retain deny rules, input validation and the platform's actual
-process boundaries. See [security](threat-model.md#local-tools-and-processes).
+process boundaries. Workspace text search and context selection check each
+resolved file before reading its contents. Denied files are omitted; explicit
+`ask` rules require approval for each file even after the tool was approved.
+Declining a file approval stops the operation. URL fetching checks destination
+policy on every redirect, including redirects within one origin, before DNS
+resolution and dispatch. Each permitted hop still validates every DNS answer
+as public and pins the HTTP connection to those validated addresses. See [security](threat-model.md#local-tools-and-processes).
 
 ## Desktop profile
 
