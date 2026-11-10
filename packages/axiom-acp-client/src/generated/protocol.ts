@@ -139,6 +139,7 @@ export interface ProtocolSchema {
   desktopBootstrapRequest: DesktopBootstrapRequest;
   desktopBootstrapResponse: DesktopBootstrapResponse;
   promptMetadata: PromptMetadata;
+  sessionCommandRequest: SessionCommandRequest;
   getAttachmentsRequest: GetAttachmentsRequest;
   getAttachmentsResponse: GetAttachmentsResponse;
   regenerateImageRequest: RegenerateImageRequest;
@@ -335,6 +336,10 @@ export interface FeatureVersions {
   attachments?: number;
   compaction?: number;
   activity?: number;
+  /**
+   * Explicit application command invocation; prompt text stays literal.
+   */
+  commandInvocation?: number;
   [k: string]: unknown;
 }
 export interface DesktopBootstrapRequest {
@@ -408,6 +413,17 @@ export interface FileContent {
   name: string;
   mimeType: string;
   data: string;
+}
+/**
+ * Application controls selected explicitly by the client. Never infer this
+ * request from ordinary pasted or submitted prompt text.
+ */
+export interface SessionCommandRequest {
+  sessionId: string;
+  /**
+   * A slash command selected intentionally, such as `/thinking high`.
+   */
+  command: string;
 }
 export interface GetAttachmentsRequest {
   threadId: string;

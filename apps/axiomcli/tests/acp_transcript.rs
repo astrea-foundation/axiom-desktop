@@ -257,7 +257,8 @@ impl AcpProcess {
                         "usage": 1,
                         "securityEvidence": 4,
                         "compaction": 1,
-                        "activity": 1
+                        "activity": 1,
+                        "commandInvocation": 1
                     }
                 }
             },
@@ -729,12 +730,12 @@ async fn config_persistence_failure_rolls_live_settings_back_before_next_request
 async fn slash_thinking_persistence_failure_rolls_back_before_standard_config() {
     let workspace = tempfile::tempdir().expect("workspace");
     let mut acp = AcpProcess::spawn_with_persistence_failure("echo", "slash-thinking");
-    acp.initialize().await;
+    acp.initialize_extension().await;
     let session = acp.new_session(2, workspace.path()).await;
 
     acp.send(&json!({
-        "jsonrpc":"2.0","id":3,"method":"session/prompt",
-        "params":{"sessionId":session,"prompt":[{"type":"text","text":"/thinking high"}]}
+        "jsonrpc":"2.0","id":3,"method":"_axiom/session/command",
+        "params":{"sessionId":session,"command":"/thinking high"}
     }))
     .await;
     assert!(acp.response(3).await.get("error").is_some());
@@ -1243,9 +1244,14 @@ async fn resumed_acp_sessions_retain_retired_models_and_reconcile_changed_reason
 async fn slash_commands_are_advertised_and_execute_outside_model_turns() {
     let workspace = tempfile::tempdir().expect("workspace");
     let mut acp = AcpProcess::spawn("echo");
-    acp.initialize().await;
+    acp.initialize_extension().await;
     let session = acp.new_session(2, workspace.path()).await;
-    let update = acp.read().await;
+    let update = loop {
+        let update = acp.read().await;
+        if update["params"]["update"]["availableCommands"].is_array() {
+            break update;
+        }
+    };
     assert_eq!(update["method"], "session/update");
     let commands = update["params"]["update"]["availableCommands"]
         .as_array()
@@ -1309,8 +1315,8 @@ async fn slash_commands_are_advertised_and_execute_outside_model_turns() {
     );
 
     acp.send(&json!({
-        "jsonrpc":"2.0","id":3,"method":"session/prompt",
-        "params":{"sessionId":session,"prompt":[{"type":"text","text":"/permissions"}]}
+        "jsonrpc":"2.0","id":3,"method":"_axiom/session/command",
+        "params":{"sessionId":session,"command":"/permissions"}
     }))
     .await;
     let mut transcript = String::new();
@@ -1324,11 +1330,11 @@ async fn slash_commands_are_advertised_and_execute_outside_model_turns() {
     }
     assert!(transcript.contains("session mode selector"));
     assert!(transcript.contains("session mode selector to change Tools permissions"));
-    assert!(!transcript.contains("Echo:"));
+    assert!(!transcript.contains("AxiomCLI received:"));
 
     acp.send(&json!({
-        "jsonrpc":"2.0","id":4,"method":"session/prompt",
-        "params":{"sessionId":session,"prompt":[{"type":"text","text":"/model"}]}
+        "jsonrpc":"2.0","id":4,"method":"_axiom/session/command",
+        "params":{"sessionId":session,"command":"/model"}
     }))
     .await;
     let mut model_picker = String::new();
@@ -1356,8 +1362,8 @@ async fn slash_commands_are_advertised_and_execute_outside_model_turns() {
     );
 
     acp.send(&json!({
-        "jsonrpc":"2.0","id":6,"method":"session/prompt",
-        "params":{"sessionId":session,"prompt":[{"type":"text","text":"/model arbitrary-id"}]}
+        "jsonrpc":"2.0","id":6,"method":"_axiom/session/command",
+        "params":{"sessionId":session,"command":"/model arbitrary-id"}
     }))
     .await;
     let mut invalid_model = String::new();
@@ -1372,8 +1378,8 @@ async fn slash_commands_are_advertised_and_execute_outside_model_turns() {
     assert!(invalid_model.contains("/model"));
 
     acp.send(&json!({
-        "jsonrpc":"2.0","id":7,"method":"session/prompt",
-        "params":{"sessionId":session,"prompt":[{"type":"text","text":"/help"}]}
+        "jsonrpc":"2.0","id":7,"method":"_axiom/session/command",
+        "params":{"sessionId":session,"command":"/help"}
     }))
     .await;
     let mut help = String::new();
@@ -1389,8 +1395,8 @@ async fn slash_commands_are_advertised_and_execute_outside_model_turns() {
     assert!(help.contains("not model prompts"));
 
     acp.send(&json!({
-        "jsonrpc":"2.0","id":8,"method":"session/prompt",
-        "params":{"sessionId":session,"prompt":[{"type":"text","text":"/refresh"}]}
+        "jsonrpc":"2.0","id":8,"method":"_axiom/session/command",
+        "params":{"sessionId":session,"command":"/refresh"}
     }))
     .await;
     let mut refreshed = String::new();
@@ -1403,9 +1409,11 @@ async fn slash_commands_are_advertised_and_execute_outside_model_turns() {
     }
     assert!(refreshed.contains("Attestation refreshed"));
     assert!(!refreshed.contains("Echo:"));
-    acp.send(&json!({"jsonrpc":"2.0","id":9,"method":"session/prompt",
-        "params":{"sessionId":session,"prompt":[{"type":"text","text":"/update"}]}}))
-        .await;
+    acp.send(
+        &json!({"jsonrpc":"2.0","id":9,"method":"_axiom/session/command",
+        "params":{"sessionId":session,"command":"/update"}}),
+    )
+    .await;
     let mut update_help = String::new();
     loop {
         let value = acp.read().await;
@@ -2337,4 +2345,66 @@ async fn protocol_level_request_cancellation_stops_the_active_prompt() {
     let response = acp.response(3).await;
     assert_eq!(response["result"]["stopReason"], "cancelled");
     acp.close().await;
+}
+
+#[tokio::test]
+async fn slash_text_in_acp_prompts_is_literal_and_commands_require_explicit_invocation() {
+    for negotiated in [false, true] {
+        let workspace = tempfile::tempdir().unwrap();
+        let mut acp = AcpProcess::spawn("echo");
+        if negotiated {
+            acp.initialize_extension().await;
+        } else {
+            acp.initialize().await;
+        }
+        let session = acp.new_session(2, workspace.path()).await;
+        for (offset, text) in [
+            "/logout",
+            "/thinking high",
+            "/security accept-outdated",
+            "/logout\npasted ordinary text",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let id = 10 + i64::try_from(offset).unwrap();
+            acp.send(&json!({"jsonrpc":"2.0","id":id,"method":"session/prompt",
+                "params":{"sessionId":session,"prompt":[{"type":"text","text":text}]}}))
+                .await;
+            let mut output = String::new();
+            loop {
+                let value = acp.read().await;
+                if value["params"]["update"]["sessionUpdate"] == "agent_message_chunk"
+                    && let Some(text) = value["params"]["update"]["content"]["text"].as_str()
+                {
+                    output.push_str(text);
+                }
+                if value["id"] == id {
+                    assert_eq!(value["result"]["stopReason"], "end_turn");
+                    break;
+                }
+            }
+            assert!(output.contains("AxiomCLI received:"), "{output}");
+            assert!(
+                output.contains(text),
+                "ordinary text must be delivered verbatim: {output}"
+            );
+        }
+        acp.send(
+            &json!({"jsonrpc":"2.0","id":20,"method":"_axiom/session/command",
+            "params":{"sessionId":session,"command":"/help"}}),
+        )
+        .await;
+        let response = acp.response(20).await;
+        assert_eq!(response.get("error").is_some(), !negotiated, "{response}");
+        if negotiated {
+            acp.send(
+                &json!({"jsonrpc":"2.0","id":21,"method":"_axiom/session/command",
+                "params":{"sessionId":session,"command":"ordinary text"}}),
+            )
+            .await;
+            assert!(acp.response(21).await.get("error").is_some());
+        }
+        acp.close().await;
+    }
 }

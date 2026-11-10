@@ -24,7 +24,7 @@ non-Desktop consumers.
 |---|---|
 | `initialize` | ACP v1, metadata, load-session support and optional Axiom negotiation |
 | `session/new`, `session/load` | Canonical workspace, durable state and restored model/thinking/profile |
-| `session/prompt` | Text/resource links, ordered user/assistant/reasoning chunks, tools and stop reason |
+| `session/prompt` | Literal text/resource links, ordered user/assistant/reasoning chunks, tools and stop reason; leading slashes never invoke application controls |
 | `session/cancel`, `$/cancel_request` | Cooperative cancellation; supported long-running extension requests also cancel. A cancelled permission response also cancels its prompt, even if it arrives before the cancellation notification. |
 | `session/set_mode` | CLI permission profile; Desktop Agent changes use the dedicated revisioned method |
 | `session/set_config_option` | Model/thinking selection validated by native policy and the catalog |
@@ -39,6 +39,18 @@ bytes rather than extracted content. Audio, binary
 embedded documents, client-owned terminals/filesystems and per-session MCP
 injection are not advertised. Tools execute behind AxiomCLI policy. Unknown
 standard methods receive normal JSON-RPC method errors.
+
+ACP clients invoke deliberately selected slash commands through
+`_axiom/session/command` with `{sessionId, command}`, after negotiating
+`commandInvocation@1`. The command string uses the advertised slash vocabulary
+(for example, `/thinking high`); the response is the normal prompt stop reason.
+Do not infer command invocation from pasted or submitted user message text.
+The TypeScript SDK exposes `invokeCommand` separately from `prompt`; Desktop's
+ordinary composer continues to call `prompt`. With an older sidecar that lacks
+this feature, the SDK blocks leading-slash prompts before dispatch and asks for
+a restart, preventing the legacy implicit command parser from handling them.
+CLI/TUI command entry retains its intentional local parsing. Older clients can continue submitting literal ACP
+prompts and can use standard mode/configuration methods for controls.
 
 ## Extension negotiation
 
@@ -65,7 +77,8 @@ reactivate them after an account or connection changes and returns.
 Other advertised features are version **1**:
 `desktopChat`, `desktopAgent`, `threadCatalog`, `modelCatalog`,
 `profilePreferences`, `collections`, `usage`,
-`webConsent`, `steering`, `messageRevision`, `compaction`, `imageResources`, and `activity`.
+`webConsent`, `steering`, `messageRevision`, `compaction`, `imageResources`,
+`activity`, and `commandInvocation`.
 The source `FeatureVersions` and generated schema are authoritative.
 
 `securityEvidence@4` carries verified hardware, key, freshness and provenance
@@ -94,6 +107,7 @@ are never an instruction to send conversation plaintext through a hosted endpoin
 | Group | Method names following `_axiom/` |
 |---|---|
 | Desktop | `desktop/bootstrap`, `desktop/agent/configure`, `desktop/mcp` |
+| Explicit commands | `session/command` (requires `commandInvocation@1`) |
 | Threads | `thread/list`, `thread/timeline`, `thread/attachments`, `thread/rename`, `thread/delete_preview`, `thread/delete_confirm` |
 | Models/preferences | `models/list`, `profile/preferences`, `profile/preferences/set` |
 | Collections | `collection/list`, `collection/create`, `collection/rename`, `collection/set_collapsed`, `collection/move`, `collection/delete`, `collection/assign` |

@@ -1485,6 +1485,7 @@ struct PendingDelete {
 
 #[derive(Clone, Copy)]
 enum ExtensionFeature {
+    CommandInvocation = 1 << 22,
     Steering = 1 << 11,
     ThreadCatalog = 1 << 0,
     Timeline = 1 << 1,
@@ -1548,6 +1549,9 @@ impl ExtensionState {
             return;
         };
         let mut mask = 0;
+        if features.command_invocation >= 1 {
+            mask |= ExtensionFeature::CommandInvocation as u64;
+        }
         if features.image_resources >= 1 {
             mask |= ExtensionFeature::ImageResources as u64;
         }
