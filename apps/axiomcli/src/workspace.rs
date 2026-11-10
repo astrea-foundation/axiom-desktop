@@ -1550,29 +1550,23 @@ impl ProcessManager {
         {
             command.process_group(0);
         }
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt as _;
-            const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-            command
-                .as_std_mut()
-                .creation_flags(CREATE_NEW_PROCESS_GROUP);
-        }
-        let mut child = command.spawn()?;
+        let mut child = spawn_command(command)?;
         let pid = child.id();
         // Registration is synchronous and happens before the first await after
         // spawn. If this future is cancelled or the runtime is torn down from
         // this point onward, the guard kills the complete, separately-created
         // tool process group from Drop.
         let mut process_group = process_groups.register(pid);
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| AxiomError::Tool("missing stdout pipe".into()))?;
-        let stderr = child
-            .stderr
-            .take()
-            .ok_or_else(|| AxiomError::Tool("missing stderr pipe".into()))?;
+        #[cfg(windows)]
+        let stdout = child.stdout().take();
+        #[cfg(not(windows))]
+        let stdout = child.stdout.take();
+        let stdout = stdout.ok_or_else(|| AxiomError::Tool("missing stdout pipe".into()))?;
+        #[cfg(windows)]
+        let stderr = child.stderr().take();
+        #[cfg(not(windows))]
+        let stderr = child.stderr.take();
+        let stderr = stderr.ok_or_else(|| AxiomError::Tool("missing stderr pipe".into()))?;
         let retained = Arc::new(AtomicUsize::new(0));
         let max = max_output_bytes;
         let stdout_task = tokio::spawn(read_bounded(
@@ -1589,13 +1583,17 @@ impl ProcessManager {
             live,
             OutputStream::Stderr,
         ));
+        let mut readers = OutputReaders {
+            stdout: stdout_task,
+            stderr: stderr_task,
+        };
         let timeout = Duration::from_secs(request.timeout_secs.clamp(1, 3600));
         let status = tokio::select! {
             () = cancellation.cancelled() => {
                 terminate_process_group(pid, &mut child, &mut process_group).await;
                 return Err(AxiomError::Cancelled);
             }
-            result = tokio::time::timeout(timeout, child.wait()) => if let Ok(status) = result {
+            result = tokio::time::timeout(timeout, wait_command_leader(&mut child)) => if let Ok(status) = result {
                 status?
             } else {
                 terminate_process_group(pid, &mut child, &mut process_group).await;
@@ -1607,12 +1605,10 @@ impl ProcessManager {
         // descriptors and to ensure `run_command` never becomes an unmanaged
         // background-process escape hatch.
         process_group.terminate().await;
-        let (mut stdout, stdout_truncated) = stdout_task
-            .await
-            .map_err(|error| AxiomError::Tool(error.to_string()))??;
-        let (mut stderr, stderr_truncated) = stderr_task
-            .await
-            .map_err(|error| AxiomError::Tool(error.to_string()))??;
+        #[cfg(windows)]
+        child.start_kill()?;
+        let ((mut stdout, stdout_truncated), (mut stderr, stderr_truncated)) =
+            readers.finish(cancellation).await?;
         let mut encoding_truncated = false;
         stdout = truncate_utf8(&stdout, max_output_bytes, &mut encoding_truncated);
         let remaining = max_output_bytes.saturating_sub(stdout.len());
@@ -2348,33 +2344,90 @@ fn bind_development_cache(command: &mut Command, home: Option<&Path>) -> bool {
     cargo_bin_bound
 }
 
+#[cfg(windows)]
+type CommandChild = Box<dyn process_wrap::tokio::ChildWrapper>;
+#[cfg(not(windows))]
+type CommandChild = tokio::process::Child;
+
+fn spawn_command(command: Command) -> std::io::Result<CommandChild> {
+    #[cfg(windows)]
+    {
+        use process_wrap::tokio::{CommandWrap, JobObject, KillOnDrop};
+        // JobObject spawns suspended, assigns the child before any user code
+        // can spawn descendants, then resumes it. Keep the CLI-wide exit job
+        // intact: this is a nested job owned only by this command.
+        CommandWrap::from(command)
+            .wrap(KillOnDrop)
+            .wrap(JobObject)
+            .spawn()
+    }
+    #[cfg(not(windows))]
+    {
+        let mut command = command;
+        command.spawn()
+    }
+}
+
+async fn wait_command_leader(
+    child: &mut CommandChild,
+) -> std::io::Result<std::process::ExitStatus> {
+    // The JobObject wrapper's wait waits for the whole job. Observe the leader
+    // instead, then terminate any descendants before joining inherited pipes.
+    #[cfg(windows)]
+    {
+        child.inner_mut().wait().await
+    }
+    #[cfg(not(windows))]
+    child.wait().await
+}
+
 async fn terminate_process_group(
     _pid: Option<u32>,
-    child: &mut tokio::process::Child,
+    child: &mut CommandChild,
     process_group: &mut crate::process_env::ProcessGroupGuard,
 ) {
-    #[cfg(unix)]
     process_group.terminate().await;
-    #[cfg(windows)]
-    if let Some(pid) = _pid {
-        let taskkill = std::env::var_os("SystemRoot")
-            .map(PathBuf::from)
-            .map(|root| root.join("System32").join("taskkill.exe"))
-            .filter(|path| path.is_file())
-            .unwrap_or_else(|| PathBuf::from("taskkill.exe"));
-        let mut termination = Command::new(taskkill);
-        let pid = pid.to_string();
-        crate::process_env::apply_sanitized_environment(&mut termination);
-        termination
-            .args(["/PID", pid.as_str(), "/T", "/F"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .kill_on_drop(true);
-        let _ = tokio::time::timeout(Duration::from_secs(2), termination.status()).await;
+    // On Windows this targets the Job Object, even after leader exit. On Unix
+    // the group guard already killed descendants and this reaps the leader.
+    let _ = child.start_kill();
+    let _ = tokio::time::timeout(Duration::from_secs(2), wait_command_leader(child)).await;
+}
+
+type CapturedOutput = (String, bool);
+
+struct OutputReaders {
+    stdout: tokio::task::JoinHandle<Result<CapturedOutput>>,
+    stderr: tokio::task::JoinHandle<Result<CapturedOutput>>,
+}
+
+impl OutputReaders {
+    async fn finish(
+        &mut self,
+        cancellation: CancellationToken,
+    ) -> Result<(CapturedOutput, CapturedOutput)> {
+        let readers = async {
+            let stdout = (&mut self.stdout)
+                .await
+                .map_err(|error| AxiomError::Tool(error.to_string()))??;
+            let stderr = (&mut self.stderr)
+                .await
+                .map_err(|error| AxiomError::Tool(error.to_string()))??;
+            Ok((stdout, stderr))
+        };
+        tokio::select! {
+            () = cancellation.cancelled() => Err(AxiomError::Cancelled),
+            output = tokio::time::timeout(Duration::from_secs(2), readers) => output.map_err(|_| AxiomError::Tool("process output pipes did not close after termination".into()))?,
+        }
     }
-    let _ = child.kill().await;
-    let _ = child.wait().await;
+}
+
+impl Drop for OutputReaders {
+    fn drop(&mut self) {
+        // Dropping a JoinHandle alone detaches it. Always stop readers when a
+        // timeout, cancellation, error or dropped run future ends the command.
+        self.stdout.abort();
+        self.stderr.abort();
+    }
 }
 
 fn digest(bytes: &[u8]) -> String {
@@ -3171,6 +3224,160 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn output_reader_joins_are_bounded_and_cancellable() {
+        struct Finished(Arc<AtomicUsize>);
+        impl Drop for Finished {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        for cancel in [false, true] {
+            let finished = Arc::new(AtomicUsize::new(0));
+            let reader = |finished: Arc<AtomicUsize>| {
+                tokio::spawn(async move {
+                    let _finished = Finished(finished);
+                    std::future::pending::<Result<CapturedOutput>>().await
+                })
+            };
+            let mut readers = OutputReaders {
+                stdout: reader(finished.clone()),
+                stderr: reader(finished.clone()),
+            };
+            tokio::task::yield_now().await;
+            let cancellation = CancellationToken::new();
+            if cancel {
+                cancellation.cancel();
+            }
+            let result = tokio::time::timeout(Duration::from_secs(3), readers.finish(cancellation))
+                .await
+                .unwrap();
+            if cancel {
+                assert!(matches!(result, Err(AxiomError::Cancelled)));
+            } else {
+                assert!(
+                    result
+                        .unwrap_err()
+                        .to_string()
+                        .contains("pipes did not close")
+                );
+            }
+            drop(readers);
+            tokio::time::timeout(Duration::from_secs(1), async {
+                while finished.load(Ordering::SeqCst) != 2 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "subprocess fixture invoked by the Windows job regression"]
+    fn windows_command_job_fixture() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(&std::env::var("CI").unwrap()).unwrap();
+        let root = PathBuf::from(fixture["root"].as_str().unwrap());
+        let mode = fixture["mode"].as_str().unwrap();
+        if mode == "descendant" {
+            std::fs::write(root.join("ready"), b"ready").unwrap();
+            while !root.join("release").exists() {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            std::fs::write(root.join("survived"), b"escaped job").unwrap();
+        } else {
+            let mut descendant = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "workspace::tests::windows_command_job_fixture",
+                    "--ignored",
+                    "--nocapture",
+                ])
+                .env(
+                    "CI",
+                    serde_json::json!({"mode":"descendant", "root":root}).to_string(),
+                )
+                .spawn()
+                .unwrap();
+            while !root.join("ready").exists() {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            if mode == "leader_exit" {
+                std::process::exit(0);
+            }
+            descendant.wait().unwrap();
+        }
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn windows_command_jobs_own_descendants_after_leader_exit_timeout_cancel_and_abort() {
+        // Exercise nested membership without letting the test harness itself
+        // be killed when this parent job handle closes. The CLI's existing
+        // process-wide job additionally enables kill-on-close.
+        let parent_job = win32job::Job::create().unwrap();
+        parent_job.assign_current_process().unwrap();
+        for mode in ["leader_exit", "timeout", "cancel", "abort"] {
+            let root = tempdir().unwrap();
+            let workspace = Workspace::new(root.path()).unwrap();
+            let manager = ProcessManager::new(4096);
+            let mut request = process_request(
+                std::env::current_exe().unwrap().to_str().unwrap(),
+                &[
+                    "--exact",
+                    "workspace::tests::windows_command_job_fixture",
+                    "--ignored",
+                    "--nocapture",
+                ],
+            );
+            request.env.insert(
+                "CI".into(),
+                serde_json::json!({"mode":mode,"root":root.path()}).to_string(),
+            );
+            request.timeout_secs = 2;
+            let cancellation = CancellationToken::new();
+            let trigger = cancellation.clone();
+            let run =
+                tokio::spawn(async move { manager.run(&workspace, &request, cancellation).await });
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while !root.path().join("ready").exists() {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("descendant must start inside the command job");
+            if mode == "cancel" {
+                trigger.cancel();
+            }
+            if mode == "abort" {
+                run.abort();
+            }
+            let outcome = tokio::time::timeout(Duration::from_secs(5), run)
+                .await
+                .expect("bounded command completion");
+            match mode {
+                "leader_exit" => assert_eq!(outcome.unwrap().unwrap().exit_code, Some(0)),
+                "cancel" => assert!(matches!(outcome.unwrap(), Err(AxiomError::Cancelled))),
+                "abort" => assert!(outcome.unwrap_err().is_cancelled()),
+                _ => assert!(
+                    outcome
+                        .unwrap()
+                        .unwrap_err()
+                        .to_string()
+                        .contains("timed out")
+                ),
+            }
+            std::fs::write(root.path().join("release"), b"release after cleanup").unwrap();
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            assert!(
+                !root.path().join("survived").exists(),
+                "{mode}: descendant escaped command job"
+            );
+        }
     }
 
     #[cfg(unix)]

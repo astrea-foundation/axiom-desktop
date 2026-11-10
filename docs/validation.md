@@ -441,3 +441,16 @@ cancel-and-restart flow, the saved sent-transfer hint, continued tracking beyond
 the quote deadline and small-window layout
 on Windows and macOS previews. Keep Desktop and its bundled `billing@4` sidecar
 together. Installer publishing remains separate release work.
+
+Windows command containment requires native VM qualification before release.
+Run `cargo test -p axiomcli --lib windows_command_jobs_own_descendants` on the
+Windows development checkout and verify leader exit, timeout, cancellation and
+dropped-future cleanup while descendants hold output pipes. Confirm the nested
+command jobs coexist with the existing process-wide exit-cleanup job. Portable
+output-reader and POSIX process-tree tests do not qualify Windows behavior.
+If a Windows VM is unavailable, use the manual `ci.yml` portability workflow on
+a published non-production feature branch containing the exact reviewed change:
+`gh workflow run ci.yml --ref <feature-branch> -f target=windows-x64 -f extended=false`.
+Record the run's `headSha` and successful Windows portability job against the
+reviewed source revision. This workflow runs checks; release workflows and tags
+are not part of command-containment qualification.

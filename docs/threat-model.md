@@ -153,6 +153,12 @@ MCP servers or grant broader authority.
 Processes have bounded output/time and cancellation cleanup; background tasks
 have four slots. An approved host-authority program on macOS/Windows can access
 resources beyond its cwd. The Web toggle only gates built-in search/fetch tools.
+On Windows each command has a nested kill-on-close Job Object. The command
+starts suspended until it is assigned to that job, so descendants inherit the
+command's lifetime. Timeout, cancellation, a dropped run, and successful leader
+exit all terminate the job. This retains the process-wide exit-cleanup job.
+Output readers are cancelled with their command and have a bounded join after
+termination, including when a descendant inherited a pipe.
 MCP executables are trusted user-selected host code on every OS. Desktop starts
 only explicitly tested, selected [local connections](mcp.md), with per-thread
 tool authority and approval separate from builtin Agent permissions. Account and

@@ -717,6 +717,7 @@ dependencies = [
  "open",
  "portable-pty",
  "predicates",
+ "process-wrap",
  "proptest",
  "pulldown-cmark",
  "ratatui",
