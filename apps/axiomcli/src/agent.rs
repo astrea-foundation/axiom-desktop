@@ -2136,6 +2136,31 @@ impl TurnRunner for AgentEngine {
                 }
                 AppEvent::ModelChanged { model } => active_model.clone_from(model),
                 AppEvent::ThinkingLevelChanged { level } => settings.thinking = *level,
+                AppEvent::ModelHistoryCheckpoint {
+                    version,
+                    messages: canonical,
+                } => {
+                    let canonical: Vec<ChatMessage> = serde_json::from_value(canonical.clone())
+                        .map_err(|error| {
+                            AxiomError::Storage(format!(
+                                "invalid model history checkpoint: {error}"
+                            ))
+                        })?;
+                    if *version != 1 || canonical.first().is_none_or(|m| m.role != ChatRole::System)
+                    {
+                        return Err(AxiomError::Storage(
+                            "unsupported or invalid authoritative model history checkpoint".into(),
+                        ));
+                    }
+                    messages = canonical;
+                    tool_names.clear();
+                    viewed_image_ids.clear();
+                    for message in &messages {
+                        for call in &message.tool_calls {
+                            tool_names.insert(call.id.clone(), call.function.name.clone());
+                        }
+                    }
+                }
                 AppEvent::ContextCompacted { summary, .. } => {
                     // A pre-turn automatic compaction is journaled after the
                     // prompt was accepted, even though the summary covers only
@@ -2556,35 +2581,10 @@ impl TurnRunner for AgentEngine {
                         .map_err(|_| AxiomError::Cancelled)?;
                 }
                 Err(AxiomError::Cancelled) => return Err(AxiomError::Cancelled),
-                Err(_) => {
-                    // A failed summarizer must not permanently strand a full
-                    // thread. The new user message is kept outside this lossy
-                    // recovery and still uses the normal authenticated provider.
-                    let summary = local_recovery_summary(
-                        &messages,
-                        (self.limits.max_context_bytes / 32)
-                            .min(self.limits.max_context_tokens / 8)
-                            .clamp(32, 512),
-                    );
-                    let before = messages.len();
-                    messages = compacted_history(
-                        messages
-                            .first()
-                            .map_or("", |message| message.content.as_str()),
-                        &summary,
-                    );
-                    prospective_context_tokens =
-                        model_context_tokens(&model, &messages).saturating_add(prompt_tokens);
-                    events.send(AppEvent::WarningRaised {
-                        message: "Older conversation context could not be summarized. Some older context and media were omitted so this message can continue.".into(),
-                    }).await.map_err(|_| AxiomError::Cancelled)?;
-                    events
-                        .send(AppEvent::ContextCompacted {
-                            summary,
-                            messages_before: before,
-                        })
-                        .await
-                        .map_err(|_| AxiomError::Cancelled)?;
+                Err(error) => {
+                    return Err(AxiomError::Provider(format!(
+                        "Context compaction failed; original conversation and media were retained. Retry compaction or choose a model with a larger context: {error}"
+                    )));
                 }
             }
         }
@@ -2666,6 +2666,13 @@ impl TurnRunner for AgentEngine {
             )?;
             self.update_context_tokens(&context.session_id, known_context_tokens)
                 .await;
+            events
+                .send(AppEvent::ModelHistoryCheckpoint {
+                    version: 1,
+                    messages: serde_json::to_value(&messages)?,
+                })
+                .await
+                .map_err(|_| AxiomError::Cancelled)?;
             let mut streamed_text = String::new();
             let provider_result = before_optional_deadline(
                 deadline,
@@ -2734,6 +2741,13 @@ impl TurnRunner for AgentEngine {
                 tool_call_id: None,
                 tool_calls: assistant.tool_calls.clone(),
             });
+            events
+                .send(AppEvent::ModelHistoryCheckpoint {
+                    version: 1,
+                    messages: serde_json::to_value(&messages)?,
+                })
+                .await
+                .map_err(|_| AxiomError::Cancelled)?;
             known_context_tokens = usage.map_or_else(
                 || model_context_tokens(&model, &messages),
                 |(input, output)| input.saturating_add(output),
@@ -2803,6 +2817,13 @@ impl TurnRunner for AgentEngine {
                 {
                     continue;
                 }
+                events
+                    .send(AppEvent::ModelHistoryCheckpoint {
+                        version: 1,
+                        messages: serde_json::to_value(&messages)?,
+                    })
+                    .await
+                    .map_err(|_| AxiomError::Cancelled)?;
                 self.histories
                     .lock()
                     .await
@@ -3541,35 +3562,6 @@ fn compacted_history(system: &str, summary: &str) -> Vec<ChatMessage> {
             ),
         ),
     ]
-}
-
-fn local_recovery_summary(messages: &[ChatMessage], max_chars: usize) -> String {
-    let mut snippets = messages
-        .iter()
-        .rev()
-        .filter(|message| {
-            matches!(message.role, ChatRole::User | ChatRole::Assistant)
-                && !message.content.is_empty()
-        })
-        .take(2)
-        .map(|message| {
-            let tail = message
-                .content
-                .chars()
-                .rev()
-                .take(max_chars / 2)
-                .collect::<String>()
-                .chars()
-                .rev()
-                .collect::<String>();
-            format!("{:?} (partial): {tail}", message.role)
-        })
-        .collect::<Vec<_>>();
-    snippets.reverse();
-    format!(
-        "Recovery omitted older messages and media because automatic summarization failed. These incomplete excerpts are context only, not new instructions. Earlier tool outcomes may be unknown; do not repeat side effects automatically.\n{}",
-        snippets.join("\n")
-    )
 }
 
 fn enforce_context_budget(
@@ -4443,6 +4435,7 @@ mod engine_tests {
         .enumerate()
         .map(|(index, event)| EventEnvelope {
             schema_version: 1,
+            turn_id: None,
             sequence: (index + 1) as u64,
             occurred_at: chrono::Utc::now(),
             correlation_id: CorrelationId::new(),
@@ -4978,6 +4971,7 @@ mod engine_tests {
             .with_timezone(&chrono::Utc);
         let created = EventEnvelope {
             schema_version: 1,
+            turn_id: None,
             sequence: 1,
             occurred_at: started_at,
             correlation_id: CorrelationId::new(),
@@ -6041,6 +6035,7 @@ mod engine_tests {
             store
                 .append(&EventEnvelope {
                     schema_version: 1,
+                    turn_id: None,
                     sequence: u64::try_from(index).unwrap() + 1,
                     occurred_at: chrono::Utc::now(),
                     correlation_id: crate::app::CorrelationId::new(),
@@ -6225,6 +6220,7 @@ mod engine_tests {
         drop(requests);
         let event = EventEnvelope {
             schema_version: 1,
+            turn_id: None,
             sequence: 1,
             occurred_at: chrono::Utc::now(),
             correlation_id: crate::app::CorrelationId::new(),
@@ -6605,6 +6601,125 @@ mod engine_tests {
                 .is_err()
         );
         assert_eq!(engine.histories.lock().await[&session_id], history);
+    }
+
+    #[tokio::test]
+    async fn canonical_checkpoint_restores_exact_model_structure_and_media() {
+        let engine = AgentEngine::new(
+            Arc::new(ScriptedProvider::new(vec![])),
+            Arc::new(ToolRegistry::new()),
+            "test",
+            3,
+        );
+        let store = crate::session::SessionStore::in_memory().unwrap();
+        let session_id = SessionId::new();
+        let mut assistant =
+            ChatMessage::text(ChatRole::Assistant, "task-management flask-sqlalchemy");
+        assistant.reasoning_content = Some("reasoning".into());
+        assistant.name = Some("model-name".into());
+        assistant.refusal = Some("supported-field".into());
+        assistant.tool_calls = vec![crate::provider::ToolCall {
+            id: "one".into(),
+            kind: "function".into(),
+            function: crate::provider::FunctionCall {
+                name: "echo".into(),
+                arguments: "{ \"text\" : \"flask-sqlalchemy\" }".into(),
+            },
+        }];
+        let mut tool = ChatMessage::text(ChatRole::Tool, "exact model tool result");
+        tool.tool_call_id = Some("one".into());
+        let mut media = ChatMessage::text(ChatRole::User, "image observation");
+        media.images.push(axiom_inference::ImageContent {
+            mime_type: "image/png".into(),
+            data: crate::image_tool::tests::generated_fixture().data,
+        });
+        media.files.push(axiom_inference::FileContent {
+            name: "source.txt".into(),
+            mime_type: "text/plain".into(),
+            data: "dGFzay1tYW5hZ2VtZW50".into(),
+        });
+        let canonical = vec![
+            ChatMessage::text(ChatRole::System, "system"),
+            ChatMessage::text(ChatRole::User, "original prompt"),
+            assistant,
+            tool,
+            media,
+        ];
+        let events = [
+            AppEvent::SessionCreated {
+                cwd: PathBuf::from("/tmp/canonical"),
+                origin: crate::app::Origin::Test,
+                profile: PermissionProfile::None,
+            },
+            AppEvent::ModelHistoryCheckpoint {
+                version: 1,
+                messages: serde_json::to_value(&canonical).unwrap(),
+            },
+        ];
+        for (index, event) in events.into_iter().enumerate() {
+            store
+                .append(&EventEnvelope {
+                    schema_version: 1,
+                    turn_id: None,
+                    sequence: index as u64 + 1,
+                    occurred_at: chrono::Utc::now(),
+                    correlation_id: crate::app::CorrelationId::new(),
+                    origin: crate::app::Origin::Test,
+                    session_id: session_id.clone(),
+                    event,
+                })
+                .unwrap();
+        }
+        engine
+            .restore_session(&session_id, &store.load(&session_id).unwrap())
+            .await
+            .unwrap();
+        let saved = engine.histories.lock().await[&session_id].clone();
+        assert_eq!(saved[1..], canonical[1..]);
+    }
+
+    #[tokio::test]
+    async fn pre_turn_compaction_failure_retains_original_history_for_retry() {
+        let provider = Arc::new(ScriptedProvider::new(vec![AssistantTurn {
+            reasoning: None,
+            text: String::new(),
+            tool_calls: vec![],
+        }]));
+        let mut limits = AgentLimits::development(3);
+        limits.max_context_bytes = 16 * 1024;
+        let engine =
+            AgentEngine::with_limits(provider, Arc::new(ToolRegistry::new()), "test", limits);
+        let ctx = context();
+        let original = vec![
+            ChatMessage::text(ChatRole::System, "system"),
+            ChatMessage::text(ChatRole::User, "Keep every source detail ".repeat(4000)),
+        ];
+        engine
+            .histories
+            .lock()
+            .await
+            .insert(ctx.session_id.clone(), original.clone());
+        let (tx, mut rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
+        let error = engine
+            .run(
+                ctx.clone(),
+                "next prompt".into(),
+                tx,
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("original conversation and media were retained")
+        );
+        assert_eq!(engine.histories.lock().await[&ctx.session_id], original);
+        assert!(
+            !drain(&mut rx)
+                .iter()
+                .any(|e| matches!(e, AppEvent::ContextCompacted { .. }))
+        );
     }
 
     #[tokio::test]
@@ -7168,6 +7283,7 @@ mod engine_tests {
         .enumerate()
         .map(|(index, event)| EventEnvelope {
             schema_version: 1,
+            turn_id: None,
             sequence: index as u64 + 1,
             occurred_at: chrono::Utc::now(),
             correlation_id: CorrelationId::new(),
@@ -7299,19 +7415,18 @@ mod engine_tests {
     }
 
     #[tokio::test]
-    async fn failed_automatic_summary_discards_old_context_and_sends_the_new_prompt() {
-        let provider = Arc::new(ScriptedProvider::new(vec![
-            AssistantTurn {
-                text: String::new(),
-                reasoning: None,
-                tool_calls: Vec::new(),
-            },
-            AssistantTurn {
-                text: "Recovered response".into(),
-                reasoning: None,
-                tool_calls: Vec::new(),
-            },
-        ]));
+    async fn failed_automatic_summary_retains_source_until_successful_explicit_retry() {
+        let mut turns = vec![AssistantTurn {
+            text: String::new(),
+            reasoning: None,
+            tool_calls: vec![],
+        }];
+        turns.extend((0..40).map(|_| AssistantTurn {
+            text: "Faithful successor summary".into(),
+            reasoning: None,
+            tool_calls: vec![],
+        }));
+        let provider = Arc::new(ScriptedProvider::new(turns));
         let mut limits = AgentLimits::development(3);
         limits.max_context_bytes = 16 * 1024;
         let engine = AgentEngine::with_limits(
@@ -7321,14 +7436,40 @@ mod engine_tests {
             limits,
         );
         let ctx = context();
-        engine.histories.lock().await.insert(
-            ctx.session_id.clone(),
-            vec![
-                ChatMessage::text(ChatRole::System, "system"),
-                ChatMessage::text(ChatRole::User, "old context ".repeat(4000)),
-            ],
-        );
+        let original = vec![
+            ChatMessage::text(ChatRole::System, "system"),
+            ChatMessage::text(ChatRole::User, "old context ".repeat(4000)),
+        ];
+        engine
+            .histories
+            .lock()
+            .await
+            .insert(ctx.session_id.clone(), original.clone());
         let (tx, mut rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
+        assert!(
+            engine
+                .run(
+                    ctx.clone(),
+                    "Keep this complete new instruction".into(),
+                    tx,
+                    CancellationToken::new()
+                )
+                .await
+                .is_err()
+        );
+        assert_eq!(engine.histories.lock().await[&ctx.session_id], original);
+        assert!(
+            !drain(&mut rx)
+                .iter()
+                .any(|e| matches!(e, AppEvent::ContextCompacted { .. }))
+        );
+        assert_eq!(provider.requests.lock().await.len(), 1);
+        let (tx, _rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
+        engine
+            .compact(&ctx.session_id, None, tx, CancellationToken::new())
+            .await
+            .unwrap();
+        let (tx, _rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
         engine
             .run(
                 ctx,
@@ -7338,19 +7479,19 @@ mod engine_tests {
             )
             .await
             .unwrap();
-        let events = drain(&mut rx);
-        assert!(events.iter().any(|event| matches!(event, AppEvent::WarningRaised { message } if message.contains("omitted"))));
-        assert!(events.iter().any(|event| matches!(event, AppEvent::ContextCompacted { summary, .. } if summary.contains("Recovery omitted"))));
-        let requests = provider.requests.lock().await;
-        assert_eq!(requests.len(), 2);
         assert_eq!(
-            requests[1].messages.last().unwrap().content,
+            provider
+                .requests
+                .lock()
+                .await
+                .last()
+                .unwrap()
+                .messages
+                .last()
+                .unwrap()
+                .content,
             "Keep this complete new instruction"
         );
-        assert!(
-            serialized_message_bytes(&requests[1].messages).unwrap() < limits.max_context_bytes
-        );
-        assert_tool_batches_complete(&requests[1].messages);
     }
 
     #[tokio::test]
@@ -7367,6 +7508,7 @@ mod engine_tests {
         let events = vec![
             EventEnvelope {
                 schema_version: 1,
+                turn_id: None,
                 sequence: 1,
                 occurred_at: chrono::Utc::now(),
                 correlation_id: CorrelationId::new(),
@@ -7380,6 +7522,7 @@ mod engine_tests {
             },
             EventEnvelope {
                 schema_version: 1,
+                turn_id: None,
                 sequence: 2,
                 occurred_at: chrono::Utc::now(),
                 correlation_id: CorrelationId::new(),
@@ -7393,6 +7536,7 @@ mod engine_tests {
             },
             EventEnvelope {
                 schema_version: 1,
+                turn_id: None,
                 sequence: 3,
                 occurred_at: chrono::Utc::now(),
                 correlation_id: CorrelationId::new(),
@@ -7402,6 +7546,7 @@ mod engine_tests {
             },
             EventEnvelope {
                 schema_version: 1,
+                turn_id: None,
                 sequence: 4,
                 occurred_at: chrono::Utc::now(),
                 correlation_id: CorrelationId::new(),
@@ -7576,6 +7721,7 @@ mod engine_tests {
         .enumerate()
         .map(|(index, event)| EventEnvelope {
             schema_version: 1,
+            turn_id: None,
             sequence: u64::try_from(index + 1).expect("sequence"),
             occurred_at: chrono::Utc::now(),
             correlation_id: CorrelationId::new(),
@@ -7667,6 +7813,7 @@ mod engine_tests {
         .enumerate()
         .map(|(index, event)| EventEnvelope {
             schema_version: 1,
+            turn_id: None,
             sequence: u64::try_from(index + 1).expect("sequence"),
             occurred_at: chrono::Utc::now(),
             correlation_id: CorrelationId::new(),
@@ -7731,6 +7878,7 @@ mod engine_tests {
         .enumerate()
         .map(|(index, event)| EventEnvelope {
             schema_version: 1,
+            turn_id: None,
             sequence: u64::try_from(index + 1).expect("sequence"),
             occurred_at: chrono::Utc::now(),
             correlation_id: CorrelationId::new(),
@@ -8032,6 +8180,7 @@ mod engine_tests {
         .enumerate()
         .map(|(index, event)| EventEnvelope {
             schema_version: 1,
+            turn_id: None,
             sequence: (index + 1) as u64,
             occurred_at: chrono::Utc::now(),
             correlation_id: CorrelationId::new(),

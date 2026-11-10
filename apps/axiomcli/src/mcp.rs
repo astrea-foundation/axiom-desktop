@@ -24,7 +24,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     AxiomError, Result,
-    audit::{redact_text, redact_value},
+    audit::redact_text,
     config::McpServerConfig,
     policy::{Effect, ToolAccess},
     tools::{Tool, ToolContext, ToolResult},
@@ -596,18 +596,14 @@ impl Tool for McpTool {
         };
 
         let success = result.is_error != Some(true);
-        let mut envelope = serde_json::json!({
+        let envelope = serde_json::json!({
             "server": self.server_name,
             "tool": self.remote_name,
             "connection_generation": generation,
             "content_trust": "untrusted MCP result",
             "result": result,
         });
-        redact_value(&mut envelope);
-        let serialized = redact_environment_text(
-            &serde_json::to_string_pretty(&envelope)?,
-            &self.connection.config.env,
-        );
+        let serialized = serialize_result_content(&envelope, &self.connection.config.env)?;
         let (content, truncated) = truncate(&serialized, self.max_output_bytes);
         Ok(ToolResult {
             images: Vec::new(),
@@ -631,6 +627,15 @@ impl Tool for McpTool {
             Ok(result) => Ok(result),
         }
     }
+}
+
+fn serialize_result_content(envelope: &Value, env: &BTreeMap<String, String>) -> Result<String> {
+    // Results are authoritative untrusted content. Preserve ordinary text;
+    // protect only actual secrets injected into this server's environment.
+    Ok(redact_environment_text(
+        &serde_json::to_string_pretty(envelope)?,
+        env,
+    ))
 }
 
 pub(crate) fn redact_environment_text(text: &str, env: &BTreeMap<String, String>) -> String {
@@ -723,6 +728,15 @@ mod tests {
         let (output, truncated) = truncate("cherry 🌸 tree", 10);
         assert!(truncated);
         assert!(std::str::from_utf8(output.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn successful_results_preserve_ordinary_text_and_filter_exact_injected_secrets() {
+        let content = serde_json::json!({"result":{"content":[{"type":"text","text":"task-management flask-sqlalchemy actual-env-secret"}]}});
+        let env = BTreeMap::from([("TOKEN".into(), "actual-env-secret".into())]);
+        let saved = serialize_result_content(&content, &env).unwrap();
+        assert!(saved.contains("task-management flask-sqlalchemy"));
+        assert!(!saved.contains("actual-env-secret"));
     }
 
     #[test]

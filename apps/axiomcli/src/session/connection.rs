@@ -23,15 +23,20 @@ impl SessionStore {
             std::fs::create_dir_all(parent)?;
         }
         let connection = Connection::open(path).map_err(storage_error)?;
+        // SQLite aliases must share one execution-lock namespace.
+        let database_path = std::fs::canonicalize(path)?;
         connection
             .busy_timeout(std::time::Duration::from_secs(5))
             .map_err(storage_error)?;
         let store = Self {
             state: Arc::new(Mutex::new(StoreState {
                 connection: Some(connection),
-                path: Some(path.to_path_buf()),
+                path: Some(database_path),
                 account_id: None,
                 generation: 0,
+                owner_id: uuid::Uuid::new_v4().to_string(),
+                executions: std::collections::HashMap::new(),
+                context_operations: std::collections::HashSet::new(),
             })),
             switch: Arc::new(Mutex::new(())),
             route: None,
@@ -54,6 +59,9 @@ impl SessionStore {
                 path: None,
                 account_id: None,
                 generation: 0,
+                owner_id: uuid::Uuid::new_v4().to_string(),
+                executions: std::collections::HashMap::new(),
+                context_operations: std::collections::HashSet::new(),
             })),
             switch: Arc::new(Mutex::new(())),
             route: None,
@@ -74,6 +82,9 @@ impl SessionStore {
                 path: None,
                 account_id: None,
                 generation: 0,
+                owner_id: uuid::Uuid::new_v4().to_string(),
+                executions: std::collections::HashMap::new(),
+                context_operations: std::collections::HashSet::new(),
             })),
             switch: Arc::new(Mutex::new(())),
             route: Some(AccountRoute { paths, frontend }),
@@ -223,6 +234,8 @@ pub(super) fn binding_matches(binding: Option<&StoreBinding>, state: &StoreState
 }
 
 pub(super) fn advance_store_generation(state: &mut StoreState) -> Result<()> {
+    state.executions.clear();
+    state.context_operations.clear();
     state.generation = state
         .generation
         .checked_add(1)

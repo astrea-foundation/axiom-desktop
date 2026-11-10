@@ -443,3 +443,10 @@ cancel-and-restart flow, the saved sent-transfer hint, continued tracking beyond
 the quote deadline and small-window layout
 on Windows and macOS previews. Keep Desktop and its bundled `billing@4` sidecar
 together. Installer publishing remains separate release work.
+
+Before releasing the schema-6 conversation store, qualify execution ownership on
+Windows as well as macOS: keep one client running while another opens the store,
+reject concurrent prompt/manual compaction, kill the owner, and recover from the
+already-open observer. Run the canonical-history and export-omission regressions
+against migrated account data. No release build or version change is required
+for these development checks.

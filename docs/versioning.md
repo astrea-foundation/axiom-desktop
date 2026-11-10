@@ -68,3 +68,10 @@ Automatic updates accept stable product versions and remember the highest signed
 release sequence/version per installation. A release version and its signed
 inventory are immutable. Desktop, bundled CLI and the standalone CLI/proxy pair
 are installed together. Storage compatibility must be checked before any rollback.
+
+Local account conversation storage schema 6 adds durable execution owners and
+version-1 authoritative model history. Schema upgrades run in one immediate
+transaction. Existing schema-4 conversations remain readable through the legacy
+projection until their next atomic write adopts canonical history. Newer or
+invalid canonical versions are rejected explicitly; downgrade tools must not
+reconstruct inference history from display rows.

@@ -105,7 +105,42 @@ The inspectable [SQL baseline](../apps/axiomcli/src/session/schema.sql) and
 Conversation content and drafts stay local. Desktop drafts, pending submissions,
 Web preferences and queues use account-scoped local state. Deleting a thread
 removes its conversation records but does not delete files in its working directory.
-Local conversation databases are not encrypted at rest by AxiomCLI.
+Local conversation databases are not encrypted at rest by AxiomCLI. Authoritative
+prompts, assistant messages, tool results and metadata are stored verbatim; only
+diagnostics and explicit exports apply credential redaction. MCP adapters still
+filter exact secrets supplied in their configured environment before establishing
+a tool result; generic diagnostic heuristics never rewrite successful results. If automatic
+compaction fails before a turn, original context and media remain recoverable.
+The turn fails with an explicit retry/choose-larger-context message; it never
+substitutes a local excerpt for the source history.
+
+Account databases migrate transactionally to schema 6. Each thread has a
+versioned authoritative semantic history independent of presentation rows.
+Exact provider-neutral model-message checkpoints preserve raw tool argument
+strings, grouped tool calls, tool results, reasoning, images, files and context
+boundaries. Live attestation state and evidence remain ephemeral; historical
+response verification never restores a live lease. Resume uses this source; timeline edits cannot rewrite inference
+context. Display remains a projection of the same semantic events. The latest
+exact checkpoint for each turn is retained alongside the full semantic source
+history, so earlier message revisions preserve exact model structure. Checkpoints
+reference deduplicated model messages, avoiding a new copy of every earlier
+image or file at every checkpoint.
+Legacy threads without canonical records use their existing compatible timeline
+projection until the next write adopts it atomically. A partial legacy load
+refuses migration with an explicit error and retains the original records. Unsupported canonical
+versions or corrupt authoritative records fail explicitly instead of silently
+rebuilding a different conversation. Content already lost by older versions
+cannot be recovered by migration.
+
+Execution ownership combines a persisted owner ID and an OS lock per active
+thread. Opening a database preserves live work owned by another client. A new
+claim rejects concurrent execution transactionally; process exit releases the
+lock, allowing recovery to mark only abandoned turns interrupted. Recovery also
+runs before a new claim so an already-open observer can recover a later crash.
+These local lock files are retained to preserve inode identity. Delayed native
+output carries its originating turn ID and cannot attach to another turn.
+Account switching invalidates old handles and releases their local execution
+locks. Interrupted tool operations remain unknown and are never replayed.
 
 ## Runtime boundaries
 
