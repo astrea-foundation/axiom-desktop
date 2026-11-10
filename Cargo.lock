@@ -630,7 +630,6 @@ dependencies = [
  "rand_core 0.6.4",
  "rcgen",
  "reqwest 0.13.4",
- "ryu",
  "secrecy",
  "serde",
  "serde_json",

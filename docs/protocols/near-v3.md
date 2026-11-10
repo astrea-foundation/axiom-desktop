@@ -55,8 +55,14 @@ snapshot, and expiry (at most five minutes). The client bounds its verified cach
 to its own policy and cache lifetime too. Different sessions for one model coexist;
 a new worker never overwrites another client's accepted recipient.
 
-The relay context contains exactly `request_body_hash`, `response_signing_address`,
-and `worker_session_id`. The backend looks up the account-owned session rather than
+The relay context binds `request_body_hash`, `response_signing_address`,
+and `worker_session_id`. New clients also send `request_body_base64` and
+`response_wire_version: 1`. The backend decodes and structurally compares the
+exact JSON to the admitted encrypted fields, model, stream mode and token cap,
+rejects duplicate keys and type substitutions, then forwards those bytes without
+reserializing. Number spelling, whitespace and Unicode escaping do not affect
+admission or change the client-authenticated hash. Legacy clients retain the
+previous reconstruction contract. The backend looks up the account-owned session rather than
 the model's latest lease. Expired/mismatched sessions fail before provider dispatch.
 
 A bounded in-process connection cache is only an optimization. Another API process
@@ -83,6 +89,16 @@ using the accepted worker connection. Both backend and native client verify the
 Ed25519 signature against the attested model key. Signed text must be exactly
 `model_id:sha256(exact_request_bytes):sha256(exact_response_bytes)`.
 ECDSA records and gateway-only hash pairs are rejected under this contract.
+
+For streaming, raw wire version 1 relays bounded `message.provider_chunk` events
+with a run ID, contiguous zero-based index and base64 of the original provider
+bytes. The native client parses and decrypts these bytes for provisional output;
+the backend parses the same encrypted stream for independent billing and usage
+checks. The terminal proof carries `response_wire_version: 1` and the exact
+`response_chunk_count` instead of repeating the transcript. Missing, duplicate,
+mixed or reordered chunks fail closed. Legacy clients retain terminal transcript
+chunks. Non-streaming retains its signed raw response because the receipt must
+authenticate provider JSON metadata as well as encrypted fields.
 
 For streaming, the signature covers the complete ordered raw SSE transcript,
 including its terminal marker and usage. Deltas remain provisional until the native

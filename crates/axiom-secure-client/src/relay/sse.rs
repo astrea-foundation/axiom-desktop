@@ -11,6 +11,7 @@ pub(crate) enum RelayEvent {
     Accounting(axiom_inference::RequestUsage),
     Finalizing(RunPayload),
     Delta(DeltaPayload),
+    ProviderChunk(crate::relay::dto::ProviderChunkPayload),
     MessageCompleted(CompletedPayload),
     RunCompleted(RunPayload),
     Cancelled(CancelledPayload),
@@ -193,6 +194,7 @@ fn parse_event(name: &str, data: &str) -> Result<Option<RelayEvent>> {
     match name {
         "run.created" => decode!(CreatedPayload, RunCreated),
         "run.accounting" => decode!(axiom_inference::RequestUsage, Accounting),
+        "message.provider_chunk" => decode!(crate::relay::dto::ProviderChunkPayload, ProviderChunk),
         "message.encrypted_delta" => decode!(DeltaPayload, Delta),
         "message.encrypted_completed" => decode!(CompletedPayload, MessageCompleted),
         "run.completed" => decode!(RunPayload, RunCompleted),
