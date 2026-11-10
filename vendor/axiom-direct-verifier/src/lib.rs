@@ -163,7 +163,7 @@ impl Prepared {
             jwks,
             &self.policy["nvidia_anchors"],
             &c["challenge"],
-            self.now,
+            final_now,
         )?;
         let mut expires = self
             .expires
@@ -223,7 +223,12 @@ pub fn verify_with_vendor(raw: &[u8], jwks: &[u8], bundle: &[u8]) -> Result<Valu
         "vendor response bound"
     );
     let prepared = Prepared::new(raw, now()?)?;
-    prepared.finish(&json::decode(jwks)?, &json::decode(bundle)?, now()?)
+    let accepted = prepared.finish(&json::decode(jwks)?, &json::decode(bundle)?, now()?)?;
+    ensure!(
+        number(&accepted["expires_at"])? > now()?,
+        "evidence expired during appraisal"
+    );
+    Ok(accepted)
 }
 /// Deterministic cryptographic check for packaged native executables.
 pub fn self_test() -> Result<()> {
@@ -255,6 +260,7 @@ mod tests {
             json::decode(include_bytes!("../tests/fixtures/equivalence.json")).unwrap();
         let instant = fixture["now"].as_u64().unwrap();
         let mut count = 0;
+        let mut positive = std::collections::BTreeSet::new();
         for case in fixture["cases"].as_array().unwrap() {
             let raw = serde_json::to_vec(&case["input"]).unwrap();
             let result = Prepared::new(&raw, instant)
@@ -262,6 +268,7 @@ mod tests {
             if case["expected"].is_null() {
                 assert!(result.is_err(), "accepted negative {}", case["name"]);
             } else {
+                positive.insert(case["name"].as_str().unwrap());
                 assert_eq!(
                     result.unwrap_or_else(|e| panic!("{}: {e:#}", case["name"])),
                     case["expected"],
@@ -272,7 +279,56 @@ mod tests {
             count += 1;
         }
         assert!(count >= 40);
+        assert_eq!(
+            positive,
+            std::collections::BTreeSet::from([
+                "valid",
+                "vision-tools",
+                "permanent-policy",
+                "crl-short-expiry",
+                "valid-rsa-pss-amd-chain"
+            ])
+        );
     }
+    #[test]
+    fn nvidia_uses_post_io_clock_and_caps_every_authenticated_signer_chain() {
+        let fixture: Value = json::decode(include_bytes!("../tests/fixtures/timing.json")).unwrap();
+        let cases = fixture["cases"].as_array().unwrap();
+        assert_eq!(cases.len(), 7);
+        for case in cases {
+            let raw = serde_json::to_vec(&case["input"]).unwrap();
+            let result = Prepared::new(&raw, case["start_now"].as_u64().unwrap()).and_then(|p| {
+                p.finish(
+                    &case["jwks"],
+                    &case["bundle"],
+                    case["final_now"].as_u64().unwrap(),
+                )
+            });
+            if case["expected"].is_null() {
+                assert!(result.is_err(), "accepted {}", case["name"]);
+            } else {
+                assert_eq!(
+                    result.unwrap_or_else(|e| panic!("{}: {e:#}", case["name"])),
+                    case["expected"],
+                    "{}",
+                    case["name"]
+                );
+            }
+            if case["intentional_difference"].is_null() {
+                assert_eq!(
+                    case["expected"], case["python_expected"],
+                    "Python post-I/O equivalence {}",
+                    case["name"]
+                );
+            } else {
+                assert!(
+                    case["expected"]["expires_at"].as_u64().unwrap()
+                        < case["python_expected"]["expires_at"].as_u64().unwrap()
+                );
+            }
+        }
+    }
+
     #[test]
     fn hostile_inputs_and_clock_skew_fail_before_vendor_io() {
         for raw in [

@@ -4,7 +4,13 @@ use p384::ecdsa::{Signature, signature::Verifier};
 use serde_json::Value;
 pub const NRAS: &str = "https://nras.attestation.nvidia.com";
 
-fn jwt(token: &Value, jwks: &Value, anchors: &Value, nonce: &Value, now: u64) -> Result<Value> {
+fn jwt(
+    token: &Value,
+    jwks: &Value,
+    anchors: &Value,
+    nonce: &Value,
+    now: u64,
+) -> Result<(Value, u64)> {
     let token = text(token)?;
     ensure!(token.len() <= 2 * 1024 * 1024, "NVIDIA JWT limit");
     let parts = token.split('.').collect::<Vec<_>>();
@@ -46,8 +52,9 @@ fn jwt(token: &Value, jwks: &Value, anchors: &Value, nonce: &Value, now: u64) ->
         .iter()
         .map(|d| cert::parse(d))
         .collect::<Result<Vec<_>>>()?;
+    let mut certificate_expiry = u64::MAX;
     for c in &certs {
-        cert::validity(c, now)?;
+        certificate_expiry = certificate_expiry.min(cert::validity(c, now)?);
     }
     for (i, pair) in certs.windows(2).enumerate() {
         cert::ca(&pair[1], Some(i))?;
@@ -69,7 +76,7 @@ fn jwt(token: &Value, jwks: &Value, anchors: &Value, nonce: &Value, now: u64) ->
             ensure!(number(v)? <= now + 30, "future NVIDIA JWT");
         }
     }
-    Ok(claims)
+    Ok((claims, certificate_expiry))
 }
 pub fn verify(
     bundle: &Value,
@@ -85,14 +92,14 @@ pub fn verify(
             && bundle[1].as_object().is_some_and(|o| o.len() == 1),
         "one complete NVIDIA detached EAT required"
     );
-    let overall = jwt(&bundle[0][1], jwks, anchors, nonce, now)?;
+    let (overall, certificate_expiry) = jwt(&bundle[0][1], jwks, anchors, nonce, now)?;
     let issued = number(&overall["iat"])?;
-    let mut expires = number(&overall["exp"])?;
+    let mut expires = number(&overall["exp"])?.min(certificate_expiry);
     ensure!(
         overall["x-nvidia-overall-att-result"] == true
             && overall["x-nvidia-ver"] == "3.0"
             && issued >= now.saturating_sub(120)
-            && expires > issued,
+            && number(&overall["exp"])? > issued,
         "NVIDIA overall appraisal failed"
     );
     let submods = overall["submods"]
@@ -109,7 +116,8 @@ pub fn verify(
                 == serde_json::json!(["DIGEST", ["SHA-256", sha256(text(token)?.as_bytes())]]),
             "detached token digest mismatch"
         );
-        let c = jwt(token, jwks, anchors, nonce, now)?;
+        let (c, certificate_expiry) = jwt(token, jwks, anchors, nonce, now)?;
+        expires = expires.min(certificate_expiry);
         if let Some(exp) = c.get("exp") {
             expires = expires.min(number(exp)?);
         }

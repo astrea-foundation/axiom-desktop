@@ -451,3 +451,12 @@ digest checks. Packaging fixtures cover native Windows ARM64 and the retained
 x64 fallback. Other platform binaries, measured worker/gateway images and live
 hardware/provider acceptance remain release qualification work; no installer,
 production deployment or signed trust-policy change was performed by this batch.
+
+The A31 trust-review follow-up adds seven signed timing cases to the 49-case
+corpus. NVIDIA claims and certificates are checked at post-I/O time; reusable
+evidence expires no later than the earliest certificate in either token chain.
+The unchanged Python reference remains the timing-equivalence oracle, with the
+stricter certificate-lifetime cap recorded explicitly. VMPL, signer, TCB and
+missing alias-complete negatives carry valid synthetic VCEK signatures; signature
+corruption and padding remain separate rejection cases. All named valid corpus
+cases are required to stay positive.
