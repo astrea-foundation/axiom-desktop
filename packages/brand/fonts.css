@@ -1,0 +1,6 @@
+@import "@fontsource-variable/dm-sans";
+@import "@fontsource/dm-mono/400.css";
+@import "@fontsource/dm-mono/500.css";
+@font-face { font-family: "PP Cirka"; src: url("./fonts/PPCirka-Light.otf") format("opentype"); font-weight: 300; font-display: swap; }
+@font-face { font-family: "PP Cirka"; src: url("./fonts/PPCirka-Regular.otf") format("opentype"); font-weight: 400; font-display: swap; }
+@font-face { font-family: "PP Cirka"; src: url("./fonts/PPCirka-Bold.otf") format("opentype"); font-weight: 700; font-display: swap; }

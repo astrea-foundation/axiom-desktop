@@ -1,0 +1,457 @@
+use crate::{AUDIENCE, PROTOCOL, SignedDocument, hex_bytes, origin, sha256};
+use anyhow::{Result, ensure};
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkerIdentity {
+    pub worker_id: String,
+    pub boot_id: String,
+    pub encryption_key: String,
+    pub identity_key: String,
+    pub model_manifest: String,
+    pub logical_origin: String,
+    pub evidence_profile: String,
+    pub deployment_digest: String,
+}
+impl WorkerIdentity {
+    pub fn validate(&self, fixture: bool) -> Result<()> {
+        hex_bytes(&self.worker_id, 16)?;
+        hex_bytes(&self.boot_id, 32)?;
+        hex_bytes(&self.encryption_key, 32)?;
+        hex_bytes(&self.identity_key, 32)?;
+        hex_bytes(&self.model_manifest, 32)?;
+        hex_bytes(&self.deployment_digest, 32)?;
+        origin(&self.logical_origin, fixture)?;
+        ensure!(
+            self.evidence_profile == "tinfoil-gpu-v3"
+                || self.evidence_profile == "axiom-snp-nvidia-v1"
+                || (fixture && self.evidence_profile == "test-fixture-only"),
+            "unsupported worker evidence profile"
+        );
+        Ok(())
+    }
+    pub fn encryption_digest(&self) -> Result<String> {
+        Ok(sha256(hex_bytes(&self.encryption_key, 32)?))
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Operation {
+    Chat,
+    Image,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Limits {
+    pub context_tokens: u64,
+    pub output_tokens: u64,
+    pub input_bytes: u64,
+    pub output_bytes: u64,
+    pub image_pixels: u64,
+    pub image_steps: u64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub input_image_pixels: u64,
+    pub deadline: u64,
+}
+impl Limits {
+    pub fn validate(&self, now: u64) -> Result<()> {
+        ensure!(
+            (1..=131_072).contains(&self.context_tokens)
+                && (1..=32_768).contains(&self.output_tokens)
+                && self.output_tokens <= self.context_tokens,
+            "invalid token budget"
+        );
+        ensure!(
+            (1..=crate::MAX_REQUEST as u64).contains(&self.input_bytes)
+                && (1..=crate::MAX_RESPONSE as u64).contains(&self.output_bytes),
+            "invalid byte budget"
+        );
+        ensure!(
+            self.image_pixels <= crate::vision::MAX_GENERATED_PIXELS
+                && self.input_image_pixels <= crate::vision::MAX_INPUT_PIXELS
+                && self.image_steps <= 8
+                && self.deadline > now
+                && self.deadline <= now.saturating_add(600),
+            "invalid execution budget"
+        );
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Binding {
+    pub account: String,
+    pub account_session: String,
+    pub client_jkt: String,
+    pub request_id: String,
+    pub attempt_id: String,
+    pub reservation_id: String,
+    pub fencing: u64,
+    pub worker: WorkerIdentity,
+    pub grant_jti: String,
+    pub operation: Operation,
+    pub limits: Limits,
+}
+impl Binding {
+    pub fn validate(&self, now: u64, fixture: bool) -> Result<()> {
+        for id in [&self.account, &self.account_session, &self.client_jkt] {
+            ensure!(!id.is_empty() && id.len() <= 128, "invalid principal");
+        }
+        for id in [
+            &self.request_id,
+            &self.attempt_id,
+            &self.reservation_id,
+            &self.grant_jti,
+        ] {
+            hex_bytes(id, 16)?;
+        }
+        ensure!(
+            self.fencing > 0 && self.fencing <= 9_007_199_254_740_991,
+            "invalid fence"
+        );
+        self.worker.validate(fixture)?;
+        self.limits.validate(now)?;
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Grant {
+    pub protocol: String,
+    pub issuer: String,
+    pub audience: String,
+    pub issued_at: u64,
+    pub expires_at: u64,
+    pub binding: Binding,
+    pub price_version: String,
+    pub max_charge_microusd: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pricing: Option<crate::pricing::Price>,
+}
+impl Grant {
+    pub fn validate(
+        &self,
+        issuer: &str,
+        worker: &WorkerIdentity,
+        now: u64,
+        fixture: bool,
+    ) -> Result<()> {
+        ensure!(
+            self.protocol == PROTOCOL && self.issuer == issuer && self.audience == AUDIENCE,
+            "grant contract mismatch"
+        );
+        ensure!(
+            self.issued_at <= now.saturating_add(30)
+                && self.expires_at > now
+                && self.expires_at > self.issued_at
+                && self.expires_at - self.issued_at <= 120,
+            "expired grant"
+        );
+        ensure!(
+            &self.binding.worker == worker
+                && !self.price_version.is_empty()
+                && self.price_version.len() <= 64,
+            "wrong grant recipient"
+        );
+        self.binding.validate(now, fixture)?;
+        match &self.pricing {
+            Some(price) => ensure!(
+                price.version == self.price_version
+                    && price.maximum(&self.binding)? == self.max_charge_microusd,
+                "grant pricing mismatch"
+            ),
+            None => ensure!(
+                self.max_charge_microusd == 0,
+                "paid grant requires a price snapshot"
+            ),
+        }
+        Ok(())
+    }
+
+    pub fn charge(&self, usage: &Usage) -> Result<u64> {
+        let total = if let Some(price) = &self.pricing {
+            price.charge(&self.binding, usage)?.total_microusd
+        } else {
+            usage.validate(&self.binding)?;
+            ensure!(
+                self.max_charge_microusd == 0,
+                "paid grant requires a price snapshot"
+            );
+            0
+        };
+        ensure!(
+            total <= self.max_charge_microusd,
+            "charge exceeds accepted grant"
+        );
+        Ok(total)
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Envelope {
+    pub protocol: String,
+    pub grant: String,
+    pub proof: String,
+    pub payload: String,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Payload {
+    pub binding: String,
+    pub input: Input,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Input {
+    Chat {
+        messages: Vec<Message>,
+        max_tokens: u64,
+        reasoning_effort: String,
+        tools: Vec<serde_json::Value>,
+    },
+    Image {
+        prompt: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        references: Vec<crate::vision::InlineImage>,
+        #[serde(default, skip_serializing_if = "is_false")]
+        uncensored: bool,
+        width: u32,
+        height: u32,
+        steps: u32,
+        seed: u32,
+    },
+}
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+impl Input {
+    pub fn validate(&self, binding: &Binding) -> Result<()> {
+        match self {
+            Self::Chat {
+                messages,
+                max_tokens,
+                reasoning_effort,
+                tools,
+            } => {
+                ensure!(
+                    binding.operation == Operation::Chat
+                        && !messages.is_empty()
+                        && messages.len() <= 4096
+                        && *max_tokens > 0
+                        && *max_tokens <= binding.limits.output_tokens,
+                    "invalid chat"
+                );
+                ensure!(
+                    ["low", "medium", "high", "none"].contains(&reasoning_effort.as_str()),
+                    "invalid reasoning/tools"
+                );
+                crate::tools::definitions(tools)?;
+                let mut image_count = 0usize;
+                let mut image_pixels = 0u64;
+                for m in messages {
+                    ensure!(
+                        ["system", "developer", "user", "assistant", "tool"]
+                            .contains(&m.role.as_str())
+                            && m.content.len() <= 3 * 1024 * 1024,
+                        "invalid message"
+                    );
+                    ensure!(
+                        m.tool_calls.len() <= crate::tools::MAX_TOOLS
+                            && (m.tool_calls.is_empty() || m.role == "assistant")
+                            && (m.role == "tool") == m.tool_call_id.is_some(),
+                        "invalid tool message role"
+                    );
+                    if let Some(id) = &m.tool_call_id {
+                        ensure!(crate::tools::valid_id(id), "invalid tool result id");
+                    }
+                    let mut ids = std::collections::BTreeSet::new();
+                    for call in &m.tool_calls {
+                        call.validate()?;
+                        ensure!(ids.insert(&call.id), "duplicate tool call id");
+                    }
+                    ensure!(
+                        m.images.is_empty() || m.role == "user",
+                        "images require a user message"
+                    );
+                    for image in &m.images {
+                        image_count += 1;
+                        ensure!(
+                            image_count <= crate::vision::MAX_IMAGES,
+                            "input image count limit"
+                        );
+                        image_pixels = image_pixels
+                            .checked_add(image.validate()?)
+                            .ok_or_else(|| anyhow::anyhow!("input image pixel overflow"))?;
+                    }
+                }
+                ensure!(
+                    image_pixels <= binding.limits.input_image_pixels,
+                    "input images exceed grant"
+                );
+            }
+            Self::Image {
+                prompt,
+                references,
+                width,
+                height,
+                steps,
+                ..
+            } => {
+                ensure!(
+                    binding.operation == Operation::Image
+                        && references.len() <= crate::vision::MAX_REFERENCES
+                        && !prompt.is_empty()
+                        && prompt.len() <= 64 * 1024
+                        && *width >= 256
+                        && *height >= 256
+                        && width.is_multiple_of(32)
+                        && height.is_multiple_of(32)
+                        && *width <= 8192
+                        && *height <= 8192
+                        && u64::from(*width) * u64::from(*height) <= binding.limits.image_pixels
+                        && *steps > 0
+                        && u64::from(*steps) <= binding.limits.image_steps,
+                    "invalid image budget"
+                );
+                let mut pixels = 0u64;
+                for image in references {
+                    ensure!(image.mime_type == "image/png", "PNG reference required");
+                    pixels += image.validate()?;
+                }
+                ensure!(
+                    pixels <= binding.limits.input_image_pixels,
+                    "references exceed grant"
+                );
+            }
+        }
+        Ok(())
+    }
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Message {
+    pub role: String,
+    pub content: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<crate::vision::InlineImage>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<crate::tools::ToolCall>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+}
+impl Message {
+    pub fn text(role: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            role: role.into(),
+            content: content.into(),
+            images: Vec::new(),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Usage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub image_pixels: u64,
+    pub image_steps: u64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub input_image_pixels: u64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub cached_input_tokens: u64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub reasoning_tokens: u64,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
+}
+
+impl Usage {
+    pub fn validate(&self, binding: &Binding) -> Result<()> {
+        ensure!(
+            self.cached_input_tokens <= self.input_tokens
+                && self.reasoning_tokens <= self.output_tokens,
+            "invalid cache or reasoning token subset"
+        );
+        ensure!(
+            self.input_tokens
+                .checked_add(self.output_tokens)
+                .is_some_and(|v| v <= binding.limits.context_tokens)
+                && self.output_tokens <= binding.limits.output_tokens
+                && self.image_pixels <= binding.limits.image_pixels
+                && self.image_steps <= binding.limits.image_steps,
+            "usage exceeds grant"
+        );
+        ensure!(
+            self.input_image_pixels <= binding.limits.input_image_pixels,
+            "input image usage exceeds grant"
+        );
+        match binding.operation {
+            Operation::Chat => ensure!(
+                self.image_pixels == 0 && self.image_steps == 0 && self.input_tokens > 0,
+                "invalid chat usage"
+            ),
+            Operation::Image => ensure!(
+                self.input_tokens == 0
+                    && self.output_tokens == 0
+                    && self.cached_input_tokens == 0
+                    && self.reasoning_tokens == 0
+                    && self.image_pixels > 0
+                    && self.image_steps > 0,
+                "invalid image usage"
+            ),
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Receipt {
+    pub protocol: String,
+    pub binding_sha256: String,
+    pub request_wire_sha256: String,
+    pub response_prefix_sha256: String,
+    pub binding: Binding,
+    pub status: String,
+    pub usage: Usage,
+    pub price_version: String,
+    pub charge_microusd: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Ticket {
+    pub protocol: String,
+    pub binding: Binding,
+    pub expires_at: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkerEvidence {
+    pub protocol: String,
+    pub challenge: String,
+    pub identity: SignedDocument,
+    pub document: serde_json::Value,
+    pub manifest: SignedDocument,
+    pub policy: SignedDocument,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IdentityStatement {
+    pub worker: WorkerIdentity,
+    pub challenge: String,
+    pub issued_at: u64,
+    pub expires_at: u64,
+}
