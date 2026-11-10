@@ -32,7 +32,7 @@ const output=path.join(path.resolve(values.get('--output')),target);
 try {await fs.lstat(output); throw new Error('AstreaAI output already exists');} catch(e) {if(e.code!=='ENOENT') throw e;}
 const build=path.join(root,'.local/direct-build',target);
 await fs.mkdir(build,{recursive:true});
-const environment={...process.env,CARGO_TARGET_DIR:path.join(build,'target'),CARGO_BUILD_JOBS:process.env.CARGO_BUILD_JOBS||'2'};
+const environment={...process.env,CARGO_TARGET_DIR:process.env.CARGO_TARGET_DIR||path.join(build,'target'),CARGO_BUILD_JOBS:process.env.CARGO_BUILD_JOBS||'2'};
 run('cargo',['build','--manifest-path',path.join(source,'Cargo.toml'),'--locked','--release','--bin','axiom-direct-verify'],{env:environment});
 await fs.mkdir(path.join(output,'runtime'),{recursive:true});
 const binaryName='axiom-direct-verify'+(process.platform==='win32'?'.exe':'');
