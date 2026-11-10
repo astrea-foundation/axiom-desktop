@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
+pub(crate) const KEYRING_SERVICE: &str = "stream.axiom.desktop.mcp";
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(crate) struct DesktopMcpState {
     pub revision: u64,
@@ -81,7 +83,7 @@ pub(crate) fn validate_input(input: &DesktopMcpServerInput) -> Result<()> {
 fn credential_entry(store: &SessionStore, name: &str) -> Result<keyring::Entry> {
     let account_root = store.active_desktop_cwd()?;
     let scope = Sha256::digest(account_root.as_os_str().to_string_lossy().as_bytes());
-    keyring::Entry::new("stream.axiom.desktop.mcp", &format!("{scope:x}:{name}"))
+    keyring::Entry::new(KEYRING_SERVICE, &format!("{scope:x}:{name}"))
         .map_err(|_| AxiomError::Storage("MCP system credential store is unavailable".into()))
 }
 

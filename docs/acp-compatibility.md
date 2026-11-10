@@ -65,7 +65,7 @@ reactivate them after an account or connection changes and returns.
 Other advertised features are version **1**:
 `desktopChat`, `desktopAgent`, `threadCatalog`, `modelCatalog`,
 `profilePreferences`, `collections`, `usage`,
-`webConsent`, `steering`, `messageRevision`, `compaction`, and `activity`.
+`webConsent`, `steering`, `messageRevision`, `compaction`, `imageResources`, and `activity`.
 The source `FeatureVersions` and generated schema are authoritative.
 
 `securityEvidence@4` carries verified hardware, key, freshness and provenance
@@ -129,6 +129,20 @@ request, with input/output tokens, model, time and optional pinned capacity/
 compaction threshold. It is persisted atomically with thread revision. It does
 not estimate unsent drafts, sum billing, or get overwritten by compaction/title
 work. Request-accounting reconciliation never marks partial output verified.
+
+`imageResources@1` replaces generated image bytes in live updates and saved
+Desktop timeline pages with conversation-owned descriptors. `_axiom/image/read`
+returns one completed image for the active account's exact thread, tool-call ID
+and SHA-256. Main validates its PNG bytes, geometry and hash, then gives the
+renderer an opaque document-scoped handle. Reads near the viewport are limited
+to two at a time, with a bounded cache for inactive image URLs. Account/runtime
+changes revoke handles and reject late replies; loading errors keep the rest
+of the conversation usable and offer an explicit retry.
+
+A Desktop client with the timeline extension may send
+`_meta.axiom.skipHistoryReplay: true` on `session/load`. Native runtime history
+still restores, including damaged-record recovery, while Desktop fetches its
+authoritative timeline once. Standard ACP clients retain transcript replay.
 
 ## Desktop authority and revisions
 
@@ -278,7 +292,9 @@ and observed-versus-approved distinctions from [security](threat-model.md).
 ## Process bounds and contract generation
 
 ACP is newline-delimited JSON-RPC. Stdout is protocol-only. The Node client bounds
-frames to 64 MiB and retained stderr to 64 KiB, honors stdin backpressure, rejects
+frames to 64 MiB and retained stderr to 64 KiB, assembles fragmented frames with
+linear byte copying, stops a chunk immediately after a fatal parse error,
+honors stdin backpressure, rejects
 pending work on process exit, and never exposes raw method dispatch to the renderer.
 Typed extension failures include a bounded code/message/retryability object;
 clients must not infer authority or retry behavior from display text.

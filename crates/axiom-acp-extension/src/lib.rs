@@ -81,6 +81,8 @@ pub struct FeatureVersions {
     pub web_consent: u16,
     /// Version 2 exposes one image tool automatically for vision models.
     pub image_generation: u16,
+    /// Metadata-only image presentation with account-scoped on-demand reads.
+    pub image_resources: u16,
     pub steering: u16,
     pub message_revision: u16,
     pub attachments: u16,
@@ -106,6 +108,7 @@ impl FeatureVersions {
             security_evidence: 4,
             web_consent: 1,
             image_generation: 4,
+            image_resources: 1,
             steering: 1,
             message_revision: 1,
             attachments: 2,
@@ -961,6 +964,25 @@ pub struct RegenerateImageResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcRequest)]
+#[request(method = "_axiom/image/read", response = ReadImageResponse)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReadImageRequest {
+    pub thread_id: String,
+    pub call_id: String,
+    pub sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcResponse)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadImageResponse {
+    pub data: String,
+    pub mime_type: String,
+    pub width: u32,
+    pub height: u32,
+    pub sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcRequest)]
 #[request(method = "_axiom/thread/delete_preview", response = DeletePreviewResponse)]
 #[serde(rename_all = "camelCase")]
 pub struct DeletePreviewRequest {
@@ -1433,6 +1455,8 @@ pub struct ProtocolSchema {
     pub get_attachments_response: GetAttachmentsResponse,
     pub regenerate_image_request: RegenerateImageRequest,
     pub regenerate_image_response: RegenerateImageResponse,
+    pub read_image_request: ReadImageRequest,
+    pub read_image_response: ReadImageResponse,
     pub delivery_metadata: DeliveryMetadata,
     pub list_threads_request: ListThreadsRequest,
     pub list_threads_response: ListThreadsResponse,

@@ -349,6 +349,16 @@ with the release; retain raw operational captures privately.
 
 ## Windows setup and Store acceptance
 
+Factory reset requires Windows VM qualification before release: start with
+synthetic chats in multiple accounts, persisted Desktop/CLI settings, a native
+refresh token and an MCP credential. Confirm from signed-out/disconnected
+Settings, verify cleanup starts after Desktop exits, inspect both application
+folders and Credential Manager, and sign in again to an empty profile. Also
+exercise a locked/denied vault, another active CLI, and a file deletion failure;
+incomplete resets must reopen with a visible error. Native/controller and browser
+tests cover isolated files, mock credentials, exclusion, confirmation and retry;
+these do not replace Windows vault and installer qualification.
+
 The 0.1.12 offline package and website Setup were published after signed Windows
 installation qualification. The live older-to-current first-launch check then
 found a separate native updater failure: the canonical job path is rejected

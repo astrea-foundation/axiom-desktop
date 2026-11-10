@@ -762,6 +762,14 @@ fn missing_attachments_and_broken_image_records_keep_text_loadable_and_editable(
                 )
                 .unwrap()
         };
+        let page = store
+            .thread_page_with_image_resources(&id, None, None, 250)
+            .unwrap();
+        assert!(
+            page.items
+                .iter()
+                .any(|item| item.kind == TimelineItemKind::UserMessage)
+        );
         let history = store.load(&id).unwrap();
         assert!(history.iter().any(|event| matches!(&event.event, AppEvent::PromptAccepted { text, attachments, .. } if text=="hello" && attachments.is_empty())));
         assert!(

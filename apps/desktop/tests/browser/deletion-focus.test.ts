@@ -29,7 +29,7 @@ function depositBilling(postedMicrousd: number, revision = 1): BillingStatus {
 }
 
 before(async () => {
-  server = await createServer({
+  server = await createServer({ cacheDir: fileURLToPath(new URL("../../node_modules/.vite-tests/deletion-focus.test", import.meta.url)),
     configFile: false,
     root: fileURLToPath(new URL("../../src/renderer", import.meta.url)),
     plugins: [react(), tailwindcss()],
@@ -1241,6 +1241,7 @@ for (const platform of ["linux", "win32", "darwin"]) {
       await settle();
       assert.equal(await viewport.evaluate((el) => el.scrollTop), pausedTop, "scrolling up preserves the reading position");
 
+      await jump.hover(); // Floating controls must pass wheel scrolling through to the chat.
       await page.mouse.wheel(0, 10_000);
       await atBottom();
       await jump.waitFor({ state: "hidden" });
@@ -3803,6 +3804,66 @@ test("1536-pixel local image resources survive streaming updates while the compo
     await page.keyboard.press("Escape");
     await dialog.waitFor({ state: "detached" });
     assert.equal(await page.getByRole("link", { name: "Save image", exact: true }).getAttribute("href"), url);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("lazy generated images fetch near the viewport, preserve layout, and retry a failed read", async () => {
+  const { page, errors } = await openApp("linux", false, [], "medium", true, false);
+  try {
+    await page.locator('[data-thread-id="old-thread"]').click();
+    await page.evaluate(() => {
+      const reads: string[] = [], releases: string[] = [];
+      const urls = new Map<string, string>();
+      let failMiddle = true;
+      Object.assign(window, { __lazyImageReads: reads, __lazyImageReleases: releases });
+      (window as any).axiomDesktop.agent.loadGeneratedImage = async (id: string) => {
+        if (urls.has(id)) return { imageUrl: urls.get(id), width: 1024, height: 1024 };
+        reads.push(id);
+        if (id === "asset-10" && failMiddle) { failMiddle = false; throw new Error("fixture read failed"); }
+        const canvas = document.createElement("canvas"); canvas.width = 1024; canvas.height = 1024;
+        const context = canvas.getContext("2d")!;
+        context.fillStyle = "#164e63"; context.fillRect(0, 0, 1024, 1024);
+        context.fillStyle = "white"; context.font = "64px sans-serif"; context.fillText(`Image ${id.slice(6)}`, 120, 510);
+        const blob = await new Promise<Blob>(resolve => canvas.toBlob(value => resolve(value!), "image/png"));
+        const imageUrl = URL.createObjectURL(blob); urls.set(id, imageUrl);
+        return { imageUrl, width: 1024, height: 1024 };
+      };
+      (window as any).axiomDesktop.agent.releaseGeneratedImage = (id: string) => { releases.push(id); };
+      (window as any).__deletionTest.setTimeline(Array.from({ length: 20 }, (_, index) => ({
+        id: `generated-${index}`, kind: "tool", text: "", status: "completed", tool: {
+          callId: `generated-${index}`, name: "generate", title: "generate", kind: "other", status: "completed",
+          input: { prompt: `Image ${index}` }, locations: [],
+          content: [{ type: "image", mimeType: "image/png", assetId: `asset-${index}`, width: 1024, height: 1024 }],
+        },
+      })));
+    });
+    const middle = page.locator('[data-tool-call-id="generated-10"]');
+    await page.locator('[data-tool-call-id="generated-19"] img').waitFor();
+    const before = await middle.locator("figure").boundingBox();
+    const initial = await page.evaluate(() => (window as any).__lazyImageReads as string[]);
+    assert.ok(initial.length <= 6, `only nearby images load on open: ${initial}`);
+    assert.ok(!initial.includes("asset-10"), "opening the thread must leave distant originals unfetched");
+    assert.equal(await middle.locator("img").count(), 0);
+    await page.locator("[data-chat-scroll]").hover();
+    await page.mouse.wheel(0, -300);
+    await middle.scrollIntoViewIfNeeded();
+    await middle.getByRole("button", { name: "Retry loading image", exact: true }).click();
+    const trigger = middle.getByRole("button", { name: "View generated image", exact: true });
+    await trigger.waitFor();
+    const after = await middle.locator("figure").boundingBox();
+    assert.ok(before && after && Math.abs(before.height - after.height) < 1, "reserved image dimensions prevent scroll jumps");
+    const source = await trigger.locator("img").getAttribute("src");
+    await trigger.click();
+    const dialog = page.getByRole("dialog", { name: "Image preview: Generated image", exact: true });
+    await dialog.waitFor();
+    assert.equal(await dialog.locator("img").getAttribute("src"), source);
+    await page.keyboard.press("Escape"); await dialog.waitFor({ state: "detached" });
+    assert.equal(await middle.getByRole("link", { name: "Save image", exact: true }).getAttribute("href"), source);
+    const final = await page.evaluate(() => ({ reads: (window as any).__lazyImageReads, releases: (window as any).__lazyImageReleases }));
+    assert.equal(final.reads.filter((id: string) => id === "asset-10").length, 2, "one failed read and one explicit retry");
+    assert.ok(final.reads.length < 20);
+    assert.ok(final.releases.includes("asset-19"), "scrolled-out images release their displayed resource");
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
 });

@@ -40,6 +40,12 @@
     "regenerateImageResponse": {
       "$ref": "#/$defs/RegenerateImageResponse"
     },
+    "readImageRequest": {
+      "$ref": "#/$defs/ReadImageRequest"
+    },
+    "readImageResponse": {
+      "$ref": "#/$defs/ReadImageResponse"
+    },
     "deliveryMetadata": {
       "$ref": "#/$defs/DeliveryMetadata"
     },
@@ -238,6 +244,8 @@
     "getAttachmentsResponse",
     "regenerateImageRequest",
     "regenerateImageResponse",
+    "readImageRequest",
+    "readImageResponse",
     "deliveryMetadata",
     "listThreadsRequest",
     "listThreadsResponse",
@@ -883,6 +891,14 @@
           "maximum": 65535,
           "default": 0
         },
+        "imageResources": {
+          "description": "Metadata-only image presentation with account-scoped on-demand reads.",
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535,
+          "default": 0
+        },
         "steering": {
           "type": "integer",
           "format": "uint16",
@@ -1201,6 +1217,57 @@
       },
       "required": [
         "callId"
+      ]
+    },
+    "ReadImageRequest": {
+      "type": "object",
+      "properties": {
+        "threadId": {
+          "type": "string"
+        },
+        "callId": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "threadId",
+        "callId",
+        "sha256"
+      ]
+    },
+    "ReadImageResponse": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "string"
+        },
+        "mimeType": {
+          "type": "string"
+        },
+        "width": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "height": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "sha256": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "data",
+        "mimeType",
+        "width",
+        "height",
+        "sha256"
       ]
     },
     "DeliveryMetadata": {

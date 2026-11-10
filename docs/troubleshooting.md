@@ -31,9 +31,14 @@ ordinary Desktop/CLI launches omit this flag. Older clients reject the unknown
 flag before reading any credential; hosts must not retry without it.
 
 Desktop preserves the native sign-in failure reason in its error banner, including
-TLS connection causes. Version 0.1.7 can hide failures while starting sign-in behind
-the generic `Internal error` message. A failed start can happen before a request
-reaches the account service, so server logs alone cannot identify it.
+TLS connection causes. When starting sign-in fails with `InvalidContentType`,
+the banner says **Couldn’t connect securely**, explains that browser sign-in could
+not start, and suggests checking VPN, proxy or network-filter settings or trying
+another network. Expand **Technical details** for the original native error.
+This explanation does not identify which component sent the invalid data.
+Version 0.1.7 can hide failures while starting sign-in behind the generic
+`Internal error` message. A failed start can happen before a request reaches the
+account service, so server logs alone cannot identify it.
 
 If sign-in and the update check both fail to connect, compare the same check on
 another network (for example, a phone hotspot). On macOS, run the bundled native
@@ -74,6 +79,39 @@ account has no credit. Use **Refresh balance** to retry. Valid credit remains
 visible if only deposit provisioning is temporarily unavailable; the address
 stays pending until it can be validated. Billing and inference have separate
 limits, so a balance error alone does not identify the cause of a chat rejection.
+
+## Completely reset local data
+
+Reinstalling keeps Axiom's account data. To erase it, open **Settings → Account →
+Factory reset Axiom…**, type `RESET`, and choose **Delete everything and restart**.
+The control works while signed out or disconnected. Close other AxiomCLI windows
+first. See [configuration](configuration.md#paths-and-local-state) for the full
+deletion scope and the offline `axiomcli factory-reset --confirm` command.
+
+On older versions without factory reset, quit Desktop, CLI and local proxies,
+then remove the application's directories and its saved credentials. This
+permanently removes local history for every account. These are the default paths;
+explicit XDG overrides change native config/data locations.
+
+| Platform | App-owned directories to remove if present |
+|---|---|
+| Windows | `%APPDATA%\Axiom`, `%APPDATA%\axiom-desktop`, `%APPDATA%\axiom`, `%LOCALAPPDATA%\axiom`, `%LOCALAPPDATA%\Axiom`, `%LOCALAPPDATA%\axiom-desktop` |
+| macOS | `~/Library/Application Support/Axiom`, `~/Library/Application Support/axiom-desktop`, `~/Library/Application Support/axiom`, `~/Library/Caches/Axiom`, `~/Library/Caches/axiom-desktop`, `~/Library/Caches/axiom`, `~/Library/Logs/Axiom`, `~/Library/Logs/axiom-desktop` |
+| Linux | `${XDG_CONFIG_HOME:-~/.config}/Axiom`, `${XDG_CONFIG_HOME:-~/.config}/axiom-desktop`, `${XDG_CONFIG_HOME:-~/.config}/axiom`, `${XDG_DATA_HOME:-~/.local/share}/axiom`, `${XDG_CACHE_HOME:-~/.cache}/Axiom`, `${XDG_CACHE_HOME:-~/.cache}/axiom-desktop`, `${XDG_CACHE_HOME:-~/.cache}/axiom` |
+
+On a case-insensitive filesystem, `Axiom` and `axiom` refer to the same directory.
+In **Credential Manager → Windows Credentials**, **Keychain Access** on macOS,
+or the system **Passwords and Keys** app on Linux, remove Axiom entries with
+service names `stream.axiom.axiomcli` and `stream.axiom.desktop.mcp`. Windows
+generic credentials include these service names after the account name in their
+target. Leave other applications' credentials alone, then reopen Axiom and sign
+in. The online account, balance and hosted API keys remain available; external
+browser sessions and files saved outside Axiom-managed folders are kept.
+
+If a TLS error such as `InvalidContentType` persists after a clean reset, compare
+the native client's update check on another network and inspect VPN, proxy and
+network-filter settings as described above. A clean profile does not repair a
+broken TLS connection.
 
 ## Local proxy
 

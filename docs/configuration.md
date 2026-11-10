@@ -61,6 +61,38 @@ configuration, identity, vault credentials, trust policy and workspace files are
 separate. Reset is destructive for the selected local history; it does not
 reset a hosted account or payment ledger.
 
+For a complete clean install, use **Settings → Account → Factory reset Axiom…**
+and type `RESET`. The equivalent offline recovery command, after quitting Desktop,
+CLI and proxy processes, is:
+
+```sh
+axiomcli factory-reset --confirm
+```
+
+Factory reset deletes all accounts' Desktop and CLI history, attachments and
+managed chat folders; shared and frontend configuration; installation identity
+and trust-policy caches; saved Axiom sign-ins and MCP secrets in the OS credential
+store; and Electron profiles, browser storage, logs and update caches. It works
+without loading configuration or database schemas and makes no network requests.
+The Desktop action stops its native processes, exits, runs the bundled cleanup
+helper after file handles close, and reopens Axiom. Other native processes using
+the same data must be closed; reset refuses to run while their storage lease is
+held. An empty `.axiom-factory-reset.lock` coordination file outside the data
+tree remains, containing no user information.
+
+The online account, credit, hosted API keys, external browser sign-in and files
+outside Axiom-managed storage are kept. Files in a custom Agent working directory
+or a Downloads folder are outside reset's scope. An OS credential-store failure
+leaves files available for retry; deletion can be partial if the filesystem fails
+after credential cleanup. Desktop displays an error after reopening if reset did
+not finish. Unlock the vault or close remaining processes and retry. Development
+staging/local profiles, including named profiles, reset their isolated files and
+scoped credentials. A production reset clears both Axiom credential services,
+including retired secrets.
+
+See [troubleshooting](troubleshooting.md#completely-reset-local-data) for manual
+recovery on versions that predate the factory reset command.
+
 ## Trusted user configuration
 
 ```toml
