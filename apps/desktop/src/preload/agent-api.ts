@@ -86,6 +86,7 @@ export interface AgentApi {
   openAccountPortal: () => Promise<void>;
   logout: () => Promise<AccountStatusResponse>;
   prewarmSecurity: (modelId: string) => Promise<VerifySecurityResponse>;
+  ensureSecurity: (sessionId: string) => Promise<VerifySecurityResponse>;
   verifySecurity: (sessionId: string, acceptOutdatedTee?: boolean, modelId?: string) => Promise<VerifySecurityResponse>;
   compact: (sessionId: string, focus?: string) => Promise<CompactResponse>;
   deletePreview: (sessionIds: string[]) => Promise<DeletePreviewResponse>;
@@ -157,6 +158,7 @@ export const agentApi: AgentApi = {
   openAccountPortal: () => invoke("account-open"),
   logout: () => invoke("logout"),
   prewarmSecurity: (modelId) => invoke("security-prewarm", modelId),
+  ensureSecurity: (sessionId) => invoke("security-ensure", sessionId),
   verifySecurity: (sessionId, acceptOutdatedTee, modelId) => invoke("security-verify", sessionId, acceptOutdatedTee, modelId),
   compact: (sessionId, focus) => invoke("compact", sessionId, focus),
   deletePreview: (sessionIds) => invoke("delete-preview", sessionIds),

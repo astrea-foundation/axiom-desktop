@@ -5,6 +5,7 @@ import { chromium, type Browser, type Page } from "playwright";
 import { createServer, type ViteDevServer } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
+import { securityEvidence } from "../../../../fixtures/desktop-security.mts";
 import type { ClientState, DesktopMcpRequest, DesktopMcpResponse, ApiKeyRecord, AccountStatus, BillingStatus, ClientSessionState, ClientTimelineItem, ContextUsage, ConfigureDesktopAgentRequest, DesktopAgentSettings, ListModelsResponse } from "@axiom/axiom-acp-client";
 
 // Real renderer/DOM focus tests, but no Electron window, OS input, account,
@@ -306,7 +307,12 @@ async function openApp(platform = "linux", failDelete = false, thinkingLevels: s
         setAccountState: (account: AccountStatus) => { state.account = account; state.sessions = {}; state.catalog = []; emit(); },
         setBilling: (billing: BillingStatus) => { state.billing = billing; emit(); },
         setError: (error: string | null) => { state.error = error; emit(); },
-        setSecurity: (security: string) => { state.sessions["old-thread"]!.security = { state: security }; emit(); },
+        setSecurity: (security: string, evidence: ClientSessionState["securityEvidence"] = null) => {
+          const selected = state.sessions["old-thread"]!;
+          selected.security = { state: security };
+          (selected as ClientSessionState).securityEvidence = evidence;
+          emit();
+        },
         failBalance: (fail: boolean) => { failBalance = fail; },
         setRuntime: (id: string, connected = true) => { state.runtimeInstanceId = id; state.connected = connected; emit(); },
         finishTurn: () => { state.sessions["old-thread"]!.running = false; state.sessions["old-thread"]!.activeTurnId = null; emit(); },
@@ -416,6 +422,34 @@ for (const ending of ["completion", "stop", "failure"]) test(`model selection st
     await picker.getByRole("button", { name: /Other model/ }).click();
     await page.waitForFunction(() => (window as any).__deletionTest.settingsCalls.some((request: any) => request.model === "other-model"));
     assert.equal(await selector.innerText(), "Other model");
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("Desktop automatic TEE renewal uses its cached-report action and explicit Refresh forces verification", async () => {
+  const { page, errors } = await openApp();
+  try {
+    await page.evaluate((report) => {
+      const app = (window as any).__deletionTest;
+      const agent = (window as any).axiomDesktop.agent;
+      agent.ensureSecurity = async (id: string) => {
+        app.calls.push({ method: "ensureSecurity", id });
+        app.setSecurity("verified", report);
+        return { status: { state: "verified" }, evidence: report };
+      };
+      agent.verifySecurity = async (id: string) => {
+        app.calls.push({ method: "verifySecurity", id });
+        app.setSecurity("verified", report);
+        return { status: { state: "verified" }, evidence: report };
+      };
+    }, securityEvidence());
+    await page.locator('[data-thread-id="old-thread"]').click();
+    await page.getByRole("button", { name: "TEE verified. View privacy proof", exact: true }).waitFor();
+    assert.equal((await calls(page)).filter(call => call.method === "ensureSecurity").length, 1);
+    assert.equal((await calls(page)).filter(call => call.method === "verifySecurity").length, 0);
+    await page.getByRole("button", { name: "Refresh TEE verification", exact: true }).click();
+    await page.waitForFunction(() => (window as any).__deletionTest.calls.some((call: any) => call.method === "verifySecurity"));
+    assert.equal((await calls(page)).filter(call => call.method === "ensureSecurity").length, 1);
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
 });

@@ -356,6 +356,9 @@ function installAgentIpc(): void {
   agentHandle("agent:security-prewarm", (_event, modelId: unknown) =>
     sidecar.prewarmSecurity(boundedString(modelId, "model ID", 512)),
   );
+  agentHandle("agent:security-ensure", (_event, sessionId: unknown) =>
+    sidecar.ensureSecurity(boundedString(sessionId, "session ID", 128)),
+  );
   agentHandle("agent:security-verify", (_event, sessionId: unknown, acceptOutdatedTee: unknown, modelId: unknown) =>
     sidecar.verifySecurity(boundedString(sessionId, "session ID", 128), acceptOutdatedTee === true,
       acceptOutdatedTee === true ? boundedString(modelId, "model ID", 512) : undefined),

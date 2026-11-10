@@ -815,6 +815,38 @@ export class AxiomAcpClient extends EventEmitter {
     return entry.promise;
   }
 
+  /** Renew the displayed report through the native reusable proof cache.
+   * Explicit verifySecurity remains the only path that forces fresh attestation. */
+  async ensureSecurity(threadId: string): Promise<VerifySecurityResponse> {
+    const accountContext = this.state.accountContextToken();
+    const context = this.state.securityContextToken(threadId);
+    const session = this.state.snapshot().sessions[threadId];
+    const modelId = session?.settings?.model;
+    if (!context || !modelId) throw new ProtocolError("Load this thread before verifying its model");
+    if (session.running) throw new ProtocolError("Wait for the current reply before refreshing verification");
+    const existing = this.securityVerifications.get(threadId);
+    if (existing?.context === context) return existing.promise;
+    const cached = this.securityWarmups.get(modelId);
+    if (cached?.context === accountContext && !cached.pending && cached.validUntil > 0
+      && cached.validUntil <= Date.now() + 30_000) {
+      // Re-read native cached material near expiry. This drops only the JS
+      // report, never the provider proof, pinned transport or retry backoff.
+      this.securityWarmups.delete(modelId);
+    }
+    const result = await this.prewarmSecurity(modelId);
+    const current = this.state.snapshot().sessions[threadId];
+    if (this.state.accountContextToken() !== accountContext || this.state.securityContextToken(threadId) !== context
+      || !current || current.running || this.securityVerifications.has(threadId)) {
+      throw new ProtocolError("The verification context changed; refresh the selected model");
+    }
+    const evidence = publicSecurityEvidence(result, modelId);
+    if (!evidence || evidence.hardExpiresAtUnixSeconds * 1000 <= Date.now()) throw new ProtocolError("Verification returned no fresh evidence");
+    // Cached warmups may predate this thread. Apply the public report only to
+    // its still-idle, unchanged model/account/runtime; keep the original expiry.
+    this.state.setSecurityVerification(threadId, { pending: false, evidence, status: result.status });
+    return { status: result.status, evidence };
+  }
+
   verifySecurity(threadId: string, acceptOutdatedTee = false, expectedModelId?: string): Promise<VerifySecurityResponse> {
     const context = this.state.securityContextToken(threadId);
     const accountContext = this.state.accountContextToken();

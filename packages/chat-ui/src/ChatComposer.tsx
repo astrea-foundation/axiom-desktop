@@ -58,6 +58,7 @@ interface ChatComposerProps {
   requestUsage?: ClientSessionState["requestUsage"];
   activeTurnId?: string | null;
   onVerifySecurity?: () => void | Promise<unknown>;
+  onEnsureSecurity?: () => void | Promise<unknown>;
   webEnabled?: boolean;
   webDisabled?: boolean;
   onWebToggle?: () => void;
@@ -89,6 +90,7 @@ export function ChatComposer({
   requestUsage = [],
   activeTurnId,
   onVerifySecurity,
+  onEnsureSecurity,
   webEnabled = false,
   webDisabled = false,
   onWebToggle,
@@ -310,7 +312,7 @@ export function ChatComposer({
             {security !== undefined && onVerifySecurity ? (
               <TeeVerificationBadge key={JSON.stringify([securityScope, security.sessionId, selectedModelId])}
                 session={security} model={models.find((model) => model.id === selectedModelId)} modelId={selectedModelId}
-                webEnabled={webEnabled} disabledReason={securityRefreshDisabledReason} onVerify={onVerifySecurity} />
+                webEnabled={webEnabled} disabledReason={securityRefreshDisabledReason} onVerify={onVerifySecurity} onEnsure={onEnsureSecurity} />
             ) : null}
             <ContextUsageIndicator
               usage={contextUsage}
