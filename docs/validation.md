@@ -441,3 +441,13 @@ cancel-and-restart flow, the saved sent-transfer hint, continued tracking beyond
 the quote deadline and small-window layout
 on Windows and macOS previews. Keep Desktop and its bundled `billing@4` sidecar
 together. Installer publishing remains separate release work.
+
+The managed development Rust verifier replacement passed 49 signed synthetic
+Python/Rust equivalence cases, hostile-input/clock/canonical-binding checks,
+strict Clippy, the Python operator adapter/reference suite and an independently
+locked standalone build. Its unsigned Darwin ARM64 native sidecar passed clean
+environment self-test/rejection, native architecture, inventory and executable
+digest checks. Packaging fixtures cover native Windows ARM64 and the retained
+x64 fallback. Other platform binaries, measured worker/gateway images and live
+hardware/provider acceptance remain release qualification work; no installer,
+production deployment or signed trust-policy change was performed by this batch.
