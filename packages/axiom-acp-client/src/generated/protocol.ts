@@ -143,6 +143,8 @@ export interface ProtocolSchema {
   getAttachmentsResponse: GetAttachmentsResponse;
   regenerateImageRequest: RegenerateImageRequest;
   regenerateImageResponse: RegenerateImageResponse;
+  readImageRequest: ReadImageRequest;
+  readImageResponse: ReadImageResponse;
   deliveryMetadata: DeliveryMetadata;
   listThreadsRequest: ListThreadsRequest;
   listThreadsResponse: ListThreadsResponse;
@@ -324,6 +326,10 @@ export interface FeatureVersions {
    * Version 2 exposes one image tool automatically for vision models.
    */
   imageGeneration?: number;
+  /**
+   * Metadata-only image presentation with account-scoped on-demand reads.
+   */
+  imageResources?: number;
   steering?: number;
   messageRevision?: number;
   attachments?: number;
@@ -418,6 +424,19 @@ export interface RegenerateImageRequest {
 }
 export interface RegenerateImageResponse {
   callId: string;
+  [k: string]: unknown;
+}
+export interface ReadImageRequest {
+  threadId: string;
+  callId: string;
+  sha256: string;
+}
+export interface ReadImageResponse {
+  data: string;
+  mimeType: string;
+  width: number;
+  height: number;
+  sha256: string;
   [k: string]: unknown;
 }
 /**

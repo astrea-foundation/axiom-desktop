@@ -42,6 +42,11 @@ draft; navigation, reselecting a thread and reload preserve them. An anonymous
 draft can follow the first sign-in. Pending first-message setup has its own
 identity, so navigating away does not silently discard or redirect it.
 
+Saved generated images load as they approach the viewport. Loading failures show
+**Retry loading image** without blocking messages or the rest of the thread.
+Image reads and cache memory are bounded; reopening a conversation no longer
+replays all saved image bytes before loading its timeline.
+
 ## Balance and payments
 
 Open the account menu and choose **Balance** to view credit and top up with mainnet

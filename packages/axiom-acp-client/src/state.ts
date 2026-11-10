@@ -175,7 +175,10 @@ function mergeTool(
   callId: string,
   update: Record<string, unknown>,
 ): ToolActivity {
-  const content = Array.isArray(update.content) ? update.content : [];
+  const resource = object(object(update.rawOutput)?.imageResource);
+  const content = resource ? [{ type: "image", mimeType: resource.mimeType, width: resource.width, height: resource.height,
+    imageResource: { callId: resource.callId, sha256: resource.sha256 } }]
+    : Array.isArray(update.content) ? update.content : [];
   const locations = Array.isArray(update.locations) ? update.locations : [];
   return {
     callId,

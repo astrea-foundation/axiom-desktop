@@ -6,6 +6,8 @@ export interface ChatHost {
   chrome?: { isMac: boolean; fullScreen: boolean; trafficLightInsetClass: string };
   getAttachments?(threadId: string, userItemId: string): Promise<{ attachments: PromptAttachment[] }>;
   regenerateImage?(threadId: string, callId: string): Promise<{ callId: string }>;
+  loadGeneratedImage?(assetId: string): Promise<{ imageUrl: string; width: number; height: number }>;
+  releaseGeneratedImage?(assetId: string): void;
   usageSummary?(accountId: string, request: Pick<UsageSummaryRequest, 'period' | 'timezone'>): Promise<{ summary: UsageSummary }>;
   resolvePermission?(interactionId: string, outcome: PermissionOutcome): Promise<unknown>;
   resolveElicitation?(interactionId: string, outcome: ElicitationOutcome): Promise<unknown>;

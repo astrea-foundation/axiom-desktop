@@ -172,6 +172,14 @@ pub async fn serve_stdio(
         async,
         builder,
         context,
+        images::read,
+        extension::ReadImageRequest,
+        extension::ReadImageResponse
+    );
+    let builder = request_handler!(
+        async,
+        builder,
+        context,
         threads::delete_preview,
         DeletePreviewRequest,
         DeletePreviewResponse

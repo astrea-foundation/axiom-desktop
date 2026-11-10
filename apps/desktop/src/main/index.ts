@@ -155,6 +155,8 @@ function installAgentIpc(): void {
     clipboard.writeText(proxy.copyToken(boundedString(accountId, "account ID", 128), boundedString(runtimeId, "runtime ID", 128)));
   });
   agentHandle("agent:state", (event) => sidecar.rendererState(event.sender));
+  agentHandle("agent:image-read", (event, context: unknown, id: unknown) =>
+    sidecar.rendererImage(event.sender, boundedString(context, "image context", 128), boundedString(id, "image resource", 128)));
   agentHandle("agent:usage-summary", async (_event, accountId: unknown, period: unknown = "all_time", timezone: unknown = "UTC") => {
     const id = boundedString(accountId, "account ID", 128);
     if (period !== "week" && period !== "month" && period !== "all_time") throw new Error("Invalid usage period");

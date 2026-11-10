@@ -27,6 +27,7 @@ import type {
   ConfigureDesktopAgentResponse,
   EventNotification,
   GetThreadTimelineResponse,
+  ReadImageResponse,
   ListModelsResponse,
   ListThreadsRequest,
   ListThreadsResponse,
@@ -72,6 +73,7 @@ const EXTENSION_CAPABILITIES = {
     securityEvidence: 4,
     webConsent: 1,
     imageGeneration: 4,
+    imageResources: 1,
     steering: 1,
     messageRevision: 1,
     attachments: 2,
@@ -165,6 +167,7 @@ export class AxiomAcpClient extends EventEmitter {
   private supportsMcp = false;
   private supportsImageGeneration = false;
   private supportsImageRegeneration = false;
+  private supportsImageResources = false;
   private supportsCryptoInvoices = false;
   private supportsAttachments = false;
   private desktopBootstrap: DesktopBootstrapResponse | null = null;
@@ -246,6 +249,7 @@ export class AxiomAcpClient extends EventEmitter {
     this.supportsMcp = (meta?.features?.desktopMcp ?? 0) >= 1;
     this.supportsImageGeneration = (meta?.features?.imageGeneration ?? 0) >= 3;
     this.supportsImageRegeneration = (meta?.features?.imageGeneration ?? 0) >= 4;
+    this.supportsImageResources = (meta?.features?.imageResources ?? 0) >= 1;
     this.state.setImageGenerationAvailable(this.supportsImageGeneration);
     this.supportsCryptoInvoices = (meta?.features?.billing ?? 0) >= 5;
     this.supportsAttachments = (meta?.features?.attachments ?? 0) >= 2;
@@ -352,7 +356,13 @@ export class AxiomAcpClient extends EventEmitter {
   async loadSession(threadId: string, cwd: string): Promise<SessionStartResult> {
     this.assertInitialized();
     const accountContext = this.state.accountContextToken();
-    const result = await this.process.request<SessionStartResult>("session/load", { sessionId: threadId, cwd, mcpServers: [] });
+    const result = await this.process.request<SessionStartResult>("session/load", {
+      sessionId: threadId, cwd, mcpServers: [],
+      // Desktop atomically restores the authoritative timeline below. Replaying
+      // every saved event first transfers all generated images a second time
+      // and publishes a growing state snapshot for each historical event.
+      ...(this.desktopBootstrap ? { _meta: { axiom: { skipHistoryReplay: true } } } : {}),
+    });
     this.assertAccountContext(accountContext);
     this.state.addSession(threadId, cwd);
     if (result.modes) this.state.setModes(threadId, result.modes.currentModeId, result.modes.availableModes);
@@ -434,6 +444,17 @@ export class AxiomAcpClient extends EventEmitter {
     const context = this.state.accountContextToken();
     const result = await this.process.request<GetAttachmentsResponse>("_axiom/thread/attachments", { threadId, userItemId });
     this.assertAccountContext(context);
+    return result;
+  }
+
+  async readImage(threadId: string, callId: string, sha256: string): Promise<ReadImageResponse> {
+    if (!this.supportsImageResources) throw new ProtocolError("Restart Axiom to load saved images.");
+    const context = this.state.accountContextToken();
+    const result = await this.process.request<ReadImageResponse>("_axiom/image/read", { threadId, callId, sha256 });
+    this.assertAccountContext(context);
+    if (result.sha256 !== sha256 || result.mimeType !== "image/png" || typeof result.data !== "string" || result.data.length > 14_000_000) {
+      throw new ProtocolError("Saved image identity differs");
+    }
     return result;
   }
 

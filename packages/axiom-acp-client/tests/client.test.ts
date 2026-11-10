@@ -913,8 +913,14 @@ test("desktop Agent settings own per-thread workspaces and persist permissions a
     client = new AxiomAcpClient(options);
     await client.initialize();
     await client.bootstrapDesktop();
+    const replayed: unknown[] = [];
+    client.process.on("notification", (notification) => {
+      if (JSON.stringify(notification).includes("hello from desktop profile")) replayed.push(notification);
+    });
     await client.loadChat(created.sessionId);
+    assert.deepEqual(replayed, [], "Desktop restores history from its authoritative timeline once");
     const restored = client.getState().sessions[created.sessionId]!;
+    assert.ok(restored.timeline.some((item) => item.kind === "user" && item.text === "hello from desktop profile"));
     assert.equal(restored.cwd, customCwd);
     assert.equal(restored.currentModeId, "confirm");
     assert.deepEqual(restored.desktopAgent, configured.agent);
