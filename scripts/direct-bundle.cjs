@@ -3,7 +3,7 @@ const path = require('node:path');
 const {createHash} = require('node:crypto');
 const {spawnSync} = require('node:child_process');
 
-const targets = new Set(['darwin-arm64','darwin-x64','win32-x64','linux-x64']);
+const targets = new Set(['darwin-arm64','darwin-x64','win32-x64','win32-arm64','linux-x64']);
 const digest = data => createHash('sha256').update(data).digest('hex');
 const inside = (root, child) => child.startsWith(root + path.sep);
 const macho = data => ['cffaedfe','cefaedfe','cafebabe','cafebabf'].includes(data.subarray(0,4).toString('hex'));
@@ -72,9 +72,14 @@ async function bundleTargets(source,options) {
   }))).every(Boolean);
   // Electron's universal packager invokes hooks for each thin app before merge.
   // Give both apps identical signed resources so the final app retains both CPUs.
-  return options.platform === 'darwin' && (options.architecture === 'universal' || hasBothMacRuntimes)
+  let architecture = options.architecture;
+  if (options.platform === 'win32' && architecture === 'arm64') {
+    try { await fs.access(path.join(source,'win32-arm64','bundle.json')); }
+    catch (error) { if(error.code!=='ENOENT') throw error; architecture='x64'; }
+  }
+  return options.platform === 'darwin'  && (options.architecture === 'universal' || hasBothMacRuntimes)
     ? ['darwin-arm64','darwin-x64']
-    : [options.platform+'-'+(options.platform==='win32'?'x64':options.architecture)];
+    : [options.platform+'-'+architecture];
 }
 
 async function verifyBundles(resources,source,options) {

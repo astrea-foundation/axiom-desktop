@@ -178,3 +178,12 @@ tests/browser/updates.test.ts` exercises the light/dark controls. See
 [release previews](releasing.md#development-previews) and
 [qualification](validation.md). Production keys are not
 needed for local tests; committed fixture keys must never sign a release.
+
+The AstreaAI sidecar is built from the inventoried standalone Rust source under
+`vendor/axiom-direct-verifier`, with `cargo build --locked`. The existing
+`node scripts/build-direct-bundle.mjs --output ...` command builds and validates
+a native executable; Node, Rust and the platform linker are required. Python,
+uv, PyInstaller and an external OpenSSL runtime are no longer verifier build
+requirements. Native Windows ARM64 bundles are supported, while older x64
+bundles remain a compatible Windows ARM64 fallback. Publisher keys, executable
+digest pins, hardware verification and signed trust-policy semantics are unchanged.

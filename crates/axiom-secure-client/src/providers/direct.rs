@@ -117,6 +117,9 @@ fn bundled_config(executable: &std::path::Path) -> Result<Option<PathBuf>> {
     let target = match (std::env::consts::OS, std::env::consts::ARCH) {
         ("macos", "aarch64") => "darwin-arm64",
         ("macos", "x86_64") => "darwin-x64",
+        ("windows", "aarch64") if directory.join("direct/win32-arm64/native.json").exists() => {
+            "win32-arm64"
+        }
         ("windows", "aarch64" | "x86_64") => "win32-x64",
         ("linux", "x86_64") => "linux-x64",
         _ => return Ok(None),
@@ -230,7 +233,13 @@ mod installed_bundle_tests {
     use super::*;
 
     fn installed_executable(directory: &std::path::Path) -> PathBuf {
-        for target in ["darwin-arm64", "darwin-x64", "win32-x64", "linux-x64"] {
+        for target in [
+            "darwin-arm64",
+            "darwin-x64",
+            "win32-x64",
+            "win32-arm64",
+            "linux-x64",
+        ] {
             let path = directory.join("direct").join(target);
             std::fs::create_dir_all(&path).unwrap();
             installed_config(&path);
