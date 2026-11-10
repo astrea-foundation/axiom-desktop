@@ -52,6 +52,7 @@ struct ToolDescriptor {
 struct ConnectionState {
     service: Arc<McpService>,
     generation: u64,
+    descriptors: BTreeMap<String, ToolDescriptor>,
     _process_group: crate::process_env::ProcessGroupGuard,
 }
 
@@ -69,12 +70,14 @@ impl McpConnection {
         config: McpServerConfig,
         connected: ConnectedMcp,
         process_groups: crate::process_env::ProcessGroupRegistry,
+        descriptors: BTreeMap<String, ToolDescriptor>,
     ) -> Self {
         Self {
             config,
             state: RwLock::new(ConnectionState {
                 service: Arc::new(connected.service),
                 generation: 1,
+                descriptors,
                 _process_group: connected.process_group,
             }),
             reconnect: Mutex::new(()),
@@ -89,6 +92,21 @@ impl McpConnection {
         (state.service.clone(), state.generation)
     }
 
+    async fn verified_current(
+        &self,
+        expected_name: &str,
+        expected_schema: &Value,
+    ) -> Result<(Arc<McpService>, u64)> {
+        let state = self.state.read().await;
+        verify_reconnected_tool(
+            &state.descriptors,
+            &self.config.name,
+            expected_name,
+            expected_schema,
+        )?;
+        Ok((state.service.clone(), state.generation))
+    }
+
     async fn healthy_service(
         &self,
         expected_name: &str,
@@ -99,7 +117,7 @@ impl McpConnection {
         }
         let current = self.current().await;
         if !connection_closed(&current.0) {
-            return Ok(current);
+            return self.verified_current(expected_name, expected_schema).await;
         }
         self.reconnect_if_current(&current.0, expected_name, expected_schema)
             .await
@@ -117,20 +135,18 @@ impl McpConnection {
         }
         let current = self.current().await;
         if !Arc::ptr_eq(&current.0, failed) && !connection_closed(&current.0) {
-            verify_reconnected_tool(
-                &current.0,
-                &self.config.name,
-                expected_name,
-                expected_schema,
-            )
-            .await?;
-            return Ok(current);
+            return self.verified_current(expected_name, expected_schema).await;
         }
 
         let connected = connect(&self.config, &self.process_groups).await?;
         let service = Arc::new(connected.service);
-        verify_reconnected_tool(&service, &self.config.name, expected_name, expected_schema)
-            .await?;
+        let descriptors = discover_tools(&service, &self.config.name).await?;
+        verify_reconnected_tool(
+            &descriptors,
+            &self.config.name,
+            expected_name,
+            expected_schema,
+        )?;
         if self.shutting_down.load(Ordering::Acquire) {
             return Err(AxiomError::Cancelled);
         }
@@ -139,6 +155,7 @@ impl McpConnection {
         *state = ConnectionState {
             service: service.clone(),
             generation,
+            descriptors,
             _process_group: connected.process_group,
         };
         Ok((service, generation))
@@ -176,6 +193,7 @@ pub async fn connect_tools(
             config.clone(),
             connected,
             process_groups,
+            descriptors.clone(),
         ));
 
         for descriptor in descriptors.into_values() {
@@ -402,13 +420,12 @@ fn normalize_descriptor(server_name: &str, tool: RemoteTool) -> Result<ToolDescr
     })
 }
 
-async fn verify_reconnected_tool(
-    service: &McpService,
+fn verify_reconnected_tool(
+    tools: &BTreeMap<String, ToolDescriptor>,
     server_name: &str,
     expected_name: &str,
     expected_schema: &Value,
 ) -> Result<()> {
-    let tools = discover_tools(service, server_name).await?;
     let Some(tool) = tools.get(expected_name) else {
         return Err(AxiomError::Protocol(format!(
             "MCP server `{server_name}` no longer advertises tool `{expected_name}` after reconnect"

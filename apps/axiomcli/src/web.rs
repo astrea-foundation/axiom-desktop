@@ -9,7 +9,11 @@ use reqwest::{StatusCode, Url, header};
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
-use crate::{AxiomError, Result, auth::AuthManager};
+use crate::{
+    AxiomError, Result,
+    auth::AuthManager,
+    policy::{DenyDynamicEffects, Effect, EffectAuthorizer},
+};
 
 const MAX_SEARCH_QUERY_BYTES: usize = 2048;
 const MAX_SEARCH_RESPONSE_BYTES: usize = 1024 * 1024;
@@ -246,6 +250,45 @@ pub struct SafeFetcher {
     max_redirects: usize,
 }
 
+#[async_trait]
+trait FetchTransport: Send + Sync {
+    async fn get(
+        &self,
+        url: &Url,
+        timeout: Duration,
+        cancellation: &CancellationToken,
+    ) -> Result<reqwest::Response>;
+}
+
+struct PinnedHttpTransport;
+
+#[async_trait]
+impl FetchTransport for PinnedHttpTransport {
+    async fn get(
+        &self,
+        url: &Url,
+        timeout: Duration,
+        cancellation: &CancellationToken,
+    ) -> Result<reqwest::Response> {
+        let resolved = validate_public_destination(url).await?;
+        let host = url
+            .host_str()
+            .ok_or_else(|| AxiomError::Tool("fetch URL has no host".into()))?;
+        let client = reqwest::Client::builder()
+            .timeout(timeout)
+            .redirect(reqwest::redirect::Policy::none())
+            .no_proxy()
+            .user_agent(concat!("AxiomCLI/", env!("CARGO_PKG_VERSION")))
+            .resolve_to_addrs(host, &resolved)
+            .build()
+            .map_err(|error| AxiomError::Tool(error.to_string()))?;
+        tokio::select! {
+            () = cancellation.cancelled() => Err(AxiomError::Cancelled),
+            response = client.get(url.clone()).send() => response.map_err(|error| AxiomError::Tool(format!("fetch failed: {error}"))),
+        }
+    }
+}
+
 impl SafeFetcher {
     #[must_use]
     pub fn new(timeout: Duration, max_bytes: usize) -> Self {
@@ -257,25 +300,41 @@ impl SafeFetcher {
     }
 
     pub async fn fetch(&self, input: &str, cancellation: CancellationToken) -> Result<FetchResult> {
+        self.fetch_authorized(input, cancellation, &DenyDynamicEffects)
+            .await
+    }
+
+    pub async fn fetch_authorized(
+        &self,
+        input: &str,
+        cancellation: CancellationToken,
+        authorization: &dyn EffectAuthorizer,
+    ) -> Result<FetchResult> {
+        self.fetch_using(input, cancellation, authorization, &PinnedHttpTransport)
+            .await
+    }
+
+    async fn fetch_using(
+        &self,
+        input: &str,
+        cancellation: CancellationToken,
+        authorization: &dyn EffectAuthorizer,
+        transport: &dyn FetchTransport,
+    ) -> Result<FetchResult> {
         let mut url = Url::parse(input)
             .map_err(|error| AxiomError::Tool(format!("invalid fetch URL: {error}")))?;
         for redirect in 0..=self.max_redirects {
-            let resolved = validate_public_destination(&url).await?;
-            let host = url
-                .host_str()
-                .ok_or_else(|| AxiomError::Tool("fetch URL has no host".into()))?;
-            let client = reqwest::Client::builder()
-                .timeout(self.timeout)
-                .redirect(reqwest::redirect::Policy::none())
-                .no_proxy()
-                .user_agent(concat!("AxiomCLI/", env!("CARGO_PKG_VERSION")))
-                .resolve_to_addrs(host, &resolved)
-                .build()
-                .map_err(|error| AxiomError::Tool(error.to_string()))?;
-            let response = tokio::select! {
-                () = cancellation.cancelled() => return Err(AxiomError::Cancelled),
-                response = client.get(url.clone()).send() => response.map_err(|error| AxiomError::Tool(format!("fetch failed: {error}")))?,
-            };
+            // Includes same-origin redirects: rules may restrict a path, not
+            // just the hostname. Never dispatch a target under earlier consent.
+            authorization
+                .authorize(
+                    Effect::Network {
+                        url: url.to_string(),
+                    },
+                    cancellation.clone(),
+                )
+                .await?;
+            let response = transport.get(&url, self.timeout, &cancellation).await?;
             if response.status().is_redirection() {
                 if redirect == self.max_redirects {
                     return Err(AxiomError::Tool("too many redirects".into()));
@@ -555,6 +614,121 @@ mod tests {
         ));
         assert_eq!(bounded_external_text("\u{1b}[31mcherry", 64), "[31mcherry");
         assert_eq!(bounded_external_text("ééé", 3), "é");
+    }
+
+    #[derive(Default)]
+    struct RedirectTransport(std::sync::Mutex<Vec<String>>);
+
+    #[async_trait]
+    impl FetchTransport for RedirectTransport {
+        async fn get(
+            &self,
+            url: &Url,
+            _: Duration,
+            _: &CancellationToken,
+        ) -> Result<reqwest::Response> {
+            // Public IP literals keep this fixture deterministic without DNS
+            // or external traffic; the production address validator still runs.
+            let addresses = validate_public_destination(url).await?;
+            assert!(addresses.iter().all(|address| is_public_ip(address.ip())));
+            self.0.lock().unwrap().push(url.to_string());
+            let response = if url.host_str() == Some("1.1.1.1") {
+                axum::http::Response::builder()
+                    .status(302)
+                    .header("location", "https://1.0.0.1/restricted")
+                    .body("redirect")
+                    .unwrap()
+            } else {
+                axum::http::Response::builder()
+                    .status(200)
+                    .header("content-type", "text/plain")
+                    .body("permitted result")
+                    .unwrap()
+            };
+            Ok(response.into())
+        }
+    }
+
+    struct RedirectApproval {
+        requests: std::sync::Mutex<Vec<String>>,
+        allow: bool,
+    }
+
+    #[async_trait]
+    impl crate::policy::ApprovalHandler for RedirectApproval {
+        async fn request(
+            &self,
+            request: crate::policy::ApprovalRequest,
+            _: CancellationToken,
+        ) -> Result<crate::policy::ApprovalResponse> {
+            let Effect::Network { url } = request.effect else {
+                panic!("network approval");
+            };
+            self.requests.lock().unwrap().push(url);
+            assert!(!request.allow_session_grants);
+            Ok(crate::policy::ApprovalResponse {
+                choice: if self.allow {
+                    crate::policy::ApprovalChoice::AllowOnce
+                } else {
+                    crate::policy::ApprovalChoice::Deny
+                },
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn redirect_destination_policy_precedes_second_public_dispatch() {
+        use crate::{
+            app::PermissionProfile,
+            policy::{EffectClass, ExecutionAuthorizer, PolicyEngine, PolicyRule, RuleAction},
+        };
+        for (action, allow, dispatches, approvals) in [
+            (RuleAction::Deny, true, 1, 0),
+            (RuleAction::Ask, false, 1, 1),
+            (RuleAction::Ask, true, 2, 1),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let approval = std::sync::Arc::new(RedirectApproval {
+                requests: Default::default(),
+                allow,
+            });
+            let authorization = ExecutionAuthorizer {
+                policy: PolicyEngine::for_workspace_with_rules(
+                    root.path(),
+                    vec![PolicyRule {
+                        action,
+                        effect: Some(EffectClass::Network),
+                        resource_prefix: Some("https://1.0.0.1/restricted".into()),
+                        reason: None,
+                    }],
+                )
+                .unwrap(),
+                profile: PermissionProfile::FullAccess,
+                approval: Some(approval.clone()),
+                events: None,
+            };
+            let transport = RedirectTransport::default();
+            let result = SafeFetcher::new(Duration::from_secs(2), 4096)
+                .fetch_using(
+                    "https://1.1.1.1/start",
+                    CancellationToken::new(),
+                    &authorization,
+                    &transport,
+                )
+                .await;
+            assert_eq!(result.is_ok(), dispatches == 2);
+            assert_eq!(transport.0.lock().unwrap().len(), dispatches);
+            let requested = approval.requests.lock().unwrap();
+            assert_eq!(requested.len(), approvals);
+            assert!(
+                requested
+                    .iter()
+                    .all(|url| url == "https://1.0.0.1/restricted")
+            );
+            if let Ok(result) = result {
+                assert_eq!(result.content, "permitted result");
+            }
+        }
     }
 
     #[test]

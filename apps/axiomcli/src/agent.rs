@@ -2963,13 +2963,20 @@ impl TurnRunner for AgentEngine {
                     })
                     .await
                     .map_err(|_| AxiomError::Cancelled)?;
+                let execution_authorization = crate::policy::ExecutionAuthorizer {
+                    policy: self.policy_for(&context).await?,
+                    profile: context.permission_profile,
+                    approval: context.approval.clone(),
+                    events: Some(events.clone()),
+                };
                 let result = before_optional_deadline(
                     deadline,
-                    tools.execute(
+                    tools.execute_authorized(
                         &call.function.name,
                         &tool_context,
                         arguments.clone(),
                         cancellation.clone(),
+                        &execution_authorization,
                     ),
                 )
                 .await?;

@@ -25,7 +25,10 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use crate::{AxiomError, Result};
+use crate::{
+    AxiomError, Result,
+    policy::{Effect, EffectAuthorizer},
+};
 
 #[derive(Clone, Debug)]
 pub struct Workspace {
@@ -336,11 +339,13 @@ impl Workspace {
         })
     }
 
-    pub fn search(
+    pub async fn search(
         &self,
         query: &str,
         max_matches: usize,
         max_file_bytes: u64,
+        authorization: &dyn EffectAuthorizer,
+        cancellation: CancellationToken,
     ) -> Result<Vec<String>> {
         if query.is_empty() {
             return Err(AxiomError::Tool("search query cannot be empty".into()));
@@ -360,9 +365,23 @@ impl Workspace {
                 _ => continue,
             };
             let _ = metadata;
-            let relative = self.relative(entry.path());
-            let Ok(read) = self.read(
-                &relative,
+            let Ok(path) = self.resolve_existing(entry.path()) else {
+                continue;
+            };
+            match authorization
+                .authorize(
+                    Effect::FileRead { path: path.clone() },
+                    cancellation.clone(),
+                )
+                .await
+            {
+                Ok(()) => {}
+                Err(AxiomError::PermissionDenied(_)) => continue,
+                Err(error) => return Err(error),
+            }
+            let relative = self.relative(&path);
+            let Ok(read) = self.read_resolved(
+                path,
                 1,
                 100_000,
                 usize::try_from(max_file_bytes).unwrap_or(usize::MAX),
@@ -386,11 +405,13 @@ impl Workspace {
         Ok(matches)
     }
 
-    pub fn select_context(
+    pub async fn select_context(
         &self,
         query: &str,
         max_files: usize,
         max_bytes: usize,
+        authorization: &dyn EffectAuthorizer,
+        cancellation: CancellationToken,
     ) -> Result<Vec<ContextRange>> {
         if query.trim().is_empty() {
             return Err(AxiomError::Tool("context query cannot be empty".into()));
@@ -409,8 +430,22 @@ impl Workspace {
             if !metadata.is_file() || metadata.len() > 2 * 1024 * 1024 {
                 continue;
             }
-            let relative = self.relative(entry.path());
-            let Ok(read) = self.read(&relative, 1, 100_000, 2 * 1024 * 1024) else {
+            let Ok(path) = self.resolve_existing(entry.path()) else {
+                continue;
+            };
+            match authorization
+                .authorize(
+                    Effect::FileRead { path: path.clone() },
+                    cancellation.clone(),
+                )
+                .await
+            {
+                Ok(()) => {}
+                Err(AxiomError::PermissionDenied(_)) => continue,
+                Err(error) => return Err(error),
+            }
+            let relative = self.relative(&path);
+            let Ok(read) = self.read_resolved(path, 1, 100_000, 2 * 1024 * 1024) else {
                 continue;
             };
             let lines: Vec<_> = read.content.lines().collect();
@@ -574,8 +609,24 @@ impl Workspace {
         max_lines: usize,
         max_bytes: usize,
     ) -> Result<FileRead> {
+        self.read_resolved(
+            self.resolve_existing(path)?,
+            start_line,
+            max_lines,
+            max_bytes,
+        )
+    }
+
+    // Do not resolve again after authorization: a replacement symlink must not
+    // redirect an approved path to a different file.
+    fn read_resolved(
+        &self,
+        path: PathBuf,
+        start_line: usize,
+        max_lines: usize,
+        max_bytes: usize,
+    ) -> Result<FileRead> {
         const MAX_INSPECT_BYTES: u64 = 8 * 1024 * 1024;
-        let path = self.resolve_existing(path)?;
         let mut file = open_verified(&path, &self.root)?;
         let metadata = file.metadata()?;
         if !metadata.is_file() {
@@ -1175,7 +1226,7 @@ fn open_verified(path: &Path, root: &Path) -> Result<File> {
     {
         use std::os::fd::AsRawFd as _;
         let actual = PathBuf::from(format!("/proc/self/fd/{}", file.as_raw_fd())).canonicalize()?;
-        if !actual.starts_with(root) {
+        if !actual.starts_with(root) || actual != path {
             return Err(AxiomError::OutsideWorkspace(actual));
         }
     }
@@ -1189,14 +1240,14 @@ fn open_verified(path: &Path, root: &Path) -> Result<File> {
             ))
         })?;
         let actual = actual.canonicalize()?;
-        if !actual.starts_with(root) {
+        if !actual.starts_with(root) || actual != path {
             return Err(AxiomError::OutsideWorkspace(actual));
         }
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let actual = path.canonicalize()?;
-        if !actual.starts_with(root) {
+        if !actual.starts_with(root) || actual != path {
             return Err(AxiomError::OutsideWorkspace(actual));
         }
     }
@@ -2310,8 +2361,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn discovery_glob_metadata_and_context_are_bounded_and_stable() {
+    #[tokio::test]
+    async fn discovery_glob_metadata_and_context_are_bounded_and_stable() {
         let root = tempdir().expect("root");
         Repository::init(root.path()).expect("repository");
         std::fs::create_dir_all(root.path().join("src/nested")).expect("src");
@@ -2354,11 +2405,19 @@ mod tests {
         assert_eq!(metadata.provenance, SourceClassification::LikelyGenerated);
         assert_eq!(metadata.content, ContentClassification::Text);
 
+        let authorization = crate::policy::ExecutionAuthorizer {
+            policy: crate::policy::PolicyEngine::for_workspace(root.path()).unwrap(),
+            profile: crate::app::PermissionProfile::FullAccess,
+            approval: None,
+            events: None,
+        };
         let first = discovered
-            .select_context("cherry", 8, 120)
+            .select_context("cherry", 8, 120, &authorization, CancellationToken::new())
+            .await
             .expect("context");
         let second = discovered
-            .select_context("cherry", 8, 120)
+            .select_context("cherry", 8, 120, &authorization, CancellationToken::new())
+            .await
             .expect("stable context");
         assert_eq!(
             serde_json::to_string(&first).expect("first"),
