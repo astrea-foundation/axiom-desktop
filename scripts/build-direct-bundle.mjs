@@ -17,6 +17,7 @@ function run(program,args,options={}) {
   return r;
 }
 const target=process.platform+'-'+process.arch;
+const rustTarget={'darwin-arm64':'aarch64-apple-darwin','darwin-x64':'x86_64-apple-darwin','win32-x64':'x86_64-pc-windows-msvc','win32-arm64':'aarch64-pc-windows-msvc','linux-x64':'x86_64-unknown-linux-gnu'}[target];
 if(!['darwin-arm64','darwin-x64','win32-x64','win32-arm64','linux-x64'].includes(target)) throw new Error('Unsupported AstreaAI build target');
 const revision=run('git',['rev-parse','HEAD'],{stdio:'pipe',encoding:'utf8'}).stdout.trim();
 if(run('git',['status','--porcelain'],{stdio:'pipe',encoding:'utf8'}).stdout.trim()) throw new Error('Commit the verifier packaging source before building');
@@ -33,10 +34,11 @@ try {await fs.lstat(output); throw new Error('AstreaAI output already exists');}
 const build=path.join(root,'.local/direct-build',target);
 await fs.mkdir(build,{recursive:true});
 const environment={...process.env,CARGO_TARGET_DIR:process.env.CARGO_TARGET_DIR||path.join(build,'target'),CARGO_BUILD_JOBS:process.env.CARGO_BUILD_JOBS||'2'};
-run('cargo',['build','--manifest-path',path.join(source,'Cargo.toml'),'--locked','--release','--bin','axiom-direct-verify'],{env:environment});
+run('rustup',['target','add',rustTarget]);
+run('cargo',['build','--target',rustTarget,'--manifest-path',path.join(source,'Cargo.toml'),'--locked','--release','--bin','axiom-direct-verify'],{env:environment});
 await fs.mkdir(path.join(output,'runtime'),{recursive:true});
 const binaryName='axiom-direct-verify'+(process.platform==='win32'?'.exe':'');
-await fs.copyFile(path.join(environment.CARGO_TARGET_DIR,'release',binaryName),path.join(output,'runtime',binaryName));
+await fs.copyFile(path.join(environment.CARGO_TARGET_DIR,rustTarget,'release',binaryName),path.join(output,'runtime',binaryName));
 if(process.platform!=='win32') await fs.chmod(path.join(output,'runtime',binaryName),0o755);
 if(values.has('--codesign-identity')) {
   if(process.platform!=='darwin') throw new Error('Apple signing requires macOS');

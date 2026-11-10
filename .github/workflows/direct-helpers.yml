@@ -33,6 +33,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
+          architecture: ${{ endsWith(matrix.target, 'arm64') && 'arm64' || 'x64' }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.97.1
