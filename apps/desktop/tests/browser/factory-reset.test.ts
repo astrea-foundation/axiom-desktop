@@ -10,7 +10,7 @@ import tailwindcss from "@tailwindcss/vite";
 let browser: Browser, server: ViteDevServer, origin: string;
 const captures = process.env.AXIOM_RESET_CAPTURE_DIR;
 before(async () => {
-  server = await createServer({ configFile: false, root: fileURLToPath(new URL("../../src/renderer", import.meta.url)),
+  server = await createServer({ cacheDir: fileURLToPath(new URL("../../node_modules/.vite-tests/factory-reset.test", import.meta.url)), configFile: false, root: fileURLToPath(new URL("../../src/renderer", import.meta.url)),
     plugins: [react(), tailwindcss()], server: { host: "127.0.0.1", port: 0 }, logLevel: "error" });
   await server.listen(); origin = server.resolvedUrls!.local[0]!;
   browser = await chromium.launch({ headless: true });

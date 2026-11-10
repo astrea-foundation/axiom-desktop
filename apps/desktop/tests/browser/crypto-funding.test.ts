@@ -8,7 +8,7 @@ import tailwindcss from "@tailwindcss/vite";
 
 let browser: Browser, server: ViteDevServer, origin: string;
 before(async () => {
-  server = await createServer({configFile: false, root: fileURLToPath(new URL("../../", import.meta.url)), plugins: [react(), tailwindcss()],
+  server = await createServer({ cacheDir: fileURLToPath(new URL("../../node_modules/.vite-tests/crypto-funding.test", import.meta.url)),configFile: false, root: fileURLToPath(new URL("../../", import.meta.url)), plugins: [react(), tailwindcss()],
     server: {host: "127.0.0.1", port: 0}, logLevel: "error"});
   await server.listen(); origin = server.resolvedUrls!.local[0]!;
   browser = await chromium.launch({headless: true});

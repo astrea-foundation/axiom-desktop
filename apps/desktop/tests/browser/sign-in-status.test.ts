@@ -12,7 +12,7 @@ let server: ViteDevServer;
 let origin: string;
 const captures = process.env.AXIOM_SIGN_IN_CAPTURE_DIR;
 before(async () => {
-  server = await createServer({ configFile: false, root: fileURLToPath(new URL("../../src/renderer", import.meta.url)),
+  server = await createServer({ cacheDir: fileURLToPath(new URL("../../node_modules/.vite-tests/sign-in-status.test", import.meta.url)), configFile: false, root: fileURLToPath(new URL("../../src/renderer", import.meta.url)),
     plugins: [react(), tailwindcss()], server: { host: "127.0.0.1", port: 0 }, logLevel: "error" });
   await server.listen();
   origin = server.resolvedUrls!.local[0]!;

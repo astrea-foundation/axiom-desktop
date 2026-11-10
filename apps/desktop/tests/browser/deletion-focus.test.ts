@@ -29,7 +29,7 @@ function depositBilling(postedMicrousd: number, revision = 1): BillingStatus {
 }
 
 before(async () => {
-  server = await createServer({
+  server = await createServer({ cacheDir: fileURLToPath(new URL("../../node_modules/.vite-tests/deletion-focus.test", import.meta.url)),
     configFile: false,
     root: fileURLToPath(new URL("../../src/renderer", import.meta.url)),
     plugins: [react(), tailwindcss()],
@@ -1241,6 +1241,7 @@ for (const platform of ["linux", "win32", "darwin"]) {
       await settle();
       assert.equal(await viewport.evaluate((el) => el.scrollTop), pausedTop, "scrolling up preserves the reading position");
 
+      await jump.hover(); // Floating controls must pass wheel scrolling through to the chat.
       await page.mouse.wheel(0, 10_000);
       await atBottom();
       await jump.waitFor({ state: "hidden" });
