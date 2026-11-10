@@ -346,30 +346,25 @@ impl EffectAuthorizer for ExecutionAuthorizer {
                 "approval handler is unavailable".into(),
             ))
         };
-        let result = response.and_then(|response| {
-            self.policy.apply_approval(&request, response)?;
-            if response.choice.is_allowed() {
-                Ok(response)
-            } else {
-                Err(AxiomError::ApprovalDeclined)
-            }
-        });
+        let (result, choice) = match response {
+            Ok(response) => match self.policy.apply_approval(&request, response) {
+                Err(error) => (Err(error), "rejected_scope"),
+                Ok(()) if response.choice.is_allowed() => (Ok(()), response.choice.as_str()),
+                Ok(()) => (Err(AxiomError::ApprovalDeclined), response.choice.as_str()),
+            },
+            Err(error) => (Err(error), "failed_closed"),
+        };
         if let Some(events) = &self.events {
             events
                 .send(AppEvent::PermissionResolved {
                     request_id: request.request_id,
                     allowed: result.is_ok(),
-                    choice: Some(
-                        result
-                            .as_ref()
-                            .map_or("failed_closed", |response| response.choice.as_str())
-                            .into(),
-                    ),
+                    choice: Some(choice.into()),
                 })
                 .await
                 .map_err(|_| AxiomError::Cancelled)?;
         }
-        result.map(|_| ())
+        result
     }
 }
 

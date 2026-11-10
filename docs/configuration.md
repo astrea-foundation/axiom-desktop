@@ -142,10 +142,12 @@ servers from shared CLI configuration.
 | `full_access` | Exposed tools run without routine approval prompts |
 
 All profiles retain deny rules, input validation and the platform's actual
-process boundaries. Workspace text search and context selection check each
-resolved file before reading its contents. Denied files are omitted; explicit
+process boundaries. Workspace text search, context selection, Git worktree
+inspection and session diffs check each resolved file before reading its contents.
+Session diff baselines are captured only after those checks; retained baseline
+content and fallback patches are checked again before being returned. Denied files are omitted; explicit
 `ask` rules require approval for each file even after the tool was approved.
-Declining a file approval stops the operation. URL fetching checks destination
+Declining a file approval stops the turn. URL fetching checks destination
 policy on every redirect, including redirects within one origin, before DNS
 resolution and dispatch. Each permitted hop still validates every DNS answer
 as public and pins the HTTP connection to those validated addresses. See [security](threat-model.md#local-tools-and-processes).

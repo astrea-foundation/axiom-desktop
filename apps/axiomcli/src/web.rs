@@ -310,8 +310,32 @@ impl SafeFetcher {
         cancellation: CancellationToken,
         authorization: &dyn EffectAuthorizer,
     ) -> Result<FetchResult> {
-        self.fetch_using(input, cancellation, authorization, &PinnedHttpTransport)
-            .await
+        self.fetch_using(
+            input,
+            cancellation,
+            authorization,
+            &PinnedHttpTransport,
+            false,
+        )
+        .await
+    }
+
+    /// The tool dispatcher has already authorized the initial Network effect.
+    /// Redirects still require their own decisions, including same-URL hops.
+    pub(crate) async fn fetch_after_preflight(
+        &self,
+        input: &str,
+        cancellation: CancellationToken,
+        authorization: &dyn EffectAuthorizer,
+    ) -> Result<FetchResult> {
+        self.fetch_using(
+            input,
+            cancellation,
+            authorization,
+            &PinnedHttpTransport,
+            true,
+        )
+        .await
     }
 
     async fn fetch_using(
@@ -320,20 +344,23 @@ impl SafeFetcher {
         cancellation: CancellationToken,
         authorization: &dyn EffectAuthorizer,
         transport: &dyn FetchTransport,
+        initial_authorized: bool,
     ) -> Result<FetchResult> {
         let mut url = Url::parse(input)
             .map_err(|error| AxiomError::Tool(format!("invalid fetch URL: {error}")))?;
         for redirect in 0..=self.max_redirects {
             // Includes same-origin redirects: rules may restrict a path, not
             // just the hostname. Never dispatch a target under earlier consent.
-            authorization
-                .authorize(
-                    Effect::Network {
-                        url: url.to_string(),
-                    },
-                    cancellation.clone(),
-                )
-                .await?;
+            if redirect > 0 || !initial_authorized {
+                authorization
+                    .authorize(
+                        Effect::Network {
+                            url: url.to_string(),
+                        },
+                        cancellation.clone(),
+                    )
+                    .await?;
+            }
             let response = transport.get(&url, self.timeout, &cancellation).await?;
             if response.status().is_redirection() {
                 if redirect == self.max_redirects {
@@ -689,7 +716,7 @@ mod tests {
         ] {
             let root = tempfile::tempdir().unwrap();
             let approval = std::sync::Arc::new(RedirectApproval {
-                requests: Default::default(),
+                requests: std::sync::Mutex::default(),
                 allow,
             });
             let authorization = ExecutionAuthorizer {
@@ -714,6 +741,7 @@ mod tests {
                     CancellationToken::new(),
                     &authorization,
                     &transport,
+                    false,
                 )
                 .await;
             assert_eq!(result.is_ok(), dispatches == 2);
