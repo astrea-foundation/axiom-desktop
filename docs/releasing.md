@@ -292,17 +292,21 @@ not replace bytes or metadata in a published release.
 
 ### Qualifying a candidate
 
-Pull requests targeting `main` run Linux Rust and Desktop UI checks. Merging does
-not repeat those checks automatically. Native macOS/Windows validation is an
-explicit `ci.yml` dispatch with `target=native` (all four native jobs), `all`
-(also Linux/UI), or a specific platform; `linux` and
-`desktop` rerun only those checks. Validate the complete candidate on `dev`,
-promote it, confirm the promoted tree matches, and tag that validated candidate
-commit now reachable from `main`. The release gate requires successful Rust, UI,
-and all four native CI jobs for the exact tagged revision, combining targeted
-runs when needed. Packaging reuses those results instead of repeating the suites.
-Retry only failed validation targets or packaging jobs. These checks do not
-replace signed OS installation acceptance.
+Pushes to `dev` and pull requests targeting `dev` or `main` run Linux Rust,
+TypeScript/unit/browser checks and all four native macOS/Windows portability
+jobs. Manual `ci.yml` dispatches can retry `target=native`, `all`, a specific
+native platform, `linux`, or `desktop`. After those checks succeed for the exact
+development revision, use the non-publishing candidate workflow below to catch
+bundled-verifier and installer packaging failures before production tags exist.
+Retry only failed validation targets or candidate packaging jobs.
+
+A candidate run does not authorize promotion or publication. For a separately
+authorized release, validate the complete candidate on `dev`, promote it, confirm
+the promoted tree matches, and tag the validated commit now reachable from
+`main`. The production gate still requires successful Rust, UI and all four
+native CI jobs for the exact tagged revision, combining targeted runs when
+needed. Candidate-target selection does not relax that requirement. Checks and
+unsigned packaging do not replace signed OS installation acceptance.
 
 Routine qualification runs functional tests once. The repeated deterministic
 evaluation and three host-performance benchmarks are opt-in with
@@ -311,7 +315,7 @@ Small persistence, cancellation, process cleanup, protocol and security tests
 stay required. Clippy already checks all Linux targets, and native tests compile
 their targets, so CI does not precede either with a duplicate `cargo check`.
 CI omits development/test debug symbols, retains assertions, downloads the pinned
-`cargo-deny` executable with checksum verification, and limits a dispatched native matrix to two concurrent
+`cargo-deny` executable with checksum verification, and limits the native matrix to two concurrent
 jobs. Release build profiles and signing checks are unchanged.
 The audit installer action is pinned to a commit and disables source-build
 fallbacks, so a fresh PR does not spend minutes compiling the audit tool itself.
@@ -338,20 +342,47 @@ sandboxing are unchanged. Git attributes preserve LF across Windows checkouts.
 
 ## Development previews
 
-The **Preview installers** workflow can run on `dev` without production secrets:
+The **Candidate validation (unpublished)** workflow runs explicitly on a
+non-`main` development branch. It rejects tag dispatches, retains the existing
+product version and requires successful `ci.yml` jobs for the exact revision.
+Select one native target for a focused packaging check; `all` requests all five
+native installer targets, with at most two jobs running together:
 
 ```sh
-gh workflow run desktop-packages.yml --ref dev
+gh workflow run desktop-packages.yml --ref dev -f target=linux
+# Other targets: macos-intel, macos-arm64, windows-x64, windows-arm64, all
 ```
 
-It builds actual unsigned installers into Actions artifacts, with stable updates
-disabled. It does not publish GitHub releases, CDN objects, or feeds. Local builds
-use the same native builders:
+Every selected target requires the Rust and Desktop UI CI jobs; macOS/Windows
+also require their matching native portability job. A missing, active, cancelled
+or failed required result blocks packaging. Run or retry CI first; this workflow
+does not dispatch CI on the operator's behalf.
+
+The workflow builds and self-tests the native AstreaAI verifier through
+`scripts/build-direct-bundle.mjs`, bundles it into actual unsigned Desktop and CLI
+installers, and compiles with stable update trust disabled. It validates that the
+unsigned inventory matches the selected source SHA, existing product version,
+platform and architecture, includes every required Desktop/CLI format, and
+matches each artifact's length/hash and `SHA256SUMS`. A source-tree check rejects
+uncommitted packaging changes. The resulting `candidate-SHA-PLATFORM-ARCH` Actions
+artifact contains the installers, inventory, checksums and
+`candidate-validation.json` receipt, retained for seven days. The token has only
+read access to repository contents and Actions. No signing secrets, release
+upload, CDN upload, feed change, production inference or deployment is involved.
+
+Local unsigned packaging uses the same native builders from a clean, committed
+checkout. Confirm the existing Desktop and CLI versions match first:
 
 ```sh
+export AXIOM_UPDATE_PUBLIC_KEYS=''
+node scripts/build-direct-bundle.mjs --output .local/direct/bundle
+export AXIOM_DIRECT_BUNDLE=.local/direct/bundle
 cargo build --locked --release -p axiomcli -p axiom-proxy
 node apps/desktop/scripts/package-desktop.mjs --linux --x64 --unsigned
 node scripts/package-cli.mjs --linux --x64 --unsigned
+version=$(node -p "require('./apps/desktop/package.json').version")
+node scripts/download-manifest.mjs apps/desktop/dist "$version" unsigned
+node scripts/verify-candidate.mjs apps/desktop/dist linux x64 "$(git rev-parse HEAD)" "$version"
 ```
 
 Use `--mac --arm64|--x64` or `--win --arm64|--x64` on native hosts. Windows needs

@@ -30,6 +30,27 @@ class ReleaseValidationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             module.verify("a" * 40, runs, jobs)
 
+    def test_candidate_requires_rust_ui_and_selected_native_platform(self):
+        for target, native in module.NATIVE_TARGETS.items():
+            with self.subTest(target=target):
+                required = module.candidate_checks(target)
+                self.assertEqual(required, {"rust", "desktop-ui"} | native)
+                runs = [{"id": 1, "head_sha": "a" * 40}]
+                jobs = [{"name": name, "conclusion": "success"} for name in required]
+                self.assertEqual(module.verify("a" * 40, runs, lambda _: jobs, required), sorted(required))
+                for missing in required:
+                    with self.assertRaises(ValueError):
+                        module.verify("a" * 40, runs, lambda _: [job for job in jobs if job["name"] != missing], required)
+                with self.assertRaises(ValueError):
+                    module.verify("b" * 40, runs, lambda _: jobs, required)
+
+    def test_candidate_selection_does_not_weaken_stable_release_requirements(self):
+        runs = [{"id": 1, "head_sha": "a" * 40}]
+        jobs = [{"name": name, "conclusion": "success"} for name in module.candidate_checks("linux")]
+        with self.assertRaises(ValueError):
+            module.verify("a" * 40, runs, lambda _: jobs)
+        self.assertEqual(module.candidate_checks("all"), module.REQUIRED)
+
 
 if __name__ == "__main__":
     unittest.main()

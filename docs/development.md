@@ -45,14 +45,18 @@ workflow.
 
 ## Checks
 
-Run the checks relevant to a change before pushing `dev`; CI runs on pull
-requests targeting `main` and explicit dispatches, without repeating on merge.
+Run the checks relevant to a change before pushing `dev`. CI runs on pushes to
+`dev`, pull requests targeting `dev` or `main`, and explicit dispatches. Each dev
+push validates the resulting revision, including merges.
 The full local checks corresponding to the main workflow are:
 
 ```sh
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 pnpm test:rust
+python3 -m unittest discover -s scripts/tests -p 'test_release*.py'
+node --test scripts/direct-bundle.test.mjs scripts/verify-candidate.test.mjs
+cargo build --locked -p axiomcli
 cargo install cargo-deny --version "=$(tr -d '\r\n' < .cargo-deny-version)" --locked
 cargo deny check
 node packages/brand/scripts/build-callback.mjs --check
@@ -83,16 +87,19 @@ live-provider instructions. Routine tests explicitly skip three host-performance
 benchmarks and retain a small persistence regression. Live inference always uses registered, locally
 verified provider E2EE; it is not a prerequisite for a documentation edit.
 
-The [CI workflow](../.github/workflows/ci.yml) runs Rust/security and browser UI
-checks on pull requests, without repeating them on merge. Manual dispatch accepts
-`target=all`, `native`, `linux`, `desktop`, `macos-intel`, `macos-arm64`,
-`windows-x64`, or `windows-arm64` so native validation and failure retries can
-be targeted. Use `native` alongside a promotion PR to run the four native jobs
-without duplicating its Linux/UI checks. Run all
-required platforms before release packaging. Set `extended=true` only when the
-additional repetitions and performance benchmarks are wanted. These jobs do not package applications
-or establish interactive OS acceptance. [Release workflows](releasing.md) do the
-packaging and require separate release evidence.
+The [CI workflow](../.github/workflows/ci.yml) runs Rust/security, generated ACP
+contract checks, workspace TypeScript checks, unit/browser tests and all four
+native macOS/Windows portability jobs during normal dev/PR validation. ACP client
+tests build their required debug CLI in each job that runs them. The native
+matrix runs at most two jobs together.
+
+Manual dispatch accepts `target=all`, `native`, `linux`, `desktop`, `macos-intel`,
+`macos-arm64`, `windows-x64`, or `windows-arm64` so validation and failure retries
+can be targeted. Set `extended=true` only when additional repetitions and
+performance benchmarks are wanted. These jobs do not package applications or
+establish interactive OS acceptance. After CI passes, the explicit
+[unsigned candidate workflow](releasing.md#development-previews) can package and
+validate a selected native target without changing versions or publishing it.
 
 Portability fixtures compare canonical working directories and keep differently
 cased Desktop resource layouts in separate directories, including on macOS's
