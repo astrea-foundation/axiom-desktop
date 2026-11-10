@@ -69,7 +69,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          architecture: ${{ matrix.arch }}
           cache: pnpm
+      - name: Require Node to match the native candidate architecture
+        env:
+          EXPECTED_NODE_ARCH: ${{ matrix.arch }}
+        run: node -e "if (process.arch !== process.env.EXPECTED_NODE_ARCH) throw new Error('Candidate Node architecture mismatch')"
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
