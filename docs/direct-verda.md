@@ -258,6 +258,11 @@ inference. Both cached proof and admission must cover the entire new request
 deadline; request keys, nonces and grants are never reused. Explicit Refresh
 invalidates the cache and any failed exchange drops it without inference replay.
 The proof's original local verification time is retained in the privacy report.
+Desktop's automatic report renewal reads this reusable native cache rather than
+invalidating it; only an explicit Refresh forces a new appraisal. The worker
+proof remains bounded to at most 240 seconds, and a new 180-second request still
+requires coverage through its deadline. Near-expiry material therefore cannot
+authorize a new full-length image request, even when its report is still valid.
 
 The account-owned provider checks every 20 seconds and prepares 210 seconds of
 proof and admission coverage, providing 30 seconds of headroom above a normal

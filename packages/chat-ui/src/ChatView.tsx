@@ -36,6 +36,7 @@ interface ChatViewProps {
   onReasoningEffortChange: (effort: ReasoningEffort) => void;
   pendingUserMessage?: PendingUserMessage | null;
   onVerifySecurity: () => void | Promise<unknown>;
+  onEnsureSecurity?: () => void | Promise<unknown>;
   onAcceptOutdatedTee?: () => Promise<void>;
   securityScope?: string;
   securityRefreshDisabledReason?: string;
@@ -67,6 +68,7 @@ export function ChatView({
   onReasoningEffortChange,
   pendingUserMessage,
   onVerifySecurity,
+  onEnsureSecurity,
   onAcceptOutdatedTee,
   securityScope,
   securityRefreshDisabledReason,
@@ -141,6 +143,7 @@ export function ChatView({
             requestUsage={session?.requestUsage}
             activeTurnId={session?.activeTurnId}
             onVerifySecurity={onVerifySecurity}
+            onEnsureSecurity={onEnsureSecurity}
           />
         </div>
       </div>

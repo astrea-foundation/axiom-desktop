@@ -246,6 +246,86 @@ test("composition warms once while pending and reuses the result until expiry", 
   assert.equal(client.getState().sessions.thread?.security?.state, "verified");
 });
 
+test("automatic renewal applies an already cached warmup to a newly loaded thread without re-verification", async (t) => {
+  const client = fixture(t);
+  client.state.removeSession("thread");
+  const report = result();
+  const request = t.mock.method(client.process, "request", async () => report);
+  await client.prewarmSecurity("test-model");
+  client.state.addSession("thread", ""); model(client, "test-model");
+  assert.equal(client.getState().sessions.thread?.securityEvidence, null);
+  await client.ensureSecurity("thread");
+  await client.ensureSecurity("thread");
+  assert.equal(request.mock.callCount(), 1);
+  assert.equal(request.mock.calls[0]!.arguments[0], "_axiom/security/prewarm");
+  const current = client.getState().sessions.thread!;
+  assert.equal(current.security?.state, "verified");
+  assert.equal(current.securityEvidence?.verifiedAtUnixSeconds, report.evidence!.verifiedAtUnixSeconds);
+  assert.equal(current.securityEvidence?.hardExpiresAtUnixSeconds, report.evidence!.hardExpiresAtUnixSeconds);
+});
+
+test("automatic renewal rereads near-expiry native material without forcing a hardware appraisal", async (t) => {
+  const client = fixture(t);
+  let now = Date.now(); t.mock.method(Date, "now", () => now);
+  const first = result();
+  const request = t.mock.method(client.process, "request", async () => first);
+  await client.prewarmSecurity("test-model");
+  now = first.evidence!.hardExpiresAtUnixSeconds * 1000 - 30_000;
+  const renewed = result();
+  const pending = hold(t, client);
+  const a = client.ensureSecurity("thread"), b = client.ensureSecurity("thread");
+  await Promise.resolve();
+  assert.equal(pending.request.mock.callCount(), 1);
+  assert.equal(pending.request.mock.calls[0]!.arguments[0], "_axiom/security/prewarm");
+  assert.equal(client.getState().sessions.thread?.securityEvidence?.hardExpiresAtUnixSeconds, first.evidence!.hardExpiresAtUnixSeconds);
+  pending.resolve(renewed); await Promise.all([a, b]);
+  assert.equal(client.getState().sessions.thread?.securityEvidence?.hardExpiresAtUnixSeconds, renewed.evidence!.hardExpiresAtUnixSeconds);
+  assert.equal(request.mock.callCount(), 1);
+});
+
+for (const change of ["account", "runtime", "model", "running", "request-report"] as const) {
+  test(`automatic report renewal cannot overwrite a changed ${change} context`, async (t) => {
+    const client = fixture(t);
+    const pending = hold(t, client);
+    const renewal = client.ensureSecurity("thread");
+    await Promise.resolve();
+    if (change === "account") client.state.setAccount({ revision: 2, state: "valid", account: { id: "other", linkedMethods: [] } });
+    if (change === "runtime") {
+      for (const runtimeInstanceId of ["one", "two"]) client.state.extensionEvent({
+        runtimeInstanceId, sequence: 1, occurredAt: new Date().toISOString(), sessionId: "thread",
+        event: { kind: "security_changed", status: { state: "unverified" } },
+      });
+    }
+    if (change === "model") { model(client, "other-model"); model(client, "test-model"); }
+    if (change === "running") client.state.setRunning("thread", true);
+    const actual = securityEvidence(); actual.modelKeyFingerprint = "d4".repeat(32);
+    if (change === "request-report") requestReport(client, actual);
+    pending.resolve(result());
+    await assert.rejects(renewal, /changed/);
+    assert.equal(client.getState().sessions.thread?.securityEvidence?.modelKeyFingerprint ?? null,
+      change === "request-report" ? actual.modelKeyFingerprint : null);
+  });
+}
+
+test("automatic renewal refuses expired material and preserves warmup retry backoff", async (t) => {
+  const client = fixture(t);
+  const expired = result(); expired.evidence!.hardExpiresAtUnixSeconds = Math.floor(Date.now() / 1000) - 1;
+  const request = t.mock.method(client.process, "request", async () => expired);
+  await assert.rejects(client.ensureSecurity("thread"), /fresh evidence|incomplete|mismatched/);
+  await assert.rejects(client.ensureSecurity("thread"), /fresh evidence|incomplete|mismatched/);
+  assert.equal(request.mock.callCount(), 1);
+  assert.equal(client.getState().sessions.thread?.securityEvidence, null);
+});
+
+test("explicit Refresh still bypasses the reusable warmup report", async (t) => {
+  const client = fixture(t);
+  const methods: string[] = [];
+  t.mock.method(client.process, "request", async (method: string) => { methods.push(method); return result(); });
+  await client.ensureSecurity("thread");
+  await client.verifySecurity("thread");
+  assert.deepEqual(methods, ["_axiom/security/prewarm", "_axiom/security/verify"]);
+});
+
 test("typing failures back off without timers, and manual refresh remains available", async (t) => {
   const client = fixture(t);
   let now = Date.now();

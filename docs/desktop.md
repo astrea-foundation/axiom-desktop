@@ -358,6 +358,12 @@ runs at a time; failures retry with backoff from thirty seconds to five minutes.
 Verification waits for an active reply to finish and for a disconnected thread
 to synchronize. An outdated TEE still requires explicit user consent; automatic
 refresh never accepts that warning. Manual **Refresh** remains available.
+Automatic renewal reuses the native provider's still-fresh, model-bound proof
+and pinned connection. It does not force a new hardware appraisal or discard
+the image service's prepared session. A valid badge remains visible while that
+renewal is pending; actual hard expiry still changes its status. Explicit
+**Refresh** requests new attestation. Cached warmup reports can populate newly
+loaded idle threads, while account, runtime and model changes fence late results.
 
 Editing a nonempty message while signed in also starts verification for the
 selected model, including on the welcome screen before a thread exists. Only the

@@ -302,6 +302,12 @@ Security projections require the registered provider identity, accepted key
 fingerprints and hard expiry. NEAR require positive lease generation;
 Tinfoil intentionally omits it. The projection must preserve router-versus-worker
 and observed-versus-approved distinctions from [security](threat-model.md).
+The SDK's `ensureSecurity(threadId)` renews an idle thread's report through the
+model-only `_axiom/security/prewarm` method and reusable native attestation cache.
+It fences account/runtime/model changes, running requests and newer request
+reports before applying a result. `verifySecurity(threadId)` uses
+`_axiom/security/verify` for an explicit fresh appraisal. Both retain the
+provider's original hard expiry and required public-evidence validation.
 
 ## Process bounds and contract generation
 
