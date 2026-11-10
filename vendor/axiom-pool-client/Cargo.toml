@@ -1,0 +1,30 @@
+[package]
+name = "axiom-pool-client"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "Apache-2.0"
+
+[features]
+test-fixture = ["axiom-pool-protocol/test-fixture"]
+
+[dependencies]
+axiom-pool-protocol = { version = "0.1.0", path = "../axiom-pool-protocol" }
+anyhow = "1"
+base64 = "0.22"
+ed25519-dalek = "2"
+futures-util = "0.3"
+hex = "0.4"
+p256 = { version = "0.14", features = ["ecdsa"] }
+rand = "0.9"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+secrecy = "0.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["process", "io-util", "time", "sync", "fs", "macros", "rt-multi-thread"] }
+tokio-util = "0.7"
+zeroize = "1"
+
+[[example]]
+name = "smoke"
+required-features = ["test-fixture"]

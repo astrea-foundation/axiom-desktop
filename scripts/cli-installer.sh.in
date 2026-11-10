@@ -1,0 +1,40 @@
+#!/bin/sh
+set -eu
+prefix="${XDG_DATA_HOME:-$HOME/.local/share}/axiom-cli"
+if [ "${1:-}" = --prefix ] && [ "$#" = 2 ]; then prefix=$2
+elif [ "$#" != 0 ]; then echo 'usage: installer [--prefix DIRECTORY]' >&2; exit 1; fi
+case "$prefix" in /*) ;; *) echo 'Installation prefix must be absolute' >&2; exit 1;; esac
+case "$prefix" in /|/usr|/usr/local|/bin|/opt|"$HOME") echo 'Choose a dedicated installation directory' >&2; exit 1;; esac
+if [ -e "$prefix/current" ] && [ ! -f "$prefix/current/axiom-install.json" ]; then
+  echo 'This directory belongs to another installation' >&2; exit 1
+fi
+version='@VERSION@'
+mkdir -p "$prefix/versions" "$prefix/bin"
+stage=$(mktemp -d "$prefix/versions/.install.XXXXXX")
+trap 'rm -rf "$stage"' EXIT HUP INT TERM
+sed '1,/^__AXIOM_PAYLOAD__$/d' "$0" | base64 -d | tar -xz -C "$stage"
+test "$("$stage/bin/axiomcli" --version)" = "axiomcli $version"
+if [ -e "$prefix/versions/$version" ]; then
+  diff -qr "$stage" "$prefix/versions/$version" >/dev/null || { echo 'An installed version cannot be replaced with different bytes' >&2; exit 1; }
+else mv "$stage" "$prefix/versions/$version"; fi
+link="$prefix/.current.$$"
+ln -s "versions/$version" "$link"
+mv -Tf "$link" "$prefix/current"
+for program in axiomcli axiom-proxy; do
+  ln -sfn "../current/bin/$program" "$prefix/bin/$program"
+done
+bin_dir="${XDG_BIN_HOME:-$HOME/.local/bin}"
+mkdir -p "$bin_dir"
+for program in axiomcli axiom-proxy; do
+  target="$bin_dir/$program"
+  if [ -e "$target" ] || [ -L "$target" ]; then
+    if [ ! -L "$target" ] || [ "$(readlink "$target")" != "$prefix/bin/$program" ]; then
+      echo "A different $program already exists at $target; the installed binary is at $prefix/bin/$program" >&2
+      continue
+    fi
+  fi
+  ln -sfn "$prefix/bin/$program" "$target"
+done
+printf 'Installed AxiomCLI %s. Run %s/axiomcli (add that directory to PATH if necessary).\n' "$version" "$bin_dir"
+exit 0
+__AXIOM_PAYLOAD__
