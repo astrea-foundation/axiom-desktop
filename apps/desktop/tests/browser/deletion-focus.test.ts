@@ -370,6 +370,56 @@ async function openApp(platform = "linux", failDelete = false, thinkingLevels: s
   return { page, errors, nativeDialogs };
 }
 
+for (const ending of ["completion", "stop", "failure"]) test(`model selection stays locked through generation until ${ending}`, async () => {
+  const modelCatalog: ListModelsResponse = { models: ["test-model", "other-model"].map(id => ({
+    id, label: id === "test-model" ? "Test model" : "Other model", shortLabel: id === "test-model" ? "Test model" : "Other model",
+    providerId: "test", providerLabel: "Test provider", upstreamModel: id, thinkingLevels: [],
+  })) };
+  const { page, errors } = await openApp("linux", false, [], "medium", false, true, modelCatalog);
+  try {
+    await page.locator('[data-thread-id="old-thread"]').click();
+    await page.locator("[data-chat-scroll]").waitFor();
+    const selector = page.locator('.composer-shell button[aria-haspopup="menu"]').first();
+    await selector.click();
+    const picker = page.getByRole("dialog", { name: "Choose a model", exact: true });
+    await picker.waitFor();
+    await page.evaluate(() => (window as any).__deletionTest.setTimeline([
+      { id: "reply", turnId: "active-test-turn", kind: "assistant", text: "Generating a reply…", status: "streaming" },
+    ], true));
+    await picker.waitFor({ state: "detached" });
+    assert.equal(await selector.isDisabled(), true);
+    assert.equal(await selector.getAttribute("aria-expanded"), "false");
+    assert.equal(await selector.getAttribute("title"), "Model is fixed for the current response");
+    await selector.evaluate((button: HTMLButtonElement) => button.click());
+    assert.equal(await picker.count(), 0);
+    assert.equal(await page.evaluate(() => (window as any).__deletionTest.settingsCalls.length), 0);
+    await page.locator("textarea[data-chat-input]").fill("Next question");
+    if (ending === "completion" && process.env.AXIOM_MODEL_LOCK_SCREENSHOT) {
+      await page.screenshot({ path: process.env.AXIOM_MODEL_LOCK_SCREENSHOT, animations: "disabled" });
+    }
+    // A different conversation can still choose its own model.
+    await page.getByRole("button", { name: "New thread", exact: true }).click();
+    assert.equal(await selector.isEnabled(), true);
+    await page.locator('[data-thread-id="old-thread"]').click();
+    await page.locator("[data-chat-scroll]").waitFor();
+    assert.equal(await selector.isDisabled(), true);
+    if (ending === "stop") {
+      await page.getByRole("button", { name: "Stop generating", exact: true }).click();
+    } else {
+      await page.evaluate((failed) => (window as any).__deletionTest.setTimeline([
+        { id: "reply", kind: "assistant", text: "Final content", status: failed ? "failed" : "completed", terminalVerified: !failed },
+      ], false), ending === "failure");
+    }
+    await page.waitForFunction(() => !document.querySelector<HTMLButtonElement>('.composer-shell button[aria-haspopup="menu"]')?.disabled);
+    assert.equal(await selector.getAttribute("aria-expanded"), "false", "the old picker stays closed after generation");
+    await selector.click();
+    await picker.getByRole("button", { name: /Other model/ }).click();
+    await page.waitForFunction(() => (window as any).__deletionTest.settingsCalls.some((request: any) => request.model === "other-model"));
+    assert.equal(await selector.innerText(), "Other model");
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
 test("outdated TEE consent retries the paused turn through attachment-preserving revision", async () => {
   const { page, errors } = await openApp();
   try {
