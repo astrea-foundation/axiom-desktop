@@ -360,7 +360,9 @@ does not dispatch CI on the operator's behalf.
 
 The workflow builds and self-tests the native AstreaAI verifier through
 `scripts/build-direct-bundle.mjs`, bundles it into actual unsigned Desktop and CLI
-installers, and compiles with stable update trust disabled. It validates that the
+installers, and compiles with stable update trust disabled. Each packaging job
+installs Node for its selected architecture and checks `process.arch` before
+building, including native ARM64 on macOS and Windows. It validates that the
 unsigned inventory matches the selected source SHA, existing product version,
 platform and architecture, includes every required Desktop/CLI format, and
 matches each artifact's length/hash and `SHA256SUMS`. A source-tree check rejects
