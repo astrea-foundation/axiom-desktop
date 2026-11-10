@@ -158,6 +158,10 @@ available during this wait, and another message waits in the FIFO queue until
 the active request finishes. This applies to existing chats, first messages,
 retries and queued messages when their turn arrives.
 During a response, Enter adds input to the same FIFO queue.
+The model picker is disabled while a message is being sent or a response is
+running, including tool calls. An open picker closes when generation starts.
+Wait for the response to finish or stop it before changing models. Other idle
+threads and the new-chat screen keep their own model selection available.
 **Send now** stops the current reply, waits for its cleanup, then sends the
 selected message as a new turn. Its text, attachments, Web choice and Agent
 settings are preserved. Other queued messages retain their order. The cancel

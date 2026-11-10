@@ -196,7 +196,7 @@ export function useModelCatalog(agentState: ClientState, navigation: ReturnType<
   }, [activeThreadId]);
 
   const updateSettings = (nextModel?: string, nextThinking?: ReasoningEffort) => {
-    if (!activeThreadId || !activeSession) return;
+    if (!activeThreadId || !activeSession || (nextModel && activeSession.running)) return;
     const api = window.axiomDesktop?.agent;
     if (!api) return;
     const generation = ++settingsGeneration.current;
