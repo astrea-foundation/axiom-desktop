@@ -1,0 +1,37 @@
+{
+  "origin": "https://worker.axiom.stream:8443",
+  "connect_ip": "95.133.254.84",
+  "model_manifest": "70f4574bcec58ecc53c5e30680eaed1b29423de013ad743474781252fefeb4fe",
+  "verifier": {
+    "binary": "runtime/axiom-direct-verify",
+    "binary_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "publisher_key": "e8b28619216fe6e0f4c2e15e734b1e689896647417459f8905a90a820bee3aaf",
+    "minimum_policy_sequence": 22
+  },
+  "account": {
+    "origin": "https://api.axiom.stream",
+    "issuer_key": "17b705895975ede52fbe635efe48a3af0312845082f8b9350465a68678ef1dc2",
+    "chat_price": {
+      "currency": "USD",
+      "input_microusd_per_million": 250000,
+      "cached_input_microusd_per_million": 50000,
+      "output_microusd_per_million": 1500000,
+      "image_microusd_per_megapixel_step": 0,
+      "request_microusd": 0,
+      "version": "astreaai-chat-20261105-v1"
+    },
+    "image_price": {
+      "currency": "USD",
+      "input_microusd_per_million": 0,
+      "cached_input_microusd_per_million": 0,
+      "output_microusd_per_million": 0,
+      "image_microusd_per_megapixel_step": 0,
+      "request_microusd": 8000,
+      "version": "astreaai-image-20261105-v1"
+    },
+    "maximum_charge_microusd": 100000
+  },
+  "vision": true,
+  "tools": true,
+  "image_generation": true
+}
