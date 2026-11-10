@@ -1,5 +1,14 @@
 # Release acceptance
 
+The 0.1.21 installed-image proof explicitly selected AstreaAI/Qwen and did not
+establish the normal fresh-profile default or NEAR catalog availability. During
+production catalog discovery failures, NEAR offerings can disappear and the
+runtime's existing preference order selects Tinfoil DeepSeek. Future signed
+qualification must require the exact abliterated NEAR offering and Uncensored
+tag, verify the actual Desktop/CLI default without a model environment override,
+then separately select the image-test model. Until this live gate passes, do not
+claim restored NEAR availability from the 0.1.21 image receipts.
+
 The 0.1.21 release audit updates rusqlite to 0.41.1 with libsqlite3-sys 0.39.1
 (SQLite 3.54.1), addressing RUSTSEC-2026-0459 in the bundled database engine.
 The MCP SDK moves to rmcp 3.9.0, covering RUSTSEC-2026-0457, RUSTSEC-2026-0461

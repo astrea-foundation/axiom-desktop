@@ -178,6 +178,16 @@ and report authenticated, final, settled image usage. The private
 binary hashes to the generated image and usage receipt. Publication depends on
 this check; downloading the signed inventory does not replace it.
 
+Before selecting the AstreaAI image-test model, qualification must use the normal
+installed catalog and a fresh profile without `AXIOM_MODEL`. Require NEAR's exact
+`deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated` offering, its `uncensored` tag,
+and that offering as the new session's selected default. Use the Desktop chat
+frontend and bootstrap workspace for Desktop, and the CLI frontend for standalone
+CLI. Only after recording the actual default may the test select AstreaAI/Qwen
+through the normal model-selection RPC for its image request. A working image
+service cannot substitute for the required chat catalog and default selection;
+provider discovery outages must block release qualification.
+
 `scripts/prepare-store-submission.mjs release setup store` prepares the private
 `windows-store-submission` workflow artifact: the exact full offline EXE URL,
 hash, silent arguments, certification notes and remaining acceptance fields.
