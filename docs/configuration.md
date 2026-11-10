@@ -144,9 +144,12 @@ servers from shared CLI configuration.
 All profiles retain deny rules, input validation and the platform's actual
 process boundaries. Workspace text search, context selection, Git worktree
 inspection and session diffs check each resolved file before reading its contents.
-Session diff baselines are captured only after those checks; retained baseline
-content and fallback patches are checked again before being returned. Denied files are omitted; explicit
-`ask` rules require approval for each file even after the tool was approved.
+Background session-diff baselines capture only immediately permitted files and
+skip `ask` and denied files without prompting. Foreground search, context, Git
+and session-diff reads retain normal approvals, including an explicit diff's
+first snapshot. Retained baseline content and fallback patches are checked again
+before being returned. Denied files are omitted; explicit `ask` rules require
+approval for each file even after the tool was approved.
 Declining a file approval stops the turn. URL fetching checks destination
 policy on every redirect, including redirects within one origin, before DNS
 resolution and dispatch. Each permitted hop still validates every DNS answer

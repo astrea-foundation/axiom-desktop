@@ -293,6 +293,12 @@ pub trait ApprovalHandler: Send + Sync {
 #[async_trait]
 pub trait EffectAuthorizer: Send + Sync {
     async fn authorize(&self, effect: Effect, cancellation: CancellationToken) -> Result<()>;
+
+    /// Background bookkeeping may use only existing authority. Implementations
+    /// that cannot evaluate policy without interaction must fail closed.
+    fn immediately_allows(&self, _effect: Effect) -> bool {
+        false
+    }
 }
 
 pub struct ExecutionAuthorizer {
@@ -304,6 +310,10 @@ pub struct ExecutionAuthorizer {
 
 #[async_trait]
 impl EffectAuthorizer for ExecutionAuthorizer {
+    fn immediately_allows(&self, effect: Effect) -> bool {
+        self.policy.evaluate(self.profile, effect).kind == DecisionKind::Allow
+    }
+
     async fn authorize(&self, effect: Effect, cancellation: CancellationToken) -> Result<()> {
         use crate::app::AppEvent;
         if cancellation.is_cancelled() {
