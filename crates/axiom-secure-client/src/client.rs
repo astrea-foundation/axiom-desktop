@@ -507,6 +507,7 @@ mod tests {
     use super::*;
 
     fn installed_direct_config(relay: &str) -> SecureClientConfig {
+        let fixture_root = std::env::temp_dir();
         let mut config = SecureClientConfig::new("https://relay.example").unwrap();
         config.relay_base_url = url::Url::parse(relay).unwrap();
         config.endpoint_policy.require_https = false;
@@ -515,8 +516,8 @@ mod tests {
         config.direct = Some(
             serde_json::from_value(serde_json::json!({
                 "origin":"https://worker.example:8443", "connect_ip":null,
-                "model_manifest":"aa".repeat(32), "issuer_key_file":"/private/operator.pem",
-                "verifier":{"binary":"/installed/verifier", "binary_sha256":"bb".repeat(32),
+                "model_manifest":"aa".repeat(32), "issuer_key_file":fixture_root.join("axiom-test-operator.pem"),
+                "verifier":{"binary":fixture_root.join("axiom-test-verifier"), "binary_sha256":"bb".repeat(32),
                     "publisher_key":"cc".repeat(32), "minimum_policy_sequence":20}
             }))
             .unwrap(),
