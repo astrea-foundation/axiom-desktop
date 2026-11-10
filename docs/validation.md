@@ -187,7 +187,9 @@ requirements. See [the pool guide](inference-pool.md).
 
 Run the [development checks](development.md#checks), including Rust formatting,
 strict Clippy, functional tests, dependency policy, generated ACP contract checks,
-TypeScript checks, Desktop unit/browser tests and the production build. Use the
+TypeScript checks and Desktop unit/browser tests. Validate installer changes
+through the explicit [unsigned candidate workflow](releasing.md#development-previews)
+before production tags; retain its source SHA and candidate receipt. Use the
 [release procedure](releasing.md#ci-baseline) to reuse successful CI for the exact
 candidate instead of repeating unrelated jobs. The live release gate uses the
 registered provider's attested E2EE protocol; it does not replace interactive QA.
