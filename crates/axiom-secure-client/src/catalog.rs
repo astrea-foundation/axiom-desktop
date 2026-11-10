@@ -122,7 +122,25 @@ pub(crate) async fn fetch_models(
             ))?,
     };
     if response.status() != StatusCode::OK {
-        return Err(error_for_status(response.status()));
+        let status = response.status();
+        // Only the bounded operational code is trusted here. Never display
+        // backend error text or navigate to a URL supplied in an error body.
+        if status == StatusCode::FORBIDDEN
+            && let Ok(body) =
+                bounded_body(response, config.limits.model_catalog_bytes.min(8192)).await
+            && let Ok(value) = serde_json::from_slice::<Value>(&body)
+            && value
+                .get("detail")
+                .and_then(|detail| detail.get("code"))
+                .and_then(Value::as_str)
+                == Some("consent_required")
+        {
+            return Err(SecureClientError::new(
+                axiom_inference::ProviderFailureKind::Authentication,
+                "Review the current policies on your Axiom account page to restore model access",
+            ));
+        }
+        return Err(error_for_status(status));
     }
     let body = bounded_body(response, config.limits.model_catalog_bytes).await?;
     let wire: Vec<Value> = serde_json::from_slice(&body)

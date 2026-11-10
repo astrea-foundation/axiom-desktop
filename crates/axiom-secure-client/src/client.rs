@@ -210,11 +210,16 @@ impl SecureClient {
                 }
                 Ok(models)
             }
-            // Locally pinned discovery remains useful when no other provider
-            // is configured. Inference still requires fresh worker admission.
+            // Locally pinned discovery remains useful during catalog outages,
+            // but must not hide account authorization failures. Inference
+            // still requires fresh worker admission.
             Err(error)
                 if !configured_pool.is_empty()
-                    && error.kind() != axiom_inference::ProviderFailureKind::Cancelled =>
+                    && !matches!(
+                        error.kind(),
+                        axiom_inference::ProviderFailureKind::Cancelled
+                            | axiom_inference::ProviderFailureKind::Authentication
+                    ) =>
             {
                 Ok(configured_pool)
             }
@@ -776,6 +781,40 @@ mod tests {
             client.models(cancelled).await.unwrap_err().kind(),
             axiom_inference::ProviderFailureKind::Cancelled
         );
+    }
+
+    #[tokio::test]
+    async fn installed_astreaai_does_not_hide_catalog_authentication_failures() {
+        for (status, body, expected_detail) in [
+            (
+                "401 Unauthorized",
+                serde_json::json!({"detail":"invalid session"}),
+                "Axiom authentication failed",
+            ),
+            (
+                "403 Forbidden",
+                serde_json::json!({"detail":{"code":"consent_required","consent_url":"https://untrusted.invalid/private"}}),
+                "Review the current policies on your Axiom account page to restore model access",
+            ),
+            (
+                "403 Forbidden",
+                serde_json::json!({"detail":"private authorization failure"}),
+                "Axiom authentication failed",
+            ),
+        ] {
+            let (relay, server) = catalog_server(status, body).await;
+            let client =
+                SecureClient::new(installed_direct_config(&relay), ApiCredential::new("test"))
+                    .unwrap();
+            let error = client.models(CancellationToken::new()).await.unwrap_err();
+            assert_eq!(
+                error.kind(),
+                axiom_inference::ProviderFailureKind::Authentication
+            );
+            assert_eq!(error.safe_detail(), expected_detail);
+            assert!(client.catalog_cache.read().await.is_none());
+            server.await.unwrap();
+        }
     }
 
     #[tokio::test]
