@@ -59,7 +59,6 @@ impl AxiomPaths {
         })
     }
 
-    #[cfg(test)]
     pub(crate) fn from_roots(config_root: PathBuf, data_root: PathBuf) -> Self {
         Self {
             config_root,

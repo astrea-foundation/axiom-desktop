@@ -712,6 +712,7 @@ dependencies = [
  "image",
  "insta",
  "keyring",
+ "keyring-core",
  "nix 0.31.3",
  "open",
  "portable-pty",
