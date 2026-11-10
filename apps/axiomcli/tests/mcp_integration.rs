@@ -231,7 +231,7 @@ async fn discovers_real_stdio_tools_and_preserves_policy_provenance() {
     let tool = &tools[0];
     assert_eq!(tool.name(), "mcp__blossom_fixture__echo");
     assert!(matches!(
-        tool.effects(&context(&temp), &json!({"value":"pink"}))
+        tool.effects(&context(&temp), &json!({"value":"task-management flask-sqlalchemy"}))
             .expect("effects")
             .as_slice(),
         [Effect::Mcp { server, tool, side_effecting: true }]
@@ -241,7 +241,7 @@ async fn discovers_real_stdio_tools_and_preserves_policy_provenance() {
     let result = tool
         .execute(
             &context(&temp),
-            json!({"value":"pink"}),
+            json!({"value":"task-management flask-sqlalchemy"}),
             CancellationToken::new(),
         )
         .await
@@ -249,8 +249,16 @@ async fn discovers_real_stdio_tools_and_preserves_policy_provenance() {
     assert!(result.success);
     assert!(result.content.contains("Blossom Fixture"));
     assert!(result.content.contains("untrusted MCP result"));
-    assert!(!result.content.contains("axm_"));
-    assert!(result.content.contains("[REDACTED]"));
+    let saved: Value = serde_json::from_str(&result.content).expect("result envelope");
+    // No configured secret is present. Credential-like server text is ordinary
+    // authoritative content and must survive without diagnostic rewriting.
+    assert_eq!(
+        saved["result"]["content"][0]["text"],
+        "echo=\"task-management flask-sqlalchemy\"; secret=axm_1234567890abcdefghijklmnop"
+    );
+    for tool in tools {
+        tool.shutdown().await;
+    }
 }
 
 #[tokio::test]
@@ -422,13 +430,17 @@ async fn explicit_environment_values_never_reach_tool_results_or_debug_output() 
     let result = tools[0]
         .execute(
             &context(&root),
-            json!({"text": secret}),
+            json!({"value": format!("task-management flask-sqlalchemy {secret}")}),
             CancellationToken::new(),
         )
         .await
         .unwrap();
     assert!(!result.content.contains(secret));
-    assert!(result.content.contains("[REDACTED]"));
+    let saved: Value = serde_json::from_str(&result.content).expect("result envelope");
+    assert_eq!(
+        saved["result"]["content"][0]["text"],
+        "echo=\"task-management flask-sqlalchemy [REDACTED]\"; secret=axm_1234567890abcdefghijklmnop"
+    );
     for tool in tools {
         tool.shutdown().await;
     }
