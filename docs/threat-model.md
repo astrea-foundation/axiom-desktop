@@ -177,7 +177,12 @@ enter renderer state. The separate API-key creation operation intentionally retu
 one new automation key for display; its Debug/state paths redact or omit the token.
 There is no automation-key submission path for Desktop native sign-in.
 
-Conversation databases are not encrypted at rest. Startup repairs unfinished
+Conversation databases use SQLCipher and managed binary assets use authenticated
+encrypted external files, with domain-separated keys derived from an independent
+OS-credential-store secret. Draft/outbox imports delete legacy browser copies
+only after native acknowledgement. Missing/locked/wrong keys preserve existing
+data and fail closed. See [local storage](local-storage.md) for migration and
+recovery boundaries. Startup repairs unfinished
 turns to interrupted state without replay. Delete confirmations bind the exact
 selection, expire after 60 seconds and are one-use/process-local. IPC framing is
 bounded to 64 MiB (including escaped text and inline image payloads); retained sidecar stderr is capped at 64 KiB. Sequence gaps require

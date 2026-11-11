@@ -10,6 +10,7 @@ export type DesktopApi = {
   minimize: () => void;
   maximize: () => void;
   close: () => void;
+  onBeforeLocalStateChange: (flush: (reason: "close" | "account") => Promise<void>, release: () => void) => () => void;
   isMaximized: () => Promise<boolean>;
   onMaximizedChange: (callback: (maximized: boolean) => void) => () => void;
   isFullScreen: () => Promise<boolean>;
@@ -36,6 +37,17 @@ const api: DesktopApi = {
   },
   close: () => {
     ipcRenderer.send("window:close");
+  },
+  onBeforeLocalStateChange: (flush, release) => {
+    const prepare = (_event: unknown, token: string, reason: "close" | "account") => {
+      void flush(reason).then(() => ipcRenderer.send("local-state:flushed", token, null), () => ipcRenderer.send("local-state:flushed", token, true));
+    };
+    ipcRenderer.on("local-state:prepare", prepare);
+    ipcRenderer.on("local-state:release", release);
+    return () => {
+      ipcRenderer.removeListener("local-state:prepare", prepare);
+      ipcRenderer.removeListener("local-state:release", release);
+    };
   },
   isMaximized: () => ipcRenderer.invoke("window:isMaximized"),
   onMaximizedChange: (callback) => {

@@ -9,8 +9,48 @@ tag, verify the actual Desktop/CLI default without a model environment override,
 then separately select the image-test model. Until this live gate passes, do not
 claim restored NEAR availability from the 0.1.21 image receipts.
 
-The 0.1.21 release audit updates rusqlite to 0.41.1 with libsqlite3-sys 0.39.1
-(SQLite 3.54.1), addressing RUSTSEC-2026-0459 in the bundled database engine.
+Encrypted storage pins `rusqlite =0.42.0` with `libsqlite3-sys 0.40.0` and
+`sqlcipher-src =420.0.0+sqlcipher-4.20.0-sqlite-3.54.1-libtomcrypt-1.18.2`.
+This supplies SQLCipher 4.20.0 on SQLite 3.54.1 with vendored static OpenSSL 4.0.3
+from registry `openssl-src =400.0.2+4.0.3`. The verified `openssl-sys 0.9.118`
+package has a manifest-only patch selecting that source; its bindings and build
+scripts are unchanged. The upstream vendoring range still selects unsupported
+OpenSSL 3.6.3, and no published source crate contains current OpenSSL 3.5.9 LTS.
+See the [exact patch and source provenance](../vendor/openssl-sys-0.9.118/AXIOM-PROVENANCE.md).
+OpenSSL 4.0 is [supported through May 14, 2027](https://openssl-library.org/source/);
+review bundled C security updates independently of Rust advisory results.
+The earlier `libsqlite3-sys 0.39.1` normal SQLite bundle was patched, but its
+SQLCipher bundle still used vulnerable SQLite 3.53.4; see
+[RUSTSEC-2026-0459](https://rustsec.org/advisories/RUSTSEC-2026-0459.html).
+The native opener rejects linked SQLite versions below 3.54.1 before opening
+any database/WAL path. A regression test checks the actual linked SQLite,
+SQLCipher and `cipher_provider_version` (`OpenSSL 4.0.3 29 Sep 2026`).
+No advisory exception or weaker WAL validation is used for this dependency fix.
+
+The [rusqlite 0.42.0 release](https://github.com/rusqlite/rusqlite/releases/tag/v0.42.0)
+and `libsqlite3-sys` crate originate at upstream commit
+`812d63147ebea21c9c3de4db9e556f2e4e9f8161`; the SQLCipher source package originates
+at [commit 617c0cc9673cadddd1beefda6db47aa732d5a7ab](https://github.com/LucaCappelletti94/sqlcipher-src/tree/617c0cc9673cadddd1beefda6db47aa732d5a7ab).
+`Cargo.lock` records the verified registry archive SHA-256 values:
+
+| Crate | Archive SHA-256 |
+| --- | --- |
+| rusqlite 0.42.0 | `a4edff0039f148731aee2fd80f76dbfeb12d204ab3d1c544838d34e02151049b` |
+| libsqlite3-sys 0.40.0 | `b06e69070b7e12262b0cd90832f0a7396f142a2b330181255562decf9f0c6215` |
+| sqlcipher-src 420.0.0 | `fd6b5280ed2593d07b2816ec531821c15c306903bcca224716f1fbcc2bbfedfe` |
+| openssl-src 400.0.2+4.0.3 | `d2093956673b8dbda85c87fa4fb78e70698ce6c5978a2837d1613f661d3bef76` |
+
+The original `openssl-sys 0.9.118` archive SHA-256 is
+`19c413d6ec9ebaf5e1c829d355cb3e9f783778d700f135be0921d52fce3c60ae`;
+the workspace resolves the documented local manifest patch instead of the
+unmodified registry package.
+
+The packaged `sqlcipher.c` amalgamation SHA-256 is
+`8cd2347d18886fee4651153fabeeeffb7cec008700987dab1c00261febc4220f`,
+matching its upstream `sqlcipher/SHA256SUMS`. The official
+[SQLCipher changelog](https://github.com/sqlcipher/sqlcipher/blob/v4.20.0/CHANGELOG.md)
+identifies the SQLite 3.54.1 baseline.
+
 The MCP SDK moves to rmcp 3.9.0, covering RUSTSEC-2026-0457, RUSTSEC-2026-0461
 and RUSTSEC-2026-0462. The dependency audit remains required without new advisory
 exceptions. Existing conversation storage and MCP behavior must pass native
@@ -200,6 +240,38 @@ qualification must launch the installed app and reach its first window; a
 successful renderer build or source-mode launch does not establish that the
 packaged main process can start.
 
+## Encrypted local storage qualification
+
+The [encrypted local store](local-storage.md) uses SQLCipher and encrypted
+external assets at schema 7. Synthetic native fixtures cover plaintext stores
+with committed WAL data, exact message/checkpoint identity, interrupted format
+replacement, authenticated assets, ownership/cleanup, missing or incorrect keys,
+portable backups and interrupted restore activation. Desktop fixtures cover
+account-scoped browser import, acknowledgement before deletion and recovered
+preparations that require review. These checks never open real customer stores
+or real credential entries.
+
+Keep the SQLite security baseline in the SQLCipher-enabled build at 3.54.1 or
+newer. The regular `libsqlite3-sys` bundled version alone does not establish
+this: its SQLCipher source can select a different SQLite baseline. Retain the
+runtime version regression and dependency audit without an exception for
+RUSTSEC-2026-0459.
+The locked Hickory DNS crates use 0.26.2 for the current malformed-input fixes.
+The source package's permissive SQLite/LibTomCrypt licenses have a narrow
+`sqlcipher-src =420.0.0` allowance; the global license policy is unchanged.
+
+Before release, qualify native Windows and Linux builds with their actual
+credential stores, plus signed macOS Keychain approval persistence. Verify a
+data-preserving upgrade with existing attachments, generated originals/previews,
+drafts and pending/failed queue entries; locked or missing credentials must
+preserve the encrypted files. Check normal close/quit and account changes while
+draft writes are pending, failure recovery without plaintext fallback, portable
+restore into an empty profile and key-only recovery without changing chats.
+Keep another older native process open during migration to verify the maintenance
+fence. Test interrupted activation and OS restart with the complete database and
+asset directory. Local synthetic tests do not establish OS-keystore UX,
+power-loss durability or signed installer acceptance on another OS.
+
 ## Interactive qualification
 
 Image tools use only the installed AstreaAI image adapter. Its runtime fixes
@@ -227,8 +299,8 @@ decoding that yields to UI tasks. These local transport checks do not change
 provider attestation, authenticated completion, original image bytes or size caps.
 
 Chat recovery regressions cover missing attachment payloads, damaged image
-metadata, unavailable historical image views, interrupted tool replies, bounded
-image-reference expiration, incompatible historical files after a model switch,
+metadata, unavailable historical image views, interrupted tool replies,
+missing image references, incompatible historical files after a model switch,
 and failed automatic summarization before a new prompt. Client completion checks
 also delay an older running snapshot across send, edit and image regeneration,
 then require a fresh ready snapshot. These checks preserve normal provider

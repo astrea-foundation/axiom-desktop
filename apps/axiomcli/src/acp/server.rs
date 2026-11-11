@@ -97,6 +97,14 @@ pub async fn serve_stdio(
         protocol::InitializeResponse
     );
     let builder = request_handler!(
+        async,
+        builder,
+        context,
+        local_payload::handle,
+        extension::LocalPayloadRequest,
+        extension::LocalPayloadResponse
+    );
+    let builder = request_handler!(
         sync,
         builder,
         context,

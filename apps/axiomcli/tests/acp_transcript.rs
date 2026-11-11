@@ -796,7 +796,7 @@ async fn new_acp_sessions_reconcile_stale_catalog_preferences_before_use() {
         .join("state.sqlite3");
 
     {
-        let store = SessionStore::open(&database).expect("seed durable preferences");
+        let store = SessionStore::open_fixture(&database).expect("seed durable preferences");
         store
             .set_profile_preferences("retired-model", ThinkingLevel::High)
             .expect("retired preference");
@@ -832,7 +832,7 @@ async fn new_acp_sessions_reconcile_stale_catalog_preferences_before_use() {
     retired.close().await;
 
     {
-        let store = SessionStore::open(&database).expect("reopen durable preferences");
+        let store = SessionStore::open_fixture(&database).expect("reopen durable preferences");
         store
             .set_profile_preferences("medium-only", ThinkingLevel::ExtraHigh)
             .expect("stale reasoning preference");
@@ -1150,7 +1150,7 @@ async fn resumed_acp_sessions_retain_retired_models_and_reconcile_changed_reason
         .join("cli")
         .join("state.sqlite3");
     let (retired_id, changed_reasoning_id) = {
-        let store = SessionStore::open(&database).expect("state store");
+        let store = SessionStore::open_fixture(&database).expect("state store");
         let retired = seed_session_settings(
             &store,
             workspace.path(),
@@ -1202,7 +1202,7 @@ async fn resumed_acp_sessions_retain_retired_models_and_reconcile_changed_reason
     }
     acp.close().await;
 
-    let store = SessionStore::open(&database).expect("reopen preserved state");
+    let store = SessionStore::open_fixture(&database).expect("reopen preserved state");
     let retired = store
         .load_recovering(&retired_id)
         .expect("load retired-model correction");
@@ -1866,7 +1866,7 @@ async fn desktop_timeline_restore_transfers_saved_images_once_and_preserves_acp_
         first.close().await;
         (session, cwd)
     };
-    let store = SessionStore::open(
+    let store = SessionStore::open_fixture(
         state
             .path()
             .join("data/axiom/accounts/local-test-account/desktop/state.sqlite3"),

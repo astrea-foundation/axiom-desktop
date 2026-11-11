@@ -164,6 +164,7 @@ impl SessionStore {
             None
         };
         let owner = connection.guard.owner_id.clone();
+        let assets = connection.assets().clone();
         let transaction = connection
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(storage_error)?;
@@ -173,6 +174,7 @@ impl SessionStore {
             for event in legacy {
                 super::model_history::append(
                     &transaction,
+                    &assets,
                     &event,
                     event.event.turn_id().map(ToString::to_string).as_deref(),
                 )?;
@@ -197,8 +199,14 @@ impl SessionStore {
         let mut client_item_id = client_item_id.as_deref();
         for envelope in envelopes {
             let turn = super::execution::check_execution(&transaction, envelope, &owner)?;
-            persist_event(&transaction, envelope, client_item_id, turn.as_deref())?;
-            super::model_history::append(&transaction, envelope, turn.as_deref())?;
+            persist_event(
+                &transaction,
+                &assets,
+                envelope,
+                client_item_id,
+                turn.as_deref(),
+            )?;
+            super::model_history::append(&transaction, &assets, envelope, turn.as_deref())?;
             if matches!(
                 envelope.event,
                 AppEvent::PromptAccepted { .. } | AppEvent::TurnStarted { .. }
@@ -305,6 +313,7 @@ impl SessionStore {
 
 pub(super) fn persist_event(
     transaction: &Transaction<'_>,
+    assets: &super::assets::AssetManager,
     envelope: &EventEnvelope,
     client_item_id: Option<&str>,
     execution_turn: Option<&str>,
@@ -404,10 +413,18 @@ pub(super) fn persist_event(
             if !attachments.is_empty() {
                 axiom_inference::validate_prompt(text, attachments)
                     .map_err(|error| AxiomError::Storage(error.to_string()))?;
+                let mut stored = serde_json::to_value(attachments)?;
+                super::asset_codec::MediaCodec {
+                    assets,
+                    connection: transaction,
+                    owner: &super::assets::thread_owner(&thread_id),
+                    direction: super::asset_codec::Direction::Store,
+                }
+                .attachments(&mut stored)?;
                 transaction
                     .execute(
                         "INSERT INTO prompt_attachments(user_item_id,payload) VALUES (?1,?2)",
-                        params![user_item_id, serde_json::to_string(attachments)?],
+                        params![user_item_id, serde_json::to_string(&stored)?],
                     )
                     .map_err(storage_error)?;
             }
@@ -734,6 +751,13 @@ pub(super) fn persist_event(
                 .remove("data");
             metadata["generated_image"] = proof;
             metadata["content"] = json!([{"type":"content", "content":{"type":"image", "data":image.data,"mimeType":image.mime_type}}]);
+            super::asset_codec::MediaCodec {
+                assets,
+                connection: transaction,
+                owner: &super::assets::thread_owner(&thread_id),
+                direction: super::asset_codec::Direction::Store,
+            }
+            .timeline(&mut metadata)?;
             transaction
                 .execute(
                     "UPDATE timeline_items SET metadata=?2, updated_at=?3 WHERE id=?1",

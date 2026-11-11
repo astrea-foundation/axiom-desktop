@@ -654,7 +654,7 @@ fn usage_command_opens_an_inspector_without_submitting_a_prompt() {
     let (output, success) = run_tui_at("usage", false, root.path(), &[]);
     assert!(success, "usage session failed: {output:?}");
     assert!(output.contains("Usage"));
-    let store = SessionStore::open(test_account_database(root.path())).unwrap();
+    let store = SessionStore::open_fixture(test_account_database(root.path())).unwrap();
     let sessions = store.list(false).unwrap();
     assert!(!sessions.is_empty());
     for session in sessions {
@@ -666,7 +666,7 @@ fn usage_command_opens_an_inspector_without_submitting_a_prompt() {
 }
 
 fn saved_prompts(root: &Path) -> Vec<String> {
-    let store = SessionStore::open(test_account_database(root)).unwrap();
+    let store = SessionStore::open_fixture(test_account_database(root)).unwrap();
     store
         .list(false)
         .unwrap()
@@ -719,7 +719,7 @@ fn model_picker_paste_filters_without_polluting_the_next_prompt() {
     let (output, success) = run_tui_at("paste_picker", false, root.path(), &[]);
     assert!(success, "picker session failed: {output:?}");
     assert_eq!(saved_prompts(root.path()), ["probe", "AfterPicker"]);
-    let store = SessionStore::open(test_account_database(root.path())).unwrap();
+    let store = SessionStore::open_fixture(test_account_database(root.path())).unwrap();
     let session = store.list(false).unwrap().pop().unwrap();
     let events = store.load(&session.id.parse().unwrap()).unwrap();
     assert_eq!(model_for_resume(&events, "fallback"), "alternate-model");
@@ -869,7 +869,7 @@ fn resumed_tui_sessions_reconcile_retired_models_and_changed_reasoning_support()
     let workspace = tempfile::tempdir().expect("workspace");
     let database = test_account_database(state.path());
     let (retired_id, changed_reasoning_id) = {
-        let store = SessionStore::open(&database).expect("state store");
+        let store = SessionStore::open_fixture(&database).expect("state store");
         (
             seed_tui_session_settings(
                 &store,
@@ -898,7 +898,7 @@ fn resumed_tui_sessions_reconcile_retired_models_and_changed_reasoning_support()
         assert!(success, "reconciled TUI resume failed: {output:?}");
     }
 
-    let store = SessionStore::open(&database).expect("reopen corrected state");
+    let store = SessionStore::open_fixture(&database).expect("reopen corrected state");
     let retired = store
         .load_recovering(&retired_id)
         .expect("load retired-model correction");
@@ -943,7 +943,7 @@ fn a_new_tui_session_reconciles_preferences_against_the_current_catalog() {
     let database = test_account_database(state.path());
 
     {
-        let store = SessionStore::open(&database).expect("seed retired preference");
+        let store = SessionStore::open_fixture(&database).expect("seed retired preference");
         store
             .set_profile_preferences("retired-model", ThinkingLevel::High)
             .expect("retired model preference");
@@ -951,7 +951,7 @@ fn a_new_tui_session_reconciles_preferences_against_the_current_catalog() {
     let (output, success) = run_tui_at("preference_bootstrap", false, state.path(), &[]);
     assert!(success, "TUI failed with retired preference: {output:?}");
     {
-        let store = SessionStore::open(&database).expect("read corrected preference");
+        let store = SessionStore::open_fixture(&database).expect("read corrected preference");
         let preferences = store.profile_preferences().expect("profile preferences");
         assert_eq!(preferences.model.as_deref(), Some("alternate-model"));
         assert_eq!(preferences.thinking_level, ThinkingLevel::High);
@@ -965,7 +965,8 @@ fn a_new_tui_session_reconciles_preferences_against_the_current_catalog() {
         success,
         "TUI failed with changed reasoning support: {output:?}"
     );
-    let store = SessionStore::open(&database).expect("read reconciled reasoning preference");
+    let store =
+        SessionStore::open_fixture(&database).expect("read reconciled reasoning preference");
     let preferences = store.profile_preferences().expect("profile preferences");
     assert_eq!(preferences.model.as_deref(), Some("medium-only"));
     assert_eq!(preferences.thinking_level, ThinkingLevel::Medium);

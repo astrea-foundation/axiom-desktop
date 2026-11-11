@@ -18,19 +18,63 @@ use super::{AccountRoute, ConnectionGuard, SessionStore, StoreBinding, StoreStat
 
 impl SessionStore {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        #[cfg(not(test))]
+        let opened = crate::local_storage::open_database(path.as_ref())?;
+        // Unit fixtures must never touch the user's operating-system keychain.
+        #[cfg(test)]
+        let opened = crate::local_storage::open_database_with_key(
+            path.as_ref(),
+            Arc::new(crate::local_storage::StorageKey::from_bytes([0x53; 32])),
+        )?;
+        Self::from_opened(path.as_ref(), opened)
+    }
+
+    /// Explicit synthetic fixture only. Never used by the application opener.
+    #[cfg(debug_assertions)]
+    pub fn open_fixture(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let connection = Connection::open(path).map_err(storage_error)?;
-        // SQLite aliases must share one execution-lock namespace.
+        Self::from_opened(
+            path,
+            crate::local_storage::OpenedDatabase {
+                connection: Connection::open(path).map_err(storage_error)?,
+                maintenance: None,
+                key: Arc::new(crate::local_storage::StorageKey::from_bytes([0x46; 32])),
+            },
+        )
+    }
+
+    pub(crate) fn verify_asset_integrity(&self) -> Result<()> {
+        let connection = self.lock()?;
+        connection.assets().verify(&connection)
+    }
+
+    pub(crate) fn open_protected_with_key(
+        path: &Path,
+        key: Arc<crate::local_storage::StorageKey>,
+    ) -> Result<Self> {
+        Self::from_opened(
+            path,
+            crate::local_storage::open_database_with_key(path, key)?,
+        )
+    }
+
+    fn from_opened(path: &Path, opened: crate::local_storage::OpenedDatabase) -> Result<Self> {
+        // Keep the process-wide exclusive migration fence through schema/media
+        // conversion, physical cleanup and interrupted-turn recovery.
+        let _maintenance = opened.maintenance;
         let database_path = std::fs::canonicalize(path)?;
-        connection
+        let assets = super::assets::AssetManager::disk(&database_path, opened.key)?;
+        opened
+            .connection
             .busy_timeout(std::time::Duration::from_secs(5))
             .map_err(storage_error)?;
         let store = Self {
             state: Arc::new(Mutex::new(StoreState {
-                connection: Some(connection),
+                connection: Some(opened.connection),
+                assets: Some(assets),
                 path: Some(database_path),
                 account_id: None,
                 generation: 0,
@@ -43,11 +87,6 @@ impl SessionStore {
             binding: None,
         };
         store.initialize()?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-        }
         store.interrupt_incomplete_turns()?;
         Ok(store)
     }
@@ -56,6 +95,7 @@ impl SessionStore {
         let store = Self {
             state: Arc::new(Mutex::new(StoreState {
                 connection: Some(Connection::open_in_memory().map_err(storage_error)?),
+                assets: Some(super::assets::AssetManager::memory()),
                 path: None,
                 account_id: None,
                 generation: 0,
@@ -79,6 +119,7 @@ impl SessionStore {
         Self {
             state: Arc::new(Mutex::new(StoreState {
                 connection: None,
+                assets: None,
                 path: None,
                 account_id: None,
                 generation: 0,
@@ -127,6 +168,19 @@ impl SessionStore {
     /// Close the old database before opening the exact new account. Failure
     /// leaves every clone inactive and never falls back to the old store.
     pub fn activate_account(&self, account_id: &str) -> Result<()> {
+        self.activate_with_opener(account_id, |path| Self::open(path))
+    }
+
+    #[cfg(debug_assertions)]
+    pub fn activate_fixture_account(&self, account_id: &str) -> Result<()> {
+        self.activate_with_opener(account_id, |path| Self::open_fixture(path))
+    }
+
+    fn activate_with_opener(
+        &self,
+        account_id: &str,
+        open: impl FnOnce(&Path) -> Result<Self>,
+    ) -> Result<()> {
         if self.binding.is_some() {
             return Err(bound_store_switch());
         }
@@ -144,6 +198,7 @@ impl SessionStore {
             }
             advance_store_generation(&mut state)?;
             state.connection = None;
+            state.assets = None;
             state.path = None;
             state.account_id = None;
         }
@@ -151,14 +206,19 @@ impl SessionStore {
         let path = route
             .paths
             .account_state_database(account_id, route.frontend)?;
-        let candidate = Self::open(&path)?;
+        let candidate = open(&path)?;
+        let mut candidate = candidate.lock_state()?;
         let connection = candidate
-            .lock_state()?
             .connection
             .take()
             .ok_or_else(|| AxiomError::Storage("new account database did not open".into()))?;
+        let assets = candidate
+            .assets
+            .take()
+            .ok_or_else(|| AxiomError::Storage("new account assets did not open".into()))?;
         let mut state = self.lock_state()?;
         state.connection = Some(connection);
+        state.assets = Some(assets);
         state.path = Some(path);
         state.account_id = Some(account_id.to_owned());
         Ok(())
@@ -175,6 +235,7 @@ impl SessionStore {
         let mut state = self.lock_state()?;
         advance_store_generation(&mut state)?;
         state.connection = None;
+        state.assets = None;
         state.path = None;
         state.account_id = None;
         Ok(())

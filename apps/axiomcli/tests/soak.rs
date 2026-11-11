@@ -142,7 +142,7 @@ async fn check_stream_and_transcript(chunks: usize, checkpoints: usize, benchmar
 
     let state = tempfile::tempdir().expect("state");
     let database = state.path().join("state.sqlite3");
-    let store = SessionStore::open(&database).expect("store");
+    let store = SessionStore::open_fixture(&database).expect("store");
     let runtime = Runtime::new(8);
     let session_id = runtime.session_id();
     let created = runtime

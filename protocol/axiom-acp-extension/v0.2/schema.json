@@ -4,6 +4,12 @@
   "description": "Schema root used to generate the checked-in language-neutral contract.",
   "type": "object",
   "properties": {
+    "localPayloadRequest": {
+      "$ref": "#/$defs/LocalPayloadRequest"
+    },
+    "localPayloadResponse": {
+      "$ref": "#/$defs/LocalPayloadResponse"
+    },
     "desktopMcpRequest": {
       "$ref": "#/$defs/DesktopMcpRequest"
     },
@@ -235,6 +241,8 @@
     }
   },
   "required": [
+    "localPayloadRequest",
+    "localPayloadResponse",
     "desktopMcpRequest",
     "desktopMcpResponse",
     "configureDesktopAgentRequest",
@@ -313,6 +321,79 @@
     "metadata"
   ],
   "$defs": {
+    "LocalPayloadRequest": {
+      "description": "Native-only local persistence. The renderer never receives encryption keys.",
+      "type": "object",
+      "properties": {
+        "accountId": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "action": {
+          "$ref": "#/$defs/LocalPayloadAction"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "accountId",
+        "id",
+        "action"
+      ]
+    },
+    "LocalPayloadAction": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "get"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "value": true,
+            "kind": {
+              "type": "string",
+              "const": "put"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "remove"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "LocalPayloadResponse": {
+      "type": "object",
+      "properties": {
+        "value": true
+      },
+      "additionalProperties": false
+    },
     "DesktopMcpRequest": {
       "type": "object",
       "properties": {
@@ -811,6 +892,14 @@
           "default": 0
         },
         "desktopMcp": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535,
+          "default": 0
+        },
+        "localPayload": {
+          "description": "Account-bound encrypted local drafts and outbox data.",
           "type": "integer",
           "format": "uint16",
           "minimum": 0,

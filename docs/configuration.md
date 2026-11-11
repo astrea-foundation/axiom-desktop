@@ -44,18 +44,24 @@ and `XDG_DATA_HOME` overrides apply on every platform; relative values are rejec
   shared/trust-policy.json
   accounts/<opaque-account-id>/
     cli/state.sqlite3
+    cli/state.sqlite3.assets/<opaque-asset-id>
     desktop/state.sqlite3
+    desktop/state.sqlite3.assets/<opaque-asset-id>
     desktop/chat/<thread-id>/
 ```
 
 Shared installation identity and the trust-policy rollback journal are not
 conversation databases. Refresh tokens live only in the OS credential store.
-No account database opens while signed out. Schema migrations are described in
-[versioning](versioning.md).
+No account database opens while signed out. Databases use SQLCipher; binary
+image/file payloads are encrypted external assets. Independent storage keys live
+in the OS credential store. Existing database, image and browser draft/outbox data
+is migrated forwards. See [encrypted local storage](local-storage.md) for the
+format, migration and portable recovery commands.
 
 `axiomcli reset-local-state --account ACCOUNT_ID --frontend cli --confirm`
 (or `--frontend desktop-chat`) removes the selected account/frontend database and
-SQLite sidecars. Stop Desktop and CLI first. The command runs before authentication
+SQLite sidecars, encrypted external assets and pending migration files. Stop
+Desktop and CLI first. The command runs before authentication
 and schema loading, so it can remove obsolete state. Other accounts/frontends,
 configuration, identity, vault credentials, trust policy and workspace files are
 separate. Reset is destructive for the selected local history; it does not
@@ -87,7 +93,7 @@ leaves files available for retry; deletion can be partial if the filesystem fail
 after credential cleanup. Desktop displays an error after reopening if reset did
 not finish. Unlock the vault or close remaining processes and retry. Development
 staging/local profiles, including named profiles, reset their isolated files and
-scoped credentials. A production reset clears both Axiom credential services,
+scoped credentials. A production reset clears Axiom credential services,
 including retired secrets.
 
 See [troubleshooting](troubleshooting.md#completely-reset-local-data) for manual
@@ -165,7 +171,7 @@ the embedded product prompt. `--system-prompt-file` cannot replace it. That prom
 combines the shared chat behavior, the Desktop capability profile and
 [`desktop-product.md`](../apps/axiomcli/prompts/desktop-product.md), which tells
 the model what AxiomAI is and how Desktop protects conversations: on-device TEE
-verification and encryption, the composer privacy badge, unencrypted-at-rest local
+verification and encryption, the composer privacy badge, encrypted local
 history, and the separate Web and Agent-mode boundaries. Keep it consistent with
 [privacy behavior](privacy.md) when either changes.
 

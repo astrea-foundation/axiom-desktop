@@ -171,13 +171,22 @@ has been sent, use Stop on its reply.
 
 Prompt text may use up to **4 MiB of UTF-8**; direct file bounds are listed below.
 The model's context capacity and the configured native context budget still apply.
-Queues hold at most 32 messages and 64 MiB of payloads, scoped to the account.
-Large payloads commit to local IndexedDB before the draft is cleared; localStorage
-holds only the outbox manifest. Stable
+New queue reservations allow at most 32 messages and 64 MiB of payloads, scoped to
+the account. Importing legacy saved preparations can restore more entries so
+existing drafts survive migration; new reservations retain the normal bounds.
+Payloads and outbox metadata commit to encrypted native storage before the draft
+is cleared. Images/documents are encrypted external files, referenced by the
+database. Existing localStorage/IndexedDB payloads import on account unlock,
+with acknowledgement before removal. Recovered conflicts appear as saved
+preparations requiring explicit review. Stable
 client IDs reconcile delivery with the native transcript. Stop pauses automatic
 queue delivery. Restored or uncertain submissions require review; disconnect,
 restart or account changes never justify silently resending them. A fresh prompt
 after Stop can start normally when no older queued message needs review.
+Normal window close, quit and explicit account changes wait for pending native
+draft/outbox writes. A failed save keeps Axiom open for retry. Text edits are
+debounced; an abrupt process kill or raw page reload before acknowledgement can
+lose an uncommitted edit.
 
 ## Images and files
 

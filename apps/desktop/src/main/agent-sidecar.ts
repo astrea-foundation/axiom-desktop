@@ -3,7 +3,7 @@ import { access, stat } from "node:fs/promises";
 import { constants } from "node:fs";
 import { resolve } from "node:path";
 import { app, BrowserWindow, shell, type WebContents } from "electron";
-import type { DesktopMcpRequest } from "@axiom/axiom-acp-client";
+import type { DesktopMcpRequest, LocalPayloadRequest } from "@axiom/axiom-acp-client";
 import {
   AxiomAcpClient,
   DESKTOP_SIDECAR_INHERITED_ENV,
@@ -247,6 +247,7 @@ export class AgentSidecar {
     return this.requireClient().loadChat(sessionId);
   }
 
+  localPayload(request: LocalPayloadRequest) { return this.requireClient().localPayload(request); }
   desktopMcp(request: DesktopMcpRequest) { return this.requireClient().desktopMcp(request); }
   configureDesktopAgent(request: ConfigureDesktopAgentRequest) { return this.requireClient().configureDesktopAgent(request); }
 

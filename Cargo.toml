@@ -11,7 +11,7 @@ members = [
     "crates/axiom-openai-compat",
     "crates/axiom-secure-client",
 ]
-exclude = ["vendor/agent-client-protocol-2.0.0", "vendor/axiom-pool-protocol", "vendor/axiom-pool-client"]
+exclude = ["vendor/agent-client-protocol-2.0.0", "vendor/axiom-pool-protocol", "vendor/axiom-pool-client", "vendor/openssl-sys-0.9.118"]
 default-members = [
     "apps/axiomcli",
     "apps/axiom-proxy",
@@ -42,6 +42,10 @@ axiom-secure-client = { version = "0.1.0", path = "crates/axiom-secure-client" }
 # registers a deep typed-handler chain. Keep the published 2.0.0 API and apply
 # only upstream rust-sdk PR #306 until the fix ships in a crates.io release.
 agent-client-protocol = { path = "vendor/agent-client-protocol-2.0.0" }
+# Upstream vendoring still selects unsupported OpenSSL 3.6.3. This verified
+# crate changes only its source dependency to patched, supported OpenSSL 4.0.3.
+# See vendor/openssl-sys-0.9.118/AXIOM-PROVENANCE.md for the exact manifest diff.
+openssl-sys = { path = "vendor/openssl-sys-0.9.118" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

@@ -67,6 +67,7 @@ mod account;
 mod catalog;
 mod collections;
 mod images;
+mod local_payload;
 mod mcp;
 mod prompts;
 mod security;
@@ -1485,6 +1486,7 @@ struct PendingDelete {
 
 #[derive(Clone, Copy)]
 enum ExtensionFeature {
+    LocalPayload = 1 << 23,
     CommandInvocation = 1 << 22,
     Steering = 1 << 11,
     ThreadCatalog = 1 << 0,
@@ -1549,6 +1551,9 @@ impl ExtensionState {
             return;
         };
         let mut mask = 0;
+        if features.local_payload >= 1 {
+            mask |= ExtensionFeature::LocalPayload as u64;
+        }
         if features.command_invocation >= 1 {
             mask |= ExtensionFeature::CommandInvocation as u64;
         }

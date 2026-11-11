@@ -5,6 +5,8 @@ import type { GeneratedImageUrl } from "./agent-state-images";
 import type { PromptAttachment, GetAttachmentsResponse } from "@axiom/axiom-acp-client";
 import type {
   AccountStatusResponse,
+  LocalPayloadRequest,
+  LocalPayloadResponse,
   BillingStatusResponse,
   CryptoOptionsResponse,
   CryptoPaymentResponse,
@@ -46,6 +48,7 @@ import type {
 } from "@axiom/axiom-acp-client";
 
 export interface AgentApi {
+  localPayload: (request: LocalPayloadRequest) => Promise<LocalPayloadResponse>;
   getState: () => Promise<ClientState>;
   desktopBootstrap: () => Promise<DesktopBootstrapResponse>;
   newChat: () => Promise<SessionStartResult>;
@@ -111,16 +114,35 @@ function invoke<T>(method: string, ...args: unknown[]): Promise<T> {
 const stateImages = new AgentStateImages();
 const stateListeners = new Set<(state: ClientState) => void>();
 // Subscribe before any renderer listeners: initial image payloads must not be
-// lost between bootstrap and React mounting. Only document-local URLs cross
-// contextBridge, never binary assets or multi-megabyte base64 strings.
-ipcRenderer.on("agent:state-changed", (_event, packet: AgentStatePacket) => {
+// lost between bootstrap and React mounting. State projections carry document-
+// local URLs; explicit draft/attachment APIs transfer their owning input bytes.
+let localState: ClientState | null = null;
+let localEpoch = 0;
+function acceptState(packet: AgentStatePacket): ClientState {
   const state = stateImages.accept(packet);
+  const identity = (value: ClientState | null) => JSON.stringify([value?.connected, value?.runtimeInstanceId, value?.account?.state, value?.account?.account?.id]);
+  if (identity(state) !== identity(localState)) localEpoch++;
+  localState = state;
+  return state;
+}
+
+ipcRenderer.on("agent:state-changed", (_event, packet: AgentStatePacket) => {
+  const state = acceptState(packet);
   for (const listener of stateListeners) listener(state);
 });
 window.addEventListener("unload", () => stateImages.dispose(), { once: true });
 
 export const agentApi: AgentApi = {
-  getState: async () => stateImages.accept(await invoke<AgentStatePacket>("state")),
+  localPayload: async (request) => {
+    if (!localState?.connected || localState.account?.state !== "valid" || localState.account.account?.id !== request.accountId) {
+      throw new Error("The account changed. Local data was not accessed.");
+    }
+    const epoch = localEpoch;
+    const result = await invoke<LocalPayloadResponse>("local-payload", request);
+    if (epoch !== localEpoch) throw new Error("The account changed while saving local data.");
+    return result;
+  },
+  getState: async () => acceptState(await invoke<AgentStatePacket>("state")),
   desktopBootstrap: () => invoke("desktop-bootstrap"),
   newChat: () => invoke("chat-new"),
   desktopMcp: (request) => invoke("desktop-mcp", request),

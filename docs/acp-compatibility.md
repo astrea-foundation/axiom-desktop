@@ -54,6 +54,15 @@ prompts and can use standard mode/configuration methods for controls.
 
 ## Extension negotiation
 
+`localPayload@1` provides `_axiom/localPayload` for Desktop's encrypted drafts
+and outbox. Requests bind the exact authenticated account and native store
+generation, with get/put/remove operations on version-1 prompt or queue envelopes.
+Accepted binary image/file slots are externalized by native storage. Keys never
+cross ACP. Missing feature support, account changes or persistence errors fail
+closed; Desktop does not fall back to plaintext browser writes. Legacy browser
+imports require native acknowledgement before deletion. See
+[encrypted local storage](local-storage.md).
+
 Clients advertise `clientCapabilities._meta.axiom`. AxiomCLI advertises its
 extension at initialization but sends custom notifications and accepts custom
 calls only after compatible negotiation. `protocolVersion` shares a leading-number

@@ -121,8 +121,12 @@ The inspectable [SQL baseline](../apps/axiomcli/src/session/schema.sql) and
 Conversation content and drafts stay local. Desktop drafts, pending submissions,
 Web preferences and queues use account-scoped local state. Deleting a thread
 removes its conversation records but does not delete files in its working directory.
-Local conversation databases are not encrypted at rest by AxiomCLI. Authoritative
-prompts, assistant messages, tool results and metadata are stored verbatim; only
+Local conversation databases use SQLCipher with independent OS-protected keys.
+Managed image/file bytes are encrypted external assets; authoritative records
+and checkpoints keep their references. Drafts and the outbox use native encrypted
+persistence with acknowledged forward import from legacy browser storage. See
+[encrypted local storage](local-storage.md). Authoritative prompts, assistant
+messages, tool results and metadata retain their exact runtime content; only
 diagnostics and explicit exports apply credential redaction. MCP adapters still
 filter exact secrets supplied in their configured environment before establishing
 a tool result; generic diagnostic heuristics never rewrite successful results. If automatic
@@ -130,7 +134,7 @@ compaction fails before a turn, original context and media remain recoverable.
 The turn fails with an explicit retry/choose-larger-context message; it never
 substitutes a local excerpt for the source history.
 
-Account databases migrate transactionally to schema 6. Each thread has a
+Account databases migrate transactionally to schema 7. Each thread has a
 versioned authoritative semantic history independent of presentation rows.
 Exact provider-neutral model-message checkpoints preserve raw tool argument
 strings, grouped tool calls, tool results, reasoning, images, files and context

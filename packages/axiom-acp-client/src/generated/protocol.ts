@@ -1,5 +1,16 @@
 /* Generated from protocol/axiom-acp-extension/v0.2/schema.json. Do not edit. */
 
+export type LocalPayloadAction =
+  | {
+      kind: "get";
+    }
+  | {
+      value: unknown;
+      kind: "put";
+    }
+  | {
+      kind: "remove";
+    };
 export type DesktopMcpAction =
   | {
       kind: "list";
@@ -131,6 +142,8 @@ export type ExtensionErrorCode =
  * Schema root used to generate the checked-in language-neutral contract.
  */
 export interface ProtocolSchema {
+  localPayloadRequest: LocalPayloadRequest;
+  localPayloadResponse: LocalPayloadResponse;
   desktopMcpRequest: DesktopMcpRequest;
   desktopMcpResponse: DesktopMcpResponse;
   configureDesktopAgentRequest: ConfigureDesktopAgentRequest;
@@ -210,6 +223,17 @@ export interface ProtocolSchema {
     [k: string]: unknown;
   };
   [k: string]: unknown;
+}
+/**
+ * Native-only local persistence. The renderer never receives encryption keys.
+ */
+export interface LocalPayloadRequest {
+  accountId: string;
+  id: string;
+  action: LocalPayloadAction;
+}
+export interface LocalPayloadResponse {
+  value?: unknown;
 }
 export interface DesktopMcpRequest {
   threadId?: string | null;
@@ -313,6 +337,10 @@ export interface FeatureVersions {
   desktopChat?: number;
   desktopAgent?: number;
   desktopMcp?: number;
+  /**
+   * Account-bound encrypted local drafts and outbox data.
+   */
+  localPayload?: number;
   threadCatalog?: number;
   timeline?: number;
   modelCatalog?: number;
