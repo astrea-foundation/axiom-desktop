@@ -1,5 +1,5 @@
 /** @jsxRuntime automatic */
-import { AlertTriangle, CheckCircle2, ListChecks } from "lucide-react";
+import { AlertTriangle, CheckCircle2, ListChecks, LoaderCircle } from "lucide-react";
 import type { ClientSessionState, ClientTimelineItem } from "@axiom/chat-core/viewTypes";
 import type { PendingUserMessage } from "@axiom/chat-core/types";
 import { replyErrorPresentation } from "@axiom/chat-core/replyErrors";
@@ -63,6 +63,7 @@ export function TimelineView({
   const turnsWithErrors = new Set(session.timeline.filter((item) => item.kind === "error" && item.turnId).map((item) => item.turnId));
   const rows = presentation.map((row) => {
     if (row.kind === "message") {
+      if (session.compaction && row.message.role === "assistant" && !row.message.content && !row.message.reasoningContent) return null;
       const source = sources.get(row.message.id);
       const turnId = turnsByItem.get(row.message.id);
       const summaries = attachmentSummaries(source?.raw);
@@ -103,7 +104,17 @@ export function TimelineView({
   return (
     <div className="chat-timeline">
       {rows}
-      {session.running && !lastAlreadyShowsGeneration ? (
+      {session.compaction ? (
+        <div role="status" aria-live="polite" aria-atomic="true" data-timeline-kind="compaction"
+          className="flex items-center gap-2 px-1 py-3 text-[12.5px] text-[var(--color-text-secondary)]">
+          <LoaderCircle aria-hidden="true" size={15} className="shrink-0 animate-spin motion-reduce:animate-none" />
+          <span className="tabular-nums">Compacting context
+            {session.compaction.total > 0 ? ` · Pass ${Math.min(session.compaction.completed + 1, session.compaction.total)}/${session.compaction.total}` : " · Preparing"}
+            {` · ${session.compaction.estimated ? "~" : ""}${new Intl.NumberFormat("en-US").format(session.compaction.generatedTokens)} tokens generated`}
+          </span>
+        </div>
+      ) : null}
+      {session.running && !session.compaction && !lastAlreadyShowsGeneration ? (
         <div data-timeline-kind="assistant"><MessageBubble
           responseActive
           message={{ id: "active-generation", role: "assistant", status: "streaming", content: "" }}

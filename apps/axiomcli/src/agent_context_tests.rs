@@ -70,7 +70,7 @@ impl InferenceProvider for ContextProvider {
         let maximum_images = if self.model.id == "direct:qwen3.8-27b" {
             8
         } else {
-            axiom_inference::MAX_ATTACHMENTS
+            usize::MAX
         };
         if image_count > maximum_images {
             return Err(AxiomError::Provider(
@@ -242,7 +242,7 @@ async fn context_guard_uses_the_same_visual_token_allowance_as_compaction() {
 }
 
 #[tokio::test]
-async fn new_uploads_compact_existing_images_before_exceeding_the_context_image_cap() {
+async fn new_uploads_exceeding_the_provider_protocol_limit_preserve_images_without_compaction() {
     let provider = Arc::new(ContextProvider::new("direct:qwen3.8-27b"));
     let engine = AgentEngine::new(
         provider.clone(),
@@ -262,15 +262,16 @@ async fn new_uploads_compact_existing_images_before_exceeding_the_context_image_
     let (tx, _rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
     engine
         .run(
-            ctx,
+            ctx.clone(),
             "Analyze this new image too".into(),
             tx,
             CancellationToken::new(),
         )
         .await
-        .unwrap();
+        .unwrap_err();
     let requests = provider.requests.lock().await;
-    assert!(is_compaction(&requests[0]));
+    assert_eq!(requests.len(), 1);
+    assert!(!is_compaction(&requests[0]));
     let final_request = requests.last().unwrap();
     assert!(!is_compaction(final_request));
     assert_eq!(
@@ -279,7 +280,14 @@ async fn new_uploads_compact_existing_images_before_exceeding_the_context_image_
             .iter()
             .map(|m| m.images.len())
             .sum::<usize>(),
-        1
+        9
+    );
+    assert_eq!(
+        engine.histories.lock().await[&ctx.session_id]
+            .iter()
+            .map(|message| message.images.len())
+            .sum::<usize>(),
+        9
     );
 }
 
@@ -342,7 +350,7 @@ async fn astreaai_viewing_at_eight_images_is_a_repairable_error_before_dispatch(
     let mut refused = false;
     while let Ok(event) = rx.try_recv() {
         if let AppEvent::ToolOutput { content, .. } = event {
-            refused |= content.contains("maximum of 8 images");
+            refused |= content.contains("at most 8 images");
         }
     }
     assert!(refused);
@@ -596,7 +604,7 @@ async fn compaction_honors_advertised_output_limits_when_normal_requests_use_a_d
 }
 
 #[tokio::test]
-async fn encoded_image_bytes_can_still_trigger_safe_compaction_below_the_token_threshold() {
+async fn encoded_image_bytes_never_trigger_compaction_below_the_token_threshold() {
     let provider = Arc::new(ContextProvider::new("direct:qwen3.8-27b"));
     let mut limits = AgentLimits::development(4);
     limits.max_context_bytes = 128 * 1024;
@@ -623,7 +631,8 @@ async fn encoded_image_bytes_can_still_trigger_safe_compaction_below_the_token_t
         .await
         .unwrap();
     let requests = provider.requests.lock().await;
-    assert!(is_compaction(&requests[0]));
+    assert_eq!(requests.len(), 1);
+    assert!(!is_compaction(&requests[0]));
     assert!(!is_compaction(requests.last().unwrap()));
     assert_eq!(
         requests
@@ -642,7 +651,7 @@ async fn encoded_image_bytes_can_still_trigger_safe_compaction_below_the_token_t
             _ => {}
         }
     }
-    assert!(compacted);
+    assert!(!compacted);
     assert_eq!(
         reports.len(),
         1,

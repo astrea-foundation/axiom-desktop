@@ -43,6 +43,26 @@ test("fallback appears once before the assistant placeholder arrives", () => {
   assert.equal(render([user, provider]).match(/Generating/g)?.length, 1);
 });
 
+test("compaction replaces the empty generation placeholder with live work counters and a spinner", () => {
+  const current = session([user, pending]);
+  current.compaction = { completed: 1, total: 3, generatedTokens: 1246, estimated: true };
+  let html = renderToStaticMarkup(createElement(TimelineView, { session: current }));
+  assert.match(html, /data-timeline-kind="compaction"/);
+  assert.match(html, /animate-spin/);
+  assert.match(html, /Pass 2\/3/);
+  assert.match(html, /~1,246 tokens generated/);
+  assert.doesNotMatch(html, /Generating/);
+  current.compaction = { ...current.compaction, completed: 3, generatedTokens: 2398, estimated: false };
+  html = renderToStaticMarkup(createElement(TimelineView, { session: current }));
+  assert.match(html, /Pass 3\/3/);
+  assert.match(html, /2,398 tokens generated/);
+  assert.doesNotMatch(html, /~/);
+  current.compaction = null;
+  html = renderToStaticMarkup(createElement(TimelineView, { session: current }));
+  assert.doesNotMatch(html, /Compacting context/);
+  assert.match(html, /Generating/);
+});
+
 test("a visible warning after a pending response does not add another indicator", () => {
   const html = render([user, pending, { id: "warning", kind: "activity", text: "Retrying request" }]);
   assert.equal(html.match(/Generating/g)?.length, 1);

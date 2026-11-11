@@ -484,11 +484,94 @@ pub struct CompactionResult {
     pub messages_before: usize,
 }
 
+#[derive(Default)]
+struct CompactionWork {
+    completed: u64,
+    total: u64,
+    finished_tokens: u64,
+    finished_estimated: bool,
+    streamed_chars: u64,
+    reported_tokens: Option<u64>,
+    last_update: Option<tokio::time::Instant>,
+}
+
+impl CompactionWork {
+    fn observe(&mut self, event: &ProviderEvent) {
+        match event {
+            ProviderEvent::TextDelta(text) | ProviderEvent::ReasoningDelta(text) => {
+                self.streamed_chars = self
+                    .streamed_chars
+                    .saturating_add(text.chars().count() as u64);
+            }
+            ProviderEvent::Usage { output_tokens, .. } => {
+                self.reported_tokens = Some(*output_tokens);
+            }
+            ProviderEvent::Accounting(usage) => {
+                if let Some(tokens) = usage.output_tokens.as_deref().and_then(|v| v.parse().ok()) {
+                    self.reported_tokens = Some(tokens);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn snapshot(&self) -> axiom_acp_extension::CompactionProgress {
+        axiom_acp_extension::CompactionProgress {
+            completed: self.completed,
+            total: self.total,
+            generated_tokens: self.finished_tokens.saturating_add(
+                self.reported_tokens
+                    .unwrap_or_else(|| self.streamed_chars.div_ceil(4)),
+            ),
+            estimated: self.finished_estimated
+                || self.completed < self.total && self.reported_tokens.is_none(),
+        }
+    }
+
+    async fn publish(&mut self, output: &mpsc::Sender<AppEvent>, force: bool) -> Result<()> {
+        let now = tokio::time::Instant::now();
+        if !force
+            && self
+                .last_update
+                .is_some_and(|last| now.duration_since(last) < Duration::from_millis(250))
+        {
+            return Ok(());
+        }
+        output
+            .send(AppEvent::CompactionProgressUpdated {
+                progress: self.snapshot(),
+            })
+            .await
+            .map_err(|_| AxiomError::Cancelled)?;
+        self.last_update = Some(now);
+        Ok(())
+    }
+
+    fn finish(&mut self, assistant: &AssistantTurn) {
+        self.streamed_chars = self.streamed_chars.max(
+            (assistant.text.chars().count() as u64).saturating_add(
+                assistant
+                    .reasoning
+                    .as_deref()
+                    .map_or(0, |value| value.chars().count() as u64),
+            ),
+        );
+        let snapshot = self.snapshot();
+        self.finished_tokens = snapshot.generated_tokens;
+        self.finished_estimated = snapshot.estimated;
+        self.completed = self.completed.saturating_add(1);
+        self.streamed_chars = 0;
+        self.reported_tokens = None;
+    }
+}
+
 /// Explicit, replaceable safety budgets for one agent turn. Step and wall-time
 /// limits are opt-in; context and output bounds remain mandatory memory guards.
 #[derive(Clone, Copy, Debug)]
 pub struct AgentLimits {
     pub max_steps: Option<usize>,
+    /// Conversation text, reasoning and tool arguments; native media has its
+    /// own per-message transport bounds and is not included in this count.
     pub max_context_bytes: usize,
     pub max_context_tokens: usize,
     pub max_tool_output_bytes: usize,
@@ -1365,14 +1448,8 @@ impl AgentEngine {
             ));
         }
         let messages_before = history.len().saturating_sub(1);
-        events
-            .send(AppEvent::ProgressUpdated {
-                message: "Compacting conversation context…".into(),
-                completed: None,
-                total: None,
-            })
-            .await
-            .map_err(|_| AxiomError::Cancelled)?;
+        let mut work = CompactionWork::default();
+        work.publish(events, true).await?;
 
         let budget = self.compaction_transcript_budget(model).max(1024);
         let summary_limit = (budget / 4).clamp(256, 32 * 1024);
@@ -1432,6 +1509,8 @@ impl AgentEngine {
                 .saturating_add(focus.len())
                 .saturating_add(1024),
         )?;
+        work.total = parts.len() as u64;
+        work.publish(events, true).await?;
         let mut summary = String::new();
         for (index, part) in parts.iter().enumerate() {
             let transcript = &part.transcript;
@@ -1476,7 +1555,12 @@ impl AgentEngine {
                     .min(output_limit),
             );
             let next = self
-                .provider_turn_for_compaction(request, events, cancellation.child_token())
+                .provider_turn_for_compaction(
+                    request,
+                    events,
+                    cancellation.child_token(),
+                    &mut work,
+                )
                 .await?
                 .text;
             if next.trim().is_empty() || next.len() > summary_limit {
@@ -1606,6 +1690,7 @@ impl AgentEngine {
         request: InferenceRequest,
         output: &mpsc::Sender<AppEvent>,
         cancellation: CancellationToken,
+        work: &mut CompactionWork,
     ) -> Result<AssistantTurn> {
         let (provider_tx, mut provider_rx) = mpsc::channel(64);
         let future = self
@@ -1613,18 +1698,23 @@ impl AgentEngine {
             .stream(request, provider_tx, cancellation.clone());
         tokio::pin!(future);
         let mut incomplete = false;
+        let mut stream_open = true;
         let result = loop {
             tokio::select! {
+                () = cancellation.cancelled() => return Err(AxiomError::Cancelled),
                 result = &mut future => break result,
-                event = provider_rx.recv() => {
-                    let Some(event) = event else { continue };
+                event = provider_rx.recv(), if stream_open => {
+                    let Some(event) = event else { stream_open = false; continue };
                     incomplete |= matches!(&event, ProviderEvent::Finished(reason) if !matches!(reason, axiom_inference::FinishReason::Stop));
+                    work.observe(&event);
+                    work.publish(output, false).await?;
                     forward_compaction_provider_event(output, event).await?;
                 }
             }
         };
         while let Ok(event) = provider_rx.try_recv() {
             incomplete |= matches!(&event, ProviderEvent::Finished(reason) if !matches!(reason, axiom_inference::FinishReason::Stop));
+            work.observe(&event);
             forward_compaction_provider_event(output, event).await?;
         }
         let assistant = result?;
@@ -1638,6 +1728,8 @@ impl AgentEngine {
                 "compaction provider returned a tool call even though no tools were exposed".into(),
             ));
         }
+        work.finish(&assistant);
+        work.publish(output, true).await?;
         Ok(assistant)
     }
 
@@ -1972,6 +2064,7 @@ impl TurnRunner for AgentEngine {
         }
         let mut active_model = settings.model.clone();
         let mut last_used_model = None;
+        let mut reported_context = None;
         let mut cwd = None;
         // Keep the system slot in place while replaying. Its final contents
         // depend on settings projected from the whole stream, but its role is
@@ -2161,7 +2254,15 @@ impl TurnRunner for AgentEngine {
                         }
                     }
                 }
+                AppEvent::ContextUsageUpdated { usage } => {
+                    reported_context = Some((
+                        usage.model_id.clone(),
+                        usage.input_tokens.saturating_add(usage.output_tokens),
+                        messages.len(),
+                    ));
+                }
                 AppEvent::ContextCompacted { summary, .. } => {
+                    reported_context = None;
                     // A pre-turn automatic compaction is journaled after the
                     // prompt was accepted, even though the summary covers only
                     // the older history. Preserve that exact pending prompt
@@ -2209,17 +2310,25 @@ impl TurnRunner for AgentEngine {
         // Restore the complete post-compaction journal. A large restored
         // context must go through normal staged compaction before inference;
         // pruning here would silently discard facts on restart or Stop.
+        let messages = repair_tool_history(messages);
+        let restored_tokens = reported_context.and_then(|(model, tokens, length)| {
+            (model == settings.model && length == messages.len()).then_some(tokens)
+        });
         self.histories
             .lock()
             .await
-            .insert(session_id.clone(), repair_tool_history(messages));
+            .insert(session_id.clone(), messages);
         self.image_catalogs
             .lock()
             .await
             .insert(session_id.clone(), images);
-        // Restore has no live model metadata. Recompute on the next turn
-        // instead of caching the generic 8192-token allowance for every image.
-        self.context_tokens.lock().await.remove(session_id);
+        // A report covering this exact completed context remains authoritative
+        // across reload. Otherwise the next turn estimates with live metadata.
+        if let Some(tokens) = restored_tokens {
+            self.update_context_tokens(session_id, tokens).await;
+        } else {
+            self.context_tokens.lock().await.remove(session_id);
+        }
         self.settings
             .lock()
             .await
@@ -2540,22 +2649,10 @@ impl TurnRunner for AgentEngine {
             .get(&context.session_id)
             .copied()
             .unwrap_or_else(|| model_context_tokens(&model, &messages));
-        let mut prospective_context_tokens = previous_context_tokens
-            .saturating_add(prompt_tokens)
-            .max(model_context_tokens(&model, &messages).saturating_add(prompt_tokens));
-        if (auto_compact_limit.is_some_and(|limit| {
+        let mut prospective_context_tokens = previous_context_tokens.saturating_add(prompt_tokens);
+        if auto_compact_limit.is_some_and(|limit| {
             prospective_context_tokens >= u64::try_from(limit).unwrap_or(u64::MAX)
-        }) || serialized_message_bytes(&model_messages(&model, &messages))?.saturating_add(
-            serialized_message_bytes(&model_messages(&model, std::slice::from_ref(&user_message)))?,
-        ) > self.limits.max_context_bytes
-            || model.supports_images
-                && messages
-                    .iter()
-                    .chain(std::iter::once(&user_message))
-                    .map(|message| message.images.len())
-                    .sum::<usize>()
-                    > model_context_image_limit(&model))
-            && messages.len() > 1
+        }) && messages.len() > 1
         {
             match self
                 .compact_messages(
@@ -2589,8 +2686,7 @@ impl TurnRunner for AgentEngine {
             }
         }
         messages.push(user_message);
-        let mut known_context_tokens =
-            prospective_context_tokens.max(model_context_tokens(&model, &messages));
+        let mut known_context_tokens = prospective_context_tokens;
         let mut last_call = None;
         let mut all_responses_verified = true;
 
@@ -2607,11 +2703,9 @@ impl TurnRunner for AgentEngine {
                 return Err(AxiomError::Cancelled);
             }
             if step > 0
-                && (auto_compact_limit.is_some_and(|limit| {
-                    known_context_tokens.max(model_context_tokens(&model, &messages))
-                        >= u64::try_from(limit).unwrap_or(u64::MAX)
-                }) || serialized_message_bytes(&model_messages(&model, &messages))?
-                    > self.limits.max_context_bytes)
+                && auto_compact_limit.is_some_and(|limit| {
+                    known_context_tokens >= u64::try_from(limit).unwrap_or(u64::MAX)
+                })
                 && messages.len() > 1
             {
                 let (mut compacted, result) = self
@@ -2644,7 +2738,11 @@ impl TurnRunner for AgentEngine {
             }
             if let Some(inbox) = &context.steering {
                 for input in inbox.take_pending() {
-                    messages.push(ChatMessage::text(ChatRole::User, input.text.clone()));
+                    let message = ChatMessage::text(ChatRole::User, input.text.clone());
+                    known_context_tokens = known_context_tokens.saturating_add(
+                        model_context_tokens(&model, std::slice::from_ref(&message)),
+                    );
+                    messages.push(message);
                     events
                         .send(AppEvent::SteeringApplied {
                             turn_id: context.turn_id.clone(),
@@ -2653,13 +2751,12 @@ impl TurnRunner for AgentEngine {
                         })
                         .await
                         .map_err(|_| AxiomError::Cancelled)?;
-                    known_context_tokens = model_context_tokens(&model, &messages);
                     last_call = None;
                 }
             }
             step = step.saturating_add(1);
             enforce_context_budget(
-                &model,
+                known_context_tokens,
                 &model_messages(&model, &messages),
                 self.limits.max_context_bytes,
                 self.limits.max_context_tokens,
@@ -2677,7 +2774,7 @@ impl TurnRunner for AgentEngine {
             let provider_result = before_optional_deadline(
                 deadline,
                 self.provider_turn(
-                    inference_request_for_model(
+                    inference_request_for_model_with_context(
                         &model,
                         settings.model.clone(),
                         messages.clone(),
@@ -2703,6 +2800,7 @@ impl TurnRunner for AgentEngine {
                             })
                             .collect(),
                         settings.thinking,
+                        Some(known_context_tokens),
                     ),
                     &context,
                     &events,
@@ -2767,8 +2865,7 @@ impl TurnRunner for AgentEngine {
                     continue;
                 }
                 if auto_compact_limit.is_some_and(|limit| {
-                    known_context_tokens.max(model_context_tokens(&model, &messages))
-                        >= u64::try_from(limit).unwrap_or(u64::MAX)
+                    known_context_tokens >= u64::try_from(limit).unwrap_or(u64::MAX)
                 }) && messages.len() > 1
                 {
                     match self
@@ -3027,7 +3124,7 @@ impl TurnRunner for AgentEngine {
                     if image_count.saturating_add(tool_images.len()) > image_limit {
                         tool_result.success = false;
                         tool_result.content = format!(
-                            "Cannot view another image: the model context already contains the maximum of {image_limit} images. Compact the conversation before viewing more images."
+                            "This provider's request protocol supports at most {image_limit} images. Choose a provider that supports more images to view another one; the conversation was retained."
                         );
                         tool_result.events.clear();
                     } else {
@@ -3197,8 +3294,6 @@ impl TurnRunner for AgentEngine {
                 known_context_tokens = known_context_tokens
                     .saturating_add(model_context_tokens(&model, &image_observations));
                 messages.extend(image_observations);
-                known_context_tokens =
-                    known_context_tokens.max(model_context_tokens(&model, &messages));
                 self.update_context_tokens(&context.session_id, known_context_tokens)
                     .await;
             }
@@ -3241,8 +3336,13 @@ impl TurnRunner for AgentEngine {
         let current = settings
             .entry(session_id.clone())
             .or_insert_with(|| self.default_settings());
+        let model_changed = current.model != selection.model;
         current.model.clone_from(&selection.model);
         current.thinking = selection.thinking;
+        drop(settings);
+        if model_changed {
+            self.context_tokens.lock().await.remove(session_id);
+        }
         Ok(())
     }
 
@@ -3565,7 +3665,7 @@ fn compacted_history(system: &str, summary: &str) -> Vec<ChatMessage> {
 }
 
 fn enforce_context_budget(
-    model: &axiom_inference::ModelInfo,
+    context_tokens: u64,
     messages: &[ChatMessage],
     max_bytes: usize,
     max_tokens: usize,
@@ -3573,21 +3673,7 @@ fn enforce_context_budget(
     let bytes = messages.iter().fold(0_usize, |total, message| {
         total
             .saturating_add(message.content.len())
-            .saturating_add(
-                message
-                    .files
-                    .iter()
-                    .map(|file| file.data.len())
-                    .sum::<usize>(),
-            )
             .saturating_add(message.reasoning_content.as_ref().map_or(0, String::len))
-            .saturating_add(
-                message
-                    .images
-                    .iter()
-                    .map(|image| image.data.len())
-                    .sum::<usize>(),
-            )
             .saturating_add(
                 message
                     .tool_calls
@@ -3596,8 +3682,9 @@ fn enforce_context_budget(
                     .sum::<usize>(),
             )
     });
-    let estimated_tokens =
-        usize::try_from(model_context_tokens(model, messages)).unwrap_or(usize::MAX);
+    // Native attachments have per-message byte bounds. Their encoded transport
+    // size is not conversation text and must not force context summarization.
+    let estimated_tokens = usize::try_from(context_tokens).unwrap_or(usize::MAX);
     if bytes > max_bytes || estimated_tokens > max_tokens {
         Err(AxiomError::Provider(format!(
             "turn context exceeded its budget ({bytes}/{max_bytes} bytes, approximately {estimated_tokens}/{max_tokens} tokens)"
@@ -3796,16 +3883,27 @@ fn model_context_image_limit(model: &axiom_inference::ModelInfo) -> usize {
     if model.provider_id == "axiom-direct" || model.id == "direct:qwen3.8-27b" {
         8
     } else {
-        axiom_inference::MAX_ATTACHMENTS
+        usize::MAX
     }
 }
 
 fn inference_request_for_model(
     model: &axiom_inference::ModelInfo,
     model_id: String,
+    messages: Vec<ChatMessage>,
+    tools: Vec<crate::provider::ToolDefinition>,
+    thinking: ThinkingLevel,
+) -> InferenceRequest {
+    inference_request_for_model_with_context(model, model_id, messages, tools, thinking, None)
+}
+
+fn inference_request_for_model_with_context(
+    model: &axiom_inference::ModelInfo,
+    model_id: String,
     mut messages: Vec<ChatMessage>,
     tools: Vec<crate::provider::ToolDefinition>,
     thinking: ThinkingLevel,
+    known_context_tokens: Option<u64>,
 ) -> InferenceRequest {
     let thinking = reconcile_model_settings(model, thinking).thinking;
     if !model.supports_images {
@@ -3855,7 +3953,11 @@ fn inference_request_for_model(
         // Compaction controls history occupancy; it must not permanently cap
         // generation at the unused 15% even when the actual prompt is short.
         let tools = serde_json::to_string(&request.tools).unwrap_or_default();
-        let input = model_context_tokens(model, &request.messages)
+        // Use the same authoritative baseline as compaction. Otherwise a
+        // conservative whole-history image estimate can reduce a valid
+        // conversation to a one-token output budget.
+        let input = known_context_tokens
+            .unwrap_or_else(|| model_context_tokens(model, &request.messages))
             .saturating_add(u64::try_from(estimate_tokens(&tools)).unwrap_or(u64::MAX))
             .saturating_add(request.messages.len() as u64 * 8);
         let margin = (model.context_window_tokens / 100).max(1);
@@ -4209,8 +4311,9 @@ mod engine_tests {
         let parts = compaction_inputs(&model, &[message.clone()], 4096, 10_000, 1024).unwrap();
         assert_eq!(parts[0].images, vec![image.clone()]);
         assert!(!parts[0].transcript.contains(&image.data));
-        assert!(enforce_context_budget(&model, &[message.clone()], 10, 100_000).is_err());
-        assert!(enforce_context_budget(&model, &[message], 1000, 100).is_err());
+        let tokens = model_context_tokens(&model, std::slice::from_ref(&message));
+        assert!(enforce_context_budget(tokens, &[message.clone()], 10, 100_000).is_err());
+        assert!(enforce_context_budget(tokens, &[message], 1000, 100).is_err());
     }
 
     #[test]
@@ -6087,7 +6190,7 @@ mod engine_tests {
     }
 
     #[tokio::test]
-    async fn view_image_at_the_context_image_limit_is_a_repairable_tool_error() {
+    async fn view_image_keeps_more_than_ten_images_without_compaction() {
         use crate::image_tool::{
             ImageCatalog, ImageGenerationTool, ViewImageTool, tests::generated_fixture,
         };
@@ -6105,7 +6208,7 @@ mod engine_tests {
                 )],
             },
             AssistantTurn {
-                text: "The context already contains ten images.".into(),
+                text: "The eleventh image is visible.".into(),
                 reasoning: None,
                 tool_calls: vec![],
             },
@@ -6155,13 +6258,17 @@ mod engine_tests {
             .await
             .unwrap();
         let events = drain(&mut rx);
-        assert!(events.iter().any(|event| matches!(event, AppEvent::ToolOutput { content, .. } if content.contains("maximum of 10 images"))));
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, AppEvent::ContextCompacted { .. }))
+        );
         assert!(
             events
                 .iter()
-                .any(|event| matches!(event, AppEvent::ToolCompleted { success: false, .. }))
+                .any(|event| matches!(event, AppEvent::ToolCompleted { success: true, .. }))
         );
-        for request in provider.requests.lock().await.iter() {
+        for (index, request) in provider.requests.lock().await.iter().enumerate() {
             request.validate().unwrap();
             assert_eq!(
                 request
@@ -6169,7 +6276,7 @@ mod engine_tests {
                     .iter()
                     .map(|message| message.images.len())
                     .sum::<usize>(),
-                10
+                10 + index
             );
         }
     }
@@ -6485,6 +6592,70 @@ mod engine_tests {
     }
 
     #[test]
+    fn compaction_work_counts_streamed_text_and_reasoning_then_uses_reported_tokens() {
+        let mut work = CompactionWork {
+            total: 2,
+            ..Default::default()
+        };
+        work.observe(&ProviderEvent::TextDelta("hello world!".into()));
+        work.observe(&ProviderEvent::ReasoningDelta("reasoning...".into()));
+        assert_eq!(work.snapshot().generated_tokens, 6);
+        assert!(work.snapshot().estimated);
+        work.observe(&ProviderEvent::Usage {
+            input_tokens: 900,
+            output_tokens: 8,
+        });
+        assert_eq!(work.snapshot().generated_tokens, 8);
+        assert!(!work.snapshot().estimated);
+        work.finish(&AssistantTurn {
+            text: "hello world!".into(),
+            reasoning: Some("reasoning...".into()),
+            tool_calls: vec![],
+        });
+        assert_eq!(work.snapshot().completed, 1);
+        work.observe(&ProviderEvent::TextDelta("next summary".into()));
+        assert_eq!(work.snapshot().generated_tokens, 11);
+        work.observe(&ProviderEvent::Usage {
+            input_tokens: 1000,
+            output_tokens: 4,
+        });
+        work.finish(&AssistantTurn {
+            text: "next summary".into(),
+            reasoning: None,
+            tool_calls: vec![],
+        });
+        let progress = work.snapshot();
+        assert_eq!(
+            (
+                progress.completed,
+                progress.total,
+                progress.generated_tokens,
+                progress.estimated
+            ),
+            (2, 2, 12, false)
+        );
+    }
+
+    #[test]
+    fn encoded_media_does_not_consume_the_conversation_text_byte_budget() {
+        let mut message = ChatMessage::text(ChatRole::User, "look");
+        message.images.push(axiom_inference::ImageContent {
+            mime_type: "image/png".into(),
+            data: "A".repeat(4096),
+        });
+        assert!(enforce_context_budget(100, &[message], 64, 1000).is_ok());
+        assert!(
+            enforce_context_budget(
+                100,
+                &[ChatMessage::text(ChatRole::User, "x".repeat(65))],
+                64,
+                1000
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn compaction_fragments_preserve_all_roles_and_large_unicode_payloads() {
         let mut tool = ChatMessage::text(
             ChatRole::Tool,
@@ -6548,7 +6719,7 @@ mod engine_tests {
             .lock()
             .await
             .insert(session_id.clone(), history);
-        let (tx, _rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
+        let (tx, mut rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
         let result = engine
             .compact(&session_id, None, tx, CancellationToken::new())
             .await
@@ -6558,6 +6729,20 @@ mod engine_tests {
         assert!(result.summary.contains("Confirmed Riverside"));
         let requests = provider.requests.lock().await;
         assert!(requests.len() > 1);
+        let progress = drain(&mut rx)
+            .into_iter()
+            .filter_map(|event| match event {
+                AppEvent::CompactionProgressUpdated { progress } => Some(progress),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let last = progress.last().unwrap();
+        assert_eq!(
+            (last.completed, last.total),
+            (requests.len() as u64, requests.len() as u64)
+        );
+        assert!(last.generated_tokens > 0);
+        assert!(last.estimated);
         assert!(
             requests[0].messages[1]
                 .content
@@ -6680,11 +6865,17 @@ mod engine_tests {
 
     #[tokio::test]
     async fn pre_turn_compaction_failure_retains_original_history_for_retry() {
-        let provider = Arc::new(ScriptedProvider::new(vec![AssistantTurn {
+        let mut scripted = ScriptedProvider::new(vec![AssistantTurn {
             reasoning: None,
             text: String::new(),
             tool_calls: vec![],
-        }]));
+        }]);
+        scripted.model_details = Some(vec![axiom_inference::ModelInfo {
+            id: "test".into(),
+            context_window_tokens: 20_000,
+            ..Default::default()
+        }]);
+        let provider = Arc::new(scripted);
         let mut limits = AgentLimits::development(3);
         limits.max_context_bytes = 16 * 1024;
         let engine =
@@ -6879,6 +7070,96 @@ mod engine_tests {
                 .iter()
                 .any(|event| matches!(event, AppEvent::ContextUsageUpdated { .. }))
         );
+    }
+
+    #[tokio::test]
+    async fn reported_usage_overrides_whole_history_image_estimates_before_and_after_inference() {
+        struct VisionUsage(AutoCompactProvider);
+        #[async_trait]
+        impl InferenceProvider for VisionUsage {
+            async fn stream(
+                &self,
+                request: InferenceRequest,
+                events: mpsc::Sender<ProviderEvent>,
+                cancellation: CancellationToken,
+            ) -> Result<AssistantTurn> {
+                self.0.stream(request, events, cancellation).await
+            }
+            async fn models(
+                &self,
+                cancellation: CancellationToken,
+            ) -> Result<Vec<axiom_inference::ModelInfo>> {
+                let mut models = self.0.models(cancellation).await?;
+                models[0].supports_images = true;
+                Ok(models)
+            }
+        }
+        let provider = Arc::new(VisionUsage(AutoCompactProvider {
+            requests: Mutex::new(vec![]),
+            usage: (1000, 50),
+            context_window_tokens: 20_000,
+            max_output_tokens: 100,
+        }));
+        let engine = AgentEngine::new(provider.clone(), Arc::new(ToolRegistry::new()), "test", 3);
+        let ctx = context();
+        let mut history = vec![ChatMessage::text(ChatRole::System, "system")];
+        for _ in 0..12 {
+            let mut message = ChatMessage::text(ChatRole::User, "an earlier image");
+            message.images.push(axiom_inference::ImageContent {
+                mime_type: "image/png".into(),
+                data: crate::image_tool::tests::generated_fixture().data,
+            });
+            history.push(message);
+        }
+        engine
+            .histories
+            .lock()
+            .await
+            .insert(ctx.session_id.clone(), history);
+        engine.update_context_tokens(&ctx.session_id, 1000).await;
+        let (tx, mut rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
+        engine
+            .run(ctx.clone(), "continue".into(), tx, CancellationToken::new())
+            .await
+            .unwrap();
+        let events = drain(&mut rx);
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, AppEvent::ContextCompacted { .. }))
+        );
+        let requests = provider.0.requests.lock().await;
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].max_output_tokens, Some(100));
+        assert_eq!(
+            requests[0]
+                .messages
+                .iter()
+                .map(|message| message.images.len())
+                .sum::<usize>(),
+            12
+        );
+        requests[0].validate().unwrap();
+        drop(requests);
+        let journal = events
+            .into_iter()
+            .enumerate()
+            .map(|(index, event)| EventEnvelope {
+                schema_version: 1,
+                sequence: index as u64 + 1,
+                turn_id: Some(ctx.turn_id.clone()),
+                occurred_at: chrono::Utc::now(),
+                correlation_id: crate::app::CorrelationId::new(),
+                origin: crate::app::Origin::Test,
+                session_id: ctx.session_id.clone(),
+                event,
+            })
+            .collect::<Vec<_>>();
+        engine
+            .restore_session(&ctx.session_id, &journal)
+            .await
+            .unwrap();
+        assert_eq!(engine.context_tokens.lock().await[&ctx.session_id], 1050);
     }
 
     #[tokio::test]
@@ -7426,7 +7707,13 @@ mod engine_tests {
             reasoning: None,
             tool_calls: vec![],
         }));
-        let provider = Arc::new(ScriptedProvider::new(turns));
+        let mut scripted = ScriptedProvider::new(turns);
+        scripted.model_details = Some(vec![axiom_inference::ModelInfo {
+            id: "test".into(),
+            context_window_tokens: 10_000,
+            ..Default::default()
+        }]);
+        let provider = Arc::new(scripted);
         let mut limits = AgentLimits::development(3);
         limits.max_context_bytes = 16 * 1024;
         let engine = AgentEngine::with_limits(
@@ -8143,6 +8430,54 @@ mod engine_tests {
             task.await.expect("join"),
             Err(AxiomError::Cancelled)
         ));
+    }
+
+    #[tokio::test]
+    async fn compaction_cancellation_does_not_depend_on_provider_cooperation() {
+        struct UncooperativeProvider;
+        #[async_trait]
+        impl InferenceProvider for UncooperativeProvider {
+            async fn stream(
+                &self,
+                _: InferenceRequest,
+                _: mpsc::Sender<ProviderEvent>,
+                _: CancellationToken,
+            ) -> Result<AssistantTurn> {
+                std::future::pending().await
+            }
+        }
+        let engine = AgentEngine::new(
+            Arc::new(UncooperativeProvider),
+            Arc::new(ToolRegistry::new()),
+            "test",
+            3,
+        );
+        let session_id = SessionId::new();
+        let history = vec![
+            ChatMessage::text(ChatRole::System, "system"),
+            ChatMessage::text(ChatRole::User, "keep this context"),
+        ];
+        engine
+            .histories
+            .lock()
+            .await
+            .insert(session_id.clone(), history.clone());
+        let cancellation = CancellationToken::new();
+        let (tx, mut rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
+        let compact = engine.compact(&session_id, None, tx, cancellation.clone());
+        tokio::pin!(compact);
+        tokio::select! {
+            _ = &mut compact => panic!("compaction should be waiting for its provider"),
+            event = rx.recv() => assert!(matches!(event, Some(AppEvent::CompactionProgressUpdated { .. }))),
+        }
+        cancellation.cancel();
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(1), compact)
+                .await
+                .unwrap(),
+            Err(AxiomError::Cancelled)
+        ));
+        assert_eq!(engine.histories.lock().await[&session_id], history);
     }
 
     #[tokio::test]

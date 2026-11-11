@@ -179,12 +179,15 @@ thread, check the transcript before using **Send now** when delivery is uncertai
 The composer's lock icon indicates encrypted model conversations and does not
 disable typing.
 
-Incomplete turns are marked interrupted after restart; tools are not replayed.
+Incomplete turns are marked interrupted after their owning process exits; tools
+are not replayed. Recovery acquires the same per-thread OS lock as execution.
+Opening the store from another client preserves live turns and compaction;
+repeated probes never expire a healthy owner's lock.
 An unavailable saved attachment, damaged image result, or incomplete tool reply
 is omitted or marked unknown in model context so usable text can still be loaded,
 edited and sent. The original saved rows are retained. If automatic summarization
-fails before a new message, Axiom uses a short partial excerpt of older text and
-keeps the complete new message; a notice explains the context loss. Expired image
+fails before a new message, the turn reports an error and retains the original
+context for a retry or a larger-context model. Expired image
 tool references can be attached again without starting a new conversation.
 Accounting reconciliation cannot turn incomplete text into a verified response.
 Export with `sessions export` while the database can still be read. Unknown,

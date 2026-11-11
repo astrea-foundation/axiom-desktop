@@ -1128,6 +1128,8 @@ pub(super) fn persist_event(
                 },
             )?;
         }
+        // Live compaction counters never become timeline text or model input.
+        AppEvent::CompactionProgressUpdated { .. } => {}
         AppEvent::SessionClosed => {
             set_thread_lifecycle(transaction, &thread_id, ThreadLifecycle::Closed)?;
         }

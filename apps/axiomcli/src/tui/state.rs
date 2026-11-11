@@ -257,6 +257,7 @@ pub struct TuiState {
     pub(super) animation_frame: u64,
     pub(super) transition_ticks: u8,
     pub(super) compacting: bool,
+    pub(super) compaction_status: Option<String>,
     pub(super) has_prompt: bool,
 }
 
@@ -318,6 +319,7 @@ impl TuiState {
             animation_frame: 0,
             transition_ticks: 0,
             compacting: false,
+            compaction_status: None,
             has_prompt: false,
         }
     }
@@ -900,6 +902,7 @@ impl TuiState {
                 messages_before, ..
             } => {
                 self.compacting = false;
+                self.compaction_status = None;
                 self.status = "Context compacted".into();
                 self.status_tone = StatusTone::Success;
                 self.push_entry(
@@ -909,6 +912,22 @@ impl TuiState {
                     ),
                     false,
                 );
+            }
+            AppEvent::CompactionProgressUpdated { progress } => {
+                self.compacting = true;
+                self.status = if progress.total == 0 {
+                    "Compacting context · Preparing".into()
+                } else {
+                    format!(
+                        "Compacting context · Pass {}/{} · {}{} tokens generated",
+                        progress.completed.saturating_add(1).min(progress.total),
+                        progress.total,
+                        if progress.estimated { "~" } else { "" },
+                        progress.generated_tokens
+                    )
+                };
+                self.compaction_status = Some(self.status.clone());
+                self.status_tone = StatusTone::Active;
             }
             AppEvent::ProgressUpdated { message, .. } => {
                 let message = sanitize_terminal_text(message);
@@ -1085,6 +1104,8 @@ impl TuiState {
             }
             AppEvent::TurnCompleted { turn_id } => {
                 self.running = false;
+                self.compacting = false;
+                self.compaction_status = None;
                 self.status = "Task complete".into();
                 self.status_tone = StatusTone::Success;
                 self.clear_foreground_attention();
@@ -1097,6 +1118,8 @@ impl TuiState {
             }
             AppEvent::TurnCancelled { turn_id } => {
                 self.running = false;
+                self.compacting = false;
+                self.compaction_status = None;
                 if self.security == "VERIFYING" {
                     self.reset_security();
                 }
@@ -1121,6 +1144,8 @@ impl TuiState {
             }
             AppEvent::ErrorRaised { turn_id, message } => {
                 self.running = false;
+                self.compacting = false;
+                self.compaction_status = None;
                 self.status_tone = StatusTone::Error;
                 self.clear_foreground_attention();
                 let detail = sanitize_terminal_text(message);

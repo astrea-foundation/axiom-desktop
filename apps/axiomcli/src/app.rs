@@ -434,6 +434,9 @@ pub enum AppEvent {
         completed: Option<u64>,
         total: Option<u64>,
     },
+    CompactionProgressUpdated {
+        progress: axiom_acp_extension::CompactionProgress,
+    },
     TaskListUpdated {
         items: Vec<TaskItem>,
     },

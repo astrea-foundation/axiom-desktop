@@ -42,6 +42,27 @@ function toolUpdate(revision: number, callId: string, status = "pending") {
 
 const report = (inputTokens: number) => ({ inputTokens, outputTokens: 10, modelId: "model", reportedAt: "2026-09-07T00:00:00Z", contextWindowTokens: 100_000, autoCompactThresholdTokens: 85_000 });
 
+test("compaction work counters remain separate from response text and clear on every terminal path", () => {
+  for (const phase of ["completed", "cancelled", "failed"] as const) {
+    const store = new AxiomStateStore();
+    store.replaceTimeline([page(1)]);
+    const original = store.snapshot().sessions.thread!.timeline;
+    const notify = (sequence: number, event: Parameters<typeof store.extensionEvent>[0]["event"]) => store.extensionEvent({ runtimeInstanceId: "runtime", sessionId: "thread", sequence, occurredAt: "2026-11-11T00:00:00Z", event });
+    notify(1, { kind: "compaction", phase: "started", detail: "Preparing" });
+    assert.equal(store.snapshot().sessions.thread!.compaction?.total, 0);
+    const progress = { completed: 1, total: 3, generatedTokens: 1246, estimated: true };
+    notify(2, { kind: "compaction", phase: "summarizing", progress });
+    assert.deepEqual(store.snapshot().sessions.thread!.compaction, progress);
+    assert.deepEqual(store.snapshot().sessions.thread!.timeline, original);
+    notify(3, { kind: "compaction", phase, detail: null });
+    assert.equal(store.snapshot().sessions.thread!.compaction, null);
+  }
+  const store = new AxiomStateStore();
+  store.extensionEvent({ runtimeInstanceId: "runtime", sessionId: "thread", sequence: 1, occurredAt: "2026-11-11T00:00:00Z", event: { kind: "compaction", phase: "started" } });
+  store.extensionEvent({ runtimeInstanceId: "runtime", sessionId: "thread", sequence: 2, occurredAt: "2026-11-11T00:00:00Z", event: { kind: "active_turn_changed", turnId: null } });
+  assert.equal(store.snapshot().sessions.thread!.compaction, null);
+});
+
 test("image percentages update the owning tool and survive durable refresh without transcript text", () => {
   const store = new AxiomStateStore();
   store.replaceTimeline([page(1)]);

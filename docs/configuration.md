@@ -268,14 +268,18 @@ Provider request timeouts do not expire human approval/question cards. Those
 waits end on an answer, cancellation/disconnect, or an enabled whole-turn limit.
 
 Automatic compaction is based on 85% of the selected model's advertised context
-capacity, capped by local limits. The independent `max_context_bytes` guard
-includes encoded image/file data, so image-heavy conversations can compact
-below the token threshold. Base64 byte length is not a text-token count.
-New uploads also compact existing history before exceeding the selected model's
-image context cap (eight images for AstreaAI chat).
+capacity, capped by local token limits. Image counts and payload sizes never
+trigger compaction. The independent `max_context_bytes` guard bounds conversation
+text, reasoning and tool arguments; encoded image/file data has separate
+per-message limits. Exceeding a memory or provider transport limit returns an
+error while preserving the conversation. Base64 byte length is not a text-token
+count. AstreaAI's eight-image request cap is a protocol limit, not a compaction
+threshold.
 Uploads and successful `view_image` observations use the selected model's visual
-allowance in both automatic compaction and the native token guard. After restore,
-the next turn recomputes that allowance using current model metadata. Generated
+allowance for new context before the provider reports usage. Existing context
+uses the provider count, including after reload when the report still covers the
+same completed context and model; model changes invalidate that baseline. Without
+a matching report, the next turn estimates using current model metadata. Generated
 images add visual context only when viewed. Unsupported reasoning levels fail
 locally.
 `minimal`, `low`, `medium`, `high`, and `xhigh` are the application enum; a model

@@ -2453,6 +2453,13 @@ fn two_clients_preserve_live_turns_reject_conflicts_and_route_exact_turns() {
     let turn = TurnId::new();
     create(&first, &id);
     begin_turn(&first, &id, &turn, None);
+    for _ in 0..6 {
+        let probe = SessionStore::open(&path).unwrap();
+        let snapshot = probe.thread_snapshot(&id, None, 100).unwrap();
+        assert_eq!(snapshot.thread.lifecycle, ThreadLifecycle::Running);
+        assert_eq!(probe.recovery_status(&id).unwrap().interrupted_turns, 0);
+        assert!(probe.claim_context_operation(&id).is_err());
+    }
     let second = SessionStore::open(&path).unwrap();
     assert_eq!(
         second.thread_summary(&id).unwrap().lifecycle,
@@ -2664,6 +2671,11 @@ fn manual_context_operations_serialize_with_other_clients_and_turns() {
     create(&first, &id);
     let second = SessionStore::open(&path).unwrap();
     let claim = first.claim_context_operation(&id).unwrap();
+    for _ in 0..6 {
+        let probe = SessionStore::open(&path).unwrap();
+        assert!(probe.claim_context_operation(&id).is_err());
+        assert_eq!(probe.recovery_status(&id).unwrap().interrupted_turns, 0);
+    }
     assert!(first.claim_context_operation(&id).is_err());
     assert!(second.claim_context_operation(&id).is_err());
     let prompt = envelope(

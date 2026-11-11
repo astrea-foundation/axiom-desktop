@@ -43,6 +43,14 @@ const money = (value: bigint) => `$${value / 1000000n}.${(value % 1000000n).toSt
 export function requestUsageTotals(records: RequestUsage[]) {
   // Snapshots replace cumulative counters; duplicate deliveries are not charges.
   const unique = [...new Map(records.map((record) => [record.requestId, record])).values()];
+  // Wire pages use random request IDs as stable cursors, not chronological
+  // positions. Live updates and reloads must select the same newest request.
+  const timestamp = (value: string | null | undefined) => value != null && /^\d+$/.test(value) ? BigInt(value) : -1n;
+  unique.sort((a, b) => {
+    const start = timestamp(a.startedAtMs) - timestamp(b.startedAtMs);
+    const finish = timestamp(a.finishedAtMs) - timestamp(b.finishedAtMs);
+    return start < 0n ? -1 : start > 0n ? 1 : finish < 0n ? -1 : finish > 0n ? 1 : a.requestId.localeCompare(b.requestId);
+  });
   const sum = (key: "inputTokens" | "outputTokens" | "costMicrousd" | "cachedInputTokens" | "reasoningTokens") =>
     unique.reduce((total, request) => total + BigInt(request[key] ?? "0"), 0n);
   const starts = unique.map((r) => Number(r.startedAtMs)).filter(Number.isFinite);
@@ -70,12 +78,12 @@ export function ContextUsageIndicator(props: ContextUsageIndicatorProps) {
   const requests = requestUsageTotals(props.requestUsage ?? []).records;
   const conversation = requests.filter((request) => request.purpose === "conversation");
   const latest = conversation.at(-1);
-  const latestKnown = latest && latest.inputTokens != null && latest.outputTokens != null;
+  const latestKnown = conversation.filter((request) => request.inputTokens != null && request.outputTokens != null).at(-1);
   const usage = latestKnown ? {
-    inputTokens: Number(latest.inputTokens), outputTokens: Number(latest.outputTokens),
-    modelId: latest.modelId, reportedAt: latest.finishedAtMs ?? latest.startedAtMs ?? "",
-    contextWindowTokens: latest.contextWindowTokens ?? (latest.modelId === props.usage?.modelId ? props.usage.contextWindowTokens : undefined),
-    autoCompactThresholdTokens: latest.autoCompactThresholdTokens ?? (latest.modelId === props.usage?.modelId ? props.usage.autoCompactThresholdTokens : undefined),
+    inputTokens: Number(latestKnown.inputTokens), outputTokens: Number(latestKnown.outputTokens),
+    modelId: latestKnown.modelId, reportedAt: latestKnown.finishedAtMs ?? latestKnown.startedAtMs ?? "",
+    contextWindowTokens: latestKnown.contextWindowTokens ?? (latestKnown.modelId === props.usage?.modelId ? props.usage?.contextWindowTokens : undefined),
+    autoCompactThresholdTokens: latestKnown.autoCompactThresholdTokens ?? (latestKnown.modelId === props.usage?.modelId ? props.usage?.autoCompactThresholdTokens : undefined),
   } : props.usage;
   const view = contextUsagePresentation({ ...props, usage });
   const turnId = props.activeTurnId ?? latest?.turnId;

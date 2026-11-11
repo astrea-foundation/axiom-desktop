@@ -278,9 +278,12 @@ rejected. Regeneration after steering targets the turn's original prompt.
 Already-performed file edits and other tool side effects are not rolled back.
 
 Compaction uses encrypted, tool-free model requests to build successor context.
-Automatic compaction follows the selected model's advertised capacity and local
-limits. The byte limit includes encoded attachments and can trigger compaction
-while the last reported token count is below the token threshold. The runtime
+Automatic compaction is triggered only by context tokens, at the selected model's
+advertised threshold capped by local token limits. Uploaded images and successful
+`view_image` observations contribute visual tokens; generated images contribute
+only when viewed. Provider-reported usage takes precedence over estimates for
+existing context. Only new material is estimated until the next provider report.
+Image counts and encoded attachment sizes do not trigger compaction. The runtime
 budgets native image/file inputs as well as text in each summary stage, leaving
 room for previous summaries and output, including reasoning. It summarizes older
 history in bounded stages and keeps a usable recent tail; summaries persist for
@@ -315,10 +318,9 @@ compaction threshold. The 85% threshold controls when history is compacted.
 New uploads and successful `view_image` observations count toward the next
 request's context; the meter updates when the provider reports that request.
 Image generation alone does not add visual input to the chat model. Encoded
-image/file bytes also have an independent native memory limit, which can cause
-compaction before the displayed token threshold is reached. New uploads also
-compact existing images when needed to stay within the selected chat model's
-image context cap, including AstreaAI's eight-image limit.
+image/file data has per-message native size limits. These transport limits are
+independent of compaction. AstreaAI's eight-image request limit produces a provider
+limit error; it never causes automatic summarization or removal of earlier images.
 Tinfoil uses upstream's remaining-context generation default. Other protocols
 use the advertised output ceiling and estimated remaining request space (including
 tools/images and a margin). Exact tokenization and final context enforcement belong
@@ -329,6 +331,12 @@ survive reload, and model switches do not rescale old counts against a new model
 No report is shown as unknown, rather than fabricated zero usage.
 
 Hover, focus or click the meter to see context use and the compaction threshold.
+Request records are selected by their start timestamps, independent of the random
+request IDs used for accounting pagination. During compaction, a spinner shows the
+current pass and cumulative generated tokens. A `~` marks counts estimated from
+streamed summary text and available reasoning; provider output-token reports
+replace those estimates when available. Counts describe work completed, not a
+percentage or a promise of the final summary length.
 Expand **Usage details** for input/output counts, turn totals, cache and reasoning
 subsets, settlement state, elapsed time and other thread charges. Tab reaches the
 disclosure; Escape closes the panel and returns focus to the meter. Partial or
