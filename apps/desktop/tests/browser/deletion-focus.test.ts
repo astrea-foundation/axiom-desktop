@@ -2915,21 +2915,72 @@ test("proxy view follows native state and sends start, restart, stop and clipboa
 });
 
 test("an anonymous draft follows sign-in and each account recovers only its own draft", async () => {
-  const { page, errors } = await openApp();
+  const { page, errors, nativePayloads } = await openApp();
   try {
     const input = page.locator("textarea[data-chat-input]");
     await input.fill("Old account secret");
-    await page.evaluate(() => (window as any).axiomDesktop.agent.logout());
+    await page.evaluate(async () => {
+      // The mock logout changes accounts immediately; perform the same draft
+      // flush that Electron's account lifecycle awaits before native logout.
+      const { flushLocalState, releaseLocalStateFlush } = await import(`${location.origin}/src/updateFlush.ts`);
+      try {
+        await flushLocalState("account");
+        await (window as any).axiomDesktop.agent.logout();
+      } finally { releaseLocalStateFlush(); }
+    });
+    assert.equal(nativePayloads.get(JSON.stringify(["test-account", "axiom.draft.v1:test-account:new"]))?.payload.text, "Old account secret");
     await page.getByRole("button", { name: "Sign in", exact: true }).waitFor();
     assert.equal(await input.inputValue(), "");
     await input.fill("New draft written while signed out");
+    await page.evaluate(() => {
+      const hydration = {
+        readRequested: false, writeRequested: false, writeAcknowledged: false,
+        releaseRead: () => {}, releaseWrite: () => {},
+      };
+      const read = new Promise<void>(resolve => { hydration.releaseRead = resolve; });
+      const write = new Promise<void>(resolve => { hydration.releaseWrite = resolve; });
+      const agent = (window as any).axiomDesktop.agent, original = agent.localPayload;
+      agent.localPayload = async (request: LocalPayloadRequest) => {
+        const draft = request.accountId === "account-b" && request.id === "axiom.draft.v1:account-b:new";
+        if (draft && request.action.kind === "get") { hydration.readRequested = true; await read; }
+        if (draft && request.action.kind === "put") { hydration.writeRequested = true; await write; }
+        const result = await original(request);
+        if (draft && request.action.kind === "put") hydration.writeAcknowledged = true;
+        return result;
+      };
+      (window as any).__draftHydration = hydration;
+    });
     await page.evaluate(() => (window as any).__deletionTest.setAccountState({ revision: 3, state: "valid", account: { id: "account-b", displayName: "B", linkedMethods: ["password"] } }));
     await page.getByRole("button", { name: "Test model", exact: true }).waitFor();
-    assert.equal(await input.inputValue(), "New draft written while signed out");
+    await page.waitForFunction(() => (window as any).__draftHydration.readRequested);
+    // Model readiness precedes draft hydration. Hold both native operations so
+    // the composer cannot appear ready merely because local storage was fast.
+    assert.equal(await input.inputValue(), "");
+    assert.equal(nativePayloads.has(JSON.stringify(["account-b", "axiom.draft.v1:account-b:new"])), false);
+    await page.evaluate(() => (window as any).__draftHydration.releaseRead());
+    await page.waitForFunction(() => (window as any).__draftHydration.writeRequested);
+    assert.equal(await page.evaluate(() => (window as any).__draftHydration.writeAcknowledged), false);
+    assert.equal(await input.inputValue(), "");
+    assert.equal(nativePayloads.has(JSON.stringify(["account-b", "axiom.draft.v1:account-b:new"])), false);
+    await page.evaluate(() => (window as any).__draftHydration.releaseWrite());
+    await page.waitForFunction(() => (window as any).__draftHydration.writeAcknowledged
+      && (document.querySelector("textarea[data-chat-input]") as HTMLTextAreaElement)?.value === "New draft written while signed out");
+    assert.equal(nativePayloads.get(JSON.stringify(["account-b", "axiom.draft.v1:account-b:new"]))?.payload.text, "New draft written while signed out");
     await page.evaluate(() => (window as any).__deletionTest.setAccount("test-account"));
     await page.waitForFunction(() => (document.querySelector("textarea[data-chat-input]") as HTMLTextAreaElement)?.value === "Old account secret");
+    assert.equal(nativePayloads.get(JSON.stringify(["test-account", "axiom.draft.v1:test-account:new"]))?.payload.text, "Old account secret");
+    await page.evaluate(() => (window as any).__deletionTest.setAccount("account-b"));
+    await page.waitForFunction(() => (document.querySelector("textarea[data-chat-input]") as HTMLTextAreaElement)?.value === "New draft written while signed out");
+    assert.equal((await calls(page)).some(call => call.method === "prompt" || call.method === "attachments"), false);
     assert.deepEqual(errors, []);
-  } finally { await page.close(); }
+  } finally {
+    try {
+      await page.evaluate(() => {
+        (window as any).__draftHydration?.releaseRead();
+        (window as any).__draftHydration?.releaseWrite();
+      });
+    } finally { await page.close(); }
+  }
 });
 
 test("usage shows model shares in both themes, exact small charges, and an honest empty state", async () => {

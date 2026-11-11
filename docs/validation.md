@@ -250,6 +250,8 @@ portable backups and interrupted restore activation. Desktop fixtures cover
 account-scoped browser import, acknowledgement before deletion and recovered
 preparations that require review. These checks never open real customer stores
 or real credential entries.
+The sign-in draft regression delays both native reads and adoption writes;
+model-picker readiness alone does not establish acknowledged draft hydration.
 
 Keep the SQLite security baseline in the SQLCipher-enabled build at 3.54.1 or
 newer. The regular `libsqlite3-sys` bundled version alone does not establish
