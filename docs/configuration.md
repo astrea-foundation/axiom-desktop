@@ -189,8 +189,9 @@ explicit Web consent independently of Agent permissions. See [Desktop](desktop.m
 
 ## Image generation and editing
 
-Vision uploads accept up to ten images per request within the selected provider's
-context limit; AstreaAI chat permits eight images across the current context.
+Vision uploads accept up to ten images per submitted user message. Later messages
+can each add ten more; chat history has no separate image-count limit. Model
+token/context and encoded request-byte budgets still apply.
 Desktop resizes each image
 locally to at most 1,048,576 pixels while preserving aspect ratio and transparency
 before encryption. The unified image tool accepts optional `width` and `height`
@@ -221,10 +222,12 @@ requesting a correction. Viewing is optional and does not create or edit an
 image. Generated results are displayed to the user but are not automatically
 added to the model's visual context. Vision copies preserve aspect ratio and
 transparency, correct orientation, and fit within 1,048,576 pixels; originals
-remain available for editing, viewing and saving. Viewed images count toward
-the selected chat model's image context limit, including AstreaAI's eight-image
-cap. Successful views are restored from their tool
-records and conversation-local references without storing another image copy.
+remain available for editing, viewing and saving. Viewed images consume model
+context tokens and encoded request bytes, and can trigger normal automatic
+compaction. There is no conversation-wide view or generation count limit.
+Conversation image IDs remain available for later viewing and reference use.
+Successful views are restored from their tool records and conversation-local
+references or saved model checkpoints.
 
 Native code withholds and rejects image tools for nonvision models, including
 after a model switch, and rejects their new image uploads. Other file types
@@ -271,8 +274,7 @@ Automatic compaction is based on 85% of the selected model's advertised context
 capacity, capped by local limits. The independent `max_context_bytes` guard
 includes encoded image/file data, so image-heavy conversations can compact
 below the token threshold. Base64 byte length is not a text-token count.
-New uploads also compact existing history before exceeding the selected model's
-image context cap (eight images for AstreaAI chat).
+Uploads and views do not trigger compaction merely by crossing an image count.
 Uploads and successful `view_image` observations use the selected model's visual
 allowance in both automatic compaction and the native token guard. After restore,
 the next turn recomputes that allowance using current model metadata. Generated

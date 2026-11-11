@@ -841,7 +841,6 @@ impl Session {
         }
         let mut messages = Vec::new();
         let mut input_image_pixels = 0u64;
-        let mut input_image_count = 0usize;
         for m in request.messages {
             if (!m.images.is_empty() && !self.model.supports_images)
                 || !m.files.is_empty()
@@ -874,12 +873,6 @@ impl Session {
                     })
                 })
                 .collect::<Result<Vec<_>>>()?;
-            input_image_count += images.len();
-            if input_image_count > axiom_pool_protocol::vision::MAX_IMAGES {
-                return Err(SecureClientError::capability(
-                    "This connection supports at most eight images in the current context",
-                ));
-            }
             for image in &images {
                 input_image_pixels = input_image_pixels
                     .checked_add(image.pixels())

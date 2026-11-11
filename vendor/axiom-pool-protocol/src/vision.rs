@@ -5,10 +5,8 @@ use image::{ImageFormat, ImageReader, Limits};
 use serde::{Deserialize, Serialize};
 use std::io::Cursor;
 
-pub const MAX_IMAGES: usize = 8;
 pub const MAX_IMAGE_EDGE: u32 = 1024;
 pub const MAX_IMAGE_PIXELS: u64 = 1024 * 1024;
-pub const MAX_INPUT_PIXELS: u64 = MAX_IMAGES as u64 * MAX_IMAGE_PIXELS;
 pub const MAX_IMAGE_BYTES: usize = 5 * 1024 * 1024;
 pub const MAX_REFERENCES: usize = 5;
 pub const MAX_GENERATED_PIXELS: u64 = 1536 * 1536;

@@ -61,22 +61,7 @@ impl InferenceProvider for ContextProvider {
         let fits = model_context_tokens(&self.model, &request.messages)
             + u64::from(request.max_output_tokens.unwrap_or(0))
             <= u64::from(self.model.context_window_tokens);
-        let image_count = request
-            .messages
-            .iter()
-            .map(|m| m.images.len())
-            .sum::<usize>();
         self.requests.lock().await.push(request);
-        let maximum_images = if self.model.id == "direct:qwen3.8-27b" {
-            8
-        } else {
-            axiom_inference::MAX_ATTACHMENTS
-        };
-        if image_count > maximum_images {
-            return Err(AxiomError::Provider(
-                "synthetic provider: too many visual inputs".into(),
-            ));
-        }
         if !fits {
             return Err(AxiomError::Provider(
                 "synthetic provider: image inputs exceed the model context".into(),
@@ -242,7 +227,7 @@ async fn context_guard_uses_the_same_visual_token_allowance_as_compaction() {
 }
 
 #[tokio::test]
-async fn new_uploads_compact_existing_images_before_exceeding_the_context_image_cap() {
+async fn new_uploads_compact_existing_images_when_the_token_budget_requires_it() {
     let provider = Arc::new(ContextProvider::new("direct:qwen3.8-27b"));
     let engine = AgentEngine::new(
         provider.clone(),
@@ -251,13 +236,17 @@ async fn new_uploads_compact_existing_images_before_exceeding_the_context_image_
         4,
     );
     let ctx = TurnContext {
-        attachments: uploads(1),
+        attachments: uploads(10),
         ..context()
     };
-    let message = axiom_inference::user_message("Analyze the earlier images", &uploads(8));
+    let message = axiom_inference::user_message("Analyze the earlier images", &uploads(10));
     engine.histories.lock().await.insert(
         ctx.session_id.clone(),
-        vec![ChatMessage::text(ChatRole::System, "system"), message],
+        vec![
+            ChatMessage::text(ChatRole::System, "system"),
+            message.clone(),
+            message,
+        ],
     );
     let (tx, _rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
     engine
@@ -279,12 +268,12 @@ async fn new_uploads_compact_existing_images_before_exceeding_the_context_image_
             .iter()
             .map(|m| m.images.len())
             .sum::<usize>(),
-        1
+        10
     );
 }
 
 #[tokio::test]
-async fn astreaai_viewing_at_eight_images_is_a_repairable_error_before_dispatch() {
+async fn astreaai_viewing_after_ten_uploads_reaches_the_provider() {
     use crate::image_tool::{ImageCatalog, ImageGenerationTool, ViewImageTool};
     let mut provider = ContextProvider::new("direct:qwen3.8-27b");
     let catalog = ImageCatalog::default();
@@ -314,7 +303,7 @@ async fn astreaai_viewing_at_eight_images_is_a_repairable_error_before_dispatch(
     let engine = AgentEngine::new(provider.clone(), Arc::new(tools), &provider.model.id, 4);
     let ctx = TurnContext {
         image_tools_available: true,
-        attachments: uploads(8),
+        attachments: uploads(10),
         ..context()
     };
     engine
@@ -334,22 +323,28 @@ async fn astreaai_viewing_at_eight_images_is_a_repairable_error_before_dispatch(
         .unwrap();
     let requests = provider.requests.lock().await;
     assert_eq!(requests.len(), 2);
-    assert!(
-        requests
-            .iter()
-            .all(|r| r.messages.iter().map(|m| m.images.len()).sum::<usize>() == 8)
-    );
-    let mut refused = false;
+    for (request, expected) in requests.iter().zip([10, 11]) {
+        assert_eq!(
+            request
+                .messages
+                .iter()
+                .map(|message| message.images.len())
+                .sum::<usize>(),
+            expected
+        );
+    }
+    let mut viewed = false;
     while let Ok(event) = rx.try_recv() {
-        if let AppEvent::ToolOutput { content, .. } = event {
-            refused |= content.contains("maximum of 8 images");
+        if let AppEvent::ToolCompleted { success, .. } = event {
+            assert!(success);
+            viewed = true;
         }
     }
-    assert!(refused);
+    assert!(viewed);
 }
 
 #[tokio::test]
-async fn astreaai_compaction_splits_larger_history_at_its_eight_image_protocol_limit() {
+async fn astreaai_compaction_preserves_multiple_ten_image_messages() {
     let provider = Arc::new(ContextProvider::new("direct:qwen3.8-27b"));
     let engine = AgentEngine::new(
         provider.clone(),
@@ -358,12 +353,15 @@ async fn astreaai_compaction_splits_larger_history_at_its_eight_image_protocol_l
         4,
     );
     let session_id = SessionId::new();
-    // A model switch can bring history from another vision provider's limit.
     let mut message = ChatMessage::text(ChatRole::User, "Keep these existing image observations.");
     message.images = vec![image(); 10];
     engine.histories.lock().await.insert(
         session_id.clone(),
-        vec![ChatMessage::text(ChatRole::System, "system"), message],
+        vec![
+            ChatMessage::text(ChatRole::System, "system"),
+            message.clone(),
+            message,
+        ],
     );
     let (tx, _rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
     engine
@@ -378,12 +376,13 @@ async fn astreaai_compaction_splits_larger_history_at_its_eight_image_protocol_l
             .flat_map(|r| &r.messages)
             .map(|m| m.images.len())
             .sum::<usize>(),
-        10
+        20
     );
     assert!(
         requests
             .iter()
-            .all(|r| r.messages.iter().map(|m| m.images.len()).sum::<usize>() <= 8)
+            .flat_map(|r| &r.messages)
+            .all(|message| message.images.len() <= 10)
     );
 }
 

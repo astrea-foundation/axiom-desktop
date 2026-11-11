@@ -249,7 +249,7 @@ OCR, conversion or rasterization. Document processing belongs to the attested
 provider. Unsupported files remain visible in the draft and block sending until
 you remove them or select a model that supports them.
 
-A message can contain eight attachments, up to 5 MiB per image, 10 MiB per file,
+A message can contain ten attachments, up to 5 MiB per image, 10 MiB per file,
 and 16 MiB of text plus base64-encoded attachment payloads. Text remains bounded
 to 4 MiB. Model context and native budgets still apply; inputs are never silently
 truncated. Audio/video and remote URLs are unsupported.
@@ -316,9 +316,10 @@ New uploads and successful `view_image` observations count toward the next
 request's context; the meter updates when the provider reports that request.
 Image generation alone does not add visual input to the chat model. Encoded
 image/file bytes also have an independent native memory limit, which can cause
-compaction before the displayed token threshold is reached. New uploads also
-compact existing images when needed to stay within the selected chat model's
-image context cap, including AstreaAI's eight-image limit.
+compaction before the displayed token threshold is reached. Ten attachments is
+a per-message upload limit: later messages can add ten more, and image views and
+generation have no conversation-wide count limit. Compaction preserves saved
+assets and their reference IDs for later use.
 Tinfoil uses upstream's remaining-context generation default. Other protocols
 use the advertised output ceiling and estimated remaining request space (including
 tools/images and a margin). Exact tokenization and final context enforcement belong

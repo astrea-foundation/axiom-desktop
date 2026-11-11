@@ -267,15 +267,16 @@ the physical executable; both must discover the same pinned local configuration.
 Optional `view_image` inspection has native regression coverage for uploaded,
 generated and edited images, generation followed by viewing before the final
 answer, tool-batch ordering, persisted restoration, malformed/foreign references,
-decode failures, cancellation, model/service gating and the ten-image context
-limit. Vision-copy checks include transparent images and generated PNGs larger
+decode failures, cancellation, model/service gating and successful views after
+ten uploads. Vision-copy checks include transparent images and generated PNGs larger
 than the upload byte limit. The October 27 live record predates this viewing
 tool; live model selection of the new tool remains a separate qualification.
 
 Synthetic native context checks cover model-specific image allowances after
 restore and in the token guard, new views added to the last reported context count,
-new uploads that cross AstreaAI's eight-image context cap, view refusals at that
-cap, model switches from larger image histories, byte-triggered compaction below the
+ten uploads in each of two turns, 110 views across normal token-triggered
+compaction, retention beyond 256 images and 64 MiB without expiring older
+references, model switches from larger image histories, byte-triggered compaction below the
 token threshold, attachment order and Unicode text across bounded summary stages,
 encoded attachment and message bounds including summary overhead, and reasoning
 output space before the visible summary. Existing failure/cancellation checks
