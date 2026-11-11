@@ -24,9 +24,7 @@ pub(super) fn initialize(
     ));
     let mut extensions =
         ExtensionCapabilities::agent(ctx_extension_state.runtime_instance_id.clone());
-    if std::env::var_os("AXIOM_CHUTES_CLIENT_CONFIG_FILE").is_none()
-        && std::env::var_os("AXIOM_DIRECT_CLIENT_CONFIG_FILE").is_none()
-    {
+    if !context.runner.supports_image_generation() {
         extensions.features.image_generation = 0;
     }
     if context.frontend != FrontendKind::DesktopChat {
@@ -361,6 +359,15 @@ pub(super) async fn load_session(
     let ctx_runtime = context.runtime.clone();
     let ctx_sessions = context.sessions.clone();
     let ctx_store = context.store.clone();
+    let replay_history = !(ctx_frontend == FrontendKind::DesktopChat
+        && extension_enabled(&ctx_extension_state, ExtensionFeature::Timeline)
+        && request
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.get(extension::META_KEY))
+            .and_then(|meta| meta.get("skipHistoryReplay"))
+            .and_then(serde_json::Value::as_bool)
+            == Some(true));
     let Some(store) = ctx_store else {
         return responder.respond_with_internal_error("durable session loading is unavailable");
     };
@@ -458,8 +465,8 @@ pub(super) async fn load_session(
                     ));
                 }
             }
-            if let Some(warning) = loaded.warnings.first() {
-                return Err(agent_client_protocol::util::internal_error(warning.clone()));
+            for warning in &loaded.warnings {
+                send_text(&connection, &external_id, format!("[recovery] {warning}. Older context was omitted so this conversation can continue."))?;
             }
             let restored_model = model_for_resume(&loaded.events, &ctx_default_model);
             let restored_thinking = thinking_for_resume(&loaded.events, ctx_default_thinking);
@@ -521,21 +528,27 @@ pub(super) async fn load_session(
                 .restore(&loaded.events)
                 .await
                 .map_err(agent_error)?;
-            for (index, envelope) in loaded.events.iter().enumerate() {
-                send_event(
-                    &connection,
-                    &external_id,
-                    envelope.event.clone(),
-                    EventDelivery {
-                        cwd: Some(&saved_cwd),
-                        extension_state: None,
-                        correlation_id: Some(envelope.correlation_id.to_string()),
-                        revision: None,
-                        client_item_id: None,
-                    },
-                )?;
-                if (index + 1) % 128 == 0 {
-                    tokio::task::yield_now().await;
+            // Desktop can opt into fetching the authoritative timeline after
+            // load. Native history restoration above still runs in full; only
+            // the redundant presentation replay is skipped. Standard ACP
+            // clients keep receiving the required transcript notifications.
+            if replay_history {
+                for (index, envelope) in loaded.events.iter().enumerate() {
+                    send_event(
+                        &connection,
+                        &external_id,
+                        envelope.event.clone(),
+                        EventDelivery {
+                            cwd: Some(&saved_cwd),
+                            extension_state: None,
+                            correlation_id: Some(envelope.correlation_id.to_string()),
+                            revision: None,
+                            client_item_id: None,
+                        },
+                    )?;
+                    if (index + 1) % 128 == 0 {
+                        tokio::task::yield_now().await;
+                    }
                 }
             }
             let resumed = ctx_runtime

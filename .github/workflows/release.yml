@@ -101,14 +101,10 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: sudo apt-get update && sudo apt-get install -y bubblewrap libarchive-tools rpm libfuse2
       - run: cargo build --locked --release -p axiomcli -p axiom-proxy
-      - name: Build the production helper on the oldest supported Linux distribution
-        run: node scripts/build-chutes-bundle.mjs --channel production --output .local/chutes/bundle
-      - name: Build the pinned AstreaAI verifier
+      - name: Build the pinned AstreaAI verifier on the oldest supported Linux distribution
         run: node scripts/build-direct-bundle.mjs --output .local/direct/bundle
       - name: Build Desktop and standalone installers
         env:
-          AXIOM_CHUTES_BUNDLE: .local/chutes/bundle
-          AXIOM_CHUTES_RELEASE_CHANNEL: production
           AXIOM_DIRECT_BUNDLE: .local/direct/bundle
         run: |
           test -n "$AXIOM_UPDATE_PUBLIC_KEYS"
@@ -158,19 +154,17 @@ jobs:
           architecture: ${{ matrix.arch }}
       - uses: astral-sh/setup-uv@v6
       - run: cargo build --locked --release -p axiomcli -p axiom-proxy
-      - name: Build the native frozen production helper
+      - name: Build the pinned native AstreaAI verifier
         run: |
           if [ '${{ matrix.arch }}' = x64 ]; then
             export OPENSSL_DIR="$(brew --prefix openssl@3)"
             export OPENSSL_STATIC=1
             export UV_NO_CACHE=1
           fi
-          node scripts/build-chutes-bundle.mjs --channel production --output .local/chutes/bundle
           node scripts/build-direct-bundle.mjs --output .local/direct/bundle
           mkdir -p target/helper-artifact
-          cp -R .local/chutes/bundle target/helper-artifact/bundle
           cp -R .local/direct/bundle target/helper-artifact/direct
-          tar -czf helper.tar.gz -C target/helper-artifact bundle direct
+          tar -czf helper.tar.gz -C target/helper-artifact direct
       - uses: actions/upload-artifact@v4
         with:
           name: macos-helper-${{ matrix.arch }}
@@ -209,15 +203,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - uses: astral-sh/setup-uv@v6
       - uses: actions/download-artifact@v4
         with:
           pattern: macos-helper-*
           path: target/helper-inputs
-      - name: Unpack native helpers and install locked signing tooling
+      - name: Unpack native verifier bundles
         run: |
           python -c "import pathlib,tarfile; [tarfile.open(p).extractall(p.parent,filter='data') for p in pathlib.Path('target/helper-inputs').glob('*/helper.tar.gz')]"
-          uv sync --project vendor/axiom-chutes-helper/providers/chutes --locked --no-default-groups --group bundle
       - uses: actions/download-artifact@v4
         with:
           name: macos-native-x64
@@ -248,18 +240,11 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$CSC_KEYCHAIN"
           security list-keychains -d user -s "$CSC_KEYCHAIN" "$HOME/Library/Keychains/login.keychain-db"
           axiom_app_identity="$(node -e 'const {execFileSync}=require("node:child_process");const names=[...execFileSync("security",["find-identity","-v","-p","codesigning"],{encoding:"utf8"}).matchAll(/"([^"\n]+)"/g)].map(m=>m[1]);const name=names.find(n=>n.startsWith("Developer ID Application:")&&n.endsWith("("+process.env.APPLE_TEAM_ID+")"));if(!name)process.exit(1);process.stdout.write(name);')"
-          axiom_helper_python="$PWD/vendor/axiom-chutes-helper/providers/chutes/.venv/bin/python"
-          for axiom_helper_arch in x64 arm64; do
-            "$axiom_helper_python" vendor/axiom-chutes-helper/scripts/sign_chutes_helper.py --input "target/helper-inputs/macos-helper-$axiom_helper_arch/bundle" --output "target/helper-signed/$axiom_helper_arch" --codesign-identity "$axiom_app_identity"
-          done
-          "$axiom_helper_python" vendor/axiom-chutes-helper/scripts/combine_chutes_helpers.py --arm64 target/helper-signed/arm64 --x64 target/helper-signed/x64 --output target/helper-production --codesign-identity "$axiom_app_identity"
           mkdir -p target/direct-inputs
           cp -R target/helper-inputs/macos-helper-arm64/direct/darwin-arm64 target/direct-inputs/
           cp -R target/helper-inputs/macos-helper-x64/direct/darwin-x64 target/direct-inputs/
           node scripts/sign-direct-bundles.mjs --input target/direct-inputs --output target/direct-production --codesign-identity "$axiom_app_identity"
           export AXIOM_DIRECT_BUNDLE="$PWD/target/direct-production"
-          export AXIOM_CHUTES_BUNDLE="$PWD/target/helper-production"
-          export AXIOM_CHUTES_RELEASE_CHANNEL=production
           node apps/desktop/scripts/package-desktop.mjs --mac --universal
           node scripts/package-cli.mjs --mac --universal --input target/release/universal
           for file in apps/desktop/dist/*.pkg; do
@@ -267,6 +252,34 @@ jobs:
             xcrun stapler validate "$file"
             spctl --assess --type install --verbose=2 "$file"
           done
+      - name: Generate and view an authenticated image from both signed installations
+        env:
+          AXIOM_INSTALLED_NATIVE_QA: ${{ secrets.AXIOM_INSTALLED_NATIVE_QA }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          desktop="apps/desktop/dist/Axiom-$version-mac-universal.pkg"
+          standalone="apps/desktop/dist/AxiomCLI-$version-mac-universal.pkg"
+          sudo installer -pkg "$desktop" -target /
+          node scripts/verify-installed-image.mjs /Applications/Axiom.app/Contents/Resources/bin/axiomcli "$desktop" "$RUNNER_TEMP/installed-image-desktop" "$version"
+          # Switch CLI registration only on this disposable acceptance runner.
+          link=/usr/local/bin/axiomcli
+          test -L "$link"
+          test "$(readlink "$link")" = /Applications/Axiom.app/Contents/Resources/bin/axiomcli
+          sudo rm "$link"
+          sudo installer -pkg "$standalone" -target /
+          node scripts/verify-installed-image.mjs /usr/local/lib/axiom-cli/bin/axiomcli "$standalone" "$RUNNER_TEMP/installed-image-cli" "$version"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: signed-installation-image-acceptance
+          retention-days: 7
+          path: |
+            ${{ runner.temp }}/installed-image-desktop/receipt.json
+            ${{ runner.temp }}/installed-image-desktop/image-*.png
+            ${{ runner.temp }}/installed-image-cli/receipt.json
+            ${{ runner.temp }}/installed-image-cli/image-*.png
+          if-no-files-found: warn
       - uses: actions/upload-artifact@v4
         with:
           name: axiom-release-mac-universal

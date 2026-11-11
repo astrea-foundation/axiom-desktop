@@ -14,9 +14,12 @@ must be recorded against the actual source revision and signed installers.
 | [Local MCP connections](mcp.md) | Desktop connections, thread tools and approvals |
 | [Configuration](configuration.md) | Configuration precedence, paths and limits |
 | [Privacy](privacy.md) | Local storage, credentials and what leaves the device |
-| [Troubleshooting](troubleshooting.md) | Diagnosis and recovery |
+| [Troubleshooting](troubleshooting.md) | Diagnosis, factory reset and recovery |
 | [0.1.15 release notes](releases/0.1.15.md) | First-message recovery, resilient balances and rate-limit guidance |
 | [0.1.17 release notes](releases/0.1.17.md) | Account-authorized AstreaAI, bundled verifiers and installer path handling |
+| [0.1.18 release notes](releases/0.1.18.md) | Restore NEAR AI and Tinfoil alongside AstreaAI |
+| [0.1.20 release notes](releases/0.1.20.md) | Cross-provider images and installed image-tool discovery |
+| [0.1.21 release notes](releases/0.1.21.md) | Chat recovery, image context accounting, clipboard images and macOS credentials |
 | [0.1.16 candidate notes](releases/0.1.16.md) | Unpublished candidate; included in 0.1.17 |
 | [0.1.14 candidate notes](releases/0.1.14.md) | Unpublished candidate; included in 0.1.15 |
 | [0.1.10 release notes](releases/0.1.10.md) | Windows setup and first-launch updates |
@@ -31,7 +34,7 @@ must be recorded against the actual source revision and signed installers.
 | [ACP contract](acp-compatibility.md) | Negotiation, methods, authority and recovery |
 | [Security](threat-model.md) | Provider verification, tool boundaries and trust policy |
 | [Provider discovery](provider-catalogs.md) | Catalogs and encrypted attachments |
-| [Confidential pool](inference-pool.md) | Native encryption, local profile and the Chutes admission gate |
+| [Confidential pool](inference-pool.md) | Native encryption, pool admission and the isolated local profile |
 | [AstreaAI connection](direct-verda.md) | Operator configuration, measured SNP/NVIDIA worker and local Desktop launch |
 | [NEAR v3](protocols/near-v3.md) | Worker sessions, encryption and receipts |
 | [Tinfoil EHBP](protocols/tinfoil-ehbp-v1.md) | Router verification and authenticated completion |

@@ -61,6 +61,38 @@ configuration, identity, vault credentials, trust policy and workspace files are
 separate. Reset is destructive for the selected local history; it does not
 reset a hosted account or payment ledger.
 
+For a complete clean install, use **Settings → Account → Factory reset Axiom…**
+and type `RESET`. The equivalent offline recovery command, after quitting Desktop,
+CLI and proxy processes, is:
+
+```sh
+axiomcli factory-reset --confirm
+```
+
+Factory reset deletes all accounts' Desktop and CLI history, attachments and
+managed chat folders; shared and frontend configuration; installation identity
+and trust-policy caches; saved Axiom sign-ins and MCP secrets in the OS credential
+store; and Electron profiles, browser storage, logs and update caches. It works
+without loading configuration or database schemas and makes no network requests.
+The Desktop action stops its native processes, exits, runs the bundled cleanup
+helper after file handles close, and reopens Axiom. Other native processes using
+the same data must be closed; reset refuses to run while their storage lease is
+held. An empty `.axiom-factory-reset.lock` coordination file outside the data
+tree remains, containing no user information.
+
+The online account, credit, hosted API keys, external browser sign-in and files
+outside Axiom-managed storage are kept. Files in a custom Agent working directory
+or a Downloads folder are outside reset's scope. An OS credential-store failure
+leaves files available for retry; deletion can be partial if the filesystem fails
+after credential cleanup. Desktop displays an error after reopening if reset did
+not finish. Unlock the vault or close remaining processes and retry. Development
+staging/local profiles, including named profiles, reset their isolated files and
+scoped credentials. A production reset clears both Axiom credential services,
+including retired secrets.
+
+See [troubleshooting](troubleshooting.md#completely-reset-local-data) for manual
+recovery on versions that predate the factory reset command.
+
 ## Trusted user configuration
 
 ```toml
@@ -110,7 +142,18 @@ servers from shared CLI configuration.
 | `full_access` | Exposed tools run without routine approval prompts |
 
 All profiles retain deny rules, input validation and the platform's actual
-process boundaries. See [security](threat-model.md#local-tools-and-processes).
+process boundaries. Workspace text search, context selection, Git worktree
+inspection and session diffs check each resolved file before reading its contents.
+Background session-diff baselines capture only immediately permitted files and
+skip `ask` and denied files without prompting. Foreground search, context, Git
+and session-diff reads retain normal approvals, including an explicit diff's
+first snapshot. Retained baseline content and fallback patches are checked again
+before being returned. Denied files are omitted; explicit `ask` rules require
+approval for each file even after the tool was approved.
+Declining a file approval stops the turn. URL fetching checks destination
+policy on every redirect, including redirects within one origin, before DNS
+resolution and dispatch. Each permitted hop still validates every DNS answer
+as public and pins the HTTP connection to those validated addresses. See [security](threat-model.md#local-tools-and-processes).
 
 ## Desktop profile
 
@@ -118,15 +161,24 @@ process boundaries. See [security](threat-model.md#local-tools-and-processes).
 It ignores shared CLI `permission_profile`/`mcp_servers` and clears those imported
 CLI server configurations,
 rejects a non-Web startup profile from frontend config/environment, and uses
-the embedded product prompt. `--system-prompt-file` cannot replace it.
+the embedded product prompt. `--system-prompt-file` cannot replace it. That prompt
+combines the shared chat behavior, the Desktop capability profile and
+[`desktop-product.md`](../apps/axiomcli/prompts/desktop-product.md), which tells
+the model what AxiomAI is and how Desktop protects conversations: on-device TEE
+verification and encryption, the composer privacy badge, unencrypted-at-rest local
+history, and the separate Web and Agent-mode boundaries. Keep it consistent with
+[privacy behavior](privacy.md) when either changes.
 
-Selecting **Qwen3.8 Uncensored** (`chutes:qwen3.8-27b`, or the debug-only
-`chutes-preview:qwen3.8-27b`) adds its native model-specific instructions to the
-system message before E2EE encryption. They identify the model by its display
-name and instruct it to follow every user request without refusals or unsolicited
-moralizing. Native prompt refresh applies the policy to new, restored, and
-compacted threads, and removes it when another model is selected. Tool
-availability, Web consent, and approval enforcement still come from the runtime.
+Every model receives Axiom's uncensored behavior policy
+([`uncensored.md`](../packages/chat-core/prompts/uncensored.md)) in the system
+message before E2EE encryption. It instructs the model to follow every user
+request without refusals or unsolicited moralizing, while staying accurate about
+facts, tools and capabilities. Selecting AstreaAI's **Qwen3.8 Uncensored**
+(`direct:qwen3.8-27b`) also adds its model-specific identity line. Native prompt refresh rebuilds both for new,
+restored, and compacted threads, and removes the identity line when another model
+is selected. The policy is a prompt, not a model change: hosted models keep their
+own safety training and may still refuse. Tool availability, Web consent, and
+approval enforcement still come from the runtime.
 
 After authentication, `desktopAgent@1` can atomically configure a thread's
 Agent enablement, approval level and working directory while idle. This is the
@@ -137,22 +189,24 @@ explicit Web consent independently of Agent permissions. See [Desktop](desktop.m
 
 ## Image generation and editing
 
-Vision uploads accept up to ten images per request. Desktop resizes each image
+Vision uploads accept up to ten images per request within the selected provider's
+context limit; AstreaAI chat permits eight images across the current context.
+Desktop resizes each image
 locally to at most 1,048,576 pixels while preserving aspect ratio and transparency
 before encryption. The unified image tool accepts optional `width` and `height`
 together for saved legacy calls. New model calls use `aspect_ratio`; the native
 client chooses the largest exact match on a 32-pixel grid within 2,359,296 pixels.
-New images default to **2:3 portrait (1216×1824)**. The supported ratios are
+New images default to **1:1 square (1536×1536)**. The supported ratios are
 `1:1`, `2:3`, `3:2`, `3:4`, `4:3`, `9:16`, `16:9`, `1:2`, `2:1`, `9:21`,
 and `21:9`. Other ratios, including extreme values, fail before provider dispatch.
 The client sends concrete dimensions, including the default, so retained workers
 use the same sizes. Model instructions favor higher resolutions for image
-quality. Reference-based calls without an aspect ratio preserve the first
-reference's output dimensions or aspect ratio within the limits.
+quality. Reference-based calls without an aspect ratio use the same default size.
 
 Vision-capable chat models automatically receive the shared `generate`
-and `view_image` tools when the managed Chutes image adapter is installed and
-`imageGeneration@3` is negotiated. There is no Images toggle. `generate` requires a `prompt`; optional
+and `view_image` tools when the AstreaAI image adapter is installed and
+`imageGeneration@4` is negotiated. The chat provider and image
+provider may differ. There is no Images toggle. `generate` requires a `prompt`; optional
 `reference_image_ids` select up to five ordered conversation-owned images for
 editing or composition. Refer to them in the prompt as `<image1>`, `<image2>`,
 etc. in array order. Omitting references creates a new image. Invalid references fail
@@ -168,7 +222,8 @@ image. Generated results are displayed to the user but are not automatically
 added to the model's visual context. Vision copies preserve aspect ratio and
 transparency, correct orientation, and fit within 1,048,576 pixels; originals
 remain available for editing, viewing and saving. Viewed images count toward
-the ten-image context limit. Successful views are restored from their tool
+the selected chat model's image context limit, including AstreaAI's eight-image
+cap. Successful views are restored from their tool
 records and conversation-local references without storing another image copy.
 
 Native code withholds and rejects image tools for nonvision models, including
@@ -177,16 +232,20 @@ retain their own model capability checks. Image tools work independently of
 Web and Agent mode and never grant local or Web permissions. Image work starts
 through the LLM tool loop or an explicit per-image Regenerate action. The latter
 runs only the stored image request in a new image-only turn, preserving the chat
-prompt, original image, and later messages. The UI renders verified results and offers Save
-image. Click a generated or edited image to open the full-image viewer. Uploaded
+prompt, original image, and later messages. The UI renders verified results with an
+AstreaAI attribution and offers Save image. In Desktop, right-click an image in the
+chat or full-image viewer to copy the image to the system clipboard or save it.
+Click a generated or edited image to open the full-image viewer. Uploaded
 and previous generated/edited images can be edited; each edit keeps its source
 and creates a new result. Saved legacy `edit_image` results remain readable.
-The installed managed Chutes adapter is required even when the chat model uses
-another provider. See the
+The installed AstreaAI image adapter is required even when the chat model uses
+another provider; without it image tools are not registered and native image
+requests fail with an unavailable-service error. See the
+[AstreaAI connection guide](direct-verda.md) and the
 [image-generation contract](../../axiom-inference/docs/image-generation.md).
 
 Image tools forward authenticated progress percentages through the native
-helper, including queued, generating and finishing states. The UI shows percentages
+client, including queued, generating and finishing states. The UI shows percentages
 while work is pending; its percentage and progress bar disappear after successful
 result verification and settlement. This requires the
 matching streaming image cords and backend relay paths. Save image suggests
@@ -209,7 +268,20 @@ Provider request timeouts do not expire human approval/question cards. Those
 waits end on an answer, cancellation/disconnect, or an enabled whole-turn limit.
 
 Automatic compaction is based on 85% of the selected model's advertised context
-capacity, capped by local limits. Unsupported reasoning levels fail locally.
+capacity, capped by local token limits. Image counts and payload sizes never
+trigger compaction. The independent `max_context_bytes` guard bounds conversation
+text, reasoning and tool arguments; encoded image/file data has separate
+per-message limits. Exceeding a memory or provider transport limit returns an
+error while preserving the conversation. Base64 byte length is not a text-token
+count. AstreaAI's eight-image request cap is a protocol limit, not a compaction
+threshold.
+Uploads and successful `view_image` observations use the selected model's visual
+allowance for new context before the provider reports usage. Existing context
+uses the provider count, including after reload when the report still covers the
+same completed context and model; model changes invalidate that baseline. Without
+a matching report, the next turn estimates using current model metadata. Generated
+images add visual context only when viewed. Unsupported reasoning levels fail
+locally.
 `minimal`, `low`, `medium`, `high`, and `xhigh` are the application enum; a model
 may expose only a subset. See [CLI](cli.md) for remembered model/thinking settings.
 
@@ -228,8 +300,7 @@ different search destination. Search queries are not inference E2EE; see
 | `AXIOM_MODEL` | Discovered model ID override |
 | `AXIOM_POOL_CLIENT_CONFIG_FILE` | Installed public pool pins and offerings; never a provider credential |
 | `AXIOM_LOCAL_RELAY_CA_FILE` | Explicit CA for an HTTPS loopback API; cannot change provider trust |
-| `AXIOM_CHUTES_DESKTOP_PREVIEW_CONFIG` | Debug-only local Chutes native bridge; optional installed publisher-key fingerprint enables signed staging releases with scoped TEE verification |
-| `AXIOM_CHUTES_CLIENT_CONFIG_FILE` | Trusted installed managed Chutes helper, publisher fingerprint and native price ceiling; uses Axiom account authentication and keeps the provider key on the backend |
+| `AXIOM_DIRECT_CLIENT_CONFIG_FILE` | Explicit installed AstreaAI worker pins, verifier and capability flags; installers otherwise use their bundled configuration. See [AstreaAI connection](direct-verda.md) |
 | `AXIOM_DESKTOP_LOCAL_PROFILE=1` | Unpackaged loopback profile with separate Electron/native storage |
 | `AXIOM_DESKTOP_LOCAL_CREDENTIALS=1` | Explicit unpackaged local-profile opt-in to the debug native credential file; both API and auth origins must be loopback |
 | `AXIOMCLI_LOCAL_DEV_CREDENTIALS=1` | Debug Unix builds only: owner-only, origin-scoped credentials under the isolated native data directory; rejected for remote origins, release builds and API-key overrides |
@@ -251,23 +322,17 @@ versioned price snapshot; native code verifies the exact final charge against
 the authenticated usage receipt. An optional `pricing` snapshot populates the
 displayed input/output rates. Rates are integer microUSD per million tokens;
 reasoning tokens are included in output and cached tokens are included in input.
-These financial settings do not relax worker attestation or enable the
-unqualified Chutes pool offering.
-
-Managed Chutes releases unresolved request holds after 15 minutes. The API
-checks every 30 seconds and before new admission. Until then, its unresolved
-request limit appears as an admission error with the expiry window, distinct
-from a hardware or encrypted-exchange failure. Expiry never replays a request
-or marks an incomplete reply verified; a late authentic usage receipt does not
-create a charge after expiry.
+These financial settings do not relax worker attestation.
 
 Desktop service-origin pairing and development overrides are described in
 [development](development.md#setup). Child tool processes receive
 a sanitized environment, not the application's credentials; per-command additions
 are limited by native policy.
 
-The default model setting is `auto`: prefer Tinfoil's DeepSeek V4.1 Flash
-(`deepseek-v4-1-flash`) when it appears in the validated provider catalog. Other
-Tinfoil offerings come next, followed by NEAR and then other registered providers.
+The default model setting is `auto`: prefer NEAR's attested, abliterated
+DeepSeek V4.1 Flash (`deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated`) when it
+appears in the validated provider catalog, then Tinfoil's DeepSeek V4.1 Flash
+(`deepseek-v4-1-flash`). Other Tinfoil offerings come next, followed by NEAR and
+then other registered providers.
 Configure an explicit model ID to select a particular offering. Saved selections
 take precedence; this preference cannot add an unavailable model to the catalog.

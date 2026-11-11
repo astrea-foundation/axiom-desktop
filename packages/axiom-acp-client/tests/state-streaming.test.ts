@@ -42,6 +42,27 @@ function toolUpdate(revision: number, callId: string, status = "pending") {
 
 const report = (inputTokens: number) => ({ inputTokens, outputTokens: 10, modelId: "model", reportedAt: "2026-09-07T00:00:00Z", contextWindowTokens: 100_000, autoCompactThresholdTokens: 85_000 });
 
+test("compaction work counters remain separate from response text and clear on every terminal path", () => {
+  for (const phase of ["completed", "cancelled", "failed"] as const) {
+    const store = new AxiomStateStore();
+    store.replaceTimeline([page(1)]);
+    const original = store.snapshot().sessions.thread!.timeline;
+    const notify = (sequence: number, event: Parameters<typeof store.extensionEvent>[0]["event"]) => store.extensionEvent({ runtimeInstanceId: "runtime", sessionId: "thread", sequence, occurredAt: "2026-11-11T00:00:00Z", event });
+    notify(1, { kind: "compaction", phase: "started", detail: "Preparing" });
+    assert.equal(store.snapshot().sessions.thread!.compaction?.total, 0);
+    const progress = { completed: 1, total: 3, generatedTokens: 1246, estimated: true };
+    notify(2, { kind: "compaction", phase: "summarizing", progress });
+    assert.deepEqual(store.snapshot().sessions.thread!.compaction, progress);
+    assert.deepEqual(store.snapshot().sessions.thread!.timeline, original);
+    notify(3, { kind: "compaction", phase, detail: null });
+    assert.equal(store.snapshot().sessions.thread!.compaction, null);
+  }
+  const store = new AxiomStateStore();
+  store.extensionEvent({ runtimeInstanceId: "runtime", sessionId: "thread", sequence: 1, occurredAt: "2026-11-11T00:00:00Z", event: { kind: "compaction", phase: "started" } });
+  store.extensionEvent({ runtimeInstanceId: "runtime", sessionId: "thread", sequence: 2, occurredAt: "2026-11-11T00:00:00Z", event: { kind: "active_turn_changed", turnId: null } });
+  assert.equal(store.snapshot().sessions.thread!.compaction, null);
+});
+
 test("image percentages update the owning tool and survive durable refresh without transcript text", () => {
   const store = new AxiomStateStore();
   store.replaceTimeline([page(1)]);
@@ -69,6 +90,28 @@ test("image percentages update the owning tool and survive durable refresh witho
   assert.deepEqual(tool.content, []);
 });
 
+test("live image references survive tool completion and metadata-only timeline replacement", () => {
+  const store = new AxiomStateStore(); store.replaceTimeline([page(1)]);
+  const proposed = toolUpdate(2, "image");
+  Object.assign(proposed.update, {title: "Generating image · generate", kind: "other", rawInput: {prompt: "A blue mug"}});
+  store.standardUpdate(proposed);
+  const imageResource = { callId: "image", sha256: "ab".repeat(32), mimeType: "image/png", width: 1024, height: 1024 };
+  store.standardUpdate({ ...toolUpdate(3, "image", "in_progress"), update: {
+    sessionUpdate: "tool_call_update", toolCallId: "image", rawOutput: { imageResource },
+  } });
+  store.standardUpdate(toolUpdate(4, "image", "completed"));
+  const live = store.snapshot().sessions.thread!.timeline.find(row => row.tool?.callId === "image")!.tool!;
+  assert.equal(live.status, "completed"); assert.equal(live.content.length, 1);
+  assert.deepEqual(live.content[0], { type: "image", mimeType: "image/png", width: 1024, height: 1024,
+    imageResource: { callId: "image", sha256: imageResource.sha256 } });
+  assert.ok(!JSON.stringify(live).includes('"data":'));
+  const durable = page(5); durable.thread.lastTimelineSequence = 2;
+  durable.items.push({ ...durable.items[0]!, id: "image-tool", externalId: "image", sequence: 2,
+    kind: "tool_call", content: "", status: "completed", metadata: { name: "generate", content: live.content } });
+  store.replaceTimeline([durable]);
+  assert.deepEqual(store.snapshot().sessions.thread!.timeline.find(row => row.tool?.callId === "image")!.tool!.content, live.content);
+});
+
 test("late generated titles update the sidebar without replacing chat or recency", () => {
   const store = new AxiomStateStore();
   const snapshot = page(1, "The answer");
@@ -91,6 +134,27 @@ test("late generated titles update the sidebar without replacing chat or recency
   });
   assert.equal(store.snapshot().catalog[0]!.title, "My manual title");
   assert.equal(store.snapshot().sessions.thread!.title, "My manual title");
+});
+
+test("late title updates keep unloaded threads unloaded and preserve newer renames", () => {
+  const store = new AxiomStateStore();
+  const snapshot = page(1, "Original response");
+  store.setCatalog([snapshot.thread]);
+  store.replaceTimeline([snapshot]);
+  store.removeSession("thread");
+  const title = (revision: number, text: string) => ({
+    sessionId: "thread", _meta: { axiom: { threadRevision: revision, lastTimelineSequence: 1 } },
+    update: { sessionUpdate: "session_info_update", title: text },
+  });
+  assert.equal(store.standardUpdate(title(2, "Generated title")), null);
+  assert.equal(store.snapshot().catalog[0]!.title, "Generated title");
+  assert.equal(store.snapshot().sessions.thread, undefined);
+  store.applyThreadRename({ ...snapshot.thread, revision: 4, title: "Manual title" });
+  store.standardUpdate(title(3, "Stale generated title"));
+  assert.equal(store.snapshot().catalog[0]!.title, "Manual title");
+  assert.equal(store.snapshot().sessions.thread, undefined);
+  store.replaceTimeline([{ ...snapshot, thread: { ...snapshot.thread, revision: 4, title: "Manual title" } }]);
+  assert.equal(store.snapshot().sessions.thread!.timeline[0]!.text, "Original response");
 });
 
 test("steering identity survives snapshots and separates same-turn assistant segments", () => {

@@ -22,7 +22,7 @@ impl StreamDeadline {
     }
     pub(crate) fn observe(&mut self, event: &RelayEvent) {
         match event {
-            RelayEvent::Delta(_) if !self.finalizing => {
+            RelayEvent::Delta(_) | RelayEvent::ProviderChunk(_) if !self.finalizing => {
                 self.deadline = Instant::now() + Duration::from_secs(90);
                 self.stage = "model progress";
             }

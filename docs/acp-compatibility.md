@@ -24,7 +24,7 @@ non-Desktop consumers.
 |---|---|
 | `initialize` | ACP v1, metadata, load-session support and optional Axiom negotiation |
 | `session/new`, `session/load` | Canonical workspace, durable state and restored model/thinking/profile |
-| `session/prompt` | Text/resource links, ordered user/assistant/reasoning chunks, tools and stop reason |
+| `session/prompt` | Literal text/resource links, ordered user/assistant/reasoning chunks, tools and stop reason; leading slashes never invoke application controls |
 | `session/cancel`, `$/cancel_request` | Cooperative cancellation; supported long-running extension requests also cancel. A cancelled permission response also cancels its prompt, even if it arrives before the cancellation notification. |
 | `session/set_mode` | CLI permission profile; Desktop Agent changes use the dedicated revisioned method |
 | `session/set_config_option` | Model/thinking selection validated by native policy and the catalog |
@@ -39,6 +39,18 @@ bytes rather than extracted content. Audio, binary
 embedded documents, client-owned terminals/filesystems and per-session MCP
 injection are not advertised. Tools execute behind AxiomCLI policy. Unknown
 standard methods receive normal JSON-RPC method errors.
+
+ACP clients invoke deliberately selected slash commands through
+`_axiom/session/command` with `{sessionId, command}`, after negotiating
+`commandInvocation@1`. The command string uses the advertised slash vocabulary
+(for example, `/thinking high`); the response is the normal prompt stop reason.
+Do not infer command invocation from pasted or submitted user message text.
+The TypeScript SDK exposes `invokeCommand` separately from `prompt`; Desktop's
+ordinary composer continues to call `prompt`. With an older sidecar that lacks
+this feature, the SDK blocks leading-slash prompts before dispatch and asks for
+a restart, preventing the legacy implicit command parser from handling them.
+CLI/TUI command entry retains its intentional local parsing. Older clients can continue submitting literal ACP
+prompts and can use standard mode/configuration methods for controls.
 
 ## Extension negotiation
 
@@ -65,7 +77,8 @@ reactivate them after an account or connection changes and returns.
 Other advertised features are version **1**:
 `desktopChat`, `desktopAgent`, `threadCatalog`, `modelCatalog`,
 `profilePreferences`, `collections`, `usage`,
-`webConsent`, `steering`, `messageRevision`, `compaction`, and `activity`.
+`webConsent`, `steering`, `messageRevision`, `compaction`, `imageResources`,
+`activity`, and `commandInvocation`.
 The source `FeatureVersions` and generated schema are authoritative.
 
 `securityEvidence@4` carries verified hardware, key, freshness and provenance
@@ -94,6 +107,7 @@ are never an instruction to send conversation plaintext through a hosted endpoin
 | Group | Method names following `_axiom/` |
 |---|---|
 | Desktop | `desktop/bootstrap`, `desktop/agent/configure`, `desktop/mcp` |
+| Explicit commands | `session/command` (requires `commandInvocation@1`) |
 | Threads | `thread/list`, `thread/timeline`, `thread/attachments`, `thread/rename`, `thread/delete_preview`, `thread/delete_confirm` |
 | Models/preferences | `models/list`, `profile/preferences`, `profile/preferences/set` |
 | Collections | `collection/list`, `collection/create`, `collection/rename`, `collection/set_collapsed`, `collection/move`, `collection/delete`, `collection/assign` |
@@ -110,6 +124,13 @@ security, context/accounting and activity state with `runtimeInstanceId`, monoto
 `sequence`, RFC 3339 `occurredAt`, and optional thread/correlation IDs.
 
 ## Durable timeline and recovery
+
+Compaction activity includes optional `progress` counters: `completed` and `total`
+passes, cumulative `generatedTokens`, and `estimated`. Streamed text and available
+reasoning supply approximate counts until provider output-token usage arrives.
+These ephemeral counters are independent of billable request usage and never
+become assistant text or authoritative conversation history. Completion, failure
+and cancellation clear the progress indicator.
 
 Thread summaries/pages include `revision` and `lastTimelineSequence`. Timeline
 pagination uses an exclusive sequence cursor. On gaps/runtime changes, fetch all
@@ -129,6 +150,20 @@ request, with input/output tokens, model, time and optional pinned capacity/
 compaction threshold. It is persisted atomically with thread revision. It does
 not estimate unsent drafts, sum billing, or get overwritten by compaction/title
 work. Request-accounting reconciliation never marks partial output verified.
+
+`imageResources@1` replaces generated image bytes in live updates and saved
+Desktop timeline pages with conversation-owned descriptors. `_axiom/image/read`
+returns one completed image for the active account's exact thread, tool-call ID
+and SHA-256. Main validates its PNG bytes, geometry and hash, then gives the
+renderer an opaque document-scoped handle. Reads near the viewport are limited
+to two at a time, with a bounded cache for inactive image URLs. Account/runtime
+changes revoke handles and reject late replies; loading errors keep the rest
+of the conversation usable and offer an explicit retry.
+
+A Desktop client with the timeline extension may send
+`_meta.axiom.skipHistoryReplay: true` on `session/load`. Native runtime history
+still restores, including damaged-record recovery, while Desktop fetches its
+authoritative timeline once. Standard ACP clients retain transcript replay.
 
 ## Desktop authority and revisions
 
@@ -180,6 +215,8 @@ renderer from sending a file shape to an older process. Timeline metadata contai
 only summaries; `thread/attachments` reads original inputs under the active account
 guard. Revisions preserve attachments and recheck model support. Model discovery
 adds `fileMimeTypes`; `supportsImages` remains separate. See [direct uploads](desktop.md#images-and-files).
+Model discovery also adds optional catalog `tags` (`id`, `label`,
+`tone`, `position`); see [model tags](provider-catalogs.md#model-tags-and-picker-filters).
 
 `imageGeneration@3` exposes `generate` and `view_image` automatically for a
 vision-capable selected model when the native image service is installed. A
@@ -272,11 +309,19 @@ Security projections require the registered provider identity, accepted key
 fingerprints and hard expiry. NEAR require positive lease generation;
 Tinfoil intentionally omits it. The projection must preserve router-versus-worker
 and observed-versus-approved distinctions from [security](threat-model.md).
+The SDK's `ensureSecurity(threadId)` renews an idle thread's report through the
+model-only `_axiom/security/prewarm` method and reusable native attestation cache.
+It fences account/runtime/model changes, running requests and newer request
+reports before applying a result. `verifySecurity(threadId)` uses
+`_axiom/security/verify` for an explicit fresh appraisal. Both retain the
+provider's original hard expiry and required public-evidence validation.
 
 ## Process bounds and contract generation
 
 ACP is newline-delimited JSON-RPC. Stdout is protocol-only. The Node client bounds
-frames to 64 MiB and retained stderr to 64 KiB, honors stdin backpressure, rejects
+frames to 64 MiB and retained stderr to 64 KiB, assembles fragmented frames with
+linear byte copying, stops a chunk immediately after a fatal parse error,
+honors stdin backpressure, rejects
 pending work on process exit, and never exposes raw method dispatch to the renderer.
 Typed extension failures include a bounded code/message/retryability object;
 clients must not infer authority or retry behavior from display text.

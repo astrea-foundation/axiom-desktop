@@ -66,6 +66,13 @@ function providerModels(response: ListModelsResponse): ProviderModel[] {
       supportsImages: model.supportsImages,
       fileMimeTypes: model.fileMimeTypes,
       autoCompactThresholdTokens: model.autoCompactThresholdTokens,
+      // AxiomCLI already validated and sorted these; the native runtime applies the uncensored tag's image policy.
+      tags: (model.tags ?? []).map((tag) => ({
+        id: tag.id,
+        label: tag.label,
+        tone: tag.tone ?? "gray",
+        position: tag.position ?? 0,
+      })),
     };
   }).sort(compareModelPreference);
 }
@@ -189,7 +196,7 @@ export function useModelCatalog(agentState: ClientState, navigation: ReturnType<
   }, [activeThreadId]);
 
   const updateSettings = (nextModel?: string, nextThinking?: ReasoningEffort) => {
-    if (!activeThreadId || !activeSession) return;
+    if (!activeThreadId || !activeSession || (nextModel && activeSession.running)) return;
     const api = window.axiomDesktop?.agent;
     if (!api) return;
     const generation = ++settingsGeneration.current;

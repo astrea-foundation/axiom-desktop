@@ -3,7 +3,7 @@ const path = require('node:path');
 const {createHash} = require('node:crypto');
 const {spawnSync} = require('node:child_process');
 
-const targets = new Set(['darwin-arm64','darwin-x64','win32-x64','linux-x64']);
+const targets = new Set(['darwin-arm64','darwin-x64','win32-x64','win32-arm64','linux-x64']);
 const digest = data => createHash('sha256').update(data).digest('hex');
 const inside = (root, child) => child.startsWith(root + path.sep);
 const macho = data => ['cffaedfe','cefaedfe','cafebabe','cafebabf'].includes(data.subarray(0,4).toString('hex'));
@@ -64,7 +64,7 @@ async function inspectBundle(root,target,options={}) {
   return {manifest,config,binary};
 }
 
-async function copyBundles(resources,source,options) {
+async function bundleTargets(source,options) {
   const darwinTargets = ['darwin-arm64','darwin-x64'];
   const hasBothMacRuntimes = options.platform === 'darwin' && (await Promise.all(darwinTargets.map(async target => {
     try { return (await fs.stat(path.join(source,target))).isDirectory(); }
@@ -72,10 +72,30 @@ async function copyBundles(resources,source,options) {
   }))).every(Boolean);
   // Electron's universal packager invokes hooks for each thin app before merge.
   // Give both apps identical signed resources so the final app retains both CPUs.
-  const wanted = options.platform === 'darwin' && (options.architecture === 'universal' || hasBothMacRuntimes)
+  let architecture = options.architecture;
+  if (options.platform === 'win32' && architecture === 'arm64') {
+    try { await fs.access(path.join(source,'win32-arm64','bundle.json')); }
+    catch (error) { if(error.code!=='ENOENT') throw error; architecture='x64'; }
+  }
+  return options.platform === 'darwin'  && (options.architecture === 'universal' || hasBothMacRuntimes)
     ? ['darwin-arm64','darwin-x64']
-    : [options.platform+'-'+(options.platform==='win32'?'x64':options.architecture)];
-  for (const target of wanted) {
+    : [options.platform+'-'+architecture];
+}
+
+async function verifyBundles(resources,source,options) {
+  for (const target of await bundleTargets(source,options)) {
+    const input=path.join(source,target), output=path.join(resources,'direct',target);
+    if (!(await fs.lstat(output)).isDirectory()) throw new Error('Packaged AstreaAI runtime must be an ordinary directory');
+    await inspectBundle(input,target,options);
+    await inspectBundle(output,target,options);
+    if (!(await fs.readFile(path.join(input,'bundle.json'))).equals(await fs.readFile(path.join(output,'bundle.json')))) {
+      throw new Error('Packaged AstreaAI runtime differs from its validated input');
+    }
+  }
+}
+
+async function copyBundles(resources,source,options) {
+  for (const target of await bundleTargets(source,options)) {
     const input=path.join(source,target), output=path.join(resources,'direct',target);
     await inspectBundle(input,target,options);
     await fs.mkdir(path.dirname(output),{recursive:true});
@@ -113,4 +133,4 @@ async function signMacBundles(source,output,identity,teamId) {
   }
 }
 
-module.exports={inventory,inspectBundle,copyBundles,signMacBundles,digest};
+module.exports={inventory,inspectBundle,copyBundles,verifyBundles,signMacBundles,digest};

@@ -297,6 +297,11 @@ pub(super) async fn compact(
         let _account_guard = account_guard;
         let connection = task_connection;
         let task_result: agent_client_protocol::Result<_> = async {
+            let _context_operation = ctx_store
+                .as_ref()
+                .map(|store| store.claim_context_operation(&internal_id))
+                .transpose()
+                .map_err(agent_error)?;
             send_extension_activity(
                 &connection,
                 &ctx_extension_state,
@@ -304,6 +309,7 @@ pub(super) async fn compact(
                 ActivityEvent::Compaction {
                     phase: CompactionPhase::Started,
                     detail: Some("Compacting conversation context".into()),
+                    progress: None,
                 },
             )?;
             let (events_tx, mut events_rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
@@ -394,6 +400,7 @@ pub(super) async fn compact(
                                 CompactionPhase::Failed
                             },
                             detail: Some(error.to_string()),
+                            progress: None,
                         },
                     )?;
                     Err(agent_error(error))

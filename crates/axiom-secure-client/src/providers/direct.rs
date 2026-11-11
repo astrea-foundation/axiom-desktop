@@ -105,12 +105,21 @@ pub(crate) fn installed_config(relay: &url::Url) -> Result<Option<DirectConfig>>
 }
 
 fn bundled_config(executable: &std::path::Path) -> Result<Option<PathBuf>> {
+    // Unix may report the command symlink rather than its installed target.
+    // The installer places its trust bundle beside the actual binary.
+    #[cfg(unix)]
+    let executable = executable
+        .canonicalize()
+        .map_err(|_| SecureClientError::configuration("native executable location unavailable"))?;
     let Some(directory) = executable.parent().and_then(std::path::Path::parent) else {
         return Ok(None);
     };
     let target = match (std::env::consts::OS, std::env::consts::ARCH) {
         ("macos", "aarch64") => "darwin-arm64",
         ("macos", "x86_64") => "darwin-x64",
+        ("windows", "aarch64") if directory.join("direct/win32-arm64/native.json").exists() => {
+            "win32-arm64"
+        }
         ("windows", "aarch64" | "x86_64") => "win32-x64",
         ("linux", "x86_64") => "linux-x64",
         _ => return Ok(None),
@@ -223,6 +232,24 @@ fn capabilities(model: &mut ModelInfo, config: &SecureClientConfig) {
 mod installed_bundle_tests {
     use super::*;
 
+    fn installed_executable(directory: &std::path::Path) -> PathBuf {
+        for target in [
+            "darwin-arm64",
+            "darwin-x64",
+            "win32-x64",
+            "win32-arm64",
+            "linux-x64",
+        ] {
+            let path = directory.join("direct").join(target);
+            std::fs::create_dir_all(&path).unwrap();
+            installed_config(&path);
+        }
+        let executable = directory.join("bin/axiomcli");
+        std::fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        std::fs::write(&executable, b"synthetic executable fixture").unwrap();
+        executable
+    }
+
     fn installed_config(directory: &std::path::Path) -> PathBuf {
         let mut value: serde_json::Value =
             serde_json::from_str(include_str!("../../../../deploy/astreaai-production.json"))
@@ -270,18 +297,31 @@ mod installed_bundle_tests {
     #[test]
     fn bundle_discovery_requires_a_recognized_installation_identity() {
         let directory = tempfile::tempdir().unwrap();
-        for target in ["darwin-arm64", "darwin-x64", "win32-x64", "linux-x64"] {
-            let path = directory.path().join("direct").join(target);
-            std::fs::create_dir_all(&path).unwrap();
-            installed_config(&path);
-        }
-        let executable = directory.path().join("bin/axiomcli");
+        let executable = installed_executable(directory.path());
         assert!(bundled_config(&executable).is_err());
         let identity = directory.path().join("axiom-install.json");
         std::fs::write(&identity, br#"{"schemaVersion":1,"product":"unknown"}"#).unwrap();
         assert!(bundled_config(&executable).is_err());
         std::fs::write(&identity, br#"{"schemaVersion":1,"product":"desktop"}"#).unwrap();
         assert!(bundled_config(&executable).unwrap().is_some());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn command_symlink_discovers_the_actual_installation_bundle() {
+        let directory = tempfile::tempdir().unwrap();
+        let resources = directory.path().join("lib/axiom-cli");
+        let executable = installed_executable(&resources);
+        std::fs::write(
+            resources.join("axiom-install.json"),
+            br#"{"schemaVersion":1,"product":"cli"}"#,
+        )
+        .unwrap();
+        let command = directory.path().join("bin/axiomcli");
+        std::fs::create_dir_all(command.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink("../lib/axiom-cli/bin/axiomcli", &command).unwrap();
+        let expected = bundled_config(&executable).unwrap().unwrap();
+        assert_eq!(bundled_config(&command).unwrap(), Some(expected));
     }
 }
 pub(crate) fn models(config: &SecureClientConfig) -> Vec<ModelInfo> {
@@ -291,6 +331,14 @@ pub(crate) fn models(config: &SecureClientConfig) -> Vec<ModelInfo> {
     let mut model = ModelInfo {
         id: MODEL.into(),
         label: "Qwen3.8 Uncensored · AstreaAI".into(),
+        // Locally pinned offering: carries its own tag so image policy follows
+        // the same catalog-tag rule as relay offerings.
+        tags: vec![axiom_inference::ModelTag {
+            id: axiom_inference::UNCENSORED_MODEL_TAG.into(),
+            label: "Uncensored".into(),
+            tone: axiom_inference::ModelTagTone::Pink,
+            position: 50,
+        }],
         short_label: "Qwen3.8 Uncensored".into(),
         provider_id: ID.into(),
         provider_label: "AstreaAI".into(),
@@ -429,12 +477,20 @@ impl DirectProvider {
         &self,
         policy: &TrustPolicy,
         request: axiom_inference::ImageGenerationRequest<'_>,
+        uncensored: bool,
         progress: Option<mpsc::Sender<axiom_inference::ImageGenerationProgress>>,
         cancel: CancellationToken,
     ) -> Result<crate::GeneratedImage> {
         use base64::{Engine as _, engine::general_purpose::STANDARD};
-        if request.chat_model_id != MODEL
-            || request.prompt.trim().is_empty()
+        if request.chat_model_id.trim().is_empty()
+            || request.chat_model_id.len() > 256
+            || request.chat_model_id.chars().any(char::is_control)
+        {
+            return Err(SecureClientError::capability(
+                "Choose a valid chat model before generating an image",
+            ));
+        }
+        if request.prompt.trim().is_empty()
             || request.prompt.len() > 8192
             || request.references.len() > axiom_pool_protocol::vision::MAX_REFERENCES
         {
@@ -497,7 +553,7 @@ impl DirectProvider {
                 Input::Image {
                     prompt: request.prompt.into(),
                     references,
-                    uncensored: runtime.uncensored(request.chat_model_id),
+                    uncensored,
                     width: size.width,
                     height: size.height,
                     steps: 8,
@@ -585,7 +641,7 @@ impl DirectProvider {
             height: size.height,
             sha256: axiom_pool_protocol::sha256(&bytes),
             source_image_ids,
-            chat_model_id: Some(MODEL.into()),
+            chat_model_id: Some(request.chat_model_id.into()),
             evidence: evidence(&model, policy, &worker, worker.public_evidence()),
             usage: axiom_inference::RequestUsage {
                 request_id,
@@ -640,10 +696,12 @@ impl SecureProvider for DirectProvider {
         &self,
         policy: &TrustPolicy,
         request: axiom_inference::ImageGenerationRequest<'_>,
+        uncensored: bool,
         progress: Option<mpsc::Sender<axiom_inference::ImageGenerationProgress>>,
         cancel: CancellationToken,
     ) -> Result<crate::GeneratedImage> {
-        self.generate(policy, request, progress, cancel).await
+        self.generate(policy, request, uncensored, progress, cancel)
+            .await
     }
     fn id(&self) -> &'static str {
         ID
@@ -1149,12 +1207,13 @@ mod tests {
     }
 
     fn installed() -> SecureClientConfig {
+        let fixture_root = std::env::temp_dir();
         let mut config = SecureClientConfig::new("https://127.0.0.1:9443").unwrap();
         config.direct = Some(
             serde_json::from_value(serde_json::json!({
                 "origin":"https://worker.example:8443", "connect_ip":null,
-                "model_manifest":"aa".repeat(32), "issuer_key_file":"/private/operator.pem",
-                "verifier":{"binary":"/installed/verifier", "binary_sha256":"bb".repeat(32),
+                "model_manifest":"aa".repeat(32), "issuer_key_file":fixture_root.join("axiom-test-operator.pem"),
+                "verifier":{"binary":fixture_root.join("axiom-test-verifier"), "binary_sha256":"bb".repeat(32),
                     "publisher_key":"cc".repeat(32), "minimum_policy_sequence":10}
             }))
             .unwrap(),
@@ -1185,7 +1244,7 @@ mod tests {
                 ..model.clone()
             },
             ModelInfo {
-                attestation_protocol: "chutes-gpu-v1".into(),
+                attestation_protocol: "unqualified-gpu-v1".into(),
                 ..model.clone()
             },
             ModelInfo {
@@ -1244,7 +1303,12 @@ mod tests {
             .unwrap();
         assert_eq!((size.width, size.height), (1536, 1536));
         assert!(runtime.image.aspect_ratios.contains(&"2:3".into()));
-        assert!(runtime.uncensored(MODEL));
+        let config = installed();
+        assert!(
+            models(&config)
+                .iter()
+                .all(|model| model.has_tag(axiom_inference::UNCENSORED_MODEL_TAG))
+        );
     }
 
     #[tokio::test]
@@ -1261,6 +1325,62 @@ mod tests {
                 .safe_detail()
                 .contains("not enabled")
         );
+    }
+
+    #[tokio::test]
+    async fn image_requests_keep_chat_provider_independent_of_the_image_installation() {
+        let config = installed();
+        let configured = provider(&config, &Arc::new(ApiCredential::new("synthetic")))
+            .unwrap()
+            .unwrap();
+        for chat_model_id in [MODEL, "tinfoil-deepseek-v4-1-flash", "glm-5-3-flash"] {
+            let error = configured
+                .image_request(
+                    &TrustPolicy::default(),
+                    axiom_inference::ImageGenerationRequest {
+                        chat_model_id,
+                        prompt: "A dog in a garden",
+                        references: &[],
+                        dimensions: None,
+                    },
+                    false,
+                    None,
+                    CancellationToken::new(),
+                )
+                .await
+                .unwrap_err();
+            assert!(
+                error.safe_detail().contains("not enabled"),
+                "{chat_model_id} must reach image-installation validation: {}",
+                error.safe_detail()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn image_requests_reject_invalid_chat_identity_before_key_access() {
+        let config = installed();
+        let configured = provider(&config, &Arc::new(ApiCredential::new("synthetic")))
+            .unwrap()
+            .unwrap();
+        for chat_model_id in ["", " ", "near\nmodel", &"a".repeat(257)] {
+            let error = configured
+                .image_request(
+                    &TrustPolicy::default(),
+                    axiom_inference::ImageGenerationRequest {
+                        chat_model_id,
+                        prompt: "A dog",
+                        references: &[],
+                        dimensions: None,
+                    },
+                    false,
+                    None,
+                    CancellationToken::new(),
+                )
+                .await
+                .unwrap_err();
+            assert!(error.safe_detail().contains("valid chat model"));
+        }
     }
 
     #[tokio::test]

@@ -1,1 +1,1 @@
-export type { ProviderModel, ReasoningEffort } from "@axiom/chat-core/models";
+export type { ModelTag, ModelTagTone, ProviderModel, ReasoningEffort } from "@axiom/chat-core/models";

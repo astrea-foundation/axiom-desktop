@@ -649,6 +649,14 @@ fn compaction_has_a_visible_compression_animation_and_static_status_marker() {
     state.compacting = true;
     state.status = "Compacting conversation context…".into();
     state.status_tone = StatusTone::Active;
+    state.apply(&AppEvent::CompactionProgressUpdated {
+        progress: axiom_acp_extension::CompactionProgress {
+            completed: 1,
+            total: 3,
+            generated_tokens: 1246,
+            estimated: true,
+        },
+    });
     state.apply(&AppEvent::ProviderStatusChanged {
         connected: true,
         detail: "Attested end-to-end encrypted inference connected".into(),
@@ -660,6 +668,7 @@ fn compaction_has_a_visible_compression_animation_and_static_status_marker() {
     let compressed = render_symbols(100, 30, &state);
     assert!(spread.contains("● [▰   ▰   ▰]  Compacting"));
     assert!(compressed.contains("● [    ◆    ]  Compacting"));
+    assert!(spread.contains("Pass 2/3 · ~1246 tokens generated"));
     assert!(!spread.contains("Attested end-to-end"));
     assert_ne!(spread, compressed);
 

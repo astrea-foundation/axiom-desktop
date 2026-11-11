@@ -13,6 +13,14 @@ handles passkey, Google, password and wallet authentication. Native login creden
 outside the renderer. Signing out closes the active account store and invalidates
 pending account operations.
 
+Open **Settings → Account → Factory reset Axiom…** to start fresh on this
+computer. The control is also available while signed out or disconnected. Type
+`RESET` and confirm to stop active work, delete local chats and managed files,
+settings, cached app data, and saved Axiom/MCP credentials, then restart for a
+fresh sign-in. This also removes local data shared with AxiomCLI. Online accounts,
+balances, hosted API keys and files outside Axiom are kept. Close other CLI
+windows first. See [recovery and deletion scope](troubleshooting.md#completely-reset-local-data).
+
 Conversations and folders are account-local. Folder names are labels, not file
 paths. Rename and Delete use in-app dialogs; batch deletion is confirmed against
 the exact native selection. Deleting a conversation does not remove workspace files.
@@ -33,6 +41,11 @@ finishes. Drafts are scoped to account/thread, with a separate new-chat
 draft; navigation, reselecting a thread and reload preserve them. An anonymous
 draft can follow the first sign-in. Pending first-message setup has its own
 identity, so navigating away does not silently discard or redirect it.
+
+Saved generated images load as they approach the viewport. Loading failures show
+**Retry loading image** without blocking messages or the rest of the thread.
+Image reads and cache memory are bounded; reopening a conversation no longer
+replays all saved image bytes before loading its timeline.
 
 ## Balance and payments
 
@@ -145,6 +158,10 @@ available during this wait, and another message waits in the FIFO queue until
 the active request finishes. This applies to existing chats, first messages,
 retries and queued messages when their turn arrives.
 During a response, Enter adds input to the same FIFO queue.
+The model picker is disabled while a message is being sent or a response is
+running, including tool calls. An open picker closes when generation starts.
+Wait for the response to finish or stop it before changing models. Other idle
+threads and the new-chat screen keep their own model selection available.
 **Send now** stops the current reply, waits for its cleanup, then sends the
 selected message as a new turn. Its text, attachments, Web choice and Agent
 settings are preserved. Other queued messages retain their order. The cancel
@@ -171,15 +188,22 @@ an upload or request to describe it does not by itself request generation.
 The model uses `generate` for both operations, with up to five optional reference
 images. It refers to them as `<image1>`, `<image2>`, etc. in the order supplied
 to the tool. The image service uses ComfyUI inside the encrypted worker.
-Images from Qwen3.8 Uncensored use the pinned uncensored LoRA at strength 0.9;
-other chat models use the base image model. The model can optionally call
+With AstreaAI installed, vision-capable NEAR and Tinfoil chats use that same
+attested image service while keeping their selected chat model. Image receipts
+and billing identify the AstreaAI worker; saved image provenance retains the
+originating chat model for regeneration.
+Images from chat models with the catalog's **Uncensored** tag (such as the
+abliterated DeepSeek V4.1 Flash and Qwen3.8 Uncensored) use the pinned uncensored
+LoRA at strength 0.9; other chat models use the base image model. The model can optionally call
 `view_image` to inspect an uploaded or generated result before finishing its
 turn, including deciding whether a correction is needed. Click a generated or edited
 image to view it in the larger viewer; Escape, the close button or a backdrop
 click closes it. Click the image to zoom in, scroll to move around the larger
 image, and click again to fit it in the viewer. Enter or Space on the image
-performs the same zoom toggle. Right-click the image in the viewer to choose Save image as…
-and select a destination. Save image also remains available beneath the result;
+performs the same zoom toggle. Right-click an image in the chat or viewer to choose
+Copy image, which puts the image itself on the system clipboard, or Save image as…
+to select a destination. Generated images are attributed to AstreaAI beneath the result.
+Save image also remains available beneath the result;
 each save suggests a fresh random PNG filename. Image generation and editing show a
 live percentage and progress bar. Queued work displays 0%; finishing stays at
 99% until the verified result is ready; the percentage and bar then disappear. Nonvision
@@ -194,16 +218,15 @@ Stop apply to this image job; regeneration never automatically retries after a
 failure or account/runtime change.
 
 The default policy lets the model choose `aspect_ratio` from `1:1`, `2:3`, `3:2`, `3:4`, `4:3`, `9:16`,
-`16:9`, `1:2`, `2:1`, `9:21`, and `21:9`. The default for new images is **2:3**.
+`16:9`, `1:2`, `2:1`, `9:21`, and `21:9`. The default for new images is **1:1**.
 Native code selects the largest exact ratio on the supported 32-pixel grid,
-within 2,359,296 pixels. This gives 1216×1824 for 2:3, 1536×1536 for 1:1, and
-2048×1152 for 16:9. Without a ratio, references retain their existing sizing rules.
+within 2,359,296 pixels. This gives 1536×1536 for 1:1, 1216×1824 for 2:3, and
+2048×1152 for 16:9. Without a ratio, reference-based requests use the same
+default size.
 
-For a runtime-capable backend, signed settings supply the current default,
-ratio list, reference limit, sampling and model-specific adapter policy. The
-native tool definition is updated for each turn; generic model instructions
-defer to it. See [backend runtime updates](../../axiom-inference/docs/runtime-updates.md)
-for supported bounds and initial rollout requirements.
+The installed AstreaAI client supplies the current default, ratio list and
+reference limit. The native tool definition is updated for each turn; generic
+model instructions defer to it.
 
 Copy and Regenerate appear after the full response turn finishes, including any
 tool calls; an introductory message or completed tool-call segment does not
@@ -214,8 +237,9 @@ Use Attach, paste an image, or drop files anywhere in the main chat panel,
 including its empty space and transcript. A drop indicator marks the panel;
 the sidebar and Proxy view do not attach files. Image and file icons
 in the model picker show the selected model's current capabilities; hover or use
-the accessible label for their meaning. See [catalog discovery](provider-catalogs.md)
-for refreshes and unavailable models.
+the accessible label for their meaning. The picker can filter by catalog tag,
+host and upload support; see [catalog discovery](provider-catalogs.md#model-tags-and-picker-filters)
+for tags, refreshes and unavailable models.
 
 Images are original PNG/JPEG/WebP/GIF bytes. File-capable Tinfoil models accept
 text/code, Markdown, CSV, HTML, JSON, XML, PDF and Office Open XML files
@@ -254,18 +278,54 @@ rejected. Regeneration after steering targets the turn's original prompt.
 Already-performed file edits and other tool side effects are not rolled back.
 
 Compaction uses encrypted, tool-free model requests to build successor context.
-Automatic compaction follows the selected model's advertised capacity and local
-limits. The runtime summarizes older history in bounded stages and keeps a usable
-recent tail; summaries persist for resume. Cancellation never marks unfinished
+Automatic compaction is triggered only by context tokens, at the selected model's
+advertised threshold capped by local token limits. Uploaded images and successful
+`view_image` observations contribute visual tokens; generated images contribute
+only when viewed. Provider-reported usage takes precedence over estimates for
+existing context. Only new material is estimated until the next provider report.
+Image counts and encoded attachment sizes do not trigger compaction. The runtime
+uses one summary request whenever the conversation fits with room for summary
+output, reasoning and a safety margin. It passes historical messages and native
+image/file inputs together, preserving their order and association. Historical
+system notes cannot override the summarizer's instructions; unsupported reasoning
+fields and refusal details remain available as historical text.
+When token or provider request limits require multiple requests, consecutive
+fragments are grouped into as few passes as the budgets allow. Each pass reserves
+space for the previous summary and new output. A usable recent tail is retained
+verbatim, and summaries persist for resume. Cancellation never marks unfinished
 compaction successful. Compaction is model-generated and is not a guarantee of
 perfect recall. The original local journal remains available independently of
 the compacted model context.
+
+If automatic pre-turn summarization fails, the turn reports an error and retains
+the original conversation and media for retrying compaction or choosing a model
+with a larger context. Cancellation stops the turn. Original saved messages remain
+separate from the compacted model context.
+On restore, missing or invalid old attachments and image details are omitted
+instead of blocking the entire conversation. Interrupted tool calls receive an
+unknown-outcome marker; recovery does not execute them. Older file formats that
+the newly selected model cannot read are omitted from context while their text
+remains available. New uploads still require a compatible model.
+
+The image tools keep a bounded catalog of recent conversation references. Older
+references expire as new images arrive, allowing further generation in the same
+thread. Saved images remain in local history; an expired reference may need to
+be attached again for another edit. A completed or cancelled response refreshes
+thread state after any older timeline fetch, so a stale running snapshot cannot
+leave the composer waiting indefinitely.
+Late generated titles update the sidebar without reopening an unloaded thread.
 
 ## Usage and verification
 
 The composer meter displays provider-reported input/output usage for the **last
 completed conversation request**, with that request's model capacity and effective
 compaction threshold. The 85% threshold controls when history is compacted.
+New uploads and successful `view_image` observations count toward the next
+request's context; the meter updates when the provider reports that request.
+Image generation alone does not add visual input to the chat model. Encoded
+image/file data has per-message native size limits. These transport limits are
+independent of compaction. AstreaAI's eight-image request limit produces a provider
+limit error; it never causes automatic summarization or removal of earlier images.
 Tinfoil uses upstream's remaining-context generation default. Other protocols
 use the advertised output ceiling and estimated remaining request space (including
 tools/images and a margin). Exact tokenization and final context enforcement belong
@@ -276,6 +336,13 @@ survive reload, and model switches do not rescale old counts against a new model
 No report is shown as unknown, rather than fabricated zero usage.
 
 Hover, focus or click the meter to see context use and the compaction threshold.
+Request records are selected by their start timestamps, independent of the random
+request IDs used for accounting pagination. During compaction, a spinner shows
+cumulative generated tokens and the current pass when multiple passes are needed.
+A `~` marks counts estimated from
+streamed summary text and available reasoning; provider output-token reports
+replace those estimates when available. Counts describe work completed, not a
+percentage or a promise of the final summary length.
 Expand **Usage details** for input/output counts, turn totals, cache and reasoning
 subsets, settlement state, elapsed time and other thread charges. Tab reaches the
 disclosure; Escape closes the panel and returns focus to the meter. Partial or
@@ -293,7 +360,8 @@ beside **TEE verified** explains TEE protection and the server hardware check in
 plain language. Hover, focus or click it to show the help; Escape dismisses the
 help before closing the report. The inspector contains hardware, encryption-key,
 freshness and source-provenance checks for the selected provider. Tinfoil reports
-router verification, and NEAR v3 identifies an attested worker TLS key.
+router verification, and NEAR v3 identifies an attested worker TLS key and, on
+the gateway route, the attested NEAR gateway's key, TLS key and workload.
 
 Reports renew automatically for the selected model while the window is active,
 visible and online. Renewal starts up to thirty seconds before expiry, capped
@@ -304,6 +372,12 @@ runs at a time; failures retry with backoff from thirty seconds to five minutes.
 Verification waits for an active reply to finish and for a disconnected thread
 to synchronize. An outdated TEE still requires explicit user consent; automatic
 refresh never accepts that warning. Manual **Refresh** remains available.
+Automatic renewal reuses the native provider's still-fresh, model-bound proof
+and pinned connection. It does not force a new hardware appraisal or discard
+the image service's prepared session. A valid badge remains visible while that
+renewal is pending; actual hard expiry still changes its status. Explicit
+**Refresh** requests new attestation. Cached warmup reports can populate newly
+loaded idle threads, while account, runtime and model changes fence late results.
 
 Editing a nonempty message while signed in also starts verification for the
 selected model, including on the welcome screen before a thread exists. Only the

@@ -434,6 +434,9 @@ pub enum AppEvent {
         completed: Option<u64>,
         total: Option<u64>,
     },
+    CompactionProgressUpdated {
+        progress: axiom_acp_extension::CompactionProgress,
+    },
     TaskListUpdated {
         items: Vec<TaskItem>,
     },
@@ -533,6 +536,12 @@ pub enum AppEvent {
     ThinkingLevelChanged {
         level: ThinkingLevel,
     },
+    /// Exact provider-neutral inference state at a safe model boundary. Display
+    /// clients ignore this internal checkpoint and use the semantic timeline.
+    ModelHistoryCheckpoint {
+        version: u32,
+        messages: serde_json::Value,
+    },
     ContextCompacted {
         summary: String,
         messages_before: usize,
@@ -567,6 +576,25 @@ pub enum AppEvent {
         message: String,
     },
     SessionClosed,
+}
+
+impl AppEvent {
+    #[must_use]
+    pub fn turn_id(&self) -> Option<&TurnId> {
+        match self {
+            Self::SteeringApplied { turn_id, .. }
+            | Self::PromptAccepted { turn_id, .. }
+            | Self::TurnStarted { turn_id }
+            | Self::TextDelta { turn_id, .. }
+            | Self::ReasoningDelta { turn_id, .. }
+            | Self::ToolProposed { turn_id, .. }
+            | Self::ResponseVerified { turn_id }
+            | Self::TurnCompleted { turn_id }
+            | Self::TurnCancelled { turn_id } => Some(turn_id),
+            Self::ErrorRaised { turn_id, .. } => turn_id.as_ref(),
+            _ => None,
+        }
+    }
 }
 
 /// Presentation-neutral before/after file content for clients that support
@@ -631,6 +659,8 @@ pub enum SecurityStatus {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EventEnvelope {
     pub schema_version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<TurnId>,
     pub sequence: u64,
     pub occurred_at: DateTime<Utc>,
     pub correlation_id: CorrelationId,
@@ -1089,6 +1119,11 @@ impl Kernel {
         self.next_sequence += 1;
         EventEnvelope {
             schema_version: 1,
+            turn_id: event.turn_id().cloned().or_else(|| {
+                self.sessions
+                    .get(&session_id)
+                    .and_then(|session| session.active_turn.clone())
+            }),
             sequence: self.next_sequence,
             occurred_at: self.services.now(),
             correlation_id,
@@ -1346,6 +1381,37 @@ impl Runtime {
         Ok(event)
     }
 
+    /// Bind asynchronous output to its originating execution before recording
+    /// it. A delayed task must never attach output to a later active turn.
+    pub async fn emit_for_turn(
+        &self,
+        session_id: SessionId,
+        turn_id: &TurnId,
+        event: AppEvent,
+    ) -> Result<EventEnvelope> {
+        let mut kernel = self.kernel.lock().await;
+        let session = kernel
+            .session(&session_id)
+            .ok_or_else(|| AxiomError::SessionNotFound(session_id.to_string()))?;
+        if session.active_turn.as_ref() != Some(turn_id)
+            || event.turn_id().is_some_and(|id| id != turn_id)
+        {
+            return Err(AxiomError::InvalidTransition(
+                "event belongs to a different execution turn".into(),
+            ));
+        }
+        let origin = session.origin;
+        let mut envelope = kernel.record(
+            session_id,
+            CorrelationId::from_uuid(self.services.next_uuid()),
+            origin,
+            event,
+        )?;
+        envelope.turn_id = Some(turn_id.clone());
+        let _ = self.events.send(envelope.clone());
+        Ok(envelope)
+    }
+
     pub async fn restore(&self, events: &[EventEnvelope]) -> Result<SessionState> {
         self.restore_with_cooperation(events, tokio::task::yield_now)
             .await
@@ -1426,6 +1492,7 @@ mod tests {
     fn journal_event(session_id: &SessionId, sequence: u64, event: AppEvent) -> EventEnvelope {
         EventEnvelope {
             schema_version: 1,
+            turn_id: event.turn_id().cloned(),
             sequence,
             occurred_at: Utc
                 .with_ymd_and_hms(2026, 8, 22, 0, 0, 0)
@@ -2069,5 +2136,85 @@ mod tests {
             .await
             .expect("dispatch after restore");
         assert_eq!(next[0].sequence, max_sequence + 1);
+    }
+    #[tokio::test]
+    async fn asynchronous_events_keep_their_originating_turn_and_reject_stale_output() {
+        let runtime = Runtime::new(256);
+        let session = runtime.session_id();
+        runtime
+            .dispatch(AppCommand::CreateSession {
+                session_id: session.clone(),
+                cwd: PathBuf::from("/tmp/turn-binding"),
+                origin: Origin::Test,
+                profile: PermissionProfile::None,
+            })
+            .await
+            .unwrap();
+        let first = runtime.turn_id();
+        runtime
+            .dispatch(AppCommand::SubmitPrompt {
+                session_id: session.clone(),
+                turn_id: first.clone(),
+                text: "first".into(),
+                attachments: vec![],
+            })
+            .await
+            .unwrap();
+        let envelope = runtime
+            .emit_for_turn(
+                session.clone(),
+                &first,
+                AppEvent::UsageUpdated {
+                    input_tokens: 10,
+                    output_tokens: 2,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(envelope.turn_id.as_ref(), Some(&first));
+        runtime
+            .dispatch(AppCommand::FinishTurn {
+                session_id: session.clone(),
+                turn_id: first.clone(),
+            })
+            .await
+            .unwrap();
+        let second = runtime.turn_id();
+        runtime
+            .dispatch(AppCommand::SubmitPrompt {
+                session_id: session.clone(),
+                turn_id: second.clone(),
+                text: "second".into(),
+                attachments: vec![],
+            })
+            .await
+            .unwrap();
+        assert!(
+            runtime
+                .emit_for_turn(
+                    session.clone(),
+                    &first,
+                    AppEvent::ToolOutput {
+                        call_id: "old".into(),
+                        content: "late".into(),
+                        truncated: false
+                    }
+                )
+                .await
+                .is_err()
+        );
+        let envelope = runtime
+            .emit_for_turn(
+                session,
+                &second,
+                AppEvent::ProgressUpdated {
+                    message: "current".into(),
+                    completed: None,
+                    total: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(envelope.turn_id.as_ref(), Some(&second));
     }
 }

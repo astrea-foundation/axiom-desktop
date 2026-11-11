@@ -36,6 +36,7 @@ interface ChatViewProps {
   onReasoningEffortChange: (effort: ReasoningEffort) => void;
   pendingUserMessage?: PendingUserMessage | null;
   onVerifySecurity: () => void | Promise<unknown>;
+  onEnsureSecurity?: () => void | Promise<unknown>;
   onAcceptOutdatedTee?: () => Promise<void>;
   securityScope?: string;
   securityRefreshDisabledReason?: string;
@@ -67,6 +68,7 @@ export function ChatView({
   onReasoningEffortChange,
   pendingUserMessage,
   onVerifySecurity,
+  onEnsureSecurity,
   onAcceptOutdatedTee,
   securityScope,
   securityRefreshDisabledReason,
@@ -99,6 +101,7 @@ export function ChatView({
         <button
           type="button"
           onClick={autoScroll.resume}
+          onWheel={autoScroll.onOverlayWheel}
           aria-label="Scroll to latest"
           className="shadow-glass-pop animate-fade-in absolute bottom-3 left-1/2 z-10 flex h-9 w-9 -translate-x-1/2 items-center justify-center rounded-full bg-[var(--surface-float)] text-[var(--color-text-secondary)] transition-[transform,color] hover:text-[var(--color-text-primary)] active:scale-90"
         >
@@ -140,6 +143,7 @@ export function ChatView({
             requestUsage={session?.requestUsage}
             activeTurnId={session?.activeTurnId}
             onVerifySecurity={onVerifySecurity}
+            onEnsureSecurity={onEnsureSecurity}
           />
         </div>
       </div>

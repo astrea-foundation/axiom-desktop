@@ -38,25 +38,25 @@ origins are rejected. See [service-origins.ts](../apps/desktop/src/main/service-
 and [configuration](configuration.md).
 
 The [confidential pool guide](inference-pool.md) describes the isolated local
-profile, per-process loopback CA, installed model pins and native preflight.
-The current Chutes offering fails application/key attestation before inference;
-a successful hardware diagnostic does not permit a production verified Desktop chat.
-The separate explicit debug adapter permits encrypted interactive Chutes testing.
-An unsigned configuration retains its yellow development label. An independently
-pinned staging publisher with valid signed metadata enables scoped TEE and
-release-authority verification and automatic signed updates. See the pool
-guide for its native configuration and local account workflow.
+profile, per-process loopback CA and installed model pins. A successful hardware
+diagnostic does not permit a production verified Desktop chat. The
+[AstreaAI connection guide](direct-verda.md) covers the local AstreaAI launch
+workflow.
 
 ## Checks
 
-Run the checks relevant to a change before pushing `dev`; CI runs on pull
-requests targeting `main` and explicit dispatches, without repeating on merge.
+Run the checks relevant to a change before pushing `dev`. CI runs on pushes to
+`dev`, pull requests targeting `dev` or `main`, and explicit dispatches. Each dev
+push validates the resulting revision, including merges.
 The full local checks corresponding to the main workflow are:
 
 ```sh
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 pnpm test:rust
+python3 -m unittest discover -s scripts/tests -p 'test_release*.py'
+node --test scripts/direct-bundle.test.mjs scripts/verify-candidate.test.mjs
+cargo build --locked -p axiomcli
 cargo install cargo-deny --version "=$(tr -d '\r\n' < .cargo-deny-version)" --locked
 cargo deny check
 node packages/brand/scripts/build-callback.mjs --check
@@ -87,16 +87,19 @@ live-provider instructions. Routine tests explicitly skip three host-performance
 benchmarks and retain a small persistence regression. Live inference always uses registered, locally
 verified provider E2EE; it is not a prerequisite for a documentation edit.
 
-The [CI workflow](../.github/workflows/ci.yml) runs Rust/security and browser UI
-checks on pull requests, without repeating them on merge. Manual dispatch accepts
-`target=all`, `native`, `linux`, `desktop`, `macos-intel`, `macos-arm64`,
-`windows-x64`, or `windows-arm64` so native validation and failure retries can
-be targeted. Use `native` alongside a promotion PR to run the four native jobs
-without duplicating its Linux/UI checks. Run all
-required platforms before release packaging. Set `extended=true` only when the
-additional repetitions and performance benchmarks are wanted. These jobs do not package applications
-or establish interactive OS acceptance. [Release workflows](releasing.md) do the
-packaging and require separate release evidence.
+The [CI workflow](../.github/workflows/ci.yml) runs Rust/security, generated ACP
+contract checks, workspace TypeScript checks, unit/browser tests and all four
+native macOS/Windows portability jobs during normal dev/PR validation. ACP client
+tests build their required debug CLI in each job that runs them. The native
+matrix runs at most two jobs together.
+
+Manual dispatch accepts `target=all`, `native`, `linux`, `desktop`, `macos-intel`,
+`macos-arm64`, `windows-x64`, or `windows-arm64` so validation and failure retries
+can be targeted. Set `extended=true` only when additional repetitions and
+performance benchmarks are wanted. These jobs do not package applications or
+establish interactive OS acceptance. After CI passes, the explicit
+[unsigned candidate workflow](releasing.md#development-previews) can package and
+validate a selected native target without changing versions or publishing it.
 
 Portability fixtures compare canonical working directories and keep differently
 cased Desktop resource layouts in separate directories, including on macOS's
@@ -175,3 +178,12 @@ tests/browser/updates.test.ts` exercises the light/dark controls. See
 [release previews](releasing.md#development-previews) and
 [qualification](validation.md). Production keys are not
 needed for local tests; committed fixture keys must never sign a release.
+
+The AstreaAI sidecar is built from the inventoried standalone Rust source under
+`vendor/axiom-direct-verifier`, with `cargo build --locked`. The existing
+`node scripts/build-direct-bundle.mjs --output ...` command builds and validates
+a native executable; Node, Rust and the platform linker are required. Python,
+uv, PyInstaller and an external OpenSSL runtime are no longer verifier build
+requirements. Native Windows ARM64 bundles are supported, while older x64
+bundles remain a compatible Windows ARM64 fallback. Publisher keys, executable
+digest pins, hardware verification and signed trust-policy semantics are unchanged.

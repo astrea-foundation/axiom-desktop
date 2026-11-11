@@ -83,7 +83,8 @@ async fn run() -> Result<()> {
         image_pixels: 1024 * 1024,
         image_steps: 8,
         input_image_pixels: 0,
-        deadline: now + 600,
+        // The controller cannot reserve a job beyond the accepted worker proof.
+        deadline: (now + 180).min(pinned.expires_at().saturating_sub(1)),
     };
     let prepared = client
         .prepare_pinned(

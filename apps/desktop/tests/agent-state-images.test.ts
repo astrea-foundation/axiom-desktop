@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 import type { ClientState } from "@axiom/axiom-acp-client";
 import { AgentStateTransport } from "../src/main/agent-state-transport";
@@ -142,4 +143,113 @@ test("invalid geometry, noncanonical base64 and injected local URLs never become
   Object.assign(image(native), { imageUrl: "blob:injected", axiomImageAsset: "another-account" });
   const result = new AgentStateImages(resources().api).accept(new AgentStateTransport().encode(native));
   assert.equal(image(result).imageUrl, undefined);
+});
+
+function lazyImages(count = 1, bytes = 1024) {
+  const native = state("");
+  const replies = new Map<string, { data: string; mimeType: string; width: number; height: number; sha256: string }>();
+  native.sessions.thread!.timeline = Array.from({ length: count }, (_, index) => {
+    const raw = Buffer.from(png(1024, 1024, bytes), "base64"); raw[31] = index;
+    const data = raw.toString("base64"), sha256 = createHash("sha256").update(raw).digest("hex");
+    const callId = `image-${index}`;
+    replies.set(callId, { data, mimeType: "image/png", width: 1024, height: 1024, sha256 });
+    const block = { type: "image", mimeType: "image/png", width: 1024, height: 1024, imageResource: { callId, sha256 } };
+    return { id: callId, kind: "tool", text: "", raw: { metadata: { content: [block] } },
+      tool: { callId, name: "generate", title: "Image", kind: "other", status: "completed", input: {}, content: [block], locations: [] } };
+  });
+  return { native, replies };
+}
+
+test("lazy image state transfers no bytes and coalesces on-demand reads into stable cached URLs", async () => {
+  const { native, replies } = lazyImages(8, 1024 * 1024);
+  const transport = new AgentStateTransport(), r = resources(), preload = new AgentStateImages(r.api);
+  const packet = transport.encode(native, true);
+  const visible = preload.accept(packet);
+  const id = String(image(visible).assetId);
+  assert.equal(packet.images.length, 0);
+  assert.ok(JSON.stringify(packet).length < 12_000);
+  assert.equal(r.created.length, 0, "opening a thread does not create or fetch image blobs");
+  assert.equal(image(visible).imageResource, undefined, "only opaque document handles reach React");
+  let calls = 0;
+  const read = (context: string, asset: string) => transport.readImage(context, asset, async request => {
+    calls++; assert.equal(request.threadId, "thread"); return replies.get(request.callId)!;
+  });
+  const [a, b] = await Promise.all([preload.load(id, read), preload.load(id, read)]);
+  assert.equal(calls, 1);
+  assert.equal(a.imageUrl, b.imageUrl);
+  preload.release(id); preload.release(id);
+  assert.equal((await preload.load(id, read)).imageUrl, a.imageUrl);
+  assert.equal(calls, 1, "scrolling back to a cached image avoids another transfer");
+  preload.release(id);
+  const other = new AgentStateTransport(); other.encode(native);
+  await assert.rejects(other.readImage(packet.context!, id, async () => { throw new Error("must not read"); }), /no longer available/);
+  preload.dispose();
+  const reloaded = new AgentStateImages(r.api);
+  const snapshot = transport.encode(native, true);
+  const reloadId = String(image(reloaded.accept(snapshot)).assetId);
+  assert.equal(snapshot.images.length, 0, "document reload also carries metadata only");
+  assert.equal(calls, 1);
+  assert.notEqual((await reloaded.load(reloadId, read)).imageUrl, a.imageUrl);
+  assert.equal(calls, 2, "a new document fetches only its requested original");
+  reloaded.dispose();
+});
+
+test("lazy image reads reject stale account/runtime/deletion results before creating a URL", async () => {
+  for (const change of ["account", "runtime", "delete"]) {
+    const { native, replies } = lazyImages();
+    const transport = new AgentStateTransport(), r = resources(), preload = new AgentStateImages(r.api);
+    const packet = transport.encode(native);
+    const id = String(image(preload.accept(packet)).assetId);
+    let finish!: () => void;
+    const gate = new Promise<void>(resolve => { finish = resolve; });
+    const pending = preload.load(id, (context, asset) => transport.readImage(context, asset, async request => {
+      await gate; return replies.get(request.callId)!;
+    }));
+    const rejected = assert.rejects(pending, /context changed/);
+    if (change === "account") native.account!.account!.id = "two";
+    if (change === "runtime") native.runtimeInstanceId = "restarted";
+    if (change === "delete") native.sessions.thread!.timeline = [];
+    preload.accept(transport.encode(native));
+    finish(); await rejected;
+    assert.deepEqual(r.created, [], change);
+    assert.deepEqual(r.revoked, [], change);
+  }
+});
+
+test("lazy image cache evicts idle images within its byte budget and pins displayed images", async () => {
+  const { native, replies } = lazyImages(5);
+  const transport = new AgentStateTransport(), r = resources(), preload = new AgentStateImages(r.api, 2048);
+  const packet = transport.encode(native), visible = preload.accept(packet);
+  const ids = visible.sessions.thread!.timeline.map(row => String((row.tool!.content[0] as Record<string, unknown>).assetId));
+  const read = (context: string, id: string) => transport.readImage(context, id, async request => replies.get(request.callId)!);
+  const pinned = await preload.load(ids[0]!, read);
+  for (const id of ids.slice(1)) { await preload.load(id, read); preload.release(id); }
+  assert.equal(r.revoked.length, 2);
+  assert.ok(!r.revoked.includes(pinned.imageUrl), "an active viewer retains its original URL");
+  assert.equal(r.created.length - r.revoked.length, 3, "one displayed image plus two cached originals");
+  preload.release(ids[0]!);
+  assert.equal(r.created.length - r.revoked.length, 2);
+  preload.dispose();
+  assert.equal(r.revoked.length, r.created.length);
+});
+
+test("on-demand image reads bound concurrency and reject mismatched content", async () => {
+  const { native, replies } = lazyImages(5);
+  const transport = new AgentStateTransport(), preload = new AgentStateImages(resources().api);
+  const packet = transport.encode(native), visible = preload.accept(packet);
+  const ids = visible.sessions.thread!.timeline.map(row => String((row.tool!.content[0] as Record<string, unknown>).assetId));
+  const gates: (() => void)[] = [];
+  let active = 0, maximum = 0;
+  const reads = ids.map(id => preload.load(id, (context, asset) => transport.readImage(context, asset, async request => {
+    active++; maximum = Math.max(maximum, active);
+    await new Promise<void>(resolve => gates.push(resolve)); active--;
+    return replies.get(request.callId)!;
+  })));
+  assert.equal(gates.length, 2);
+  for (let index = 0; index < 5; index++) {
+    gates[index]!(); await new Promise(resolve => setImmediate(resolve));
+  }
+  await Promise.all(reads);
+  assert.equal(maximum, 2);
+  await assert.rejects(transport.readImage(packet.context!, String(image(packet.state).axiomImageAsset), async request => ({ ...replies.get(request.callId)!, data: png() })), /identity differs|content differs/);
 });

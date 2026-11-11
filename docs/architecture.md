@@ -70,6 +70,30 @@ bounded account metadata and opaque login handles, never native access/refresh
 tokens. Desktop removes `AXIOM_API_KEY` from its sidecar environment; standalone
 CLI/proxy automation may use that explicit environment override.
 
+On macOS, startup checks for the origin-scoped Keychain item by reference without
+decrypting its password. The first restore reads the refresh token once while
+holding the CLI/Desktop coordination lock continuously through server rotation
+and persistence. Commit reuses that locked observation, and the macOS writer
+updates the existing item in place without reading the old password again.
+The item keeps its existing access controls and shared service/account identity.
+The protected entry is an `axc1_` envelope containing the rotating refresh token
+and an independently random 32-byte recovery attempt. It is still one OS
+credential item, using the existing origin/profile scope. Legacy bare tokens
+upgrade under the same process-shared lock before a request is dispatched.
+Transport timeouts, 5xx and malformed responses retain the same durable attempt;
+a different CLI/Desktop process reloads it under that lock. The API may return
+the exact original rotation for two minutes while all session/token bounds are
+valid and the successor remains unused. Retries never extend expiration or
+create another family branch. A different attempt, late retry or successor reuse
+retains family revocation; HTTP 401 clears the matching local credential.
+Successful rotation replaces the entry with the successor and a fresh attempt.
+Install compatible platform migration/API support before shipping this native
+client; an old API rejects the new request field and the native client keeps its
+entry for a later compatible retry. This envelope is opaque to older native
+versions, so do not downgrade a profile with a saved current session.
+
+A denied read remains unavailable and is not retried by account-status polling.
+
 The hosted account ID is an opaque identifier, independent of email, wallet or
 installation identity. Login identities and wallet signatures are never provider
 E2EE key material. Implementation: [auth.rs](../apps/axiomcli/src/auth.rs),
@@ -97,7 +121,50 @@ The inspectable [SQL baseline](../apps/axiomcli/src/session/schema.sql) and
 Conversation content and drafts stay local. Desktop drafts, pending submissions,
 Web preferences and queues use account-scoped local state. Deleting a thread
 removes its conversation records but does not delete files in its working directory.
-Local conversation databases are not encrypted at rest by AxiomCLI.
+Local conversation databases are not encrypted at rest by AxiomCLI. Authoritative
+prompts, assistant messages, tool results and metadata are stored verbatim; only
+diagnostics and explicit exports apply credential redaction. MCP adapters still
+filter exact secrets supplied in their configured environment before establishing
+a tool result; generic diagnostic heuristics never rewrite successful results. If automatic
+compaction fails before a turn, original context and media remain recoverable.
+The turn fails with an explicit retry/choose-larger-context message; it never
+substitutes a local excerpt for the source history.
+
+Compaction first checks whether the native conversation and summary output fit
+one request, using the current context count when available. Historical system
+notes are demoted to untrusted context and reasoning/refusal text is preserved
+even when the selected model cannot replay its original fields. Fallback grouping
+keeps consecutive serialized fragments and native attachments together until a
+token or provider request limit is reached. All passes must succeed before the
+successor context replaces the original; partial summaries never commit.
+
+Account databases migrate transactionally to schema 6. Each thread has a
+versioned authoritative semantic history independent of presentation rows.
+Exact provider-neutral model-message checkpoints preserve raw tool argument
+strings, grouped tool calls, tool results, reasoning, images, files and context
+boundaries. Live attestation state and evidence remain ephemeral; historical
+response verification never restores a live lease. Resume uses this source; timeline edits cannot rewrite inference
+context. Display remains a projection of the same semantic events. The latest
+exact checkpoint for each turn is retained alongside the full semantic source
+history, so earlier message revisions preserve exact model structure. Checkpoints
+reference deduplicated model messages, avoiding a new copy of every earlier
+image or file at every checkpoint.
+Legacy threads without canonical records use their existing compatible timeline
+projection until the next write adopts it atomically. A partial legacy load
+refuses migration with an explicit error and retains the original records. Unsupported canonical
+versions or corrupt authoritative records fail explicitly instead of silently
+rebuilding a different conversation. Content already lost by older versions
+cannot be recovered by migration.
+
+Execution ownership combines a persisted owner ID and an OS lock per active
+thread. Opening a database preserves live work owned by another client. A new
+claim rejects concurrent execution transactionally; process exit releases the
+lock, allowing recovery to mark only abandoned turns interrupted. Recovery also
+runs before a new claim so an already-open observer can recover a later crash.
+These local lock files are retained to preserve inode identity. Delayed native
+output carries its originating turn ID and cannot attach to another turn.
+Account switching invalidates old handles and releases their local execution
+locks. Interrupted tool operations remain unknown and are never replayed.
 
 ## Runtime boundaries
 

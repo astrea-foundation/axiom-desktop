@@ -1,6 +1,7 @@
 import { ipcRenderer } from "electron";
 import { AgentStateImages } from "./agent-state-images";
-import type { AgentStatePacket } from "../shared/agent-state";
+import type { AgentImagePacket, AgentStatePacket } from "../shared/agent-state";
+import type { GeneratedImageUrl } from "./agent-state-images";
 import type { PromptAttachment, GetAttachmentsResponse } from "@axiom/axiom-acp-client";
 import type {
   AccountStatusResponse,
@@ -58,6 +59,8 @@ export interface AgentApi {
   promptWithAttachments: (sessionId: string, text: string, clientItemId: string, webEnabled: boolean, agentRevision: number, attachments: PromptAttachment[], mcpRevision?: number) => Promise<PromptResult>;
   getAttachments: (threadId: string, userItemId: string) => Promise<GetAttachmentsResponse>;
   regenerateImage: (threadId: string, callId: string) => Promise<{ callId: string }>;
+  loadGeneratedImage: (assetId: string) => Promise<GeneratedImageUrl>;
+  releaseGeneratedImage: (assetId: string) => void;
   revisePrompt: (sessionId: string, text: string, userItemId: string, expectedRevision: number, webEnabled: boolean, agentRevision: number, mcpRevision?: number) => Promise<PromptResult>;
   steer: (request: SteerTurnRequest) => Promise<SteerTurnResponse>;
   cancel: (sessionId: string) => Promise<void>;
@@ -83,6 +86,7 @@ export interface AgentApi {
   openAccountPortal: () => Promise<void>;
   logout: () => Promise<AccountStatusResponse>;
   prewarmSecurity: (modelId: string) => Promise<VerifySecurityResponse>;
+  ensureSecurity: (sessionId: string) => Promise<VerifySecurityResponse>;
   verifySecurity: (sessionId: string, acceptOutdatedTee?: boolean, modelId?: string) => Promise<VerifySecurityResponse>;
   compact: (sessionId: string, focus?: string) => Promise<CompactResponse>;
   deletePreview: (sessionIds: string[]) => Promise<DeletePreviewResponse>;
@@ -127,6 +131,8 @@ export const agentApi: AgentApi = {
   promptWithAttachments: (sessionId, text, clientItemId, webEnabled, agentRevision, attachments, mcpRevision) => invoke("prompt-with-attachments", sessionId, text, clientItemId, webEnabled, agentRevision, attachments, mcpRevision),
   getAttachments: (threadId, userItemId) => invoke("attachments", threadId, userItemId),
   regenerateImage: (threadId, callId) => invoke("image-regenerate", threadId, callId),
+  loadGeneratedImage: (assetId) => stateImages.load(assetId, (context, id) => invoke<AgentImagePacket>("image-read", context, id)),
+  releaseGeneratedImage: (assetId) => stateImages.release(assetId),
   revisePrompt: (sessionId, text, userItemId, expectedRevision, webEnabled, agentRevision, mcpRevision) => invoke("prompt-revise", sessionId, text, userItemId, expectedRevision, webEnabled, agentRevision, mcpRevision),
   steer: (request) => invoke("steer", request),
   cancel: (sessionId) => invoke("cancel", sessionId),
@@ -152,6 +158,7 @@ export const agentApi: AgentApi = {
   openAccountPortal: () => invoke("account-open"),
   logout: () => invoke("logout"),
   prewarmSecurity: (modelId) => invoke("security-prewarm", modelId),
+  ensureSecurity: (sessionId) => invoke("security-ensure", sessionId),
   verifySecurity: (sessionId, acceptOutdatedTee, modelId) => invoke("security-verify", sessionId, acceptOutdatedTee, modelId),
   compact: (sessionId, focus) => invoke("compact", sessionId, focus),
   deletePreview: (sessionIds) => invoke("delete-preview", sessionIds),

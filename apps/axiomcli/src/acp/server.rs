@@ -129,6 +129,14 @@ pub async fn serve_stdio(
         protocol::PromptResponse
     );
     let builder = request_handler!(
+        async,
+        builder,
+        context,
+        prompts::invoke_command,
+        extension::SessionCommandRequest,
+        protocol::PromptResponse
+    );
+    let builder = request_handler!(
         sync_ref,
         builder,
         context,
@@ -167,6 +175,14 @@ pub async fn serve_stdio(
         images::regenerate,
         extension::RegenerateImageRequest,
         extension::RegenerateImageResponse
+    );
+    let builder = request_handler!(
+        async,
+        builder,
+        context,
+        images::read,
+        extension::ReadImageRequest,
+        extension::ReadImageResponse
     );
     let builder = request_handler!(
         async,

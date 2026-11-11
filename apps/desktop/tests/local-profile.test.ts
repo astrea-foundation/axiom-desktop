@@ -10,8 +10,8 @@ const environment = {
   AXIOM_BASE_URL: "https://127.0.0.1:9443",
   AXIOM_POOL_CLIENT_CONFIG_FILE: join(home, "pool.json"),
   AXIOM_LOCAL_RELAY_CA_FILE: join(home, "local-ca.pem"),
-  AXIOM_CHUTES_DESKTOP_PREVIEW_CONFIG: join(home, "native-preview.json"),
-  CHUTES_API_KEY: "must-not-reach-sidecar",
+  AXIOM_DIRECT_CLIENT_CONFIG_FILE: join(home, "direct-public.json"),
+  UPSTREAM_PROVIDER_API_KEY: "must-not-reach-sidecar",
 };
 
 test("named hosted staging profiles isolate all storage and forward public account pins only", () => {
@@ -45,8 +45,8 @@ test("local inference profile isolates storage and passes only public trust conf
     XDG_CONFIG_HOME: join(home, ".axiom-local", "config"),
     XDG_DATA_HOME: join(home, ".axiom-local", "data"),
     AXIOM_POOL_CLIENT_CONFIG_FILE: environment.AXIOM_POOL_CLIENT_CONFIG_FILE,
+    AXIOM_DIRECT_CLIENT_CONFIG_FILE: environment.AXIOM_DIRECT_CLIENT_CONFIG_FILE,
     AXIOM_LOCAL_RELAY_CA_FILE: environment.AXIOM_LOCAL_RELAY_CA_FILE,
-    AXIOM_CHUTES_DESKTOP_PREVIEW_CONFIG: environment.AXIOM_CHUTES_DESKTOP_PREVIEW_CONFIG,
   });
 });
 
@@ -81,7 +81,7 @@ test("local profile rejects remote audiences, mixed profiles and relative trust 
     { AXIOM_BASE_URL: "https://api.axiom.stream", AXIOM_AUTH_URL: "https://auth.axiom.stream" },
     { AXIOM_DESKTOP_STAGING_PROFILE: "1" },
     { AXIOM_POOL_CLIENT_CONFIG_FILE: "relative.json" },
-    { AXIOM_CHUTES_DESKTOP_PREVIEW_CONFIG: "relative.json" },
+    { AXIOM_DIRECT_CLIENT_CONFIG_FILE: "relative.json" },
   ]) {
     assert.throws(() => localProfile({ packaged: false, environment: { ...environment, ...replacement }, home: "/test-user" }));
   }

@@ -27,6 +27,7 @@ import type {
   ConfigureDesktopAgentResponse,
   EventNotification,
   GetThreadTimelineResponse,
+  ReadImageResponse,
   ListModelsResponse,
   ListThreadsRequest,
   ListThreadsResponse,
@@ -72,11 +73,13 @@ const EXTENSION_CAPABILITIES = {
     securityEvidence: 4,
     webConsent: 1,
     imageGeneration: 4,
+    imageResources: 1,
     steering: 1,
     messageRevision: 1,
     attachments: 2,
     compaction: 1,
     activity: 1,
+    commandInvocation: 1,
   },
 } as const;
 
@@ -162,9 +165,11 @@ export class AxiomAcpClient extends EventEmitter {
   private fullResyncRequired = false;
   private initialized = false;
   private supportsMessageRevision = false;
+  private supportsCommandInvocation = false;
   private supportsMcp = false;
   private supportsImageGeneration = false;
   private supportsImageRegeneration = false;
+  private supportsImageResources = false;
   private supportsCryptoInvoices = false;
   private supportsAttachments = false;
   private desktopBootstrap: DesktopBootstrapResponse | null = null;
@@ -242,10 +247,12 @@ export class AxiomAcpClient extends EventEmitter {
     // user starts a chat. Publish the handshake identity first so that event
     // cannot masquerade as a restart and invalidate an in-flight submission.
     this.state.initializeRuntime(meta?.runtimeInstanceId);
+    this.supportsCommandInvocation = (meta?.features?.commandInvocation ?? 0) >= 1;
     this.supportsMessageRevision = (meta?.features?.messageRevision ?? 0) >= 1;
     this.supportsMcp = (meta?.features?.desktopMcp ?? 0) >= 1;
     this.supportsImageGeneration = (meta?.features?.imageGeneration ?? 0) >= 3;
     this.supportsImageRegeneration = (meta?.features?.imageGeneration ?? 0) >= 4;
+    this.supportsImageResources = (meta?.features?.imageResources ?? 0) >= 1;
     this.state.setImageGenerationAvailable(this.supportsImageGeneration);
     this.supportsCryptoInvoices = (meta?.features?.billing ?? 0) >= 5;
     this.supportsAttachments = (meta?.features?.attachments ?? 0) >= 2;
@@ -352,7 +359,13 @@ export class AxiomAcpClient extends EventEmitter {
   async loadSession(threadId: string, cwd: string): Promise<SessionStartResult> {
     this.assertInitialized();
     const accountContext = this.state.accountContextToken();
-    const result = await this.process.request<SessionStartResult>("session/load", { sessionId: threadId, cwd, mcpServers: [] });
+    const result = await this.process.request<SessionStartResult>("session/load", {
+      sessionId: threadId, cwd, mcpServers: [],
+      // Desktop atomically restores the authoritative timeline below. Replaying
+      // every saved event first transfers all generated images a second time
+      // and publishes a growing state snapshot for each historical event.
+      ...(this.desktopBootstrap ? { _meta: { axiom: { skipHistoryReplay: true } } } : {}),
+    });
     this.assertAccountContext(accountContext);
     this.state.addSession(threadId, cwd);
     if (result.modes) this.state.setModes(threadId, result.modes.currentModeId, result.modes.availableModes);
@@ -362,7 +375,22 @@ export class AxiomAcpClient extends EventEmitter {
     return { ...result, sessionId: threadId };
   }
 
+  /** Invoke a deliberately selected application control. Never route pasted prompt text here. */
+  async invokeCommand(threadId: string, command: string): Promise<PromptResult> {
+    if (!this.supportsCommandInvocation) throw new ProtocolError("Restart Axiom to enable explicit commands.");
+    if (!command.trimStart().startsWith("/") || Buffer.byteLength(command, "utf8") > 4 * 1024 * 1024) {
+      throw new ProtocolError("Expected an explicit slash command");
+    }
+    const accountContext = this.state.accountContextToken();
+    const result = await this.process.request<PromptResult>("_axiom/session/command", { sessionId: threadId, command }, 0);
+    this.assertAccountContext(accountContext);
+    return result;
+  }
+
   async prompt(threadId: string, text: string, clientItemId: string, webEnabled = false, agentRevision = this.state.snapshot().sessions[threadId]?.desktopAgent?.revision ?? 0, revision?: { userItemId: string; expectedRevision: number }, attachments: PromptAttachment[] = [], mcpRevision?: number): Promise<PromptResult> {
+    if (!this.supportsCommandInvocation && text.trimStart().startsWith("/")) {
+      throw new ProtocolError("Restart Axiom before sending literal text beginning with a slash.");
+    }
     if (revision && (!this.supportsMessageRevision || !revision.userItemId || revision.userItemId.length > 512
       || !Number.isSafeInteger(revision.expectedRevision) || revision.expectedRevision < 0)) {
       throw new ProtocolError("Restart Axiom before editing or regenerating messages.");
@@ -403,7 +431,7 @@ export class AxiomAcpClient extends EventEmitter {
     } finally {
       if (this.state.accountContextToken() === accountContext) {
         this.state.setRunning(threadId, false);
-        await this.refreshThread(threadId).catch(() => undefined);
+        await this.refreshThread(threadId, true).catch(() => undefined);
       }
     }
   }
@@ -424,7 +452,7 @@ export class AxiomAcpClient extends EventEmitter {
       if (this.pendingImageRequests.get(threadId) === cancellation) this.pendingImageRequests.delete(threadId);
       if (this.state.accountContextToken() === context) {
         this.state.setRunning(threadId, false);
-        await this.refreshThread(threadId).catch(() => undefined);
+        await this.refreshThread(threadId, true).catch(() => undefined);
       }
     }
   }
@@ -434,6 +462,17 @@ export class AxiomAcpClient extends EventEmitter {
     const context = this.state.accountContextToken();
     const result = await this.process.request<GetAttachmentsResponse>("_axiom/thread/attachments", { threadId, userItemId });
     this.assertAccountContext(context);
+    return result;
+  }
+
+  async readImage(threadId: string, callId: string, sha256: string): Promise<ReadImageResponse> {
+    if (!this.supportsImageResources) throw new ProtocolError("Restart Axiom to load saved images.");
+    const context = this.state.accountContextToken();
+    const result = await this.process.request<ReadImageResponse>("_axiom/image/read", { threadId, callId, sha256 });
+    this.assertAccountContext(context);
+    if (result.sha256 !== sha256 || result.mimeType !== "image/png" || typeof result.data !== "string" || result.data.length > 14_000_000) {
+      throw new ProtocolError("Saved image identity differs");
+    }
     return result;
   }
 
@@ -544,11 +583,19 @@ export class AxiomAcpClient extends EventEmitter {
     return result;
   }
 
-  refreshThread(threadId: string): Promise<GetThreadTimelineResponse> {
+  refreshThread(threadId: string, afterInFlight = false): Promise<GetThreadTimelineResponse> {
     const accountContext = this.state.accountContextToken();
     const refreshKey = `${accountContext}:${threadId}`;
     const existing = this.refreshingThreads.get(refreshKey);
-    if (existing) return existing;
+    if (existing) {
+      if (!afterInFlight) return existing;
+      // A snapshot started during a turn can still report it as running after
+      // its RPC has completed. Terminal cleanup needs a later native snapshot.
+      return existing.catch(() => undefined).then(() => {
+        this.assertAccountContext(accountContext);
+        return this.refreshThread(threadId);
+      });
+    }
     const refresh = this.fetchTimeline(threadId, accountContext)
       .finally(() => this.refreshingThreads.delete(refreshKey));
     this.refreshingThreads.set(refreshKey, refresh);
@@ -784,6 +831,38 @@ export class AxiomAcpClient extends EventEmitter {
     this.securityWarmups.set(modelId, entry);
     this.runBackground(entry.promise);
     return entry.promise;
+  }
+
+  /** Renew the displayed report through the native reusable proof cache.
+   * Explicit verifySecurity remains the only path that forces fresh attestation. */
+  async ensureSecurity(threadId: string): Promise<VerifySecurityResponse> {
+    const accountContext = this.state.accountContextToken();
+    const context = this.state.securityContextToken(threadId);
+    const session = this.state.snapshot().sessions[threadId];
+    const modelId = session?.settings?.model;
+    if (!context || !modelId) throw new ProtocolError("Load this thread before verifying its model");
+    if (session.running) throw new ProtocolError("Wait for the current reply before refreshing verification");
+    const existing = this.securityVerifications.get(threadId);
+    if (existing?.context === context) return existing.promise;
+    const cached = this.securityWarmups.get(modelId);
+    if (cached?.context === accountContext && !cached.pending && cached.validUntil > 0
+      && cached.validUntil <= Date.now() + 30_000) {
+      // Re-read native cached material near expiry. This drops only the JS
+      // report, never the provider proof, pinned transport or retry backoff.
+      this.securityWarmups.delete(modelId);
+    }
+    const result = await this.prewarmSecurity(modelId);
+    const current = this.state.snapshot().sessions[threadId];
+    if (this.state.accountContextToken() !== accountContext || this.state.securityContextToken(threadId) !== context
+      || !current || current.running || this.securityVerifications.has(threadId)) {
+      throw new ProtocolError("The verification context changed; refresh the selected model");
+    }
+    const evidence = publicSecurityEvidence(result, modelId);
+    if (!evidence || evidence.hardExpiresAtUnixSeconds * 1000 <= Date.now()) throw new ProtocolError("Verification returned no fresh evidence");
+    // Cached warmups may predate this thread. Apply the public report only to
+    // its still-idle, unchanged model/account/runtime; keep the original expiry.
+    this.state.setSecurityVerification(threadId, { pending: false, evidence, status: result.status });
+    return { status: result.status, evidence };
   }
 
   verifySecurity(threadId: string, acceptOutdatedTee = false, expectedModelId?: string): Promise<VerifySecurityResponse> {

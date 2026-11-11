@@ -11,7 +11,7 @@ use std::{
     time::Duration,
 };
 
-use git2::{DiffFormat, Repository, StatusOptions};
+use git2::{DiffFormat, DiffOptions, Repository, StatusOptions};
 use globset::Glob;
 use ignore::WalkBuilder;
 use serde::{Deserialize, Serialize};
@@ -25,7 +25,10 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use crate::{AxiomError, Result};
+use crate::{
+    AxiomError, Result,
+    policy::{Effect, EffectAuthorizer},
+};
 
 #[derive(Clone, Debug)]
 pub struct Workspace {
@@ -336,11 +339,13 @@ impl Workspace {
         })
     }
 
-    pub fn search(
+    pub async fn search(
         &self,
         query: &str,
         max_matches: usize,
         max_file_bytes: u64,
+        authorization: &dyn EffectAuthorizer,
+        cancellation: CancellationToken,
     ) -> Result<Vec<String>> {
         if query.is_empty() {
             return Err(AxiomError::Tool("search query cannot be empty".into()));
@@ -360,9 +365,23 @@ impl Workspace {
                 _ => continue,
             };
             let _ = metadata;
-            let relative = self.relative(entry.path());
-            let Ok(read) = self.read(
-                &relative,
+            let Ok(path) = self.resolve_existing(entry.path()) else {
+                continue;
+            };
+            match authorization
+                .authorize(
+                    Effect::FileRead { path: path.clone() },
+                    cancellation.clone(),
+                )
+                .await
+            {
+                Ok(()) => {}
+                Err(AxiomError::PermissionDenied(_)) => continue,
+                Err(error) => return Err(error),
+            }
+            let relative = self.relative(&path);
+            let Ok(read) = self.read_resolved(
+                &path,
                 1,
                 100_000,
                 usize::try_from(max_file_bytes).unwrap_or(usize::MAX),
@@ -386,11 +405,13 @@ impl Workspace {
         Ok(matches)
     }
 
-    pub fn select_context(
+    pub async fn select_context(
         &self,
         query: &str,
         max_files: usize,
         max_bytes: usize,
+        authorization: &dyn EffectAuthorizer,
+        cancellation: CancellationToken,
     ) -> Result<Vec<ContextRange>> {
         if query.trim().is_empty() {
             return Err(AxiomError::Tool("context query cannot be empty".into()));
@@ -409,8 +430,22 @@ impl Workspace {
             if !metadata.is_file() || metadata.len() > 2 * 1024 * 1024 {
                 continue;
             }
-            let relative = self.relative(entry.path());
-            let Ok(read) = self.read(&relative, 1, 100_000, 2 * 1024 * 1024) else {
+            let Ok(path) = self.resolve_existing(entry.path()) else {
+                continue;
+            };
+            match authorization
+                .authorize(
+                    Effect::FileRead { path: path.clone() },
+                    cancellation.clone(),
+                )
+                .await
+            {
+                Ok(()) => {}
+                Err(AxiomError::PermissionDenied(_)) => continue,
+                Err(error) => return Err(error),
+            }
+            let relative = self.relative(&path);
+            let Ok(read) = self.read_resolved(&path, 1, 100_000, 2 * 1024 * 1024) else {
                 continue;
             };
             let lines: Vec<_> = read.content.lines().collect();
@@ -467,11 +502,76 @@ impl Workspace {
         Ok(retained)
     }
 
-    pub fn inspect_git(
+    pub async fn inspect_git(
         &self,
         max_status: usize,
         max_commits: usize,
         max_diff_bytes: usize,
+        authorization: &dyn EffectAuthorizer,
+        cancellation: CancellationToken,
+    ) -> Result<GitInspection> {
+        // Enumerating index/tree names does not open worktree content. Authorize
+        // them before libgit2 status hashing or diff generation can read bytes.
+        let candidates = self.git_read_candidates()?;
+        let mut allowed = Vec::new();
+        for path in candidates {
+            let Ok(resolved) = self.resolve_for_write(&path) else {
+                continue;
+            };
+            match authorization
+                .authorize(Effect::FileRead { path: resolved }, cancellation.clone())
+                .await
+            {
+                Ok(()) => allowed.push(path),
+                Err(AxiomError::PermissionDenied(_)) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        self.inspect_git_paths(max_status, max_commits, max_diff_bytes, &allowed)
+    }
+
+    fn git_read_candidates(&self) -> Result<Vec<PathBuf>> {
+        let repository = Repository::discover(&self.root)
+            .map_err(|error| AxiomError::Tool(format!("not a Git repository: {error}")))?;
+        let workdir = repository
+            .workdir()
+            .ok_or_else(|| AxiomError::Tool("bare Git repositories are not supported".into()))?
+            .canonicalize()?;
+        if self.root != workdir {
+            return Err(AxiomError::OutsideWorkspace(workdir));
+        }
+        let mut paths = std::collections::BTreeSet::new();
+        for entry in repository.index()?.iter() {
+            if let Ok(path) = std::str::from_utf8(&entry.path) {
+                paths.insert(PathBuf::from(path));
+            }
+        }
+        if let Ok(head) = repository.head()
+            && let Ok(tree) = head.peel_to_tree()
+        {
+            tree.walk(git2::TreeWalkMode::PreOrder, |prefix, entry| {
+                if entry.kind() != Some(git2::ObjectType::Tree)
+                    && let Ok(name) = entry.name()
+                {
+                    paths.insert(PathBuf::from(format!("{prefix}{name}")));
+                }
+                git2::TreeWalkResult::Ok
+            })?;
+        }
+        for path in self.glob("**/*", 10_000, false)? {
+            if self.root.join(&path).is_file() {
+                paths.insert(path);
+            }
+        }
+        Ok(paths.into_iter().collect())
+    }
+
+    fn inspect_git_paths(
+        &self,
+        max_status: usize,
+        max_commits: usize,
+        max_diff_bytes: usize,
+        allowed: &[PathBuf],
     ) -> Result<GitInspection> {
         let repository = Repository::discover(&self.root)
             .map_err(|error| AxiomError::Tool(format!("not a Git repository: {error}")))?;
@@ -496,16 +596,27 @@ impl Workspace {
         options
             .include_untracked(true)
             .recurse_untracked_dirs(true)
-            .include_ignored(false);
-        let statuses = repository
-            .statuses(Some(&mut options))?
-            .iter()
-            .take(max_status)
-            .map(|entry| GitStatusEntry {
-                path: PathBuf::from(entry.path().unwrap_or("(non-utf8 path)")),
-                status: format!("{:?}", entry.status()),
-            })
-            .collect();
+            .include_ignored(false)
+            .exclude_submodules(true)
+            .disable_pathspec_match(true);
+        for path in allowed {
+            options.pathspec(path);
+        }
+        // Empty pathspec means all files to libgit2, so do not call it at all
+        // when no worktree files were authorized.
+        let statuses = if allowed.is_empty() {
+            Vec::new()
+        } else {
+            repository
+                .statuses(Some(&mut options))?
+                .iter()
+                .take(max_status)
+                .map(|entry| GitStatusEntry {
+                    path: PathBuf::from(entry.path().unwrap_or("(non-utf8 path)")),
+                    status: format!("{:?}", entry.status()),
+                })
+                .collect()
+        };
 
         let mut recent_commits = Vec::new();
         if let Ok(mut walk) = repository.revwalk()
@@ -533,29 +644,40 @@ impl Workspace {
             .head()
             .ok()
             .and_then(|head| head.peel_to_tree().ok());
-        let diff = repository.diff_tree_to_workdir(head_tree.as_ref(), None)?;
+        let mut diff_options = DiffOptions::new();
+        diff_options
+            .disable_pathspec_match(true)
+            .ignore_submodules(true);
+        for path in allowed {
+            diff_options.pathspec(path);
+        }
         let output = std::cell::RefCell::new(Vec::new());
         let truncated = std::cell::Cell::new(false);
-        diff.print(DiffFormat::Patch, |_delta, _hunk, line| {
-            let mut output = output.borrow_mut();
-            let available = max_diff_bytes.saturating_sub(output.len());
-            if available == 0 {
-                truncated.set(true);
-                return true;
-            }
-            let prefix = matches!(line.origin(), '+' | '-' | ' ').then_some(line.origin() as u8);
-            let content = line.content();
-            let total = content.len().saturating_add(usize::from(prefix.is_some()));
-            if let Some(prefix) = prefix
-                && output.len() < max_diff_bytes
-            {
-                output.push(prefix);
-            }
-            let remaining = max_diff_bytes.saturating_sub(output.len());
-            output.extend_from_slice(&content[..content.len().min(remaining)]);
-            truncated.set(truncated.get() || total > available);
-            true
-        })?;
+        if !allowed.is_empty() {
+            let diff =
+                repository.diff_tree_to_workdir(head_tree.as_ref(), Some(&mut diff_options))?;
+            diff.print(DiffFormat::Patch, |_delta, _hunk, line| {
+                let mut output = output.borrow_mut();
+                let available = max_diff_bytes.saturating_sub(output.len());
+                if available == 0 {
+                    truncated.set(true);
+                    return true;
+                }
+                let prefix =
+                    matches!(line.origin(), '+' | '-' | ' ').then_some(line.origin() as u8);
+                let content = line.content();
+                let total = content.len().saturating_add(usize::from(prefix.is_some()));
+                if let Some(prefix) = prefix
+                    && output.len() < max_diff_bytes
+                {
+                    output.push(prefix);
+                }
+                let remaining = max_diff_bytes.saturating_sub(output.len());
+                output.extend_from_slice(&content[..content.len().min(remaining)]);
+                truncated.set(truncated.get() || total > available);
+                true
+            })?;
+        }
         let diff = String::from_utf8_lossy(&output.into_inner()).into_owned();
         Ok(GitInspection {
             branch,
@@ -574,20 +696,36 @@ impl Workspace {
         max_lines: usize,
         max_bytes: usize,
     ) -> Result<FileRead> {
+        self.read_resolved(
+            &self.resolve_existing(path)?,
+            start_line,
+            max_lines,
+            max_bytes,
+        )
+    }
+
+    // Do not resolve again after authorization: a replacement symlink must not
+    // redirect an approved path to a different file.
+    pub(crate) fn read_resolved(
+        &self,
+        path: &Path,
+        start_line: usize,
+        max_lines: usize,
+        max_bytes: usize,
+    ) -> Result<FileRead> {
         const MAX_INSPECT_BYTES: u64 = 8 * 1024 * 1024;
-        let path = self.resolve_existing(path)?;
-        let mut file = open_verified(&path, &self.root)?;
+        let mut file = open_verified(path, &self.root)?;
         let metadata = file.metadata()?;
         if !metadata.is_file() {
             return Err(AxiomError::Tool(format!(
                 "special file cannot be read: {}",
-                self.relative(&path).display()
+                self.relative(path).display()
             )));
         }
         if metadata.len() > MAX_INSPECT_BYTES {
             return Err(AxiomError::Tool(format!(
                 "large file omitted: {} is {} bytes (limit {MAX_INSPECT_BYTES}); inspect metadata or select a smaller source file",
-                self.relative(&path).display(),
+                self.relative(path).display(),
                 metadata.len()
             )));
         }
@@ -596,7 +734,7 @@ impl Workspace {
         if bytes.iter().take(8192).any(|byte| *byte == 0) {
             return Err(AxiomError::Tool(format!(
                 "binary file cannot be read as text: {}",
-                self.relative(&path).display()
+                self.relative(path).display()
             )));
         }
         let sha256 = digest(&bytes);
@@ -604,7 +742,7 @@ impl Workspace {
             .map_err(|_| {
             AxiomError::Tool(format!(
                 "text file is not valid UTF-8: {}",
-                self.relative(&path).display()
+                self.relative(path).display()
             ))
         })?;
         let start_line = start_line.max(1);
@@ -622,7 +760,7 @@ impl Workspace {
         let content = truncate_utf8(&selected, max_bytes, &mut truncated);
         let line_count = content.lines().count();
         Ok(FileRead {
-            path: self.relative(&path),
+            path: self.relative(path),
             content,
             start_line,
             end_line: start_line.saturating_add(line_count.saturating_sub(1)),
@@ -1175,7 +1313,7 @@ fn open_verified(path: &Path, root: &Path) -> Result<File> {
     {
         use std::os::fd::AsRawFd as _;
         let actual = PathBuf::from(format!("/proc/self/fd/{}", file.as_raw_fd())).canonicalize()?;
-        if !actual.starts_with(root) {
+        if !actual.starts_with(root) || actual != path {
             return Err(AxiomError::OutsideWorkspace(actual));
         }
     }
@@ -1189,14 +1327,14 @@ fn open_verified(path: &Path, root: &Path) -> Result<File> {
             ))
         })?;
         let actual = actual.canonicalize()?;
-        if !actual.starts_with(root) {
+        if !actual.starts_with(root) || actual != path {
             return Err(AxiomError::OutsideWorkspace(actual));
         }
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let actual = path.canonicalize()?;
-        if !actual.starts_with(root) {
+        if !actual.starts_with(root) || actual != path {
             return Err(AxiomError::OutsideWorkspace(actual));
         }
     }
@@ -1412,29 +1550,23 @@ impl ProcessManager {
         {
             command.process_group(0);
         }
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt as _;
-            const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-            command
-                .as_std_mut()
-                .creation_flags(CREATE_NEW_PROCESS_GROUP);
-        }
-        let mut child = command.spawn()?;
+        let mut child = spawn_command(command)?;
         let pid = child.id();
         // Registration is synchronous and happens before the first await after
         // spawn. If this future is cancelled or the runtime is torn down from
         // this point onward, the guard kills the complete, separately-created
         // tool process group from Drop.
         let mut process_group = process_groups.register(pid);
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| AxiomError::Tool("missing stdout pipe".into()))?;
-        let stderr = child
-            .stderr
-            .take()
-            .ok_or_else(|| AxiomError::Tool("missing stderr pipe".into()))?;
+        #[cfg(windows)]
+        let stdout = child.stdout().take();
+        #[cfg(not(windows))]
+        let stdout = child.stdout.take();
+        let stdout = stdout.ok_or_else(|| AxiomError::Tool("missing stdout pipe".into()))?;
+        #[cfg(windows)]
+        let stderr = child.stderr().take();
+        #[cfg(not(windows))]
+        let stderr = child.stderr.take();
+        let stderr = stderr.ok_or_else(|| AxiomError::Tool("missing stderr pipe".into()))?;
         let retained = Arc::new(AtomicUsize::new(0));
         let max = max_output_bytes;
         let stdout_task = tokio::spawn(read_bounded(
@@ -1451,13 +1583,17 @@ impl ProcessManager {
             live,
             OutputStream::Stderr,
         ));
+        let mut readers = OutputReaders {
+            stdout: stdout_task,
+            stderr: stderr_task,
+        };
         let timeout = Duration::from_secs(request.timeout_secs.clamp(1, 3600));
         let status = tokio::select! {
             () = cancellation.cancelled() => {
                 terminate_process_group(pid, &mut child, &mut process_group).await;
                 return Err(AxiomError::Cancelled);
             }
-            result = tokio::time::timeout(timeout, child.wait()) => if let Ok(status) = result {
+            result = tokio::time::timeout(timeout, wait_command_leader(&mut child)) => if let Ok(status) = result {
                 status?
             } else {
                 terminate_process_group(pid, &mut child, &mut process_group).await;
@@ -1469,12 +1605,10 @@ impl ProcessManager {
         // descriptors and to ensure `run_command` never becomes an unmanaged
         // background-process escape hatch.
         process_group.terminate().await;
-        let (mut stdout, stdout_truncated) = stdout_task
-            .await
-            .map_err(|error| AxiomError::Tool(error.to_string()))??;
-        let (mut stderr, stderr_truncated) = stderr_task
-            .await
-            .map_err(|error| AxiomError::Tool(error.to_string()))??;
+        #[cfg(windows)]
+        child.start_kill()?;
+        let ((mut stdout, stdout_truncated), (mut stderr, stderr_truncated)) =
+            readers.finish(cancellation).await?;
         let mut encoding_truncated = false;
         stdout = truncate_utf8(&stdout, max_output_bytes, &mut encoding_truncated);
         let remaining = max_output_bytes.saturating_sub(stdout.len());
@@ -2210,33 +2344,90 @@ fn bind_development_cache(command: &mut Command, home: Option<&Path>) -> bool {
     cargo_bin_bound
 }
 
+#[cfg(windows)]
+type CommandChild = Box<dyn process_wrap::tokio::ChildWrapper>;
+#[cfg(not(windows))]
+type CommandChild = tokio::process::Child;
+
+fn spawn_command(command: Command) -> std::io::Result<CommandChild> {
+    #[cfg(windows)]
+    {
+        use process_wrap::tokio::{CommandWrap, JobObject, KillOnDrop};
+        // JobObject spawns suspended, assigns the child before any user code
+        // can spawn descendants, then resumes it. Keep the CLI-wide exit job
+        // intact: this is a nested job owned only by this command.
+        CommandWrap::from(command)
+            .wrap(KillOnDrop)
+            .wrap(JobObject)
+            .spawn()
+    }
+    #[cfg(not(windows))]
+    {
+        let mut command = command;
+        command.spawn()
+    }
+}
+
+async fn wait_command_leader(
+    child: &mut CommandChild,
+) -> std::io::Result<std::process::ExitStatus> {
+    // The JobObject wrapper's wait waits for the whole job. Observe the leader
+    // instead, then terminate any descendants before joining inherited pipes.
+    #[cfg(windows)]
+    {
+        child.inner_mut().wait().await
+    }
+    #[cfg(not(windows))]
+    child.wait().await
+}
+
 async fn terminate_process_group(
     _pid: Option<u32>,
-    child: &mut tokio::process::Child,
+    child: &mut CommandChild,
     process_group: &mut crate::process_env::ProcessGroupGuard,
 ) {
-    #[cfg(unix)]
     process_group.terminate().await;
-    #[cfg(windows)]
-    if let Some(pid) = _pid {
-        let taskkill = std::env::var_os("SystemRoot")
-            .map(PathBuf::from)
-            .map(|root| root.join("System32").join("taskkill.exe"))
-            .filter(|path| path.is_file())
-            .unwrap_or_else(|| PathBuf::from("taskkill.exe"));
-        let mut termination = Command::new(taskkill);
-        let pid = pid.to_string();
-        crate::process_env::apply_sanitized_environment(&mut termination);
-        termination
-            .args(["/PID", pid.as_str(), "/T", "/F"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .kill_on_drop(true);
-        let _ = tokio::time::timeout(Duration::from_secs(2), termination.status()).await;
+    // On Windows this targets the Job Object, even after leader exit. On Unix
+    // the group guard already killed descendants and this reaps the leader.
+    let _ = child.start_kill();
+    let _ = tokio::time::timeout(Duration::from_secs(2), wait_command_leader(child)).await;
+}
+
+type CapturedOutput = (String, bool);
+
+struct OutputReaders {
+    stdout: tokio::task::JoinHandle<Result<CapturedOutput>>,
+    stderr: tokio::task::JoinHandle<Result<CapturedOutput>>,
+}
+
+impl OutputReaders {
+    async fn finish(
+        &mut self,
+        cancellation: CancellationToken,
+    ) -> Result<(CapturedOutput, CapturedOutput)> {
+        let readers = async {
+            let stdout = (&mut self.stdout)
+                .await
+                .map_err(|error| AxiomError::Tool(error.to_string()))??;
+            let stderr = (&mut self.stderr)
+                .await
+                .map_err(|error| AxiomError::Tool(error.to_string()))??;
+            Ok((stdout, stderr))
+        };
+        tokio::select! {
+            () = cancellation.cancelled() => Err(AxiomError::Cancelled),
+            output = tokio::time::timeout(Duration::from_secs(2), readers) => output.map_err(|_| AxiomError::Tool("process output pipes did not close after termination".into()))?,
+        }
     }
-    let _ = child.kill().await;
-    let _ = child.wait().await;
+}
+
+impl Drop for OutputReaders {
+    fn drop(&mut self) {
+        // Dropping a JoinHandle alone detaches it. Always stop readers when a
+        // timeout, cancellation, error or dropped run future ends the command.
+        self.stdout.abort();
+        self.stderr.abort();
+    }
 }
 
 fn digest(bytes: &[u8]) -> String {
@@ -2310,8 +2501,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn discovery_glob_metadata_and_context_are_bounded_and_stable() {
+    #[tokio::test]
+    async fn discovery_glob_metadata_and_context_are_bounded_and_stable() {
         let root = tempdir().expect("root");
         Repository::init(root.path()).expect("repository");
         std::fs::create_dir_all(root.path().join("src/nested")).expect("src");
@@ -2354,11 +2545,19 @@ mod tests {
         assert_eq!(metadata.provenance, SourceClassification::LikelyGenerated);
         assert_eq!(metadata.content, ContentClassification::Text);
 
+        let authorization = crate::policy::ExecutionAuthorizer {
+            policy: crate::policy::PolicyEngine::for_workspace(root.path()).unwrap(),
+            profile: crate::app::PermissionProfile::FullAccess,
+            approval: None,
+            events: None,
+        };
         let first = discovered
-            .select_context("cherry", 8, 120)
+            .select_context("cherry", 8, 120, &authorization, CancellationToken::new())
+            .await
             .expect("context");
         let second = discovered
-            .select_context("cherry", 8, 120)
+            .select_context("cherry", 8, 120, &authorization, CancellationToken::new())
+            .await
             .expect("stable context");
         assert_eq!(
             serde_json::to_string(&first).expect("first"),
@@ -2411,8 +2610,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn git_inspection_uses_library_and_returns_bounded_status_diff_and_log() {
+    #[tokio::test]
+    async fn git_inspection_uses_library_and_returns_bounded_status_diff_and_log() {
         let root = tempdir().expect("root");
         let repository = Repository::init(root.path()).expect("repository");
         std::fs::write(root.path().join("tracked.txt"), "old\n").expect("tracked");
@@ -2437,7 +2636,16 @@ mod tests {
         std::fs::write(root.path().join("tracked.txt"), "new\n").expect("modify");
         std::fs::write(root.path().join("untracked.txt"), "new\n").expect("untracked");
         let workspace = Workspace::new(root.path()).expect("workspace");
-        let inspection = workspace.inspect_git(10, 5, 32).expect("inspect");
+        let authorization = crate::policy::ExecutionAuthorizer {
+            policy: crate::policy::PolicyEngine::for_workspace(root.path()).unwrap(),
+            profile: crate::app::PermissionProfile::FullAccess,
+            approval: None,
+            events: None,
+        };
+        let inspection = workspace
+            .inspect_git(10, 5, 32, &authorization, CancellationToken::new())
+            .await
+            .expect("inspect");
         assert!(inspection.head.is_some());
         assert_eq!(inspection.recent_commits[0].summary, "initial fixture");
         assert!(
@@ -2671,8 +2879,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn structured_diff_and_git_diff_agree_on_changed_lines() {
+    #[tokio::test]
+    async fn structured_diff_and_git_diff_agree_on_changed_lines() {
         let root = tempdir().expect("root");
         let repository = Repository::init(root.path()).expect("repository");
         std::fs::write(root.path().join("file.txt"), "old\n").expect("file");
@@ -2700,7 +2908,16 @@ mod tests {
                 4096,
             )
             .expect("patch");
-        let git = workspace.inspect_git(10, 1, 4096).expect("git diff");
+        let authorization = crate::policy::ExecutionAuthorizer {
+            policy: crate::policy::PolicyEngine::for_workspace(root.path()).unwrap(),
+            profile: crate::app::PermissionProfile::FullAccess,
+            approval: None,
+            events: None,
+        };
+        let git = workspace
+            .inspect_git(10, 1, 4096, &authorization, CancellationToken::new())
+            .await
+            .expect("git diff");
         for line in ["-old", "+new content"] {
             assert!(outcome.diff.contains(line), "structured {line}");
             assert!(git.diff.contains(line), "git {line}: {:?}", git.diff);
@@ -3009,6 +3226,160 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn output_reader_joins_are_bounded_and_cancellable() {
+        struct Finished(Arc<AtomicUsize>);
+        impl Drop for Finished {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        for cancel in [false, true] {
+            let finished = Arc::new(AtomicUsize::new(0));
+            let reader = |finished: Arc<AtomicUsize>| {
+                tokio::spawn(async move {
+                    let _finished = Finished(finished);
+                    std::future::pending::<Result<CapturedOutput>>().await
+                })
+            };
+            let mut readers = OutputReaders {
+                stdout: reader(finished.clone()),
+                stderr: reader(finished.clone()),
+            };
+            tokio::task::yield_now().await;
+            let cancellation = CancellationToken::new();
+            if cancel {
+                cancellation.cancel();
+            }
+            let result = tokio::time::timeout(Duration::from_secs(3), readers.finish(cancellation))
+                .await
+                .unwrap();
+            if cancel {
+                assert!(matches!(result, Err(AxiomError::Cancelled)));
+            } else {
+                assert!(
+                    result
+                        .unwrap_err()
+                        .to_string()
+                        .contains("pipes did not close")
+                );
+            }
+            drop(readers);
+            tokio::time::timeout(Duration::from_secs(1), async {
+                while finished.load(Ordering::SeqCst) != 2 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "subprocess fixture invoked by the Windows job regression"]
+    fn windows_command_job_fixture() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(&std::env::var("CI").unwrap()).unwrap();
+        let root = PathBuf::from(fixture["root"].as_str().unwrap());
+        let mode = fixture["mode"].as_str().unwrap();
+        if mode == "descendant" {
+            std::fs::write(root.join("ready"), b"ready").unwrap();
+            while !root.join("release").exists() {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            std::fs::write(root.join("survived"), b"escaped job").unwrap();
+        } else {
+            let mut descendant = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "workspace::tests::windows_command_job_fixture",
+                    "--ignored",
+                    "--nocapture",
+                ])
+                .env(
+                    "CI",
+                    serde_json::json!({"mode":"descendant", "root":root}).to_string(),
+                )
+                .spawn()
+                .unwrap();
+            while !root.join("ready").exists() {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            if mode == "leader_exit" {
+                std::process::exit(0);
+            }
+            descendant.wait().unwrap();
+        }
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn windows_command_jobs_own_descendants_after_leader_exit_timeout_cancel_and_abort() {
+        // Exercise nested membership without letting the test harness itself
+        // be killed when this parent job handle closes. The CLI's existing
+        // process-wide job additionally enables kill-on-close.
+        let parent_job = win32job::Job::create().unwrap();
+        parent_job.assign_current_process().unwrap();
+        for mode in ["leader_exit", "timeout", "cancel", "abort"] {
+            let root = tempdir().unwrap();
+            let workspace = Workspace::new(root.path()).unwrap();
+            let manager = ProcessManager::new(4096);
+            let mut request = process_request(
+                std::env::current_exe().unwrap().to_str().unwrap(),
+                &[
+                    "--exact",
+                    "workspace::tests::windows_command_job_fixture",
+                    "--ignored",
+                    "--nocapture",
+                ],
+            );
+            request.env.insert(
+                "CI".into(),
+                serde_json::json!({"mode":mode,"root":root.path()}).to_string(),
+            );
+            request.timeout_secs = 2;
+            let cancellation = CancellationToken::new();
+            let trigger = cancellation.clone();
+            let run =
+                tokio::spawn(async move { manager.run(&workspace, &request, cancellation).await });
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while !root.path().join("ready").exists() {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("descendant must start inside the command job");
+            if mode == "cancel" {
+                trigger.cancel();
+            }
+            if mode == "abort" {
+                run.abort();
+            }
+            let outcome = tokio::time::timeout(Duration::from_secs(5), run)
+                .await
+                .expect("bounded command completion");
+            match mode {
+                "leader_exit" => assert_eq!(outcome.unwrap().unwrap().exit_code, Some(0)),
+                "cancel" => assert!(matches!(outcome.unwrap(), Err(AxiomError::Cancelled))),
+                "abort" => assert!(outcome.unwrap_err().is_cancelled()),
+                _ => assert!(
+                    outcome
+                        .unwrap()
+                        .unwrap_err()
+                        .to_string()
+                        .contains("timed out")
+                ),
+            }
+            std::fs::write(root.path().join("release"), b"release after cleanup").unwrap();
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            assert!(
+                !root.path().join("survived").exists(),
+                "{mode}: descendant escaped command job"
+            );
+        }
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn cancellation_terminates_the_process_tree() {
@@ -3143,7 +3514,7 @@ mod tests {
                         "sh",
                         &[
                             "-c",
-                            "(sleep 1; printf survived > aborted-future-child-survived) & wait",
+                            "(printf ready > aborted-future-child-ready; while [ ! -e release-aborted-future-child ]; do sleep 0.02; done; printf survived > aborted-future-child-survived) & wait",
                         ],
                     ),
                     CancellationToken::new(),
@@ -3152,14 +3523,23 @@ mod tests {
         });
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
-        while registry.active_count() == 0 && tokio::time::Instant::now() < deadline {
+        while (registry.active_count() == 0
+            || !root.path().join("aborted-future-child-ready").exists())
+            && tokio::time::Instant::now() < deadline
+        {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         assert_eq!(registry.active_count(), 1);
+        assert!(root.path().join("aborted-future-child-ready").exists());
         run.abort();
         assert!(run.await.expect_err("task was aborted").is_cancelled());
         assert_eq!(registry.active_count(), 0);
 
+        // Release the child's work only after abort and guard destruction.
+        // A loaded host can delay the test task beyond a fixed child sleep;
+        // that must not turn work done before cancellation into a cleanup failure.
+        std::fs::write(root.path().join("release-aborted-future-child"), "go")
+            .expect("release child after abort");
         tokio::time::sleep(Duration::from_millis(1100)).await;
         assert!(!root.path().join("aborted-future-child-survived").exists());
     }

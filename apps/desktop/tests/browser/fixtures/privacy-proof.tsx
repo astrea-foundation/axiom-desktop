@@ -25,6 +25,8 @@ function ProofHarness() {
   const [disabledReason, setDisabledReason] = useState<string | undefined>();
   const [showChat, setShowChat] = useState(true);
   const requests = useRef(0);
+  const automaticRequests = useRef(0);
+  const [cacheAware, setCacheAware] = useState(false);
   const acceptances = useRef(0);
   const acceptOutdated = async () => {
     acceptances.current++;
@@ -41,11 +43,17 @@ function ProofHarness() {
     setSession((current) => ({ ...current, security: { state: "verifying" }, securityVerificationPending: true }));
     return new Promise<void>((resolve, reject) => { pending.current = { resolve, reject }; });
   };
+  const ensure = () => {
+    automaticRequests.current++;
+    return new Promise<void>((resolve, reject) => { pending.current = { resolve, reject }; });
+  };
   Object.assign(window, { __privacyTest: {
     calls: () => requests.current,
+    automaticCalls: () => automaticRequests.current,
+    report: () => session.securityEvidence,
     acceptances: () => acceptances.current,
     update: (changes: Partial<ClientSessionState>) => setSession((current) => ({ ...current, ...changes })),
-    setWeb, setScope, setModel, setDisabledReason, setShowChat,
+    setWeb, setScope, setModel, setDisabledReason, setShowChat, setCacheAware,
     finishReport: (evidence: ClientSessionState["securityEvidence"]) => {
       setSession((current) => ({ ...current, security: evidence!.status, securityEvidence: evidence,
         securityVerificationPending: false }));
@@ -67,7 +75,7 @@ function ProofHarness() {
       {showChat ? <ChatView session={session} draft={draft} onDraftChange={setDraft} onSubmit={() => {}} onStop={() => {}}
         isStreaming={session.running} models={[model]} selectedModelId={selectedModel} modelStatusLabel="" onModelChange={setModel}
         requiresSignIn={false} onSignIn={() => {}} reasoningEffort="medium" onReasoningEffortChange={() => {}}
-        onVerifySecurity={verify} securityScope={scope} securityRefreshDisabledReason={disabledReason}
+        onVerifySecurity={verify} onEnsureSecurity={cacheAware ? ensure : undefined} securityScope={scope} securityRefreshDisabledReason={disabledReason}
         onAcceptOutdatedTee={acceptOutdated}
         webEnabled={web} webDisabled={false} onWebToggle={() => setWeb((value) => !value)} /> : null}
     </main>

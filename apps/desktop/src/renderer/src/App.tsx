@@ -327,6 +327,10 @@ export function App() {
                 pendingUserMessage={pendingUserMessage}
                 securityScope={agentAccountScope}
                 securityRefreshDisabledReason={!agentState.connected ? "Reconnect to refresh verification" : requiresSignIn ? "Sign in to refresh verification" : undefined}
+                onEnsureSecurity={async () => {
+                  if (!activeThreadId || !window.axiomDesktop?.agent) throw new Error("No active thread");
+                  await window.axiomDesktop.agent.ensureSecurity(activeThreadId);
+                }}
                 onVerifySecurity={async () => {
                   if (!activeThreadId || !window.axiomDesktop?.agent) throw new Error("No active thread");
                   await window.axiomDesktop.agent.verifySecurity(activeThreadId);

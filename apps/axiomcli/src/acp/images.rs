@@ -6,6 +6,56 @@ use super::{
     mpsc, protocol, release_session_work, send_event,
 };
 
+pub(super) async fn read(
+    context: &ServerContext,
+    request: extension::ReadImageRequest,
+    responder: Responder<extension::ReadImageResponse>,
+    _connection: &ConnectionTo<Client>,
+) -> agent_client_protocol::Result<()> {
+    if !extension_enabled(&context.extension_state, ExtensionFeature::ImageResources) {
+        return responder.respond_with_error(extension_not_negotiated());
+    }
+    if request.call_id.is_empty()
+        || request.call_id.len() > 512
+        || request.sha256.len() != 64
+        || !request
+            .sha256
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    {
+        return responder.respond_with_internal_error("invalid image identity");
+    }
+    let Some(store) = &context.store else {
+        return responder.respond_with_internal_error("image storage is unavailable");
+    };
+    let account = match context.account_work.register_store(store) {
+        Ok(account) => account,
+        Err(error) => return responder.respond_with_error(agent_error(error)),
+    };
+    let Ok(thread_id) = request.thread_id.parse::<crate::app::SessionId>() else {
+        return responder.respond_with_internal_error("invalid thread ID");
+    };
+    // Decoding and hashing an original PNG must not block other native requests.
+    let result = tokio::task::spawn_blocking(move || {
+        let image = account
+            .read(|store| store.generated_image(&thread_id, &request.call_id, &request.sha256));
+        match image {
+            Ok(image) => account.publish(|| {
+                responder.respond(extension::ReadImageResponse {
+                    data: image.data,
+                    mime_type: image.mime_type,
+                    width: image.width,
+                    height: image.height,
+                    sha256: image.sha256,
+                })
+            }),
+            Err(error) => responder.respond_with_error(agent_error(error)),
+        }
+    })
+    .await;
+    result.map_err(|error| agent_client_protocol::util::internal_error(error.to_string()))?
+}
+
 fn recipe(
     history: &[crate::app::EventEnvelope],
     source: &str,
@@ -178,7 +228,7 @@ pub(super) async fn regenerate(
                     result = &mut run => break result,
                     event = events_rx.recv() => {
                         let Some(event) = event else { continue };
-                        let envelope = runtime.emit(internal_id.clone(), event.clone()).await.map_err(agent_error)?;
+                        let envelope = runtime.emit_for_turn(internal_id.clone(), &turn_id, event.clone()).await.map_err(agent_error)?;
                         let revision = account.store.append(&envelope).map_err(agent_error)?;
                         account.publish(|| send_event(&connection_task, &external_id, event, EventDelivery {
                             cwd: Some(&cwd), extension_state: Some(&extension), correlation_id: Some(envelope.correlation_id.to_string()), revision: Some(&revision), client_item_id: None,
@@ -189,7 +239,7 @@ pub(super) async fn regenerate(
                 }
             };
             while let Ok(event) = events_rx.try_recv() {
-                let envelope = runtime.emit(internal_id.clone(), event.clone()).await.map_err(agent_error)?;
+                let envelope = runtime.emit_for_turn(internal_id.clone(), &turn_id, event.clone()).await.map_err(agent_error)?;
                 let revision = account.store.append(&envelope).map_err(agent_error)?;
                 account.publish(|| send_event(&connection_task, &external_id, event, EventDelivery {
                     cwd: Some(&cwd), extension_state: Some(&extension), correlation_id: Some(envelope.correlation_id.to_string()), revision: Some(&revision), client_item_id: None,
@@ -269,7 +319,7 @@ mod tests {
             format!("img_{}", "bb".repeat(16)),
         ];
         let mut original = generated_fixture();
-        original.chat_model_id = Some("chutes:qwen3.8-27b".into());
+        original.chat_model_id = Some("direct:qwen3.8-27b".into());
         original.source_image_ids = refs.clone();
         let arguments = json!({"prompt":"Use <image1> with the colors of <image2>","reference_image_ids":refs,"aspect_ratio":"1:1"});
         for event in [
@@ -318,7 +368,7 @@ mod tests {
             .unwrap();
         let history = store.load(&id).unwrap();
         let (replay, origin_model) = recipe(&history, "original-image").unwrap();
-        assert_eq!(origin_model.as_deref(), Some("chutes:qwen3.8-27b"));
+        assert_eq!(origin_model.as_deref(), Some("direct:qwen3.8-27b"));
         assert_eq!(
             replay,
             json!({"prompt":arguments["prompt"],"reference_image_ids":refs,"width":1536,"height":1536})

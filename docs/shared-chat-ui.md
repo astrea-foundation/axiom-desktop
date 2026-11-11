@@ -61,6 +61,15 @@ available categories and account/storage actions. Web hides Agent, MCP, Proxy,
 native updates and local API-key controls. Unsupported uploads are disabled with
 provider/model-specific hover text. Composer relocation animates on immediate
 thread creation and respects reduced motion.
+The composer disables model selection during preparation and streaming, dismisses
+an open model picker when either starts, and restores selection when the turn
+ends. Hosts must keep `isStreaming` true through tool calls and cancellation
+cleanup and reject model changes against an active run in their settings handler.
+Hosts may supply `onEnsureSecurity` for automatic, cache-aware report renewal;
+`onVerifySecurity` remains the explicit Refresh action. Without that optional
+callback, automatic renewal retains the existing verification callback. An
+already valid report stays visible during automatic renewal until its true
+hard expiry. Running image/tool turns finish before either refresh can start.
 
 Queue hosts may provide `persistQueue` to require an encrypted durable commit
 before dispatch. Native hosts retain their existing synchronous admission timing.

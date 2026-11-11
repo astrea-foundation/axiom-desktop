@@ -112,7 +112,7 @@ export function ProviderBrandIcon({ providerId, providerLabel, className = "h-3.
   if (providerId === "axiom-direct" || hasAlias(normalized, "astreaai")) {
     return <AssetIcon asset={{ name: "AstreaAI", src: astreaIcon }} className={className} />;
   }
-  if (providerId === "axiom" || providerId === "chutes" || providerId === "chutes-preview") {
+  if (providerId === "axiom") {
     return <AssetIcon asset={{ name: "Axiom", src: axiomIcon }} className={className} />;
   }
   if (hasAlias(normalized, "tinfoil")) {

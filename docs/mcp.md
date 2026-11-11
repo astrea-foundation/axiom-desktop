@@ -90,3 +90,9 @@ plaintext MCP arguments, results or reconstructed model messages.
 
 See [privacy](privacy.md), [local process boundaries](threat-model.md#local-tools-and-processes)
 and [ACP authority](acp-compatibility.md#desktop-authority-and-revisions).
+
+After a local MCP connection reconnects, its complete discovered tool list is
+bound to the new connection generation. Every call checks its original schema
+against that generation, including sibling tools that did not initiate the
+reconnect. Removed tools or changed schemas are rejected before dispatch;
+restart the connection to review the new tool definitions.

@@ -58,6 +58,7 @@ interface ChatComposerProps {
   requestUsage?: ClientSessionState["requestUsage"];
   activeTurnId?: string | null;
   onVerifySecurity?: () => void | Promise<unknown>;
+  onEnsureSecurity?: () => void | Promise<unknown>;
   webEnabled?: boolean;
   webDisabled?: boolean;
   onWebToggle?: () => void;
@@ -89,6 +90,7 @@ export function ChatComposer({
   requestUsage = [],
   activeTurnId,
   onVerifySecurity,
+  onEnsureSecurity,
   webEnabled = false,
   webDisabled = false,
   onWebToggle,
@@ -117,6 +119,7 @@ export function ChatComposer({
   const attachmentHint = !selectedModel ? 'Choose a model to attach files' : !canAttach ? 'Choose a model that supports image or file uploads' : `Attach files supported by ${selectedModel.providerLabel}’s ${selectedModel.shortLabel}`;
   const imageMismatch = attachments?.items.some((file) => !acceptsAttachment(selectedModel, file));
   const canSend = !preparing && (Boolean(value.trim()) || Boolean(attachments?.items.length)) && !attachments?.busy && !imageMismatch && (Boolean(selectedModel) || requiresSignIn);
+  const modelSelectionLocked = preparing || isStreaming;
 
   useEffect(() => {
     const el = ref.current;
@@ -134,10 +137,10 @@ export function ChatComposer({
   }, [agentControl?.scope]);
 
   useEffect(() => {
-    if (models.length === 0) {
+    if (modelSelectionLocked || models.length === 0) {
       setOpenMenu((current) => current === "model" ? null : current);
     }
-  }, [models.length]);
+  }, [modelSelectionLocked, models.length]);
 
   useEffect(() => {
     // Agent owns a top-layer modal, including dismissal and focus handling.
@@ -194,18 +197,19 @@ export function ChatComposer({
             <div className="relative shrink-0">
               <button
                 type="button"
-                disabled={models.length === 0 && !requiresSignIn}
+                disabled={modelSelectionLocked || (models.length === 0 && !requiresSignIn)}
                 onClick={() => {
+                  if (modelSelectionLocked) return;
                   if (requiresSignIn) {
                     onSignIn?.();
                     return;
                   }
                   setOpenMenu((open) => (open === "model" ? null : "model"));
                 }}
-                className="flex h-7 items-center gap-1.5 rounded-[7px] bg-[var(--wash-chip)] px-2.5 text-[12px] font-medium text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--wash-chip-hover)] hover:text-[var(--color-text-primary)] disabled:cursor-default disabled:hover:bg-[var(--wash-chip)] disabled:hover:text-[var(--color-text-secondary)]"
+                className="flex h-7 items-center gap-1.5 rounded-[7px] bg-[var(--wash-chip)] px-2.5 text-[12px] font-medium text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--wash-chip-hover)] hover:text-[var(--color-text-primary)] disabled:cursor-default disabled:opacity-50 disabled:hover:bg-[var(--wash-chip)] disabled:hover:text-[var(--color-text-secondary)]"
                 aria-haspopup="menu"
-                aria-expanded={openMenu === "model"}
-                title={requiresSignIn ? "Sign in to choose a model" : models.length === 0 ? modelStatusLabel : "Select model"}
+                aria-expanded={openMenu === "model" && !modelSelectionLocked}
+                title={modelSelectionLocked ? "Model is fixed for the current response" : requiresSignIn ? "Sign in to choose a model" : models.length === 0 ? modelStatusLabel : "Select model"}
               >
                 {selectedModel ? (
                   <>
@@ -222,11 +226,12 @@ export function ChatComposer({
                 </span>
                 <ChevronDown size={12} className="opacity-70" />
               </button>
-              {openMenu === "model" ? (
+              {openMenu === "model" && !modelSelectionLocked ? (
                 <ModelPicker
                   models={models}
                   selectedModelId={selectedModelId}
                   onSelect={(modelId) => {
+                    if (modelSelectionLocked) return;
                     onModelChange(modelId);
                     setOpenMenu(null);
                   }}
@@ -307,7 +312,7 @@ export function ChatComposer({
             {security !== undefined && onVerifySecurity ? (
               <TeeVerificationBadge key={JSON.stringify([securityScope, security.sessionId, selectedModelId])}
                 session={security} model={models.find((model) => model.id === selectedModelId)} modelId={selectedModelId}
-                webEnabled={webEnabled} disabledReason={securityRefreshDisabledReason} onVerify={onVerifySecurity} />
+                webEnabled={webEnabled} disabledReason={securityRefreshDisabledReason} onVerify={onVerifySecurity} onEnsure={onEnsureSecurity} />
             ) : null}
             <ContextUsageIndicator
               usage={contextUsage}

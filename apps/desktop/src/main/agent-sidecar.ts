@@ -1,7 +1,7 @@
 import type { PromptAttachment } from "@axiom/axiom-acp-client";
 import { access, stat } from "node:fs/promises";
 import { constants } from "node:fs";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import { app, BrowserWindow, shell, type WebContents } from "electron";
 import type { DesktopMcpRequest } from "@axiom/axiom-acp-client";
 import {
@@ -75,6 +75,10 @@ export class AgentSidecar {
   rendererState(contents: WebContents) {
     return rendererTransport(contents).encode(this.state(), true);
   }
+  rendererImage(contents: WebContents, context: string, id: string) {
+    const client = this.requireClient();
+    return rendererTransport(contents).readImage(context, id, request => client.readImage(request.threadId, request.callId, request.sha256));
+  }
   constructor(private readonly stateChanged: (state: ClientState) => void = () => {}) {}
   private client: AxiomAcpClient | null = null;
   private initializingClient: AxiomAcpClient | null = null;
@@ -119,20 +123,6 @@ export class AgentSidecar {
     let client: AxiomAcpClient | null = null;
     try {
       const command = await resolveSidecar();
-      // Installed native trust configuration is startup input, never an ACP
-      // or renderer preference. Packaged apps only use their own resource.
-      const chutesConfig = app.isPackaged
-        ? join(process.resourcesPath, "chutes", "native.json")
-        : process.env.AXIOM_CHUTES_CLIENT_CONFIG_FILE;
-      let chutesEnv: NodeJS.ProcessEnv = {};
-      if (chutesConfig) {
-        try {
-          await access(chutesConfig, constants.R_OK);
-          chutesEnv = { AXIOM_CHUTES_CLIENT_CONFIG_FILE: chutesConfig };
-        } catch (error) {
-          if (!app.isPackaged) throw error;
-        }
-      }
       client = new AxiomAcpClient({
         command,
         args: ["acp", "--frontend", "desktop-chat"],
@@ -140,7 +130,6 @@ export class AgentSidecar {
         env: {
           AXIOM_AUTH_URL: this.origins.auth,
           AXIOM_BASE_URL: this.origins.api,
-          ...chutesEnv,
           ...localProfile({ packaged: app.isPackaged, environment: process.env, home: app.getPath("home") }).sidecarEnv,
         },
         inheritEnv: DESKTOP_SIDECAR_INHERITED_ENV,
@@ -391,6 +380,10 @@ export class AgentSidecar {
 
   prewarmSecurity(modelId: string) {
     return this.requireClient().prewarmSecurity(modelId);
+  }
+
+  ensureSecurity(sessionId: string) {
+    return this.requireClient().ensureSecurity(sessionId);
   }
 
   verifySecurity(sessionId: string, acceptOutdatedTee = false, modelId?: string) {

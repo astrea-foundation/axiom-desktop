@@ -28,6 +28,7 @@ use tempfile::tempdir;
 fn envelope(id: &SessionId, sequence: u64, event: AppEvent) -> EventEnvelope {
     EventEnvelope {
         schema_version: 1,
+        turn_id: event.turn_id().cloned(),
         sequence,
         occurred_at: Utc::now(),
         correlation_id: CorrelationId::new(),
@@ -165,7 +166,7 @@ fn version_two_store_upgrades_preserving_titles_and_history() {
         .lock()
         .unwrap()
         .execute_batch(
-            "DROP TABLE desktop_mcp_threads; DROP TABLE desktop_mcp_state; ALTER TABLE threads DROP COLUMN title_generation_id; PRAGMA user_version=2;",
+            "DROP TABLE model_messages; DROP TABLE model_history; DROP TABLE model_history_threads; ALTER TABLE turns DROP COLUMN owner_id; DROP TABLE desktop_mcp_threads; DROP TABLE desktop_mcp_state; ALTER TABLE threads DROP COLUMN title_generation_id; PRAGMA user_version=2;",
         )
         .unwrap();
     drop(store);
@@ -174,7 +175,7 @@ fn version_two_store_upgrades_preserving_titles_and_history() {
         upgraded.thread_summary(&id).unwrap().title.as_deref(),
         Some("Existing name")
     );
-    assert_eq!(upgraded.load(&id).unwrap().len(), history.len());
+    assert_eq!(upgraded.load(&id).unwrap()[0].event, history[0].event);
     assert!(
         upgraded
             .begin_title_generation(&id, "Replacement")
@@ -713,6 +714,82 @@ fn begin_turn(
 }
 
 #[test]
+fn missing_attachments_and_broken_image_records_keep_text_loadable_and_editable() {
+    for corrupt_metadata in [false, true] {
+        let store = SessionStore::in_memory().unwrap();
+        let id = SessionId::new();
+        let turn = TurnId::new();
+        create(&store, &id);
+        begin_turn(&store, &id, &turn, Some("original"));
+        for (sequence, event) in [
+            AppEvent::ToolProposed {
+                turn_id: turn.clone(),
+                call_id: "image".into(),
+                name: "generate".into(),
+                arguments: json!({"prompt":"Synthetic image"}),
+            },
+            AppEvent::ImageGenerated {
+                call_id: "image".into(),
+                image: Box::new(crate::image_tool::tests::generated_fixture()),
+            },
+            AppEvent::ToolCompleted {
+                call_id: "image".into(),
+                success: true,
+            },
+            AppEvent::TurnCompleted {
+                turn_id: turn.clone(),
+            },
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            store
+                .append(&envelope(&id, sequence as u64 + 4, event))
+                .unwrap();
+        }
+        let user_id: String = {
+            let connection = store.lock().unwrap();
+            connection.execute("UPDATE timeline_items SET metadata='{\"attachments\":[{\"kind\":\"image\"}]}' WHERE thread_id=?1 AND kind='user_message'", [id.to_string()]).unwrap();
+            connection.execute(if corrupt_metadata {
+                "UPDATE timeline_items SET metadata='broken json' WHERE thread_id=?1 AND kind='tool_call'"
+            } else {
+                "UPDATE timeline_items SET metadata=json_remove(metadata,'$.content') WHERE thread_id=?1 AND kind='tool_call'"
+            }, [id.to_string()]).unwrap();
+            connection
+                .query_row(
+                    "SELECT id FROM timeline_items WHERE thread_id=?1 AND kind='user_message'",
+                    [id.to_string()],
+                    |row| row.get(0),
+                )
+                .unwrap()
+        };
+        let page = store
+            .thread_page_with_image_resources(&id, None, None, 250)
+            .unwrap();
+        assert!(
+            page.items
+                .iter()
+                .any(|item| item.kind == TimelineItemKind::UserMessage)
+        );
+        let history = store.load(&id).unwrap();
+        assert!(history.iter().any(|event| matches!(&event.event, AppEvent::PromptAccepted { text, attachments, .. } if text=="hello" && attachments.is_empty())));
+        assert!(
+            history
+                .iter()
+                .any(|event| matches!(event.event, AppEvent::ImageGenerated { .. }))
+        );
+        assert!(store.prompt_attachments(&id, &user_id).unwrap().is_empty());
+        let revision = axiom_acp_extension::PromptRevision {
+            user_item_id: user_id,
+            expected_revision: store.thread_summary(&id).unwrap().revision,
+        };
+        assert!(store.history_before_user_message(&id, &revision).is_ok());
+        assert!(store.thread_snapshot(&id, None, 100).is_ok());
+        begin_turn(&store, &id, &TurnId::new(), Some("after-recovery"));
+    }
+}
+
+#[test]
 fn timeline_sequence_uniqueness_also_supplies_the_pagination_index() {
     let store = SessionStore::in_memory().unwrap();
     let id = SessionId::new();
@@ -1220,9 +1297,11 @@ fn tool_boundaries_preserve_message_segments_through_restart_and_replay() {
         vec![
             "Let me check 🌍: ",
             "search-1",
-            "One result. More. ",
+            "One result. ",
+            "More. ",
             "search-2",
-            "The news is xyz.More. "
+            "The news is xyz.",
+            "More. "
         ]
     );
 }
@@ -1676,7 +1755,7 @@ fn message_order_ignores_operational_updates_and_paginates_empty_threads() {
         &older,
         "2026-01-02T03:00:00Z",
         AppEvent::TextDelta {
-            turn_id: turn,
+            turn_id: turn.clone(),
             text: "new reply".into(),
         },
     );
@@ -1691,6 +1770,11 @@ fn message_order_ignores_operational_updates_and_paginates_empty_threads() {
     assert_eq!(
         revision.last_user_message_at.as_deref(),
         Some("2026-01-01T01:00:00.000Z")
+    );
+    at(
+        &older,
+        "2026-01-02T03:00:01Z",
+        AppEvent::TurnCompleted { turn_id: turn },
     );
     at(
         &older,
@@ -2134,7 +2218,7 @@ fn generated_and_edited_images_restore_from_their_owning_durable_tool_records() 
     create(&store, &id);
     begin_turn(&store, &id, &turn, None);
     let evidence:axiom_secure_client::SecurityEvidence=serde_json::from_value(json!({
-        "state":"verified","provider_id":"chutes","model_id":"chutes:qwen-image-2.1-turbo",
+        "state":"verified","provider_id":"axiom-direct","model_id":"direct:qwen3.8-27b",
         "attestation_protocol":"synthetic-unit-fixture","e2ee_protocol":"synthetic-unit-fixture","e2ee_encryption_version":1,
         "trust_policy_version":"unit-test","verified_at_unix_seconds":1,"model_key_fingerprint":"00".repeat(32),
         "tls_spki_fingerprint":null,"checks":[],"provider_claims":[]
@@ -2158,13 +2242,8 @@ fn generated_and_edited_images_restore_from_their_owning_durable_tool_records() 
             evidence: evidence.clone(),
             usage: axiom_inference::RequestUsage {
                 request_id,
-                provider_id: "chutes".into(),
-                model_id: if index == 0 {
-                    "chutes:qwen-image-2.1-turbo"
-                } else {
-                    "chutes:qwen-image-2.1-turbo-edit"
-                }
-                .into(),
+                provider_id: "axiom-direct".into(),
+                model_id: "direct:qwen3.8-27b".into(),
                 settled: true,
                 response_verified: true,
                 ..Default::default()
@@ -2240,4 +2319,517 @@ fn generated_and_edited_images_restore_from_their_owning_durable_tool_records() 
             .resolve(&format!("img_{}", "22".repeat(16)))
             .is_err()
     );
+}
+
+#[test]
+fn authoritative_content_is_verbatim_while_exports_apply_redaction_and_omissions() {
+    let store = SessionStore::in_memory().unwrap();
+    let id = SessionId::new();
+    let turn = TurnId::new();
+    create(&store, &id);
+    let text = "task-management flask-sqlalchemy sk-examplecredential123456789";
+    store
+        .append(&envelope(
+            &id,
+            2,
+            AppEvent::PromptAccepted {
+                turn_id: turn.clone(),
+                text: text.into(),
+                attachments: vec![],
+            },
+        ))
+        .unwrap();
+    store
+        .append(&envelope(
+            &id,
+            3,
+            AppEvent::TextDelta {
+                turn_id: turn.clone(),
+                text: text.into(),
+            },
+        ))
+        .unwrap();
+    store
+        .append(&envelope(
+            &id,
+            4,
+            AppEvent::ToolProposed {
+                turn_id: turn.clone(),
+                call_id: "call".into(),
+                name: "generate".into(),
+                arguments: json!({"prompt":text}),
+            },
+        ))
+        .unwrap();
+    store
+        .append(&envelope(
+            &id,
+            5,
+            AppEvent::ToolOutput {
+                call_id: "call".into(),
+                content: text.into(),
+                truncated: false,
+            },
+        ))
+        .unwrap();
+    store
+        .append(&envelope(
+            &id,
+            6,
+            AppEvent::DiffAvailable {
+                call_id: "call".into(),
+                diff: "private-diff-payload".into(),
+                truncated: false,
+                files: vec![],
+            },
+        ))
+        .unwrap();
+    let connection = store.lock().unwrap();
+    connection.execute("UPDATE timeline_items SET metadata=json_set(metadata, '$.content', json('[{\"data\":\"private-image-payload\"}]'), '$.generated_image', json('{\"data\":\"private-image-payload\"}')) WHERE kind='tool_call'", []).unwrap();
+    drop(connection);
+    let events = store.load(&id).unwrap();
+    assert!(events.iter().any(
+        |e| matches!(&e.event, AppEvent::PromptAccepted { text: saved, .. } if saved == text)
+    ));
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(&e.event, AppEvent::TextDelta { text: saved, .. } if saved == text))
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(&e.event, AppEvent::ToolOutput { content, .. } if content == text))
+    );
+    let full = store.export(&id).unwrap();
+    assert!(!full.contains("sk-examplecredential123456789"));
+    let omitted = store
+        .export_with_options(
+            &id,
+            super::ExportOptions {
+                include_tool_output: false,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    for payload in ["private-image-payload", "private-diff-payload"] {
+        assert!(!omitted.contains(payload));
+    }
+    let omitted: Value = serde_json::from_str(
+        &store
+            .export_with_options(
+                &id,
+                super::ExportOptions {
+                    include_prompts: false,
+                    ..Default::default()
+                },
+            )
+            .unwrap(),
+    )
+    .unwrap();
+    let prompt = omitted["timeline_items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["kind"] == "user_message")
+        .unwrap();
+    assert_eq!(prompt["content"], "[omitted by export policy]");
+    assert_eq!(prompt["metadata"], json!({}));
+    let tool = omitted["timeline_items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["kind"] == "tool_call")
+        .unwrap();
+    assert!(tool["metadata"].get("arguments").is_none());
+}
+
+#[test]
+fn two_clients_preserve_live_turns_reject_conflicts_and_route_exact_turns() {
+    let root = tempdir().unwrap();
+    let path = root.path().join("state.sqlite");
+    let first = SessionStore::open(&path).unwrap();
+    let id = SessionId::new();
+    let turn = TurnId::new();
+    create(&first, &id);
+    begin_turn(&first, &id, &turn, None);
+    for _ in 0..6 {
+        let probe = SessionStore::open(&path).unwrap();
+        let snapshot = probe.thread_snapshot(&id, None, 100).unwrap();
+        assert_eq!(snapshot.thread.lifecycle, ThreadLifecycle::Running);
+        assert_eq!(probe.recovery_status(&id).unwrap().interrupted_turns, 0);
+        assert!(probe.claim_context_operation(&id).is_err());
+    }
+    let second = SessionStore::open(&path).unwrap();
+    assert_eq!(
+        second.thread_summary(&id).unwrap().lifecycle,
+        ThreadLifecycle::Running
+    );
+    assert_eq!(second.recovery_status(&id).unwrap().interrupted_turns, 0);
+    assert!(
+        second
+            .append(&envelope(
+                &id,
+                4,
+                AppEvent::PromptAccepted {
+                    turn_id: TurnId::new(),
+                    text: "conflict".into(),
+                    attachments: vec![]
+                }
+            ))
+            .is_err()
+    );
+    let mut stale = envelope(
+        &id,
+        5,
+        AppEvent::ToolOutput {
+            call_id: "stale".into(),
+            content: "wrong".into(),
+            truncated: false,
+        },
+    );
+    stale.turn_id = Some(TurnId::new());
+    assert!(first.append(&stale).is_err());
+    first
+        .append(&envelope(
+            &id,
+            6,
+            AppEvent::TurnCompleted {
+                turn_id: turn.clone(),
+            },
+        ))
+        .unwrap();
+    let next = TurnId::new();
+    begin_turn(&second, &id, &next, None);
+    let mut late = envelope(
+        &id,
+        7,
+        AppEvent::UsageUpdated {
+            input_tokens: 900,
+            output_tokens: 100,
+        },
+    );
+    late.turn_id = Some(turn);
+    assert!(second.append(&late).is_err());
+    assert_eq!(
+        second
+            .thread_snapshot(&id, None, 100)
+            .unwrap()
+            .turns
+            .last()
+            .unwrap()
+            .input_tokens,
+        0
+    );
+}
+
+#[test]
+#[ignore = "subprocess fixture invoked by crash recovery regression"]
+fn execution_lock_child_worker() {
+    let Some(path) = std::env::var_os("AXIOM_W02_CRASH_DB") else {
+        return;
+    };
+    let store = SessionStore::open(path).unwrap();
+    let id: SessionId = std::env::var("AXIOM_W02_CRASH_THREAD")
+        .unwrap()
+        .parse()
+        .unwrap();
+    begin_turn(&store, &id, &TurnId::new(), None);
+    std::fs::write(std::env::var_os("AXIOM_W02_CRASH_READY").unwrap(), b"ready").unwrap();
+    loop {
+        std::thread::park();
+    }
+}
+
+#[test]
+fn killed_owner_is_recovered_without_interrupting_its_healthy_process() {
+    let root = tempdir().unwrap();
+    let path = root.path().join("state.sqlite");
+    let ready = root.path().join("ready");
+    let store = SessionStore::open(&path).unwrap();
+    let id = SessionId::new();
+    create(&store, &id);
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "session::tests::execution_lock_child_worker",
+            "--ignored",
+        ])
+        .env("AXIOM_W02_CRASH_DB", &path)
+        .env("AXIOM_W02_CRASH_THREAD", id.to_string())
+        .env("AXIOM_W02_CRASH_READY", &ready)
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !ready.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    if !ready.exists() {
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("child did not acquire execution");
+    }
+    let observer = SessionStore::open(&path).unwrap();
+    assert_eq!(observer.recovery_status(&id).unwrap().interrupted_turns, 0);
+    child.kill().unwrap();
+    child.wait().unwrap();
+    // This client opened while the owner was healthy. Claiming a new turn
+    // recovers the abandoned owner without requiring another database open.
+    begin_turn(&observer, &id, &TurnId::new(), None);
+    assert_eq!(observer.recovery_status(&id).unwrap().interrupted_turns, 1);
+    assert!(observer.load(&id).unwrap().iter().any(|e| matches!(&e.event, AppEvent::ErrorRaised { turn_id: Some(_), message } if message.contains("previous process"))));
+}
+
+#[test]
+fn canonical_history_survives_timeline_damage_and_legacy_migration_is_atomic() {
+    let store = SessionStore::in_memory().unwrap();
+    let id = SessionId::new();
+    create(&store, &id);
+    let turn = TurnId::new();
+    begin_turn(&store, &id, &turn, None);
+    store
+        .append(&envelope(
+            &id,
+            4,
+            AppEvent::TextDelta {
+                turn_id: turn.clone(),
+                text: "authoritative assistant".into(),
+            },
+        ))
+        .unwrap();
+    store
+        .append(&envelope(&id, 5, AppEvent::TurnCompleted { turn_id: turn }))
+        .unwrap();
+    store
+        .lock()
+        .unwrap()
+        .execute(
+            "UPDATE timeline_items SET content='presentation changed'",
+            [],
+        )
+        .unwrap();
+    assert!(store.load(&id).unwrap().iter().any(|e| matches!(&e.event, AppEvent::TextDelta { text, .. } if text == "authoritative assistant")));
+    // Simulate a supported pre-v6 thread; its first write adopts the compatible
+    // legacy projection while later timeline modifications cannot alter it.
+    store
+        .lock()
+        .unwrap()
+        .execute_batch("DELETE FROM model_history; DELETE FROM model_history_threads;")
+        .unwrap();
+    let legacy = store.load(&id).unwrap();
+    assert!(legacy.iter().any(
+        |e| matches!(&e.event, AppEvent::TextDelta { text, .. } if text == "presentation changed")
+    ));
+    store
+        .append(&envelope(
+            &id,
+            6,
+            AppEvent::ThinkingLevelChanged {
+                level: ThinkingLevel::High,
+            },
+        ))
+        .unwrap();
+    store
+        .lock()
+        .unwrap()
+        .execute("UPDATE timeline_items SET content='later damage'", [])
+        .unwrap();
+    assert!(store.load(&id).unwrap().iter().any(
+        |e| matches!(&e.event, AppEvent::TextDelta { text, .. } if text == "presentation changed")
+    ));
+    store
+        .append(&envelope(
+            &id,
+            7,
+            AppEvent::SecurityStatusChanged {
+                state: crate::app::SecurityStatus::Verified,
+            },
+        ))
+        .unwrap();
+    assert!(!store.load(&id).unwrap().iter().any(|e| matches!(
+        e.event,
+        AppEvent::SecurityStatusChanged { .. } | AppEvent::SecurityEvidenceUpdated { .. }
+    )));
+    store
+        .lock()
+        .unwrap()
+        .execute("UPDATE model_history_threads SET version=999", [])
+        .unwrap();
+    assert!(
+        store.load(&id).is_err(),
+        "unknown authoritative versions must not fall back silently"
+    );
+}
+
+#[test]
+fn manual_context_operations_serialize_with_other_clients_and_turns() {
+    let root = tempdir().unwrap();
+    let path = root.path().join("state.sqlite");
+    let first = SessionStore::open(&path).unwrap();
+    let id = SessionId::new();
+    create(&first, &id);
+    let second = SessionStore::open(&path).unwrap();
+    let claim = first.claim_context_operation(&id).unwrap();
+    for _ in 0..6 {
+        let probe = SessionStore::open(&path).unwrap();
+        assert!(probe.claim_context_operation(&id).is_err());
+        assert_eq!(probe.recovery_status(&id).unwrap().interrupted_turns, 0);
+    }
+    assert!(first.claim_context_operation(&id).is_err());
+    assert!(second.claim_context_operation(&id).is_err());
+    let prompt = envelope(
+        &id,
+        2,
+        AppEvent::PromptAccepted {
+            turn_id: TurnId::new(),
+            text: "wait".into(),
+            attachments: vec![],
+        },
+    );
+    assert!(first.append(&prompt).is_err());
+    assert!(second.append(&prompt).is_err());
+    drop(claim);
+    second.append(&prompt).unwrap();
+    assert!(first.claim_context_operation(&id).is_err());
+}
+
+#[test]
+fn earlier_turn_revisions_keep_exact_checkpoints_with_deduplicated_messages() {
+    let store = SessionStore::in_memory().unwrap();
+    let id = SessionId::new();
+    let first = TurnId::new();
+    create(&store, &id);
+    begin_turn(&store, &id, &first, None);
+    let original = json!([
+        {"role":"system","content":"system"},
+        {"role":"user","content":"original"},
+        {"role":"assistant","content":"reply","reasoning_content":"reasoning","name":"supported name"}
+    ]);
+    for _ in 0..2 {
+        store
+            .append(&envelope(
+                &id,
+                4,
+                AppEvent::ModelHistoryCheckpoint {
+                    version: 1,
+                    messages: original.clone(),
+                },
+            ))
+            .unwrap();
+    }
+    store
+        .append(&envelope(
+            &id,
+            5,
+            AppEvent::TurnCompleted { turn_id: first },
+        ))
+        .unwrap();
+    let second = TurnId::new();
+    begin_turn(&store, &id, &second, None);
+    let mut next = original.clone();
+    next.as_array_mut()
+        .unwrap()
+        .push(json!({"role":"user","content":"next"}));
+    store
+        .append(&envelope(
+            &id,
+            6,
+            AppEvent::ModelHistoryCheckpoint {
+                version: 1,
+                messages: next,
+            },
+        ))
+        .unwrap();
+    store
+        .append(&envelope(
+            &id,
+            7,
+            AppEvent::TurnCompleted { turn_id: second },
+        ))
+        .unwrap();
+    let count: i64 = store
+        .lock()
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM model_messages", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(count, 4);
+    let snapshot = store.thread_snapshot(&id, None, 100).unwrap();
+    let second_user = snapshot
+        .items
+        .iter()
+        .filter(|i| i.kind == TimelineItemKind::UserMessage)
+        .nth(1)
+        .unwrap();
+    let revision = axiom_acp_extension::PromptRevision {
+        user_item_id: second_user.id.clone(),
+        expected_revision: snapshot.thread.revision,
+    };
+    let before = store.history_before_user_message(&id, &revision).unwrap();
+    assert!(before.iter().any(|e| matches!(&e.event, AppEvent::ModelHistoryCheckpoint { messages, .. } if messages == &original)));
+    store
+        .truncate_before_user_message(&id, &second_user.id, revision.expected_revision)
+        .unwrap();
+    assert!(store.load(&id).unwrap().iter().any(|e| matches!(&e.event, AppEvent::ModelHistoryCheckpoint { messages, .. } if messages == &original)));
+    let count: i64 = store
+        .lock()
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM model_messages", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(count, 3);
+}
+
+#[test]
+fn partial_legacy_history_is_retained_instead_of_adopted_as_complete() {
+    let store = SessionStore::in_memory().unwrap();
+    let id = SessionId::new();
+    create(&store, &id);
+    {
+        let connection = store.lock().unwrap();
+        connection
+            .execute_batch("DELETE FROM model_history; DELETE FROM model_history_threads;")
+            .unwrap();
+        connection.execute("WITH RECURSIVE entries(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM entries WHERE n<?2) INSERT INTO timeline_items(id,thread_id,sequence,kind,status,created_at,updated_at) SELECT 'legacy-'||n,?1,n,'notice','completed','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z' FROM entries", params![id.to_string(), i64::try_from(super::MAX_TIMELINE_ITEMS_PER_LOAD + 1).unwrap()]).unwrap();
+    }
+    let result = store.append(&envelope(
+        &id,
+        2,
+        AppEvent::ThinkingLevelChanged {
+            level: ThinkingLevel::High,
+        },
+    ));
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("original records were retained")
+    );
+    let connection = store.lock().unwrap();
+    assert!(!super::model_history::exists(&connection, &id).unwrap());
+    let count: i64 = connection
+        .query_row("SELECT COUNT(*) FROM timeline_items", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(
+        count,
+        i64::try_from(super::MAX_TIMELINE_ITEMS_PER_LOAD + 1).unwrap()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn database_symlink_alias_cannot_interrupt_a_live_owner() {
+    let root = tempdir().unwrap();
+    let path = root.path().join("state.sqlite");
+    let alias = root.path().join("alias.sqlite");
+    let owner = SessionStore::open(&path).unwrap();
+    let id = SessionId::new();
+    create(&owner, &id);
+    begin_turn(&owner, &id, &TurnId::new(), None);
+    std::os::unix::fs::symlink(&path, &alias).unwrap();
+    let observer = SessionStore::open(&alias).unwrap();
+    assert_eq!(
+        observer.thread_summary(&id).unwrap().lifecycle,
+        ThreadLifecycle::Running
+    );
+    assert_eq!(observer.recovery_status(&id).unwrap().interrupted_turns, 0);
 }

@@ -56,12 +56,12 @@ continues on `dev`. Avoid direct commits or pushes to `main`.
 
 ## Releases
 
-CI checks pull requests targeting `main`; merges do not repeat those checks.
-Pushes to development branches and pull requests targeting `dev` do not start
-Actions automatically. Run relevant local checks before pushing. Manual CI
-dispatch supports targeted native validation and retries; releases require the
-complete set of successful checks for their exact tagged revision. CI does not
-package applications; superseded runs for the same target are cancelled.
+CI runs on pushes to `dev` and pull requests targeting `dev` or `main`. Normal
+coverage includes Rust formatting, strict Clippy, dependency policy, workspace
+and native macOS/Windows tests, generated ACP contracts, TypeScript checks and
+unit/browser tests. Run relevant local checks before pushing. Manual CI dispatch
+supports targeted validation and retries. Superseded runs for the same target
+are cancelled. Normal CI runs checks and tests; candidate packaging is explicit.
 
 GitHub Actions is limited to CI and release artifact production. There is no
 standalone scheduled or manually dispatched live-evaluation workflow. Run ad hoc
@@ -72,9 +72,10 @@ GitHub Actions generates release artifacts only from stable `vMAJOR.MINOR.PATCH`
 tags whose commits have been promoted to `main` and whose version matches the
 product. The signed release workflow runs when the tag is pushed, builds both
 Desktop and standalone installers, and hands their signed inventory to the
-platform publisher. The separate Preview installers workflow can run on `dev`
-and produces unsigned Actions artifacts with stable updates disabled. It does
-not publish downloads or change a feed. See [the release procedure](docs/releasing.md)
+platform publisher. The separate Candidate validation (unpublished) workflow runs
+on development branches after exact-revision CI passes and produces unsigned Actions
+artifacts with stable updates disabled. It does not publish downloads or change a
+feed. See [the release procedure](docs/releasing.md)
 for setup, native acceptance and publication commands.
 
 Use the [development checks](docs/development.md#checks) and

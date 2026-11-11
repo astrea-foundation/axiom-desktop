@@ -27,7 +27,7 @@ default-members = [
 [workspace.package]
 edition = "2024"
 license = "Apache-2.0"
-rust-version = "1.88"
+rust-version = "1.89"
 
 [workspace.dependencies]
 axiom-update-client = { version = "0.1.0", path = "crates/axiom-update-client" }

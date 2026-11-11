@@ -81,11 +81,15 @@ pub struct FeatureVersions {
     pub web_consent: u16,
     /// Version 2 exposes one image tool automatically for vision models.
     pub image_generation: u16,
+    /// Metadata-only image presentation with account-scoped on-demand reads.
+    pub image_resources: u16,
     pub steering: u16,
     pub message_revision: u16,
     pub attachments: u16,
     pub compaction: u16,
     pub activity: u16,
+    /// Explicit application command invocation; prompt text stays literal.
+    pub command_invocation: u16,
 }
 
 impl FeatureVersions {
@@ -106,11 +110,13 @@ impl FeatureVersions {
             security_evidence: 4,
             web_consent: 1,
             image_generation: 4,
+            image_resources: 1,
             steering: 1,
             message_revision: 1,
             attachments: 2,
             compaction: 1,
             activity: 1,
+            command_invocation: 1,
         }
     }
 }
@@ -135,6 +141,19 @@ pub struct DesktopBootstrapResponse {
     /// thinking level is `medium`; afterward these are the last-used values.
     pub new_thread_settings: ProfilePreferences,
 }
+
+/// Application controls selected explicitly by the client. Never infer this
+/// request from ordinary pasted or submitted prompt text.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcRequest)]
+#[request(method = "_axiom/session/command", response = SessionCommandResponse)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SessionCommandRequest {
+    pub session_id: String,
+    /// A slash command selected intentionally, such as `/thinking high`.
+    pub command: String,
+}
+
+pub type SessionCommandResponse = agent_client_protocol::schema::v1::PromptResponse;
 
 /// Metadata Axiom Desktop attaches beneath the standard ACP `_meta.axiom`
 /// namespace when submitting a user message.
@@ -469,6 +488,64 @@ pub struct SecurityEvidence {
     pub workload_manifest: Option<String>,
 }
 
+/// Color vocabulary for model tags.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelTagTone {
+    #[default]
+    Gray,
+    Green,
+    Blue,
+    Violet,
+    Amber,
+    Pink,
+    Orange,
+    Teal,
+    Red,
+}
+
+impl From<axiom_inference::ModelTagTone> for ModelTagTone {
+    fn from(tone: axiom_inference::ModelTagTone) -> Self {
+        use axiom_inference::ModelTagTone as Source;
+        match tone {
+            Source::Gray => Self::Gray,
+            Source::Green => Self::Green,
+            Source::Blue => Self::Blue,
+            Source::Violet => Self::Violet,
+            Source::Amber => Self::Amber,
+            Source::Pink => Self::Pink,
+            Source::Orange => Self::Orange,
+            Source::Teal => Self::Teal,
+            Source::Red => Self::Red,
+        }
+    }
+}
+
+/// Backend-curated model label. Tags filter and annotate model lists, and the
+/// native runtime uses the `uncensored` tag to select the uncensored image
+/// adapter. Tags never affect routing, pricing, attestation or availability.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelTag {
+    pub id: String,
+    pub label: String,
+    #[serde(default)]
+    pub tone: ModelTagTone,
+    #[serde(default)]
+    pub position: u16,
+}
+
+impl From<axiom_inference::ModelTag> for ModelTag {
+    fn from(tag: axiom_inference::ModelTag) -> Self {
+        Self {
+            id: tag.id,
+            label: tag.label,
+            tone: tag.tone.into(),
+            position: tag.position,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelInfo {
@@ -490,6 +567,9 @@ pub struct ModelInfo {
     pub input_price_microusd_per_million_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_price_microusd_per_million_tokens: Option<u64>,
+    /// Catalog tags, sorted by position then ID.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<ModelTag>,
 }
 
 /// Last provider-reported conversation request, not a measurement of the next
@@ -760,6 +840,8 @@ pub enum ActivityEvent {
     Compaction {
         phase: CompactionPhase,
         detail: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        progress: Option<CompactionProgress>,
     },
     CollectionsChanged {
         state: CollectionState,
@@ -778,6 +860,17 @@ pub enum CompactionPhase {
     Completed,
     Cancelled,
     Failed,
+}
+
+/// Live work counters, independent of billable request usage. Streamed text and
+/// reasoning are estimates until the provider supplies an output-token count.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CompactionProgress {
+    pub completed: u64,
+    pub total: u64,
+    pub generated_tokens: u64,
+    pub estimated: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, JsonRpcNotification)]
@@ -897,6 +990,25 @@ pub struct RegenerateImageRequest {
 #[serde(rename_all = "camelCase")]
 pub struct RegenerateImageResponse {
     pub call_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcRequest)]
+#[request(method = "_axiom/image/read", response = ReadImageResponse)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReadImageRequest {
+    pub thread_id: String,
+    pub call_id: String,
+    pub sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcResponse)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadImageResponse {
+    pub data: String,
+    pub mime_type: String,
+    pub width: u32,
+    pub height: u32,
+    pub sha256: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcRequest)]
@@ -1368,10 +1480,13 @@ pub struct ProtocolSchema {
     pub desktop_bootstrap_request: DesktopBootstrapRequest,
     pub desktop_bootstrap_response: DesktopBootstrapResponse,
     pub prompt_metadata: PromptMetadata,
+    pub session_command_request: SessionCommandRequest,
     pub get_attachments_request: GetAttachmentsRequest,
     pub get_attachments_response: GetAttachmentsResponse,
     pub regenerate_image_request: RegenerateImageRequest,
     pub regenerate_image_response: RegenerateImageResponse,
+    pub read_image_request: ReadImageRequest,
+    pub read_image_response: ReadImageResponse,
     pub delivery_metadata: DeliveryMetadata,
     pub list_threads_request: ListThreadsRequest,
     pub list_threads_response: ListThreadsResponse,

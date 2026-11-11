@@ -1,4 +1,4 @@
-//! Storage value validation, redaction and platform path encoding.
+//! Storage value validation and platform path encoding.
 
 use std::{
     ffi::OsString,
@@ -12,7 +12,6 @@ use serde_json::Value;
 use crate::{
     AxiomError, Result,
     app::{AppEvent, EventEnvelope, Origin, PermissionProfile, ThinkingLevel},
-    audit::redact_value,
 };
 
 use super::MAX_CLIENT_ITEM_ID_BYTES;
@@ -61,21 +60,19 @@ pub(super) fn validate_client_item_id(value: &str) -> Result<String> {
     Ok(value.into())
 }
 
-pub(super) fn redact_text(value: &str) -> String {
-    let mut value = Value::String(value.into());
-    redact_value(&mut value);
-    value.as_str().unwrap_or_default().to_owned()
+// Authoritative content is lossless. Diagnostic/export redaction belongs at
+// those separate boundaries, never in the local conversation codec.
+pub(super) fn content_json(value: &impl Serialize) -> Result<Value> {
+    serde_json::to_value(value).map_err(Into::into)
 }
 
-pub(super) fn redacted_json(value: &impl Serialize) -> Result<Value> {
-    let mut value = serde_json::to_value(value)?;
-    redact_value(&mut value);
-    Ok(value)
-}
-
-pub(super) fn encode_metadata(mut metadata: Value) -> Result<String> {
-    redact_value(&mut metadata);
-    serde_json::to_string(&metadata).map_err(Into::into)
+pub(super) fn encode_metadata(metadata: Value) -> Result<String> {
+    let Value::Object(fields) = metadata else {
+        return Err(AxiomError::Storage(
+            "timeline metadata must be a JSON object".into(),
+        ));
+    };
+    serde_json::to_string(&fields).map_err(Into::into)
 }
 
 pub(super) fn checked_i64(value: u64, label: &str) -> Result<i64> {

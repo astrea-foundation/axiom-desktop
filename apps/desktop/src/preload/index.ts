@@ -6,6 +6,7 @@ import type { UpdatesApi } from "../shared/updates";
 
 export type DesktopApi = {
   platform: NodeJS.Platform;
+  factoryReset: (confirmation: string) => Promise<void>;
   minimize: () => void;
   maximize: () => void;
   close: () => void;
@@ -34,6 +35,7 @@ const api: DesktopApi = {
     isDismissed: () => ipcRenderer.invoke("astrea-banner:is-dismissed"),
     dismiss: () => ipcRenderer.invoke("astrea-banner:dismiss"),
   },
+  factoryReset: (confirmation) => ipcRenderer.invoke("app:factory-reset", confirmation),
   minimize: () => {
     ipcRenderer.send("window:minimize");
   },

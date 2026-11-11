@@ -70,6 +70,7 @@ export interface ClientSessionState {
   securityVerificationError?: string | null;
   contextUsage?: ContextUsage | null;
   requestUsage?: RequestUsage[];
+  compaction?: { completed: number; total: number; generatedTokens: number; estimated: boolean } | null;
   modes: SessionMode[];
   currentModeId: string | null;
   configOptions: SessionConfigOption[];
@@ -175,7 +176,10 @@ function mergeTool(
   callId: string,
   update: Record<string, unknown>,
 ): ToolActivity {
-  const content = Array.isArray(update.content) ? update.content : [];
+  const resource = object(object(update.rawOutput)?.imageResource);
+  const content = resource ? [{ type: "image", mimeType: resource.mimeType, width: resource.width, height: resource.height,
+    imageResource: { callId: resource.callId, sha256: resource.sha256 } }]
+    : Array.isArray(update.content) ? update.content : [];
   const locations = Array.isArray(update.locations) ? update.locations : [];
   return {
     callId,
@@ -548,7 +552,10 @@ export class AxiomStateStore extends EventEmitter {
   setRunning(sessionId: string, running: boolean): void {
     const session = (this.value.sessions[sessionId] ??= emptySession(sessionId));
     session.running = running;
-    if (!running) session.activeTurnId = null;
+    if (!running) {
+      session.activeTurnId = null;
+      session.compaction = null;
+    }
     this.changed();
   }
 
@@ -574,8 +581,20 @@ export class AxiomStateStore extends EventEmitter {
     if (!record || typeof record.sessionId !== "string") return null;
     const update = object(record.update);
     if (!update) return null;
-    const session = (this.value.sessions[record.sessionId] ??= emptySession(record.sessionId));
     const metadata = deliveryMetadata(record, update);
+    const type = String(update.sessionUpdate ?? "");
+    if (type === "session_info_update" && !this.value.sessions[record.sessionId]) {
+      // Background title generation may finish after the UI unloads a thread.
+      // Metadata can update its sidebar row without reopening empty chat state.
+      const summary = this.value.catalog.find(thread => thread.threadId === record.sessionId);
+      if (summary && typeof update.title === "string" && (!metadata || metadata.threadRevision >= summary.revision)) {
+        summary.title = update.title;
+        if (metadata) summary.revision = Math.max(summary.revision, metadata.threadRevision);
+        this.changed();
+      }
+      return null;
+    }
+    const session = (this.value.sessions[record.sessionId] ??= emptySession(record.sessionId));
     if (metadata) {
       if (metadata.threadRevision < session.threadRevision) return null;
       if (session.threadRevision > 0 && metadata.threadRevision > session.threadRevision + 1) {
@@ -587,7 +606,6 @@ export class AxiomStateStore extends EventEmitter {
       if (metadata.lastUserMessageAt !== undefined) session.lastUserMessageAt = metadata.lastUserMessageAt;
     }
 
-    const type = String(update.sessionUpdate ?? "");
     if (type === "user_message_chunk" || type === "agent_message_chunk" || type === "agent_thought_chunk") {
       if (metadata && metadata.threadRevision <= (this.textRevisions.get(record.sessionId) ?? -1)) {
         return session.needsResync ? record.sessionId : null;
@@ -739,6 +757,17 @@ export class AxiomStateStore extends EventEmitter {
     else if (event.kind === "active_turn_changed" && sessionId) {
       const session = (this.value.sessions[sessionId] ??= emptySession(sessionId));
       session.activeTurnId = event.turnId ?? null;
+      if (!session.activeTurnId) session.compaction = null;
+    }
+    else if (event.kind === "compaction" && sessionId) {
+      const session = this.value.sessions[sessionId] ??= emptySession(sessionId);
+      if (["completed", "cancelled", "failed"].includes(event.phase)) session.compaction = null;
+      else if (["started", "summarizing", "replacing_context"].includes(event.phase)) {
+        const progress = event.progress;
+        if (progress && [progress.completed, progress.total, progress.generatedTokens].every((count) => Number.isSafeInteger(count) && count >= 0)
+          && progress.completed <= progress.total && typeof progress.estimated === "boolean") session.compaction = progress;
+        else if (!session.compaction) session.compaction = { completed: 0, total: 0, generatedTokens: 0, estimated: true };
+      }
     }
     else if (event.kind === "collections_changed") {
       if (event.state.revision >= this.value.collections.revision) this.value.collections = event.state;

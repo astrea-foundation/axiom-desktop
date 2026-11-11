@@ -37,6 +37,42 @@ pub(super) async fn prompt(
     responder: Responder<protocol::PromptResponse>,
     connection: &ConnectionTo<Client>,
 ) -> agent_client_protocol::Result<()> {
+    prompt_with_invocation(context, request, responder, connection, false).await
+}
+
+pub(super) async fn invoke_command(
+    context: &ServerContext,
+    request: extension::SessionCommandRequest,
+    responder: Responder<protocol::PromptResponse>,
+    connection: &ConnectionTo<Client>,
+) -> agent_client_protocol::Result<()> {
+    if !extension_enabled(
+        &context.extension_state,
+        ExtensionFeature::CommandInvocation,
+    ) {
+        return responder.respond_with_error(extension_not_negotiated());
+    }
+    if request.command.len() > axiom_inference::MAX_MESSAGE_TEXT_BYTES
+        || slash::parse(&request.command).is_none()
+    {
+        return responder.respond_with_internal_error("Expected an explicit slash command");
+    }
+    let prompt = protocol::PromptRequest::new(
+        protocol::SessionId::new(request.session_id),
+        vec![protocol::ContentBlock::Text(protocol::TextContent::new(
+            request.command,
+        ))],
+    );
+    prompt_with_invocation(context, prompt, responder, connection, true).await
+}
+
+async fn prompt_with_invocation(
+    context: &ServerContext,
+    request: protocol::PromptRequest,
+    responder: Responder<protocol::PromptResponse>,
+    connection: &ConnectionTo<Client>,
+    explicit_command: bool,
+) -> agent_client_protocol::Result<()> {
     let ctx_account_transition = context.account_transition.clone();
     let ctx_account_work = context.account_work.clone();
     let ctx_auth = context.auth.clone();
@@ -89,19 +125,22 @@ pub(super) async fn prompt(
         return responder.respond_with_internal_error(error.to_string());
     }
     let session_id = request.session_id.clone();
-    // Edited user text is data, including a leading slash.
-    let command = match if message_revision.is_some() || !attachments.is_empty() {
-        None
-    } else {
-        slash::parse(&prompt)
-    } {
-        Some(Ok(command)) => Some(command),
-        Some(Err(error)) => {
-            send_text(connection, &session_id, format!("Command error: {error}"))?;
-            return responder.respond(protocol::PromptResponse::new(protocol::StopReason::EndTurn));
-        }
-        None => None,
-    };
+    // Prompt text is always data. Only the dedicated negotiated command
+    // request can enter application-control routing.
+    let command =
+        match if !explicit_command || message_revision.is_some() || !attachments.is_empty() {
+            None
+        } else {
+            slash::parse(&prompt)
+        } {
+            Some(Ok(command)) => Some(command),
+            Some(Err(error)) => {
+                send_text(connection, &session_id, format!("Command error: {error}"))?;
+                return responder
+                    .respond(protocol::PromptResponse::new(protocol::StopReason::EndTurn));
+            }
+            None => None,
+        };
     let deterministic_test_runner = cfg!(debug_assertions)
         && std::env::var("AXIOMCLI_TEST_RUNNER").is_ok_and(|value| !value.trim().is_empty());
     if command.is_none() && !ctx_auth.has_credential() && !deterministic_test_runner {
@@ -823,6 +862,7 @@ pub(super) async fn prompt(
                     let (events_tx, mut events_rx) =
                         mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
                     let task_result: agent_client_protocol::Result<_> = async {
+                        let _context_operation = task_store.as_ref().map(|store| store.claim_context_operation(&internal_id)).transpose().map_err(agent_error)?;
                         let compact = task_runner.compact(
                             &internal_id,
                             focus,
@@ -959,18 +999,9 @@ pub(super) async fn prompt(
     let preflight: crate::Result<()> = async {
         axiom_inference::validate_prompt(&prompt, &attachments)
             .map_err(|error| crate::AxiomError::Protocol(error.to_string()))?;
-        let mut file_types = attachments.iter().filter_map(|attachment| match attachment {
+        let file_types = attachments.iter().filter_map(|attachment| match attachment {
             axiom_inference::PromptAttachment::File { file, .. } => Some(file.mime_type.clone()), _ => None,
         }).collect::<Vec<_>>();
-        if let Some(history) = revision_history.as_ref() {
-            for event in history.iter().rev().take_while(|event| !matches!(event.event, AppEvent::ContextCompacted { .. })) {
-                if let AppEvent::PromptAccepted { attachments, .. } = &event.event {
-                    file_types.extend(attachments.iter().filter_map(|attachment| match attachment {
-                        axiom_inference::PromptAttachment::File { file, .. } => Some(file.mime_type.clone()), _ => None,
-                    }));
-                }
-            }
-        }
         if !file_types.is_empty() {
             let models = ctx_runner.available_model_details(work.cancellation.child_token()).await?;
             if !models.iter().any(|model| model.id == session_model && file_types.iter().all(|mime| model.file_mime_types.contains(mime))) {
@@ -1138,6 +1169,7 @@ pub(super) async fn prompt(
         let (events_tx, mut events_rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
         let display_cwd = cwd.clone();
         let mut terminalized = false;
+        let mut restore_after_turn = false;
         let mut task_result: agent_client_protocol::Result<_> = async {
             let mcp = if let Some(expected) = mcp_revision {
                 let store = task_store.as_ref().expect("desktop store").bind_active_account().map_err(agent_error)?;
@@ -1177,7 +1209,7 @@ pub(super) async fn prompt(
                     event = events_rx.recv() => {
                         let Some(event) = event else { continue };
                         let envelope = task_runtime
-                            .emit(internal_id.clone(), event.clone())
+                            .emit_for_turn(internal_id.clone(), &turn_id, event.clone())
                             .await
                             .map_err(agent_error)?;
                         let revision = match &task_store {
@@ -1211,12 +1243,13 @@ pub(super) async fn prompt(
                 }
             };
             if result.is_err() {
+                restore_after_turn = true;
                 work.cancellation.cancel();
                 title_cancellation.cancel();
             }
             while let Ok(event) = events_rx.try_recv() {
                 let envelope = task_runtime
-                    .emit(internal_id.clone(), event.clone())
+                    .emit_for_turn(internal_id.clone(), &turn_id, event.clone())
                     .await
                     .map_err(agent_error)?;
                 let revision = match &task_store {
@@ -1290,17 +1323,17 @@ pub(super) async fn prompt(
         }
         .await;
 
-        if matches!(task_result, Ok(protocol::StopReason::Cancelled))
+        if (restore_after_turn || task_result.is_err() || matches!(task_result, Ok(protocol::StopReason::Cancelled)))
             && let Some(store) = &task_store
         {
-            // Stop drops the runner future promptly to close upstream.
+            // Stop or an error can drop the runner before its history commit.
             // Rebuild its context from the committed journal before
             // releasing this thread; the dropped future may not have
             // saved the accepted prompt or its interrupted response.
             task_result = async {
                 let history = store.load(&internal_id).map_err(agent_error)?;
                 task_runner.restore_session(&internal_id, &history).await.map_err(agent_error)?;
-                Ok(protocol::StopReason::Cancelled)
+                task_result
             }.await;
         }
 

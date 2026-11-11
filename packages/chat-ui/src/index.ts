@@ -6,8 +6,10 @@ export { ModelBrandIcon, ProviderBrandIcon, normalizeCompanyName } from "./Model
 export { ModelPicker } from "./ModelPicker";
 export { formatModelPricing } from "./modelPricing";
 export { compareModelPreference } from "./modelPreferences";
+export { catalogCapabilities, catalogHosts, catalogTags, countModels, emptyModelFilters, filterModels, hasActiveModelFilters, matchesModelFilters, modelHasCapability, toggled } from "./modelFilters";
+export type { HostOption, ModelCapability, ModelFilters } from "./modelFilters";
 export { OverflowTitle } from "./OverflowTitle";
-export type { ProviderModel, ReasoningEffort } from "./types";
+export type { ModelTag, ModelTagTone, ProviderModel, ReasoningEffort } from "./types";
 
 export * from "./ChatComposer";
 export * from "./WelcomeView";

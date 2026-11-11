@@ -5,6 +5,7 @@ import { chromium, type Browser, type Page } from "playwright";
 import { createServer, type ViteDevServer } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
+import { securityEvidence } from "../../../../fixtures/desktop-security.mts";
 import type { ClientState, DesktopMcpRequest, DesktopMcpResponse, ApiKeyRecord, AccountStatus, BillingStatus, ClientSessionState, ClientTimelineItem, ContextUsage, ConfigureDesktopAgentRequest, DesktopAgentSettings, ListModelsResponse } from "@axiom/axiom-acp-client";
 
 // Real renderer/DOM focus tests, but no Electron window, OS input, account,
@@ -29,7 +30,7 @@ function depositBilling(postedMicrousd: number, revision = 1): BillingStatus {
 }
 
 before(async () => {
-  server = await createServer({
+  server = await createServer({ cacheDir: fileURLToPath(new URL("../../node_modules/.vite-tests/deletion-focus.test", import.meta.url)),
     configFile: false,
     root: fileURLToPath(new URL("../../src/renderer", import.meta.url)),
     plugins: [react(), tailwindcss()],
@@ -306,7 +307,12 @@ async function openApp(platform = "linux", failDelete = false, thinkingLevels: s
         setAccountState: (account: AccountStatus) => { state.account = account; state.sessions = {}; state.catalog = []; emit(); },
         setBilling: (billing: BillingStatus) => { state.billing = billing; emit(); },
         setError: (error: string | null) => { state.error = error; emit(); },
-        setSecurity: (security: string) => { state.sessions["old-thread"]!.security = { state: security }; emit(); },
+        setSecurity: (security: string, evidence: ClientSessionState["securityEvidence"] = null) => {
+          const selected = state.sessions["old-thread"]!;
+          selected.security = { state: security };
+          (selected as ClientSessionState).securityEvidence = evidence;
+          emit();
+        },
         failBalance: (fail: boolean) => { failBalance = fail; },
         setRuntime: (id: string, connected = true) => { state.runtimeInstanceId = id; state.connected = connected; emit(); },
         finishTurn: () => { state.sessions["old-thread"]!.running = false; state.sessions["old-thread"]!.activeTurnId = null; emit(); },
@@ -369,6 +375,84 @@ async function openApp(platform = "linux", failDelete = false, thinkingLevels: s
   }
   return { page, errors, nativeDialogs };
 }
+
+for (const ending of ["completion", "stop", "failure"]) test(`model selection stays locked through generation until ${ending}`, async () => {
+  const modelCatalog: ListModelsResponse = { models: ["test-model", "other-model"].map(id => ({
+    id, label: id === "test-model" ? "Test model" : "Other model", shortLabel: id === "test-model" ? "Test model" : "Other model",
+    providerId: "test", providerLabel: "Test provider", upstreamModel: id, thinkingLevels: [],
+  })) };
+  const { page, errors } = await openApp("linux", false, [], "medium", false, true, modelCatalog);
+  try {
+    await page.locator('[data-thread-id="old-thread"]').click();
+    await page.locator("[data-chat-scroll]").waitFor();
+    const selector = page.locator('.composer-shell button[aria-haspopup="menu"]').first();
+    await selector.click();
+    const picker = page.getByRole("dialog", { name: "Choose a model", exact: true });
+    await picker.waitFor();
+    await page.evaluate(() => (window as any).__deletionTest.setTimeline([
+      { id: "reply", turnId: "active-test-turn", kind: "assistant", text: "Generating a reply…", status: "streaming" },
+    ], true));
+    await picker.waitFor({ state: "detached" });
+    assert.equal(await selector.isDisabled(), true);
+    assert.equal(await selector.getAttribute("aria-expanded"), "false");
+    assert.equal(await selector.getAttribute("title"), "Model is fixed for the current response");
+    await selector.evaluate((button: HTMLButtonElement) => button.click());
+    assert.equal(await picker.count(), 0);
+    assert.equal(await page.evaluate(() => (window as any).__deletionTest.settingsCalls.length), 0);
+    await page.locator("textarea[data-chat-input]").fill("Next question");
+    if (ending === "completion" && process.env.AXIOM_MODEL_LOCK_SCREENSHOT) {
+      await page.screenshot({ path: process.env.AXIOM_MODEL_LOCK_SCREENSHOT, animations: "disabled" });
+    }
+    // A different conversation can still choose its own model.
+    await page.getByRole("button", { name: "New thread", exact: true }).click();
+    assert.equal(await selector.isEnabled(), true);
+    await page.locator('[data-thread-id="old-thread"]').click();
+    await page.locator("[data-chat-scroll]").waitFor();
+    assert.equal(await selector.isDisabled(), true);
+    if (ending === "stop") {
+      await page.getByRole("button", { name: "Stop generating", exact: true }).click();
+    } else {
+      await page.evaluate((failed) => (window as any).__deletionTest.setTimeline([
+        { id: "reply", kind: "assistant", text: "Final content", status: failed ? "failed" : "completed", terminalVerified: !failed },
+      ], false), ending === "failure");
+    }
+    await page.waitForFunction(() => !document.querySelector<HTMLButtonElement>('.composer-shell button[aria-haspopup="menu"]')?.disabled);
+    assert.equal(await selector.getAttribute("aria-expanded"), "false", "the old picker stays closed after generation");
+    await selector.click();
+    await picker.getByRole("button", { name: /Other model/ }).click();
+    await page.waitForFunction(() => (window as any).__deletionTest.settingsCalls.some((request: any) => request.model === "other-model"));
+    assert.equal(await selector.innerText(), "Other model");
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("Desktop automatic TEE renewal uses its cached-report action and explicit Refresh forces verification", async () => {
+  const { page, errors } = await openApp();
+  try {
+    await page.evaluate((report) => {
+      const app = (window as any).__deletionTest;
+      const agent = (window as any).axiomDesktop.agent;
+      agent.ensureSecurity = async (id: string) => {
+        app.calls.push({ method: "ensureSecurity", id });
+        app.setSecurity("verified", report);
+        return { status: { state: "verified" }, evidence: report };
+      };
+      agent.verifySecurity = async (id: string) => {
+        app.calls.push({ method: "verifySecurity", id });
+        app.setSecurity("verified", report);
+        return { status: { state: "verified" }, evidence: report };
+      };
+    }, securityEvidence());
+    await page.locator('[data-thread-id="old-thread"]').click();
+    await page.getByRole("button", { name: "TEE verified. View privacy proof", exact: true }).waitFor();
+    assert.equal((await calls(page)).filter(call => call.method === "ensureSecurity").length, 1);
+    assert.equal((await calls(page)).filter(call => call.method === "verifySecurity").length, 0);
+    await page.getByRole("button", { name: "Refresh TEE verification", exact: true }).click();
+    await page.waitForFunction(() => (window as any).__deletionTest.calls.some((call: any) => call.method === "verifySecurity"));
+    assert.equal((await calls(page)).filter(call => call.method === "ensureSecurity").length, 1);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
 
 test("outdated TEE consent retries the paused turn through attachment-preserving revision", async () => {
   const { page, errors } = await openApp();
@@ -1188,7 +1272,8 @@ for (const platform of ["linux", "win32", "darwin"]) {
       const queue = page.getByRole("region", { name: "Message queue", exact: true });
       await queue.getByText("Restored after reconnect. Review and send when ready.", { exact: true }).waitFor();
       assert.equal((await calls(page)).filter((call) => call.method === "prompt").length, 0);
-      await queue.getByRole("button", { name: "Cancel queued message", exact: true }).click();
+      const cancel = queue.getByRole("button", { name: "Cancel queued message", exact: true });
+      await cancel.focus(); await page.keyboard.press("Enter");
       await queue.waitFor({ state: "hidden" });
       assert.deepEqual(errors, []);
     } finally { await page.close(); }
@@ -1240,6 +1325,7 @@ for (const platform of ["linux", "win32", "darwin"]) {
       await settle();
       assert.equal(await viewport.evaluate((el) => el.scrollTop), pausedTop, "scrolling up preserves the reading position");
 
+      await jump.hover(); // Floating controls must pass wheel scrolling through to the chat.
       await page.mouse.wheel(0, 10_000);
       await atBottom();
       await jump.waitFor({ state: "hidden" });
@@ -3140,12 +3226,16 @@ for (const remembered of ["auto", "near-glm"]) test(`Tinfoil default, provider o
     await control.waitFor();
     await control.click();
     const picker = page.getByRole("dialog", { name: "Choose a model" });
-    const tabs = picker.getByRole("tab");
-    assert.match(await tabs.nth(0).innerText(), /^Tinfoil/);
-    assert.match(await tabs.nth(1).innerText(), /^NEAR AI/);
-    assert.equal(await tabs.nth(remembered === "auto" ? 0 : 1).getAttribute("aria-selected"), "true");
-    await tabs.nth(0).click();
-    const choices = picker.getByRole("tabpanel").getByRole("button");
+    const hosts = picker.getByRole("group", { name: "Filter by host" }).getByRole("button");
+    assert.match(await hosts.nth(0).innerText(), /^All/);
+    assert.match(await hosts.nth(1).innerText(), /^Tinfoil/);
+    assert.match(await hosts.nth(2).innerText(), /^NEAR AI/);
+    const list = picker.getByRole("group", { name: "Models" });
+    assert.ok((await list.locator('[aria-current="true"]').innerText()).startsWith(currentLabel));
+    await hosts.nth(1).click();
+    assert.equal(await hosts.nth(1).getAttribute("aria-pressed"), "true");
+    const choices = list.getByRole("button");
+    assert.equal(await choices.count(), 2);
     assert.match(await choices.first().innerText(), /^DeepSeek V4.1 Flash/);
     await choices.first().click();
     const selected = page.getByRole("button", { name: "DeepSeek V4.1 Flash", exact: true });
@@ -3158,6 +3248,71 @@ for (const remembered of ["auto", "near-glm"]) test(`Tinfoil default, provider o
     await page.locator("textarea[data-chat-input]").fill("Keep the chosen model");
     await page.evaluate(() => window.dispatchEvent(new Event("focus")));
     assert.equal(await selected.isVisible(), true);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("new sessions default to NEAR's abliterated DeepSeek and fall back to Tinfoil's DeepSeek", async () => {
+  const model = (id: string, label: string, providerId: string, upstreamModel: string) => ({
+    id, label, shortLabel: label, providerId, providerLabel: providerId === "near" ? "NEAR AI" : "Tinfoil",
+    upstreamModel, thinkingLevels: [], contextWindowTokens: 32768, maxOutputTokens: 8192,
+    autoCompactThresholdTokens: 27853, supportsImages: false, fileMimeTypes: [],
+    inputPriceMicrousdPerMillionTokens: 300000, outputPriceMicrousdPerMillionTokens: 1200000,
+  });
+  const tinfoil = model("tinfoil-deepseek-v4-1-flash", "DeepSeek V4.1 Flash", "tinfoil", "deepseek-v4-1-flash");
+  const abliterated = model("deepseek-v4-1-flash-1017-abliterated", "DeepSeek V4.1 Flash Abliterated", "near", "deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated");
+  for (const [models, expected] of [[[tinfoil, abliterated], "DeepSeek V4.1 Flash Abliterated"], [[tinfoil], "DeepSeek V4.1 Flash"]] as const) {
+    const { page, errors } = await openApp("linux", false, [], "provider_default", false, true, { models: [...models] } as unknown as ListModelsResponse, "auto");
+    try {
+      await page.getByRole("button", { name: expected, exact: true }).waitFor();
+      assert.deepEqual(errors, []);
+    } finally { await page.close(); }
+  }
+});
+
+test("model picker filters by catalog tags, hosts, capabilities and tag search", async () => {
+  const tag = (id: string, label: string, tone: string, position: number) => ({ id, label, tone, position });
+  const cheap = tag("cheap", "Cheap", "green", 10);
+  const model = (id: string, label: string, providerId: string, tags: ReturnType<typeof tag>[], supportsImages = false) => ({
+    id, label, shortLabel: label, providerId, providerLabel: providerId === "near" ? "NEAR AI" : "Tinfoil",
+    upstreamModel: id, thinkingLevels: [], contextWindowTokens: 32768, maxOutputTokens: 8192,
+    autoCompactThresholdTokens: 27853, supportsImages, fileMimeTypes: [],
+    inputPriceMicrousdPerMillionTokens: 500000, outputPriceMicrousdPerMillionTokens: 2000000, tags,
+  });
+  const catalog = { models: [
+    model("tinfoil-deepseek-v4-1-flash", "DeepSeek V4.1 Flash", "tinfoil", [cheap, tag("fast", "Fast", "blue", 20)]),
+    model("tinfoil-kimi-k3", "Kimi K3", "tinfoil", [tag("intelligent", "Intelligent", "violet", 30)]),
+    model("near-qwen", "Qwen3.6 35B", "near", [cheap, tag("uncensored", "Uncensored", "pink", 50)], true),
+    model("near-minimax", "MiniMax M3", "near", [tag("new", "New", "orange", 1000)]),
+  ] } as unknown as ListModelsResponse;
+  const { page, errors } = await openApp("linux", false, [], "provider_default", false, true, catalog, "auto");
+  try {
+    await page.getByRole("button", { name: "DeepSeek V4.1 Flash", exact: true }).click();
+    const picker = page.getByRole("dialog", { name: "Choose a model" });
+    const tags = picker.getByRole("group", { name: "Filter by tag" });
+    const rows = picker.getByRole("group", { name: "Models" }).getByRole("button");
+    const status = picker.locator('[aria-live="polite"]');
+    assert.deepEqual(await tags.getByRole("button").allInnerTexts(), ["Uncensored", "Cheap", "Fast", "Intelligent", "New"]);
+    assert.equal(await rows.count(), 4);
+    assert.match(await rows.first().innerText(), /Tinfoil\s*Cheap\s*Fast/);
+
+    await tags.getByRole("button", { name: "Cheap", exact: true }).click();
+    assert.equal(await rows.count(), 2);
+    assert.equal(await tags.getByRole("button", { name: "Intelligent", exact: true }).isDisabled(), true);
+    await picker.getByRole("button", { name: "Only models that accept images", exact: true }).click();
+    assert.equal(await rows.count(), 1);
+    assert.match(await rows.first().innerText(), /^Qwen3.6 35B/);
+    assert.match(await status.innerText(), /^1 model · Cheap \+ Images$/);
+    await page.evaluate(() => document.getAnimations().forEach(animation => animation.finish()));
+    await picker.screenshot({ path: "/tmp/axiom-tagged-picker-filtered.png" });
+
+    await picker.getByRole("button", { name: "Clear filters", exact: true }).click();
+    assert.equal(await rows.count(), 4);
+    await page.evaluate(() => document.getAnimations().forEach(animation => animation.finish()));
+    await picker.screenshot({ path: "/tmp/axiom-tagged-picker.png" });
+    await picker.getByRole("textbox", { name: "Search models" }).fill("new");
+    assert.equal(await rows.count(), 1);
+    assert.match(await rows.first().innerText(), /^MiniMax M3/);
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
 });
@@ -3181,7 +3336,8 @@ test("catalog refresh withdraws saved models and shows Tinfoil upload icons", as
     assert.ok(await page.getByRole("button", { name: "Send", exact: true }).isDisabled());
     await unavailable.click();
     const picker = page.getByRole("dialog", {name: "Choose a model"});
-    await picker.getByRole("tab", { name: /Tinfoil/ }).waitFor();
+    await picker.getByRole("button", { name: /New vision/ }).waitFor();
+    assert.equal(await picker.getByRole("group", { name: "Filter by host" }).count(), 0, "a single host needs no host filter");
     assert.equal(await picker.getByRole("img", {name:"Image uploads"}).count(), 1);
     assert.equal(await picker.getByRole("img", {name:"File uploads"}).count(), 1);
     const logo = picker.locator('img[title="Tinfoil"]');
@@ -3647,8 +3803,8 @@ test("generated and edited images open the local viewer with keyboard and backdr
     const trigger = page.getByRole("button", { name: "View generated image", exact: true });
     await trigger.waitFor();
     const caption = await trigger.locator("..").locator("figcaption").innerText();
-    assert.match(caption, /Axiom/);
-    assert.doesNotMatch(caption, /Chutes|AstreaAI/, "a provider-free image fixture must not invent its source");
+    assert.match(caption, /AstreaAI/);
+    assert.doesNotMatch(caption, /Axiom|Tinfoil|NEAR AI/, "image captions identify the AstreaAI image service independently of the chat model");
     assert.doesNotMatch(caption, /verified|E2EE/i);
     const thumbnail = await trigger.boundingBox();
     const source = await trigger.locator("img").getAttribute("src");
@@ -3732,6 +3888,66 @@ test("1536-pixel local image resources survive streaming updates while the compo
     await page.keyboard.press("Escape");
     await dialog.waitFor({ state: "detached" });
     assert.equal(await page.getByRole("link", { name: "Save image", exact: true }).getAttribute("href"), url);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("lazy generated images fetch near the viewport, preserve layout, and retry a failed read", async () => {
+  const { page, errors } = await openApp("linux", false, [], "medium", true, false);
+  try {
+    await page.locator('[data-thread-id="old-thread"]').click();
+    await page.evaluate(() => {
+      const reads: string[] = [], releases: string[] = [];
+      const urls = new Map<string, string>();
+      let failMiddle = true;
+      Object.assign(window, { __lazyImageReads: reads, __lazyImageReleases: releases });
+      (window as any).axiomDesktop.agent.loadGeneratedImage = async (id: string) => {
+        if (urls.has(id)) return { imageUrl: urls.get(id), width: 1024, height: 1024 };
+        reads.push(id);
+        if (id === "asset-10" && failMiddle) { failMiddle = false; throw new Error("fixture read failed"); }
+        const canvas = document.createElement("canvas"); canvas.width = 1024; canvas.height = 1024;
+        const context = canvas.getContext("2d")!;
+        context.fillStyle = "#164e63"; context.fillRect(0, 0, 1024, 1024);
+        context.fillStyle = "white"; context.font = "64px sans-serif"; context.fillText(`Image ${id.slice(6)}`, 120, 510);
+        const blob = await new Promise<Blob>(resolve => canvas.toBlob(value => resolve(value!), "image/png"));
+        const imageUrl = URL.createObjectURL(blob); urls.set(id, imageUrl);
+        return { imageUrl, width: 1024, height: 1024 };
+      };
+      (window as any).axiomDesktop.agent.releaseGeneratedImage = (id: string) => { releases.push(id); };
+      (window as any).__deletionTest.setTimeline(Array.from({ length: 20 }, (_, index) => ({
+        id: `generated-${index}`, kind: "tool", text: "", status: "completed", tool: {
+          callId: `generated-${index}`, name: "generate", title: "generate", kind: "other", status: "completed",
+          input: { prompt: `Image ${index}` }, locations: [],
+          content: [{ type: "image", mimeType: "image/png", assetId: `asset-${index}`, width: 1024, height: 1024 }],
+        },
+      })));
+    });
+    const middle = page.locator('[data-tool-call-id="generated-10"]');
+    await page.locator('[data-tool-call-id="generated-19"] img').waitFor();
+    const before = await middle.locator("figure").boundingBox();
+    const initial = await page.evaluate(() => (window as any).__lazyImageReads as string[]);
+    assert.ok(initial.length <= 6, `only nearby images load on open: ${initial}`);
+    assert.ok(!initial.includes("asset-10"), "opening the thread must leave distant originals unfetched");
+    assert.equal(await middle.locator("img").count(), 0);
+    await page.locator("[data-chat-scroll]").hover();
+    await page.mouse.wheel(0, -300);
+    await middle.scrollIntoViewIfNeeded();
+    await middle.getByRole("button", { name: "Retry loading image", exact: true }).click();
+    const trigger = middle.getByRole("button", { name: "View generated image", exact: true });
+    await trigger.waitFor();
+    const after = await middle.locator("figure").boundingBox();
+    assert.ok(before && after && Math.abs(before.height - after.height) < 1, "reserved image dimensions prevent scroll jumps");
+    const source = await trigger.locator("img").getAttribute("src");
+    await trigger.click();
+    const dialog = page.getByRole("dialog", { name: "Image preview: Generated image", exact: true });
+    await dialog.waitFor();
+    assert.equal(await dialog.locator("img").getAttribute("src"), source);
+    await page.keyboard.press("Escape"); await dialog.waitFor({ state: "detached" });
+    assert.equal(await middle.getByRole("link", { name: "Save image", exact: true }).getAttribute("href"), source);
+    const final = await page.evaluate(() => ({ reads: (window as any).__lazyImageReads, releases: (window as any).__lazyImageReleases }));
+    assert.equal(final.reads.filter((id: string) => id === "asset-10").length, 2, "one failed read and one explicit retry");
+    assert.ok(final.reads.length < 20);
+    assert.ok(final.releases.includes("asset-19"), "scrolled-out images release their displayed resource");
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
 });

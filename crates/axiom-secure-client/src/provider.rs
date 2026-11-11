@@ -78,10 +78,12 @@ pub trait SecureProvider: sealed::Provider + Send + Sync {
             "image generation unavailable for this provider",
         ))
     }
+    /// `uncensored` is the client's catalog-tag decision for the chat model.
     async fn image_request(
         &self,
         _policy: &TrustPolicy,
         _request: axiom_inference::ImageGenerationRequest<'_>,
+        _uncensored: bool,
         _progress: Option<mpsc::Sender<axiom_inference::ImageGenerationProgress>>,
         _cancel: CancellationToken,
     ) -> Result<crate::GeneratedImage> {
@@ -114,32 +116,14 @@ impl ProviderRegistry {
                 config.clone(),
                 Arc::clone(&credential),
             )) as Arc<dyn SecureProvider>;
-            #[cfg(debug_assertions)]
-            let preview = crate::providers::chutes_preview::provider(&config)?;
-            let chutes = crate::providers::chutes_preview::hosted_provider(
-                &config,
-                Arc::clone(&credential),
-            )?;
             let direct = crate::providers::direct::provider(&config, &credential)?;
             let pool = Arc::new(crate::providers::pool::PoolProvider::new(
                 config, credential,
             )) as Arc<dyn SecureProvider>;
-            let providers = vec![near, tinfoil, pool];
-            let mut providers = providers;
+            let mut providers = vec![near, tinfoil, pool];
             if let Some(direct) = direct {
                 providers.push(direct);
             }
-            if let Some(chutes) = chutes {
-                providers.push(chutes);
-            }
-            #[cfg(debug_assertions)]
-            let providers = {
-                let mut providers = providers;
-                if let Some(preview) = preview {
-                    providers.push(preview);
-                }
-                providers
-            };
             Self::new(providers)
         }
         #[cfg(feature = "test-fixture")]
@@ -161,20 +145,8 @@ impl ProviderRegistry {
                 providers.push(Arc::new(crate::providers::fixture::FixtureProvider::new(
                     config, credential,
                 )) as Arc<dyn SecureProvider>);
-            } else {
-                if let Some(direct) = crate::providers::direct::provider(&config, &credential)? {
-                    providers.push(direct);
-                }
-                if let Some(chutes) = crate::providers::chutes_preview::hosted_provider(
-                    &config,
-                    Arc::clone(&credential),
-                )? {
-                    providers.push(chutes);
-                }
-                #[cfg(debug_assertions)]
-                if let Some(preview) = crate::providers::chutes_preview::provider(&config)? {
-                    providers.push(preview);
-                }
+            } else if let Some(direct) = crate::providers::direct::provider(&config, &credential)? {
+                providers.push(direct);
             }
             Self::new(providers)
         }

@@ -99,6 +99,7 @@ export type ActivityEvent =
   | {
       phase: CompactionPhase;
       detail?: string | null;
+      progress?: CompactionProgress | null;
       kind: "compaction";
       [k: string]: unknown;
     }
@@ -139,10 +140,13 @@ export interface ProtocolSchema {
   desktopBootstrapRequest: DesktopBootstrapRequest;
   desktopBootstrapResponse: DesktopBootstrapResponse;
   promptMetadata: PromptMetadata;
+  sessionCommandRequest: SessionCommandRequest;
   getAttachmentsRequest: GetAttachmentsRequest;
   getAttachmentsResponse: GetAttachmentsResponse;
   regenerateImageRequest: RegenerateImageRequest;
   regenerateImageResponse: RegenerateImageResponse;
+  readImageRequest: ReadImageRequest;
+  readImageResponse: ReadImageResponse;
   deliveryMetadata: DeliveryMetadata;
   listThreadsRequest: ListThreadsRequest;
   listThreadsResponse: ListThreadsResponse;
@@ -324,11 +328,19 @@ export interface FeatureVersions {
    * Version 2 exposes one image tool automatically for vision models.
    */
   imageGeneration?: number;
+  /**
+   * Metadata-only image presentation with account-scoped on-demand reads.
+   */
+  imageResources?: number;
   steering?: number;
   messageRevision?: number;
   attachments?: number;
   compaction?: number;
   activity?: number;
+  /**
+   * Explicit application command invocation; prompt text stays literal.
+   */
+  commandInvocation?: number;
   [k: string]: unknown;
 }
 export interface DesktopBootstrapRequest {
@@ -403,6 +415,17 @@ export interface FileContent {
   mimeType: string;
   data: string;
 }
+/**
+ * Application controls selected explicitly by the client. Never infer this
+ * request from ordinary pasted or submitted prompt text.
+ */
+export interface SessionCommandRequest {
+  sessionId: string;
+  /**
+   * A slash command selected intentionally, such as `/thinking high`.
+   */
+  command: string;
+}
 export interface GetAttachmentsRequest {
   threadId: string;
   userItemId: string;
@@ -418,6 +441,19 @@ export interface RegenerateImageRequest {
 }
 export interface RegenerateImageResponse {
   callId: string;
+  [k: string]: unknown;
+}
+export interface ReadImageRequest {
+  threadId: string;
+  callId: string;
+  sha256: string;
+}
+export interface ReadImageResponse {
+  data: string;
+  mimeType: string;
+  width: number;
+  height: number;
+  sha256: string;
   [k: string]: unknown;
 }
 /**
@@ -585,6 +621,25 @@ export interface ModelInfo {
   autoCompactThresholdTokens: number;
   inputPriceMicrousdPerMillionTokens?: number | null;
   outputPriceMicrousdPerMillionTokens?: number | null;
+  /**
+   * Catalog tags, sorted by position then ID.
+   */
+  tags?: ModelTag[];
+  [k: string]: unknown;
+}
+/**
+ * Backend-curated model label. Tags filter and annotate model lists, and the
+ * native runtime uses the `uncensored` tag to select the uncensored image
+ * adapter. Tags never affect routing, pricing, attestation or availability.
+ */
+export interface ModelTag {
+  id: string;
+  label: string;
+  /**
+   * Color vocabulary for model tags.
+   */
+  tone?: "gray" | "green" | "blue" | "violet" | "amber" | "pink" | "orange" | "teal" | "red";
+  position?: number;
   [k: string]: unknown;
 }
 export interface GetProfilePreferencesRequest {
@@ -1017,6 +1072,17 @@ export interface EventNotification {
   threadRevision?: number | null;
   lastTimelineSequence?: number | null;
   event: ActivityEvent;
+  [k: string]: unknown;
+}
+/**
+ * Live work counters, independent of billable request usage. Streamed text and
+ * reasoning are estimates until the provider supplies an output-token count.
+ */
+export interface CompactionProgress {
+  completed: number;
+  total: number;
+  generatedTokens: number;
+  estimated: boolean;
   [k: string]: unknown;
 }
 export interface ExtensionError {

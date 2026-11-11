@@ -28,6 +28,9 @@
     "promptMetadata": {
       "$ref": "#/$defs/PromptMetadata"
     },
+    "sessionCommandRequest": {
+      "$ref": "#/$defs/SessionCommandRequest"
+    },
     "getAttachmentsRequest": {
       "$ref": "#/$defs/GetAttachmentsRequest"
     },
@@ -39,6 +42,12 @@
     },
     "regenerateImageResponse": {
       "$ref": "#/$defs/RegenerateImageResponse"
+    },
+    "readImageRequest": {
+      "$ref": "#/$defs/ReadImageRequest"
+    },
+    "readImageResponse": {
+      "$ref": "#/$defs/ReadImageResponse"
     },
     "deliveryMetadata": {
       "$ref": "#/$defs/DeliveryMetadata"
@@ -234,10 +243,13 @@
     "desktopBootstrapRequest",
     "desktopBootstrapResponse",
     "promptMetadata",
+    "sessionCommandRequest",
     "getAttachmentsRequest",
     "getAttachmentsResponse",
     "regenerateImageRequest",
     "regenerateImageResponse",
+    "readImageRequest",
+    "readImageResponse",
     "deliveryMetadata",
     "listThreadsRequest",
     "listThreadsResponse",
@@ -883,6 +895,14 @@
           "maximum": 65535,
           "default": 0
         },
+        "imageResources": {
+          "description": "Metadata-only image presentation with account-scoped on-demand reads.",
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535,
+          "default": 0
+        },
         "steering": {
           "type": "integer",
           "format": "uint16",
@@ -912,6 +932,14 @@
           "default": 0
         },
         "activity": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535,
+          "default": 0
+        },
+        "commandInvocation": {
+          "description": "Explicit application command invocation; prompt text stays literal.",
           "type": "integer",
           "format": "uint16",
           "minimum": 0,
@@ -1147,6 +1175,24 @@
         "data"
       ]
     },
+    "SessionCommandRequest": {
+      "description": "Application controls selected explicitly by the client. Never infer this\nrequest from ordinary pasted or submitted prompt text.",
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "command": {
+          "description": "A slash command selected intentionally, such as `/thinking high`.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "sessionId",
+        "command"
+      ]
+    },
     "GetAttachmentsRequest": {
       "type": "object",
       "properties": {
@@ -1201,6 +1247,57 @@
       },
       "required": [
         "callId"
+      ]
+    },
+    "ReadImageRequest": {
+      "type": "object",
+      "properties": {
+        "threadId": {
+          "type": "string"
+        },
+        "callId": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "threadId",
+        "callId",
+        "sha256"
+      ]
+    },
+    "ReadImageResponse": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "string"
+        },
+        "mimeType": {
+          "type": "string"
+        },
+        "width": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "height": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "sha256": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "data",
+        "mimeType",
+        "width",
+        "height",
+        "sha256"
       ]
     },
     "DeliveryMetadata": {
@@ -1877,6 +1974,13 @@
           ],
           "format": "uint64",
           "minimum": 0
+        },
+        "tags": {
+          "description": "Catalog tags, sorted by position then ID.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ModelTag"
+          }
         }
       },
       "required": [
@@ -1890,6 +1994,48 @@
         "contextWindowTokens",
         "maxOutputTokens",
         "autoCompactThresholdTokens"
+      ]
+    },
+    "ModelTag": {
+      "description": "Backend-curated model label. Tags filter and annotate model lists, and the\nnative runtime uses the `uncensored` tag to select the uncensored image\nadapter. Tags never affect routing, pricing, attestation or availability.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "tone": {
+          "$ref": "#/$defs/ModelTagTone",
+          "default": "gray"
+        },
+        "position": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535,
+          "default": 0
+        }
+      },
+      "required": [
+        "id",
+        "label"
+      ]
+    },
+    "ModelTagTone": {
+      "description": "Color vocabulary for model tags.",
+      "type": "string",
+      "enum": [
+        "gray",
+        "green",
+        "blue",
+        "violet",
+        "amber",
+        "pink",
+        "orange",
+        "teal",
+        "red"
       ]
     },
     "GetProfilePreferencesRequest": {
@@ -3603,6 +3749,16 @@
                 "null"
               ]
             },
+            "progress": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/CompactionProgress"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "kind": {
               "type": "string",
               "const": "compaction"
@@ -3656,6 +3812,36 @@
         "completed",
         "cancelled",
         "failed"
+      ]
+    },
+    "CompactionProgress": {
+      "description": "Live work counters, independent of billable request usage. Streamed text and\nreasoning are estimates until the provider supplies an output-token count.",
+      "type": "object",
+      "properties": {
+        "completed": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "total": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "generatedTokens": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "estimated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "completed",
+        "total",
+        "generatedTokens",
+        "estimated"
       ]
     },
     "ExtensionError": {

@@ -55,7 +55,6 @@ if (platform === '--win' && !unsigned) builder.push('--config', 'electron-builde
 // app separately first adds a redundant Apple queue wait for each architecture.
 if (platform === '--mac') builder.push('--config.mac.notarize=false');
 const env = unsigned ? unsignedEnvironment(process.env) : { ...process.env };
-if (env.AXIOM_CHUTES_BUNDLE) env.AXIOM_CHUTES_BUNDLE = path.resolve(env.AXIOM_CHUTES_BUNDLE);
 if (combined && platform === '--win') env.AXIOM_NATIVE_INPUT = nativeInput;
 if (platform === '--win') {
   env.ELECTRON_BUILDER_7Z_FILTER = 'BCJ';
@@ -65,7 +64,7 @@ if (unsigned) {
   builder.push('--config.forceCodeSigning=false');
   // The unsigned option is explicit; production defaults still require signing.
   if (platform === '--win') builder.push('--config.win.signExecutable=false');
-  if (platform === '--mac') builder.push('--config.mac.identity=-', '--config.mac.notarize=false', '--config.dmg.sign=false', '--config.mac.entitlements=build/entitlements.unsigned.plist', '--config.mac.entitlementsInherit=build/entitlements.unsigned.plist');
+  if (platform === '--mac') builder.push('--config.mac.identity=-', '--config.dmg.sign=false', '--config.mac.entitlements=build/entitlements.unsigned.plist', '--config.mac.entitlementsInherit=build/entitlements.unsigned.plist');
 }
 if (unpacked) {
   run('pnpm', ['exec', 'electron-builder', ...builder, '--dir', '--config.extraMetadata.axiomUpdateFormat=exe'], env);

@@ -20,6 +20,7 @@
     "./ModelPicker": "./src/ModelPicker.tsx",
     "./modelPricing": "./src/modelPricing.ts",
     "./modelPreferences": "./src/modelPreferences.ts",
+    "./modelFilters": "./src/modelFilters.ts",
     "./OverflowTitle": "./src/OverflowTitle.tsx",
     "./*": "./src/*.tsx",
     "./privacyProof": "./src/privacyProof.ts",

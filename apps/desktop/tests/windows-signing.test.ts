@@ -104,13 +104,11 @@ test('afterPack finds the verifier bundle from the workspace when Electron chang
   const direct = require('../../../scripts/direct-bundle.cjs');
   const originalCopy = direct.copyBundles;
   const originalBundle = process.env.AXIOM_DIRECT_BUNDLE;
-  const originalChutes = process.env.AXIOM_CHUTES_BUNDLE;
   try {
     mkdirSync(projectDir, {recursive: true});
     mkdirSync(absoluteBundle, {recursive: true});
     writeFileSync(path.join(absoluteBundle, 'resolver-fixture.txt'), 'workspace verifier fixture');
     require.cache[licensesId]!.exports = async () => {};
-    delete process.env.AXIOM_CHUTES_BUNDLE;
     // Inventory, architecture and signature validation remain in direct-bundle's
     // separate suite. This boundary check performs real I/O using the path that
     // afterPack passes to that strict copier, outside the test process's cwd.
@@ -131,7 +129,6 @@ test('afterPack finds the verifier bundle from the workspace when Electron chang
     direct.copyBundles = originalCopy;
     require.cache[licensesId]!.exports = licenses;
     if (originalBundle === undefined) delete process.env.AXIOM_DIRECT_BUNDLE; else process.env.AXIOM_DIRECT_BUNDLE = originalBundle;
-    if (originalChutes === undefined) delete process.env.AXIOM_CHUTES_BUNDLE; else process.env.AXIOM_CHUTES_BUNDLE = originalChutes;
     rmSync(directory, {recursive: true, force: true});
   }
 });

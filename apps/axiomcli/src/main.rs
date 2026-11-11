@@ -77,6 +77,8 @@ struct Cli {
 enum Command {
     /// Download, verify, install and restart an installed Axiom release.
     Update(axiomcli::updates::Arguments),
+    /// Permanently delete all local Axiom data and saved credentials. Stop Axiom first.
+    FactoryReset(axiomcli::factory_reset::Arguments),
     /// Run the account-bound secure loopback proxy under Desktop supervision.
     DesktopProxy {
         #[arg(long)]
@@ -103,6 +105,9 @@ enum Command {
         /// Select the policy, storage, prompt, and workspace contract for the ACP client.
         #[arg(long, value_enum, default_value_t = FrontendKind::Cli)]
         frontend: FrontendKind,
+        /// Refuse macOS Keychain dialogs in a disposable background probe.
+        #[arg(long)]
+        no_keychain_ui: bool,
     },
     /// Check configuration and local dependencies.
     Doctor,
@@ -221,12 +226,40 @@ enum SessionAction {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    // Set this before constructing authentication: protocol discovery can be
+    // a short-lived background process. An OS dialog must never outlive that
+    // owner or repeatedly ask the user to approve an already-exited helper.
+    // This only suppresses UI; denied credentials still fail closed. Normal
+    // Desktop, CLI and explicit browser sign-in retain interactive Keychain.
+    #[cfg(target_os = "macos")]
+    let _keychain_ui = if matches!(
+        &cli.command,
+        Some(Command::Acp {
+            no_keychain_ui: true,
+            ..
+        })
+    ) {
+        Some(
+            security_framework::os::macos::keychain::SecKeychain::disable_user_interaction()
+                .context("could not disable Keychain dialogs for the background probe")?,
+        )
+    } else {
+        None
+    };
     if let Some(Command::Update(arguments)) = cli.command {
         // Update helpers must survive shutdown of the process being replaced.
+        let paths = AxiomPaths::discover().context("failed to resolve Axiom platform paths")?;
+        let _reset_lease = axiomcli::factory_reset::runtime_lease(&paths)?;
         return axiomcli::updates::command(arguments).await;
+    }
+    if let Some(Command::FactoryReset(arguments)) = cli.command {
+        // Recovery must work without loading configuration, account or databases.
+        return axiomcli::factory_reset::command(&arguments);
     }
     install_descendant_cleanup();
     let _installation_lease = axiomcli::updates::lease()?;
+    let paths = AxiomPaths::discover().context("failed to resolve Axiom platform paths")?;
+    let _reset_lease = axiomcli::factory_reset::runtime_lease(&paths)?;
     // The proxy owns no chat store, tools, agent configuration or system prompt.
     if let Some(Command::DesktopProxy {
         account_id,
@@ -236,7 +269,7 @@ async fn main() -> anyhow::Result<()> {
         return axiomcli::proxy::run(arguments, account_id).await;
     }
     let frontend = match &cli.command {
-        Some(Command::Acp { frontend }) => *frontend,
+        Some(Command::Acp { frontend, .. }) => *frontend,
         _ => FrontendKind::Cli,
     };
     anyhow::ensure!(
@@ -248,7 +281,6 @@ async fn main() -> anyhow::Result<()> {
         .as_deref()
         .map(load_system_prompt_file)
         .transpose()?;
-    let paths = AxiomPaths::discover().context("failed to resolve Axiom platform paths")?;
     paths
         .prepare()
         .context("failed to prepare Axiom platform paths")?;
@@ -312,6 +344,9 @@ async fn main() -> anyhow::Result<()> {
         resume: None,
     }) {
         Command::Update(_) => unreachable!("update is handled before agent initialization"),
+        Command::FactoryReset(_) => {
+            unreachable!("factory reset is handled before agent initialization")
+        }
         Command::DesktopProxy { .. } => {
             unreachable!("desktop proxy is handled before agent initialization")
         }
@@ -407,7 +442,7 @@ async fn main() -> anyhow::Result<()> {
             )
             .await
         }
-        Command::Acp { frontend } => axiomcli::acp::serve_stdio(
+        Command::Acp { frontend, .. } => axiomcli::acp::serve_stdio(
             build_runner(&config, &auth, system_prompt.as_deref(), frontend).await?,
             config.clone(),
             Some(account_store),
@@ -680,9 +715,7 @@ async fn build_runner(
         config.max_tool_output_bytes,
         Arc::new(HostedSearchClient::new(auth.clone())?),
     )?;
-    if std::env::var_os("AXIOM_CHUTES_CLIENT_CONFIG_FILE").is_some()
-        || std::env::var_os("AXIOM_DIRECT_CLIENT_CONFIG_FILE").is_some()
-    {
+    if provider.has_image_service() {
         tools.register(Arc::new(axiomcli::image_tool::ImageGenerationTool {
             provider: Arc::clone(&provider),
         }))?;

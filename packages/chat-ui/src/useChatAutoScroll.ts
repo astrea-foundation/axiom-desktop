@@ -90,6 +90,15 @@ export function useChatAutoScroll(threadId: string) {
   const onWheelCapture = (event: WheelEvent<HTMLDivElement>) => {
     if (!event.ctrlKey && event.deltaY !== 0) scrollIntent(event.deltaY < 0);
   };
+  const onOverlayWheel = (event: WheelEvent<HTMLElement>) => {
+    const el = viewportRef.current;
+    if (!el || event.ctrlKey || event.deltaY === 0) return;
+    // Floating transcript controls sit outside the scrolling element. Keep a
+    // wheel gesture over them scrolling the conversation beneath the control.
+    scrollIntent(event.deltaY < 0);
+    const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? el.clientHeight : 1;
+    el.scrollTop += event.deltaY * unit;
+  };
   const onPointerDownCapture = (event: PointerEvent<HTMLDivElement>) => {
     if (event.button !== 0 || event.pointerType === "touch") return;
     const target = event.target as HTMLElement;
@@ -119,7 +128,7 @@ export function useChatAutoScroll(threadId: string) {
   };
 
   return {
-    viewportRef, contentRef, showJump, resume,
+    viewportRef, contentRef, showJump, resume, onOverlayWheel,
     handlers: { onScroll, onWheelCapture, onPointerDownCapture, onClickCapture, onTouchStartCapture, onTouchMoveCapture, onKeyDownCapture },
   };
 }

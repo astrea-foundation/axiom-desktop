@@ -16,19 +16,6 @@ The [update architecture](updates.md) describes installation ownership and
 recovery. [Release acceptance](validation.md) covers signed OS qualification;
 [repository setup](repository-setup.md) lists Actions credentials and settings.
 
-The optional managed Chutes provider uses a prebuilt standalone client payload.
-Set `AXIOM_CHUTES_BUNDLE` to its target-specific directory and explicitly set
-`AXIOM_CHUTES_RELEASE_CHANNEL=staging` for staging; production is the default.
-The packaging hook validates its exact inventory, native architecture, public
-authority and executable pin before copying it to `resources/chutes`. Signed
-macOS packages require the payload's native code to be signed by `APPLE_TEAM_ID`
-before its inventory is generated. Electron excludes that runtime from its own
-signing walk to preserve the executable hash. Use the
-[helper build guide](../../axiom-inference/docs/native-helper.md), including
-dependency notices, and retain signed installer acceptance as a separate check.
-An ad-hoc payload fails signed packaging. Windows and universal helper bundles
-are not yet qualified; omit the optional provider for those targets.
-
 ## Supported platforms
 
 | Target | Desktop installer | Standalone CLI + proxy installer |
@@ -160,6 +147,47 @@ the retained `release/` and `setup/` through the operator commands above and
 dispatch the platform publisher on `main`. Clear the variable after publication.
 Do not rebuild or resign qualified files for this handoff.
 
+Exercise a model-generated image tool call from the retained signed installation
+without configuration-file environment overrides. The installed secure provider
+must discover its bundled AstreaAI configuration and register `generate` and
+`view_image` from that loaded configuration. Verify the authenticated image result and settled usage
+before publishing; version and ordinary chat checks cannot substitute for this
+test.
+
+The macOS signing job installs each signed PKG on its disposable runner and runs
+`scripts/verify-installed-image.mjs` against the installed CLI. An isolated profile
+and a fresh native-session QA credential keep this check separate from
+maintainer accounts. Before dispatch, provision `AXIOM_INSTALLED_NATIVE_QA` in the
+protected `release` environment using a dedicated funded QA account and the normal
+native authorization/PKCE exchange. Its JSON contains `version`, `accountId`,
+`clientId`, `refreshToken`, and `sessionId`. An automation API key cannot access
+native account sessions and cannot substitute for this credential.
+
+The harness accepts only a disposable GitHub-hosted macOS runner, creates a
+separate temporary Keychain, makes it the runner's default User-domain Keychain,
+and installs that session's client identity in each
+isolated profile. Desktop and standalone CLI share the rotating Keychain entry;
+the original refresh token is seeded once, never restored after rotation. If a
+run consumes the token before failing, authorize a fresh QA native session before
+another dispatch. Revoke the QA session and remove the temporary secret after
+qualification. Never seed this fixture into a maintainer's login Keychain.
+The child process inherits no provider configuration or test
+overrides. It must register image tools, generate and view one image, finish ready,
+and report authenticated, final, settled image usage. The private
+`signed-installation-image-acceptance` artifact binds the installer and installed
+binary hashes to the generated image and usage receipt. Publication depends on
+this check; downloading the signed inventory does not replace it.
+
+Before selecting the AstreaAI image-test model, qualification must use the normal
+installed catalog and a fresh profile without `AXIOM_MODEL`. Require NEAR's exact
+`deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated` offering, its `uncensored` tag,
+and that offering as the new session's selected default. Use the Desktop chat
+frontend and bootstrap workspace for Desktop, and the CLI frontend for standalone
+CLI. Only after recording the actual default may the test select AstreaAI/Qwen
+through the normal model-selection RPC for its image request. A working image
+service cannot substitute for the required chat catalog and default selection;
+provider discovery outages must block release qualification.
+
 `scripts/prepare-store-submission.mjs release setup store` prepares the private
 `windows-store-submission` workflow artifact: the exact full offline EXE URL,
 hash, silent arguments, certification notes and remaining acceptance fields.
@@ -209,17 +237,76 @@ of this updater's public contract; the native helper uses the complete installer
 
 ## CI baseline
 
-Pull requests targeting `main` run Linux Rust and Desktop UI checks. Merging does
-not repeat those checks automatically. Native macOS/Windows validation is an
-explicit `ci.yml` dispatch with `target=native` (all four native jobs), `all`
-(also Linux/UI), or a specific platform; `linux` and
-`desktop` rerun only those checks. Validate the complete candidate on `dev`,
-promote it, confirm the promoted tree matches, and tag that validated candidate
-commit now reachable from `main`. The release gate requires successful Rust, UI,
-and all four native CI jobs for the exact tagged revision, combining targeted
-runs when needed. Packaging reuses those results instead of repeating the suites.
-Retry only failed validation targets or packaging jobs. These checks do not
-replace signed OS installation acceptance.
+### Completing unpublished packaging from retained inputs
+
+The one-time `release-0.1.21-recovery.yml` workflow uses the reviewed
+`v0.1.21-packaging.2` acceptance tag to correct the installed-image acceptance
+authentication. It retains native source/tag
+`0cea3d47db3a75c1cab7495af930bc864604a6fc` and the accepted Windows/Linux bytes from
+run `42696233901`. The guard requires that exact original attempt's successful
+native builds, live evaluation, Windows signing and ARM64 installation, and Mac
+signing/notarization; only its failed image acceptance and skipped publisher are
+recoverable. Signed Mac packages from assembly run `42709923710` are retained
+unchanged after correcting the fixture's default User-domain Keychain selection.
+That exact run's source qualification, signing and notarization must have passed
+and publication must have been skipped. All platforms reuse their retained signed
+installers. Both installed Mac products must then generate and view
+an authenticated image using their bundled configuration and native session.
+The receipt records the native source revision and separate acceptance revision.
+Publication still requires this gate and the complete signed inventory. No
+published assets or stable tags are replaced.
+
+The one-time 0.1.17 recovery completed with assembly tag
+`v0.1.17-packaging.3`. Its signed public inventory still identifies the qualified
+native source `7c41a12b31d42aefe4f21896864a166f0d087b3a`. Preserve the published
+bytes; publication retries reuse the retained signed release or public assets.
+Future installer corrections require the normal new-version release procedure.
+The recovery details below document the assembly provenance.
+
+The manual `release-packaging-recovery.yml` workflow completes the unpublished
+0.1.17 installer set from its exact qualified native source and retained build
+receipts. Dispatch the reviewed `v0.1.17-packaging.3` tag after its workflow is
+promoted to `main`. This tag records assembly recovery and is excluded from the
+normal stable-tag build trigger; the native `v0.1.17` tag remains unchanged.
+
+The recovery gate requires the original live evaluation, Linux packages, both
+Mac native inputs, both Windows native inputs, signed Windows installers and
+Windows ARM64 installation acceptance to have passed. It refuses an active or
+completed original publisher. Native receipt revisions, hashes, architecture,
+compiled update keys and exact-source CI stay mandatory.
+
+Mac assembly runs on Intel capacity. A separate checkout of the reviewed
+assembly tag supplies the packaging hooks while the app and native source
+checkout stays unchanged. The temporary x64/ARM64 app inputs omit frozen
+runtimes: Electron rewrites nested `Info.plist` files and would invalidate their
+recorded hashes and signatures. The final universal hook copies both complete
+signed runtime trees after the merge and before app signing, with the existing
+inventory, architecture, signature and no-replacement checks. Ordinary thin
+builds and standalone CLI packaging retain their normal strict copies. App code
+and Rust sidecars retain normal universal merging. Recovery repeats code signing,
+notarization, stapling and installer assessment, reuses the already accepted
+Windows/Linux bytes, and signs the complete final inventory before publication.
+The inventory continues to identify the exact qualified native source; the
+recovery workflow tag records the assembly configuration. This procedure does
+not replace bytes or metadata in a published release.
+
+### Qualifying a candidate
+
+Pushes to `dev` and pull requests targeting `dev` or `main` run Linux Rust,
+TypeScript/unit/browser checks and all four native macOS/Windows portability
+jobs. Manual `ci.yml` dispatches can retry `target=native`, `all`, a specific
+native platform, `linux`, or `desktop`. After those checks succeed for the exact
+development revision, use the non-publishing candidate workflow below to catch
+bundled-verifier and installer packaging failures before production tags exist.
+Retry only failed validation targets or candidate packaging jobs.
+
+A candidate run does not authorize promotion or publication. For a separately
+authorized release, validate the complete candidate on `dev`, promote it, confirm
+the promoted tree matches, and tag the validated commit now reachable from
+`main`. The production gate still requires successful Rust, UI and all four
+native CI jobs for the exact tagged revision, combining targeted runs when
+needed. Candidate-target selection does not relax that requirement. Checks and
+unsigned packaging do not replace signed OS installation acceptance.
 
 Routine qualification runs functional tests once. The repeated deterministic
 evaluation and three host-performance benchmarks are opt-in with
@@ -228,7 +315,7 @@ Small persistence, cancellation, process cleanup, protocol and security tests
 stay required. Clippy already checks all Linux targets, and native tests compile
 their targets, so CI does not precede either with a duplicate `cargo check`.
 CI omits development/test debug symbols, retains assertions, downloads the pinned
-`cargo-deny` executable with checksum verification, and limits a dispatched native matrix to two concurrent
+`cargo-deny` executable with checksum verification, and limits the native matrix to two concurrent
 jobs. Release build profiles and signing checks are unchanged.
 The audit installer action is pinned to a commit and disables source-build
 fallbacks, so a fresh PR does not spend minutes compiling the audit tool itself.
@@ -255,20 +342,49 @@ sandboxing are unchanged. Git attributes preserve LF across Windows checkouts.
 
 ## Development previews
 
-The **Preview installers** workflow can run on `dev` without production secrets:
+The **Candidate validation (unpublished)** workflow runs explicitly on a
+non-`main` development branch. It rejects tag dispatches, retains the existing
+product version and requires successful `ci.yml` jobs for the exact revision.
+Select one native target for a focused packaging check; `all` requests all five
+native installer targets, with at most two jobs running together:
 
 ```sh
-gh workflow run desktop-packages.yml --ref dev
+gh workflow run desktop-packages.yml --ref dev -f target=linux
+# Other targets: macos-intel, macos-arm64, windows-x64, windows-arm64, all
 ```
 
-It builds actual unsigned installers into Actions artifacts, with stable updates
-disabled. It does not publish GitHub releases, CDN objects, or feeds. Local builds
-use the same native builders:
+Every selected target requires the Rust and Desktop UI CI jobs; macOS/Windows
+also require their matching native portability job. A missing, active, cancelled
+or failed required result blocks packaging. Run or retry CI first; this workflow
+does not dispatch CI on the operator's behalf.
+
+The workflow builds and self-tests the native AstreaAI verifier through
+`scripts/build-direct-bundle.mjs`, bundles it into actual unsigned Desktop and CLI
+installers, and compiles with stable update trust disabled. Each packaging job
+installs Node for its selected architecture and checks `process.arch` before
+building, including native ARM64 on macOS and Windows. It validates that the
+unsigned inventory matches the selected source SHA, existing product version,
+platform and architecture, includes every required Desktop/CLI format, and
+matches each artifact's length/hash and `SHA256SUMS`. A source-tree check rejects
+uncommitted packaging changes. The resulting `candidate-SHA-PLATFORM-ARCH` Actions
+artifact contains the installers, inventory, checksums and
+`candidate-validation.json` receipt, retained for seven days. The token has only
+read access to repository contents and Actions. No signing secrets, release
+upload, CDN upload, feed change, production inference or deployment is involved.
+
+Local unsigned packaging uses the same native builders from a clean, committed
+checkout. Confirm the existing Desktop and CLI versions match first:
 
 ```sh
+export AXIOM_UPDATE_PUBLIC_KEYS=''
+node scripts/build-direct-bundle.mjs --output .local/direct/bundle
+export AXIOM_DIRECT_BUNDLE=.local/direct/bundle
 cargo build --locked --release -p axiomcli -p axiom-proxy
 node apps/desktop/scripts/package-desktop.mjs --linux --x64 --unsigned
 node scripts/package-cli.mjs --linux --x64 --unsigned
+version=$(node -p "require('./apps/desktop/package.json').version")
+node scripts/download-manifest.mjs apps/desktop/dist "$version" unsigned
+node scripts/verify-candidate.mjs apps/desktop/dist linux x64 "$(git rev-parse HEAD)" "$version"
 ```
 
 Use `--mac --arm64|--x64` or `--win --arm64|--x64` on native hosts. Windows needs

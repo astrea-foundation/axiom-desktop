@@ -9,11 +9,24 @@ verifier. Packaging validates the complete runtime inventory, executable digest
 and platform signatures before including it. The native client still verifies
 fresh CPU, GPU, workload, key and response evidence before accepting inference.
 
-Build the frozen verifier from a clean committed checkout with
+The 0.1.21 installer configuration pins policy sequence 22 as its minimum.
+Fresh production qualification verifies generation 15 with that policy, including
+the `chat`, `image`, `tools` and `vision` capabilities. Older policy documents
+cannot undo the revocations already included in this release's minimum.
+
+AstreaAI is additive to the normal model catalog. Installing its verifier must
+preserve the NEAR AI and Tinfoil offerings discovered through the account API.
+Each offering retains its own locally verified attestation and E2EE protocol;
+selecting another provider does not route that request through AstreaAI. If the
+remote catalog is unavailable, the locally pinned AstreaAI offering remains
+discoverable and still requires fresh worker admission before inference.
+
+Build the native Rust verifier from a clean committed checkout with
 `node scripts/build-direct-bundle.mjs --output .local/direct/bundle`. The builder
-checks the vendored source inventory and installs hash-locked dependencies.
-Intel macOS compiles the locked cryptography source using locked build tools,
-Rust and static Homebrew OpenSSL; the other platforms use upstream wheels.
+checks the vendored source inventory, compiles the locked Cargo dependency graph
+and verifies the executable in a clean environment. Node, Rust and the native
+platform linker are required; the verifier has no Python or OpenSSL runtime.
+Native Windows ARM64 is supported alongside x64 and both Mac architectures.
 Set `AXIOM_DIRECT_BUNDLE` to that output root when packaging. Signed production
 installers require the bundle; private issuer keys are rejected from it.
 Relative bundle paths resolve from the workspace root even when Electron's
@@ -25,8 +38,8 @@ profile. Inference connects directly to the independently verified confidential
 worker; the account service never receives conversation plaintext or the
 operator issuer key.
 
-The account-authorized staging mode uses the hosted staging API and service-issued
-grants instead. Its public installed `account` configuration binds the exact
+The account-authorized production mode uses `https://api.axiom.stream` and
+service-issued grants. Its public installed `account` configuration binds the exact
 account API origin, issuer public key, immutable chat/image prices and a native
 spending ceiling. `issuer_key_file` must be empty in this mode. The client obtains
 an account-owned reservation and one-use grant, then sends encrypted inference
@@ -34,11 +47,12 @@ directly to the same independently verified worker. There is no operator-signing
 fallback when account authorization, credit or price acceptance fails.
 
 The approved guest loads `munekazu/Huihui-Qwen3.8-27B-abliterated-FP8`, pinned by
-the signed model inventory. Its exact native model ID selects Axiom's bundled
-Qwen3.8 Uncensored system prompt, including after a model switch. The compact
+the signed model inventory. Its exact native model ID adds the Qwen3.8
+Uncensored identity line to Axiom's uncensored system prompt, including after a
+model switch. The compact
 model label retains “Uncensored” so the checkpoint is identifiable in the composer.
 
-This development connection supports streaming text conversations with the
+This connection supports streaming text conversations with the
 measured worker's medium reasoning template, a 32,768-token context and at most
 4,096 output tokens. Native requests omit tools when the offering does not
 support them. Image understanding is an explicit installed capability: set
@@ -99,6 +113,10 @@ come from attachments or generated images in the same conversation. Reference
 bytes stay in the encrypted request; signed usage binds their normalized pixel
 count. The adapter preserves source IDs for preview, saving and regeneration.
 Regenerate retains the original request's chosen dimensions and reference order.
+The requesting chat may use any supported vision-capable provider, including
+NEAR or Tinfoil. Its model ID is image provenance, not a selector for the image
+worker. AstreaAI still verifies its own worker, keys, signed image result and
+account-owned usage; image evidence and billing remain attributed to AstreaAI.
 The uncensored model selects its pinned image LoRA. Document uploads remain
 unavailable.
 The legacy operator connection uses free operator grants. The production account
@@ -122,7 +140,7 @@ The worker accepts only these free grants. An image result's `settled: true` and
 zero cost describe completion of that free request, not a debit from the signed-in
 customer's balance.
 
-The staging account path forwards complete chat accounting, including cached-input
+The account path forwards complete chat accounting, including cached-input
 and reasoning subsets, and image pixel/step/reference counters. Costs come from
 the verified worker receipt and pinned price, and `settled` becomes true only
 after the account controller confirms receipt reconciliation. The worker also
@@ -130,12 +148,25 @@ delivers the same receipt through its bounded private outbox. Both paths converg
 on one durable ledger debit; accounting recovery remains scoped to the signed-in
 account and does not assert that a missing response was authenticated locally.
 
-The matching backend accepts the current `input_image_pixels` field, 36 MiB
-request bound and 2,359,296-pixel image output. Before a paid rollout, qualify
-reservation release, cancellation, duplicate receipts and recovery before a
-customer can be charged. These remain [rollout gates](validation.md#astreaai-rollout-gates).
+The production backend accepts the current `input_image_pixels` field, 36 MiB
+request bound and 2,359,296-pixel image output. The
+[production qualification](../../axiom-inference/docs/qa/direct-astreaai-production-2026-11-05.json)
+records concurrent account-owned completions, wrong-account refusal, idempotent
+settlement, a zero-credit refusal before dispatch, cancelled metadata-only
+reservations and the exact five-reference image charge. Immutable production
+prices are `astreaai-chat-20261105-v1` ($0.25/M input, $0.05/M cached input and
+$1.50/M output, including reasoning) and `astreaai-image-20261105-v1` ($0.008 per
+generated image). These checks do not establish sustained throughput or all
+signed-OS interactive flows; retain the
+[remaining acceptance requirements](validation.md#astreaai-rollout-gates).
 
 ## Install and launch
+
+Production customers install [Desktop or AxiomCLI 0.1.18](https://axiom.stream/downloads)
+and sign in to their normal production account. The signed package supplies the
+verifier and public trust configuration automatically. Select **Qwen3.8
+Uncensored** under **AstreaAI**. The source/operator commands below are for an
+isolated development connection.
 
 Build this branch normally, retaining the current development version:
 
@@ -168,8 +199,8 @@ The renderer receives neither this configuration nor the private key.
 
 The canonical inference repository's `scripts/direct_desktop.py` constructs a
 small launch environment from explicit `--state`, `--desktop` and
-`--account-state` paths. It does not inherit provider API credentials or Chutes
-preview settings. The existing local account backend must be running. Select
+`--account-state` paths. It does not inherit provider API credentials or other
+provider settings. The existing local account backend must be running. Select
 **Qwen3.8 Uncensored** under AstreaAI after launch if the profile previously selected another model.
 
 Development QA can set `AXIOM_DESKTOP_LOCAL_PROFILE_NAME` to a distinct lowercase
@@ -227,6 +258,11 @@ inference. Both cached proof and admission must cover the entire new request
 deadline; request keys, nonces and grants are never reused. Explicit Refresh
 invalidates the cache and any failed exchange drops it without inference replay.
 The proof's original local verification time is retained in the privacy report.
+Desktop's automatic report renewal reads this reusable native cache rather than
+invalidating it; only an explicit Refresh forces a new appraisal. The worker
+proof remains bounded to at most 240 seconds, and a new 180-second request still
+requires coverage through its deadline. Near-expiry material therefore cannot
+authorize a new full-length image request, even when its report is still valid.
 
 The account-owned provider checks every 20 seconds and prepares 210 seconds of
 proof and admission coverage, providing 30 seconds of headroom above a normal

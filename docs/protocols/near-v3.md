@@ -5,7 +5,9 @@ Contract: `near-v3`, encryption wire version `2`, attestation
 
 This contract uses one freshly attested Ed25519 identity for recipient-key
 conversion and response signatures. It replaces NEAR v2's independently fetched
-Ed25519/ECDSA reports. Only direct model workers are supported by this contract.
+Ed25519/ECDSA reports. The `near-tdx-nvidia-v2` attestation contract covers
+direct model workers; `near-tdx-nvidia-gateway-v1` covers the same workers reached
+through NEAR's attested cloud gateway (see [Gateway route](#gateway-route)).
 
 ## Establishment
 
@@ -53,8 +55,14 @@ snapshot, and expiry (at most five minutes). The client bounds its verified cach
 to its own policy and cache lifetime too. Different sessions for one model coexist;
 a new worker never overwrites another client's accepted recipient.
 
-The relay context contains exactly `request_body_hash`, `response_signing_address`,
-and `worker_session_id`. The backend looks up the account-owned session rather than
+The relay context binds `request_body_hash`, `response_signing_address`,
+and `worker_session_id`. New clients also send `request_body_base64` and
+`response_wire_version: 1`. The backend decodes and structurally compares the
+exact JSON to the admitted encrypted fields, model, stream mode and token cap,
+rejects duplicate keys and type substitutions, then forwards those bytes without
+reserializing. Number spelling, whitespace and Unicode escaping do not affect
+admission or change the client-authenticated hash. Legacy clients retain the
+previous reconstruction contract. The backend looks up the account-owned session rather than
 the model's latest lease. Expired/mismatched sessions fail before provider dispatch.
 
 A bounded in-process connection cache is only an optimization. Another API process
@@ -82,10 +90,26 @@ Ed25519 signature against the attested model key. Signed text must be exactly
 `model_id:sha256(exact_request_bytes):sha256(exact_response_bytes)`.
 ECDSA records and gateway-only hash pairs are rejected under this contract.
 
+For streaming, raw wire version 1 relays bounded `message.provider_chunk` events
+with a run ID, contiguous zero-based index and base64 of the original provider
+bytes. The native client parses and decrypts these bytes for provisional output;
+the backend parses the same encrypted stream for independent billing and usage
+checks. The terminal proof carries `response_wire_version: 1` and the exact
+`response_chunk_count` instead of repeating the transcript. Missing, duplicate,
+mixed or reordered chunks fail closed. Legacy clients retain terminal transcript
+chunks. Non-streaming retains its signed raw response because the receipt must
+authenticate provider JSON metadata as well as encrypted fields.
+
 For streaming, the signature covers the complete ordered raw SSE transcript,
 including its terminal marker and usage. Deltas remain provisional until the native
 client verifies the transcript and receipt; missing, changed, reordered or truncated
 responses never produce successful completion.
+
+After receipt/transcript verification, terminal run completion and transport EOF,
+the shared provider emits `ResponseVerified`. Downstream encrypted relays require
+both that event and the successful stream result before emitting their own
+authenticated terminal. Provisional output, a receipt without run completion,
+cancellation and a truncated connection never emit that signal.
 
 A non-streaming result may contain authenticated encrypted reasoning without
 answer text when its generation budget ends. The relay and native client retain
@@ -97,6 +121,36 @@ Only bounded read-only receipt lookups are retried on transient failures. Invali
 signatures fail immediately. A proven pre-send worker change returns
 `ATTESTATION_KEY_CHANGED`, allowing Desktop/TUI to establish and re-encrypt once.
 An ambiguous POST failure or missing receipt never authorizes inference replay.
+
+## Gateway route
+
+Attestation contract `near-tdx-nvidia-gateway-v1` keeps `near-v3`, encryption
+version `2` and `provider_e2ee_v2`, and routes the same worker through
+`https://cloud-api.near.ai/v1`. NEAR serves some models (for example preview
+models) only on this route. The gateway's attestation report carries its own
+`gateway_attestation` and the selected worker's `model_attestations` entry, both
+answering the client's challenge.
+
+The backend pins its live TLS connection to the **gateway's** attested TLS key
+(`SHA256(gateway_ed25519_key || gateway_tls_spki_sha256) || nonce` in its TDX
+report data), verifies the gateway quote and workload manifest, and verifies the
+worker exactly as on the direct route except for the live TLS check. Requests
+carry the worker key in `X-Model-Pub-Key` so the gateway forwards to that worker.
+The evidence relayed to the client adds a `gateway` object with the gateway's
+key, nonce, TLS fingerprint, Intel quote and workload manifest.
+
+The native client requires that object exactly for this contract and rejects it
+for the direct contract. It verifies the gateway quote with the same Intel path,
+report-data binding (gateway key, gateway TLS key, nonce) and manifest binding as
+the worker, under the same Intel status policy, alongside the worker's Intel and
+NVIDIA evidence. Message ciphertext is still encrypted to the attested worker key,
+so the gateway forwards only ciphertext. Receipts are unchanged: NEAR's gateway
+returns the worker's Ed25519 signature over
+`model_id:sha256(exact_request_bytes):sha256(exact_response_bytes)` for both
+streaming and non-streaming requests, which the client and backend verify against
+the attested worker key. A misrouted request cannot decrypt or produce a valid
+receipt and fails closed. The gateway, like the backend, observes request sizes
+and timing but no message content.
 
 ## Contract compatibility
 

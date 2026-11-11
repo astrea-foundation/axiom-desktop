@@ -18,7 +18,9 @@ mod codec;
 mod collections;
 mod connection;
 mod events;
+mod execution;
 mod mcp;
+mod model_history;
 mod preferences;
 mod projection;
 mod queries;
@@ -31,6 +33,7 @@ mod tests;
 mod timeline;
 
 pub use codec::{model_for_resume, permission_for_resume, thinking_for_resume};
+pub use execution::ContextOperationGuard;
 pub use records::{
     Collection, CollectionChange, CollectionState, ExportOptions, InterruptedTool, LoadOutcome,
     ProfilePreferences, RecoveryStatus, SessionSummary, ThreadCatalogPage, ThreadLifecycle,
@@ -59,6 +62,9 @@ struct StoreState {
     path: Option<PathBuf>,
     account_id: Option<String>,
     generation: u64,
+    owner_id: String,
+    executions: std::collections::HashMap<String, std::fs::File>,
+    context_operations: std::collections::HashSet<String>,
 }
 
 #[derive(Clone, Debug)]

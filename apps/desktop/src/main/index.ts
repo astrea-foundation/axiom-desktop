@@ -21,6 +21,7 @@ import { nativeUpdates } from "./native-updates";
 import { claimFirstLaunchUpdate } from "./first-launch-update";
 import { localProfile } from "./local-profile";
 import { installPageContextMenu } from "./page-context-menu";
+import { FactoryResetController, checkFactoryResetSupport, factoryResetError, factoryResetRelaunch } from "./factory-reset";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -53,6 +54,23 @@ let shutdownStarted = false;
 // and a new desktop launch always starts with the banner enabled.
 let astreaBannerDismissed = false;
 let updates: UpdateService | undefined;
+const factoryReset = new FactoryResetController({
+  isInstalling: () => updates?.snapshot().status === "installing" || shutdownStarted,
+  prepare: async () => {
+    const executable = await resolveSidecar();
+    await checkFactoryResetSupport(executable);
+    const relaunch = factoryResetRelaunch({
+      sidecar: executable, executable: process.env.APPIMAGE || app.getPath("exe"),
+      argv: process.argv, userData: app.getPath("userData"),
+      profile: IS_STAGING_PROFILE ? "staging" : LOCAL_PROFILE.userDataName ? "local" : "system",
+      profileName: IS_STAGING_PROFILE ? process.env.AXIOM_DESKTOP_STAGING_PROFILE_NAME
+        : LOCAL_PROFILE.userDataName ? process.env.AXIOM_DESKTOP_LOCAL_PROFILE_NAME : undefined,
+    });
+    return () => app.relaunch(relaunch);
+  },
+  stop: async () => { await Promise.all([updates?.dispose(), proxy.dispose(), sidecar.stop()]); },
+  quit: () => { shutdownStarted = true; app.quit(); },
+});
 // Dev-only: preview another platform's chrome (AXIOM_DESKTOP_PLATFORM_PREVIEW=win32).
 const PLATFORM_PREVIEW = app.isPackaged ? undefined : process.env.AXIOM_DESKTOP_PLATFORM_PREVIEW;
 
@@ -120,6 +138,7 @@ function agentHandle(channel: string, handler: AgentHandler): void {
     if (!trusted || !BrowserWindow.fromWebContents(event.sender)) {
       throw new Error("agent IPC rejected an untrusted renderer");
     }
+    if (factoryReset.isPending()) throw new Error("Axiom is resetting. Wait for it to reopen.");
     if (updates?.snapshot().status === 'installing' && (channel.startsWith('agent:prompt') || channel === 'proxy:start')) {
       throw new Error('Axiom is installing an update. Wait for it to restart.');
     }
@@ -130,6 +149,7 @@ function agentHandle(channel: string, handler: AgentHandler): void {
 function installAgentIpc(): void {
   agentHandle("astrea-banner:is-dismissed", () => astreaBannerDismissed);
   agentHandle("astrea-banner:dismiss", () => { astreaBannerDismissed = true; });
+  agentHandle("app:factory-reset", (_event, confirmation: unknown) => factoryReset.reset(confirmation));
   agentHandle("proxy:state", () => proxy.snapshot());
   agentHandle("proxy:start", (_event, port: unknown, accountId: unknown, runtimeId: unknown) => {
     if (!Number.isInteger(port) || (port as number) < 1 || (port as number) > 65535) throw new Error("Port must be between 1 and 65535");
@@ -140,6 +160,8 @@ function installAgentIpc(): void {
     clipboard.writeText(proxy.copyToken(boundedString(accountId, "account ID", 128), boundedString(runtimeId, "runtime ID", 128)));
   });
   agentHandle("agent:state", (event) => sidecar.rendererState(event.sender));
+  agentHandle("agent:image-read", (event, context: unknown, id: unknown) =>
+    sidecar.rendererImage(event.sender, boundedString(context, "image context", 128), boundedString(id, "image resource", 128)));
   agentHandle("agent:usage-summary", async (_event, accountId: unknown, period: unknown = "all_time", timezone: unknown = "UTC") => {
     const id = boundedString(accountId, "account ID", 128);
     if (period !== "week" && period !== "month" && period !== "all_time") throw new Error("Invalid usage period");
@@ -338,6 +360,9 @@ function installAgentIpc(): void {
   agentHandle("agent:logout", async () => { await proxy.stop(); return sidecar.logout(); });
   agentHandle("agent:security-prewarm", (_event, modelId: unknown) =>
     sidecar.prewarmSecurity(boundedString(modelId, "model ID", 512)),
+  );
+  agentHandle("agent:security-ensure", (_event, sessionId: unknown) =>
+    sidecar.ensureSecurity(boundedString(sessionId, "session ID", 128)),
   );
   agentHandle("agent:security-verify", (_event, sessionId: unknown, acceptOutdatedTee: unknown, modelId: unknown) =>
     sidecar.verifySecurity(boundedString(sessionId, "session ID", 128), acceptOutdatedTee === true,
@@ -599,6 +624,10 @@ if (primaryInstance) app.on("second-instance", () => {
 });
 
 if (primaryInstance) void app.whenReady().then(async () => {
+  const resetError = factoryResetError(process.argv);
+  if (resetError !== null) {
+    dialog.showErrorBox("Factory reset did not finish", `${resetError}\n\nSome data or saved credentials may remain. Resolve the problem and try again from Settings → Account.`);
+  }
   const metadata = app.isPackaged
     ? JSON.parse(await readFile(join(app.getAppPath(), "package.json"), "utf8")) as { axiomUpdateFormat?: unknown; axiomUpdateChannel?: string }
     : {};
@@ -611,7 +640,7 @@ if (primaryInstance) void app.whenReady().then(async () => {
     run: nativeUpdates(resolveSidecar),
     parentPid: process.pid,
     prepareRestart: prepareUpdateRestart,
-    canRestart: () => !Object.values(sidecar.state().sessions).some(session => session.running)
+    canRestart: () => !factoryReset.isPending() && !Object.values(sidecar.state().sessions).some(session => session.running)
       && !['running', 'starting', 'stopping'].includes(proxy.snapshot().status),
     restart: async () => {
       await Promise.all([proxy.dispose(), sidecar.stop()]);
@@ -692,6 +721,7 @@ app.on("window-all-closed", () => {
 app.on("before-quit", (event) => {
   if (shutdownStarted) return;
   event.preventDefault();
+  if (factoryReset.isPending()) return;
   shutdownStarted = true;
   void Promise.all([proxy.dispose(), sidecar.stop(), updates?.dispose()]).finally(() => app.quit());
 });

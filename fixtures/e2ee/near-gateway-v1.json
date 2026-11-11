@@ -1,0 +1,37 @@
+{
+  "description": "NEAR cloud gateway TDX report_data vectors: report_data = SHA256(gateway_ed25519_key || gateway_tls_spki_sha256) || nonce. The first vector is an unmodified live gateway attestation.",
+  "report_data_vectors": [
+    {
+      "name": "live NEAR cloud gateway report (2026-11-09)",
+      "signing_key_hex": "40599fb284f43953bb356b09080fd803c960fc10285ad90eca462ca711ad4acb",
+      "tls_fingerprint_hex": "73862c254372091cc6895b900111503860694f8916ebf0c63b18d245ba8ba5ad",
+      "nonce_hex": "47b4d07c7c316018c742db40b5687de44c898c156ddd58396327734534a40845",
+      "report_data_hex": "aea6f7b5e1a1ec8e693e2adfb96f866c74b0c7a4dbb17a599ca5a7449352e40a47b4d07c7c316018c742db40b5687de44c898c156ddd58396327734534a40845",
+      "valid": true
+    },
+    {
+      "name": "different gateway key",
+      "signing_key_hex": "00599fb284f43953bb356b09080fd803c960fc10285ad90eca462ca711ad4acb",
+      "tls_fingerprint_hex": "73862c254372091cc6895b900111503860694f8916ebf0c63b18d245ba8ba5ad",
+      "nonce_hex": "47b4d07c7c316018c742db40b5687de44c898c156ddd58396327734534a40845",
+      "report_data_hex": "aea6f7b5e1a1ec8e693e2adfb96f866c74b0c7a4dbb17a599ca5a7449352e40a47b4d07c7c316018c742db40b5687de44c898c156ddd58396327734534a40845",
+      "valid": false
+    },
+    {
+      "name": "different gateway TLS key",
+      "signing_key_hex": "40599fb284f43953bb356b09080fd803c960fc10285ad90eca462ca711ad4acb",
+      "tls_fingerprint_hex": "03862c254372091cc6895b900111503860694f8916ebf0c63b18d245ba8ba5ad",
+      "nonce_hex": "47b4d07c7c316018c742db40b5687de44c898c156ddd58396327734534a40845",
+      "report_data_hex": "aea6f7b5e1a1ec8e693e2adfb96f866c74b0c7a4dbb17a599ca5a7449352e40a47b4d07c7c316018c742db40b5687de44c898c156ddd58396327734534a40845",
+      "valid": false
+    },
+    {
+      "name": "different challenge",
+      "signing_key_hex": "40599fb284f43953bb356b09080fd803c960fc10285ad90eca462ca711ad4acb",
+      "tls_fingerprint_hex": "73862c254372091cc6895b900111503860694f8916ebf0c63b18d245ba8ba5ad",
+      "nonce_hex": "07b4d07c7c316018c742db40b5687de44c898c156ddd58396327734534a40845",
+      "report_data_hex": "aea6f7b5e1a1ec8e693e2adfb96f866c74b0c7a4dbb17a599ca5a7449352e40a47b4d07c7c316018c742db40b5687de44c898c156ddd58396327734534a40845",
+      "valid": false
+    }
+  ]
+}

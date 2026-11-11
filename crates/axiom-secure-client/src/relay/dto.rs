@@ -202,7 +202,12 @@ pub(crate) struct NearCompletionProof {
     pub model: String,
     pub request_hash: String,
     pub response_hash: String,
+    #[serde(default)]
     pub response_body_base64: String,
+    #[serde(default)]
+    pub response_wire_version: Option<u8>,
+    #[serde(default)]
+    pub response_chunk_count: Option<u64>,
     pub signed_text: String,
     pub signature: String,
     pub signing_address: String,
@@ -288,6 +293,14 @@ pub(crate) struct DeltaPayload {
     pub reasoning_field: Option<String>,
     #[serde(default)]
     pub refusal_field: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ProviderChunkPayload {
+    pub run_id: String,
+    pub index: u64,
+    pub data: String,
 }
 
 #[derive(Debug, Deserialize)]

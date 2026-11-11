@@ -37,14 +37,16 @@ cannot authorize an unsupported protocol or unverified public key.
 | Provider | Registered contract | Authentication boundary |
 |---|---|---|
 | NEAR | `near-v3`, encryption `2`, `near-tdx-nvidia-v2` | Fresh challenged direct-worker evidence, locally verified Intel/NVIDIA and key/manifest bindings; Ed25519 receipt for exact request/response/model |
+| NEAR (gateway) | `near-v3`, encryption `2`, `near-tdx-nvidia-gateway-v1` | Same worker evidence and receipt, plus a fresh challenged, locally verified Intel TDX quote and manifest for NEAR's cloud gateway, whose attested TLS key the backend pins |
 | Tinfoil | `tinfoil-ehbp-v1`, encryption `1`, `tinfoil-snp-sigstore-v1` | Pinned verifier checks SNP router/build/TLS/HPKE binding; request-bound encrypted response and authenticated completion |
 
 Provider-specific wire details live in
 [NEAR v3](protocols/near-v3.md) and [Tinfoil EHBP](protocols/tinfoil-ehbp-v1.md).
 
-NEAR v3's client verifies an **attested worker TLS key**. The backend pins its
-own live worker connection; the native client does not claim to have observed
-that socket. Tinfoil verifies the measured router and its worker-verification
+NEAR v3's client verifies an **attested worker TLS key**. On the direct route the
+backend pins its own live worker connection; on the gateway route it pins the
+attested gateway's TLS key and the gateway forwards ciphertext to the worker. The
+native client does not claim to have observed either socket. Tinfoil verifies the measured router and its worker-verification
 chain, not independent local quotes for every GPU. Neither claim is independent
 proof of arbitrary model weights/source code beyond the accepted protocol.
 
@@ -151,6 +153,12 @@ MCP servers or grant broader authority.
 Processes have bounded output/time and cancellation cleanup; background tasks
 have four slots. An approved host-authority program on macOS/Windows can access
 resources beyond its cwd. The Web toggle only gates built-in search/fetch tools.
+On Windows each command has a nested kill-on-close Job Object. The command
+starts suspended until it is assigned to that job, so descendants inherit the
+command's lifetime. Timeout, cancellation, a dropped run, and successful leader
+exit all terminate the job. This retains the process-wide exit-cleanup job.
+Output readers are cancelled with their command and have a bounded join after
+termination, including when a descendant inherited a pipe.
 MCP executables are trusted user-selected host code on every OS. Desktop starts
 only explicitly tested, selected [local connections](mcp.md), with per-thread
 tool authority and approval separate from builtin Agent permissions. Account and
