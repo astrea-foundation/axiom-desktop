@@ -45,6 +45,10 @@ keyboard/focus, Markdown/code/math, provider logos and privacy states retain
 Desktop behavior. The provider proof dialog distinguishes gateway evidence from
 upstream verification when a gateway adapter supplies that scope.
 
+Sidebar hosts may supply `aboveAccount` content immediately above the account
+menu. Its rendering, media and dismissal lifecycle belong to the host; the
+shared sidebar provides only the optional layout slot.
+
 Desktop's Electron main build must bundle both `@axiom/axiom-acp-client` and
 its transitive `@axiom/chat-core` imports into JavaScript. These packages export
 TypeScript source for bundlers; packaged Node cannot load their `.ts` exports

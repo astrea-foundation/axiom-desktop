@@ -1,6 +1,7 @@
 import { Folder, PanelLeftOpen } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { BalanceScreen } from "./components/BalanceScreen";
+import { AstreaBanner } from "./components/AstreaBanner";
 import { ChatView } from "./components/ChatView";
 import { DeleteConfirmationDialog } from "./components/DeleteConfirmationDialog";
 import { DismissibleNotice } from "./components/DismissibleNotice";
@@ -220,6 +221,7 @@ export function App() {
             await window.axiomDesktop?.agent.assignThreadCollection(threadId, folderId);
           })())}
           account={accountView}
+          aboveAccount={<AstreaBanner />}
           onSignIn={openSignIn}
           onLogout={logout}
           connected={agentState.connected}
