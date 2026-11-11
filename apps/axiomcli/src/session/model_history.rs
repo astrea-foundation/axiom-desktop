@@ -25,7 +25,9 @@ pub(super) fn append(
     // attestation report or live provider state must never restore a lease.
     if matches!(
         envelope.event,
-        AppEvent::SecurityStatusChanged { .. } | AppEvent::SecurityEvidenceUpdated { .. }
+        AppEvent::SecurityStatusChanged { .. }
+            | AppEvent::SecurityEvidenceUpdated { .. }
+            | AppEvent::CompactionProgressUpdated { .. }
     ) {
         return Ok(());
     }

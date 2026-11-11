@@ -3838,6 +3838,16 @@
                 "null"
               ]
             },
+            "progress": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/CompactionProgress"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "kind": {
               "type": "string",
               "const": "compaction"
@@ -3891,6 +3901,36 @@
         "completed",
         "cancelled",
         "failed"
+      ]
+    },
+    "CompactionProgress": {
+      "description": "Live work counters, independent of billable request usage. Streamed text and\nreasoning are estimates until the provider supplies an output-token count.",
+      "type": "object",
+      "properties": {
+        "completed": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "total": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "generatedTokens": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "estimated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "completed",
+        "total",
+        "generatedTokens",
+        "estimated"
       ]
     },
     "ExtensionError": {

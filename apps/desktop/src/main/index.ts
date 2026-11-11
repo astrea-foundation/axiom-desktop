@@ -52,6 +52,9 @@ const sidecar = new AgentSidecar((state) => {
   proxy.setAccount(state.connected && state.account?.state === "valid" ? state.account.account?.id ?? null : null, state.runtimeInstanceId);
 });
 let shutdownStarted = false;
+// Deliberately process-local: dismissal survives renderer/window recreation,
+// and a new desktop launch always starts with the banner enabled.
+let astreaBannerDismissed = false;
 let updates: UpdateService | undefined;
 const allowedCloses = new WeakSet<BrowserWindow>();
 const localLifecycle = new LocalStateLifecycle<BrowserWindow>({
@@ -167,6 +170,8 @@ function agentHandle(channel: string, handler: AgentHandler): void {
 }
 
 function installAgentIpc(): void {
+  agentHandle("astrea-banner:is-dismissed", () => astreaBannerDismissed);
+  agentHandle("astrea-banner:dismiss", () => { astreaBannerDismissed = true; });
   agentHandle("app:factory-reset", (_event, confirmation: unknown) => factoryReset.reset(confirmation));
   agentHandle("proxy:state", () => proxy.snapshot());
   agentHandle("proxy:start", (_event, port: unknown, accountId: unknown, runtimeId: unknown) => {

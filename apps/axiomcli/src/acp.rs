@@ -961,6 +961,12 @@ fn extension_activity(event: &AppEvent) -> Option<ActivityEvent> {
         } => Some(ActivityEvent::Compaction {
             phase: CompactionPhase::Completed,
             detail: Some(format!("compacted {messages_before} conversation messages")),
+            progress: None,
+        }),
+        AppEvent::CompactionProgressUpdated { progress } => Some(ActivityEvent::Compaction {
+            phase: CompactionPhase::Summarizing,
+            detail: Some("Compacting conversation context".into()),
+            progress: Some(progress.clone()),
         }),
         _ => None,
     }

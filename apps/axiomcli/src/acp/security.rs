@@ -309,6 +309,7 @@ pub(super) async fn compact(
                 ActivityEvent::Compaction {
                     phase: CompactionPhase::Started,
                     detail: Some("Compacting conversation context".into()),
+                    progress: None,
                 },
             )?;
             let (events_tx, mut events_rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
@@ -399,6 +400,7 @@ pub(super) async fn compact(
                                 CompactionPhase::Failed
                             },
                             detail: Some(error.to_string()),
+                            progress: None,
                         },
                     )?;
                     Err(agent_error(error))
