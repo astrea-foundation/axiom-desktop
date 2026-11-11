@@ -125,6 +125,13 @@ security, context/accounting and activity state with `runtimeInstanceId`, monoto
 
 ## Durable timeline and recovery
 
+Compaction activity includes optional `progress` counters: `completed` and `total`
+passes, cumulative `generatedTokens`, and `estimated`. Streamed text and available
+reasoning supply approximate counts until provider output-token usage arrives.
+These ephemeral counters are independent of billable request usage and never
+become assistant text or authoritative conversation history. Completion, failure
+and cancellation clear the progress indicator.
+
 Thread summaries/pages include `revision` and `lastTimelineSequence`. Timeline
 pagination uses an exclusive sequence cursor. On gaps/runtime changes, fetch all
 pages from the beginning and atomically replace the projection. Metadata-only

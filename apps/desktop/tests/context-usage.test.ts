@@ -51,6 +51,22 @@ test("context meter shows last provider-reported input plus output and pinned li
   assert.doesNotMatch(markup, /About |Estimated/);
 });
 
+test("the meter selects requests chronologically even when random IDs or update deliveries disagree", () => {
+  const base = { modelId: "test-model", providerId: "near", purpose: "conversation", state: "completed", completeness: "final",
+    outputTokens: "1000", costMicrousd: "0", settled: true, responseVerified: true, contextWindowTokens: 100_000, autoCompactThresholdTokens: 85_000 } as const;
+  const older = { ...base, requestId: "f".repeat(32), inputTokens: "20814", startedAtMs: "1000", finishedAtMs: "2000" };
+  const newer = { ...base, requestId: "a".repeat(32), inputTokens: "25954", startedAtMs: "3000", finishedAtMs: "4000" };
+  for (const records of [[newer, older], [older, newer], [older, newer, { ...older, settled: false }]]) {
+    const html = renderToStaticMarkup(createElement(ContextUsageIndicator, { ...sample, requestUsage: records }));
+    assert.match(html, /26,954 tokens/);
+    assert.doesNotMatch(html, /21,814 tokens/);
+    assert.equal(requestUsageTotals(records).records.at(-1)?.requestId, newer.requestId);
+  }
+  const running = { ...newer, requestId: "0".repeat(32), state: "running" as const, startedAtMs: "5000", finishedAtMs: null, inputTokens: null, outputTokens: null };
+  const html = renderToStaticMarkup(createElement(ContextUsageIndicator, { ...sample, usage: null, requestUsage: [running, newer, older] }));
+  assert.match(html, /26,954 tokens/);
+});
+
 test("model switches do not relabel or scale a historical report", () => {
   const view = contextUsagePresentation({ ...sample, selectedModelId: "another-model", contextWindowTokens: 1_000_000, autoCompactThresholdTokens: 262_144 });
   assert.equal(view.percentageLabel, "76% used");

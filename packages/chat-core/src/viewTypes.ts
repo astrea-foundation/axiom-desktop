@@ -418,6 +418,7 @@ export interface ClientSessionState {
   securityVerificationError?: string | null;
   contextUsage?: ContextUsage | null;
   requestUsage?: RequestUsage[];
+  compaction?: { completed: number; total: number; generatedTokens: number; estimated: boolean } | null;
   modes: SessionMode[];
   currentModeId: string | null;
   configOptions: SessionConfigOption[];

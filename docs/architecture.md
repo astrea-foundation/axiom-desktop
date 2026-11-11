@@ -130,6 +130,14 @@ compaction fails before a turn, original context and media remain recoverable.
 The turn fails with an explicit retry/choose-larger-context message; it never
 substitutes a local excerpt for the source history.
 
+Compaction first checks whether the native conversation and summary output fit
+one request, using the current context count when available. Historical system
+notes are demoted to untrusted context and reasoning/refusal text is preserved
+even when the selected model cannot replay its original fields. Fallback grouping
+keeps consecutive serialized fragments and native attachments together until a
+token or provider request limit is reached. All passes must succeed before the
+successor context replaces the original; partial summaries never commit.
+
 Account databases migrate transactionally to schema 6. Each thread has a
 versioned authoritative semantic history independent of presentation rows.
 Exact provider-neutral model-message checkpoints preserve raw tool argument

@@ -471,7 +471,11 @@ pub(super) fn render_status(frame: &mut Frame<'_>, state: &TuiState, theme: Them
         )
     };
     let status_text = if state.compacting && !state.exit_armed && !state.search_active {
-        format!("{}  Compacting…", state.compaction_frame())
+        format!(
+            "{}  {}",
+            state.compaction_frame(),
+            state.compaction_status.as_deref().unwrap_or("Compacting…")
+        )
     } else {
         status_text
     };

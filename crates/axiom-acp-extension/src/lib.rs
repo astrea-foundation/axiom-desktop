@@ -840,6 +840,8 @@ pub enum ActivityEvent {
     Compaction {
         phase: CompactionPhase,
         detail: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        progress: Option<CompactionProgress>,
     },
     CollectionsChanged {
         state: CollectionState,
@@ -858,6 +860,17 @@ pub enum CompactionPhase {
     Completed,
     Cancelled,
     Failed,
+}
+
+/// Live work counters, independent of billable request usage. Streamed text and
+/// reasoning are estimates until the provider supplies an output-token count.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CompactionProgress {
+    pub completed: u64,
+    pub total: u64,
+    pub generated_tokens: u64,
+    pub estimated: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, JsonRpcNotification)]

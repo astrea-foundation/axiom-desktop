@@ -99,6 +99,7 @@ export type ActivityEvent =
   | {
       phase: CompactionPhase;
       detail?: string | null;
+      progress?: CompactionProgress | null;
       kind: "compaction";
       [k: string]: unknown;
     }
@@ -1071,6 +1072,17 @@ export interface EventNotification {
   threadRevision?: number | null;
   lastTimelineSequence?: number | null;
   event: ActivityEvent;
+  [k: string]: unknown;
+}
+/**
+ * Live work counters, independent of billable request usage. Streamed text and
+ * reasoning are estimates until the provider supplies an output-token count.
+ */
+export interface CompactionProgress {
+  completed: number;
+  total: number;
+  generatedTokens: number;
+  estimated: boolean;
   [k: string]: unknown;
 }
 export interface ExtensionError {

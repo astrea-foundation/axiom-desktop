@@ -70,6 +70,7 @@ export interface ClientSessionState {
   securityVerificationError?: string | null;
   contextUsage?: ContextUsage | null;
   requestUsage?: RequestUsage[];
+  compaction?: { completed: number; total: number; generatedTokens: number; estimated: boolean } | null;
   modes: SessionMode[];
   currentModeId: string | null;
   configOptions: SessionConfigOption[];
@@ -551,7 +552,10 @@ export class AxiomStateStore extends EventEmitter {
   setRunning(sessionId: string, running: boolean): void {
     const session = (this.value.sessions[sessionId] ??= emptySession(sessionId));
     session.running = running;
-    if (!running) session.activeTurnId = null;
+    if (!running) {
+      session.activeTurnId = null;
+      session.compaction = null;
+    }
     this.changed();
   }
 
@@ -753,6 +757,17 @@ export class AxiomStateStore extends EventEmitter {
     else if (event.kind === "active_turn_changed" && sessionId) {
       const session = (this.value.sessions[sessionId] ??= emptySession(sessionId));
       session.activeTurnId = event.turnId ?? null;
+      if (!session.activeTurnId) session.compaction = null;
+    }
+    else if (event.kind === "compaction" && sessionId) {
+      const session = this.value.sessions[sessionId] ??= emptySession(sessionId);
+      if (["completed", "cancelled", "failed"].includes(event.phase)) session.compaction = null;
+      else if (["started", "summarizing", "replacing_context"].includes(event.phase)) {
+        const progress = event.progress;
+        if (progress && [progress.completed, progress.total, progress.generatedTokens].every((count) => Number.isSafeInteger(count) && count >= 0)
+          && progress.completed <= progress.total && typeof progress.estimated === "boolean") session.compaction = progress;
+        else if (!session.compaction) session.compaction = { completed: 0, total: 0, generatedTokens: 0, estimated: true };
+      }
     }
     else if (event.kind === "collections_changed") {
       if (event.state.revision >= this.value.collections.revision) this.value.collections = event.state;
