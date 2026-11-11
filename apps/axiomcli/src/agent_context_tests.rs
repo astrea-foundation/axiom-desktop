@@ -154,6 +154,237 @@ fn uploads(count: usize) -> Vec<PromptAttachment> {
         .collect()
 }
 
+async fn compact_fixture(
+    provider: ContextProvider,
+    history: Vec<ChatMessage>,
+    known_tokens: Option<u64>,
+) -> (Arc<ContextProvider>, Vec<AppEvent>) {
+    let provider = Arc::new(provider);
+    let mut limits = AgentLimits::development(4);
+    limits.max_context_tokens = provider.model.context_window_tokens as usize;
+    limits.max_context_bytes = 16 * 1024 * 1024;
+    let engine = AgentEngine::with_limits(
+        provider.clone(),
+        Arc::new(ToolRegistry::new()),
+        &provider.model.id,
+        limits,
+    );
+    let id = SessionId::new();
+    engine.histories.lock().await.insert(id.clone(), history);
+    if let Some(tokens) = known_tokens {
+        engine.update_context_tokens(&id, tokens).await;
+    }
+    let (tx, mut rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
+    engine
+        .compact(&id, None, tx, CancellationToken::new())
+        .await
+        .unwrap();
+    let mut events = Vec::new();
+    while let Ok(event) = rx.try_recv() {
+        events.push(event);
+    }
+    (provider, events)
+}
+
+#[tokio::test]
+async fn interleaved_images_and_text_compact_in_one_native_request() {
+    let mut provider = ContextProvider::new("synthetic-vision");
+    provider.model.context_window_tokens = 1_048_576;
+    let mut history = vec![ChatMessage::text(ChatRole::System, "original system")];
+    for index in 0..14 {
+        let mut message = ChatMessage::text(ChatRole::User, format!("Image marker {index}"));
+        message.images.push(image());
+        history.push(message);
+        history.push(ChatMessage::text(
+            ChatRole::Assistant,
+            format!("Observation marker {index}"),
+        ));
+    }
+    history.push(ChatMessage::text(
+        ChatRole::System,
+        "Historical system note",
+    ));
+    let original = history.clone();
+    let (provider, events) = compact_fixture(provider, history, None).await;
+    let requests = provider.requests.lock().await;
+    assert_eq!(requests.len(), 1);
+    let request = &requests[0];
+    request.validate().unwrap();
+    assert_eq!(
+        request
+            .messages
+            .iter()
+            .map(|m| m.images.len())
+            .sum::<usize>(),
+        14
+    );
+    assert_eq!(
+        &request.messages[1..original.len() - 1],
+        &original[1..original.len() - 1]
+    );
+    assert_eq!(request.messages[original.len() - 1].role, ChatRole::User);
+    assert!(
+        request.messages[original.len() - 1]
+            .content
+            .contains("HISTORICAL SYSTEM NOTE")
+    );
+    assert!(
+        request
+            .messages
+            .last()
+            .unwrap()
+            .content
+            .contains("APPLICATION-GENERATED COMPACTION REQUEST")
+    );
+    assert!(events.iter().any(|event| matches!(event, AppEvent::CompactionProgressUpdated { progress } if progress.total == 1 && progress.completed == 1)));
+    assert!(!events.iter().any(|event| matches!(
+        event,
+        AppEvent::TextDelta { .. } | AppEvent::ReasoningDelta { .. }
+    )));
+}
+
+#[tokio::test]
+async fn a_million_token_model_near_its_threshold_needs_only_one_summary_request() {
+    let mut provider = ContextProvider::new("synthetic-vision");
+    provider.model.context_window_tokens = 1_048_576;
+    provider.model.max_output_tokens = 8192;
+    let context_tokens = u64::from(provider.model.auto_compact_threshold_tokens());
+    let history = vec![
+        ChatMessage::text(ChatRole::System, "system"),
+        ChatMessage::text(
+            ChatRole::User,
+            "abcd".repeat(usize::try_from(context_tokens).unwrap()),
+        ),
+    ];
+    let (provider, _) = compact_fixture(provider, history.clone(), Some(context_tokens)).await;
+    let requests = provider.requests.lock().await;
+    assert_eq!(
+        requests.len(),
+        1,
+        "85% context fits together with summary generation space"
+    );
+    assert_eq!(requests[0].max_output_tokens, Some(8192));
+    assert_eq!(requests[0].messages[1], history[1]);
+}
+
+#[tokio::test]
+async fn single_pass_keeps_reasoning_and_refusals_as_historical_context() {
+    let provider = ContextProvider::new("synthetic-vision");
+    let mut assistant = ChatMessage::text(ChatRole::Assistant, "Recorded result");
+    assistant.reasoning_content = Some("Historical reasoning reference: route B".into());
+    assistant.refusal = Some("Historical refusal reference: request C".into());
+    let history = vec![
+        ChatMessage::text(ChatRole::System, "system"),
+        ChatMessage::text(ChatRole::User, "Earlier request"),
+        assistant,
+    ];
+    let (provider, _) = compact_fixture(provider, history, None).await;
+    let requests = provider.requests.lock().await;
+    assert_eq!(requests.len(), 1);
+    let historical = &requests[0].messages[2];
+    assert!(historical.reasoning_content.is_none());
+    assert!(historical.refusal.is_none());
+    assert!(historical.content.contains("route B"));
+    assert!(historical.content.contains("request C"));
+    assert!(historical.content.contains("Recorded result"));
+}
+
+#[tokio::test]
+async fn protocol_limited_fallback_batches_interleaved_messages_into_two_requests() {
+    let provider = ContextProvider::new("direct:qwen3.8-27b");
+    let mut history = vec![ChatMessage::text(ChatRole::System, "system")];
+    for index in 0..10 {
+        let mut message = ChatMessage::text(ChatRole::User, format!("Image marker {index}"));
+        message.images.push(image());
+        history.push(message);
+        history.push(ChatMessage::text(
+            ChatRole::Assistant,
+            format!("Observation marker {index}"),
+        ));
+    }
+    let (provider, events) = compact_fixture(provider, history, None).await;
+    let requests = provider.requests.lock().await;
+    assert_eq!(requests.len(), 2);
+    assert_eq!(
+        requests
+            .iter()
+            .map(|r| r.messages.iter().map(|m| m.images.len()).sum::<usize>())
+            .collect::<Vec<_>>(),
+        vec![8, 2]
+    );
+    let transcript = requests
+        .iter()
+        .flat_map(|r| &r.messages)
+        .map(|m| m.content.as_str())
+        .collect::<String>();
+    let positions = (0..10)
+        .map(|i| transcript.find(&format!("Image marker {i}")).unwrap())
+        .collect::<Vec<_>>();
+    assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
+    assert!(
+        requests[1].messages[1]
+            .content
+            .contains("Synthetic summary preserving image observations.")
+    );
+    assert!(events.iter().any(|event| matches!(event, AppEvent::CompactionProgressUpdated { progress } if progress.total == 2 && progress.completed == 2)));
+}
+
+#[tokio::test]
+async fn compaction_reserves_output_space_before_choosing_one_request() {
+    let provider = ContextProvider::new("synthetic-vision");
+    let history = vec![
+        ChatMessage::text(ChatRole::System, "system"),
+        ChatMessage::text(ChatRole::User, "a".repeat(30_000 * 4)),
+    ];
+    let (provider, _) = compact_fixture(provider, history, Some(30_000)).await;
+    let requests = provider.requests.lock().await;
+    assert!(
+        requests.len() > 1,
+        "summary output must fit alongside its input"
+    );
+    assert!(
+        requests
+            .iter()
+            .all(|r| r.max_output_tokens.unwrap_or(0) > 1)
+    );
+}
+
+#[tokio::test]
+async fn provider_payload_limit_also_splits_a_token_sized_image_history() {
+    use base64::Engine as _;
+    let provider = ContextProvider::new("direct:qwen3.8-27b");
+    let mut bytes = vec![0_u8; 4 * 1024 * 1024];
+    bytes[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
+    let large = ImageContent {
+        mime_type: "image/png".into(),
+        data: base64::engine::general_purpose::STANDARD.encode(bytes),
+    };
+    let mut history = vec![ChatMessage::text(ChatRole::System, "system")];
+    for _ in 0..8 {
+        let mut message = ChatMessage::text(ChatRole::User, "Encoded image fixture");
+        message.images.push(large.clone());
+        history.push(message);
+    }
+    let (provider, _) = compact_fixture(provider, history, None).await;
+    let requests = provider.requests.lock().await;
+    assert_eq!(
+        requests.len(),
+        2,
+        "token and image counts fit, but the provider request payload does not"
+    );
+    assert_eq!(
+        requests
+            .iter()
+            .flat_map(|r| &r.messages)
+            .map(|m| m.images.len())
+            .sum::<usize>(),
+        8
+    );
+    for request in requests.iter() {
+        assert!(compaction_request_fits(&provider.model, request).unwrap());
+    }
+}
+
 #[tokio::test]
 async fn restoring_images_uses_the_selected_models_visual_token_allowance() {
     let provider = Arc::new(ContextProvider::new("direct:qwen3.8-27b"));

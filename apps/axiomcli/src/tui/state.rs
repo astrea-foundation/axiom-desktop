@@ -917,6 +917,12 @@ impl TuiState {
                 self.compacting = true;
                 self.status = if progress.total == 0 {
                     "Compacting context · Preparing".into()
+                } else if progress.total == 1 {
+                    format!(
+                        "Compacting context · {}{} tokens generated",
+                        if progress.estimated { "~" } else { "" },
+                        progress.generated_tokens
+                    )
                 } else {
                     format!(
                         "Compacting context · Pass {}/{} · {}{} tokens generated",

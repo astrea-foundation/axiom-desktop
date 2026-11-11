@@ -57,6 +57,11 @@ test("compaction replaces the empty generation placeholder with live work counte
   assert.match(html, /Pass 3\/3/);
   assert.match(html, /2,398 tokens generated/);
   assert.doesNotMatch(html, /~/);
+  current.compaction = { ...current.compaction, completed: 0, total: 1 };
+  html = renderToStaticMarkup(createElement(TimelineView, { session: current }));
+  assert.match(html, /Compacting context/);
+  assert.match(html, /2,398 tokens generated/);
+  assert.doesNotMatch(html, /Pass |Preparing|Generating/);
   current.compaction = null;
   html = renderToStaticMarkup(createElement(TimelineView, { session: current }));
   assert.doesNotMatch(html, /Compacting context/);

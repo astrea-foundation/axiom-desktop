@@ -1064,7 +1064,10 @@ pub(super) fn persist_event(
         }
         // Attestation reports are public but ephemeral; persist terminal receipt
         // verification separately and never restore a live lease from history.
-        AppEvent::SecurityEvidenceUpdated { .. } | AppEvent::ModelHistoryCheckpoint { .. } => {}
+        // Live compaction counters also never become timeline text or model input.
+        AppEvent::SecurityEvidenceUpdated { .. }
+        | AppEvent::ModelHistoryCheckpoint { .. }
+        | AppEvent::CompactionProgressUpdated { .. } => {}
         AppEvent::ResponseVerified { turn_id } => {
             mark_response_verified(transaction, &thread_id, &turn_id.to_string(), &now)?;
         }
@@ -1128,8 +1131,6 @@ pub(super) fn persist_event(
                 },
             )?;
         }
-        // Live compaction counters never become timeline text or model input.
-        AppEvent::CompactionProgressUpdated { .. } => {}
         AppEvent::SessionClosed => {
             set_thread_lifecycle(transaction, &thread_id, ThreadLifecycle::Closed)?;
         }

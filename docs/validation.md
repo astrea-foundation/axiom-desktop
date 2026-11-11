@@ -285,6 +285,14 @@ retain original context until all summary stages succeed. These fixtures do not
 establish live-provider or packaged Desktop acceptance of the context-accounting
 changes.
 
+Single-request compaction fixtures cover a 1M-token model at its 85% threshold,
+fourteen interleaved image messages, historical system notes, and reasoning and
+refusal fields on a model without reasoning replay. Fallback fixtures verify
+batching interleaved image messages into two requests at the eight-image protocol
+limit, reserving summary output space, and splitting encoded payloads at the
+provider request byte ceiling. These limits affect compaction request planning;
+they do not trigger automatic compaction.
+
 Compaction progress checks cover cumulative streamed summary/reasoning estimates,
 replacement with provider token counts, pass totals, spinner rendering and cleanup
 on completion, failure and cancellation. An unresponsive provider cannot prevent

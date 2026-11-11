@@ -284,18 +284,23 @@ advertised threshold capped by local token limits. Uploaded images and successfu
 only when viewed. Provider-reported usage takes precedence over estimates for
 existing context. Only new material is estimated until the next provider report.
 Image counts and encoded attachment sizes do not trigger compaction. The runtime
-budgets native image/file inputs as well as text in each summary stage, leaving
-room for previous summaries and output, including reasoning. It summarizes older
-history in bounded stages and keeps a usable recent tail; summaries persist for
-resume. Cancellation never marks unfinished
+uses one summary request whenever the conversation fits with room for summary
+output, reasoning and a safety margin. It passes historical messages and native
+image/file inputs together, preserving their order and association. Historical
+system notes cannot override the summarizer's instructions; unsupported reasoning
+fields and refusal details remain available as historical text.
+When token or provider request limits require multiple requests, consecutive
+fragments are grouped into as few passes as the budgets allow. Each pass reserves
+space for the previous summary and new output. A usable recent tail is retained
+verbatim, and summaries persist for resume. Cancellation never marks unfinished
 compaction successful. Compaction is model-generated and is not a guarantee of
 perfect recall. The original local journal remains available independently of
 the compacted model context.
 
-If automatic pre-turn summarization fails, the runtime keeps the complete new
-message and continues with a short, partial text excerpt of older context. A
-notice explains that older context and media were omitted. Cancellation still
-stops the turn. Original saved messages remain separate from this model context.
+If automatic pre-turn summarization fails, the turn reports an error and retains
+the original conversation and media for retrying compaction or choosing a model
+with a larger context. Cancellation stops the turn. Original saved messages remain
+separate from the compacted model context.
 On restore, missing or invalid old attachments and image details are omitted
 instead of blocking the entire conversation. Interrupted tool calls receive an
 unknown-outcome marker; recovery does not execute them. Older file formats that
@@ -332,8 +337,9 @@ No report is shown as unknown, rather than fabricated zero usage.
 
 Hover, focus or click the meter to see context use and the compaction threshold.
 Request records are selected by their start timestamps, independent of the random
-request IDs used for accounting pagination. During compaction, a spinner shows the
-current pass and cumulative generated tokens. A `~` marks counts estimated from
+request IDs used for accounting pagination. During compaction, a spinner shows
+cumulative generated tokens and the current pass when multiple passes are needed.
+A `~` marks counts estimated from
 streamed summary text and available reasoning; provider output-token reports
 replace those estimates when available. Counts describe work completed, not a
 percentage or a promise of the final summary length.
