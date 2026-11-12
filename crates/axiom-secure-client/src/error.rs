@@ -31,6 +31,8 @@ pub enum SecureErrorCode {
     SessionNotAccepted,
     ReceiptUnavailable,
     InvalidRequest,
+    /// Authenticated, explicit rejection before generation for context size.
+    ContextLengthExceeded,
     InvalidResponse,
     Cancelled,
     Transient,
@@ -59,6 +61,7 @@ impl SecureErrorCode {
             Self::SessionNotAccepted => "SESSION_NOT_ACCEPTED",
             Self::ReceiptUnavailable => "RECEIPT_UNAVAILABLE",
             Self::InvalidRequest => "INVALID_REQUEST",
+            Self::ContextLengthExceeded => "CONTEXT_LENGTH_EXCEEDED",
             Self::InvalidResponse => "INVALID_RESPONSE",
             Self::Cancelled => "CANCELLED",
             Self::Transient => "TRANSIENT_FAILURE",

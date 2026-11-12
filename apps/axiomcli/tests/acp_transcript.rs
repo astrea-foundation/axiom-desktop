@@ -1899,15 +1899,16 @@ async fn desktop_timeline_restore_transfers_saved_images_once_and_preserves_acp_
     let mut saved_images = Vec::new();
     for index in 0u8..3 {
         let mut bytes = vec![index; 1024 * 1024];
-        bytes[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
+        let png = include_bytes!("../src/session/fixtures/storage-original.png");
+        bytes[..png.len()].copy_from_slice(png);
         let data = STANDARD.encode(&bytes);
         let request_id = format!("{index:032x}");
         let image = axiom_secure_client::GeneratedImage {
             request_id: request_id.clone(),
             data: data.clone(),
             mime_type: "image/png".into(),
-            width: 1024,
-            height: 1024,
+            width: 256,
+            height: 256,
             sha256: hex::encode(Sha256::digest(&bytes)),
             source_image_ids: Vec::new(),
             chat_model_id: None,

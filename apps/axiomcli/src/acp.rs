@@ -1604,6 +1604,7 @@ struct PendingDelete {
 
 #[derive(Clone, Copy)]
 enum ExtensionFeature {
+    LegacyPayloadImport = 1 << 27,
     LocalPayload = 1 << 23,
     CommandInvocation = 1 << 22,
     Steering = 1 << 11,
@@ -1674,6 +1675,9 @@ impl ExtensionState {
         let mut mask = 0;
         if features.local_payload >= 1 {
             mask |= ExtensionFeature::LocalPayload as u64;
+        }
+        if features.local_payload >= 2 {
+            mask |= ExtensionFeature::LegacyPayloadImport as u64;
         }
         if features.command_invocation >= 1 {
             mask |= ExtensionFeature::CommandInvocation as u64;

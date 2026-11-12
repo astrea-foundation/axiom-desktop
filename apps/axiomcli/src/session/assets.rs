@@ -35,11 +35,38 @@ pub(super) struct AssetRef {
     sha256: String,
     bytes: u64,
 }
+/// An unavailable asset never contains bytes. SQL/locking failures remain errors
+/// so recovery cannot accidentally hide a failure to read the owning record.
+pub(super) enum AssetLoad<T> {
+    Available(T),
+    Unavailable(AssetUnavailable),
+}
+#[derive(Clone, Copy, Debug)]
+pub(super) enum AssetUnavailable {
+    InvalidReference,
+    Unauthorized,
+    Missing,
+    Unreadable,
+    Unauthenticated,
+}
+impl<T> AssetLoad<T> {
+    fn required(self) -> Result<T> {
+        match self {
+            Self::Available(value) => Ok(value),
+            Self::Unavailable(reason) => {
+                Err(invalid(&format!("saved asset is unavailable ({reason:?})")))
+            }
+        }
+    }
+}
 pub(super) fn thread_owner(id: &str) -> String {
     format!("thread:{id}")
 }
 pub(super) fn payload_owner(id: &str) -> String {
     format!("payload:{id}")
+}
+pub(super) fn payload_recovery_owner(id: &str) -> String {
+    format!("payload-recovery:{id}")
 }
 fn invalid(message: &str) -> AxiomError {
     AxiomError::Storage(message.into())
@@ -98,8 +125,24 @@ impl AssetManager {
                 sha256: digest,
                 bytes: length,
             };
-            if self.read_bytes(&reference)? != bytes {
+            if reference.bytes != bytes.len() as u64 {
                 return Err(invalid("saved asset content differs"));
+            }
+            match self.read_available(&reference)? {
+                AssetLoad::Available(saved) if saved != bytes => {
+                    return Err(invalid("saved asset content differs"));
+                }
+                AssetLoad::Available(_) => {}
+                AssetLoad::Unavailable(AssetUnavailable::InvalidReference) => {
+                    return Err(invalid("invalid stored asset reference"));
+                }
+                AssetLoad::Unavailable(_) => {
+                    // Every caller holds the store's write transaction. Restore
+                    // exact known bytes supplied by a valid new write, retaining
+                    // the dedup identity/owners. Never reuse unauthenticated data.
+                    self.preserve_unavailable(&reference)?;
+                    self.write_bytes(&reference, &bytes)?;
+                }
             }
             reference
         } else {
@@ -139,47 +182,79 @@ impl AssetManager {
         owner: &str,
         reference: &AssetRef,
     ) -> Result<String> {
+        self.load(connection, owner, reference)?.required()
+    }
+    pub(super) fn load(
+        &self,
+        connection: &Connection,
+        owner: &str,
+        reference: &AssetRef,
+    ) -> Result<AssetLoad<String>> {
         // Authorize before touching the filesystem, including guessed asset IDs.
         let saved: Option<(String,u64)> = connection.query_row("SELECT a.sha256,a.byte_length FROM binary_assets a JOIN asset_owners o ON o.asset_id=a.id WHERE o.owner=?1 AND a.id=?2", params![owner,reference.id], |r| Ok((r.get(0)?,super::codec::checked_u64_sql(r.get(1)?)?))).optional().map_err(storage_error)?;
         if saved != Some((reference.sha256.clone(), reference.bytes)) {
-            return Err(invalid("asset does not belong to this saved record"));
+            return Ok(AssetLoad::Unavailable(AssetUnavailable::Unauthorized));
         }
-        Ok(STANDARD.encode(self.read_bytes(reference)?))
+        Ok(match self.read_available(reference)? {
+            AssetLoad::Available(bytes) => AssetLoad::Available(STANDARD.encode(bytes)),
+            AssetLoad::Unavailable(reason) => AssetLoad::Unavailable(reason),
+        })
     }
-    fn read_bytes(&self, reference: &AssetRef) -> Result<Vec<u8>> {
+    fn read_available(&self, reference: &AssetRef) -> Result<AssetLoad<Vec<u8>>> {
         if reference.version != 1
             || reference.bytes > MAX_ASSET_BYTES as u64
             || uuid::Uuid::parse_str(&reference.id).is_err()
             || reference.id.len() != 36
         {
-            return Err(invalid("invalid stored asset reference"));
+            return Ok(AssetLoad::Unavailable(AssetUnavailable::InvalidReference));
         }
         let bytes = match &self.backing {
-            Backing::Memory(values) => values
-                .lock()
-                .map_err(|_| invalid("asset memory lock failed"))?
-                .get(&reference.id)
-                .cloned()
-                .ok_or_else(|| invalid("saved asset is missing"))?,
+            Backing::Memory(values) => {
+                let Some(bytes) = values
+                    .lock()
+                    .map_err(|_| invalid("asset memory lock failed"))?
+                    .get(&reference.id)
+                    .cloned()
+                else {
+                    return Ok(AssetLoad::Unavailable(AssetUnavailable::Missing));
+                };
+                bytes
+            }
             Backing::Disk { root, key } => {
                 let path = root.join(&reference.id);
-                let metadata =
-                    fs::symlink_metadata(&path).map_err(|_| invalid("saved asset is missing"))?;
+                let metadata = match fs::symlink_metadata(&path) {
+                    Ok(metadata) => metadata,
+                    Err(error) => {
+                        return Ok(AssetLoad::Unavailable(
+                            if error.kind() == std::io::ErrorKind::NotFound {
+                                AssetUnavailable::Missing
+                            } else {
+                                AssetUnavailable::Unreadable
+                            },
+                        ));
+                    }
+                };
                 if !metadata.is_file()
                     || metadata.file_type().is_symlink()
                     || metadata.len() > reference.bytes + 1024
                 {
-                    return Err(invalid("saved asset file is invalid"));
+                    return Ok(AssetLoad::Unavailable(AssetUnavailable::Unreadable));
                 }
-                decrypt_asset(key, &reference.id, &fs::read(path)?)?
+                let Ok(ciphertext) = fs::read(path) else {
+                    return Ok(AssetLoad::Unavailable(AssetUnavailable::Unreadable));
+                };
+                let Ok(bytes) = decrypt_asset(key, &reference.id, &ciphertext) else {
+                    return Ok(AssetLoad::Unavailable(AssetUnavailable::Unauthenticated));
+                };
+                bytes
             }
         };
         if bytes.len() as u64 != reference.bytes
             || hex::encode(Sha256::digest(&bytes)) != reference.sha256
         {
-            return Err(invalid("saved asset integrity check failed"));
+            return Ok(AssetLoad::Unavailable(AssetUnavailable::Unauthenticated));
         }
-        Ok(bytes)
+        Ok(AssetLoad::Available(bytes))
     }
     fn write_bytes(&self, reference: &AssetRef, bytes: &[u8]) -> Result<()> {
         match &self.backing {
@@ -210,14 +285,39 @@ impl AssetManager {
         }
         Ok(())
     }
+    fn preserve_unavailable(&self, reference: &AssetRef) -> Result<()> {
+        if let Backing::Disk { root, .. } = &self.backing {
+            let path = root.join(&reference.id);
+            match fs::symlink_metadata(&path) {
+                Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {
+                    // This name is deliberately outside the live UUID namespace:
+                    // neither lookup nor ordinary orphan collection can load it.
+                    let quarantine = root.join(format!(
+                        "{}.unavailable-{}",
+                        reference.id,
+                        uuid::Uuid::new_v4()
+                    ));
+                    fs::rename(path, &quarantine)?;
+                    #[cfg(unix)]
+                    fs::File::open(root)?.sync_all()?;
+                }
+                Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                    return Err(error.into());
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
     pub(super) fn verify(&self, connection: &Connection) -> Result<()> {
-        self.verify_with_progress(connection, &|_| {})
+        self.verify_with_progress(connection, &|_| {}, false)
     }
 
     fn verify_with_progress(
         &self,
         connection: &Connection,
         progress: &crate::storage_progress::Observer<'_>,
+        tolerate_unavailable: bool,
     ) -> Result<()> {
         use crate::storage_progress::{self, Phase};
         let total: u64 = connection
@@ -226,6 +326,7 @@ impl AssetManager {
             })
             .map_err(storage_error)?;
         let mut completed = 0;
+        let mut unavailable = 0;
         storage_progress::count(progress, Phase::Checking, completed, total);
         let mut statement = connection
             .prepare("SELECT id,sha256,byte_length FROM binary_assets")
@@ -239,9 +340,20 @@ impl AssetManager {
                 bytes: super::codec::checked_u64_sql(row.get(2).map_err(storage_error)?)
                     .map_err(storage_error)?,
             };
-            self.read_bytes(&reference)?;
+            match self.read_available(&reference)? {
+                AssetLoad::Unavailable(_) if tolerate_unavailable => unavailable += 1,
+                result => {
+                    result.required()?;
+                }
+            }
             completed += 1;
             storage_progress::count(progress, Phase::Checking, completed, total);
+        }
+        if unavailable > 0 {
+            tracing::warn!(
+                unavailable,
+                "Saved media is unavailable; damaged files were retained and will be omitted when loading records"
+            );
         }
         Ok(())
     }
@@ -252,7 +364,7 @@ impl AssetManager {
         connection: &Connection,
         progress: &crate::storage_progress::Observer<'_>,
     ) -> Result<()> {
-        self.verify_with_progress(connection, progress)?;
+        self.verify_with_progress(connection, progress, true)?;
         self.clean_orphans(connection)
     }
     fn clean_orphans(&self, connection: &Connection) -> Result<()> {

@@ -16,6 +16,9 @@ export function localPayloadRequest(value: unknown): LocalPayloadRequest {
   switch (request.action.kind) {
     case "get": case "remove": return { accountId: request.accountId, id: request.id, action: { kind: request.action.kind } };
     case "put": return { accountId: request.accountId, id: request.id, action: { kind: "put", value: localEnvelope(request.action.value) } };
+    case "import_legacy":
+      if (request.action.preview !== undefined && typeof request.action.preview !== "boolean") throw new Error("Invalid legacy import mode.");
+      return { accountId: request.accountId, id: request.id, action: { kind: "import_legacy", value: localEnvelope(request.action.value, true), preview: request.action.preview } };
     default: throw new Error("Unsupported local storage operation.");
   }
 }

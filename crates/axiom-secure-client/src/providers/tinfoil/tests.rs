@@ -564,3 +564,82 @@ fn discovered_controls_honor_selected_effort_and_explicit_thinking_disable() {
     request.thinking_mode = ThinkingMode::Enabled;
     assert!(request_body(&model, &request, true).is_err());
 }
+
+#[test]
+fn authenticated_context_rejection_has_a_specific_nonretryable_code() {
+    let body = json!({"error":{"code":"context_length_exceeded","message":"untrusted details"}});
+    let error = response::complete(&serde_json::to_vec(&body).unwrap(), "model").unwrap_err();
+    assert_eq!(error.code(), crate::SecureErrorCode::ContextLengthExceeded);
+    assert_eq!(
+        error.kind(),
+        axiom_inference::ProviderFailureKind::InvalidRequest
+    );
+    assert!(!error.retryable());
+    assert!(!error.safe_detail().contains("untrusted details"));
+    let mut parser = response::StreamParser::new("model", 4096);
+    assert!(parser.push(&sse(body.clone())).unwrap().is_empty());
+    // Classification is withheld until the authenticated transport reaches EOF.
+    assert_eq!(
+        parser.finish().unwrap_err().code(),
+        crate::SecureErrorCode::ContextLengthExceeded
+    );
+    let mut parser = response::StreamParser::new("model", 4096);
+    parser.push(&sse(body)).unwrap();
+    parser.push(b"data: [DONE]\n\n").unwrap();
+    assert_eq!(
+        parser.finish().unwrap_err().code(),
+        crate::SecureErrorCode::ContextLengthExceeded
+    );
+}
+
+#[test]
+fn ambiguous_or_post_generation_errors_never_authorize_context_recovery() {
+    let unverified = crate::relay::client::error_for_status_body(
+        reqwest::StatusCode::BAD_REQUEST,
+        br#"{"detail":{"code":"CONTEXT_LENGTH_EXCEEDED"},"error":{"code":"context_length_exceeded"}}"#,
+    );
+    assert_ne!(
+        unverified.code(),
+        crate::SecureErrorCode::ContextLengthExceeded
+    );
+    for body in [
+        json!({"error":{"code":"invalid_request","message":"context_length_exceeded"}}),
+        json!({"error":{"code":"context_length_exceeded"},"choices":[]}),
+        json!({"error":{"code":"context_length_exceeded"},"usage":{"completion_tokens":1}}),
+    ] {
+        assert_ne!(
+            response::complete(&serde_json::to_vec(&body).unwrap(), "model")
+                .unwrap_err()
+                .code(),
+            crate::SecureErrorCode::ContextLengthExceeded
+        );
+    }
+    let mut parser = response::StreamParser::new("model", 4096);
+    parser
+        .push(&chunk(
+            json!({"role":"assistant","content":"partial"}),
+            Value::Null,
+        ))
+        .unwrap();
+    let error = parser
+        .push(&sse(json!({"error":{"code":"context_length_exceeded"}})))
+        .unwrap_err();
+    assert_ne!(error.code(), crate::SecureErrorCode::ContextLengthExceeded);
+    let mut parser = response::StreamParser::new("model", 4096);
+    parser
+        .push(&sse(json!({"error":{"code":"context_length_exceeded"}})))
+        .unwrap();
+    assert!(
+        parser
+            .push(&chunk(json!({"content":"unexpected output"}), Value::Null))
+            .is_err()
+    );
+    let mut parser = response::StreamParser::new("model", 4096);
+    parser
+        .push(b"data: {\"error\":{\"code\":\"context_length_exceeded\"}}")
+        .unwrap();
+    assert_ne!(
+        parser.finish().unwrap_err().code(),
+        crate::SecureErrorCode::ContextLengthExceeded
+    );
+}

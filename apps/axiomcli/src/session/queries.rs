@@ -785,31 +785,60 @@ pub(super) fn query_prompt_attachments(
     id: &SessionId,
     item_id: &str,
 ) -> Result<Vec<axiom_inference::PromptAttachment>> {
+    read_prompt_attachments(connection, assets, id, item_id, false)
+}
+
+pub(super) fn query_replay_attachments(
+    connection: &Connection,
+    assets: &super::assets::AssetManager,
+    id: &SessionId,
+    item_id: &str,
+) -> Result<Vec<axiom_inference::PromptAttachment>> {
+    read_prompt_attachments(connection, assets, id, item_id, true)
+}
+
+fn read_prompt_attachments(
+    connection: &Connection,
+    assets: &super::assets::AssetManager,
+    id: &SessionId,
+    item_id: &str,
+    replay: bool,
+) -> Result<Vec<axiom_inference::PromptAttachment>> {
     let (payload, metadata, text): (Option<String>, String, String) = connection.query_row(
         "SELECT p.payload,i.metadata,i.content FROM timeline_items i LEFT JOIN prompt_attachments p ON p.user_item_id=i.id WHERE i.thread_id=?1 AND (i.id=?2 OR i.client_item_id=?2) AND i.kind='user_message'",
         params![id.to_string(), item_id], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?)),
     ).map_err(storage_error)?;
     if let Some(payload) = payload {
         let mut values: Value = serde_json::from_str(&payload)?;
-        super::asset_codec::MediaCodec {
+        let codec = super::asset_codec::MediaCodec {
             assets,
             connection,
             owner: &super::assets::thread_owner(&id.to_string()),
             direction: super::asset_codec::Direction::Load,
+        };
+        let omitted = if replay {
+            codec.replay_attachments(&mut values)?
+        } else {
+            codec.attachments(&mut values)?
+        };
+        if omitted > 0 {
+            tracing::warn!(omitted, "{}", super::asset_codec::MEDIA_OMITTED);
         }
-        .attachments(&mut values)?;
         let attachments: Vec<axiom_inference::PromptAttachment> = serde_json::from_value(values)?;
-        axiom_inference::validate_stored_prompt(&text, &attachments)
-            .map_err(|error| AxiomError::Storage(error.to_string()))?;
+        // An attachment-only old prompt may now have no usable media. Its
+        // original timeline text remains intact; replay adds its omission note.
+        if !text.trim().is_empty() || !attachments.is_empty() {
+            axiom_inference::validate_stored_prompt(&text, &attachments)
+                .map_err(|error| AxiomError::Storage(error.to_string()))?;
+        }
         Ok(attachments)
     } else if serde_json::from_str::<Value>(&metadata)
         .unwrap_or_default()
         .get("attachments")
         .is_some()
     {
-        Err(AxiomError::Storage(
-            "saved attachment contents are missing".into(),
-        ))
+        tracing::warn!("Saved attachment contents are missing; attachments omitted");
+        Ok(Vec::new())
     } else {
         Ok(Vec::new())
     }

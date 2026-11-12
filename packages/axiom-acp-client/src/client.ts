@@ -70,7 +70,7 @@ const EXTENSION_CAPABILITIES = {
     desktopChat: 1,
     desktopAgent: 1,
     desktopMcp: 2,
-    localPayload: 1,
+    localPayload: 2,
     account: 2,
     billing: 5,
     usage: 1,
@@ -172,6 +172,7 @@ export class AxiomAcpClient extends EventEmitter {
   private supportsCommandInvocation = false;
   private supportsMcp = false;
   private supportsLocalPayload = false;
+  private supportsLegacyPayloadImport = false;
   private supportsImageGeneration = false;
   private supportsImageRegeneration = false;
   private supportsImageResources = false;
@@ -257,6 +258,7 @@ export class AxiomAcpClient extends EventEmitter {
     this.supportsMessageRevision = (meta?.features?.messageRevision ?? 0) >= 1;
     this.supportsMcp = (meta?.features?.desktopMcp ?? 0) >= 1;
     this.supportsLocalPayload = (meta?.features?.localPayload ?? 0) >= 1;
+    this.supportsLegacyPayloadImport = (meta?.features?.localPayload ?? 0) >= 2;
     this.supportsImageGeneration = (meta?.features?.imageGeneration ?? 0) >= 3;
     this.supportsImageRegeneration = (meta?.features?.imageGeneration ?? 0) >= 4;
     this.supportsImageResources = (meta?.features?.imageResources ?? 0) >= 1;
@@ -326,6 +328,7 @@ export class AxiomAcpClient extends EventEmitter {
   async localPayload(request: LocalPayloadRequest): Promise<LocalPayloadResponse> {
     this.assertInitialized();
     if (!this.supportsLocalPayload) throw new ProtocolError("Restart Axiom with the updated native app to save encrypted drafts.");
+    if (request.action.kind === "import_legacy" && !this.supportsLegacyPayloadImport) throw new ProtocolError("Restart Axiom with the updated native app to import legacy drafts safely. Your original local data was kept.");
     const state = this.state.snapshot();
     if (!state.connected || state.account?.state !== "valid" || state.account.account?.id !== request.accountId) {
       throw new ProtocolError("The account changed. Local data was not accessed.");

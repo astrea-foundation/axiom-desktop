@@ -58,6 +58,13 @@ async function openApp(platform = "linux", failDelete = false, thinkingLevels: s
   await page.exposeFunction("__nativeLocalPayload", (request: LocalPayloadRequest) => {
     const key = JSON.stringify([request.accountId, request.id]);
     if (request.action.kind === "get") return { value: structuredClone(nativePayloads.get(key)) };
+    if (request.action.kind === "import_legacy") {
+      const value = structuredClone(request.action.value);
+      if (!request.action.preview && !nativePayloads.has(key)) nativePayloads.set(key, value);
+      // These browser scenarios use healthy payloads; native/client integration
+      // tests exercise decoder omissions and encrypted source recovery.
+      return { value, omittedMedia: 0 };
+    }
     if (request.action.kind === "put") nativePayloads.set(key, structuredClone(request.action.value));
     else if (request.action.kind === "remove") nativePayloads.delete(key);
     else throw new Error("Unsupported fixture local storage action");

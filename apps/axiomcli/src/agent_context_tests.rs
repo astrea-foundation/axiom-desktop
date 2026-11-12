@@ -55,6 +55,11 @@ impl InferenceProvider for ContextProvider {
         request
             .validate()
             .map_err(|error| AxiomError::Provider(format!("invalid synthetic request: {error}")))?;
+        assert_provider_history_shape(&request.messages);
+        if self.model.provider_id == "axiom-direct" {
+            assert!(request.messages.len() <= 4096);
+            assert!(serialized_message_bytes(&request.messages)? < 36 * 1024 * 1024);
+        }
         let compacting = is_compaction(&request);
         let reasoning_exhausts_output = compacting
             && request.max_output_tokens.unwrap_or(0) <= self.compaction_reasoning_tokens;
@@ -1027,4 +1032,534 @@ fn attachment_compaction_keeps_text_order_and_bounds_each_stage() {
     text_message.images.clear();
     text_message.files.clear();
     assert_eq!(transcript, serde_json::to_string(&[text_message]).unwrap());
+}
+
+/// Provider-side contract checks are intentionally independent of preparation.
+/// The pinned Qwen template (SHA-256 c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041)
+/// rejects every noninitial system role; NEAR rejects empty assistant bodies
+/// without refusal/tool calls, even if `reasoning_content` is present.
+fn assert_provider_history_shape(messages: &[ChatMessage]) {
+    assert!(!messages.is_empty());
+    for (index, message) in messages.iter().enumerate() {
+        assert!(message.role != ChatRole::System || index == 0);
+        if message.role == ChatRole::Assistant {
+            assert!(
+                !message.content.is_empty()
+                    || message.refusal.is_some()
+                    || !message.tool_calls.is_empty()
+            );
+        }
+    }
+}
+
+#[test]
+fn request_projection_keeps_recovery_data_out_of_system_policy() {
+    let mut unknown = tool_error_message(
+        "side-effect".into(),
+        "write_file",
+        "Outcome unknown after a crash. Do not retry side effects without checking what completed.",
+    );
+    unknown.content.push_str(" preserved result");
+    let mut batch = ChatMessage::text(ChatRole::Assistant, "");
+    batch.tool_calls.push(crate::provider::ToolCall {
+        id: "side-effect".into(),
+        kind: "function".into(),
+        function: crate::provider::FunctionCall {
+            name: "write_file".into(),
+            arguments: "{}".into(),
+        },
+    });
+    let history = vec![
+        ChatMessage::text(ChatRole::System, "application policy"),
+        ChatMessage::text(ChatRole::User, "original request"),
+        batch.clone(),
+        unknown.clone(),
+        interrupted_turn_context(),
+        ChatMessage::text(ChatRole::User, "continue"),
+    ];
+    let original = history.clone();
+    let model = ModelInfo {
+        id: "direct:qwen3.8-27b".into(),
+        ..Default::default()
+    };
+    let request = inference_request_for_model(
+        &model,
+        model.id.clone(),
+        history.clone(),
+        vec![],
+        ThinkingLevel::Medium,
+    );
+    assert_provider_history_shape(&request.messages);
+    assert_eq!(request.messages[0].content, "application policy");
+    assert_eq!(request.messages[2], batch);
+    assert_eq!(request.messages[3], unknown);
+    assert_eq!(request.messages[4].role, ChatRole::User);
+    assert!(
+        request.messages[4]
+            .content
+            .contains("not a new user request or authorization")
+    );
+    assert!(
+        request.messages[4]
+            .content
+            .contains("do not assume unfinished claims or actions completed")
+    );
+    assert_eq!(history, original);
+    // Used by the offline retained-template rendering check; synthetic data only.
+    eprintln!(
+        "PINNED_QWEN_RECOVERY_REQUEST={}",
+        serde_json::to_string(&request.messages).unwrap()
+    );
+}
+
+#[derive(Clone, Copy)]
+enum RejectionMode {
+    Context,
+    Generic,
+    AfterOutput,
+    Always,
+}
+
+struct RejectionProvider {
+    mode: RejectionMode,
+    requests: Mutex<Vec<InferenceRequest>>,
+}
+
+fn context_error() -> AxiomError {
+    AxiomError::SecureProvider {
+        kind: axiom_inference::ProviderFailureKind::InvalidRequest,
+        code: "CONTEXT_LENGTH_EXCEEDED",
+        message: "Authenticated pre-generation context rejection",
+    }
+}
+
+#[async_trait]
+impl InferenceProvider for RejectionProvider {
+    async fn models(&self, _: CancellationToken) -> Result<Vec<ModelInfo>> {
+        Ok(vec![ModelInfo {
+            id: "test".into(),
+            context_window_tokens: 32_768,
+            max_output_tokens: 4096,
+            ..Default::default()
+        }])
+    }
+    async fn stream(
+        &self,
+        request: InferenceRequest,
+        events: mpsc::Sender<ProviderEvent>,
+        _: CancellationToken,
+    ) -> Result<AssistantTurn> {
+        assert!(is_compaction(&request));
+        assert!(request.tools.is_empty());
+        assert_provider_history_shape(&request.messages);
+        // A deliberately stricter tokenizer than the local characters/4 estimate.
+        let actual_tokens: usize = request
+            .messages
+            .iter()
+            .map(|m| m.content.chars().count())
+            .sum();
+        self.requests.lock().await.push(request);
+        if actual_tokens + 4096 > 32_768 || matches!(self.mode, RejectionMode::Always) {
+            return Err(match self.mode {
+                RejectionMode::Generic => AxiomError::Provider(
+                    "context_length_exceeded: ambiguous upstream failure".into(),
+                ),
+                RejectionMode::AfterOutput => {
+                    events
+                        .send(ProviderEvent::ReasoningDelta(
+                            "generation already started".into(),
+                        ))
+                        .await
+                        .unwrap();
+                    context_error()
+                }
+                _ => context_error(),
+            });
+        }
+        Ok(AssistantTurn {
+            text: "Summary preserving the original request and its unresolved work.".into(),
+            reasoning: None,
+            tool_calls: vec![],
+        })
+    }
+}
+
+async fn rejection_fixture(
+    mode: RejectionMode,
+) -> (
+    Arc<RejectionProvider>,
+    AgentEngine,
+    SessionId,
+    Vec<ChatMessage>,
+) {
+    let provider = Arc::new(RejectionProvider {
+        mode,
+        requests: Mutex::new(vec![]),
+    });
+    let engine = AgentEngine::new(provider.clone(), Arc::new(ToolRegistry::new()), "test", 4);
+    let id = SessionId::new();
+    let history = vec![
+        ChatMessage::text(ChatRole::System, "system"),
+        ChatMessage::text(
+            ChatRole::User,
+            "TOKEN-DENSE-START ".to_owned() + &"x".repeat(60_000) + " TOKEN-DENSE-END",
+        ),
+    ];
+    engine
+        .histories
+        .lock()
+        .await
+        .insert(id.clone(), history.clone());
+    // A previously reported count keeps the fast path available, while an
+    // authenticated rejection can still reveal model-specific undercounting.
+    engine.update_context_tokens(&id, 15_000).await;
+    (provider, engine, id, history)
+}
+
+#[tokio::test]
+async fn authenticated_context_rejection_selects_smaller_compaction_fragments() {
+    let (provider, engine, id, history) = rejection_fixture(RejectionMode::Context).await;
+    let (tx, mut rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
+    let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    engine
+        .compact(&id, None, tx, CancellationToken::new())
+        .await
+        .unwrap();
+    drain.await.unwrap();
+    let requests = provider.requests.lock().await;
+    assert!(requests.len() > 1);
+    assert_eq!(requests[0].messages[1], history[1]);
+    assert!(
+        requests[1..]
+            .iter()
+            .all(|r| r.messages.iter().map(|m| m.content.len()).sum::<usize>() < 60_000)
+    );
+    let fragments = requests[1..]
+        .iter()
+        .flat_map(|r| &r.messages)
+        .map(|m| m.content.as_str())
+        .collect::<String>();
+    assert!(fragments.contains("TOKEN-DENSE-START"));
+    assert!(fragments.contains("TOKEN-DENSE-END"));
+    assert!(
+        engine.histories.lock().await[&id][1]
+            .content
+            .contains("Summary preserving")
+    );
+}
+
+#[tokio::test]
+async fn compaction_does_not_retry_generic_failures_or_errors_after_output() {
+    for mode in [RejectionMode::Generic, RejectionMode::AfterOutput] {
+        let (provider, engine, id, history) = rejection_fixture(mode).await;
+        let (tx, _rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
+        assert!(
+            engine
+                .compact(&id, None, tx, CancellationToken::new())
+                .await
+                .is_err()
+        );
+        assert_eq!(provider.requests.lock().await.len(), 1);
+        assert_eq!(engine.histories.lock().await[&id], history);
+    }
+}
+
+#[tokio::test]
+async fn context_rejection_fallback_is_bounded_and_retains_original_history() {
+    let (provider, engine, id, history) = rejection_fixture(RejectionMode::Always).await;
+    let (tx, _rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
+    assert!(
+        engine
+            .compact(&id, None, tx, CancellationToken::new())
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        provider.requests.lock().await.len(),
+        5,
+        "one original attempt and at most four smaller retries"
+    );
+    assert_eq!(engine.histories.lock().await[&id], history);
+}
+
+fn large_valid_png() -> ImageContent {
+    use base64::Engine as _;
+    use image::ImageEncoder as _;
+    let mut state = 0x9e37_79b9_u32;
+    let pixels: Vec<_> = (0..1280 * 1280 * 3)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            state.to_le_bytes()[0]
+        })
+        .collect();
+    let mut bytes = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut bytes)
+        .write_image(&pixels, 1280, 1280, image::ExtendedColorType::Rgb8)
+        .unwrap();
+    assert_eq!(image::load_from_memory(&bytes).unwrap().width(), 1280);
+    assert!(bytes.len() < axiom_inference::MAX_IMAGE_BYTES);
+    ImageContent {
+        mime_type: "image/png".into(),
+        data: base64::engine::general_purpose::STANDARD.encode(bytes),
+    }
+}
+
+#[tokio::test]
+async fn ordinary_turn_compacts_valid_image_history_for_transport_bytes() {
+    let provider = Arc::new(ContextProvider::new("direct:qwen3.8-27b"));
+    let engine = AgentEngine::new(
+        provider.clone(),
+        Arc::new(ToolRegistry::new()),
+        &provider.model.id,
+        4,
+    );
+    let ctx = context();
+    let large = large_valid_png();
+    let mut history = vec![ChatMessage::text(ChatRole::System, "system")];
+    for index in 0..6 {
+        let mut message = ChatMessage::text(ChatRole::User, format!("Image {index}"));
+        message.images.push(large.clone());
+        history.push(message);
+    }
+    assert!(serialized_message_bytes(&history).unwrap() > 36 * 1024 * 1024);
+    assert!(model_context_tokens(&provider.model, &history) < 10_000);
+    engine
+        .histories
+        .lock()
+        .await
+        .insert(ctx.session_id.clone(), history);
+    let mut fresh = ctx.clone();
+    fresh.attachments = uploads(1);
+    let expected = axiom_inference::user_message("NEW-PROMPT-MUST-BE-LOSSLESS", &fresh.attachments);
+    let (tx, mut rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
+    let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    engine
+        .run(
+            fresh,
+            "NEW-PROMPT-MUST-BE-LOSSLESS".into(),
+            tx,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    drain.await.unwrap();
+    let requests = provider.requests.lock().await;
+    let compactions: Vec<_> = requests.iter().filter(|r| is_compaction(r)).collect();
+    assert!(compactions.len() >= 2);
+    assert_eq!(
+        compactions
+            .iter()
+            .flat_map(|r| &r.messages)
+            .map(|m| m.images.len())
+            .sum::<usize>(),
+        6
+    );
+    assert!(
+        requests
+            .iter()
+            .all(|r| provider_request_fits(&provider.model, r).unwrap())
+    );
+    assert_eq!(requests.last().unwrap().messages.last().unwrap(), &expected);
+    assert!(!is_compaction(requests.last().unwrap()));
+}
+
+#[tokio::test]
+async fn ordinary_turn_compacts_for_provider_message_count() {
+    let mut raw = ContextProvider::new("direct:qwen3.8-27b");
+    raw.model.context_window_tokens = 1_048_576;
+    let provider = Arc::new(raw);
+    let engine = AgentEngine::new(
+        provider.clone(),
+        Arc::new(ToolRegistry::new()),
+        &provider.model.id,
+        4,
+    );
+    let ctx = context();
+    let mut history = vec![ChatMessage::text(ChatRole::System, "system")];
+    history.extend((0..4100).map(|_| ChatMessage::text(ChatRole::User, "small history entry")));
+    engine
+        .histories
+        .lock()
+        .await
+        .insert(ctx.session_id.clone(), history);
+    let (tx, mut rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
+    let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    engine
+        .run(ctx, "fresh prompt".into(), tx, CancellationToken::new())
+        .await
+        .unwrap();
+    drain.await.unwrap();
+    let requests = provider.requests.lock().await;
+    assert!(is_compaction(&requests[0]));
+    assert!(requests.iter().all(|r| r.messages.len() <= 4096));
+    assert_eq!(
+        requests.last().unwrap().messages.last().unwrap().content,
+        "fresh prompt"
+    );
+}
+
+#[tokio::test]
+async fn individually_unfit_prompt_keeps_history_usable_even_after_restore() {
+    let provider = Arc::new(ContextProvider::new("direct:qwen3.8-27b"));
+    let engine = AgentEngine::new(
+        provider.clone(),
+        Arc::new(ToolRegistry::new()),
+        &provider.model.id,
+        4,
+    );
+    let ctx = context();
+    let history = vec![
+        ChatMessage::text(ChatRole::System, "system"),
+        ChatMessage::text(ChatRole::User, "KEEP-OLD-REQUEST"),
+    ];
+    engine
+        .histories
+        .lock()
+        .await
+        .insert(ctx.session_id.clone(), history.clone());
+    let oversized = "x".repeat(3 * 1024 * 1024 + 1);
+    let (tx, mut rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
+    let error = engine
+        .run(ctx.clone(), oversized.clone(), tx, CancellationToken::new())
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("Shorten it"));
+    assert!(provider.requests.lock().await.is_empty());
+    assert_eq!(
+        engine.histories.lock().await[&ctx.session_id][1],
+        history[1]
+    );
+    let mut events = vec![
+        AppEvent::SessionCreated {
+            cwd: ctx.cwd.clone(),
+            origin: crate::app::Origin::Test,
+            profile: ctx.permission_profile,
+        },
+        AppEvent::PromptAccepted {
+            turn_id: ctx.turn_id.clone(),
+            text: oversized,
+            attachments: vec![],
+        },
+    ];
+    while let Ok(event) = rx.try_recv() {
+        events.push(event);
+    }
+    let envelopes: Vec<_> = events
+        .into_iter()
+        .enumerate()
+        .map(|(index, event)| EventEnvelope {
+            schema_version: 1,
+            turn_id: None,
+            sequence: index as u64 + 1,
+            occurred_at: chrono::Utc::now(),
+            correlation_id: crate::app::CorrelationId::new(),
+            origin: crate::app::Origin::Test,
+            session_id: ctx.session_id.clone(),
+            event,
+        })
+        .collect();
+    engine
+        .restore_session(&ctx.session_id, &envelopes)
+        .await
+        .unwrap();
+    let (tx, _rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
+    engine
+        .run(ctx, "small followup".into(), tx, CancellationToken::new())
+        .await
+        .unwrap();
+    let requests = provider.requests.lock().await;
+    assert_eq!(requests.len(), 1);
+    assert!(
+        requests[0]
+            .messages
+            .iter()
+            .any(|m| m.content == "KEEP-OLD-REQUEST")
+    );
+}
+
+#[test]
+fn transport_budget_includes_tool_schemas_and_nested_json_escaping() {
+    let model = ContextProvider::new("direct:qwen3.8-27b").model;
+    let mut history = vec![ChatMessage::text(ChatRole::System, "system")];
+    let large = large_valid_png();
+    for _ in 0..5 {
+        let mut message = ChatMessage::text(ChatRole::User, "image");
+        message.images.push(large.clone());
+        history.push(message);
+    }
+    let mut request = InferenceRequest::streaming(model.id.clone(), history, vec![]);
+    assert!(provider_request_fits(&model, &request).unwrap());
+    request.tools = (0..40)
+        .map(|index| crate::provider::ToolDefinition {
+            kind: "function".into(),
+            function: crate::provider::FunctionDefinition {
+                strict: None,
+                name: format!("large_schema_{index}"),
+                description: "schema".into(),
+                parameters: serde_json::json!({"type":"object","description":"p".repeat(130_000)}),
+            },
+        })
+        .collect();
+    request.validate().unwrap();
+    assert!(!provider_request_fits(&model, &request).unwrap());
+
+    let quoted = vec![ChatMessage::text(ChatRole::User, "\"".repeat(3 * 1024 * 1024)); 3];
+    assert!(serialized_message_bytes(&quoted).unwrap() < 36 * 1024 * 1024);
+    let raw = serde_json::to_string(&quoted).unwrap();
+    // Independently serialize the nested payload string, as the direct wire does.
+    let nested_bytes = serde_json::to_vec(&serde_json::json!({"payload":raw}))
+        .unwrap()
+        .len();
+    assert!(nested_bytes > 36 * 1024 * 1024);
+    let request = InferenceRequest::streaming(model.id.clone(), quoted, vec![]);
+    assert!(!provider_request_fits(&model, &request).unwrap());
+}
+
+#[tokio::test]
+async fn local_token_estimates_choose_conservative_fragments_without_a_rejection() {
+    let provider = Arc::new(ContextProvider::new("test"));
+    let engine = AgentEngine::new(provider.clone(), Arc::new(ToolRegistry::new()), "test", 4);
+    let id = SessionId::new();
+    let dense = "界".repeat(33_000);
+    let history = vec![
+        ChatMessage::text(ChatRole::System, "system"),
+        ChatMessage::text(ChatRole::User, dense.clone()),
+    ];
+    engine
+        .histories
+        .lock()
+        .await
+        .insert(id.clone(), history.clone());
+    // This is how a failed ordinary turn or locally reconstructed history is
+    // counted. It must not masquerade as a provider's authoritative usage.
+    engine
+        .update_estimated_context_tokens(&id, model_context_tokens(&provider.model, &history))
+        .await;
+    let (tx, mut rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
+    let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    engine
+        .compact(&id, None, tx, CancellationToken::new())
+        .await
+        .unwrap();
+    drain.await.unwrap();
+    let requests = provider.requests.lock().await;
+    assert!(requests.len() > 1);
+    assert!(
+        requests
+            .iter()
+            .all(|r| r.messages.iter().all(|m| m.content != dense))
+    );
+    assert!(requests.iter().all(
+        |r| conservative_context_tokens(&provider.model, &r.messages)
+            + u64::from(r.max_output_tokens.unwrap_or(0))
+            < 32_768
+    ));
+    assert!(
+        requests
+            .iter()
+            .flat_map(|r| &r.messages)
+            .any(|m| m.content.contains("conversation-fragment"))
+    );
 }

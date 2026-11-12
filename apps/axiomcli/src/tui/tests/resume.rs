@@ -8,6 +8,54 @@ use std::sync::Arc;
 const LEGACY_WARNING: &str = "Workspace changes recorded in this session: invoice.py, result.txt";
 const REAL_WARNING: &str = "A real warning is retained.";
 
+#[tokio::test]
+async fn compacted_model_restore_keeps_the_complete_public_transcript() {
+    let (_directory, store, session) = fixture(false, false);
+    store.append(&EventEnvelope {
+        schema_version: 1, sequence: 100, turn_id: None,
+        occurred_at: chrono::Utc::now(), correlation_id: CorrelationId::new(),
+        origin: Origin::Tui, session_id: session.clone(),
+        event: AppEvent::ModelHistoryCheckpoint { version: 1,
+            messages: serde_json::json!([{"role":"system","content":"system"},{"role":"user","content":"summary"}]) },
+    }).unwrap();
+    let model = store.load_recovering(&session).unwrap();
+    assert!(
+        !model
+            .events
+            .iter()
+            .any(|event| matches!(event.event, AppEvent::ToolProposed { .. }))
+    );
+    let presentation = store.load_presentation(&session).unwrap();
+    assert!(presentation.events.iter().any(|event| matches!(&event.event, AppEvent::PromptAccepted { text, .. } if text == "Fix the invoice")));
+    assert!(
+        presentation
+            .events
+            .iter()
+            .any(|event| matches!(event.event, AppEvent::ToolProposed { .. }))
+    );
+    let state = resume(&store, &session).await;
+    assert!(
+        state
+            .entries
+            .iter()
+            .any(|entry| entry.text.contains("Fix the invoice"))
+    );
+    assert!(
+        state
+            .entries
+            .iter()
+            .any(|entry| entry.text.contains(REAL_WARNING))
+    );
+    assert!(
+        state
+            .entries
+            .iter()
+            .filter_map(|entry| entry.task.as_ref())
+            .any(|task| task.changed_paths.contains(&PathBuf::from("invoice.py")))
+    );
+    assert!(store.export(&session).unwrap().contains("Fix the invoice"));
+}
+
 fn fixture(
     interrupted: bool,
     legacy_warning: bool,

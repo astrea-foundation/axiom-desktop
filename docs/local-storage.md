@@ -58,15 +58,89 @@ an encrypted backup and recovery key before moving the store to another device.
 The schema migration decodes recognized image/file slots in accepted attachments,
 generated-image timeline content, authoritative events and exact model-message
 checkpoints. It writes durable ciphertext files before committing asset references
-and preserves message/checkpoint IDs and hashes of hydrated model messages.
-Corrupt/missing media causes a recoverable error, not silent omission. Cleanup
-removes obsolete payload pages and truncates the WAL before migration completes.
+and preserves checkpoint message IDs and untouched message hashes. In these
+explicit typed slots, malformed or missing inline media is omitted during
+conversion. Byte-free unavailable attachment slots preserve original positions
+and surviving image IDs. Usable text, tool outcomes and unaffected media remain
+available. New uploads cannot supply these migration-only markers.
+
+Before committing an omission, migration archives the exact original record in
+encrypted, thread-owned recovery assets. Large records use ordered chunks. These
+records are never loaded as media, remain available for offline recovery and
+portable backup, and are released when their thread is deleted. An omitted
+canonical message keeps its numeric checkpoint ID and receives a separate
+recovery deduplication identity; its original digest is retained in the recovery
+record. Reintroducing the original valid message can therefore succeed without a
+false digest collision. Valid untouched message digests stay stable.
+
+Omission, recovery ownership and reference updates commit in the same migration
+transaction. A storage-write failure leaves the original database records intact
+for retry; orphan staged ciphertext is reclaimed after a successful retry.
+Unsupported schemas, invalid database/key authentication and unrelated malformed
+records remain errors. The converter never scans text or arbitrary tool arguments
+for media. Cleanup removes obsolete payload pages and truncates the WAL before
+migration completes.
 
 Only unreferenced ciphertext is reclaimed. Compaction alone does not erase
 original images or history needed for viewing, editing, revision or replay.
 Draft replacement updates its asset ownership; deleting a draft or thread releases
 its owners. Cleanup is serialized with SQLite writers so rollback cannot restore
 a reference to a prematurely deleted file.
+
+## Unavailable saved media
+
+A missing, unreadable, tampered or wrong-key external asset does not prevent
+opening the account or using unaffected conversations. Reads still verify the
+owning record, asset identity, ciphertext authentication, length and content hash
+before returning any bytes. An unavailable asset supplies no image or file bytes.
+History, generated-image records, exact checkpoints, attachments, drafts and queued
+preparations omit the unavailable media while preserving usable text, tool
+arguments and recorded tool outcomes. Recovery warnings identify the omission;
+queued records remain saved for review after reconnect and are not automatically
+sent. Lazy timeline image descriptors do not authenticate or load an image;
+opening an unavailable image reports that it cannot be restored.
+
+Recognized images must decode completely through their first frame with a MIME
+type matching the encoded format. The storage boundary checks canonical base64,
+encoded byte limits (5 MiB for uploads/model inputs, 10 MiB for generated originals),
+an 8192-pixel edge limit, a 32-megapixel source limit and a
+128 MiB decoder allocation limit. Signature-only or truncated images are omitted
+on both legacy migration and current external-asset reads; malformed new image
+writes are rejected. Validation never re-encodes or substitutes valid bytes.
+Unreadable external originals and their ownership remain intact for recovery.
+
+Semantic replay uses text-only omission markers where needed to preserve original
+attachment positions and the IDs of surviving uploaded images. A media-only
+canonical message receives a short unavailable-media note if omitting its bytes
+would leave it empty. These recovery projections do not rewrite the original
+saved records, invent authenticated media, restore live provider trust, or imply
+that an interrupted tool operation succeeded. Unrelated text and JSON are never
+interpreted as asset references.
+
+Broken references retain their ownership and any original ciphertext. Opening
+and compaction do not delete them. Reattaching the exact original valid bytes
+repairs an unavailable deduplicated asset under the storage write lock, preserving
+its ID and existing owners. Before replacement, a damaged regular file is moved
+beside the assets under an opaque `.unavailable-` name. Such quarantine files are
+never resolved as media and remain available for offline recovery; ordinary
+orphan collection does not remove them. Ordinary draft/thread deletion still
+releases live ownership as before. Explicit portable-backup verification remains
+strict and reports unavailable live assets rather than certifying a damaged
+archive as complete; conversation export can preserve usable text and tool
+outcomes with omission warnings.
+
+Runtime semantic restore selects the newest authoritative checkpoint before the
+requested revision boundary and the events after it. Earlier assistant text,
+reasoning, tool outputs, file bytes and superseded checkpoint media are not
+hydrated. A small earlier state/lifecycle projection retains model and thinking
+settings, workspace changes, turn IDs and unknown interrupted side effects.
+Earlier valid uploads and generated images remain available to the image catalog;
+the current catalog still hydrates those images, so catalog size can contribute
+to restore cost. TUI and standard ACP transcript replay use a separate complete
+presentation load; image regeneration reads its original recipe through that
+same path. Desktop can skip presentation replay and fetch timeline pages instead.
+The complete presentation timeline, export source and earlier revision checkpoints
+remain in storage.
 
 Desktop migrates existing browser drafts and outbox records after the owning
 account unlocks. Native commits acknowledge imported data before localStorage or
@@ -77,6 +151,26 @@ drafts remain in memory. Native persistence errors retain in-window data and blo
 durable submission instead of falling back to plaintext browser storage. Encrypted
 receipts make browser cleanup retryable without replaying already imported queue
 entries or discarding a draft edited after an earlier import.
+
+The `localPayload@2` legacy-import action validates only recognized typed media
+slots, omits damaged image/file inputs and returns the normalized source plus an
+omission count. Authored text remains exact, including at the prompt-size limit.
+Ordinary new writes continue to reject malformed media. Native creates an import
+destination only if absent; acknowledgement retries compare the normalized source
+and preserve newer native edits as well as changed browser sources. A preview
+mode archives and normalizes anonymous inputs before deciding whether both
+composer fields can be adopted. It never creates or overwrites those fields.
+
+Before browser cleanup, the import transaction archives omitted prompt inputs
+and complete affected queue-item records as encrypted recovery capsules. Each
+capsule identifies the SHA-256 of the full serialized source, so ordered chunks
+from multiple changed versions can be reconstructed independently. Recovery uses
+separate `payload-recovery:` ownership: ordinary draft/outbox replacement retains
+the archive, while explicit payload or account deletion releases it. Damaged
+imports add review notices to saved queue/error metadata or recovered preparations,
+without appending notices to authored text or resending messages. A sidecar that
+supports only `localPayload@1` can still perform ordinary persistence; legacy
+import requires an updated native app and keeps its browser source until then.
 
 Text draft writes use a short debounce. Normal window close, quit, update restart
 and explicit account transitions flush pending writes and wait for native

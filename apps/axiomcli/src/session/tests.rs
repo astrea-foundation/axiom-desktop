@@ -716,7 +716,7 @@ fn begin_turn(
 }
 
 #[test]
-fn missing_presentation_media_fails_closed_without_damaging_authoritative_history() {
+fn missing_presentation_media_is_omitted_without_damaging_authoritative_history() {
     for corrupt_metadata in [false, true] {
         let store = SessionStore::in_memory().unwrap();
         let id = SessionId::new();
@@ -781,16 +781,13 @@ fn missing_presentation_media_fails_closed_without_damaging_authoritative_histor
                 .iter()
                 .any(|event| matches!(event.event, AppEvent::ImageGenerated { .. }))
         );
-        assert!(store.prompt_attachments(&id, &user_id).is_err());
+        assert!(store.prompt_attachments(&id, &user_id).unwrap().is_empty());
         let revision = axiom_acp_extension::PromptRevision {
             user_item_id: user_id,
             expected_revision: store.thread_summary(&id).unwrap().revision,
         };
         assert!(store.history_before_user_message(&id, &revision).is_ok());
-        assert_eq!(
-            store.thread_snapshot(&id, None, 100).is_ok(),
-            corrupt_metadata
-        );
+        assert!(store.thread_snapshot(&id, None, 100).is_ok());
         begin_turn(&store, &id, &TurnId::new(), Some("after-recovery"));
     }
 }
@@ -2234,13 +2231,13 @@ fn generated_and_edited_images_restore_from_their_owning_durable_tool_records() 
     })).unwrap();
     for (index, name) in [(0, "generate_image"), (1, "edit_image"), (2, "generate")] {
         let request_id = format!("{:02x}", 0x11 * (index + 1)).repeat(16);
-        let raw = b"\x89PNG\r\n\x1a\nsynthetic-local-image";
+        let raw = include_bytes!("fixtures/storage-original.png");
         let image = axiom_secure_client::GeneratedImage {
             request_id: request_id.clone(),
             data: STANDARD.encode(raw),
             mime_type: "image/png".into(),
-            width: 1024,
-            height: 1024,
+            width: 256,
+            height: 256,
             sha256: hex::encode(Sha256::digest(raw)),
             source_image_ids: if index == 0 {
                 vec![]
