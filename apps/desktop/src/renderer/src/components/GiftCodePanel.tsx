@@ -42,7 +42,7 @@ export function GiftCodePanel({ accountId, connected }: { accountId: string; con
     <h3 className="font-medium text-[var(--color-text-primary)]">Redeem a gift code</h3>
     <form className="mt-3 flex flex-wrap items-end gap-2" onSubmit={(event) => { event.preventDefault(); void redeem(); }}>
       <label className="min-w-0 flex-1 text-[12px] text-[var(--color-text-secondary)]">Gift code
-        <input type="password" name="gift-code" autoComplete="off" spellCheck={false} maxLength={64}
+        <input type="text" name="gift-code" autoComplete="off" spellCheck={false} maxLength={64}
           value={code} disabled={!connected || busy} placeholder="AXG-…"
           onChange={(event) => { setCode(event.target.value); setError(null); setMessage(null); }}
           className="mt-1 block w-full rounded-lg border border-[var(--color-border)] bg-[var(--wash-row)] px-3 py-2 text-[13px] text-[var(--color-text-primary)] outline-none focus:border-[var(--color-text-secondary)] disabled:opacity-40" />
