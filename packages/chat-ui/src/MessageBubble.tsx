@@ -1,8 +1,9 @@
 /** @jsxRuntime automatic */
-import { AlertTriangle, Check, ChevronDown, Copy, LoaderCircle, Pencil, RotateCcw } from "lucide-react";
+import { AlertTriangle, ChevronDown, LoaderCircle, Pencil, RotateCcw } from "lucide-react";
 import { useState } from "react";
 import type { Message } from "@axiom/chat-core/types";
 import { ChatMarkdown } from "./ChatMarkdown";
+import { CopyButton } from "./CopyButton";
 import { DismissibleNotice } from "./DismissibleNotice";
 
 function thoughtLabel(durationMs?: number): string {
@@ -11,12 +12,13 @@ function thoughtLabel(durationMs?: number): string {
   return `Thought for ${seconds} ${seconds === 1 ? "second" : "seconds"}`;
 }
 
-export function MessageBubble({ message, onRevise, revisionText, revisionHasAttachments = false, showFailureNotice = true, responseActive = false }: {
+export function MessageBubble({ message, onRevise, revisionText, revisionHasAttachments = false, showFailureNotice = true, responseActive = false, copyContent }: {
   message: Message; onRevise?: (text: string) => Promise<void>; revisionText?: string; revisionHasAttachments?: boolean;
   showFailureNotice?: boolean;
   responseActive?: boolean;
+  /** Whole reply body for the turn when it was split by tool calls. */
+  copyContent?: string;
 }) {
-  const [copied, setCopied] = useState(false);
   const [revisionMode, setRevisionMode] = useState<"edit" | "regenerate" | null>(null);
   const [revisionDraft, setRevisionDraft] = useState("");
   const [revising, setRevising] = useState(false);
@@ -37,12 +39,7 @@ export function MessageBubble({ message, onRevise, revisionText, revisionHasAtta
   const terminalFailure = message.status === "failed";
   const reasoning = message.reasoningContent?.trim();
 
-  const copyMessage = async () => {
-    if (!message.content || isStreaming || responseActive || terminalFailure) return;
-    await navigator.clipboard.writeText(message.content);
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1200);
-  };
+  const replyBody = copyContent?.trim() ? copyContent : message.content;
 
   if (message.role === "user") {
     return (
@@ -127,17 +124,16 @@ export function MessageBubble({ message, onRevise, revisionText, revisionHasAtta
         </div>
       </div>
       ) : null}
-      {!message.continues && !isStreaming && !responseActive ? <div className="flex max-w-full items-center gap-1.5 self-start opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+      {/* Completed replies keep their actions visible, not hover-only, so the
+          whole reply can always be copied once the request finishes. */}
+      {!message.continues && !isStreaming && !responseActive ? <div className="flex max-w-full items-center gap-1.5 self-start">
           <div className="flex items-center gap-0.5">
-            <button
-              type="button"
-              onClick={() => void copyMessage()}
-              disabled={!message.content || isStreaming || Boolean(terminalFailure)}
+            <CopyButton
+              text={replyBody}
+              label="Copy"
+              disabled={!replyBody || Boolean(terminalFailure)}
               className="rounded-md p-1.5 text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-bg-surface-hover)] hover:text-[var(--color-text-secondary)] disabled:cursor-not-allowed disabled:opacity-35"
-              aria-label={copied ? "Copied" : "Copy"}
-            >
-              {copied ? <Check size={13} /> : <Copy size={13} />}
-            </button>
+            />
             <button
               type="button"
               disabled={!onRevise || isStreaming || revising}

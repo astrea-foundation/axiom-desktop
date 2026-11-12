@@ -60,6 +60,14 @@ export function TimelineView({
   let latestUser: ClientTimelineItem | undefined;
   for (const item of session.timeline) if (item.kind === "user") latestUser = item;
   const activeTurnId = session.activeTurnId ?? latestUser?.turnId;
+  // A turn split by tool calls renders several assistant segments; the final
+  // segment's Copy action copies the reply body of the whole turn.
+  const turnReplies = new Map<string, string[]>();
+  for (const row of presentation) {
+    if (row.kind !== "message" || row.message.role !== "assistant" || !row.message.content.trim()) continue;
+    const turnId = turnsByItem.get(row.message.id);
+    if (turnId) turnReplies.set(turnId, [...turnReplies.get(turnId) ?? [], row.message.content.trim()]);
+  }
   const turnsWithErrors = new Set(session.timeline.filter((item) => item.kind === "error" && item.turnId).map((item) => item.turnId));
   const rows = presentation.map((row) => {
     if (row.kind === "message") {
@@ -74,6 +82,7 @@ export function TimelineView({
         responseActive={session.running && (turnId && activeTurnId
           ? turnId === activeTurnId : !source || source.id === latestUser?.id)}
         showFailureNotice={!turnId || !turnsWithErrors.has(turnId)}
+        copyContent={turnId && row.message.role === "assistant" ? turnReplies.get(turnId)?.join("\n\n") : undefined}
         revisionText={source?.text} onRevise={source && onRevise ? (text) => onRevise(source.id, text) : undefined} /></div>;
     }
     if (row.kind === "tool" && row.item.tool) {
