@@ -491,7 +491,7 @@ export class AxiomAcpClient extends EventEmitter {
     const context = this.state.accountContextToken();
     const result = await this.process.request<ReadImageResponse>("_axiom/image/read", { threadId, callId, sha256 });
     this.assertAccountContext(context);
-    if (result.sha256 !== sha256 || result.mimeType !== "image/png" || typeof result.data !== "string" || result.data.length > 14_000_000) {
+    if (result.sha256 !== sha256 || result.mimeType !== "image/png" || typeof result.data !== "string" || result.data.length > 28_000_000) {
       throw new ProtocolError("Saved image identity differs");
     }
     return result;
@@ -505,7 +505,7 @@ export class AxiomAcpClient extends EventEmitter {
     const result = await this.process.request<ResolveImageResponse>("_axiom/image/resolve", { threadId, imageId });
     this.assertAccountContext(context);
     if (result.imageId !== imageId || !/^image\/(?:png|jpeg|webp|gif)$/.test(result.mimeType)
-      || typeof result.data !== "string" || result.data.length > 14_000_000
+      || typeof result.data !== "string" || result.data.length > 28_000_000
       || !["uploaded", "generated", "edited"].includes(result.origin) || typeof result.name !== "string") {
       throw new ProtocolError("Conversation image identity differs");
     }

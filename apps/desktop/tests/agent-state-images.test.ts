@@ -133,7 +133,7 @@ test("disconnect and runtime replacement revoke resources even for the same acco
 });
 
 test("invalid geometry, noncanonical base64 and injected local URLs never become resources", () => {
-  for (const data of [png(2048, 2048, 1024), png(1537, 1024, 1024), "not a png", png(1024, 1024, 1024) + "\n"]) {
+  for (const data of [png(2080, 2048, 1024), png(1537, 1024, 1024), "not a png", png(1024, 1024, 1024) + "\n"]) {
     const packet = new AgentStateTransport().encode(state(data));
     assert.equal(packet.images.length, 0);
     assert.equal(image(packet.state).data, undefined);

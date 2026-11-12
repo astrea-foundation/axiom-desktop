@@ -374,7 +374,7 @@ impl Tool for ImageGenerationTool {
         "generate"
     }
     fn description(&self) -> &'static str {
-        "Create one image with Axiom's encrypted image service only when the user requests image creation or changes. Provide a self-contained prompt and optional aspect_ratio such as 1:1, 16:9, 9:16, 3:2 or 4:3. Images work best at higher resolutions: the native client chooses the largest supported image with that exact aspect ratio on the 32-pixel grid, within 2,359,296 pixels. New images default to 1:1 square at 1536×1536. Available aspect ratios: 1:1, 2:3, 3:2, 3:4, 4:3, 9:16, 16:9, 1:2, 2:1, 9:21 and 21:9. To edit or use references, supply up to five exact conversation-local image IDs in reference_image_ids. In the prompt refer to them as <image1>, <image2>, etc. in that array's order; describe each reference's role and what to preserve. Without an aspect_ratio, reference-based calls preserve the first reference's output dimensions or aspect ratio within the limits. The result is displayed automatically. You may call view_image to inspect it before answering."
+        "Create one image with Axiom's encrypted image service only when the user requests image creation or changes. Provide a self-contained prompt and optional aspect_ratio such as 1:1, 16:9, 9:16, 3:2 or 4:3. Images work best at higher resolutions: the native client chooses the largest supported image with that exact aspect ratio on the 32-pixel grid, within 4,194,304 pixels. New images default to 1:1 square at 2048×2048. Available aspect ratios: 1:1, 2:3, 3:2, 3:4, 4:3, 9:16, 16:9, 1:2, 2:1, 9:21 and 21:9. To edit or use references, supply up to five exact conversation-local image IDs in reference_image_ids. In the prompt refer to them as <image1>, <image2>, etc. in that array's order; describe each reference's role and what to preserve. Without an aspect_ratio, reference-based calls preserve the first reference's output dimensions or aspect ratio within the limits. The result is displayed automatically. You may call view_image to inspect it before answering."
     }
     fn parameters(&self) -> Value {
         json!({"type":"object", "properties":{
@@ -383,7 +383,7 @@ impl Tool for ImageGenerationTool {
                 "items":{"type":"string","pattern":"^img_[0-9a-f]{32}$"},
                 "description":"Ordered references from this conversation. First is <image1>, second <image2>, etc. Omit or pass [] for text-only generation."},
             "aspect_ratio":{"type":"string","enum":IMAGE_ASPECT_RATIOS,"default":"1:1",
-                "description":"Width:height, for example 1:1, 16:9, 9:16, 3:2 or 4:3. The client chooses the largest supported dimensions at this ratio. Omit to use 1536×1536 square for a new image or the signed installation default for references."}},
+                "description":"Width:height, for example 1:1, 16:9, 9:16, 3:2 or 4:3. The client chooses the largest supported dimensions at this ratio. Omit to use 2048×2048 square for a new image or the signed installation default for references."}},
             "required":["prompt"], "additionalProperties":false})
     }
 
@@ -457,19 +457,11 @@ impl Tool for ImageGenerationTool {
                 ));
             }
         }
-        let mut copies = Vec::new();
-        for source in &sources {
-            copies.push(
-                context
-                    .images
-                    .view(&source.id, cancellation.clone())
-                    .await?,
-            );
-        }
+        // Generation has its own 2048² reference normalizer. A view_image
+        // thumbnail discards detail before the provider ever sees the source.
         let references = sources
             .iter()
-            .zip(&copies)
-            .map(|(source, image)| (source.id.as_str(), image))
+            .map(|source| (source.id.as_str(), source.image.as_ref()))
             .collect::<Vec<_>>();
         if args.aspect_ratio.is_some() && (args.width.is_some() || args.height.is_some()) {
             return Err(AxiomError::Tool(
@@ -500,7 +492,7 @@ impl Tool for ImageGenerationTool {
                     let size = axiom_inference::ImageDimensions { width, height };
                     size.validate().map_err(|_| {
                         AxiomError::Tool(
-                        "Output dimensions must use a 32-pixel grid, with area at most 1536×1536."
+                        "Output dimensions must use a 32-pixel grid, with area at most 2048×2048."
                             .into(),
                     )
                     })?;
@@ -705,7 +697,7 @@ pub(crate) mod tests {
             definition.function.parameters["properties"]["reference_image_ids"]["maxItems"],
             3
         );
-        assert!(definition.function.description.contains("1536×1536"));
+        assert!(definition.function.description.contains("2048×2048"));
         assert!(definition.function.description.contains("6:5"));
         assert!(!definition.function.description.contains("0.9"));
     }
@@ -713,12 +705,12 @@ pub(crate) mod tests {
     #[test]
     fn aspect_ratios_select_the_largest_exact_supported_grid_and_reject_extremes() {
         for (ratio, width, height) in [
-            ("1:1", 1536, 1536),
-            ("2:3", 1216, 1824),
-            ("3:2", 1824, 1216),
-            ("16:9", 2048, 1152),
-            ("9:16", 1152, 2048),
-            ("21:9", 2240, 960),
+            ("1:1", 2048, 2048),
+            ("2:3", 1664, 2496),
+            ("3:2", 2496, 1664),
+            ("16:9", 2560, 1440),
+            ("9:16", 1440, 2560),
+            ("21:9", 2912, 1248),
         ] {
             assert_eq!(
                 dimensions_for_aspect_ratio(ratio).unwrap(),
@@ -1063,7 +1055,7 @@ pub(crate) mod tests {
             codecs::png::{CompressionType, FilterType as PngFilter, PngEncoder},
         };
         let mut state = 0x0123_4567_u32;
-        let noise = (0..1536 * 1536 * 4)
+        let noise = (0..2048 * 2048 * 4)
             .map(|_| {
                 state ^= state << 13;
                 state ^= state >> 17;
@@ -1073,9 +1065,9 @@ pub(crate) mod tests {
             .collect::<Vec<_>>();
         let mut raw = Vec::new();
         PngEncoder::new_with_quality(&mut raw, CompressionType::Fast, PngFilter::NoFilter)
-            .write_image(&noise, 1536, 1536, ExtendedColorType::Rgba8)
+            .write_image(&noise, 2048, 2048, ExtendedColorType::Rgba8)
             .unwrap();
-        assert!(raw.len() > axiom_inference::MAX_IMAGE_BYTES);
+        assert!(raw.len() > 10 * 1024 * 1024);
         let source = ImageContent {
             mime_type: "image/png".into(),
             data: STANDARD.encode(raw),
@@ -1158,7 +1150,9 @@ pub(crate) mod tests {
                 image.validate().unwrap();
                 let raw = STANDARD.decode(&image.data).unwrap();
                 let image = image::load_from_memory(&raw).unwrap();
-                assert!(u64::from(image.width()) * u64::from(image.height()) <= 1_048_576);
+                // The tool hands the original to the provider; view_image's
+                // one-megapixel copy must never become a generation reference.
+                assert!([(1536, 1536), (64, 64)].contains(&(image.width(), image.height())));
             }
             if !request.references.is_empty() {
                 assert_eq!(

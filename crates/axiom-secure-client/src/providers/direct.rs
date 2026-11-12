@@ -563,7 +563,7 @@ impl DirectProvider {
                     context_tokens: 8192,
                     output_tokens: 1,
                     input_bytes: axiom_pool_protocol::MAX_REQUEST as u64,
-                    output_bytes: 32 * 1024 * 1024,
+                    output_bytes: 64 * 1024 * 1024,
                     image_pixels: u64::from(size.width) * u64::from(size.height),
                     image_steps: 8,
                     input_image_pixels,
@@ -1294,7 +1294,7 @@ mod tests {
         let size = runtime
             .dimensions(&runtime.image.default_aspect_ratio)
             .unwrap();
-        assert_eq!((size.width, size.height), (1536, 1536));
+        assert_eq!((size.width, size.height), (2048, 2048));
         assert!(runtime.image.aspect_ratios.contains(&"2:3".into()));
         let config = installed();
         assert!(

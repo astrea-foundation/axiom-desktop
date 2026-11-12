@@ -9,11 +9,11 @@ use serde::{Deserialize, Serialize};
 use crate::{ChatMessage, ChatRole, MAX_MESSAGE_TEXT_BYTES, ValidationError};
 
 pub const MAX_ATTACHMENTS: usize = 10;
-pub const MAX_IMAGE_BYTES: usize = 5 * 1024 * 1024;
-pub const MAX_GENERATED_IMAGE_BYTES: usize = 10 * 1024 * 1024;
-pub const MAX_GENERATED_IMAGE_PIXELS: u64 = 1536 * 1536;
+pub const MAX_IMAGE_BYTES: usize = 20 * 1024 * 1024;
+pub const MAX_GENERATED_IMAGE_BYTES: usize = 20 * 1024 * 1024;
+pub const MAX_GENERATED_IMAGE_PIXELS: u64 = 2048 * 2048;
 pub const MAX_FILE_BYTES: usize = 10 * 1024 * 1024;
-pub const MAX_ATTACHMENT_BYTES: usize = 16 * 1024 * 1024;
+pub const MAX_ATTACHMENT_BYTES: usize = 144 * 1024 * 1024;
 
 pub const FILE_MIME_TYPES: &[&str] = &[
     "text/plain",
@@ -261,11 +261,17 @@ mod tests {
 
     #[test]
     fn image_output_dimensions_enforce_area_grid_and_bounded_axes() {
-        for (width, height) in [(1024, 1024), (1536, 1536), (2048, 1152), (1152, 2048)] {
+        for (width, height) in [
+            (1024, 1024),
+            (1536, 1536),
+            (2048, 2048),
+            (2560, 1440),
+            (1440, 2560),
+        ] {
             assert!(ImageDimensions { width, height }.validate().is_ok());
         }
         for (width, height) in [
-            (2048, 2048),
+            (2080, 2048),
             (1537, 1024),
             (128, 8192),
             (u32::MAX, u32::MAX),

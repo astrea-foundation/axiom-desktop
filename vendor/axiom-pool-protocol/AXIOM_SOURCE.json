@@ -7,13 +7,13 @@
     "src/authorization.rs": "7e8b9b264a1491da53c1bb02c8d844277609ce25a8fd237bb76be1e7f94f92f3",
     "src/crypto.rs": "44d631ed676328601e0cd43a9bdec6b4af6faf33d61626cdca16615f0a12e107",
     "src/frames.rs": "2d969088120591461e1c34a88ba8a6d8d59a125e0063da8238126b19923d3d53",
-    "src/lib.rs": "1a1dee288a1c153a66859b1ec9955c81130385b9926057cafb2ed52046ceb63c",
+    "src/lib.rs": "2b7f403b0d0f2e20b2c8d36e3e3a8f925da190d0973f1da51eea43377c4eba8f",
     "src/pricing.rs": "26bbb1c8fad7580e53557a1c54232d5f35a8a5cd3e4646fabb94a1d94b3f1184",
     "src/strict.rs": "e1cee46660ae266bab4c4c1e96a3b5854f9601b68e09f97b9c2d368c2093e953",
     "src/test_support.rs": "4ef68b65bc77a079643aca91c9e5fccdb6abf6edb39bd244bd2227252b355cd4",
     "src/tools.rs": "6698e2f818fdacf00befc5e3e20dc8efe2b254f3b8cbe2273df8c3564c06fd21",
-    "src/types.rs": "ddefa6c62e1dc248ce1270eb16c1767c1fc87d2f11f12675441c0e5ce74ff1cf",
-    "src/vision.rs": "47d1acbd8460d4909dbc160fba6b87f35ba2aee7305706d6eec28621d9ed00dc",
+    "src/types.rs": "d5c974b856cd731b63894a45377578b2d877f0c94ce76ec638005f4281df8434",
+    "src/vision.rs": "876108febd874801313296071ddb5779538f306ad7f5a48c2c25d38be532dfea",
     "examples/generate_vectors.rs": "574e4cfdbec81f69484b922d2b3d0acf21c61ba3f7894216e302f79812c13fdb"
   }
 }

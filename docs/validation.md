@@ -598,3 +598,11 @@ locked credential stores, sign-out and factory reset. Confirm the Remote
 connection form, separate Tools picker, destination-aware approvals/activity and
 privacy proof disclosures in each supported platform/theme. Local HTTP fixture
 and browser harness results do not establish live-service or Windows qualification.
+
+
+The 2048² development image profile needs fresh attested GPU qualification before
+release: new and reference-based 2K generation, five full-resolution references,
+peak memory and latency with the chat model resident, base/LoRA switching, and
+Desktop/browser save and restoration of PNGs above 10 MiB. Offline checks do not
+establish the larger profile fits the production GPU. Coordinate the worker,
+account grant/storage migration, gateway and client updates.

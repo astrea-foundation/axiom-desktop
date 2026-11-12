@@ -24,8 +24,8 @@ export function attachmentAccept(model: ProviderModel | undefined): string {
   return [...types].join(",") || ".unsupported";
 }
 
-/** Resize image inputs locally before encryption; documents keep original bytes. */
-export async function readAttachment(file: File): Promise<PromptAttachment> {
+/** Keep generation-sized originals locally; providers prepare their own vision copies. */
+export async function readAttachment(file: File, options: { maxImagePixels?: number } = {}): Promise<PromptAttachment> {
   const extension = file.name.toLowerCase().split(".").at(-1) ?? "";
   const imageMime = imageTypes.get(extension) ?? (Array.from(imageTypes.values()).includes(file.type) ? file.type : undefined);
   let mimeType = imageMime ?? fileTypes.get(extension) ?? (codeExtensions.has(extension) ? "text/plain" : undefined);
@@ -37,20 +37,23 @@ export async function readAttachment(file: File): Promise<PromptAttachment> {
     const bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });
     try {
       if (bitmap.width > 16384 || bitmap.height > 16384 || bitmap.width * bitmap.height > 64 * 1024 * 1024) throw new Error(`${file.name}: image dimensions are too large.`);
-      const scale = Math.min(1, Math.sqrt(1048576 / (bitmap.width * bitmap.height)));
+      const budget = options.maxImagePixels ?? 2048 * 2048;
+      if (!Number.isInteger(budget) || budget < 1 || budget > 2048 * 2048) throw new Error("Invalid local image budget.");
+      const scale = Math.min(1, Math.sqrt(budget / (bitmap.width * bitmap.height)), 8192 / Math.max(bitmap.width, bitmap.height));
       const canvas = document.createElement("canvas");
-      canvas.width = Math.max(1, Math.floor(bitmap.width * scale));
-      canvas.height = Math.max(1, Math.floor(bitmap.height * scale));
+      const grid = options.maxImagePixels === undefined ? 32 : 1;
+      canvas.width = Math.max(grid, Math.floor(bitmap.width * scale / grid) * grid);
+      canvas.height = Math.max(grid, Math.floor(bitmap.height * scale / grid) * grid);
       const context = canvas.getContext("2d", { willReadFrequently: true });
       if (!context) throw new Error("Local image resizing is unavailable.");
+      context.imageSmoothingEnabled = true;
+      context.imageSmoothingQuality = "high";
       context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-      const rgba = context.getImageData(0, 0, canvas.width, canvas.height).data;
-      let transparent = false;
-      for (let i = 3; i < rgba.length; i += 4) if (rgba[i] !== 255) { transparent = true; break; }
-      mimeType = transparent || (imageMime === "image/png" && file.size < 512 * 1024) ? "image/png" : "image/jpeg";
+      // PNG avoids an extra lossy JPEG encode before reference conditioning.
+      mimeType = "image/png";
       const normalized = await new Promise<Blob>((resolve, reject) => canvas.toBlob(
-        blob => blob ? resolve(blob) : reject(new Error("Local image resizing failed.")), mimeType, 0.85));
-      if (normalized.size > MAX_IMAGE_BYTES) throw new Error(`${file.name}: normalized image exceeds 5 MiB.`);
+        blob => blob ? resolve(blob) : reject(new Error("Local image resizing failed.")), mimeType));
+      if (normalized.size > MAX_IMAGE_BYTES) throw new Error(`${file.name}: normalized image exceeds 20 MiB.`);
       bytes = new Uint8Array(await normalized.arrayBuffer());
     } finally { bitmap.close(); }
   } else {
