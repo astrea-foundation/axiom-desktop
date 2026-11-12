@@ -273,3 +273,12 @@ test("completed tools followed by no new text show one trailing generation indic
   assert.equal(html.match(/Generating/g)?.length, 1);
   assert.ok(html.indexOf("Searched the web") < html.indexOf("Generating"));
 });
+
+test("completed reply actions stay visible instead of appearing only on hover", () => {
+  const current = session([user, { ...pending, text: "Done", status: "completed" }]);
+  current.running = false;
+  const html = renderToStaticMarkup(createElement(TimelineView, { session: current }));
+  const bar = html.match(/<div class="([^"]*)"><div class="flex items-center gap-0.5"><button[^>]*aria-label="Copy"/)?.[1];
+  assert.ok(bar);
+  assert.doesNotMatch(bar, /opacity-0/);
+});

@@ -946,6 +946,8 @@ input {
 .markdown-prose p + ul,
 .markdown-prose p + ol,
 .markdown-prose p + pre,
+.markdown-prose p + .code-block,
+.markdown-prose .code-block + p,
 .markdown-prose ul + p,
 .markdown-prose ol + p,
 .markdown-prose pre + p {
@@ -1003,6 +1005,58 @@ input {
   overflow-x: auto;
   font-size: 13.5px;
   line-height: 1.55;
+}
+.markdown-prose .code-block {
+  background: var(--color-bg-input);
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  contain: inline-size;
+  margin: 0.7em 0;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+}
+.markdown-prose .code-block > pre {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  margin: 0;
+  padding-top: 0.15em;
+}
+.markdown-prose .code-block__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5em;
+  min-width: 0;
+  padding: 0.3em 0.45em 0 1em;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--color-text-tertiary);
+}
+.markdown-prose .code-block__language {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  text-transform: lowercase;
+}
+.markdown-prose .code-block__copy {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 0.35em;
+  border-radius: 6px;
+  padding: 0.25em 0.5em;
+  color: var(--color-text-tertiary);
+  transition: background-color 120ms ease, color 120ms ease;
+}
+.markdown-prose .code-block__copy:hover,
+.markdown-prose .code-block__copy:focus-visible {
+  background: var(--color-bg-surface-hover);
+  color: var(--color-text-secondary);
 }
 .markdown-prose pre code {
   background: transparent;
