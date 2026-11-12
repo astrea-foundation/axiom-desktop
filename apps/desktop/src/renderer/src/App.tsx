@@ -230,7 +230,7 @@ export function App() {
             await window.axiomDesktop?.agent.assignThreadCollection(threadId, folderId);
           })())}
           account={accountView}
-          aboveAccount={<AstreaBanner />}
+          aboveAccount={accountView.kind === "valid" && sidebarOpen ? <AstreaBanner /> : undefined}
           onSignIn={openSignIn}
           onLogout={logout}
           connected={agentState.connected}
@@ -290,7 +290,7 @@ export function App() {
             }} />
           </header>
 
-          {signInState.kind !== "closed" ? (
+          {signInState.kind !== "closed" && !agentState.account?.preparationPhase ? (
             <div className="mx-5 mb-2 mt-12 shrink-0">
               <SignInStatus state={signInState} onCancel={cancelNativeSignIn} onRetry={openSignIn} />
             </div>
@@ -377,7 +377,7 @@ export function App() {
                 modelStatusLabel={modelStatusLabel}
                 onModelChange={catalog.selectNewModel}
                 account={accountView}
-                signInActive={signInState.kind !== "closed"}
+                signInActive={signInState.kind !== "closed" && !agentState.account?.preparationPhase}
                 onSignIn={openSignIn}
                 onRefreshAccount={() => void refreshAccount()}
                 reasoningEffort={effectiveReasoningEffort}

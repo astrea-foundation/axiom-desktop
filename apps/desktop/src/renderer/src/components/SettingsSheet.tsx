@@ -11,6 +11,7 @@ import { UpdatesPanel } from "./UpdatesPanel";
 import type { DesktopUpdates } from "../useDesktopUpdates";
 import { accountAvatar } from "../lib/accountAvatar";
 import { FactoryResetPanel } from "./FactoryResetPanel";
+import { accountPresentation } from "../signInFlow";
 
 const THEME_OPTIONS: Array<{ value: ThemePreference; label: string }> = [
   { value: "light", label: "Light" },
@@ -47,14 +48,12 @@ export function SettingsSheet({
   const id = useId();
   const theme = useTheme();
   const signedIn = account?.state === "valid";
+  const accountView = accountPresentation(connected, true, account);
+  const preparingAccount = accountView.kind === "starting";
   const avatar = accountAvatar(account?.account?.displayName);
   const accountLabel = signedIn
     ? (account.account?.displayName || account.account?.verifiedEmail || "Connected Axiom account")
-    : account?.state === "unavailable"
-      ? (account.detail || "Account status unavailable")
-      : account?.state === "expired"
-        ? (account.detail || "Your session expired")
-        : "Not signed in";
+    : accountView.title;
   const linkedMethods = account?.account?.linkedMethods?.map((method) => ({
     passkey: "Passkey",
     google: "Google",
@@ -118,7 +117,7 @@ export function SettingsSheet({
                 <div className="break-words text-[13.5px] font-medium text-[var(--color-text-primary)]">{connected ? accountLabel : "AxiomCLI disconnected"}</div>
                 {signedIn && account?.account?.displayName && account.account.verifiedEmail ? <p className="mt-1 break-all text-[12px] text-[var(--color-text-secondary)]">{account.account.verifiedEmail}</p> : null}
                 <div className="mt-0.5 text-[12px] text-[var(--color-text-tertiary)]">
-                  {signedIn ? "Signed in" : "Sign in to load models"}
+                  {signedIn ? "Signed in" : accountView.detail}
                 </div>
                 {signedIn && linkedMethods.length > 0 ? (
                   <div className="mt-1 text-[11px] text-[var(--color-text-muted)]">
@@ -129,7 +128,7 @@ export function SettingsSheet({
               <button
                 type="button"
                 onClick={onRefreshAccount}
-                disabled={!connected}
+                disabled={!connected || preparingAccount}
                 className="rounded-md p-1.5 text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-bg-surface-hover)] hover:text-[var(--color-text-primary)] disabled:opacity-35"
                 aria-label="Refresh account"
               >
@@ -149,12 +148,12 @@ export function SettingsSheet({
               ) : null}
               <button
                 type="button"
-                disabled={!connected}
+                disabled={!connected || preparingAccount}
                 onClick={signedIn ? onLogout : onLogin}
                 className="flex items-center gap-1.5 rounded-md border border-[var(--color-border)] bg-[var(--surface-button-secondary)] px-3 py-1.5 text-[12.5px] text-[var(--color-text-secondary)] transition-[background-color,border-color,color,transform] duration-150 hover:border-[var(--color-border-accent)] hover:bg-[var(--surface-button-secondary-hover)] hover:text-[var(--color-text-primary)] active:scale-[0.97] disabled:opacity-50"
               >
                 {signedIn ? <LogOut size={13} /> : <LogIn size={13} />}
-                {signedIn ? "Sign out" : account?.state === "expired" ? "Sign in again" : "Sign in"}
+                {signedIn ? "Sign out" : preparingAccount ? "Getting ready…" : account?.state === "expired" ? "Sign in again" : "Sign in"}
               </button>
             </div>
             </div>

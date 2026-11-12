@@ -685,6 +685,7 @@ fn extension_account_status(status: VersionedValidationStatus) -> ExtensionAccou
     let revision = status.revision;
     match status.status {
         ValidationStatus::Missing => ExtensionAccountStatus {
+            preparation_phase: None,
             revision,
             storage_migration: None,
             state: ExtensionAccountState::SignedOut,
@@ -693,6 +694,7 @@ fn extension_account_status(status: VersionedValidationStatus) -> ExtensionAccou
             detail: None,
         },
         ValidationStatus::Valid(account) => ExtensionAccountStatus {
+            preparation_phase: None,
             revision,
             storage_migration: None,
             state: ExtensionAccountState::Valid,
@@ -715,6 +717,7 @@ fn extension_account_status(status: VersionedValidationStatus) -> ExtensionAccou
             detail: None,
         },
         ValidationStatus::Expired => ExtensionAccountStatus {
+            preparation_phase: None,
             revision,
             storage_migration: None,
             state: ExtensionAccountState::Expired,
@@ -723,6 +726,7 @@ fn extension_account_status(status: VersionedValidationStatus) -> ExtensionAccou
             detail: Some("The native account session expired or was revoked".into()),
         },
         ValidationStatus::Unavailable(detail) => ExtensionAccountStatus {
+            preparation_phase: None,
             revision,
             storage_migration: None,
             state: ExtensionAccountState::Unavailable,
@@ -736,12 +740,29 @@ fn extension_account_status(status: VersionedValidationStatus) -> ExtensionAccou
 fn extension_account_switching(revision: u64) -> ExtensionAccountStatus {
     ExtensionAccountStatus {
         revision,
+        preparation_phase: Some(extension::AccountPreparationPhase::SwitchingAccount),
         storage_migration: None,
-        state: ExtensionAccountState::Unavailable,
+        state: ExtensionAccountState::Starting,
         account: None,
         session: None,
-        detail: Some("Switching the local Axiom account context".into()),
+        detail: None,
     }
+}
+
+fn publish_account_preparing(
+    connection: &ConnectionTo<Client>,
+    extension_state: &ExtensionState,
+    auth: &AuthManager,
+    phase: extension::AccountPreparationPhase,
+) -> agent_client_protocol::Result<()> {
+    let mut status = extension_account_switching(auth.reserve_account_transition_revision());
+    status.preparation_phase = Some(phase);
+    send_extension_activity(
+        connection,
+        extension_state,
+        None,
+        ActivityEvent::AccountChanged { status },
+    )
 }
 
 async fn publish_account_switch_started(
@@ -1457,6 +1478,15 @@ async fn commit_account_store_switch_reporting(
     auth: &AuthManager,
 ) -> crate::Result<()> {
     drain_account_switch(sessions, work_tracker).await?;
+    if account_id.is_some() {
+        // Observational delivery cannot abort an in-progress local commit.
+        let _ = publish_account_preparing(
+            connection,
+            extension_state,
+            auth,
+            extension::AccountPreparationPhase::OpeningChats,
+        );
+    }
     let (sender, mut updates) = tokio::sync::watch::channel(None);
     let mut task = store_switch_task(store, account_id, Some(sender));
     let mut last_progress = None;
@@ -1490,6 +1520,10 @@ async fn commit_account_store_switch_reporting(
     finish_account_switch(sessions, work_tracker).await;
     if let Err(error) = &result {
         let mut status = extension_account_switching(auth.reserve_account_transition_revision());
+        status.state = ExtensionAccountState::Unavailable;
+        if account_id.is_some() {
+            status.preparation_phase = Some(extension::AccountPreparationPhase::OpeningChats);
+        }
         status.detail = Some(error.to_string());
         if latest.is_some() || last_progress.is_some() {
             status.storage_migration = Some(crate::storage_progress::Progress {
@@ -2442,6 +2476,20 @@ fn agent_error(error: crate::AxiomError) -> agent_client_protocol::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn account_preparation_is_progress_and_withholds_the_previous_identity() {
+        let status = extension_account_switching(17);
+        assert_eq!(status.state, ExtensionAccountState::Starting);
+        assert_eq!(
+            status.preparation_phase,
+            Some(extension::AccountPreparationPhase::SwitchingAccount)
+        );
+        assert_eq!(status.revision, 17);
+        assert!(status.account.is_none());
+        assert!(status.session.is_none());
+        assert!(status.detail.is_none());
+    }
 
     #[test]
     fn independently_paged_accounting_requires_timeline_version_two() {

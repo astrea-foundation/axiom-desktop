@@ -49,6 +49,7 @@ interface ChatComposerProps {
   modelStatusLabel: string;
   onModelChange: (modelId: string) => void;
   requiresSignIn?: boolean;
+  accountReady?: boolean;
   onSignIn?: () => void;
   reasoningEffort: ReasoningEffort;
   onReasoningEffortChange: (effort: ReasoningEffort) => void;
@@ -81,6 +82,7 @@ export function ChatComposer({
   modelStatusLabel,
   onModelChange,
   requiresSignIn = false,
+  accountReady = true,
   onSignIn,
   reasoningEffort,
   onReasoningEffortChange,
@@ -116,11 +118,11 @@ export function ChatComposer({
   const supportedReasoningEfforts = explicitReasoningEfforts(selectedModel?.supportedReasoningEfforts ?? []);
   const showThinkingSelector = supportedReasoningEfforts.length > 0;
   const selectedThinking = reconcileReasoningEffort(reasoningEffort, supportedReasoningEfforts);
-  const canAttach = !requiresSignIn && !!selectedModel && (selectedModel.supportsImages === true || !!selectedModel.fileMimeTypes?.length);
+  const canAttach = accountReady && !requiresSignIn && !!selectedModel && (selectedModel.supportsImages === true || !!selectedModel.fileMimeTypes?.length);
   const attachmentHint = !selectedModel ? 'Choose a model to attach files' : !canAttach ? 'Choose a model that supports image or file uploads' : `Attach files supported by ${selectedModel.providerLabel}’s ${selectedModel.shortLabel}`;
   const imageMismatch = attachments?.items.some((file) => !acceptsAttachment(selectedModel, file));
-  const canSend = !preparing && (Boolean(value.trim()) || Boolean(attachments?.items.length)) && !attachments?.busy && !imageMismatch && (Boolean(selectedModel) || requiresSignIn);
-  const modelSelectionLocked = preparing || isStreaming;
+  const canSend = !preparing && (accountReady || requiresSignIn) && (Boolean(value.trim()) || Boolean(attachments?.items.length)) && !attachments?.busy && !imageMismatch && (Boolean(selectedModel) || requiresSignIn);
+  const modelSelectionLocked = preparing || isStreaming || (!accountReady && !requiresSignIn);
 
   useEffect(() => {
     const el = ref.current;
@@ -210,7 +212,7 @@ export function ChatComposer({
                 className="flex h-7 items-center gap-1.5 rounded-[7px] bg-[var(--wash-chip)] px-2.5 text-[12px] font-medium text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--wash-chip-hover)] hover:text-[var(--color-text-primary)] disabled:cursor-default disabled:opacity-50 disabled:hover:bg-[var(--wash-chip)] disabled:hover:text-[var(--color-text-secondary)]"
                 aria-haspopup="menu"
                 aria-expanded={openMenu === "model" && !modelSelectionLocked}
-                title={modelSelectionLocked ? "Model is fixed for the current response" : requiresSignIn ? "Sign in to choose a model" : models.length === 0 ? modelStatusLabel : "Select model"}
+                title={!accountReady && !requiresSignIn ? "Available once your account is ready." : modelSelectionLocked ? "Model is fixed for the current response" : requiresSignIn ? "Sign in to choose a model" : models.length === 0 ? modelStatusLabel : "Select model"}
               >
                 {selectedModel ? (
                   <>
@@ -340,6 +342,7 @@ export function ChatComposer({
                 type="button"
                 onClick={submit}
                 disabled={!canSend}
+                title={!accountReady && !requiresSignIn ? "Available once your account is ready." : !selectedModel && !requiresSignIn ? modelStatusLabel : undefined}
                 className="flex h-[34px] w-[34px] items-center justify-center rounded-full bg-brand text-on-brand dark:bg-[var(--color-cherry)] dark:text-on-accent shadow-[0_1px_3px_var(--shade-button)] transition-[background-color,transform] hover:bg-brand-hover dark:hover:bg-[var(--color-cherry-bright)] active:scale-[0.94] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-brand dark:disabled:hover:bg-[var(--color-cherry)] disabled:active:scale-100"
                 aria-label={requiresSignIn ? "Sign in to send" : isStreaming ? "Queue message" : "Send"}
               >

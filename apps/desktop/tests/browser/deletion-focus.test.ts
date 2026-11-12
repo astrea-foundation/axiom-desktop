@@ -47,7 +47,7 @@ after(async () => {
   await server?.close();
 });
 
-async function openApp(platform = "linux", failDelete = false, thinkingLevels: string[] = [], rememberedThinking = "medium", supportsImages = false, bypassCSP = true, modelCatalog?: ListModelsResponse, rememberedModel = "test-model", recoverLegacy = false) {
+async function openApp(platform = "linux", failDelete = false, thinkingLevels: string[] = [], rememberedThinking = "medium", supportsImages = false, bypassCSP = true, modelCatalog?: ListModelsResponse, rememberedModel = "test-model", recoverLegacy = false, initialAccount?: AccountStatus) {
   const page = await browser.newPage({ viewport: { width: 1320, height: 900 }, bypassCSP });
   // Synthetic native persistence lives in the test process, survives renderer
   // reloads, and never writes draft/outbox data into browser storage.
@@ -75,7 +75,7 @@ async function openApp(platform = "linux", failDelete = false, thinkingLevels: s
     if (route.request().url().startsWith(origin)) return route.continue();
     return route.abort();
   });
-  const installBridge = ({ platform, failDelete, thinkingLevels, rememberedThinking, supportsImages, modelCatalog, rememberedModel, recoverLegacy }: { platform: string; failDelete: boolean; thinkingLevels: string[]; rememberedThinking: string; supportsImages: boolean; modelCatalog?: ListModelsResponse; rememberedModel: string; recoverLegacy: boolean }) => {
+  const installBridge = ({ platform, failDelete, thinkingLevels, rememberedThinking, supportsImages, modelCatalog, rememberedModel, recoverLegacy, initialAccount }: { platform: string; failDelete: boolean; thinkingLevels: string[]; rememberedThinking: string; supportsImages: boolean; modelCatalog?: ListModelsResponse; rememberedModel: string; recoverLegacy: boolean; initialAccount?: AccountStatus }) => {
     if (recoverLegacy) localStorage.setItem("axiom.draft.v1:anonymous:new", "Recovered draft from before sign-in. Review before sending.");
     const savedThinking = () => localStorage.getItem("test-thinking") ?? rememberedThinking;
     const settingsCalls: { threadId: string; model?: string; thinkingLevel?: string }[] = [];
@@ -106,9 +106,9 @@ async function openApp(platform = "linux", failDelete = false, thinkingLevels: s
     const state = {
       connected: true, runtimeInstanceId: "test-runtime", lastSequence: 0,
       sessions: {} as Record<string, ReturnType<typeof session>>,
-      catalog: [summary("old-thread")],
-      collections: { revision: 1, collections: [{ id: "folder", name: "Test folder", collapsed: false, threadIds: [] }] },
-      preferences: null, account: { revision: 1, state: "valid", account: { id: "test-account", displayName: "Test User", verifiedEmail: "test@example.invalid", linkedMethods: ["password"] } } as AccountStatus,
+      catalog: initialAccount && initialAccount.state !== "valid" ? [] : [summary("old-thread")],
+      collections: { revision: 1, collections: initialAccount && initialAccount.state !== "valid" ? [] : [{ id: "folder", name: "Test folder", collapsed: false, threadIds: [] }] },
+      preferences: null, account: initialAccount ?? { revision: 1, state: "valid", account: { id: "test-account", displayName: "Test User", verifiedEmail: "test@example.invalid", linkedMethods: ["password"] } } as AccountStatus,
       billing: null as BillingStatus | null, diagnostic: "", error: null as string | null,
     };
     const calls: { method: string; id?: string; text?: string; webEnabled?: boolean; userItemId?: string; expectedRevision?: number }[] = [];
@@ -399,10 +399,10 @@ async function openApp(platform = "linux", failDelete = false, thinkingLevels: s
   };
   // tsx adds a function-name helper to nested callbacks; serialized browser
   // fixtures must define that helper in their own JavaScript realm.
-  await page.addInitScript({ content: `window.__name = (fn) => fn; (${installBridge.toString()})(${JSON.stringify({ platform, failDelete, thinkingLevels, rememberedThinking, supportsImages, modelCatalog, rememberedModel, recoverLegacy })});` });
+  await page.addInitScript({ content: `window.__name = (fn) => fn; (${installBridge.toString()})(${JSON.stringify({ platform, failDelete, thinkingLevels, rememberedThinking, supportsImages, modelCatalog, rememberedModel, recoverLegacy, initialAccount })});` });
   await page.goto(origin);
   try {
-    if (modelCatalog) await page.locator("textarea[data-chat-input]").waitFor();
+    if (modelCatalog || initialAccount) await page.locator("textarea[data-chat-input]").waitFor();
     else await page.getByRole("button", { name: "Test model" }).waitFor();
   } catch (error) {
     console.error("Renderer startup failed", errors, await page.locator("body").innerText());
@@ -2586,6 +2586,57 @@ test("sign in opens browser authorization directly and leaves the composer usabl
     await page.getByRole("button", { name: "Test model", exact: true }).waitFor();
     await status.waitFor({ state: "detached" });
     assert.equal(await page.locator("textarea").inputValue(), "Keep this draft while I sign in");
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("startup names the native operation, preserves drafts and keeps Settings accessible", async () => {
+  const { page, errors } = await openApp("darwin", false, [], "medium", false, true, undefined, "test-model", false,
+    { revision: 1, state: "starting", preparationPhase: "checking_sign_in" });
+  try {
+    await page.locator("textarea[data-chat-input]").fill("Keep this draft while my chats open");
+    const status = page.getByRole("status", { name: "Preparing your account", exact: true });
+    await status.getByText("Checking your sign-in…", { exact: true }).waitFor();
+    assert.equal(await page.getByRole("button", { name: "Try again", exact: true }).count(), 0);
+    assert.equal(await page.getByRole("button", { name: "Sign in", exact: true }).count(), 0);
+    await page.evaluate(() => (window as any).__deletionTest.setAccountState({ revision: 4, state: "starting", preparationPhase: "opening_chats" }));
+    await status.getByText("Opening your chats…", { exact: true }).waitFor();
+    assert.match(await status.innerText(), /saved encryption key/);
+    assert.doesNotMatch(await status.innerText(), /unavailable|decrypting/i);
+    assert.equal(await page.getByRole("alert").count(), 0, (await page.getByRole("alert").allTextContents()).join("; "));
+    assert.equal(await page.getByRole("progressbar").count(), 0);
+    assert.equal(await page.getByRole("button", { name: "Send", exact: true }).isEnabled(), false);
+    assert.equal(await page.locator("textarea[data-chat-input]").inputValue(), "Keep this draft while my chats open");
+    assert.equal(await page.locator(".astrea-banner").count(), 0);
+    for (const theme of ["dark", "light"] as const) {
+      await page.emulateMedia({ colorScheme: theme, reducedMotion: "reduce" });
+      await page.waitForFunction((expected) => document.documentElement.dataset.theme === expected, theme);
+      if (process.env.AXIOM_STARTUP_CAPTURE_DIR) await page.screenshot({ path: `${process.env.AXIOM_STARTUP_CAPTURE_DIR}/startup-${theme}.png`, animations: "disabled" });
+    }
+    await page.getByRole("button", { name: "Account menu", exact: true }).click();
+    await page.getByRole("menuitem", { name: "Settings", exact: true }).click();
+    const settings = page.getByRole("region", { name: "Settings", exact: true });
+    await settings.waitFor();
+    await settings.getByRole("tab", { name: "Account", exact: true }).click();
+    await settings.getByText("Opening your chats…", { exact: true }).waitFor();
+    assert.equal(await settings.getByRole("button", { name: "Getting ready…", exact: true }).isEnabled(), false);
+    await page.setViewportSize({ width: 720, height: 740 });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("a real chat-storage failure offers retry with diagnostics rather than remaining in progress", async () => {
+  const { page, errors } = await openApp();
+  try {
+    await page.evaluate(() => (window as any).__deletionTest.setAccountState({ revision: 2, state: "unavailable", preparationPhase: "opening_chats", detail: "Synthetic key access was denied" }));
+    const alert = page.getByRole("alert");
+    await alert.getByText("Couldn’t open your chats", { exact: true }).waitFor();
+    assert.equal(await page.getByRole("status", { name: "Preparing your account", exact: true }).count(), 0);
+    await alert.getByRole("button", { name: "Try again", exact: true }).waitFor();
+    await alert.getByText("Details", { exact: true }).click();
+    await alert.getByText("Synthetic key access was denied", { exact: true }).waitFor();
+    if (process.env.AXIOM_STARTUP_CAPTURE_DIR) await page.screenshot({ path: `${process.env.AXIOM_STARTUP_CAPTURE_DIR}/startup-failure.png`, animations: "disabled" });
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
 });

@@ -1,6 +1,6 @@
 /** @jsxRuntime automatic */
 import type { ReactNode } from "react";
-import { LogIn, RefreshCw, ShieldAlert, ShieldCheck } from "lucide-react";
+import { LoaderCircle, LockKeyhole, LogIn, RefreshCw, ShieldAlert, ShieldCheck } from "lucide-react";
 import { AxiomMark } from "./AxiomLogo";
 import { GreetingHeadline } from "./GreetingHeadline";
 import type { AccountPresentation } from "@axiom/chat-core/account";
@@ -76,8 +76,23 @@ export function WelcomeView({
       <div className="relative z-10 flex w-full max-w-[760px] flex-col items-center animate-fade-in">
         <AxiomMark className="mb-7 h-10 w-auto" />
         <GreetingHeadline />
+        {!signInActive && account.kind === "starting" ? (
+          <div role="status" aria-live="polite" aria-atomic="true" aria-label="Preparing your account"
+            className="shadow-glass-card mb-3 flex min-h-[72px] w-full items-center gap-3 rounded-[14px] bg-[var(--surface-card)] px-4 py-3">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] bg-[var(--wash-chip)] text-[var(--color-text-secondary)]" aria-hidden="true">
+              {account.phase === "opening_chats" ? <LockKeyhole size={17} strokeWidth={1.7} />
+                : <LoaderCircle size={17} className="animate-spin motion-reduce:animate-none" />}
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="text-[13px] font-medium text-[var(--color-text-primary)]">{account.title}</p>
+              <p className="mt-0.5 text-[11.5px] leading-relaxed text-[var(--color-text-secondary)]">{account.detail}</p>
+              {account.phase === "opening_chats" ? <p className="mt-1 text-[11.5px] leading-relaxed text-[var(--color-text-tertiary)]">If your system asks, allow Axiom to access its saved key.</p> : null}
+            </div>
+            {account.phase === "opening_chats" ? <LoaderCircle size={15} className="shrink-0 animate-spin text-[var(--color-text-tertiary)] motion-reduce:animate-none" aria-hidden="true" /> : null}
+          </div>
+        ) : null}
         {!signInActive && account.kind !== "valid" && account.kind !== "starting" ? (
-          <div className="shadow-glass-card mb-3 flex w-full items-center gap-3 rounded-[14px] bg-[var(--surface-card)] px-4 py-3">
+          <div role={account.kind === "unavailable" ? "alert" : undefined} className="shadow-glass-card mb-3 flex w-full items-center gap-3 rounded-[14px] bg-[var(--surface-card)] px-4 py-3">
             <div
               className={[
                 "flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px]",
@@ -90,7 +105,11 @@ export function WelcomeView({
             </div>
             <div className="min-w-0 flex-1">
               <div className="text-[13px] font-medium text-[var(--color-text-primary)]">{account.title}</div>
-              <div className="mt-0.5 truncate text-[11.5px] text-[var(--color-text-tertiary)]">{account.detail}</div>
+              <div className="mt-0.5 text-[11.5px] leading-relaxed text-[var(--color-text-secondary)]">{account.detail}</div>
+              {account.kind === "unavailable" && account.technicalDetails ? <details className="mt-2 text-[11.5px] text-[var(--color-text-secondary)]">
+                <summary className="cursor-pointer">Details</summary>
+                <p className="mt-1 whitespace-pre-wrap break-words">{account.technicalDetails}</p>
+              </details> : null}
             </div>
             <button
               type="button"
@@ -119,6 +138,7 @@ export function WelcomeView({
             modelStatusLabel={modelStatusLabel}
             onModelChange={onModelChange}
             requiresSignIn={account.kind === "signed-out" || account.kind === "expired"}
+            accountReady={account.kind === "valid"}
             onSignIn={onSignIn}
             reasoningEffort={reasoningEffort}
             onReasoningEffortChange={onReasoningEffortChange}

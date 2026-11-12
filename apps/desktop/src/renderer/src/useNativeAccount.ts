@@ -15,6 +15,8 @@ export function useNativeAccount(agentState: ClientState, desktopReady: boolean,
   const refreshAccount = useCallback(async () => {
     const api = window.axiomDesktop?.agent;
     if (!api || !agentState.connected) return;
+    if (!signInPending.current) setSignInState({ kind: "closed" });
+    setUiError(null);
     try {
       await api.accountStatus();
       refreshModels();

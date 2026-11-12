@@ -4,7 +4,8 @@ import { accountPresentation, desktopErrorMessage, signInErrorMessage, signInErr
 
 test("account presentation distinguishes startup, sign-in, revocation, and outages", () => {
   assert.equal(accountPresentation(false, false, null).kind, "starting");
-  assert.equal(accountPresentation(true, true, null).kind, "signed-out");
+  assert.equal(accountPresentation(true, true, null).kind, "starting");
+  assert.equal(accountPresentation(true, true, { revision: 1, state: "signed_out" }).kind, "signed-out");
   assert.deepEqual(
     accountPresentation(true, true, {
       revision: 3,
@@ -33,6 +34,21 @@ test("account presentation distinguishes startup, sign-in, revocation, and outag
       },
       session: { expiresAt: "2030-01-01T00:00:00Z", credentialStore: "system keyring" },
     }).kind, "valid");
+});
+
+test("native preparation shows the actual operation without an outage or sign-in prompt", () => {
+  const checking = accountPresentation(true, true, { revision: 1, state: "starting", preparationPhase: "checking_sign_in" });
+  assert.equal(checking.kind, "starting");
+  assert.equal(checking.title, "Checking your sign-in…");
+  const opening = accountPresentation(true, true, { revision: 2, state: "starting", preparationPhase: "opening_chats" });
+  assert.equal(opening.kind, "starting");
+  assert.equal(opening.title, "Opening your chats…");
+  assert.match(opening.detail, /saved encryption key/);
+  assert.doesNotMatch(opening.detail, /decrypting|unavailable/i);
+  const failed = accountPresentation(true, true, { revision: 3, state: "unavailable", preparationPhase: "opening_chats", detail: "Synthetic key access was denied" });
+  assert.equal(failed.kind, "unavailable");
+  assert.equal(failed.title, "Couldn’t open your chats");
+  assert.equal(failed.kind === "unavailable" && failed.technicalDetails, "Synthetic key access was denied");
 });
 
 test("sign-in errors remove IPC wrapping while preserving useful detail", () => {

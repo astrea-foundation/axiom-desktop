@@ -331,6 +331,13 @@ method credentials never appear in ACP/renderer state. API-key **creation** is a
 explicit exception for a newly issued automation token shown once; account
 snapshots and Debug output omit it. It is not a native-login credential.
 
+Account preparation uses `state: starting` with optional `preparationPhase`:
+`checking_sign_in`, `switching_account` or `opening_chats`. These are native
+observations rather than errors or inferred UI timers. Account identity remains
+withheld until the store is ready and validation completes. Real opening
+failures use `state: unavailable` and retain the phase for an appropriate retry
+screen. `storageMigration` continues to carry actual migration phases/counts.
+
 `billing@2` carries account-ledger status with required trial/paid buckets,
 nullable mainnet deposit metadata and a current ZEC/USD quote. Credit uses integer
 microUSD; deposit/quote amounts use exact decimal strings. Calls require a current

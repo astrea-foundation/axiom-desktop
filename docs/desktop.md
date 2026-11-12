@@ -13,6 +13,19 @@ handles passkey, Google, password and wallet authentication. Native login creden
 outside the renderer. Signing out closes the active account store and invalidates
 pending account operations.
 
+Startup shows the native operation above the composer: checking the saved
+sign-in, changing the local account, or opening encrypted chat storage with its
+saved key. This is neutral progress; **Try again** appears only after a failure.
+The account control mirrors that progress and keeps Settings accessible. Drafts
+remain editable, while sending and model selection wait for the account to be
+ready. Older storage migrations retain their dedicated progress screen and only
+show counts actually reported by the native runtime.
+
+The **Runs on Astrea** sidebar introduction appears once per local app profile,
+after the account is ready. Dismissing it, reloading a window, changing accounts,
+updating Axiom or relaunching cannot show it again. Leaving it open also limits
+it to its first session. A fresh profile or factory reset resets this preference.
+
 Open **Settings → Account → Factory reset Axiom…** to start fresh on this
 computer. The control is also available while signed out or disconnected. Type
 `RESET` and confirm to stop active work, delete local chats and managed files,

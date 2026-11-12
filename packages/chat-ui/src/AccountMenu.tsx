@@ -1,5 +1,5 @@
 /** @jsxRuntime automatic */
-import { ChevronUp, LogIn, LogOut, Settings, WalletCards } from "lucide-react";
+import { ChevronUp, LoaderCircle, LogIn, LogOut, Settings, WalletCards } from "lucide-react";
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { BillingStatus } from "@axiom/chat-core/viewTypes";
@@ -71,7 +71,7 @@ export function AccountMenu({ account, accountId, billing, connected, onRefreshB
     };
   }, [open, dismiss]);
 
-  const balance = account.kind !== "valid" ? "Sign in" : !connected ? "Offline" : refresh === "failed" ? "Unavailable"
+  const balance = account.kind === "starting" ? "Getting ready…" : account.kind === "unavailable" ? "Unavailable" : account.kind !== "valid" ? "Sign in" : !connected ? "Offline" : refresh === "failed" ? "Unavailable"
     : billing ? usdFromMicrousd(billing.availableMicrousd, 2) : refresh === "loading" ? "Loading…" : "Unavailable";
   const itemClass = "flex w-full items-center gap-2.5 rounded-[7px] px-3 py-2.5 text-left text-[13px] text-[var(--color-text-secondary)] hover:bg-[var(--wash-hover)] focus:bg-[var(--wash-hover)] focus:text-[var(--color-text-primary)] focus:outline-none";
   return <>
@@ -79,9 +79,9 @@ export function AccountMenu({ account, accountId, billing, connected, onRefreshB
       onClick={() => setOpen((value) => !value)}
       onKeyDown={(event) => { if (event.key === "ArrowUp" || event.key === "ArrowDown") { event.preventDefault(); setOpen(true); } }}
       className={`flex w-full min-w-0 items-center gap-2.5 rounded-[10px] px-2 py-2 text-left transition-colors hover:bg-[var(--wash-hover)] ${open ? "bg-[var(--wash-hover)]" : ""}`}>
-      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--color-cherry)] text-[11px] font-semibold text-on-accent"
+      <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold ${account.kind === "starting" ? "bg-[var(--wash-chip)] text-[var(--color-text-secondary)]" : "bg-[var(--color-cherry)] text-on-accent"}`}
         style={account.kind === "valid" ? {background: avatar.background, color: avatar.color} : undefined} aria-hidden="true">
-        {account.kind === "valid" ? avatar.initials : <LogIn size={13} strokeWidth={2.3} />}
+        {account.kind === "valid" ? avatar.initials : account.kind === "starting" ? <LoaderCircle size={14} className="animate-spin motion-reduce:animate-none" /> : <LogIn size={13} strokeWidth={2.3} />}
       </span>
       <span className="flex min-w-0 flex-1 flex-col items-start leading-tight">
         <span className="max-w-full truncate text-[12.5px] text-[var(--color-text-primary)]">{account.title}</span>
@@ -103,7 +103,7 @@ export function AccountMenu({ account, accountId, billing, connected, onRefreshB
         }
       }}>
       <button type="button" role="menuitem" className={itemClass} onClick={() => { restore(); onOpenSettings(trigger.current!); }}><Settings size={15} aria-hidden="true" />Settings</button>
-      <button type="button" role="menuitem" className={itemClass} onClick={() => { restore(); onOpenBalance(trigger.current!); }}>
+      <button type="button" role="menuitem" aria-disabled={account.kind === "starting" || undefined} className={`${itemClass} aria-disabled:opacity-50`} onClick={() => { if (account.kind === "starting") return; restore(); onOpenBalance(trigger.current!); }}>
         <WalletCards size={15} className="shrink-0" aria-hidden="true" /><span>Balance</span><span className="ml-auto text-[12px] tabular-nums text-[var(--color-text-tertiary)]">{balance}</span>
       </button>
       {account.kind === "valid" ? <>
