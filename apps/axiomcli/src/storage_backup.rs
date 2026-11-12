@@ -548,7 +548,12 @@ fn stamp_restore(
             })?;
     ensure!(busy == 0, "Could not make the restore activation durable");
     drop(opened);
-    File::open(database)?.sync_all()?;
+    // Windows FlushFileBuffers requires a writable handle; a read-only
+    // handle fails with ERROR_ACCESS_DENIED. Opening for write never truncates.
+    fs::OpenOptions::new()
+        .write(true)
+        .open(database)?
+        .sync_all()?;
     Ok(())
 }
 
