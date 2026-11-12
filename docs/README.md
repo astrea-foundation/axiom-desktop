@@ -1,0 +1,59 @@
+# Axiom native documentation
+
+These guides describe Desktop, AxiomCLI and the local proxy. Release acceptance
+must be recorded against the actual source revision and signed installers.
+
+## Use Axiom
+
+| Guide | Covers |
+|---|---|
+| [Install and update](installing-desktop.md) | Packages, bundled CLI and installation |
+| [Desktop](desktop.md) | Conversations, Agent/Web controls, evidence, credit and usage |
+| [CLI and TUI](cli.md) | Commands, terminal interaction, funding, plans and sessions |
+| [Local proxy](proxy.md) | Loopback integration and OpenAI compatibility |
+| [MCP connections](mcp.md) | Remote/local connections, conversation tools and approvals |
+| [Configuration](configuration.md) | Configuration precedence, paths and limits |
+| [Privacy](privacy.md) | Local storage, credentials and what leaves the device |
+| [Encrypted local storage](local-storage.md) | Binary assets, forward migration, OS-protected keys and recovery |
+| [Troubleshooting](troubleshooting.md) | Diagnosis, factory reset and recovery |
+| [0.1.15 release notes](releases/0.1.15.md) | First-message recovery, resilient balances and rate-limit guidance |
+| [0.1.17 release notes](releases/0.1.17.md) | Account-authorized AstreaAI, bundled verifiers and installer path handling |
+| [0.1.18 release notes](releases/0.1.18.md) | Restore NEAR AI and Tinfoil alongside AstreaAI |
+| [0.1.20 release notes](releases/0.1.20.md) | Cross-provider images and installed image-tool discovery |
+| [0.1.21 release notes](releases/0.1.21.md) | Chat recovery, image context accounting, clipboard images and macOS credentials |
+| [0.1.16 candidate notes](releases/0.1.16.md) | Unpublished candidate; included in 0.1.17 |
+| [0.1.14 candidate notes](releases/0.1.14.md) | Unpublished candidate; included in 0.1.15 |
+| [0.1.10 release notes](releases/0.1.10.md) | Windows setup and first-launch updates |
+| [0.1.9 release notes](releases/0.1.9.md) | Previous release |
+| [0.1.8 release notes](releases/0.1.8.md) | Previous release |
+
+## Build and integrate
+
+| Guide | Covers |
+|---|---|
+| [Architecture](architecture.md) | Runtime, storage and service boundaries |
+| [ACP contract](acp-compatibility.md) | Negotiation, methods, authority and recovery |
+| [Security](threat-model.md) | Provider verification, tool boundaries and trust policy |
+| [Provider discovery](provider-catalogs.md) | Catalogs and encrypted attachments |
+| [Confidential pool](inference-pool.md) | Native encryption, pool admission and the isolated local profile |
+| [AstreaAI connection](direct-verda.md) | Operator configuration, measured SNP/NVIDIA worker and local Desktop launch |
+| [NEAR v3](protocols/near-v3.md) | Worker sessions, encryption and receipts |
+| [Tinfoil EHBP](protocols/tinfoil-ehbp-v1.md) | Router verification and authenticated completion |
+| [Development](development.md) | Build commands, checks and visual assets |
+| [Shared chat UI](shared-chat-ui.md) | Portable presentation and package handoff |
+| [Evaluations](evaluations.md) | Deterministic and live-provider checks |
+| [Update architecture](updates.md) | Signed metadata, installation ownership and recovery |
+| [Repository setup](repository-setup.md) | Actions environments, credentials and repository handoff |
+| [Release procedure](releasing.md) | Signing, packaging and publication |
+| [Versioning](versioning.md) | Product, storage and protocol compatibility |
+| [Release acceptance](validation.md) | Checks and evidence required for each release |
+
+[CONTRIBUTING](../CONTRIBUTING.md) defines the branch and promotion rules.
+Hosted API, auth, payments and deployment operations are maintained separately
+in the private platform repository. Native builds and tests are self-contained.
+
+Keep one current guide per topic. Internal plans, incident records and dated QA
+captures belong in private maintainer records. Preserve outstanding qualification
+requirements in [release acceptance](validation.md) when consolidating documents.
+
+- [Axiom 0.1.13](releases/0.1.13.md): shared chat, local MCP, crypto funding and updater fixes.
