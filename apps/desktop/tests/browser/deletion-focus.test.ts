@@ -656,8 +656,8 @@ test("a loaded thread also corrects stale thinking before its next message", asy
 
 async function enableDraftAgent(page: Page) {
   await page.getByRole("button", { name: "Agent", exact: true }).click();
-  await page.getByRole("switch", { name: "Enable agent mode" }).click();
-  await page.getByRole("button", { name: "Save changes", exact: true }).click();
+  await page.getByText("Ask for permission", { exact: true }).click();
+  await page.getByRole("button", { name: "Close Agent settings", exact: true }).click();
   await page.getByRole("dialog", { name: "Agent settings" }).waitFor({ state: "hidden" });
 }
 
@@ -1079,7 +1079,7 @@ for (const platform of ["linux", "win32", "darwin"]) {
     } finally { await page.close(); }
   });
 
-  test(`Agent controls save per-thread permissions and folders, with safe new-thread defaults (${platform})`, async () => {
+  test(`Agent levels save on every dismissal and preserve per-thread folders and safe defaults (${platform})`, async () => {
     const { page, errors, nativeDialogs } = await openApp(platform);
     const agent = page.getByRole("button", { name: "Agent", exact: true });
     try {
@@ -1094,11 +1094,14 @@ for (const platform of ["linux", "win32", "darwin"]) {
           && Math.abs(rect.top + rect.height / 2 - innerHeight / 2) < 2;
       });
       if (platform === "linux" && process.env.AXIOM_AGENT_SCREENSHOT) {
+        await page.setViewportSize({ width: 1320, height: 900 });
         await page.screenshot({ path: `${process.env.AXIOM_AGENT_SCREENSHOT}.light.png` });
         await page.emulateMedia({ colorScheme: "dark" });
         await page.waitForFunction(() => document.documentElement.dataset.theme === "dark");
         await page.waitForTimeout(350); // Settle the theme transition for visual inspection.
         await page.screenshot({ path: process.env.AXIOM_AGENT_SCREENSHOT });
+        await dialog.screenshot({ path: process.env.AXIOM_AGENT_SCREENSHOT.replace(/\.png$/, "-dialog.png"), animations: "disabled" });
+        await page.setViewportSize({ width: 960, height: 640 });
       }
       assert.equal(await page.locator("dialog:modal").count(), 1);
       // The native HTML modal makes the composer inert, rather than merely
@@ -1106,50 +1109,68 @@ for (const platform of ["linux", "win32", "darwin"]) {
       await page.locator("textarea[data-chat-input]").evaluate((element: HTMLTextAreaElement) => element.focus());
       assert.equal(await dialog.evaluate((element) => element.contains(document.activeElement)), true);
       const close = dialog.getByRole("button", { name: "Close Agent settings" });
-      const save = dialog.getByRole("button", { name: "Save changes" });
+      assert.equal(await dialog.getByRole("radio").count(), 3);
+      assert.equal(await dialog.getByRole("switch").count(), 0);
+      assert.equal(await dialog.getByRole("button", { name: "Save changes" }).count(), 0);
+      assert.equal(await dialog.getByRole("button", { name: "Cancel", exact: true }).count(), 0);
+      const browse = dialog.getByRole("button", { name: "Choose working directory" });
       await close.focus(); await page.keyboard.press("Shift+Tab");
-      assert.equal(await save.evaluate((element) => element === document.activeElement), true);
+      assert.equal(await browse.evaluate((element) => element === document.activeElement), true);
       await page.keyboard.press("Tab");
       assert.equal(await close.evaluate((element) => element === document.activeElement), true);
       await page.setViewportSize({ width: 1320, height: 900 });
-      assert.equal(await dialog.getByRole("switch", { name: "Enable agent mode" }).getAttribute("aria-checked"), "false");
-      assert.equal(await dialog.getByLabel("Approve commands", { exact: true }).isChecked(), true);
-      await dialog.getByRole("switch", { name: "Enable agent mode" }).click();
-      await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
-      assert.equal(await agent.getAttribute("aria-pressed"), "false");
+      assert.equal(await dialog.getByRole("radio", { name: "Off", exact: true }).isChecked(), true);
+      await dialog.getByRole("radio", { name: "Off", exact: true }).focus();
+      await page.keyboard.press("ArrowRight");
+      assert.equal(await dialog.getByRole("radio", { name: "Ask for permission", exact: true }).isChecked(), true);
+      await page.keyboard.press("Escape");
+      await dialog.waitFor({ state: "hidden" });
+      assert.equal(await agent.getAttribute("aria-pressed"), "true", "Escape saves the draft access level");
       await page.getByRole("button", { name: "Viewed Existing thread", exact: true }).click();
       await agent.click();
-      await dialog.getByRole("switch", { name: "Enable agent mode" }).click();
       await dialog.getByText("Full access", { exact: true }).click();
       await dialog.getByRole("button", { name: "Choose working directory" }).click();
       const custom = platform === "win32" ? "C:\\Projects\\My Project 日本語" : "/Projects/My Project 日本語";
       assert.equal(await dialog.getByLabel("Working directory", { exact: true }).inputValue(), custom);
-      await dialog.getByRole("button", { name: "Save changes", exact: true }).click();
+      await close.click();
       await dialog.waitFor({ state: "hidden" });
       assert.equal(await agent.getAttribute("aria-pressed"), "true");
+      let applied = await page.evaluate(async () => (await (window as any).axiomDesktop.agent.getState()).sessions["old-thread"].desktopAgent);
+      assert.equal(applied.permission, "full_access");
+      assert.equal(applied.workingDirectory, custom);
       await page.reload();
       await page.getByRole("button", { name: "Viewed Existing thread", exact: true }).click();
       await agent.click();
       assert.equal(await dialog.getByLabel("Full access", { exact: true }).isChecked(), true);
       assert.equal(await dialog.getByLabel("Working directory", { exact: true }).inputValue(), custom);
       await dialog.getByRole("button", { name: "Use default thread folder" }).click();
-      await dialog.getByRole("switch", { name: "Enable agent mode" }).click();
-      await dialog.getByRole("button", { name: "Save changes", exact: true }).click();
-      await dialog.waitFor({ state: "hidden" });
-      assert.equal(await agent.getAttribute("aria-pressed"), "false");
-      await agent.click();
+      await dialog.getByText("Ask for permission", { exact: true }).click();
       await page.keyboard.press("Escape");
-      assert.equal(await dialog.count(), 0);
+      await dialog.waitFor({ state: "hidden" });
+      applied = await page.evaluate(async () => (await (window as any).axiomDesktop.agent.getState()).sessions["old-thread"].desktopAgent);
+      assert.equal(applied.enabled, true);
+      assert.equal(applied.permission, "approve_commands");
+      assert.equal(applied.usesDefaultDirectory, true);
       await agent.click();
+      assert.equal(await dialog.getByRole("radio", { name: "Ask for permission", exact: true }).isChecked(), true);
+      await dialog.getByText("Off", { exact: true }).click();
       await page.mouse.click(12, 12);
-      assert.equal(await dialog.count(), 0, "clicking the modal backdrop closes settings");
+      await dialog.waitFor({ state: "hidden" });
+      assert.equal(await agent.getAttribute("aria-pressed"), "false", "clicking the backdrop saves Off");
+      applied = await page.evaluate(async () => (await (window as any).axiomDesktop.agent.getState()).sessions["old-thread"].desktopAgent);
+      assert.equal(applied.enabled, false);
+      assert.equal(applied.permission, "approve_commands");
       assert.equal(await agent.evaluate((element) => element === document.activeElement), true);
+      const savedCalls = (await calls(page)).filter(call => call.method === "configureAgent").length;
+      await agent.click();
+      await close.click();
+      await dialog.waitFor({ state: "hidden" });
+      assert.equal((await calls(page)).filter(call => call.method === "configureAgent").length, savedCalls, "closing unchanged settings makes no write");
       await page.getByRole("button", { name: "New thread", exact: true }).click();
       await agent.click();
-      assert.equal(await dialog.getByRole("switch", { name: "Enable agent mode" }).getAttribute("aria-checked"), "false");
-      assert.equal(await dialog.getByLabel("Approve commands", { exact: true }).isChecked(), true);
-      await dialog.getByRole("switch", { name: "Enable agent mode" }).click();
-      await dialog.getByRole("button", { name: "Save changes", exact: true }).click();
+      assert.equal(await dialog.getByRole("radio", { name: "Off", exact: true }).isChecked(), true);
+      await dialog.getByText("Ask for permission", { exact: true }).click();
+      await close.click();
       await dialog.waitFor({ state: "hidden" });
       await page.locator("textarea[data-chat-input]").fill("Work in this thread folder");
       await page.locator("textarea[data-chat-input]").press("Enter");
@@ -1166,8 +1187,8 @@ for (const platform of ["linux", "win32", "darwin"]) {
     const { page, errors } = await openApp(platform);
     try {
       await page.getByRole("button", { name: "Agent", exact: true }).click();
-      await page.getByRole("switch", { name: "Enable agent mode" }).click();
-      await page.getByRole("button", { name: "Save changes", exact: true }).click();
+      await page.getByText("Ask for permission", { exact: true }).click();
+      await page.getByRole("button", { name: "Close Agent settings", exact: true }).click();
       await page.getByRole("dialog", { name: "Agent settings" }).waitFor({ state: "hidden" });
       await page.evaluate(() => (window as any).__deletionTest.failAgent(true));
       await page.locator("textarea[data-chat-input]").fill("Keep my draft");
@@ -1183,13 +1204,12 @@ for (const platform of ["linux", "win32", "darwin"]) {
     } finally { await page.close(); }
   });
 
-  test(`Agent modal keeps failed edits local and restores focus on cancellation (${platform})`, async () => {
+  test(`Agent modal retains failed autosaves for retry and supports explicit discard (${platform})`, async () => {
     const { page, errors } = await openApp(platform);
     try {
       await page.getByRole("button", { name: "Viewed Existing thread", exact: true }).click();
       await page.getByRole("button", { name: "Agent", exact: true }).click();
       const dialog = page.getByRole("dialog", { name: "Agent settings" });
-      await dialog.getByRole("switch", { name: "Enable agent mode" }).click();
       await dialog.getByText("Full access", { exact: true }).click();
       const input = dialog.getByLabel("Working directory", { exact: true });
       await input.fill("/unavailable/project");
@@ -1202,11 +1222,23 @@ for (const platform of ["linux", "win32", "darwin"]) {
       assert.equal(await page.locator("[data-agent-toggle]").getAttribute("aria-pressed"), "false");
       assert.equal((await calls(page)).some((call) => call.method === "prompt"), false);
       await page.keyboard.press("Escape");
-      assert.equal(await page.locator("dialog:modal").count(), 0);
+      await dialog.getByRole("alert").waitFor();
+      assert.equal(await dialog.getByLabel("Full access", { exact: true }).isChecked(), true, "failed Escape never discards the selection");
+      await page.evaluate(() => (window as any).__deletionTest.failAgent(false));
+      await dialog.getByRole("button", { name: "Try again", exact: true }).click();
+      await dialog.waitFor({ state: "hidden" });
+      assert.equal(await page.locator("[data-agent-toggle]").getAttribute("aria-pressed"), "true");
       assert.equal(await page.locator("[data-agent-toggle]").evaluate((element) => document.activeElement === element), true);
       await page.keyboard.press("Enter");
-      assert.equal(await dialog.getByRole("switch", { name: "Enable agent mode" }).getAttribute("aria-checked"), "false");
-      assert.equal(await dialog.getByLabel("Approve commands", { exact: true }).isChecked(), true);
+      assert.equal(await dialog.getByLabel("Full access", { exact: true }).isChecked(), true);
+      await dialog.getByText("Ask for permission", { exact: true }).click();
+      await page.evaluate(() => (window as any).__deletionTest.failAgent(true));
+      await dialog.getByRole("button", { name: "Close Agent settings", exact: true }).click();
+      await dialog.getByRole("alert").waitFor();
+      await dialog.getByRole("button", { name: "Discard changes", exact: true }).click();
+      await dialog.waitFor({ state: "hidden" });
+      await page.keyboard.press("Enter");
+      assert.equal(await dialog.getByLabel("Full access", { exact: true }).isChecked(), true);
       assert.equal(await dialog.getByRole("alert").count(), 0);
       assert.deepEqual(errors, []);
     } finally { await page.close(); }
@@ -3912,7 +3944,7 @@ for (const existing of [false, true]) {
       await dialog.dispatchEvent("dragenter", { dataTransfer: outside });
       await dialog.dispatchEvent("drop", { dataTransfer: outside });
       assert.equal(await page.locator("[data-file-drop-overlay]").count(), 0);
-      await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+      await dialog.getByRole("button", { name: "Close Agent settings", exact: true }).click();
       assert.equal(await page.locator("[data-attachment-card]").count(), 3, "a dialog outside the panel does not attach files");
       await outside.dispose();
       assert.deepEqual(errors, []);
@@ -4714,6 +4746,77 @@ test("only editing the signed-in composer starts model-only verification, includ
   } finally { await page.close(); }
 });
 
+test("Agent autosave can undo an acknowledged MCP selection after the access-level save fails", async () => {
+  const { page, errors } = await openApp();
+  try {
+    await page.evaluate(() => (window as any).__deletionTest.enableMcp());
+    await page.getByRole("button", { name: "Viewed Existing thread", exact: true }).click();
+    await page.getByRole("button", { name: "Agent", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Agent settings", exact: true });
+    const echo = dialog.getByRole("checkbox", { name: /echo Echo from a local server/ });
+    await echo.check();
+    await dialog.getByText("Full access", { exact: true }).click();
+    await page.evaluate(() => (window as any).__deletionTest.failAgent(true));
+    await dialog.getByRole("button", { name: "Close Agent settings", exact: true }).click();
+    await dialog.getByRole("alert").filter({ hasText: "MCP tools were saved" }).waitFor();
+    const selectedTools = () => page.evaluate(async () => (await (window as any).axiomDesktop.agent.desktopMcp({ threadId: "old-thread", action: { kind: "list" } })).selectedTools);
+    assert.equal((await selectedTools()).length, 1);
+    await echo.uncheck();
+    await dialog.getByText("Off", { exact: true }).click();
+    await dialog.getByRole("button", { name: "Close Agent settings", exact: true }).click();
+    await dialog.waitFor({ state: "hidden" });
+    assert.deepEqual(await selectedTools(), [], "returning to the original choices must undo the MCP selection already saved by this dialog");
+    assert.equal(await page.getByRole("button", { name: "Agent", exact: true }).getAttribute("aria-pressed"), "false");
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("Agent close waits for acknowledgement and repeated dismissals never duplicate an autosave", async () => {
+  const { page, errors } = await openApp();
+  try {
+    await page.getByRole("button", { name: "Viewed Existing thread", exact: true }).click();
+    await page.getByRole("button", { name: "Agent", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Agent settings", exact: true });
+    await dialog.getByText("Full access", { exact: true }).click();
+    assert.equal((await calls(page)).filter(call => call.method === "configureAgent").length, 0, "selecting a level waits until close to save");
+    await page.evaluate(() => (window as any).__deletionTest.holdSetup("agent"));
+    const close = dialog.getByRole("button", { name: "Close Agent settings", exact: true });
+    await close.click();
+    await dialog.getByRole("status").filter({ hasText: "Saving changes…" }).waitFor();
+    assert.equal(await close.isDisabled(), true);
+    assert.equal(await dialog.getByRole("radio", { name: "Full access", exact: true }).isDisabled(), true);
+    assert.equal(await page.getByRole("button", { name: "Agent", exact: true }).getAttribute("aria-pressed"), "false");
+    await page.keyboard.press("Escape");
+    await page.mouse.click(12, 12);
+    assert.equal(await dialog.count(), 1);
+    assert.equal((await calls(page)).filter(call => call.method === "configureAgent").length, 1);
+    await page.evaluate(() => (window as any).__deletionTest.releaseSetup("agent"));
+    await dialog.waitFor({ state: "hidden" });
+    assert.equal(await page.getByRole("button", { name: "Agent", exact: true }).getAttribute("aria-pressed"), "true");
+    await page.getByRole("button", { name: "Agent", exact: true }).click();
+    assert.equal(await dialog.getByRole("radio", { name: "Full access", exact: true }).isChecked(), true);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+for (const change of ["account", "runtime"]) test(`Agent choices are not autosaved into a changed ${change} context`, async () => {
+  const { page, errors } = await openApp();
+  try {
+    await page.getByRole("button", { name: "Viewed Existing thread", exact: true }).click();
+    await page.getByRole("button", { name: "Agent", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Agent settings", exact: true });
+    await dialog.getByText("Full access", { exact: true }).click();
+    await page.evaluate(kind => {
+      const fixture = (window as any).__deletionTest;
+      if (kind === "account") fixture.setAccount("replacement-account");
+      else fixture.setRuntime("replacement-runtime", false);
+    }, change);
+    await dialog.waitFor({ state: "hidden" });
+    assert.equal((await calls(page)).filter(call => call.method === "configureAgent").length, 0);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
 test("composer has no separate Tools control, including with configured MCP connections", async () => {
   const { page, errors } = await openApp();
   try {
@@ -4728,7 +4831,7 @@ test("composer has no separate Tools control, including with configured MCP conn
     const dialog = page.getByRole("dialog", { name: "Agent settings", exact: true });
     await dialog.waitFor();
     await dialog.getByRole("region", { name: "MCP connections", exact: true }).getByRole("checkbox", { name: /echo Echo from a local server/ }).waitFor();
-    await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+    await dialog.getByRole("button", { name: "Close Agent settings", exact: true }).click();
     await page.evaluate(() => (window as any).axiomDesktop.agent.desktopMcp({ expectedRevision: 1, action: { kind: "delete", name: "fixture" } }));
     assert.equal(await tools.count(), 0);
     assert.equal(await page.getByRole("dialog", { name: "Tools for this conversation", exact: true }).count(), 0);
@@ -4745,11 +4848,11 @@ test("MCP selection under Agent applies only to that thread with Agent off", asy
     const dialog = page.getByRole("dialog", { name: "Agent settings" });
     await dialog.getByRole("checkbox", { name: /echo Echo from a local server/ }).check();
     assert.equal(await page.getByRole("button", { name: "Agent", exact: true }).getAttribute("aria-pressed"), "false");
-    await dialog.getByRole("button", { name: "Save changes" }).click();
+    await dialog.getByRole("button", { name: "Close Agent settings", exact: true }).click();
     await dialog.waitFor({ state: "hidden" });
     await page.getByRole("button", { name: "Agent", exact: true }).click();
     assert.equal(await dialog.getByRole("checkbox", { name: /echo Echo from a local server/ }).isChecked(), true);
-    await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+    await dialog.getByRole("button", { name: "Close Agent settings", exact: true }).click();
     await page.getByRole("button", { name: "New thread", exact: true }).click();
     await page.getByRole("button", { name: "Agent", exact: true }).click();
     assert.equal(await dialog.getByRole("checkbox", { name: /echo Echo from a local server/ }).isChecked(), false);

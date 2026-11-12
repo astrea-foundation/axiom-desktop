@@ -125,12 +125,21 @@ sidecar negotiate `billing@4`; older sidecars must be updated together.
 
 ## Agent and Web controls
 
-New threads start with Agent **off**, a separate managed working directory and
-Web **off**. Agent settings let the user enable local tools, choose **Approve
-commands** or **Full access**, and select an existing absolute directory using
-the native picker or reset to the managed thread directory.
+New threads start with Agent **Off**, a separate managed working directory and
+Web **off**. Agent settings offer three access levels: **Off** disables local
+commands and file changes, **Ask for permission** asks before each local tool
+action, and **Full access** runs local tools without routine approval prompts.
+Select an existing absolute working directory using the native picker or reset
+to the managed thread directory.
 
-Agent settings persist atomically. Save requires an idle thread; the renderer
+Changes to the access level, working directory and MCP selection save when the
+dialog closes using its close button, Escape, or a click on the backdrop. There
+are no Save or Cancel buttons. The dialog waits for save acknowledgement; a
+failed save keeps the choices and offers **Try again** or **Discard changes**.
+Closing unchanged settings makes no write. Account or runtime changes dismiss
+the old dialog without saving its draft into the replacement context.
+
+Agent settings persist atomically. Saving requires an idle thread; the renderer
 also requires an empty queue. Prompts and steering carry the saved settings
 revision, so queued text cannot silently inherit a different permission/directory
 configuration. A change clears cached policy grants and file-change tracking.

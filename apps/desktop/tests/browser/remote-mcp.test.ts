@@ -39,12 +39,13 @@ for(const theme of ["light","dark"])test(`remote tools expose destinations and r
     assert.match(await dialog.innerText(),/outside Axiom’s attested environment/);
     assert.match(await dialog.innerText(),/mcp.example.com/);
     await dialog.getByRole("checkbox",{name:"Use Project tracker in this conversation"}).check();
-    assert.equal(await dialog.getByRole("button",{name:"Save changes",exact:true}).evaluate(element=>{
+    assert.equal(await dialog.getByRole("button",{name:"Save changes",exact:true}).count(),0);
+    assert.equal(await dialog.getByRole("button",{name:"Close Agent settings",exact:true}).evaluate(element=>{
       const bounds=element.getBoundingClientRect();return bounds.top>=0 && bounds.bottom<=innerHeight;
-    }),true,"Save stays visible while the connections list scrolls");
+    }),true,"Close stays visible while the connections list scrolls");
     await dialog.getByRole("heading",{name:"MCP connections",exact:true}).scrollIntoViewIfNeeded();
     await capture(page,`${theme}-agent-connections`);
-    await dialog.getByRole("button",{name:"Save changes",exact:true}).click();await dialog.waitFor({state:"hidden"});
+    await dialog.getByRole("button",{name:"Close Agent settings",exact:true}).click();await dialog.waitFor({state:"hidden"});
     assert.equal((await page.evaluate(()=>(window as any).__remoteMcpTest.selection())).mcpTools.length,2);
     assert.equal(await page.getByRole("button",{name:"Agent",exact:true}).getAttribute("aria-pressed"),"false");
     await page.getByRole("button",{name:/View privacy proof$/}).click();const proof=page.getByRole("dialog",{name:"Privacy proof",exact:true});

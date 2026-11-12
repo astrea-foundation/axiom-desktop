@@ -93,7 +93,9 @@ reconnection and review. Concurrent turns share token-refresh coordination.
 
 Open **Agent** beside the composer and use **MCP connections**. Connections are
 grouped as **Remote services** and **On this device**. Select a connection's tools
-together or individual tools from enabled, tested connections, then **Save changes**.
+together or individual tools from enabled, tested connections, then close the
+dialog. The close button, Escape and clicking the backdrop save the choices
+automatically. Failed saves keep the dialog open for retry or explicit discard.
 Selections persist with that conversation. Other and new conversations start
 without those tools; tools can also be selected before a new conversation's
 first message.

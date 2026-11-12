@@ -21,6 +21,11 @@ ports. Agent/MCP presentation is enabled only when a host supplies that control.
 Per-conversation MCP selection lives inside the Agent dialog and remains usable
 with Agent mode off; the composer has no separate Tools control. Connection
 management stays in Settings.
+The Agent dialog uses one three-level choice: Off, Ask for permission, or Full
+access. Access, folder and MCP changes save on an intentional close, including
+Escape and the backdrop; save failures retain the draft for retry or explicit
+discard. Unchanged closes do not write, and context replacement does not save
+the previous dialog's draft.
 
 `VaultScreen` supplies callback-driven first-use password confirmation, recovery
 code download/copy and saved-code acknowledgment, password unlock, recovery with
