@@ -1408,7 +1408,7 @@ impl AgentEngine {
 
     /// Record a provider-reported active context count. Internal compaction
     /// accounting stays separate from durable request usage; local changes use
-    /// update_estimated_context_tokens so they cannot justify raw-pass fit.
+    /// `update_estimated_context_tokens` so they cannot justify raw-pass fit.
     async fn update_context_tokens(&self, session_id: &SessionId, used_tokens: u64) {
         self.estimated_contexts.lock().await.remove(session_id);
         self.context_tokens
@@ -1627,7 +1627,7 @@ impl AgentEngine {
         let mut passes: VecDeque<_> = passes.into();
         let mut context_rejections = 0_usize;
         while let Some(pass) = passes.pop_front() {
-            let index = work.completed as usize;
+            let index = work.completed;
             if cancellation.is_cancelled() {
                 return Err(AxiomError::Cancelled);
             }
@@ -1664,8 +1664,8 @@ impl AgentEngine {
                                 part.transcript,
                             ),
                         );
-                        message.images = part.images.clone();
-                        message.files = part.files.clone();
+                        message.images.clone_from(&part.images);
+                        message.files.clone_from(&part.files);
                         messages.push(message);
                     }
                     (messages, tokens)
@@ -4000,10 +4000,10 @@ fn compaction_inputs(
     let max_bytes = max_bytes
         .min(max_input_tokens.saturating_sub(256))
         .min(axiom_inference::MAX_MESSAGE_TEXT_BYTES.saturating_sub(overhead_bytes))
-        .min(if compaction_request_byte_limit(model) != usize::MAX {
-            (3 * 1024 * 1024_usize).saturating_sub(overhead_bytes)
-        } else {
+        .min(if compaction_request_byte_limit(model) == usize::MAX {
             usize::MAX
+        } else {
+            (3 * 1024 * 1024_usize).saturating_sub(overhead_bytes)
         });
     if max_bytes < 4 {
         return Err(AxiomError::Provider(

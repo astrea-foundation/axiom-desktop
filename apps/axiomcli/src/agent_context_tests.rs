@@ -1037,7 +1037,7 @@ fn attachment_compaction_keeps_text_order_and_bounds_each_stage() {
 /// Provider-side contract checks are intentionally independent of preparation.
 /// The pinned Qwen template (SHA-256 c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041)
 /// rejects every noninitial system role; NEAR rejects empty assistant bodies
-/// without refusal/tool calls, even if reasoning_content is present.
+/// without refusal/tool calls, even if `reasoning_content` is present.
 fn assert_provider_history_shape(messages: &[ChatMessage]) {
     assert!(!messages.is_empty());
     for (index, message) in messages.iter().enumerate() {
@@ -1285,13 +1285,13 @@ async fn context_rejection_fallback_is_bounded_and_retains_original_history() {
 fn large_valid_png() -> ImageContent {
     use base64::Engine as _;
     use image::ImageEncoder as _;
-    let mut state = 0x9e3779b9_u32;
+    let mut state = 0x9e37_79b9_u32;
     let pixels: Vec<_> = (0..1280 * 1280 * 3)
         .map(|_| {
             state ^= state << 13;
             state ^= state >> 17;
             state ^= state << 5;
-            state as u8
+            state.to_le_bytes()[0]
         })
         .collect();
     let mut bytes = Vec::new();
