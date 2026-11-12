@@ -418,9 +418,12 @@ pub(super) async fn load_session(
             let durable_load = tokio::task::spawn_blocking(move || {
                 let summary = durable_store.summary(&durable_internal_id)?;
                 let loaded = durable_store.load_recovering(&durable_internal_id)?;
-                Ok::<_, crate::AxiomError>((summary, loaded))
+                let presentation = if replay_history {
+                    Some(durable_store.load_presentation(&durable_internal_id)?)
+                } else { None };
+                Ok::<_, crate::AxiomError>((summary, loaded, presentation))
             });
-            let (summary, loaded) =
+            let (summary, loaded, presentation) =
                 await_session_future(&request_cancellation, &work, durable_load)
                     .await?
                     .map_err(|error| {
@@ -529,11 +532,10 @@ pub(super) async fn load_session(
                 .await
                 .map_err(agent_error)?;
             // Desktop can opt into fetching the authoritative timeline after
-            // load. Native history restoration above still runs in full; only
-            // the redundant presentation replay is skipped. Standard ACP
-            // clients keep receiving the required transcript notifications.
-            if replay_history {
-                for (index, envelope) in loaded.events.iter().enumerate() {
+            // load. The runner uses selective canonical model events, while
+            // standard ACP clients receive the complete public transcript.
+            if let Some(presentation) = presentation {
+                for (index, envelope) in presentation.events.iter().enumerate() {
                     send_event(
                         &connection,
                         &external_id,

@@ -130,7 +130,11 @@ impl SessionStore {
             && !super::model_history::exists(&*self.lock()?, &first.session_id)?
         {
             let loaded = self.load_recovering(&first.session_id)?;
-            if !loaded.warnings.is_empty() {
+            if loaded
+                .warnings
+                .iter()
+                .any(|warning| warning != super::asset_codec::MEDIA_OMITTED)
+            {
                 return Err(AxiomError::Storage(format!(
                     "legacy conversation could not be migrated completely; original records were retained: {}",
                     loaded.warnings.join("; ")
