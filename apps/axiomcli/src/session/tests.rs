@@ -201,6 +201,8 @@ fn desktop_mcp_selections_are_account_scoped_revision_checked_and_independent() 
     create(&store, &first);
     create(&store, &second);
     let server = DesktopMcpServer {
+        display_name: None,
+        remote: None,
         name: "local".into(),
         command: "local-server".into(),
         args: vec![],
@@ -1140,6 +1142,7 @@ fn tool_boundaries_preserve_message_segments_through_restart_and_replay() {
         ("search-2", "The news is xyz."),
     ] {
         append(AppEvent::ToolProposed {
+            mcp_source: None,
             turn_id: turn.clone(),
             call_id: call.into(),
             name: "web_search".into(),
@@ -1239,6 +1242,7 @@ fn tool_first_response_does_not_fill_the_pre_tool_placeholder() {
             &id,
             4,
             AppEvent::ToolProposed {
+                mcp_source: None,
                 turn_id: turn.clone(),
                 call_id: "search".into(),
                 name: "web_search".into(),
@@ -1435,6 +1439,7 @@ fn verified_tool_only_request_binds_its_empty_assistant_placeholder() {
             &id,
             5,
             AppEvent::ToolProposed {
+                mcp_source: None,
                 turn_id: turn,
                 call_id: "search".into(),
                 name: "web_search".into(),
@@ -2176,6 +2181,7 @@ fn generated_and_edited_images_restore_from_their_owning_durable_tool_records() 
                 &id,
                 10 + index * 3,
                 AppEvent::ToolProposed {
+                    mcp_source: None,
                     turn_id: turn.clone(),
                     call_id: call_id.clone(),
                     name: name.into(),
@@ -2240,4 +2246,132 @@ fn generated_and_edited_images_restore_from_their_owning_durable_tool_records() 
             .resolve(&format!("img_{}", "22".repeat(16)))
             .is_err()
     );
+}
+
+#[test]
+fn remote_mcp_authority_changes_clear_selections_and_preserve_historical_destination() {
+    use axiom_acp_extension::{
+        DesktopMcpServer, DesktopMcpTool, McpAuthentication, McpRemoteConnection, McpToolSource,
+    };
+    let (_root, store) = routed_store();
+    store.activate_account("account-a").unwrap();
+    let id = SessionId::new();
+    create(&store, &id);
+    let original = "https://original.example.com/mcp";
+    let mut server = DesktopMcpServer {
+        display_name: None,
+        name: "remote".into(),
+        command: String::new(),
+        args: vec![],
+        remote: Some(McpRemoteConnection {
+            url: original.into(),
+            auth: McpAuthentication::None,
+            client_id: None,
+            client_metadata_url: None,
+        }),
+        enabled: true,
+        environment_keys: vec![],
+        credential_id: None,
+        tools: vec![DesktopMcpTool {
+            name: "mcp__remote__echo".into(),
+            description: "Echo".into(),
+            schema_hash: "hash".into(),
+        }],
+        status: "tested".into(),
+        error: None,
+    };
+    store
+        .save_desktop_mcp(0, vec![server.clone()], None)
+        .unwrap();
+    store
+        .save_desktop_mcp(
+            1,
+            vec![server.clone()],
+            Some((&id, vec!["mcp__remote__echo".into()])),
+        )
+        .unwrap();
+    let turn = TurnId::new();
+    begin_turn(&store, &id, &turn, None);
+    store
+        .append(&envelope(
+            &id,
+            4,
+            AppEvent::ToolProposed {
+                turn_id: turn.clone(),
+                call_id: "call".into(),
+                name: "mcp__remote__echo".into(),
+                arguments: json!({"value":"hello"}),
+                mcp_source: Some(McpToolSource {
+                    server: "remote".into(),
+                    destination: Some(original.into()),
+                }),
+            },
+        ))
+        .unwrap();
+    let pending = store.thread_snapshot(&id, None, 500).unwrap();
+    let pending = pending
+        .items
+        .iter()
+        .find(|item| item.external_id.as_deref() == Some("call"))
+        .unwrap();
+    assert_eq!(pending.metadata["started"], false);
+    store
+        .append(&envelope(
+            &id,
+            5,
+            AppEvent::ToolStarted {
+                call_id: "call".into(),
+                name: "mcp__remote__echo".into(),
+            },
+        ))
+        .unwrap();
+    server.remote.as_mut().unwrap().url = "https://replacement.example.com/mcp".into();
+    store.save_desktop_mcp(2, vec![server], None).unwrap();
+    assert!(
+        store
+            .desktop_mcp_snapshot(Some(&id))
+            .unwrap()
+            .selected_tools
+            .is_empty()
+    );
+    let saved = store.thread_snapshot(&id, None, 500).unwrap();
+    let saved = saved
+        .items
+        .iter()
+        .find(|item| item.external_id.as_deref() == Some("call"))
+        .unwrap();
+    assert_eq!(saved.metadata["mcp_source"]["destination"], original);
+    assert_eq!(saved.metadata["started"], true);
+    store
+        .append(&envelope(
+            &id,
+            6,
+            AppEvent::ToolProposed {
+                turn_id: turn.clone(),
+                call_id: "denied".into(),
+                name: "mcp__remote__echo".into(),
+                arguments: json!({"value":"declined"}),
+                mcp_source: Some(McpToolSource {
+                    server: "remote".into(),
+                    destination: Some(original.into()),
+                }),
+            },
+        ))
+        .unwrap();
+    store
+        .append(&envelope(
+            &id,
+            7,
+            AppEvent::ToolCompleted {
+                call_id: "denied".into(),
+                success: false,
+            },
+        ))
+        .unwrap();
+    store
+        .append(&envelope(&id, 8, AppEvent::TurnCompleted { turn_id: turn }))
+        .unwrap();
+    assert!(!store.load(&id).unwrap().iter().any(
+        |event| matches!(&event.event, AppEvent::ToolStarted {call_id,..} if call_id == "denied")
+    ));
 }

@@ -1544,6 +1544,8 @@ enum ExtensionFeature {
     CryptoInvoices = 1 << 18,
     ImageGeneration = 1 << 19,
     ImageRegeneration = 1 << 20,
+    ImageResources = 1 << 21,
+    RemoteMcp = 1 << 22,
 }
 
 struct ExtensionState {
@@ -1585,6 +1587,9 @@ impl ExtensionState {
             return;
         };
         let mut mask = 0;
+        if features.image_resources >= 1 {
+            mask |= ExtensionFeature::ImageResources as u64;
+        }
         if features.attachments >= 2 {
             mask |= ExtensionFeature::Attachments as u64;
         }
@@ -1641,6 +1646,9 @@ impl ExtensionState {
         }
         if features.desktop_mcp >= 1 {
             mask |= ExtensionFeature::DesktopMcp as u64;
+        }
+        if features.desktop_mcp >= 2 {
+            mask |= ExtensionFeature::RemoteMcp as u64;
         }
         if features.image_generation >= 3 {
             mask |= ExtensionFeature::ImageGeneration as u64;
@@ -2084,6 +2092,7 @@ fn send_event(
             call_id,
             name,
             arguments,
+            mcp_source,
             ..
         } => {
             let kind = tool_kind(&name);
@@ -2101,6 +2110,10 @@ fn send_event(
                     protocol::ToolCall::new(call_id, title)
                         .kind(kind)
                         .status(protocol::ToolCallStatus::Pending)
+                        .meta(protocol::Meta::from_iter([(
+                            "axiomMcpSource".into(),
+                            serde_json::to_value(mcp_source).unwrap_or_default(),
+                        )]))
                         .raw_input(arguments),
                 ),
                 revision,
@@ -2134,6 +2147,23 @@ fn send_event(
             ]),
             revision,
         ),
+        AppEvent::ImageGenerated { call_id, image }
+            if extension_state
+                .is_some_and(|state| state.feature_enabled(ExtensionFeature::ImageResources)) =>
+        {
+            send_tool_update(
+                connection,
+                session_id,
+                call_id.clone(),
+                protocol::ToolCallUpdateFields::new().raw_output(
+                    serde_json::json!({"imageResource": {
+                        "callId":call_id,"sha256":image.sha256,"mimeType":image.mime_type,
+                        "width":image.width,"height":image.height
+                    }}),
+                ),
+                revision,
+            )
+        }
         AppEvent::ImageGenerated { call_id, image } => send_tool_update(
             connection,
             session_id,

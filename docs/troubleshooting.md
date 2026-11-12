@@ -58,6 +58,39 @@ visible if only deposit provisioning is temporarily unavailable; the address
 stays pending until it can be validated. Billing and inference have separate
 limits, so a balance error alone does not identify the cause of a chat rejection.
 
+## Completely reset local data
+
+Reinstalling keeps Axiom's account data. To erase it, open **Settings → Account →
+Factory reset Axiom…**, type `RESET`, and choose **Delete everything and restart**.
+The control works while signed out or disconnected. Close other AxiomCLI windows
+first. See [configuration](configuration.md#paths-and-local-state) for the full
+deletion scope and the offline `axiomcli factory-reset --confirm` command.
+
+On older versions without factory reset, quit Desktop, CLI and local proxies,
+then remove the application's directories and its saved credentials. This
+permanently removes local history for every account. These are the default paths;
+explicit XDG overrides change native config/data locations.
+
+| Platform | App-owned directories to remove if present |
+|---|---|
+| Windows | `%APPDATA%\Axiom`, `%APPDATA%\axiom-desktop`, `%APPDATA%\axiom`, `%LOCALAPPDATA%\axiom`, `%LOCALAPPDATA%\Axiom`, `%LOCALAPPDATA%\axiom-desktop` |
+| macOS | `~/Library/Application Support/Axiom`, `~/Library/Application Support/axiom-desktop`, `~/Library/Application Support/axiom`, `~/Library/Caches/Axiom`, `~/Library/Caches/axiom-desktop`, `~/Library/Caches/axiom`, `~/Library/Logs/Axiom`, `~/Library/Logs/axiom-desktop` |
+| Linux | `${XDG_CONFIG_HOME:-~/.config}/Axiom`, `${XDG_CONFIG_HOME:-~/.config}/axiom-desktop`, `${XDG_CONFIG_HOME:-~/.config}/axiom`, `${XDG_DATA_HOME:-~/.local/share}/axiom`, `${XDG_CACHE_HOME:-~/.cache}/Axiom`, `${XDG_CACHE_HOME:-~/.cache}/axiom-desktop`, `${XDG_CACHE_HOME:-~/.cache}/axiom` |
+
+On a case-insensitive filesystem, `Axiom` and `axiom` refer to the same directory.
+In **Credential Manager → Windows Credentials**, **Keychain Access** on macOS,
+or the system **Passwords and Keys** app on Linux, remove Axiom entries with
+service names `stream.axiom.axiomcli` and `stream.axiom.desktop.mcp`. Windows
+generic credentials include these service names after the account name in their
+target. Leave other applications' credentials alone, then reopen Axiom and sign
+in. The online account, balance and hosted API keys remain available; external
+browser sessions and files saved outside Axiom-managed folders are kept.
+
+If a TLS error such as `InvalidContentType` persists after a clean reset, compare
+the native client's update check on another network and inspect VPN, proxy and
+network-filter settings as described above. A clean profile does not repair a
+broken TLS connection.
+
 ## Local proxy
 
 [The proxy guide](proxy.md) owns environment variables, endpoints and limits.
@@ -103,8 +136,8 @@ reviewing the hosted-search privacy behavior. Rejection of loopback/private
 URLs by `fetch_url` is expected.
 
 CLI MCP server commands belong in trusted user configuration. In Desktop, add
-and test [local connections](mcp.md) in Settings, then choose tools in the thread's
-Agent menu. Check that the executable and its runtime are installed and reachable
+and test [connections](mcp.md) in Settings, then choose tools in the conversation's
+Tools menu. Check that the executable and its runtime are installed and reachable
 on the sanitized PATH; use an absolute path if needed. Locked/missing environment
 credentials require unlocking the OS credential store or saving them again. A disconnected read-only tool may retry once only if its
 name/schema are unchanged. A side-effecting operation with an ambiguous outcome

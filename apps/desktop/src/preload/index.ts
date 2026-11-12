@@ -6,6 +6,7 @@ import type { UpdatesApi } from "../shared/updates";
 
 export type DesktopApi = {
   platform: NodeJS.Platform;
+  factoryReset: (confirmation: string) => Promise<void>;
   minimize: () => void;
   maximize: () => void;
   close: () => void;
@@ -26,6 +27,7 @@ const previewPlatform = previewArgument?.slice("--axiom-platform-preview=".lengt
 
 const api: DesktopApi = {
   platform: previewPlatform ?? process.platform,
+  factoryReset: (confirmation) => ipcRenderer.invoke("app:factory-reset", confirmation),
   minimize: () => {
     ipcRenderer.send("window:minimize");
   },

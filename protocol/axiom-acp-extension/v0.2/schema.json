@@ -40,6 +40,12 @@
     "regenerateImageResponse": {
       "$ref": "#/$defs/RegenerateImageResponse"
     },
+    "readImageRequest": {
+      "$ref": "#/$defs/ReadImageRequest"
+    },
+    "readImageResponse": {
+      "$ref": "#/$defs/ReadImageResponse"
+    },
     "deliveryMetadata": {
       "$ref": "#/$defs/DeliveryMetadata"
     },
@@ -238,6 +244,8 @@
     "getAttachmentsResponse",
     "regenerateImageRequest",
     "regenerateImageResponse",
+    "readImageRequest",
+    "readImageResponse",
     "deliveryMetadata",
     "listThreadsRequest",
     "listThreadsResponse",
@@ -398,6 +406,57 @@
         {
           "type": "object",
           "properties": {
+            "name": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "connect"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "name"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "cancel_connect"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "name"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "disconnect"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "name"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
             "tools": {
               "type": "array",
               "items": {
@@ -438,14 +497,22 @@
       ]
     },
     "DesktopMcpServerInput": {
-      "description": "Local stdio configuration. Environment values are write-only secrets.",
+      "description": "Missing remote configuration preserves existing local stdio connections.\nEnvironment values and bearer tokens are write-only secrets.",
       "type": "object",
       "properties": {
         "name": {
           "type": "string"
         },
+        "displayName": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
         "command": {
-          "type": "string"
+          "type": "string",
+          "default": ""
         },
         "args": {
           "type": "array",
@@ -467,18 +534,77 @@
             "type": "string"
           },
           "default": null
+        },
+        "remote": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/McpRemoteConnection"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "bearerToken": {
+          "description": "None preserves the saved token; an empty string clears it.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
         }
       },
       "additionalProperties": false,
       "required": [
         "name",
-        "command",
         "enabled"
+      ]
+    },
+    "McpRemoteConnection": {
+      "description": "Public remote connection identity. Secrets never appear in snapshots.",
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string"
+        },
+        "auth": {
+          "$ref": "#/$defs/McpAuthentication",
+          "default": "none"
+        },
+        "clientId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "clientMetadataUrl": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "url"
+      ]
+    },
+    "McpAuthentication": {
+      "type": "string",
+      "enum": [
+        "none",
+        "bearer",
+        "oauth"
       ]
     },
     "DesktopMcpResponse": {
       "type": "object",
       "properties": {
+        "remoteSupported": {
+          "type": "boolean",
+          "default": false
+        },
         "revision": {
           "type": "integer",
           "format": "uint64",
@@ -509,6 +635,13 @@
         "name": {
           "type": "string"
         },
+        "displayName": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
         "command": {
           "type": "string"
         },
@@ -517,6 +650,17 @@
           "items": {
             "type": "string"
           }
+        },
+        "remote": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/McpRemoteConnection"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "enabled": {
           "type": "boolean"
@@ -883,6 +1027,14 @@
           "maximum": 65535,
           "default": 0
         },
+        "imageResources": {
+          "description": "Metadata-only image presentation with account-scoped on-demand reads.",
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535,
+          "default": 0
+        },
         "steering": {
           "type": "integer",
           "format": "uint16",
@@ -1201,6 +1353,57 @@
       },
       "required": [
         "callId"
+      ]
+    },
+    "ReadImageRequest": {
+      "type": "object",
+      "properties": {
+        "threadId": {
+          "type": "string"
+        },
+        "callId": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "threadId",
+        "callId",
+        "sha256"
+      ]
+    },
+    "ReadImageResponse": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "string"
+        },
+        "mimeType": {
+          "type": "string"
+        },
+        "width": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "height": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "sha256": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "data",
+        "mimeType",
+        "width",
+        "height",
+        "sha256"
       ]
     },
     "DeliveryMetadata": {

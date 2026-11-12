@@ -81,6 +81,8 @@ pub struct FeatureVersions {
     pub web_consent: u16,
     /// Version 2 exposes one image tool automatically for vision models.
     pub image_generation: u16,
+    /// Metadata-only image presentation with account-scoped on-demand reads.
+    pub image_resources: u16,
     pub steering: u16,
     pub message_revision: u16,
     pub attachments: u16,
@@ -94,7 +96,7 @@ impl FeatureVersions {
         Self {
             desktop_chat: 1,
             desktop_agent: 1,
-            desktop_mcp: 1,
+            desktop_mcp: 2,
             thread_catalog: 1,
             timeline: 2,
             model_catalog: 1,
@@ -106,6 +108,7 @@ impl FeatureVersions {
             security_evidence: 4,
             web_consent: 1,
             image_generation: 4,
+            image_resources: 1,
             steering: 1,
             message_revision: 1,
             attachments: 2,
@@ -206,11 +209,46 @@ pub struct ConfigureDesktopAgentResponse {
     pub agent: DesktopAgentSettings,
 }
 
-/// Local stdio configuration. Environment values are write-only secrets.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum McpAuthentication {
+    #[default]
+    None,
+    Bearer,
+    Oauth,
+}
+
+/// Public remote connection identity. Secrets never appear in snapshots.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct McpRemoteConnection {
+    pub url: String,
+    #[serde(default)]
+    pub auth: McpAuthentication,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_metadata_url: Option<String>,
+}
+
+/// Connection provenance captured by the native client at call time.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct McpToolSource {
+    pub server: String,
+    /// None identifies a local process, never an attestation claim.
+    pub destination: Option<String>,
+}
+
+/// Missing remote configuration preserves existing local stdio connections.
+/// Environment values and bearer tokens are write-only secrets.
 #[derive(Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DesktopMcpServerInput {
     pub name: String,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
     pub command: String,
     #[serde(default)]
     pub args: Vec<String>,
@@ -218,16 +256,24 @@ pub struct DesktopMcpServerInput {
     /// None preserves existing credentials; an empty map clears them.
     #[serde(default)]
     pub env: Option<BTreeMap<String, String>>,
+    #[serde(default)]
+    pub remote: Option<McpRemoteConnection>,
+    /// None preserves the saved token; an empty string clears it.
+    #[serde(default)]
+    pub bearer_token: Option<String>,
 }
 
 impl std::fmt::Debug for DesktopMcpServerInput {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DesktopMcpServerInput")
             .field("name", &self.name)
+            .field("display_name", &self.display_name)
             .field("command", &self.command)
             .field("args", &self.args)
             .field("enabled", &self.enabled)
             .field("has_environment", &self.env.is_some())
+            .field("has_remote", &self.remote.is_some())
+            .field("has_bearer_token", &self.bearer_token.is_some())
             .finish()
     }
 }
@@ -236,9 +282,12 @@ impl std::fmt::Debug for DesktopMcpServerInput {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DesktopMcpAction {
     List,
-    Save { server: DesktopMcpServerInput },
+    Save { server: Box<DesktopMcpServerInput> },
     Delete { name: String },
     Test { name: String },
+    Connect { name: String },
+    CancelConnect { name: String },
+    Disconnect { name: String },
     Select { tools: Vec<String> },
     Import { servers: Vec<DesktopMcpServerInput> },
 }
@@ -266,8 +315,12 @@ pub struct DesktopMcpTool {
 #[serde(rename_all = "camelCase")]
 pub struct DesktopMcpServer {
     pub name: String,
+    #[serde(default)]
+    pub display_name: Option<String>,
     pub command: String,
     pub args: Vec<String>,
+    #[serde(default)]
+    pub remote: Option<McpRemoteConnection>,
     pub enabled: bool,
     pub environment_keys: Vec<String>,
     pub credential_id: Option<String>,
@@ -279,6 +332,8 @@ pub struct DesktopMcpServer {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcResponse)]
 #[serde(rename_all = "camelCase")]
 pub struct DesktopMcpResponse {
+    #[serde(default)]
+    pub remote_supported: bool,
     pub revision: u64,
     pub servers: Vec<DesktopMcpServer>,
     pub selected_tools: Vec<String>,
@@ -900,6 +955,25 @@ pub struct RegenerateImageResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcRequest)]
+#[request(method = "_axiom/image/read", response = ReadImageResponse)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReadImageRequest {
+    pub thread_id: String,
+    pub call_id: String,
+    pub sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcResponse)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadImageResponse {
+    pub data: String,
+    pub mime_type: String,
+    pub width: u32,
+    pub height: u32,
+    pub sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcRequest)]
 #[request(method = "_axiom/thread/delete_preview", response = DeletePreviewResponse)]
 #[serde(rename_all = "camelCase")]
 pub struct DeletePreviewRequest {
@@ -1372,6 +1446,8 @@ pub struct ProtocolSchema {
     pub get_attachments_response: GetAttachmentsResponse,
     pub regenerate_image_request: RegenerateImageRequest,
     pub regenerate_image_response: RegenerateImageResponse,
+    pub read_image_request: ReadImageRequest,
+    pub read_image_response: ReadImageResponse,
     pub delivery_metadata: DeliveryMetadata,
     pub list_threads_request: ListThreadsRequest,
     pub list_threads_response: ListThreadsResponse,

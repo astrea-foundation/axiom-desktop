@@ -513,6 +513,7 @@ pub(super) fn persist_event(
             call_id,
             name,
             arguments,
+            mcp_source,
         } => {
             upsert_timeline_item(
                 transaction,
@@ -527,6 +528,8 @@ pub(super) fn persist_event(
                     metadata: json!({
                         "name": name,
                         "arguments": redacted_json(arguments)?,
+                        "mcp_source": mcp_source,
+                        "started": false,
                         "output_truncated": false,
                         "success": Value::Null,
                         "diff": Value::Null,
@@ -556,7 +559,7 @@ pub(super) fn persist_event(
             )?;
             transaction
                 .execute(
-                    "UPDATE timeline_items SET status='in_progress', updated_at=?2 WHERE id=?1",
+                    "UPDATE timeline_items SET status='in_progress', metadata=json_set(metadata, '$.started', json('true')), updated_at=?2 WHERE id=?1",
                     params![item_id, now],
                 )
                 .map_err(storage_error)?;

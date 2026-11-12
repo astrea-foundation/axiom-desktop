@@ -33,7 +33,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{AxiomError, Result};
 
-const KEYRING_SERVICE: &str = "stream.axiom.axiomcli";
+pub(crate) const KEYRING_SERVICE: &str = "stream.axiom.axiomcli";
 const KEYRING_ACCOUNT_PREFIX: &str = "native-refresh-token-v1";
 const MAX_TOKEN_BYTES: usize = 8 * 1024;
 const MAX_HTTP_REQUEST_BYTES: usize = 16 * 1024;
@@ -2244,7 +2244,7 @@ fn build_client(api_base_url: &str, timeout: Duration) -> Result<(Client, Url, U
     Ok((client, api_base_url, auth_base_url))
 }
 
-fn credential_scope(api_base_url: &Url, client_id_path: &Path) -> (String, PathBuf) {
+pub(crate) fn credential_scope(api_base_url: &Url, client_id_path: &Path) -> (String, PathBuf) {
     let audience = api_base_url.origin().ascii_serialization();
     let digest = URL_SAFE_NO_PAD.encode(Sha256::digest(audience.as_bytes()));
     let keyring_account = format!("{KEYRING_ACCOUNT_PREFIX}-{digest}");

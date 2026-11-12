@@ -125,7 +125,8 @@ export class AcpProcess extends EventEmitter {
   private closed = false;
   private terminalError: Error | null = null;
   private terminationPublished = false;
-  private stdoutRemainder = Buffer.alloc(0);
+  private stdoutChunks: Buffer[] = [];
+  private stdoutBytes = 0;
   private readonly terminated: Promise<void>;
   private resolveTerminated!: () => void;
   private readonly processGroupId: number | null;
@@ -347,23 +348,28 @@ export class AcpProcess extends EventEmitter {
 
   private acceptChunk(chunk: Buffer): void {
     let start = 0;
-    while (start < chunk.length) {
+    while (!this.closed && start < chunk.length) {
       const newline = chunk.indexOf(0x0a, start);
       const end = newline === -1 ? chunk.length : newline;
       const segment = chunk.subarray(start, end);
-      if (this.stdoutRemainder.length + segment.length > MAX_FRAME_BYTES) {
+      if (this.stdoutBytes + segment.length > MAX_FRAME_BYTES) {
         this.finish(new ProtocolError("incoming ACP frame exceeds the 64 MiB limit"), true);
         return;
       }
       if (segment.length > 0) {
-        this.stdoutRemainder = Buffer.concat(
-          [this.stdoutRemainder, segment],
-          this.stdoutRemainder.length + segment.length,
-        );
+        // Image-heavy timeline pages arrive in many pipe chunks. Retain those
+        // chunks until the newline instead of copying the growing frame for
+        // every chunk (quadratic work for multi-megabyte image messages).
+        this.stdoutChunks.push(segment);
+        this.stdoutBytes += segment.length;
       }
       if (newline === -1) return;
-      const line = this.stdoutRemainder.toString("utf8").replace(/\r$/, "");
-      this.stdoutRemainder = Buffer.alloc(0);
+      const frame = this.stdoutChunks.length === 1
+        ? this.stdoutChunks[0]!
+        : Buffer.concat(this.stdoutChunks, this.stdoutBytes);
+      const line = frame.toString("utf8").replace(/\r$/, "");
+      this.stdoutChunks = [];
+      this.stdoutBytes = 0;
       if (line) this.acceptLine(line);
       start = newline + 1;
     }
@@ -382,6 +388,8 @@ export class AcpProcess extends EventEmitter {
     if (this.closed) return this.terminalError ?? error;
     this.closed = true;
     this.terminalError = error;
+    this.stdoutChunks = [];
+    this.stdoutBytes = 0;
     this.failAll(error);
     if (process.platform === "win32") {
       // Do not announce termination (and let Desktop restart) until Windows

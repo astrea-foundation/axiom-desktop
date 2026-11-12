@@ -95,6 +95,9 @@ pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
     fn parameters(&self) -> Value;
+    fn mcp_source(&self) -> Option<axiom_acp_extension::McpToolSource> {
+        None
+    }
     fn access(&self) -> ToolAccess {
         ToolAccess::Write
     }
@@ -322,6 +325,10 @@ impl std::fmt::Debug for ToolRegistry {
 }
 
 impl ToolRegistry {
+    #[must_use]
+    pub fn mcp_source(&self, name: &str) -> Option<axiom_acp_extension::McpToolSource> {
+        self.tools.get(name).and_then(|tool| tool.mcp_source())
+    }
     #[must_use]
     pub fn new() -> Self {
         Self::default()

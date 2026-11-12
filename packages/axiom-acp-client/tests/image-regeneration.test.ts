@@ -57,3 +57,22 @@ test("Stop cancels image work even before the native handler has registered a ru
   await f.client.cancel("thread");await pending;
   assert.equal(f.client.getState().sessions.thread?.running,false);
 });
+
+
+test("lazy image reads stay outside shared state and reject delayed account responses", async t => {
+  const f = fixture(t); Object.assign(f.client, { supportsImageResources: true });
+  let finish!: (value: unknown) => void;
+  const response = { data: "cG5n", mimeType: "image/png", width: 1024, height: 1024, sha256: "ab".repeat(32) };
+  t.mock.method(f.client.process, "request", async (method: string, params: unknown) => {
+    assert.equal(method, "_axiom/image/read");
+    assert.deepEqual(params, { threadId: "thread", callId: "image", sha256: response.sha256 });
+    return new Promise(resolve => { finish = resolve; });
+  });
+  const first = f.client.readImage("thread", "image", response.sha256); finish(response);
+  assert.deepEqual(await first, response);
+  assert.ok(!JSON.stringify(f.client.getState()).includes(response.data));
+  const late = f.client.readImage("thread", "image", response.sha256);
+  const rejected = assert.rejects(late, /account|context/i);
+  f.client.state.setAccount({ revision: 2, state: "valid", account: { id: "account-b", linkedMethods: [] } });
+  finish(response); await rejected;
+});

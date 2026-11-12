@@ -930,6 +930,7 @@ impl TurnRunner for WorkspaceEditTurnRunner {
         });
         events
             .send(AppEvent::ToolProposed {
+                mcp_source: None,
                 turn_id: context.turn_id.clone(),
                 call_id: call_id.clone(),
                 name: "replace_text".into(),
@@ -1669,6 +1670,14 @@ impl AgentEngine {
                         request.explanation.push('\n');
                         request.explanation.push_str(&concrete_effects);
                     }
+                    if let Some(source) = tools.mcp_source(tool_name)
+                        && let Some(destination) = source.destination
+                    {
+                        request.explanation = format!(
+                            "Remote service · {}\nThis will send the inputs below to {}, outside Axiom’s attested environment. Inputs may include conversation or file content.\n\n{}",
+                            source.server, destination, request.explanation
+                        );
+                    }
                     events
                         .send(AppEvent::PermissionRequired {
                             request_id: request.request_id.clone(),
@@ -2152,6 +2161,7 @@ impl TurnRunner for AgentEngine {
         };
         events
             .send(AppEvent::ToolProposed {
+                mcp_source: None,
                 turn_id: context.turn_id,
                 call_id: call_id.clone(),
                 name: "generate".into(),
@@ -2744,6 +2754,7 @@ impl TurnRunner for AgentEngine {
                 };
                 events
                     .send(AppEvent::ToolProposed {
+                        mcp_source: tools.mcp_source(&call.function.name),
                         turn_id: context.turn_id.clone(),
                         call_id: call.id.clone(),
                         name: call.function.name.clone(),
@@ -3617,6 +3628,7 @@ async fn emit_repairable_tool_failure(
 ) -> Result<()> {
     events
         .send(AppEvent::ToolProposed {
+            mcp_source: None,
             turn_id: turn_id.clone(),
             call_id: call.id.clone(),
             name: call.function.name.clone(),
@@ -7350,6 +7362,142 @@ mod engine_tests {
                     && message.content.contains("before completion"))
         );
         assert_eq!(messages.last().unwrap().content, "What marker?");
+    }
+
+    #[tokio::test]
+    async fn stopped_reasoning_only_history_allows_followup_with_either_web_setting() {
+        for web_enabled in [false, true] {
+            let provider = Arc::new(ScriptedProvider::new(vec![AssistantTurn {
+                reasoning: None,
+                text: "continued after Stop".into(),
+                tool_calls: Vec::new(),
+            }]));
+            let engine =
+                AgentEngine::new(provider.clone(), Arc::new(ToolRegistry::new()), "test", 2);
+            let ctx = context();
+            let store = crate::session::SessionStore::in_memory().unwrap();
+            let events = [
+                AppEvent::SessionCreated {
+                    cwd: ctx.cwd.clone(),
+                    origin: Origin::Test,
+                    profile: ctx.permission_profile,
+                },
+                AppEvent::PromptAccepted {
+                    attachments: Vec::new(),
+                    turn_id: ctx.turn_id.clone(),
+                    text: "download the videos".into(),
+                },
+                AppEvent::TurnStarted {
+                    turn_id: ctx.turn_id.clone(),
+                },
+                AppEvent::ReasoningDelta {
+                    turn_id: ctx.turn_id.clone(),
+                    text: "unfinished thinking before Stop".into(),
+                },
+                AppEvent::TurnCancelled {
+                    turn_id: ctx.turn_id.clone(),
+                },
+            ]
+            .into_iter()
+            .enumerate()
+            .map(|(index, event)| EventEnvelope {
+                schema_version: 1,
+                sequence: (index + 1) as u64,
+                occurred_at: chrono::Utc::now(),
+                correlation_id: CorrelationId::new(),
+                origin: Origin::Test,
+                session_id: ctx.session_id.clone(),
+                event,
+            })
+            .collect::<Vec<_>>();
+            store.append_all(&events).unwrap();
+
+            // ACP Stop reconstructs the runner from these materialized records.
+            // Reopening the thread uses the same restoration path.
+            for _ in 0..2 {
+                engine
+                    .restore_session(&ctx.session_id, &store.load(&ctx.session_id).unwrap())
+                    .await
+                    .unwrap();
+            }
+            let snapshot = store.thread_snapshot(&ctx.session_id, None, 100).unwrap();
+            let (tx, _rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
+            engine
+                .run(
+                    TurnContext {
+                        turn_id: TurnId::new(),
+                        web_enabled,
+                        ..ctx.clone()
+                    },
+                    "try again with these settings".into(),
+                    tx,
+                    CancellationToken::new(),
+                )
+                .await
+                .unwrap();
+
+            let requests = provider.requests.lock().await;
+            let messages = &requests[0].messages;
+            assert!(messages.iter().all(|m| m.role != ChatRole::Assistant));
+            assert_eq!(messages[1].content, "download the videos");
+            assert!(messages.iter().any(|m| {
+                m.role == ChatRole::System && m.content.contains("before completion")
+            }));
+            assert_eq!(messages.last().unwrap().content, "try again with these settings");
+            assert!(messages[0].content.contains(if web_enabled {
+                "Web access for this message: ON"
+            } else {
+                "Web access for this message: OFF"
+            }));
+
+            let after = store.thread_snapshot(&ctx.session_id, None, 100).unwrap();
+            assert_eq!(after.items, snapshot.items);
+            assert!(after.items.iter().any(|item| {
+                item.kind == crate::session::TimelineItemKind::Reasoning
+                    && item.content == "unfinished thinking before Stop"
+            }));
+        }
+    }
+
+    #[tokio::test]
+    async fn empty_or_reasoning_only_completion_does_not_poison_the_next_request() {
+        for reasoning in [None, Some("thinking without an answer".into())] {
+            let provider = Arc::new(ScriptedProvider::new(vec![
+                AssistantTurn {
+                    reasoning,
+                    text: String::new(),
+                    tool_calls: Vec::new(),
+                },
+                AssistantTurn {
+                    reasoning: None,
+                    text: "next answer".into(),
+                    tool_calls: Vec::new(),
+                },
+            ]));
+            let engine =
+                AgentEngine::new(provider.clone(), Arc::new(ToolRegistry::new()), "test", 2);
+            let ctx = context();
+            for prompt in ["first prompt", "next prompt"] {
+                let (tx, _rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
+                engine
+                    .run(
+                        TurnContext {
+                            turn_id: TurnId::new(),
+                            ..ctx.clone()
+                        },
+                        prompt.into(),
+                        tx,
+                        CancellationToken::new(),
+                    )
+                    .await
+                    .unwrap();
+            }
+            let requests = provider.requests.lock().await;
+            let messages = &requests[1].messages;
+            assert!(messages.iter().all(|m| m.role != ChatRole::Assistant));
+            assert_eq!(messages[1].content, "first prompt");
+            assert_eq!(messages[2].content, "next prompt");
+        }
     }
 
     #[tokio::test]

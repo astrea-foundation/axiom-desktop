@@ -1,4 +1,6 @@
 /** @jsxRuntime automatic */
+import { McpPrivacyDetails } from "./McpPrivacy";
+import type { DesktopMcpServer } from "@axiom/chat-core/viewTypes";
 import { Check, ChevronRight, CircleHelp, Copy, FileCode2, Globe2, Minus, RotateCcw, Shield, ShieldCheck, ShieldX, X } from "lucide-react";
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import type { ClientSessionState } from "@axiom/chat-core/viewTypes";
@@ -80,13 +82,15 @@ function Fact({ label, children, mono = false }: { label: string; children: Reac
   </div>;
 }
 
-export function PrivacyProofDialog({ session, model, modelId, state, now, webEnabled, error, disabledReason, onRefresh, onClose }: {
+export function PrivacyProofDialog({ session, model, modelId, state, now, webEnabled, mcpServers, selectedMcpTools, error, disabledReason, onRefresh, onClose }: {
   session: ClientSessionState;
   model?: ProviderModel;
   modelId: string;
   state: ProofState;
   now: number;
   webEnabled: boolean;
+  mcpServers?: DesktopMcpServer[];
+  selectedMcpTools?: string[];
   error: string | null;
   disabledReason?: string;
   onRefresh: () => void;
@@ -159,7 +163,7 @@ export function PrivacyProofDialog({ session, model, modelId, state, now, webEna
           className="-mr-1 rounded-lg p-1.5 text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--wash-chip-hover)] hover:text-[var(--color-text-primary)]"><X size={16} /></button>
       </header>
       <div className="min-h-0 overflow-y-auto px-6 pb-5 sm:px-7">
-        <h3 className="mb-3 text-[12px] font-medium text-[var(--color-text-secondary)]">Environment attestation</h3>
+        <h3 className="mb-3 text-[12px] font-medium text-[var(--color-text-secondary)]">Model inference · Environment attestation</h3>
         <div className="flex items-center gap-3">
           <div className={`shadow-glass-tile flex h-10 w-10 shrink-0 items-center justify-center rounded-[13px] bg-[var(--surface-tile)] ${verified ? "text-[var(--color-success)]" : state === "failed" ? "text-[var(--color-danger)]" : "text-[var(--color-text-tertiary)]"}`}>
             {verified ? <ShieldCheck size={21} aria-hidden="true" /> : state === "failed" ? <ShieldX size={21} aria-hidden="true" /> : <Shield size={21} aria-hidden="true" />}
@@ -216,6 +220,7 @@ export function PrivacyProofDialog({ session, model, modelId, state, now, webEna
             </details> : null}
           </div>
         </details> : null}
+        <McpPrivacyDetails servers={mcpServers} selectedTools={selectedMcpTools} session={session} />
         {webEnabled ? <p className="mt-4 flex items-start gap-2 text-[12px] leading-[18px] text-[var(--color-text-secondary)]"><Globe2 size={13} className="mt-0.5 shrink-0" aria-hidden="true" />Web search queries are shared with the search service and are not end-to-end encrypted.</p> : null}
         {error ? <p role="alert" className="mt-4 rounded-[10px] bg-[var(--color-danger-soft)] px-3 py-2.5 text-[12px] text-[var(--color-danger-strong)]">{error}</p> : null}
         {state === "failed" && session.security?.detail ? <details className="mt-3 text-[12px]"><summary className="cursor-pointer text-[var(--color-text-secondary)]">Failure details</summary><p className="mt-2 whitespace-pre-wrap text-[var(--color-text-tertiary)] [overflow-wrap:anywhere]">{session.security.detail}</p></details> : null}

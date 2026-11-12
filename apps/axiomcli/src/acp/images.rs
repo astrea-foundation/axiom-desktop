@@ -6,6 +6,56 @@ use super::{
     mpsc, protocol, release_session_work, send_event,
 };
 
+pub(super) async fn read(
+    context: &ServerContext,
+    request: extension::ReadImageRequest,
+    responder: Responder<extension::ReadImageResponse>,
+    _connection: &ConnectionTo<Client>,
+) -> agent_client_protocol::Result<()> {
+    if !extension_enabled(&context.extension_state, ExtensionFeature::ImageResources) {
+        return responder.respond_with_error(extension_not_negotiated());
+    }
+    if request.call_id.is_empty()
+        || request.call_id.len() > 512
+        || request.sha256.len() != 64
+        || !request
+            .sha256
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    {
+        return responder.respond_with_internal_error("invalid image identity");
+    }
+    let Some(store) = &context.store else {
+        return responder.respond_with_internal_error("image storage is unavailable");
+    };
+    let account = match context.account_work.register_store(store) {
+        Ok(account) => account,
+        Err(error) => return responder.respond_with_error(agent_error(error)),
+    };
+    let Ok(thread_id) = request.thread_id.parse::<crate::app::SessionId>() else {
+        return responder.respond_with_internal_error("invalid thread ID");
+    };
+    // Decoding and hashing an original PNG must not block other native requests.
+    let result = tokio::task::spawn_blocking(move || {
+        let image = account
+            .read(|store| store.generated_image(&thread_id, &request.call_id, &request.sha256));
+        match image {
+            Ok(image) => account.publish(|| {
+                responder.respond(extension::ReadImageResponse {
+                    data: image.data,
+                    mime_type: image.mime_type,
+                    width: image.width,
+                    height: image.height,
+                    sha256: image.sha256,
+                })
+            }),
+            Err(error) => responder.respond_with_error(agent_error(error)),
+        }
+    })
+    .await;
+    result.map_err(|error| agent_client_protocol::util::internal_error(error.to_string()))?
+}
+
 fn recipe(
     history: &[crate::app::EventEnvelope],
     source: &str,
@@ -274,6 +324,7 @@ mod tests {
         let arguments = json!({"prompt":"Use <image1> with the colors of <image2>","reference_image_ids":refs,"aspect_ratio":"1:1"});
         for event in [
             AppEvent::ToolProposed {
+                mcp_source: None,
                 turn_id: turn.clone(),
                 call_id: "original-image".into(),
                 name: "generate".into(),
@@ -355,6 +406,7 @@ mod tests {
         regenerated.usage.request_id = regenerated.request_id.clone();
         for event in [
             AppEvent::ToolProposed {
+                mcp_source: None,
                 turn_id: next.clone(),
                 call_id: "new-image".into(),
                 name: "generate".into(),

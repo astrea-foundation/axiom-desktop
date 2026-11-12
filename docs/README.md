@@ -11,10 +11,10 @@ must be recorded against the actual source revision and signed installers.
 | [Desktop](desktop.md) | Conversations, Agent/Web controls, evidence, credit and usage |
 | [CLI and TUI](cli.md) | Commands, terminal interaction, funding, plans and sessions |
 | [Local proxy](proxy.md) | Loopback integration and OpenAI compatibility |
-| [Local MCP connections](mcp.md) | Desktop connections, thread tools and approvals |
+| [MCP connections](mcp.md) | Remote/local connections, conversation tools and approvals |
 | [Configuration](configuration.md) | Configuration precedence, paths and limits |
 | [Privacy](privacy.md) | Local storage, credentials and what leaves the device |
-| [Troubleshooting](troubleshooting.md) | Diagnosis and recovery |
+| [Troubleshooting](troubleshooting.md) | Diagnosis, factory reset and manual recovery |
 | [0.1.15 release notes](releases/0.1.15.md) | First-message recovery, resilient balances and rate-limit guidance |
 | [0.1.14 candidate notes](releases/0.1.14.md) | Unpublished candidate; included in 0.1.15 |
 | [0.1.10 release notes](releases/0.1.10.md) | Windows setup and first-launch updates |

@@ -13,6 +13,15 @@ handles passkey, Google, password and wallet authentication. Native login creden
 outside the renderer. Signing out closes the active account store and invalidates
 pending account operations.
 
+**Settings → Account → Factory reset Axiom…** erases all local accounts' chats,
+saved sign-ins, configuration and caches, including data shared with AxiomCLI.
+It remains available while signed out or disconnected. Type `RESET` and choose
+**Delete everything and restart** to confirm permanent deletion. Active chats
+and the local proxy stop; close other CLI windows first. Axiom exits, cleans up
+its local files and system-vault credentials, then reopens for a fresh sign-in.
+Your online account, credit, hosted API keys, external browser and files saved
+outside Axiom are kept. See [reset scope and recovery](configuration.md#paths-and-local-state).
+
 Conversations and folders are account-local. Folder names are labels, not file
 paths. Rename and Delete use in-app dialogs; batch deletion is confirmed against
 the exact native selection. Deleting a conversation does not remove workspace files.
@@ -84,7 +93,7 @@ The discount applies to Zcash only. Crypto availability requires backend setup.
 
 Automatic and manual balance refreshes preserve an entered gift code.
 **Redeem a gift code** adds its USD value to the signed-in account. Code
-entry is masked and cleared on success, closing the screen, disconnect or account
+entry is visible and cleared on success, closing the screen, disconnect or account
 change. It is never a chat message or saved draft. A failed/uncertain request can
 be retried with the same code without duplicate credit; a code already redeemed
 by this account reports that result and refreshes the balance.
@@ -108,8 +117,8 @@ Agent settings persist atomically. Save requires an idle thread; the renderer
 also requires an empty queue. Prompts and steering carry the saved settings
 revision, so queued text cannot silently inherit a different permission/directory
 configuration. A change clears cached policy grants and file-change tracking.
-Desktop supports explicitly configured [local MCP connections](mcp.md). The
-Agent menu selects MCP tools per thread independently of shell/filesystem
+Desktop supports explicitly configured [MCP connections](mcp.md). The
+Tools menu selects MCP tools per conversation independently of shell/filesystem
 permissions; MCP can be used while Agent is off. Settings provides connection
 management, testing, tool inspection and configuration import.
 
@@ -184,6 +193,12 @@ each save suggests a fresh random PNG filename. Image generation and editing sho
 live percentage and progress bar. Queued work displays 0%; finishing stays at
 99% until the verified result is ready; the percentage and bar then disappear. Nonvision
 models cannot use image tools or accept new image uploads.
+
+Opening an image-heavy conversation loads its messages and image dimensions
+first. Original generated images load as they approach the visible part of the
+conversation. Reserved image space keeps scrolling stable, and recently viewed
+images are cached within a bounded memory budget. A failed read offers
+**Retry loading image**. Viewing and saving use the original image.
 
 Each generated image has its own Regenerate button. It reruns only that image's
 stored prompt, reference images in their original order, output dimensions,

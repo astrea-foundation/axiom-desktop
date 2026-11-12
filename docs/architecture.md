@@ -44,14 +44,16 @@ model preferences, selection, and durable submission/queue lifecycle respectivel
 Account/runtime generations and stable submission IDs remain the guards against
 late work affecting a different account or conversation.
 
-Desktop sends generated PNG bytes once per document-local image resource,
-separately from streaming state. Main replaces duplicate inline blocks with
-opaque references; preload creates local Blob URLs before state crosses
-`contextBridge`. Token updates carry metadata and references, not image base64.
-Each window has its own resource context. Logout, account/runtime changes,
+With `imageResources@1`, native timeline queries project image dimensions and
+identities without sending PNGs to Desktop. Live image updates also carry
+metadata. Main mints opaque window/document handles; viewport requests resolve
+one account-owned completed tool and check its original hash before preload
+creates a local Blob URL. No image bytes cross `contextBridge`. Preload shares
+duplicate reads, limits concurrency to two and retains at most 32 MiB of idle
+originals, with active viewers pinned. Logout, account/runtime changes,
 disconnection and document unload revoke resources; deleted timeline resources
-are released. A full bootstrap resends assets, and late same-context bootstrap
-assets can repair references without rolling back newer conversation state.
+and delayed replies are discarded. Legacy inline image transport still sends
+assets separately from streaming state and supports late bootstrap recovery.
 Native conversation storage, image hashes, E2EE verification and resolution
 limits are unchanged. Browser inline-image compatibility decoding yields in
 bounded chunks outside React rendering.

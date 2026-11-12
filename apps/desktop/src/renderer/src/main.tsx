@@ -20,6 +20,12 @@ function DesktopHost() {
       if (!api) throw new Error("Desktop is unavailable");
       return api.regenerateImage(thread, call);
     },
+    loadGeneratedImage: async (id) => {
+      const api = window.axiomDesktop?.agent;
+      if (!api) throw new Error("Desktop is unavailable");
+      return api.loadGeneratedImage(id);
+    },
+    releaseGeneratedImage: (id) => window.axiomDesktop?.agent.releaseGeneratedImage(id),
     usageSummary: async (account, request) => {
       const api = window.axiomDesktop?.agent;
       if (!api) throw new Error("Desktop is unavailable");

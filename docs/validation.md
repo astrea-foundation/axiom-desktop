@@ -105,7 +105,10 @@ checks local development credentials across rebuilds and restarts. Installed
 app checks, cross-platform release validation and broader load tests remain
 release requirements; source-mode qualification does not replace them.
 
-Generated-image presentation checks also cover one-time binary IPC payloads,
+Generated-image presentation checks cover metadata-only initial timelines,
+viewport-triggered reads, explicit retry, stable placeholder geometry, bounded
+read concurrency and cache eviction, delayed account/runtime/deletion responses,
+and opaque per-window resource handles. Compatibility checks cover binary IPC payloads,
 stable Blob URLs through streaming updates, account/runtime resource revocation,
 late bootstrap recovery, 1536-pixel viewing while typing, and cancellable inline
 decoding that yields to UI tasks. These local transport checks do not change
@@ -134,7 +137,7 @@ require live qualification; local encrypted fixtures do not establish it.
 | Provider security | Current catalog, fresh local attestation, authenticated encrypted completion, stream cancellation/truncation, proof expiry, and explicit degraded-TEE consent/reset |
 | Conversation state | Draft/queue/history retention, attachments, edit/regenerate, compaction, interrupted-turn recovery, restart and account isolation |
 | Tools | Approval, denial, cancellation and workspace boundaries on each supported OS; Web consent and search's distinct privacy boundary |
-| Account credit | Address provisioning, deposit progress and USD valuation, posted usage, gift-code masking/redemption, trial-capacity retry/paid continuation, six-hour invoice timers, five-active-invoice enforcement, server cancellation and account-switch cleanup; coordinate real settlement/reorg checks with platform maintainers |
+| Account credit | Address provisioning, deposit progress and USD valuation, posted usage, visible Desktop gift-code entry/redemption, masked TUI gift-code entry, trial-capacity retry/paid continuation, six-hour invoice timers, five-active-invoice enforcement, server cancellation and account-switch cleanup; coordinate real settlement/reorg checks with platform maintainers |
 | Automatic updates | Signed A-to-B upgrades from idle and busy Desktop/TUI; same-terminal workspace/session restoration, GUI reopen, matching CLI version and preserved drafts/history |
 | Update failure paths | Denied OS authorization, cancellation, locked-process waits, interruption/repair, corrupt or wrong-target artifacts, rollback rejection and duplicate updater attempts; staging cleanup, including Windows helpers still in use and abandoned downloads |
 | Publication | Matching source tag, signed inventory, complete installer matrix, verified mirrors, feed activation and safe publication retries |
@@ -176,6 +179,16 @@ private keys or real conversation data. Publish a concise qualification summary
 with the release; retain raw operational captures privately.
 
 ## Windows setup and Store acceptance
+
+Factory reset requires Windows VM qualification before release: start with
+synthetic chats in multiple accounts, persisted Desktop/CLI settings, a native
+refresh token and an MCP credential. Confirm from signed-out/disconnected
+Settings, verify cleanup starts after Desktop exits, inspect both application
+folders and Credential Manager, and sign in again to an empty profile. Also
+exercise a locked/denied vault, another active CLI, and a file deletion failure;
+incomplete resets must reopen with a visible error. Native/controller and browser
+tests cover isolated files, mock credentials, exclusion, confirmation and retry;
+these do not replace Windows vault and installer qualification.
 
 The 0.1.12 offline package and website Setup were published after signed Windows
 installation qualification. The live older-to-current first-launch check then
@@ -259,3 +272,14 @@ cancel-and-restart flow, the saved sent-transfer hint, continued tracking beyond
 the quote deadline and small-window layout
 on Windows and macOS previews. Keep Desktop and its bundled `billing@4` sidecar
 together. Installer publishing remains separate release work.
+
+
+## Remote MCP release acceptance
+
+Before publishing remote MCP support, qualify the native credential store and
+browser OAuth callback on macOS, Windows and Linux with real public and
+registered-client OAuth services. Verify refresh, cancellation, account switches,
+locked credential stores, sign-out and factory reset. Confirm the Remote
+connection form, separate Tools picker, destination-aware approvals/activity and
+privacy proof disclosures in each supported platform/theme. Local HTTP fixture
+and browser harness results do not establish live-service or Windows qualification.

@@ -3054,7 +3054,7 @@ test("PDF bytes upload directly and unsupported documents keep the draft", async
 });
 
 
-test("gift redemption is masked, updates balance, retries safely and clears on account switch", async () => {
+test("gift redemption shows the code, updates balance, retries safely and clears on account switch", async () => {
   const {page, errors} = await openApp();
   try {
     await page.evaluate(() => {
@@ -3074,8 +3074,8 @@ test("gift redemption is masked, updates balance, retries safely and clears on a
     const code = "AXG-AAAA-AAAA-AAAA-AAAA-AAAA-AAAA-AAAA-AAAA";
     const field = page.getByLabel("Gift code", {exact: true});
     await field.fill(code);
-    assert.equal(await field.getAttribute("type"), "password");
-    if (process.env.AXIOM_GIFT_CAPTURE_PATH) await page.screenshot({path: process.env.AXIOM_GIFT_CAPTURE_PATH});
+    assert.equal(await field.getAttribute("type"), "text");
+    if (process.env.AXIOM_GIFT_CAPTURE_PATH) await page.screenshot({path: process.env.AXIOM_GIFT_CAPTURE_PATH, animations: "disabled"});
     await page.getByRole("button", {name: "Redeem", exact: true}).click();
     await page.getByRole("status").filter({hasText: "$25.00 added to your account."}).waitFor();
     assert.equal(await field.inputValue(), "");
@@ -3719,6 +3719,66 @@ test("1536-pixel local image resources survive streaming updates while the compo
   } finally { await page.close(); }
 });
 
+test("lazy generated images fetch near the viewport, preserve layout, and retry a failed read", async () => {
+  const { page, errors } = await openApp("linux", false, [], "medium", true, false);
+  try {
+    await page.locator('[data-thread-id="old-thread"]').click();
+    await page.evaluate(() => {
+      const reads: string[] = [], releases: string[] = [];
+      const urls = new Map<string, string>();
+      let failMiddle = true;
+      Object.assign(window, { __lazyImageReads: reads, __lazyImageReleases: releases });
+      (window as any).axiomDesktop.agent.loadGeneratedImage = async (id: string) => {
+        if (urls.has(id)) return { imageUrl: urls.get(id), width: 1024, height: 1024 };
+        reads.push(id);
+        if (id === "asset-10" && failMiddle) { failMiddle = false; throw new Error("fixture read failed"); }
+        const canvas = document.createElement("canvas"); canvas.width = 1024; canvas.height = 1024;
+        const context = canvas.getContext("2d")!;
+        context.fillStyle = "#164e63"; context.fillRect(0, 0, 1024, 1024);
+        context.fillStyle = "white"; context.font = "64px sans-serif"; context.fillText(`Image ${id.slice(6)}`, 120, 510);
+        const blob = await new Promise<Blob>(resolve => canvas.toBlob(value => resolve(value!), "image/png"));
+        const imageUrl = URL.createObjectURL(blob); urls.set(id, imageUrl);
+        return { imageUrl, width: 1024, height: 1024 };
+      };
+      (window as any).axiomDesktop.agent.releaseGeneratedImage = (id: string) => { releases.push(id); };
+      (window as any).__deletionTest.setTimeline(Array.from({ length: 20 }, (_, index) => ({
+        id: `generated-${index}`, kind: "tool", text: "", status: "completed", tool: {
+          callId: `generated-${index}`, name: "generate", title: "generate", kind: "other", status: "completed",
+          input: { prompt: `Image ${index}` }, locations: [],
+          content: [{ type: "image", mimeType: "image/png", assetId: `asset-${index}`, width: 1024, height: 1024 }],
+        },
+      })));
+    });
+    const middle = page.locator('[data-tool-call-id="generated-10"]');
+    await page.locator('[data-tool-call-id="generated-19"] img').waitFor();
+    const before = await middle.locator("figure").boundingBox();
+    const initial = await page.evaluate(() => (window as any).__lazyImageReads as string[]);
+    assert.ok(initial.length <= 6, `only nearby images load on open: ${initial}`);
+    assert.ok(!initial.includes("asset-10"), "opening the thread must leave distant originals unfetched");
+    assert.equal(await middle.locator("img").count(), 0);
+    await page.locator("[data-chat-scroll]").hover();
+    await page.mouse.wheel(0, -300);
+    await middle.scrollIntoViewIfNeeded();
+    await middle.getByRole("button", { name: "Retry loading image", exact: true }).click();
+    const trigger = middle.getByRole("button", { name: "View generated image", exact: true });
+    await trigger.waitFor();
+    const after = await middle.locator("figure").boundingBox();
+    assert.ok(before && after && Math.abs(before.height - after.height) < 1, "reserved image dimensions prevent scroll jumps");
+    const source = await trigger.locator("img").getAttribute("src");
+    await trigger.click();
+    const dialog = page.getByRole("dialog", { name: "Image preview: Generated image", exact: true });
+    await dialog.waitFor();
+    assert.equal(await dialog.locator("img").getAttribute("src"), source);
+    await page.keyboard.press("Escape"); await dialog.waitFor({ state: "detached" });
+    assert.equal(await middle.getByRole("link", { name: "Save image", exact: true }).getAttribute("href"), source);
+    const final = await page.evaluate(() => ({ reads: (window as any).__lazyImageReads, releases: (window as any).__lazyImageReleases }));
+    assert.equal(final.reads.filter((id: string) => id === "asset-10").length, 2, "one failed read and one explicit retry");
+    assert.ok(final.reads.length < 20);
+    assert.ok(final.releases.includes("asset-19"), "scrolled-out images release their displayed resource");
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
 test("vision uploads accept ten normalized images and reject an eleventh", async () => {
   const { page, errors } = await openApp("linux", false, [], "medium", true, false);
   try {
@@ -4022,22 +4082,22 @@ test("only editing the signed-in composer starts model-only verification, includ
   } finally { await page.close(); }
 });
 
-test("MCP selection in Agent settings applies only to that thread with Agent off", async () => {
+test("MCP selection in Tools applies only to that thread with Agent off", async () => {
   const { page, errors } = await openApp();
   try {
     await page.evaluate(() => (window as any).__deletionTest.enableMcp());
     await page.getByRole("button", { name: "Viewed Existing thread", exact: true }).click();
-    await page.getByRole("button", { name: "Agent", exact: true }).click();
-    const dialog = page.getByRole("dialog", { name: "Agent settings" });
+    await page.getByRole("button", { name: "Tools", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Tools for this conversation" });
     await dialog.getByRole("checkbox", { name: /echo Echo from a local server/ }).check();
-    assert.equal(await dialog.getByRole("switch", { name: "Enable agent mode" }).getAttribute("aria-checked"), "false");
-    await dialog.getByRole("button", { name: "Save changes" }).click();
+    assert.equal(await page.getByRole("button", { name: "Agent", exact: true }).getAttribute("aria-pressed"), "false");
+    await dialog.getByRole("button", { name: "Save tools" }).click();
     await dialog.waitFor({ state: "hidden" });
-    await page.getByRole("button", { name: "Agent", exact: true }).click();
+    await page.getByRole("button", { name: "Tools", exact: true }).click();
     assert.equal(await dialog.getByRole("checkbox", { name: /echo Echo from a local server/ }).isChecked(), true);
     await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
     await page.getByRole("button", { name: "New thread", exact: true }).click();
-    await page.getByRole("button", { name: "Agent", exact: true }).click();
+    await page.getByRole("button", { name: "Tools", exact: true }).click();
     assert.equal(await dialog.getByRole("checkbox", { name: /echo Echo from a local server/ }).isChecked(), false);
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
@@ -4049,17 +4109,18 @@ test("MCP settings add and test a local server without displaying saved secrets"
     await page.evaluate(() => (window as any).__deletionTest.enableMcp());
     await openAccountScreen(page, "Settings");
     await page.getByRole("tab", { name: "MCP connections", exact: true }).click();
-    await page.getByRole("button", { name: "Add local server" }).click();
-    await page.getByRole("textbox", { name: "Name", exact: true }).fill("new_local");
+    await page.getByRole("button", { name: "Add connection" }).click();
+    await page.getByRole("radio", { name: "Local process", exact: true }).check();
+    await page.getByRole("textbox", { name: /^Name/ }).fill("new_local");
     await page.getByRole("textbox", { name: "Command", exact: true }).fill("npx");
     await page.getByRole("textbox", { name: "Arguments (JSON array)" }).fill('["-y","example-server"]');
     await page.getByRole("button", { name: "Add variable", exact: true }).click();
     await page.getByRole("textbox", { name: "Variable 1 name" }).fill("API_KEY");
     await page.getByLabel("Variable 1 value").fill("browser-fixture-secret-value");
     await page.getByRole("button", { name: "Save connection" }).click();
-    const server = page.getByRole("heading", { name: "new_local", exact: true }).locator("..").locator("..");
+    const server = page.getByRole("region", { name: "new_local connection" });
     await server.getByRole("button", { name: "Test connection" }).click();
-    await server.getByText(/Tested · 1 tools/).waitFor();
+    await server.getByText(/Ready · 1 tool/).waitFor();
     await server.getByText("Inspect tools").click();
     await server.getByText("mcp__new_local__echo", { exact: true }).waitFor();
     await server.getByRole("button", { name: "Edit", exact: true }).click();

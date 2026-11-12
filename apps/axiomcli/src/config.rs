@@ -66,11 +66,20 @@ pub struct Config {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct McpServerConfig {
     pub name: String,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
     pub command: String,
     #[serde(default)]
     pub args: Vec<String>,
     #[serde(skip)]
     pub env: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    pub remote: Option<axiom_acp_extension::McpRemoteConnection>,
+    #[serde(skip)]
+    pub oauth_credentials: Option<std::sync::Arc<dyn rmcp::transport::auth::CredentialStore>>,
+    #[serde(skip)]
+    pub oauth_identity: Option<String>,
     /// Names explicitly trusted by the user as read-only. Server annotations
     /// are display hints and never grant this policy classification.
     #[serde(default)]
@@ -92,6 +101,7 @@ impl std::fmt::Debug for McpServerConfig {
             .field("command", &self.command)
             .field("args", &self.args)
             .field("environment_keys", &self.env.keys().collect::<Vec<_>>())
+            .field("has_remote", &self.remote.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -409,13 +419,16 @@ impl Config {
             rule.validate()?;
         }
         for server in &self.mcp_servers {
+            if let Some(remote) = &server.remote {
+                crate::desktop_mcp::remote::validate_connection(remote)?;
+            }
             if !(1..=86_400).contains(&server.tool_timeout_secs) {
                 return Err(AxiomError::Config(
                     "MCP tool_timeout_secs must be between 1 and 86400".into(),
                 ));
             }
             if server.name.trim().is_empty()
-                || server.command.trim().is_empty()
+                || (server.remote.is_none() && server.command.trim().is_empty())
                 || server.name.contains('\0')
                 || server.command.contains('\0')
                 || server.args.iter().any(|argument| argument.contains('\0'))
@@ -572,6 +585,8 @@ fn warn_about_unknown_config_fields(path: &Path, content: &str) -> Result<()> {
         "mcp_servers",
     ];
     const MCP_FIELDS: &[&str] = &[
+        "display_name",
+        "remote",
         "name",
         "command",
         "args",

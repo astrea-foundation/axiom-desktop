@@ -1765,6 +1765,262 @@ async fn durable_session_load_keeps_identity_replays_history_and_continues() {
 }
 
 #[tokio::test]
+async fn desktop_timeline_restore_transfers_saved_images_once_and_preserves_acp_replay() {
+    use axiomcli::app::AppEvent;
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use sha2::{Digest as _, Sha256};
+
+    let state = tempfile::tempdir().expect("image history state");
+    let (session, cwd) = {
+        let mut first =
+            AcpProcess::spawn_inner("echo", state.path(), None, Some("desktop-chat"), None);
+        first.initialize_extension().await;
+        first
+            .send(&json!({"jsonrpc":"2.0","id":2,"method":"_axiom/desktop/bootstrap","params":{}}))
+            .await;
+        let bootstrap = first.response(2).await;
+        let chat_cwd = Path::new(
+            bootstrap["result"]["chatCwd"]
+                .as_str()
+                .expect("chat workspace"),
+        );
+        let session = first.new_session(3, chat_cwd).await;
+        first
+            .send(
+                &json!({"jsonrpc":"2.0","id":4,"method":"_axiom/thread/timeline",
+            "params":{"threadId":session,"limit":1}}),
+            )
+            .await;
+        let page = first.response(4).await;
+        let cwd = page["result"]["thread"]["cwd"]
+            .as_str()
+            .expect("saved cwd")
+            .to_owned();
+        first.close().await;
+        (session, cwd)
+    };
+    let store = SessionStore::open(
+        state
+            .path()
+            .join("data/axiom/accounts/local-test-account/desktop/state.sqlite3"),
+    )
+    .expect("image store");
+    let session_id: SessionId = session.parse().expect("session ID");
+    let runtime = Runtime::new(16);
+    runtime
+        .restore(&store.load(&session_id).unwrap())
+        .await
+        .unwrap();
+    let turn_id = runtime.turn_id();
+    store
+        .append_all(
+            &runtime
+                .dispatch(AppCommand::StartImageGeneration {
+                    session_id: session_id.clone(),
+                    turn_id: turn_id.clone(),
+                })
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+    let evidence: axiom_secure_client::SecurityEvidence = serde_json::from_value(json!({
+        "state":"verified", "provider_id":"chutes", "model_id":"chutes:qwen-image-2.1-turbo",
+        "attestation_protocol":"synthetic-unit-fixture", "e2ee_protocol":"synthetic-unit-fixture",
+        "e2ee_encryption_version":1, "trust_policy_version":"unit-test", "verified_at_unix_seconds":1,
+        "model_key_fingerprint":"00".repeat(32), "tls_spki_fingerprint":null, "checks":[], "provider_claims":[]
+    })).unwrap();
+    let mut saved_images = Vec::new();
+    for index in 0u8..3 {
+        let mut bytes = vec![index; 1024 * 1024];
+        bytes[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
+        let data = STANDARD.encode(&bytes);
+        let request_id = format!("{index:032x}");
+        let image = axiom_secure_client::GeneratedImage {
+            request_id: request_id.clone(),
+            data: data.clone(),
+            mime_type: "image/png".into(),
+            width: 1024,
+            height: 1024,
+            sha256: hex::encode(Sha256::digest(&bytes)),
+            source_image_ids: Vec::new(),
+            chat_model_id: None,
+            evidence: evidence.clone(),
+            usage: axiom_inference::RequestUsage {
+                request_id,
+                provider_id: "chutes".into(),
+                model_id: "chutes:qwen-image-2.1-turbo".into(),
+                settled: true,
+                response_verified: true,
+                ..Default::default()
+            },
+        };
+        saved_images.push(data);
+        let call_id = format!("image-{index}");
+        for event in [
+            AppEvent::ToolProposed {
+                mcp_source: None,
+                turn_id: turn_id.clone(),
+                call_id: call_id.clone(),
+                name: "generate".into(),
+                arguments: json!({"prompt":"Synthetic saved image"}),
+            },
+            AppEvent::ImageGenerated {
+                call_id: call_id.clone(),
+                image: Box::new(image),
+            },
+            AppEvent::ToolCompleted {
+                call_id,
+                success: true,
+            },
+        ] {
+            store
+                .append(&runtime.emit(session_id.clone(), event).await.unwrap())
+                .unwrap();
+        }
+    }
+    store
+        .append_all(
+            &runtime
+                .dispatch(AppCommand::FinishTurn {
+                    session_id,
+                    turn_id,
+                })
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+    drop(store);
+
+    for (negotiate_timeline, skip_replay, lazy) in [
+        (true, true, true),
+        (true, true, false),
+        (true, false, false),
+        (false, true, false),
+    ] {
+        let mut resumed =
+            AcpProcess::spawn_inner("echo", state.path(), None, Some("desktop-chat"), None);
+        if lazy {
+            resumed
+                .initialize_with_capabilities(
+                    json!({"_meta":{"axiom":axiom_acp_extension::ExtensionCapabilities::client()}}),
+                )
+                .await;
+        } else if negotiate_timeline {
+            resumed.initialize_extension().await;
+        } else {
+            resumed.initialize().await;
+        }
+        resumed
+            .send(&json!({"jsonrpc":"2.0","id":2,"method":"session/load",
+            "params":{"sessionId":session,"cwd":cwd,"mcpServers":[],
+                "_meta":{"axiom":{"skipHistoryReplay":skip_replay}}}}))
+            .await;
+        let mut replayed_images = 0;
+        loop {
+            let value = resumed.read().await;
+            if let Some(content) = value["params"]["update"]["content"].as_array() {
+                replayed_images += content
+                    .iter()
+                    .filter(|block| block["content"]["type"] == "image")
+                    .count();
+            }
+            if value["id"] == 2 {
+                assert!(value.get("result").is_some(), "{value}");
+                break;
+            }
+        }
+        assert_eq!(
+            replayed_images,
+            if negotiate_timeline && skip_replay {
+                0
+            } else {
+                3
+            },
+            "skip requires an explicit opt-in and negotiated Desktop timeline"
+        );
+        if negotiate_timeline {
+            resumed
+                .send(
+                    &json!({"jsonrpc":"2.0","id":3,"method":"_axiom/thread/timeline",
+                "params":{"threadId":session,"limit":250}}),
+                )
+                .await;
+            let page = resumed.response(3).await;
+            if lazy {
+                assert!(
+                    page.to_string().len() < 30_000,
+                    "opening a thread transfers metadata only"
+                );
+                let tools = page["result"]["items"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|item| item["kind"] == "tool_call")
+                    .collect::<Vec<_>>();
+                assert_eq!(tools.len(), 3);
+                for item in &tools {
+                    assert!(
+                        item["metadata"]["content"][0]["content"]
+                            .get("data")
+                            .is_none()
+                    );
+                }
+                let resource = &tools[0]["metadata"]["content"][0]["content"]["imageResource"];
+                resumed.send(&json!({"jsonrpc":"2.0","id":4,"method":"_axiom/image/read",
+                    "params":{"threadId":session,"callId":resource["callId"],"sha256":resource["sha256"]}})).await;
+                let image = resumed.response(4).await;
+                assert_eq!(
+                    image["result"]["data"], saved_images[0],
+                    "only the requested original is returned"
+                );
+                for (request_id, thread, call, digest) in [
+                    (
+                        5,
+                        session.clone(),
+                        "missing".to_owned(),
+                        resource["sha256"].as_str().unwrap().to_owned(),
+                    ),
+                    (
+                        6,
+                        SessionId::new().to_string(),
+                        "image-0".to_owned(),
+                        resource["sha256"].as_str().unwrap().to_owned(),
+                    ),
+                    (7, session.clone(), "image-0".to_owned(), "ff".repeat(32)),
+                ] {
+                    resumed
+                        .send(
+                            &json!({"jsonrpc":"2.0","id":request_id,"method":"_axiom/image/read",
+                        "params":{"threadId":thread,"callId":call,"sha256":digest}}),
+                        )
+                        .await;
+                    assert!(resumed.response(request_id).await.get("error").is_some());
+                }
+                resumed.close().await;
+                continue;
+            }
+            let images = page["result"]["items"]
+                .as_array()
+                .expect("timeline items")
+                .iter()
+                .filter(|item| item["kind"] == "tool_call")
+                .map(|item| {
+                    item["metadata"]["content"][0]["content"]["data"]
+                        .as_str()
+                        .unwrap()
+                        .to_owned()
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                images, saved_images,
+                "every saved image survives without duplicate replay"
+            );
+        }
+        resumed.close().await;
+    }
+}
+
+#[tokio::test]
 async fn concurrent_loads_share_a_canonical_in_flight_reservation() {
     let workspace = tempfile::tempdir().expect("workspace");
     let state = tempfile::tempdir().expect("shared state");

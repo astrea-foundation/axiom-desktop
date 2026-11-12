@@ -75,6 +75,10 @@ export class AgentSidecar {
   rendererState(contents: WebContents) {
     return rendererTransport(contents).encode(this.state(), true);
   }
+  rendererImage(contents: WebContents, context: string, id: string) {
+    const client = this.requireClient();
+    return rendererTransport(contents).readImage(context, id, request => client.readImage(request.threadId, request.callId, request.sha256));
+  }
   constructor(private readonly stateChanged: (state: ClientState) => void = () => {}) {}
   private client: AxiomAcpClient | null = null;
   private initializingClient: AxiomAcpClient | null = null;

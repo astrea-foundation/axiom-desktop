@@ -19,6 +19,7 @@ import { ModelBrandIcon, ProviderBrandIcon } from "./ModelBrandIcon";
 import { ModelPicker } from "./ModelPicker";
 import { TeeVerificationBadge } from "./TeeVerificationBadge";
 import { DraftAttachments, type AttachmentControl } from "./Attachments";
+import { ToolsControl } from "./ToolsControl";
 import { AgentModeControl, type AgentControlOptions } from "./AgentModeControl";
 
 function reasoningEffortLabel(effort: ReasoningEffort): string {
@@ -30,7 +31,7 @@ function reasoningEffortLabel(effort: ReasoningEffort): string {
 
 let previousComposerBounds: DOMRect | undefined;
 
-type OpenMenu = "model" | "thinking" | "agent" | null;
+type OpenMenu = "model" | "thinking" | "agent" | "tools" | null;
 
 interface ChatComposerProps {
   attachments?: AttachmentControl;
@@ -140,8 +141,8 @@ export function ChatComposer({
   }, [models.length]);
 
   useEffect(() => {
-    // Agent owns a top-layer modal, including dismissal and focus handling.
-    if (!openMenu || openMenu === "agent") return;
+    // Agent and Tools own top-layer modals, including dismissal and focus.
+    if (!openMenu || openMenu === "agent" || openMenu === "tools") return;
     const closeMenu = (event: MouseEvent) => {
       if (!controlsRef.current?.contains(event.target as Node)) setOpenMenu(null);
     };
@@ -300,6 +301,7 @@ export function ChatComposer({
               Web
               {webEnabled ? <Check size={12} aria-hidden="true" /> : null}
             </button>
+            {agentControl ? <ToolsControl key={`tools:${agentControl.scope}`} options={agentControl} open={openMenu === "tools"} onOpenChange={open => setOpenMenu(open ? "tools" : null)} /> : null}
             {agentControl ? <AgentModeControl key={agentControl.scope} options={agentControl} open={openMenu === "agent"} onOpenChange={(open) => setOpenMenu(open ? "agent" : null)} /> : null}
           </div>
 
@@ -307,7 +309,7 @@ export function ChatComposer({
             {security !== undefined && onVerifySecurity ? (
               <TeeVerificationBadge key={JSON.stringify([securityScope, security.sessionId, selectedModelId])}
                 session={security} model={models.find((model) => model.id === selectedModelId)} modelId={selectedModelId}
-                webEnabled={webEnabled} disabledReason={securityRefreshDisabledReason} onVerify={onVerifySecurity} />
+                webEnabled={webEnabled} mcpServers={agentControl?.mcpServers} selectedMcpTools={agentControl?.selection.mcpTools} disabledReason={securityRefreshDisabledReason} onVerify={onVerifySecurity} />
             ) : null}
             <ContextUsageIndicator
               usage={contextUsage}
