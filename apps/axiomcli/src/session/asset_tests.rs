@@ -17,6 +17,23 @@ const FILE: &[u8] = b"%PDF-1.7\nsynthetic-file-asset-unique-sentinel";
 fn key() -> Arc<StorageKey> {
     Arc::new(StorageKey::from_bytes([0x71; 32]))
 }
+fn recovery_records(store: &SessionStore, id: &SessionId) -> Vec<Value> {
+    let connection = store.lock().unwrap();
+    let owner = super::assets::thread_owner(&id.to_string());
+    let mut statement = connection.prepare("SELECT a.id,a.sha256,a.byte_length FROM binary_assets a JOIN asset_owners o ON o.asset_id=a.id WHERE o.owner=?1").unwrap();
+    let references = statement.query_map([&owner], |row| Ok(json!({"version":1,"id":row.get::<_,String>(0)?,"sha256":row.get::<_,String>(1)?,"bytes":row.get::<_,i64>(2)?}))).unwrap();
+    references
+        .filter_map(|reference| {
+            let reference = serde_json::from_value(reference.unwrap()).unwrap();
+            let encoded = connection
+                .assets()
+                .resolve(&connection, &owner, &reference)
+                .unwrap();
+            let value: Value = serde_json::from_slice(&STANDARD.decode(encoded).unwrap()).ok()?;
+            (value["kind"] == "legacy_media_recovery").then_some(value)
+        })
+        .collect()
+}
 fn append(store: &SessionStore, id: &SessionId, event: AppEvent) {
     store
         .append(&crate::app::EventEnvelope {
@@ -324,7 +341,7 @@ fn legacy_v2_and_v6_externalize_all_known_slots_and_replay_exactly() {
 }
 
 #[test]
-fn legacy_v6_recovers_unrelated_broken_metadata_but_rejects_invalid_image_data() {
+fn legacy_v6_recovers_unrelated_broken_metadata_and_omits_invalid_image_data() {
     for invalid_image in [false, true] {
         let root = tempdir().unwrap();
         let path = root.path().join("state.sqlite3");
@@ -336,30 +353,6 @@ fn legacy_v6_recovers_unrelated_broken_metadata_but_rejects_invalid_image_data()
         }
         drop(raw);
         let result = SessionStore::open_protected_with_key(&path, key());
-        if invalid_image {
-            let error = result.expect_err("recognized invalid image must fail closed");
-            assert!(error.to_string().contains("base64"), "{error}");
-            let opened = crate::local_storage::open_database_with_key(&path, key()).unwrap();
-            assert_eq!(
-                opened
-                    .connection
-                    .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
-                    .unwrap(),
-                6
-            );
-            assert_eq!(
-                opened
-                    .connection
-                    .query_row(
-                        "SELECT payload FROM prompt_attachments WHERE user_item_id='user'",
-                        [],
-                        |r| r.get::<_, String>(0)
-                    )
-                    .unwrap(),
-                legacy.attachments.to_string()
-            );
-            continue;
-        }
         let store = result.unwrap();
         let page = store.thread_page(&legacy.id, None, None, 100).unwrap();
         let recovered = page
@@ -394,6 +387,32 @@ fn legacy_v6_recovers_unrelated_broken_metadata_but_rejects_invalid_image_data()
             let checkpoint: Value = serde_json::from_str(&checkpoint).unwrap();
             assert_eq!(checkpoint["messages"], json!([41, 42]));
             assert_eq!(checkpoint["_axiom_message_refs"], true);
+        }
+        if invalid_image {
+            let tool = page.items.iter().find(|item| item.id == "tool").unwrap();
+            assert!(tool.metadata.get("generated_image").is_none());
+            assert_eq!(tool.metadata["success"], true);
+            assert_eq!(
+                tool.metadata["arguments"]["prompt"],
+                "exact arguments remain"
+            );
+            assert!(tool.metadata["recovery_warning"].is_string());
+            assert!(
+                store
+                    .generated_image(&legacy.id, "call", &legacy.image.sha256)
+                    .is_err()
+            );
+            assert!(recovery_records(&store, &legacy.id).iter().any(|record| {
+                record["sourceKind"] == 1
+                    && record["sourceId"] == "tool"
+                    && String::from_utf8(
+                        STANDARD
+                            .decode(record["originalPayloadBase64"].as_str().unwrap())
+                            .unwrap(),
+                    )
+                    .unwrap()
+                    .contains("!invalid!")
+            }));
         }
         assert_no_embedded_bytes(&store);
         drop(store);
@@ -581,7 +600,8 @@ fn migration_failure_retries_and_cleans_only_orphan_ciphertext() {
     let root = tempdir().unwrap();
     let path = root.path().join("state.sqlite3");
     let legacy = legacy(&path, 6);
-    // First attachment is valid and gets staged; the second forces rollback.
+    // Stage a valid attachment and an omission/recovery archive, then simulate
+    // an actual storage-write failure. Media damage itself must not abort.
     let raw = Connection::open(&path).unwrap();
     let mut malformed = legacy.attachments.clone();
     malformed[1]["file"]["data"] = json!("!invalid!");
@@ -590,8 +610,17 @@ fn migration_failure_retries_and_cleans_only_orphan_ciphertext() {
         [malformed.to_string()],
     )
     .unwrap();
+    raw.execute_batch("CREATE TRIGGER fail_asset_migration BEFORE UPDATE ON model_messages BEGIN SELECT RAISE(ABORT,'injected migration storage failure'); END;").unwrap();
     drop(raw);
     assert!(SessionStore::open_protected_with_key(&path, key()).is_err());
+    let staged = std::fs::read_dir(asset_directory_for_database(&path))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect::<Vec<_>>();
+    assert!(
+        !staged.is_empty(),
+        "the failure occurs after ciphertext was staged"
+    );
     let opened = crate::local_storage::open_database_with_key(&path, key()).unwrap();
     assert_eq!(
         opened
@@ -600,22 +629,229 @@ fn migration_failure_retries_and_cleans_only_orphan_ciphertext() {
             .unwrap(),
         6
     );
+    assert_eq!(
+        opened
+            .connection
+            .query_row(
+                "SELECT payload FROM prompt_attachments WHERE user_item_id='user'",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+        malformed.to_string(),
+        "failed conversion preserves the original damaged record"
+    );
     opened
         .connection
-        .execute(
-            "UPDATE prompt_attachments SET payload=?1",
-            [legacy.attachments.to_string()],
-        )
+        .execute_batch("DROP TRIGGER fail_asset_migration;")
         .unwrap();
     drop(opened);
     let store = SessionStore::open_protected_with_key(&path, key()).unwrap();
+    assert_eq!(
+        serde_json::to_value(store.prompt_attachments(&legacy.id, "user").unwrap()).unwrap(),
+        json!([legacy.attachments[0]])
+    );
     assert_no_embedded_bytes(&store);
+    assert_eq!(recovery_records(&store, &legacy.id).len(), 1);
+    let live: i64 = store
+        .lock()
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM binary_assets", [], |r| r.get(0))
+        .unwrap();
     assert_eq!(
         std::fs::read_dir(asset_directory_for_database(&path))
             .unwrap()
             .count(),
-        3
+        usize::try_from(live).unwrap()
     );
+    assert!(
+        staged.iter().all(|path| !path.exists()),
+        "rolled-back media and recovery archives are reclaimed only after a successful retry"
+    );
+    store.verify_asset_integrity().unwrap();
+}
+
+#[test]
+fn legacy_inline_media_damage_preserves_usable_history_positions_and_recovery_records() {
+    for version in [2, 6] {
+        for damage in ["base64", "missing", "shape", "magic"] {
+            let root = tempdir().unwrap();
+            let path = root.path().join("state.sqlite3");
+            let fixture = legacy(&path, version);
+            let mut bad_image = attachment();
+            let mut bad_file = fixture.attachments[1].clone();
+            match damage {
+                "base64" => {
+                    bad_image["image"]["data"] = json!("!invalid-image!");
+                    bad_file["file"]["data"] = json!("!invalid-file!");
+                }
+                "missing" => {
+                    bad_image["image"].as_object_mut().unwrap().remove("data");
+                    bad_file["file"].as_object_mut().unwrap().remove("data");
+                }
+                "shape" => {
+                    bad_image["image"] = json!({"data":17,"mimeType":false});
+                    bad_file["file"] = json!({"name":null,"data":[],"mimeType":false});
+                }
+                _ => {
+                    bad_image["image"]["data"] = json!(STANDARD.encode(b"not image bytes"));
+                    bad_file["file"]["mimeType"] = json!("not/a-supported-file");
+                }
+            }
+            let good_image = json!({"kind":"image","name":"surviving.png","image":image(PREVIEW)});
+            let attachments = json!([bad_image, bad_file, good_image, fixture.attachments[1]]);
+            let original_payload = attachments.to_string();
+            let raw = Connection::open(&path).unwrap();
+            raw.execute(
+                "UPDATE prompt_attachments SET payload=?1",
+                [attachments.to_string()],
+            )
+            .unwrap();
+            let original_tool: String = raw
+                .query_row(
+                    "SELECT metadata FROM timeline_items WHERE id='tool'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let mut tool: Value = serde_json::from_str(&original_tool).unwrap();
+            tool["content"][0]["content"] = attachments[0]["image"].clone();
+            tool["content"][0]["content"]["type"] = json!("image");
+            raw.execute(
+                "UPDATE timeline_items SET metadata=?1 WHERE id='tool'",
+                [tool.to_string()],
+            )
+            .unwrap();
+            if version == 6 {
+                raw.execute("UPDATE model_history SET payload=json_set(payload,'$.attachments',json(?1)) WHERE json_extract(payload,'$.kind')='prompt_accepted'", [attachments.to_string()]).unwrap();
+                let mut generated = serde_json::to_value(&fixture.image).unwrap();
+                generated.as_object_mut().unwrap().remove("data");
+                if let Some(data) = attachments[0]["image"].get("data") {
+                    generated["data"] = data.clone();
+                }
+                generated["mimeType"] = attachments[0]["image"]["mimeType"].clone();
+                raw.execute("UPDATE model_history SET payload=json_set(payload,'$.image',json(?1)) WHERE json_extract(payload,'$.kind')='image_generated'", [generated.to_string()]).unwrap();
+                let mut message = fixture.messages[0].clone();
+                message["images"] = json!([attachments[0]["image"]]);
+                message["files"] = json!([attachments[1]["file"]]);
+                raw.execute(
+                    "UPDATE model_messages SET payload=?1 WHERE id=41",
+                    [message.to_string()],
+                )
+                .unwrap();
+            }
+            drop(raw);
+            let store = SessionStore::open_protected_with_key(&path, key()).unwrap();
+            assert_eq!(
+                serde_json::to_value(store.prompt_attachments(&fixture.id, "user").unwrap())
+                    .unwrap(),
+                json!([attachments[2], attachments[3]])
+            );
+            let history = store.load_presentation(&fixture.id).unwrap().events;
+            assert!(history.iter().any(|event| matches!(&event.event, AppEvent::PromptAccepted { text, attachments, .. }
+                if text == "look" && attachments.len() == 4 && matches!(attachments[0],axiom_inference::PromptAttachment::Text { .. })
+                && matches!(attachments[1],axiom_inference::PromptAttachment::Text { .. }))));
+            assert!(
+                !history
+                    .iter()
+                    .any(|event| matches!(event.event, AppEvent::ImageGenerated { .. }))
+            );
+            let catalog =
+                crate::image_tool::ImageCatalog::from_history(&fixture.id, &history).unwrap();
+            let identity = serde_json::to_vec(&(
+                "axiom-local-image-v1",
+                fixture.id.to_string(),
+                fixture.turn.to_string(),
+                2,
+                STANDARD.encode(PREVIEW),
+            ))
+            .unwrap();
+            assert!(
+                catalog
+                    .resolve(&format!(
+                        "img_{}",
+                        &hex::encode(Sha256::digest(identity))[..32]
+                    ))
+                    .is_ok()
+            );
+            let snapshot = store.thread_snapshot(&fixture.id, None, 100).unwrap();
+            let tool = snapshot
+                .items
+                .iter()
+                .find(|item| item.id == "tool")
+                .unwrap();
+            assert_eq!(tool.metadata["success"], true);
+            assert_eq!(
+                tool.metadata["arguments"]["prompt"],
+                "exact arguments remain"
+            );
+            assert!(tool.metadata["generated_image"].is_null());
+            assert!(tool.metadata["recovery_warning"].is_string());
+            let records = recovery_records(&store, &fixture.id);
+            assert!(records.iter().any(|record| {
+                record["sourceKind"] == 0
+                    && String::from_utf8(
+                        STANDARD
+                            .decode(record["originalPayloadBase64"].as_str().unwrap())
+                            .unwrap(),
+                    )
+                    .unwrap()
+                        == original_payload
+            }));
+            if version == 6 {
+                let checkpoint = history
+                    .iter()
+                    .find_map(|event| match &event.event {
+                        AppEvent::ModelHistoryCheckpoint { messages, .. } => Some(messages),
+                        _ => None,
+                    })
+                    .unwrap();
+                assert_eq!(checkpoint[0]["content"], "look");
+                assert_eq!(checkpoint[0]["images"], json!([]));
+                assert_eq!(checkpoint[0]["files"], json!([]));
+                assert_eq!(checkpoint[1], fixture.messages[1]);
+                assert!(records.iter().any(|record| record["sourceKind"] == 3
+                    && record["originalDigest"] == fixture.digests[0].1));
+                // The omitted message's old digest must not block a later
+                // authenticated write of that exact original valid message.
+                append(
+                    &store,
+                    &fixture.id,
+                    AppEvent::ModelHistoryCheckpoint {
+                        version: 1,
+                        messages: fixture.messages.clone(),
+                    },
+                );
+            }
+            let mut forged = payload();
+            forged["payload"]["attachments"][0]["image"]["_axiom_unavailable"] = json!(true);
+            assert!(store.set_local_payload("new-write", &forged).is_err());
+            assert_no_embedded_bytes(&store);
+            store.verify_asset_integrity().unwrap();
+            drop(store);
+            let reopened = SessionStore::open_protected_with_key(&path, key()).unwrap();
+            assert_eq!(
+                serde_json::to_value(reopened.prompt_attachments(&fixture.id, "user").unwrap())
+                    .unwrap(),
+                json!([attachments[2], attachments[3]])
+            );
+            assert!(!recovery_records(&reopened, &fixture.id).is_empty());
+            assert!(
+                reopened
+                    .export(&fixture.id)
+                    .unwrap()
+                    .contains("exact arguments remain")
+            );
+            reopened.delete_sessions(&[fixture.id]).unwrap();
+            assert_eq!(
+                std::fs::read_dir(asset_directory_for_database(&path))
+                    .unwrap()
+                    .count(),
+                0,
+                "thread deletion also releases its encrypted recovery records"
+            );
+        }
+    }
 }
 
 #[test]
