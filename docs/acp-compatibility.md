@@ -1,0 +1,419 @@
+# ACP and the Axiom extension
+
+This is the current compatibility, extension and frontend-parity reference.
+AxiomCLI targets **ACP protocol v1**, using the pinned `agent-client-protocol`
+**2.0.0** runtime and its **1.5.0** schema. The local vendor patch fixes deep-handler
+stack growth; these version numbers are independent of Axiom extension **0.2**.
+No claim about the latest upstream release is needed to implement this contract.
+
+Sources: [Rust adapter](../apps/axiomcli/src/acp.rs),
+[extension DTOs](../crates/axiom-acp-extension/src/lib.rs),
+[JSON Schema](../protocol/axiom-acp-extension/v0.2/schema.json), and
+[Node client](../packages/axiom-acp-client/src/client.ts).
+
+Desktop passes its product version to the client SDK's `initialize` call and
+requires an exact match with `agentInfo.version` before reporting a connected
+state or bootstrapping account/chat data. Missing or mismatched versions stop
+startup with reinstall/rebuild guidance. This product pairing check is separate
+from ACP protocol/extension negotiation; the SDK's argument is optional for
+non-Desktop consumers.
+
+## Standard ACP
+
+| Operation | Implemented behavior |
+|---|---|
+| `initialize` | ACP v1, metadata, load-session support and optional Axiom negotiation |
+| `session/new`, `session/load` | Canonical workspace, durable state and restored model/thinking/profile |
+| `session/prompt` | Literal text/resource links, ordered user/assistant/reasoning chunks, tools and stop reason; leading slashes never invoke application controls |
+| `session/cancel`, `$/cancel_request` | Cooperative cancellation; supported long-running extension requests also cancel. A cancelled permission response also cancels its prompt, even if it arrives before the cancellation notification. |
+| `session/set_mode` | CLI permission profile; Desktop Agent changes use the dedicated revisioned method |
+| `session/set_config_option` | Model/thinking selection validated by native policy and the catalog |
+| Permission requests | Only offered deny/once/eligible session-grant choices are valid |
+| Form elicitation | Text/enum/multiple-choice questions when the unstable client capability is advertised |
+| Plans, tools and diffs | Standard plan updates, stable tool IDs/states, bounded output and before/after diffs |
+| Session info/commands | Local title updates and slash-command discovery |
+
+Prompt images are supported and advertised. Image inputs require a model/protocol
+with encrypted image support. File inputs use direct file metadata and original
+bytes rather than extracted content. Audio, binary
+embedded documents, client-owned terminals/filesystems and per-session MCP
+injection are not advertised. Tools execute behind AxiomCLI policy. Unknown
+standard methods receive normal JSON-RPC method errors.
+
+ACP clients invoke deliberately selected slash commands through
+`_axiom/session/command` with `{sessionId, command}`, after negotiating
+`commandInvocation@1`. The command string uses the advertised slash vocabulary
+(for example, `/thinking high`); the response is the normal prompt stop reason.
+Do not infer command invocation from pasted or submitted user message text.
+The TypeScript SDK exposes `invokeCommand` separately from `prompt`; Desktop's
+ordinary composer continues to call `prompt`. With an older sidecar that lacks
+this feature, the SDK blocks leading-slash prompts before dispatch and asks for
+a restart, preventing the legacy implicit command parser from handling them.
+CLI/TUI command entry retains its intentional local parsing. Older clients can continue submitting literal ACP
+prompts and can use standard mode/configuration methods for controls.
+
+## Extension negotiation
+
+`localPayload@1` provides `_axiom/localPayload` for Desktop's encrypted drafts
+and outbox. Requests bind the exact authenticated account and native store
+generation, with get/put/remove operations on version-1 prompt or queue envelopes.
+Accepted binary image/file slots are externalized by native storage. Keys never
+cross ACP. Missing feature support, account changes or persistence errors fail
+closed; Desktop does not fall back to plaintext browser writes. Legacy browser
+imports require native acknowledgement before deletion. See
+[encrypted local storage](local-storage.md).
+
+Clients advertise `clientCapabilities._meta.axiom`. AxiomCLI advertises its
+extension at initialization but sends custom notifications and accepts custom
+calls only after compatible negotiation. `protocolVersion` shares a leading-number
+family; each named feature negotiates its own version. Missing/zero versions
+mean unsupported. Desktop checks its required feature set and negotiates optional
+features separately.
+
+The agent's initialization metadata must also include a nonempty
+`runtimeInstanceId` of at most 128 characters without whitespace or control
+characters. The Node client binds it before publishing a connected state; it
+does not wait for the first activity event. An earlier event must identify the
+same runtime, and its sequence is preserved. Missing, malformed or conflicting
+identities reject initialization. This local process identity is separate from
+provider TEE evidence and never grants inference or tool authority. Actual
+runtime changes still invalidate account and session state. Restored message
+preparations require review and a fresh send; an old setup callback cannot
+reactivate them after an account or connection changes and returns.
+
+`account`, `timeline`, `attachments`, `imageResources` and `activity` are
+version **2**; `billing` is version **4** and `securityEvidence` is version **4**.
+Other advertised features are version **1**:
+`desktopChat`, `desktopAgent`, `threadCatalog`, `modelCatalog`,
+`profilePreferences`, `collections`, `usage`,
+`webConsent`, `steering`, `messageRevision`, `compaction`, and
+`commandInvocation`.
+The source `FeatureVersions` and generated schema are authoritative.
+
+`securityEvidence@4` carries verified hardware, key, freshness and provenance
+evidence plus `outdated` (awaiting consent) and `degraded` (explicitly accepted)
+states. Desktop requires this version before accepting verification reports.
+`security/verify` accepts `acceptOutdatedTee: true` only with the current `modelId`;
+the native runtime resolves the provider and remembers consent until restart.
+Normal verification requests never grant consent. Degraded reports retain the
+failed Intel `OutOfDate` posture check; other checks must still pass.
+
+`security/prewarm` accepts only `modelId` and returns the same public report as
+`security/verify`, without creating a thread or invalidating valid native keys.
+It never grants outdated-TEE consent. Composition calls are coalesced by account
+and model, with expiry-aware reuse and bounded failure cooldowns. Native provider
+caches additionally enforce model identity, trust policy and expiry and share
+work with inference. Account transitions cancel native warmups; stale reports
+cannot replace evidence after account, runtime or model changes. Manual
+`security/verify` still requests fresh attestation.
+
+
+## Methods and ownership
+
+All methods below are local control-plane operations. Their plaintext payloads
+are never an instruction to send conversation plaintext through a hosted endpoint.
+
+| Group | Method names following `_axiom/` |
+|---|---|
+| Desktop | `desktop/bootstrap`, `desktop/agent/configure`, `desktop/mcp` |
+| Explicit commands | `session/command` (requires `commandInvocation@1`) |
+| Threads | `thread/list`, `thread/timeline`, `thread/attachments`, `thread/rename`, `thread/delete_preview`, `thread/delete_confirm` |
+| Models/preferences | `models/list`, `profile/preferences`, `profile/preferences/set` |
+| Collections | `collection/list`, `collection/create`, `collection/rename`, `collection/set_collapsed`, `collection/move`, `collection/delete`, `collection/assign` |
+| Native account | `account/status`, `account/native_login_start`, `account/native_login_complete`, `account/native_login_cancel`, `account/logout` |
+| Automation-key management | `account/api_keys`, `account/api_key_create`, `account/api_key_revoke` |
+| Billing | `billing/status`, `billing/redeem_gift_code`, `billing/crypto_options`, `billing/create_crypto_payment`, `billing/crypto_payments` |
+| Usage | `usage/summary` (optional `period`: `week`/`month`/`all_time`, IANA `timezone`; defaults: all time/UTC) |
+| Evidence/compaction/steering | `security/verify`, `security/prewarm`, `compaction/start`, `turn/steer` |
+
+Permission and question responses remain standard ACP. Standard notifications
+are the sole live representation of user/assistant/reasoning content, tools,
+plans, modes and configuration. `_axiom/event` carries additional typed account,
+security, context/accounting and activity state with `runtimeInstanceId`, monotonic
+`sequence`, RFC 3339 `occurredAt`, and optional thread/correlation IDs.
+
+`account_changed.status` may include optional `storageMigration` progress with
+phase `encrypting`, `moving_media`, `checking`, `finalizing` or `failed` and
+optional `completed`/`total` counters for that phase. During an upgrade the account
+state is `starting`, with no usable account/store context. Each progress update
+uses a newer account revision; final validation or failure has a later revision.
+Clients must apply the usual account/runtime fences so delayed progress cannot
+replace a ready account. A failed upgrade publishes `unavailable`, recovery
+details and phase `failed`; `account/status` retries opening the existing store.
+This is additive presentation metadata on `account@2`. Older clients ignore it.
+
+## Durable timeline and recovery
+
+Compaction activity includes optional `progress` counters: `completed` and `total`
+passes, cumulative `generatedTokens`, and `estimated`. Streamed text and available
+reasoning supply approximate counts until provider output-token usage arrives.
+These ephemeral counters are independent of billable request usage and never
+become assistant text or authoritative conversation history. Completion, failure
+and cancellation clear the progress indicator.
+
+Thread summaries/pages include `revision` and `lastTimelineSequence`. Timeline
+pagination uses an exclusive sequence cursor. On gaps/runtime changes, fetch all
+pages from the beginning and atomically replace the projection. Metadata-only
+refresh is insufficient. Standard notifications can include `_meta.axiom`
+delivery identity; stable prompt `clientItemId` values reconcile optimistic
+messages with durable rows.
+
+Desktop opts into `session/load` metadata
+`_meta.axiom.skipHistoryReplay: true` and then fetches the complete authoritative
+timeline before marking the thread loaded. With the Desktop frontend and
+`timeline@2` negotiated, native code restores the full conversation and image
+catalog without also replaying historical presentation notifications. This
+avoids transferring generated images twice and broadcasting partial history
+for every saved event. Ordinary ACP loads retain transcript replay; older
+sidecars can ignore the metadata and the timeline still replaces their replay.
+The local pipe reader buffers fragments until a complete frame arrives, so
+large image pages require linear copying while keeping the 64 MiB frame limit.
+
+Optional `imageResources@1` makes generated-image timeline content metadata-only:
+`{type:"image", mimeType:"image/png", width, height, imageResource:{callId,sha256}}`.
+Live tool updates carry the same descriptor in `rawOutput.imageResource`.
+`_axiom/image/read` accepts `{threadId,callId,sha256}` and returns one original
+PNG only after resolving the exact completed tool under the current account
+and checking its saved proof, digest and size. Older clients keep inline image
+content. Saved-image reads remain available without an installed image provider.
+Desktop mints a separate opaque handle for each window/document; renderer callers
+cannot supply a native path, URL or another thread identity. Its viewport loader
+keeps at most two reads in flight, shares duplicate reads and caches up to 32 MiB
+of idle originals. Active viewers pin their URLs. Account/runtime changes,
+disconnect, deletion and document unload invalidate handles and delayed replies.
+
+`lastMessageAt` describes nonempty user/assistant/reasoning activity.
+`lastUserMessageAt` advances on user submissions and is the current catalog sort
+key, descending with empty threads last and ID as tie-breaker. Clients must not
+substitute metadata `updatedAt` or arrival time. Unknown timeline kinds remain
+bounded generic activity until a client understands them.
+
+Context usage is a replacement report from the last completed conversation
+request, with input/output tokens, model, time and optional pinned capacity/
+compaction threshold. It is persisted atomically with thread revision. It does
+not estimate unsent drafts, sum billing, or get overwritten by compaction/title
+work. Request-accounting reconciliation never marks partial output verified.
+
+`imageResources@1` replaces generated image bytes in live updates and saved
+Desktop timeline pages with conversation-owned descriptors. `_axiom/image/read`
+returns one completed image for the active account's exact thread, tool-call ID
+and SHA-256. Main validates its PNG bytes, geometry and hash, then gives the
+renderer an opaque document-scoped handle. Reads near the viewport are limited
+to two at a time, with a bounded cache for inactive image URLs. Account/runtime
+changes revoke handles and reject late replies; loading errors keep the rest
+of the conversation usable and offer an explicit retry.
+
+`imageResources@2` adds `_axiom/image/resolve` for one exact conversation-local
+`img_…` ID. Native code rebuilds the image catalog from that thread's saved
+history alone, exactly as on restore, and returns the uploaded, generated or
+edited original with its origin and name. IDs never resolve across threads or
+accounts. Desktop uses it to show the image a `view_image` call inspected and the
+reference images of an image request, and only when a person expands that row.
+
+`activity@2` adds `tool_call_drafting` with the active `turnId` once per provider
+response, when the model starts writing a tool call. It carries no tool name or
+arguments; the call still arrives only as the validated ACP tool call, which
+replaces Desktop's transient "Writing tool call…" row. The event is excluded
+from saved model history and the timeline. NEAR relay streams send this content-free signal before their signed
+transcript is verified; tool names and arguments remain gated on verification.
+Providers that return tool calls only with the complete response emit it at that
+point.
+
+A Desktop client with the timeline extension may send
+`_meta.axiom.skipHistoryReplay: true` on `session/load`. Native runtime history
+still restores, including damaged-record recovery, while Desktop fetches its
+authoritative timeline once. Standard ACP clients retain transcript replay.
+
+## Desktop authority and revisions
+
+Bootstrap starts new Desktop threads with Agent off. `desktopAgent@1` atomically
+configures enablement, approval level and directory with `expectedRevision`.
+Changes require idle work; queued prompts/steering carry `agentRevision` to
+reject stale authority. Generic mode setters cannot bypass this path. Desktop
+keeps its embedded system prompt and does not start servers from CLI configuration.
+
+Optional `desktopMcp@1` adds `_axiom/desktop/mcp` for account-scoped local stdio
+connections: `list`, `save`, `delete`, `test`, `import` and per-thread `select`.
+`desktopMcp@2` adds remote Streamable HTTP, `connect`, `cancel_connect` and
+`disconnect`. `remoteSupported` reports whether both peers support remote
+connections; older peers receive only local connections and cannot execute saved
+remote selections. Missing `remote` fields preserve existing local configuration.
+Mutations carry `expectedRevision` and require idle work. Secrets are write-only
+OS-credential-store variables, bearer tokens and OAuth grants; only variable names and opaque references are
+returned. Thread selections expose only the chosen MCP tools, without granting
+builtin Agent or Web authority. Prompts with `_meta.axiom.mcpRevision` bind to the
+current account-wide configuration/selection revision; mismatches fail before
+acceptance. Missing metadata exposes no Desktop MCP tools, preserving safe older
+client behavior. Connection changes invalidate affected selections/grants;
+MCP schema hashes are rechecked before each turn. This optional feature is
+advertised only by the Desktop frontend. Native tool-call notifications carry
+`_meta.axiomMcpSource` and durable timeline metadata preserves `mcp_source` and
+`started`, identifying the call-time connection/destination and whether execution
+started. These describe tool activity, not inference attestation. See [MCP connections](mcp.md).
+
+Every Desktop prompt supplies `_meta.axiom.webEnabled`; only explicit boolean
+`true` permits built-in Web tools. Missing consent is false, and malformed
+values fail. Remembering a warning in the renderer is not native consent.
+
+`messageRevision@1` adds `PromptMetadata.revision = { userItemId,
+expectedRevision }` on standard `session/prompt`. The native store truncates
+local history starting at the selected turn, retains accounting and executes a
+normal E2EE run. It rejects active/stale/cross-account edits. This is the edit
+and regenerate flow; it does not undo prior tool side effects.
+
+`steering@1` takes `{ threadId, expectedTurnId, clientItemId, text, webEnabled }`
+plus the applicable Agent revision. Text is limited to 64 KiB. It waits for a safe
+boundary, skips unstarted tools and cannot change active-turn model/Web authority.
+Identical IDs/text join an existing submission; conflicting ID reuse fails.
+The response acknowledges application to the local transcript, not completion of
+the whole turn. Uncertain delivery requires timeline reconciliation before retry.
+
+`attachments@2` adds original inline file bytes to `_meta.axiom.attachments`:
+`{kind: "file", name, file: {name, mimeType, data}}`. Images retain
+`{kind: "image", name, image: {mimeType, data}}`. Data is canonical base64;
+outer/inner names must agree. Count, size, format, role and model capabilities are
+validated before committing a new prompt. New extracted-text uploads are rejected;
+legacy text attachments remain readable in local history. Standard ACP embedded
+resources are not advertised or converted to text.
+
+Desktop requires attachment version 2 from its sidecar. This prevents a new
+renderer from sending a file shape to an older process. Timeline metadata contains
+only summaries; `thread/attachments` reads original inputs under the active account
+guard. Revisions preserve attachments and recheck model support. Model discovery
+adds `fileMimeTypes`; `supportsImages` remains separate. See [direct uploads](desktop.md#images-and-files).
+Model discovery also adds optional catalog `tags` (`id`, `label`,
+`tone`, `position`); see [model tags](provider-catalogs.md#model-tags-and-picker-filters).
+
+`imageGeneration@3` exposes `generate` and `view_image` automatically for a
+vision-capable selected model when the native image service is installed. A
+prompt creates an image; an optional `reference_image_ids` array selects up to
+five distinct conversation-local images for editing or composition. The array
+defines `<image1>`, `<image2>`, etc. for that call. Prompt metadata has no Images toggle or
+per-message image permission. Native code checks model capability on every
+turn and rejects unadvertised image calls and nonvision image uploads. The earlier
+version-1 toggle and version-2 singular-reference contracts are not negotiated
+for new calls; their saved tool records remain renderable. Instructions
+require an explicit user request for image creation or editing; image analysis
+alone is not such a request. Web consent and Agent/MCP authority remain separate.
+
+`imageGeneration@4` adds `_axiom/image/regenerate` with only `threadId` and
+`callId`. Native code resolves a completed image tool record under the active
+account, verifies its reference order, and runs that stored request in a fresh
+image-only turn. It adds the result without replacing the user prompt, prior
+images, or later messages, and never calls the chat model. Running work is
+serialized per thread, supports standard cancellation, and retains normal
+authenticated progress, accounting, and durable recovery. Earlier sidecars
+reject the action before sending any generation request. The model-facing tool
+uses an enumerated `aspect_ratio`; client-side sizing fills the largest exact
+32-pixel-grid output within the existing area cap. New images default to 2:3.
+
+`view_image` selects one conversation-local `image_id` for optional inspection,
+including a result generated earlier in the same turn. Native code supplies a
+bounded visual observation after all replies in the tool-call batch, preserving
+provider tool-history ordering. The observation is application context, not a
+new user request. ACP receives a normal text tool result; image bytes go only to
+the selected model's encrypted vision input. Successful views reconstruct from
+the saved tool arguments and completion status, using the existing local image
+catalog. No additional ACP extension or image-generation request is needed.
+
+Image progress uses standard tool-call updates with
+`rawOutput.imageProgress = {stage, percent}`. Native tool metadata retains the
+latest value as `image_progress` for durable snapshots. Intermediate percentages
+are bounded to 0–99 and monotonic; successful tool completion supplies the UI's
+100% state. Stages are `queued`, `generating` and `finishing`. Progress is tool
+state rather than assistant text, model output or additional image content.
+
+## Accounts, billing and public evidence
+
+Login-start accepts a method hint and returns a hosted URL and opaque handle.
+Completion/cancellation use that handle. Native access/refresh tokens and browser
+method credentials never appear in ACP/renderer state. API-key **creation** is an
+explicit exception for a newly issued automation token shown once; account
+snapshots and Debug output omit it. It is not a native-login credential.
+
+`billing@2` carries account-ledger status with required trial/paid buckets,
+nullable mainnet deposit metadata and a current ZEC/USD quote. Credit uses integer
+microUSD; deposit/quote amounts use exact decimal strings. Calls require a current
+native account and reject stale account/revision results. `usage@1` carries posted
+spend by model.
+
+`billing@3` adds private gift redemption. Its bounded `code` request returns
+`creditedMicrousd`, `alreadyRedeemed` and `status`; only the updated billing status
+is published as activity. Never log or persist the code. Gift redemption requires version
+3 and carries its captured account ID through the IPC boundary. New sidecars still
+serve `billing/status` to negotiated version 2 clients, but reject redemption until
+version 3 is negotiated. Retrying the same gift code after an uncertain response
+uses backend exact-once redemption; cancellation does not prove that credit failed.
+
+`billing@4` adds crypto options, create and recent-payment reads. Funding objects
+retain the backend's snake_case fields and exact decimal strings. The create
+request carries UUID `id`, integer `amountMicrousd` and `payCurrency`; responses
+carry `options`, `payment` or `payments`. Native tokens and account-operation
+cancellation guard every request. Currency codes accept 1–32 lowercase letters
+or digits, including one-letter provider asset codes. IPC and the SDK discard
+replies after account changes. Merchant keys stay on the backend. A repeated UUID retrieves its prior
+intent; cancellation never authorizes creating a replacement automatically.
+Desktop and its bundled sidecar require version 4 together. A new sidecar talking
+to an older backend hides Other crypto and leaves existing billing available.
+
+`billing@5` adds `_axiom/billing/crypto_invoice_action` with `invoiceId`, action
+`cancel`, `check`, or `refresh`. Refresh also supplies a new UUID `id` and
+`previousQuoteId`; other actions omit those fields. Version 4 remains the required
+baseline; invoice actions are rejected until version 5 is negotiated. Captured
+account identity and operation cancellation guard IPC, RPC, and HTTP replies.
+Payment responses add optional `quote_id`, `invoice_expires_at`, and `active` for
+older-server compatibility, preserving the server's snake_case funding contract.
+The native client checks that invoice metadata appears together, expiry is exactly
+six hours after creation, and rate expiry never exceeds invoice expiry.
+
+Billing status can include shared `trial_capacity` metadata. Trial admission
+errors are typed `TRIAL_CAPACITY` with a retry timestamp; clients show a capacity
+message and retry time. Existing work finishes normally and paid funding stays
+usable when new trial requests are paused. No plaintext inference path is added.
+
+Security projections require the registered provider identity, accepted key
+fingerprints and hard expiry. NEAR require positive lease generation;
+Tinfoil intentionally omits it. The projection must preserve router-versus-worker
+and observed-versus-approved distinctions from [security](threat-model.md).
+The SDK's `ensureSecurity(threadId)` renews an idle thread's report through the
+model-only `_axiom/security/prewarm` method and reusable native attestation cache.
+It fences account/runtime/model changes, running requests and newer request
+reports before applying a result. `verifySecurity(threadId)` uses
+`_axiom/security/verify` for an explicit fresh appraisal. Both retain the
+provider's original hard expiry and required public-evidence validation.
+
+## Process bounds and contract generation
+
+ACP is newline-delimited JSON-RPC. Stdout is protocol-only. The Node client bounds
+frames to 64 MiB and retained stderr to 64 KiB, assembles fragmented frames with
+linear byte copying, stops a chunk immediately after a fatal parse error,
+honors stdin backpressure, rejects
+pending work on process exit, and never exposes raw method dispatch to the renderer.
+Typed extension failures include a bounded code/message/retryability object;
+clients must not infer authority or retry behavior from display text.
+
+```sh
+pnpm generate:protocol
+pnpm --filter @axiom/axiom-acp-client typecheck
+pnpm --filter @axiom/axiom-acp-client test
+```
+
+The generator exports Rust DTOs to JSON Schema and TypeScript; never hand-edit
+generated TypeScript. Build `cargo build --locked -p axiomcli` first for real-process
+client tests. The Rust schema-drift and ACP transcript tests, Node client/state tests
+and Desktop IPC/browser tests cover the same semantic contract.
+
+## Local history pagination
+
+Timeline v2 accepts independent `afterSequence` and `afterRequestId` cursors and
+returns `nextCursor` and `nextRequestUsageCursor`. Continue until both are absent,
+keeping each finished stream's last cursor while reading the other. Request usage
+is ordered by request ID, limited to 100 records and 512 KiB per page. Timeline
+items are limited by row count and 32 MiB of serialized JSON (including escaping);
+the final wire response is also checked below the 64 MiB transport ceiling.
+Oversized individual records fail explicitly without truncating stored content.
+Only the active turn is queried for a wire page. Accounting recovery runs before
+the first page, at most 100 pending requests per refresh, to avoid changing the
+snapshot revision during pagination. Desktop validates cursor progress and
+assembles both streams atomically at one revision and account generation.
+These exchanges use the native local pipe and never upload conversation history.
