@@ -16,6 +16,8 @@ pub(super) struct StreamParser {
     data: String,
     limit: usize,
     done: bool,
+    started: bool,
+    context_rejected: bool,
     output: InferenceResponse,
     usage: Option<Usage>,
     calls: ToolCallAccumulator,
@@ -31,6 +33,8 @@ impl StreamParser {
             data: String::new(),
             limit,
             done: false,
+            started: false,
+            context_rejected: false,
             output: InferenceResponse::default(),
             usage: None,
             calls: ToolCallAccumulator::default(),
@@ -78,6 +82,10 @@ impl StreamParser {
             return Err(invalid("duplicate stream completion"));
         }
         if data == "[DONE]" {
+            if self.context_rejected {
+                self.done = true;
+                return Ok(Vec::new());
+            }
             if self.output.finish_reason.is_none() || self.usage.is_none() {
                 return Err(invalid("incomplete authenticated terminal event"));
             }
@@ -86,9 +94,18 @@ impl StreamParser {
         }
         let value: Value =
             serde_json::from_str(data).map_err(|_| invalid("invalid authenticated stream JSON"))?;
+        if self.context_rejected {
+            return Err(invalid("data after authenticated context rejection"));
+        }
         if value.get("error").is_some() {
+            if !self.started && context_rejection(&value) {
+                // Wait for clean authenticated EOF before permitting recovery.
+                self.context_rejected = true;
+                return Ok(Vec::new());
+            }
             return Err(invalid("Tinfoil reported an inference error"));
         }
+        self.started = true;
         identity(&value, &mut self.id, &mut self.wire_model)?;
         if let Some(raw) = value.get("usage").filter(|v| !v.is_null()) {
             let current = usage(raw)?;
@@ -185,6 +202,9 @@ impl StreamParser {
     }
 
     pub(super) fn finish(mut self) -> Result<InferenceResponse> {
+        if self.context_rejected && self.buffer.is_empty() && self.data.is_empty() {
+            return Err(context_length_exceeded());
+        }
         if !self.done || !self.buffer.is_empty() || !self.data.is_empty() || self.id.is_none() {
             return Err(invalid(
                 "Tinfoil stream ended without authenticated completion",
@@ -215,7 +235,11 @@ pub(super) fn complete(body: &[u8], _model: &str) -> Result<InferenceResponse> {
     let value: Value = serde_json::from_slice(body)
         .map_err(|_| invalid("incomplete authenticated response JSON"))?;
     if value.get("error").is_some() {
-        return Err(invalid("Tinfoil reported an inference error"));
+        return Err(if context_rejection(&value) {
+            context_length_exceeded()
+        } else {
+            invalid("Tinfoil reported an inference error")
+        });
     }
     identity(&value, &mut None, &mut None)?;
     let choices = value
@@ -373,4 +397,25 @@ fn validate_finish(output: &mut InferenceResponse) -> Result<()> {
         return Err(invalid("tool calls disagree with finish reason"));
     }
     Ok(())
+}
+
+// This parser receives only request-bound EHBP-authenticated plaintext. Never
+// apply this classification to relay HTTP/status bodies or unsigned diagnostics.
+fn context_rejection(value: &Value) -> bool {
+    value
+        .get("error")
+        .and_then(|error| error.get("code"))
+        .and_then(Value::as_str)
+        == Some("context_length_exceeded")
+        && value.get("choices").is_none()
+        && value.get("usage").is_none()
+}
+
+fn context_length_exceeded() -> crate::SecureClientError {
+    crate::SecureClientError::with_code(
+        axiom_inference::ProviderFailureKind::InvalidRequest,
+        crate::SecureErrorCode::ContextLengthExceeded,
+        "The provider rejected the request before generation because its context limit was exceeded.",
+        false,
+    )
 }
