@@ -1,0 +1,197 @@
+# Acceptance and publication only; reuse every retained signed installer without rebuilding or resigning.
+name: Complete unpublished Axiom 0.1.21 packaging
+'on':
+  workflow_dispatch: {}
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: axiom-0.1.21-packaging-recovery
+  cancel-in-progress: false
+jobs:
+  qualify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Validate the reviewed recovery tag and retained acceptance gates
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/release-0.1.21-recovery.py
+      - uses: actions/checkout@v4
+        with:
+          ref: 0cea3d47db3a75c1cab7495af930bc864604a6fc
+          fetch-depth: 0
+      - name: Require the exact qualified native source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git merge-base --is-ancestor HEAD origin/main
+          node apps/desktop/scripts/set-release-version.mjs 0.1.21 --check-only
+          python3 scripts/verify-release-ci.py 0cea3d47db3a75c1cab7495af930bc864604a6fc
+  macos:
+    name: Accept retained signed Mac installers
+    needs: qualify
+    runs-on: macos-15
+    timeout-minutes: 20
+    environment: release
+    env:
+      AXIOM_UPDATE_PUBLIC_KEYS: ${{ vars.AXIOM_UPDATE_PUBLIC_KEYS }}
+      AXIOM_QUALIFIED_NATIVE_REVISION: 0cea3d47db3a75c1cab7495af930bc864604a6fc
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          name: axiom-release-mac-universal
+          path: apps/desktop/dist
+          github-token: ${{ github.token }}
+          run-id: 42709923710
+      - name: Recheck retained Mac signatures, notarization and installer assessment
+        run: |
+          set -euo pipefail
+          for file in apps/desktop/dist/*.pkg; do
+            pkgutil --check-signature "$file"
+            xcrun stapler validate "$file"
+            spctl --assess --type install --verbose=2 "$file"
+          done
+      - name: Generate and view an authenticated image from both signed installations
+        env:
+          AXIOM_INSTALLED_NATIVE_QA: ${{ secrets.AXIOM_INSTALLED_NATIVE_QA }}
+        run: |
+          set -euo pipefail
+          version=0.1.21
+          desktop="apps/desktop/dist/Axiom-$version-mac-universal.pkg"
+          standalone="apps/desktop/dist/AxiomCLI-$version-mac-universal.pkg"
+          sudo installer -pkg "$desktop" -target /
+          node scripts/verify-installed-image.mjs /Applications/Axiom.app/Contents/Resources/bin/axiomcli "$desktop" "$RUNNER_TEMP/installed-image-desktop" "$version"
+          # Switch CLI registration only on this disposable acceptance runner.
+          link=/usr/local/bin/axiomcli
+          test -L "$link"
+          test "$(readlink "$link")" = /Applications/Axiom.app/Contents/Resources/bin/axiomcli
+          sudo rm "$link"
+          sudo installer -pkg "$standalone" -target /
+          node scripts/verify-installed-image.mjs /usr/local/lib/axiom-cli/bin/axiomcli "$standalone" "$RUNNER_TEMP/installed-image-cli" "$version"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: signed-installation-image-acceptance
+          retention-days: 7
+          path: |
+            ${{ runner.temp }}/installed-image-desktop/receipt.json
+            ${{ runner.temp }}/installed-image-desktop/image-*.png
+            ${{ runner.temp }}/installed-image-cli/receipt.json
+            ${{ runner.temp }}/installed-image-cli/image-*.png
+          if-no-files-found: warn
+  publish-draft:
+    needs: macos
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+      actions: read
+    env:
+      AXIOM_UPDATE_PUBLIC_KEYS: ${{ vars.AXIOM_UPDATE_PUBLIC_KEYS }}
+      AXIOM_SIGNING_PUBLISHER: ${{ vars.AXIOM_SIGNING_PUBLISHER }}
+      AXIOM_SETUP_DIRECTORY: setup
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Validate the reviewed recovery tag and retained acceptance gates
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/release-0.1.21-recovery.py
+      - uses: actions/checkout@v4
+        with:
+          ref: 0cea3d47db3a75c1cab7495af930bc864604a6fc
+          fetch-depth: 0
+      - name: Require the exact qualified native source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git merge-base --is-ancestor HEAD origin/main
+          node apps/desktop/scripts/set-release-version.mjs 0.1.21 --check-only
+          python3 scripts/verify-release-ci.py 0cea3d47db3a75c1cab7495af930bc864604a6fc
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          name: axiom-release-linux-x64
+          path: release
+          github-token: ${{ github.token }}
+          run-id: 42696233901
+      - uses: actions/download-artifact@v4
+        with:
+          name: axiom-release-win-universal
+          path: release
+          github-token: ${{ github.token }}
+          run-id: 42696233901
+      - uses: actions/download-artifact@v4
+        with:
+          name: axiom-release-mac-universal
+          path: release
+          github-token: ${{ github.token }}
+          run-id: 42709923710
+      - uses: actions/download-artifact@v4
+        with:
+          name: axiom-windows-setup
+          path: setup
+          github-token: ${{ github.token }}
+          run-id: 42696233901
+      - name: Sign the complete final-byte inventory
+        env:
+          AXIOM_UPDATE_SIGNING_KEY: ${{ secrets.AXIOM_UPDATE_SIGNING_KEY }}
+        run: |
+          node scripts/download-manifest.mjs release "0.1.21" signed
+          node scripts/setup-manifest.mjs setup "0.1.21" signed
+      - name: Retain verified installers for publication retries
+        uses: actions/upload-artifact@v4
+        with:
+          name: axiom-signed-release
+          retention-days: 7
+          path: |
+            release/
+            setup/
+          if-no-files-found: error
+      - name: Prepare the full offline Microsoft Store package handoff
+        run: node scripts/prepare-store-submission.mjs release setup store
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-store-submission
+          retention-days: 30
+          path: store/
+          if-no-files-found: error
+      - name: Publish signed installers in the source repository Releases tab
+        if: vars.AXIOM_RELEASE_BUILD_ONLY != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/publish-github-release.mjs release --source
+      - name: Create or verify immutable GitHub draft assets
+        if: vars.AXIOM_RELEASE_BUILD_ONLY != 'true'
+        id: draft
+        env:
+          GH_TOKEN: ${{ secrets.AXIOM_RELEASES_TOKEN }}
+        run: |
+          if [ -n "$GH_TOKEN" ]; then
+            node scripts/publish-github-release.mjs release
+            echo 'published=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'Cross-repository credential is not configured; publish the axiom-signed-release artifact using the documented operator procedure.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Hand off to the promoted platform publisher
+        if: vars.AXIOM_RELEASE_BUILD_ONLY != 'true' && steps.draft.outputs.published == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.AXIOM_PLATFORM_RELEASE_TOKEN }}
+        run: |
+          if [ -n "$GH_TOKEN" ]; then
+            gh workflow run release.yml --repo astrea-foundation/axiom-platform --ref main -f version="0.1.21" -f revision="$(git rev-parse HEAD)"
+          else
+            echo 'Platform dispatch credential is not configured; operator publication remains required.' >> "$GITHUB_STEP_SUMMARY"
+          fi

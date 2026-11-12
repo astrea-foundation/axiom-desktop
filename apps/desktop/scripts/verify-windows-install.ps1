@@ -1,0 +1,97 @@
+param(
+    [Parameter(Mandatory)][string] $Installers,
+    [Parameter(Mandatory)][string] $Version,
+    [Parameter(Mandatory)][ValidateSet('x64','arm64')][string] $Arch,
+    [string] $Publisher
+)
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+if ($env:GITHUB_ACTIONS -eq 'true' -and -not $Publisher) { throw 'Production installation verification requires the expected publisher' }
+$Installers = (Resolve-Path $Installers).Path
+$temporary = Join-Path ([IO.Path]::GetTempPath()) ('axiom-install-check-' + [Guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $temporary | Out-Null
+. "$PSScriptRoot/windows-signature.ps1"
+
+function Invoke-Installer([string] $file, [string[]] $arguments) {
+    $process = Start-Process -FilePath $file -ArgumentList $arguments -PassThru
+    $null = $process.Handle
+    if (-not $process.WaitForExit(180000)) { throw "Installer timed out: $file" }
+    $process.Refresh()
+    if ($process.ExitCode -ne 0) { throw "Installer failed ($($process.ExitCode)): $file" }
+}
+function Assert-Cli([string] $file) {
+    $reported = & $file --version
+    if ($LASTEXITCODE -ne 0 -or $reported -cne "axiomcli $Version") { throw 'Installed CLI version mismatch' }
+    $keys = & $file update --trust-keys
+    if ($LASTEXITCODE -ne 0 -or -not $env:AXIOM_UPDATE_PUBLIC_KEYS -or $keys -cne $env:AXIOM_UPDATE_PUBLIC_KEYS) { throw 'Installed update trust mismatch' }
+}
+
+foreach ($product in @('Axiom','AxiomCLI')) {
+    $destination = Join-Path $temporary "$product espace-é"
+    $installer = Join-Path $Installers "$product-$Version-win-universal.exe"
+    if ($Publisher) { Assert-AxiomSignature -FilePath $installer -Publisher $Publisher }
+    # NSIS requires /D last and unquoted, even when the destination has spaces.
+    Invoke-Installer $installer @('/S',"/D=$destination")
+    if ($product -eq 'Axiom') {
+        & "$PSScriptRoot/verify-windows-package.ps1" -Unpacked $destination -Arch $Arch -Version $Version -Publisher $Publisher
+        Assert-Cli (Join-Path $destination 'resources/bin/axiomcli.exe')
+        $marker = Join-Path $destination 'resources/axiom-first-launch.json'
+        if ((Get-Content -LiteralPath $marker -Raw | ConvertFrom-Json).schemaVersion -ne 1) { throw 'Fresh install did not mark the first launch' }
+        if (@(Get-Process -Name Axiom -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path -ieq (Join-Path $destination 'Axiom.exe') }).Count -ne 0) { throw 'Silent installation launched Axiom' }
+        # Upgrading an existing install must not opt an existing user into startup installation.
+        Remove-Item -LiteralPath $marker
+        # Reproduce older clients' canonical path and automatic argument quotes.
+        Invoke-Installer $installer @('/S',"`"/D=\\?\$destination`"")
+        if (Test-Path -LiteralPath $marker) { throw 'Upgrade incorrectly marked an existing installation as fresh' }
+        Assert-Cli (Join-Path $destination 'resources/bin/axiomcli.exe')
+        $shortcut = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Axiom.lnk'
+        if (-not (Test-Path -LiteralPath $shortcut)) { throw 'Upgrade removed the Start menu shortcut' }
+        $link = (New-Object -ComObject WScript.Shell).CreateShortcut($shortcut)
+        if ($link.TargetPath -ine (Join-Path $destination 'Axiom.exe')) { throw 'Upgrade created a broken Start menu target' }
+        $uninstaller = Join-Path $destination 'Uninstall Axiom.exe'
+        # Earlier clients persisted canonical paths too. A default-path upgrade
+        # must repair registration before it invokes the previous uninstaller.
+        $installKey = 'HKCU:\Software\2fdd6a83-7dae-5442-aa32-e7c956c0a096'
+        $uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\2fdd6a83-7dae-5442-aa32-e7c956c0a096'
+        if ((Get-ItemProperty $installKey).InstallLocation -ine $destination) { throw 'Installation registration mismatch before regression check' }
+        Set-ItemProperty $installKey InstallLocation "\\?\$destination"
+        Set-ItemProperty $uninstallKey UninstallString "`"\\?\$uninstaller`" /currentuser"
+        $registered = & "$PSScriptRoot/../../axiom-setup/src/windows.ps1" -Action Inspect | ConvertFrom-Json
+        if ($registered.root -ine $destination -or $registered.machine) { throw 'Setup could not inspect the legacy registered path' }
+        Invoke-Installer $installer @('/S')
+        if ((Get-ItemProperty $installKey).InstallLocation -ine $destination) { throw 'Upgrade retained the legacy registered path' }
+        if ((New-Object -ComObject WScript.Shell).CreateShortcut($shortcut).TargetPath -ine (Join-Path $destination 'Axiom.exe')) { throw 'Registered-path upgrade broke the Start menu target' }
+        Assert-Cli (Join-Path $destination 'resources/bin/axiomcli.exe')
+    } else {
+        foreach ($name in @('axiomcli.exe','axiom-proxy.exe')) {
+            $binary = Join-Path $destination "bin/$name"
+            & node -e "require(process.argv[1])(process.argv[2], 'win', process.argv[3])" "$PSScriptRoot/../../../scripts/native-binary.cjs" $binary $Arch
+            if ($LASTEXITCODE -ne 0) { throw 'Installer selected the wrong native payload' }
+            if ($Publisher) { Assert-AxiomSignature -FilePath $binary -Publisher $Publisher }
+        }
+        Assert-Cli (Join-Path $destination 'bin/axiomcli.exe')
+        $uninstaller = Join-Path $destination 'Uninstall.exe'
+        $registered = (Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\AxiomCLI').UninstallString
+        if ($registered -cne "`"$uninstaller`"") { throw 'Registered CLI uninstall command is not correctly quoted' }
+    }
+    # _?= runs the uninstaller in place so completion is observable by this process.
+    Invoke-Installer $uninstaller @('/S',"_?=$destination")
+    if (Test-Path (Join-Path $destination 'bin/axiomcli.exe')) { throw 'CLI uninstall left its executable behind' }
+    if (Test-Path (Join-Path $destination 'Axiom.exe')) { throw 'Desktop uninstall left its executable behind' }
+    Write-Host "PASS installed native $product $Version on $Arch and uninstalled it"
+}
+# The ARM64 emulation host can briefly retain the uninstaller's image mapping
+# after process exit. Keep cleanup bounded without weakening installation checks.
+for ($attempt = 0; $attempt -lt 40; $attempt++) {
+    if (-not (Test-Path -LiteralPath $temporary)) { break }
+    try {
+        Remove-Item -LiteralPath $temporary -Recurse -Force
+        break
+    } catch {
+        if ($attempt -eq 39) {
+            Write-Warning "Verified installers; temporary cleanup remains locked: $($_.Exception.Message)"
+            break
+        }
+        Start-Sleep -Milliseconds 250
+    }
+}

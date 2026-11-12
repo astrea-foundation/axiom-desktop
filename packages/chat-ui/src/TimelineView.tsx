@@ -1,0 +1,148 @@
+/** @jsxRuntime automatic */
+import { AlertTriangle, CheckCircle2, ListChecks, LoaderCircle } from "lucide-react";
+import type { ClientSessionState, ClientTimelineItem } from "@axiom/chat-core/viewTypes";
+import type { PendingUserMessage } from "@axiom/chat-core/types";
+import { replyErrorPresentation } from "@axiom/chat-core/replyErrors";
+import { AttachmentCards, StoredAttachments, attachmentSummaries } from "./Attachments";
+import type { AttachmentPreviews } from "@axiom/chat-core/attachmentPreviews";
+import { MessageBubble } from "./MessageBubble";
+import { ToolCallCard } from "./ToolCallCard";
+import { InteractionCard } from "./InteractionCard";
+import { DismissibleNotice } from "./DismissibleNotice";
+import { hasActiveResponse, messageRevisionSources, presentTimeline } from "./timelinePresentation";
+
+function ActivityRow({ item }: { item: ClientTimelineItem }) {
+  const error = item.kind === "error";
+  if (error && item.text.includes("Intel TDX environment is OutOfDate")) return <div role="status" data-timeline-kind="activity"
+    className="flex items-start gap-2 rounded-lg bg-amber-500/10 px-3 py-2 text-[12.5px] text-[var(--color-warning)]">
+    <AlertTriangle size={14} aria-hidden="true" className="mt-0.5 shrink-0" />
+    <span>Generation paused because the provider’s TEE needs security updates.</span>
+  </div>;
+  const failure = error ? replyErrorPresentation(item.text) : null;
+  if (failure) return (
+    <DismissibleNotice data-timeline-kind="activity" role={failure.interrupted ? "status" : "alert"} className={`flex items-start gap-2 rounded-lg px-3 py-2 text-[12.5px] ${failure.interrupted ? "bg-[var(--wash-row)] text-[var(--color-text-secondary)]" : "bg-[var(--color-danger-soft)] text-[var(--color-danger-strong)]"}`}>
+      <AlertTriangle size={14} aria-hidden="true" className="mt-0.5 shrink-0" />
+      <div className="min-w-0">
+        <p>{failure.message}</p>
+        <details data-preserve-follow className="mt-1 text-[12px] text-[var(--color-text-tertiary)]">
+          <summary className="w-fit cursor-pointer rounded-sm hover:text-[var(--color-text-secondary)]">Details</summary>
+          <p className="mt-1 break-words">{item.text}</p>
+        </details>
+      </div>
+    </DismissibleNotice>
+  );
+  if (error) return <DismissibleNotice data-timeline-kind="activity" className="flex items-start gap-2 rounded-lg bg-[var(--color-danger-soft)] px-3 py-2 text-[12.5px] text-[var(--color-danger-strong)]">
+    <AlertTriangle size={14} aria-hidden="true" className="mt-0.5 shrink-0" />
+    <span className="min-w-0 break-words">{item.text}</span>
+  </DismissibleNotice>;
+  return (
+    <div data-timeline-kind="activity" className="flex items-start gap-2 rounded-lg bg-[var(--wash-row)] px-3 py-2 text-[12.5px] text-[var(--color-text-tertiary)]">
+      {item.kind === "plan" ? <ListChecks size={14} className="mt-0.5 shrink-0" /> : <CheckCircle2 size={14} className="mt-0.5 shrink-0" />}
+      <span>{item.text}</span>
+    </div>
+  );
+}
+
+export function TimelineView({
+  session,
+  pendingUserMessage,
+  onRevise,
+  attachmentPreviews,
+}: {
+  session: ClientSessionState;
+  pendingUserMessage?: PendingUserMessage | null;
+  onRevise?: (userItemId: string, text: string) => Promise<void>;
+  attachmentPreviews?: AttachmentPreviews;
+}) {
+  const presentation = presentTimeline(session.timeline);
+  const sources = messageRevisionSources(session.timeline);
+  const turnsByItem = new Map(session.timeline.map((item) => [item.id, item.turnId]));
+  let latestUser: ClientTimelineItem | undefined;
+  for (const item of session.timeline) if (item.kind === "user") latestUser = item;
+  const activeTurnId = session.activeTurnId ?? latestUser?.turnId;
+  // A turn split by tool calls renders several assistant segments; the final
+  // segment's Copy action copies the reply body of the whole turn.
+  const turnReplies = new Map<string, string[]>();
+  for (const row of presentation) {
+    if (row.kind !== "message" || row.message.role !== "assistant" || !row.message.content.trim()) continue;
+    const turnId = turnsByItem.get(row.message.id);
+    if (turnId) turnReplies.set(turnId, [...turnReplies.get(turnId) ?? [], row.message.content.trim()]);
+  }
+  const turnsWithErrors = new Set(session.timeline.filter((item) => item.kind === "error" && item.turnId).map((item) => item.turnId));
+  const rows = presentation.map((row) => {
+    if (row.kind === "message") {
+      if (session.compaction && row.message.role === "assistant" && !row.message.content && !row.message.reasoningContent) return null;
+      const source = sources.get(row.message.id);
+      const turnId = turnsByItem.get(row.message.id);
+      const summaries = attachmentSummaries(source?.raw);
+      return <div key={row.key} data-timeline-kind={row.message.role}>
+        {row.message.role === "user" ? <StoredAttachments key={`${session.sessionId}:${row.message.id}`} threadId={session.sessionId} userItemId={row.message.id} summaries={summaries}
+          initialFiles={attachmentPreviews?.get(source?.clientItemId)} /> : null}
+        <MessageBubble message={row.message} revisionHasAttachments={Boolean(summaries.length)}
+        responseActive={session.running && (turnId && activeTurnId
+          ? turnId === activeTurnId : !source || source.id === latestUser?.id)}
+        showFailureNotice={!turnId || !turnsWithErrors.has(turnId)}
+        copyContent={turnId && row.message.role === "assistant" ? turnReplies.get(turnId)?.join("\n\n") : undefined}
+        revisionText={source?.text} onRevise={source && onRevise ? (text) => onRevise(source.id, text) : undefined} /></div>;
+    }
+    if (row.kind === "tool" && row.item.tool) {
+      return <div key={row.item.tool.callId} data-timeline-kind="tool"><ToolCallCard tool={row.item.tool} threadId={session.sessionId} responseActive={session.running} /></div>;
+    }
+    return <ActivityRow key={JSON.stringify([session.sessionId, row.key, row.item.text])} item={row.item} />;
+  });
+  const showPendingUser = Boolean(
+    pendingUserMessage
+      && pendingUserMessage.sessionId === session.sessionId
+      && !session.timeline.some((item) => item.clientItemId === pendingUserMessage.id),
+  );
+  if (showPendingUser && pendingUserMessage) {
+    rows.push(
+      <div key={pendingUserMessage.id} data-timeline-kind="user"><AttachmentCards files={pendingUserMessage.attachments ?? []} /><MessageBubble
+        message={{
+          id: pendingUserMessage.id,
+          role: "user",
+          status: "pending",
+          content: pendingUserMessage.text,
+        }}
+      /></div>,
+    );
+  }
+  const lastAlreadyShowsGeneration = !showPendingUser
+    && hasActiveResponse(presentation);
+  // Shown only while the model streams a tool call; the validated tool row
+  // takes its place as soon as the call itself arrives.
+  const draftingToolCall = !showPendingUser && session.running && Boolean(session.toolCallDraftTurnId)
+    && (!session.activeTurnId || session.activeTurnId === session.toolCallDraftTurnId);
+
+  return (
+    <div className="chat-timeline">
+      {rows}
+      {session.compaction ? (
+        <div role="status" aria-live="polite" aria-atomic="true" data-timeline-kind="compaction"
+          className="flex items-center gap-2 px-1 py-3 text-[12.5px] text-[var(--color-text-secondary)]">
+          <LoaderCircle aria-hidden="true" size={15} className="shrink-0 animate-spin motion-reduce:animate-none" />
+          <span className="tabular-nums">Compacting context
+            {session.compaction.total > 1 ? ` · Pass ${Math.min(session.compaction.completed + 1, session.compaction.total)}/${session.compaction.total}` : session.compaction.total === 0 ? " · Preparing" : ""}
+            {` · ${session.compaction.estimated ? "~" : ""}${new Intl.NumberFormat("en-US").format(session.compaction.generatedTokens)} tokens generated`}
+          </span>
+        </div>
+      ) : null}
+      {draftingToolCall && !session.compaction ? (
+        <div data-timeline-kind="tool" data-tool-call-draft role="status" className="min-w-0 text-[13px]">
+          <div className="flex min-h-8 max-w-full items-center gap-2 rounded-md px-1.5 py-1 leading-5 text-[var(--color-text-secondary)]">
+            <span className="shrink-0 text-[var(--color-text-tertiary)]" aria-hidden="true"><LoaderCircle size={14} className="animate-spin motion-reduce:animate-none" /></span>
+            <span className="min-w-0 truncate">Writing tool call…</span>
+          </div>
+        </div>
+      ) : session.running && !session.compaction && !lastAlreadyShowsGeneration ? (
+        <div data-timeline-kind="assistant"><MessageBubble
+          responseActive
+          message={{ id: "active-generation", role: "assistant", status: "streaming", content: "" }}
+        /></div>
+      ) : null}
+      {session.interactions.map((interaction) => (
+        <div key={interaction.id} data-timeline-kind="interaction" data-preserve-follow><InteractionCard interaction={interaction} /></div>
+      ))}
+    </div>
+  );
+}

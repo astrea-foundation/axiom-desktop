@@ -1,0 +1,24 @@
+---
+source: apps/axiomcli/src/tui/tests.rs
+expression: "render_symbols(80, 20, &state)"
+---
+  Axiom / /work/axiomcli                                        ○ NOT VERIFIED
+────────────────────────────────────────────────────────────────────────────────
+
+  › You
+    Inspect the repository
+
+  ✓ Axiom  Complete
+      I’ll inspect the relevant files.
+    │
+    │ ✓ Read `src`
+    │
+      The repository contains a Rust coding agent.
+
+  ● Task complete
+
+    › Ask anything, or / for commands
+
+     glm-test    Thinking Medium    Permissions Ask    ○ Web Off
+
+  Enter send · Alt+Enter newline · Tab browse · / commands     Context unknown

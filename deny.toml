@@ -1,0 +1,41 @@
+[advisories]
+version = 2
+yanked = "deny"
+ignore = [
+  { id = "RUSTSEC-2026-0387", reason = "The remaining crypto-bigint 0.5 is used only for public P-256/P-384 attestation/Sigstore verification by the pinned Tinfoil/NEAR verifiers. Native private ES256 proof keys use p256 0.14 with patched crypto-bigint 0.7.10; HPKE enables only X25519. See docs/validation.md for the audited call sites and removal condition." },
+  { id = "RUSTSEC-2025-0141", reason = "bincode 1 is unmaintained but is required transitively by syntect 5.3 embedded syntax/theme dumps; remove when syntect ships a replacement" },
+  { id = "RUSTSEC-2023-0071", reason = "rsa is pulled in by dcap-qvl only to verify public attestation certificate signatures; Axiom never performs network-observable RSA private-key operations, which are the advisory's affected surface" },
+  { id = "RUSTSEC-2026-0370", reason = "Informational deprecation after zvariant merged into zbus 6; the published keyring Secret Service backend still requires zbus 5. Remove when that backend supports zbus 6; see docs/validation.md" },
+  { id = "RUSTSEC-2026-0371", reason = "Informational deprecation after zbus_names merged into zbus 6; the published keyring Secret Service backend still requires zbus 5. Remove when that backend supports zbus 6; see docs/validation.md" },
+  { id = "RUSTSEC-2026-0372", reason = "Informational deprecation after zvariant_derive merged into zbus 6; the published keyring Secret Service backend still requires zbus 5. Remove when that backend supports zbus 6; see docs/validation.md" },
+]
+
+[licenses]
+version = 2
+allow = [
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-3-Clause",
+  "CDLA-Permissive-2.0",
+  "ISC",
+  "MIT",
+  "MPL-2.0",
+  "NCSA",
+  "Unicode-3.0",
+  "Zlib",
+]
+# sqlcipher-src 420.0.0 includes SQLite's public-domain blessing and
+# LibTomCrypt's public-domain/WTFPL option. Reviewed package license files;
+# native builds use vendored OpenSSL, while this source crate also ships LTC.
+exceptions = [
+  { name = "sqlcipher-src", version = "=420.0.0", allow = ["blessing", "WTFPL"] },
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-git = ["https://github.com/tinfoilsh/tinfoil-rs", "https://github.com/tinfoilsh/encrypted-http-body-protocol"]
