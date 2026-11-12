@@ -37,6 +37,53 @@ fn key() -> Arc<StorageKey> {
     Arc::new(StorageKey::from_bytes([0x71; 32]))
 }
 
+#[test]
+fn decryption_observation_requires_an_existing_encrypted_database() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("encrypted.sqlite3");
+    let observations = std::cell::Cell::new(0);
+    let decrypting = || observations.set(observations.get() + 1);
+    let opened = open_database_with_key_and_progress(&path, key(), &|_| {}, &decrypting).unwrap();
+    assert_eq!(
+        observations.get(),
+        0,
+        "creating a fresh store is not decrypting saved chats"
+    );
+    fixture(&opened.connection);
+    drop(opened);
+    let reopened = open_database_with_key_and_progress(&path, key(), &|_| {}, &decrypting).unwrap();
+    assert_eq!(observations.get(), 1);
+    verify_fixture(&reopened.connection);
+    drop(reopened);
+    assert!(
+        open_database_with_key_and_progress(
+            &path,
+            Arc::new(StorageKey::from_bytes([0x72; 32])),
+            &|_| {},
+            &decrypting,
+        )
+        .is_err()
+    );
+    assert_eq!(
+        observations.get(),
+        2,
+        "failed decryption still reports the work attempted"
+    );
+
+    let legacy = directory.path().join("plaintext.sqlite3");
+    let source = Connection::open(&legacy).unwrap();
+    fixture(&source);
+    drop(source);
+    let migration =
+        open_database_with_key_and_progress(&legacy, key(), &|_| {}, &decrypting).unwrap();
+    assert_eq!(
+        observations.get(),
+        2,
+        "legacy encryption keeps its migration progress"
+    );
+    verify_fixture(&migration.connection);
+}
+
 fn sidecar(path: &Path, suffix: &str) -> PathBuf {
     let mut name = path.file_name().unwrap().to_os_string();
     name.push(suffix);

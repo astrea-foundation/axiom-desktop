@@ -278,7 +278,15 @@ pub(super) fn validate_key(path: &Path, key: &StorageKey) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn open_locked(paths: &StorePaths, key: &StorageKey) -> Result<Connection> {
+pub(super) fn open_locked(
+    paths: &StorePaths,
+    key: &StorageKey,
+    decrypting: &dyn Fn(),
+) -> Result<Connection> {
+    // Key retrieval has finished. Report decryption only for an existing
+    // encrypted database; fresh stores and legacy migrations have other work.
+    let decrypting_existing =
+        matches!(kind(&paths.database)?, DatabaseKind::Encrypted) && !paths.has_migration()?;
     recover(paths, key)?;
     match kind(&paths.database)? {
         DatabaseKind::Plaintext => migrate(paths, key)?,
@@ -287,6 +295,9 @@ pub(super) fn open_locked(paths: &StorePaths, key: &StorageKey) -> Result<Connec
             sync_parent(&paths.database)?;
         }
         DatabaseKind::Empty | DatabaseKind::Encrypted => {}
+    }
+    if decrypting_existing {
+        decrypting();
     }
     let connection = open_connection(&paths.database, Some(key))?;
     // Materialize the encryption header before the opener returns even for a

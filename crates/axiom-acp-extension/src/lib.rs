@@ -737,6 +737,7 @@ pub struct AccountStatus {
 pub enum AccountPreparationPhase {
     CheckingSignIn,
     OpeningChats,
+    DecryptingChats,
     SwitchingAccount,
 }
 

@@ -195,7 +195,7 @@ mod tests {
                     let paths = StorePaths::prepare(&path).unwrap();
                     let _lock = paths.lock().unwrap();
                     let key = obtain_with(&paths, &*store).unwrap();
-                    let connection = database::open_locked(&paths, &key).unwrap();
+                    let connection = database::open_locked(&paths, &key, &|| {}).unwrap();
                     connection.close().unwrap();
                     key
                 })
@@ -221,7 +221,7 @@ mod tests {
         let paths = StorePaths::prepare(&directory.path().join("state.sqlite3")).unwrap();
         let key = StorageKey::from_bytes([7; 32]);
         let wrong = StorageKey::from_bytes([8; 32]);
-        database::open_locked(&paths, &key)
+        database::open_locked(&paths, &key, &|| {})
             .unwrap()
             .close()
             .unwrap();

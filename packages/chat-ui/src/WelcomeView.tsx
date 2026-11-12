@@ -1,9 +1,10 @@
 /** @jsxRuntime automatic */
-import type { ReactNode } from "react";
-import { LoaderCircle, LockKeyhole, LogIn, RefreshCw, ShieldAlert, ShieldCheck } from "lucide-react";
+import { useLayoutEffect, useRef, type ReactNode } from "react";
+import { LogIn, RefreshCw, ShieldAlert, ShieldCheck } from "lucide-react";
 import { AxiomMark } from "./AxiomLogo";
 import { GreetingHeadline } from "./GreetingHeadline";
-import type { AccountPresentation } from "@axiom/chat-core/account";
+import { isChatPreparation, type AccountPresentation } from "@axiom/chat-core/account";
+import { ChatPreparationScreen } from "./ChatPreparationScreen";
 import type { ProviderModel, ReasoningEffort } from "@axiom/chat-core/types";
 import type { AttachmentControl } from "./Attachments";
 import { ChatComposer } from "./ChatComposer";
@@ -23,7 +24,8 @@ interface WelcomeViewProps {
   account: AccountPresentation;
   signInActive?: boolean;
   onSignIn: () => void;
-  onRefreshAccount: () => void;
+  onRefreshAccount: () => void | Promise<unknown>;
+  onOpenSettings?: (trigger: HTMLElement) => void;
   reasoningEffort: ReasoningEffort;
   onReasoningEffortChange: (effort: ReasoningEffort) => void;
   webEnabled: boolean;
@@ -46,14 +48,20 @@ export function WelcomeView({
   signInActive = false,
   onSignIn,
   onRefreshAccount,
+  onOpenSettings,
   reasoningEffort,
   onReasoningEffortChange,
   webEnabled,
   webDisabled,
   onWebToggle,
 }: WelcomeViewProps) {
+  const root = useRef<HTMLDivElement>(null);
+  const prepared = useRef(false);
+  const preparing = isChatPreparation(account);
+  useLayoutEffect(() => { if (preparing) prepared.current = true; }, [preparing]);
+  const focusComposer = !prepared.current || document.activeElement === document.body || !!root.current?.contains(document.activeElement);
   return (
-    <div className="relative flex h-full w-full items-center justify-center px-6">
+    <div ref={root} className="relative flex h-full min-h-0 w-full items-start justify-center overflow-y-auto px-6 py-16">
       {/* A fixed 2000×1400 composition pinned to the view's centre: the window
           reveals more or less of it instead of moving the blooms around. */}
       <div className="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden="true">
@@ -73,25 +81,11 @@ export function WelcomeView({
         </div>
       </div>
 
-      <div className="relative z-10 flex w-full max-w-[760px] flex-col items-center animate-fade-in">
+      <div className="relative z-10 my-auto flex w-full max-w-[760px] flex-col items-center animate-fade-in">
+        {isChatPreparation(account) ? <ChatPreparationScreen key={agentControl?.scope} account={account} onRetry={onRefreshAccount} onOpenSettings={onOpenSettings} /> : <>
         <AxiomMark className="mb-7 h-10 w-auto" />
         <GreetingHeadline />
-        {!signInActive && account.kind === "starting" ? (
-          <div role="status" aria-live="polite" aria-atomic="true" aria-label="Preparing your account"
-            className="shadow-glass-card mb-3 flex min-h-[72px] w-full items-center gap-3 rounded-[14px] bg-[var(--surface-card)] px-4 py-3">
-            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] bg-[var(--wash-chip)] text-[var(--color-text-secondary)]" aria-hidden="true">
-              {account.phase === "opening_chats" ? <LockKeyhole size={17} strokeWidth={1.7} />
-                : <LoaderCircle size={17} className="animate-spin motion-reduce:animate-none" />}
-            </div>
-            <div className="min-w-0 flex-1">
-              <p className="text-[13px] font-medium text-[var(--color-text-primary)]">{account.title}</p>
-              <p className="mt-0.5 text-[11.5px] leading-relaxed text-[var(--color-text-secondary)]">{account.detail}</p>
-              {account.phase === "opening_chats" ? <p className="mt-1 text-[11.5px] leading-relaxed text-[var(--color-text-tertiary)]">If your system asks, allow Axiom to access its saved key.</p> : null}
-            </div>
-            {account.phase === "opening_chats" ? <LoaderCircle size={15} className="shrink-0 animate-spin text-[var(--color-text-tertiary)] motion-reduce:animate-none" aria-hidden="true" /> : null}
-          </div>
-        ) : null}
-        {!signInActive && account.kind !== "valid" && account.kind !== "starting" ? (
+        {!signInActive && account.kind !== "valid" ? (
           <div role={account.kind === "unavailable" ? "alert" : undefined} className="shadow-glass-card mb-3 flex w-full items-center gap-3 rounded-[14px] bg-[var(--surface-card)] px-4 py-3">
             <div
               className={[
@@ -132,7 +126,7 @@ export function WelcomeView({
             value={draft}
             onChange={onDraftChange}
             onSubmit={onSubmit}
-            autoFocus
+            autoFocus={focusComposer}
             models={models}
             selectedModelId={selectedModelId}
             modelStatusLabel={modelStatusLabel}
@@ -150,6 +144,7 @@ export function WelcomeView({
             Model conversations are end-to-end encrypted
           </span>
         </div>
+        </>}
       </div>
     </div>
   );

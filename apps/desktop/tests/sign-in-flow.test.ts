@@ -42,9 +42,12 @@ test("native preparation shows the actual operation without an outage or sign-in
   assert.equal(checking.title, "Checking your sign-in…");
   const opening = accountPresentation(true, true, { revision: 2, state: "starting", preparationPhase: "opening_chats" });
   assert.equal(opening.kind, "starting");
-  assert.equal(opening.title, "Opening your chats…");
-  assert.match(opening.detail, /saved encryption key/);
+  assert.equal(opening.title, "Unlocking your chats");
+  assert.match(opening.detail, /key for your encrypted chats/);
   assert.doesNotMatch(opening.detail, /decrypting|unavailable/i);
+  const decrypting = accountPresentation(true, true, { revision: 3, state: "starting", preparationPhase: "decrypting_chats" });
+  assert.equal(decrypting.title, "Decrypting your chats");
+  assert.match(decrypting.detail, /on this device/);
   const failed = accountPresentation(true, true, { revision: 3, state: "unavailable", preparationPhase: "opening_chats", detail: "Synthetic key access was denied" });
   assert.equal(failed.kind, "unavailable");
   assert.equal(failed.title, "Couldn’t open your chats");

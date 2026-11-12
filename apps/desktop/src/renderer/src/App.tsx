@@ -1,4 +1,5 @@
 import { Folder, PanelLeftOpen } from "lucide-react";
+import { isChatPreparation } from "@axiom/chat-core/account";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { BalanceScreen } from "./components/BalanceScreen";
 import { AstreaBanner } from "./components/AstreaBanner";
@@ -62,6 +63,7 @@ export function App() {
   }, [accountScreenOpen]);
   const account = useNativeAccount(agentState, catalog.desktopReady, catalog.refreshModels, catalog.clearModels, closeAccountScreen, setUiError);
   const { accountView, requiresSignIn, signInState, setSignInState, refreshAccount, logout, refreshBilling, cancelNativeSignIn, openSignIn, openAccountPortal } = account;
+  const accountPreparing = isChatPreparation(accountView);
   const conversations = useConversations(agentState, connectionContext, navigation, catalog, requiresSignIn, openSignIn, setUiError);
   const { reviewPreparation, attachmentDraft, draft, setDraft, threadPreparation, pendingUserMessage, threadLoadError,
     deleteTarget, setDeleteTarget, renameTarget, setRenameTarget, billingAccountId, webAccess,
@@ -84,7 +86,7 @@ export function App() {
     : agentState.error ? { source: "agent", text: agentState.error }
     : modelCatalogError ? { source: "catalog", text: modelCatalogError } : null;
   const fileDrop = useChatFileDrop(
-    !accountScreenOpen && !preparation && (surface === "welcome" || (surface === "thread" && !!activeSession)) && !attachmentDraft.attachmentsBusy,
+    !accountScreenOpen && !accountPreparing && !preparation && (surface === "welcome" || (surface === "thread" && !!activeSession)) && !attachmentDraft.attachmentsBusy,
     attachmentDraft.attachmentScope + surface,
     (files) => void attachmentDraft.addFiles(files),
   );
@@ -296,7 +298,7 @@ export function App() {
             </div>
           ) : null}
 
-          {errorNotice ? (
+          {errorNotice && !accountPreparing ? (
             <DismissibleNotice key={JSON.stringify([billingAccountId, agentState.runtimeInstanceId, errorNotice.source, errorNotice.text, errorNotice.source === "agent" ? errorRevision : 0])}
               onDismiss={errorNotice.source === "ui" ? () => setUiError(null) : undefined}
               className={`shadow-glass-pop absolute left-1/2 top-12 z-40 max-w-[80%] -translate-x-1/2 rounded-xl bg-[var(--surface-float)] px-4 py-2 text-[12.5px] ${errorNotice.source === "catalog" ? "text-[var(--color-text-secondary)]" : "text-[var(--color-danger-strong)]"} backdrop-blur`}>
@@ -305,7 +307,7 @@ export function App() {
           ) : null}
 
           <div className="relative min-h-0 flex-1">
-            {surface === "proxy" ? <ProxyView accountId={agentState.connected ? billingAccountId : null} runtimeId={agentState.runtimeInstanceId} onInspecting={setProxyInspecting} /> : surface === "thread" && (preparation || activeSession) ? (
+            {!accountPreparing && surface === "proxy" ? <ProxyView accountId={agentState.connected ? billingAccountId : null} runtimeId={agentState.runtimeInstanceId} onInspecting={setProxyInspecting} /> : !accountPreparing && surface === "thread" && (preparation || activeSession) ? (
               <ChatView
                 preparation={preparation}
                 attachmentPreviews={conversations.attachmentPreviews}
@@ -346,7 +348,7 @@ export function App() {
                 }}
                 onAcceptOutdatedTee={() => conversations.acceptOutdatedTee(modelId)}
               />
-            ) : surface === "thread" ? (
+            ) : !accountPreparing && surface === "thread" ? (
               <div className="flex h-full flex-col items-center justify-center gap-3 text-[13px] text-[var(--color-text-tertiary)]">
                 {threadLoadError?.id === activeThreadId ? (
                   <>
@@ -376,10 +378,17 @@ export function App() {
                 selectedModelId={modelId || models[0]?.id || ""}
                 modelStatusLabel={modelStatusLabel}
                 onModelChange={catalog.selectNewModel}
-                account={accountView}
+                account={accountPreparing && accountView.kind === "unavailable" && errorNotice
+                  ? { ...accountView, technicalDetails: [...new Set([accountView.technicalDetails, errorNotice.text].filter(Boolean))].join("\n\n") }
+                  : accountView}
                 signInActive={signInState.kind !== "closed" && !agentState.account?.preparationPhase}
                 onSignIn={openSignIn}
-                onRefreshAccount={() => void refreshAccount()}
+                onRefreshAccount={refreshAccount}
+                onOpenSettings={trigger => {
+                  accountScreenReturnFocus.current = trigger;
+                  setSettingsCategory("account");
+                  setAccountScreen("settings");
+                }}
                 reasoningEffort={effectiveReasoningEffort}
                 onReasoningEffortChange={catalog.selectNewThinking}
               />

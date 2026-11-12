@@ -27,6 +27,12 @@ Escape and the backdrop; save failures retain the draft for retry or explicit
 discard. Unchanged closes do not write, and context replacement does not save
 the previous dialog's draft.
 
+`WelcomeView` replaces the greeting and composer with `ChatPreparationScreen`
+while native account preparation is active. The host supplies observed phases;
+the screen never simulates stages or percentages. The native decryption stage
+is distinct from key retrieval. Storage failures keep recovery in that same
+surface, and the host retains drafts and focus outside it until ready.
+
 `VaultScreen` supplies callback-driven first-use password confirmation, recovery
 code download/copy and saved-code acknowledgment, password unlock, recovery with
 a new password/code, and destructive reset confirmation. Native local storage

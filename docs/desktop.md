@@ -13,13 +13,22 @@ handles passkey, Google, password and wallet authentication. Native login creden
 outside the renderer. Signing out closes the active account store and invalidates
 pending account operations.
 
-Startup shows the native operation above the composer: checking the saved
-sign-in, changing the local account, or opening encrypted chat storage with its
-saved key. This is neutral progress; **Try again** appears only after a failure.
-The account control mirrors that progress and keeps Settings accessible. Drafts
-remain editable, while sending and model selection wait for the account to be
-ready. Older storage migrations retain their dedicated progress screen and only
-show counts actually reported by the native runtime.
+Startup replaces the composer with an integrated preparation screen. A large
+heading names the native operation: checking the saved sign-in, updating the
+local account, unlocking the saved key, or **Decrypting your chats**. Decryption
+is reported only after obtaining the key and immediately before opening an
+existing encrypted database. Fresh stores and legacy migrations do not report
+that decryption stage. The screen shows only stages actually observed, with a
+subtle activity sweep and reduced-motion support; it invents no percentages,
+counts or completion times.
+
+The textbox, model picker, Web, Agent and Send controls are absent during
+preparation. Drafts remain in local state and return with the composer when the
+account is ready. Readiness does not steal focus from Settings or the sidebar.
+The account control mirrors progress and keeps Settings accessible. A genuine
+preparation failure stays in the same screen with **Try again**, **Open Settings**
+and expandable diagnostics. Older storage migrations retain their dedicated
+progress screen and only show counts actually reported by the native runtime.
 
 The **Runs on Astrea** sidebar introduction appears once per local app profile,
 after the account is ready. Dismissing it, reloading a window, changing accounts,

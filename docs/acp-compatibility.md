@@ -334,11 +334,16 @@ explicit exception for a newly issued automation token shown once; account
 snapshots and Debug output omit it. It is not a native-login credential.
 
 Account preparation uses `state: starting` with optional `preparationPhase`:
-`checking_sign_in`, `switching_account` or `opening_chats`. These are native
+`checking_sign_in`, `switching_account`, `opening_chats` or `decrypting_chats`. These are native
 observations rather than errors or inferred UI timers. Account identity remains
 withheld until the store is ready and validation completes. Real opening
 failures use `state: unavailable` and retain the phase for an appropriate retry
-screen. `storageMigration` continues to carry actual migration phases/counts.
+screen. `opening_chats` covers access to the saved key; `decrypting_chats` is
+emitted after obtaining it, immediately before opening an existing encrypted
+database. Fresh stores and legacy migrations do not emit that decryption stage.
+The renderer replaces the composer during preparation and retains its draft.
+`storageMigration` continues to carry actual migration phases/counts and takes
+precedence over ordinary preparation observations.
 
 `billing@2` carries account-ledger status with required trial/paid buckets,
 nullable mainnet deposit metadata and a current ZEC/USD quote. Credit uses integer

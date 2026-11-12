@@ -1435,7 +1435,7 @@ async fn commit_account_store_switch(
     account_id: Option<&str>,
 ) -> crate::Result<()> {
     drain_account_switch(sessions, work_tracker).await?;
-    let result = store_switch_task(store, account_id, None)
+    let result = store_switch_task(store, account_id, None, None)
         .await
         .unwrap_or_else(|error| {
             Err(crate::AxiomError::Storage(format!(
@@ -1452,17 +1452,24 @@ fn store_switch_task(
     store: Option<&SessionStore>,
     account_id: Option<&str>,
     progress: Option<tokio::sync::watch::Sender<Option<crate::storage_progress::Progress>>>,
+    decrypting: Option<tokio::sync::watch::Sender<bool>>,
 ) -> tokio::task::JoinHandle<crate::Result<()>> {
     let store = store.cloned();
     let account_id = account_id.map(str::to_owned);
     tokio::task::spawn_blocking(move || match (store, account_id) {
-        (Some(store), Some(account_id)) => {
-            store.activate_account_with_progress(&account_id, &|update| {
+        (Some(store), Some(account_id)) => store.activate_account_with_progress(
+            &account_id,
+            &|update| {
                 if let Some(sender) = &progress {
                     sender.send_replace(Some(update));
                 }
-            })
-        }
+            },
+            &|| {
+                if let Some(sender) = &decrypting {
+                    sender.send_replace(true);
+                }
+            },
+        ),
         (Some(store), None) => store.deactivate_account(),
         (None, _) => Ok(()),
     })
@@ -1488,11 +1495,23 @@ async fn commit_account_store_switch_reporting(
         );
     }
     let (sender, mut updates) = tokio::sync::watch::channel(None);
-    let mut task = store_switch_task(store, account_id, Some(sender));
+    let (decrypting_sender, mut decrypting_updates) = tokio::sync::watch::channel(false);
+    let mut task = store_switch_task(store, account_id, Some(sender), Some(decrypting_sender));
     let mut last_progress = None;
+    let mut decryption_reported = false;
     let result = loop {
         tokio::select! {
             result = &mut task => break result,
+            changed = decrypting_updates.changed() => {
+                if changed.is_err() {
+                    break task.await;
+                }
+                if *decrypting_updates.borrow_and_update() && updates.borrow().is_none() {
+                    let _ = publish_account_preparing(connection, extension_state, auth,
+                        extension::AccountPreparationPhase::DecryptingChats);
+                    decryption_reported = true;
+                }
+            }
             changed = updates.changed() => {
                 if changed.is_err() {
                     break task.await;
@@ -1512,6 +1531,15 @@ async fn commit_account_store_switch_reporting(
     });
     // The task may finish before the executor consumes its last observation.
     let latest = updates.borrow().clone();
+    let decryption_started = *decrypting_updates.borrow();
+    if decryption_started && !decryption_reported && latest.is_none() {
+        let _ = publish_account_preparing(
+            connection,
+            extension_state,
+            auth,
+            extension::AccountPreparationPhase::DecryptingChats,
+        );
+    }
     if latest != last_progress
         && let Some(progress) = latest.as_ref()
     {
@@ -1522,7 +1550,11 @@ async fn commit_account_store_switch_reporting(
         let mut status = extension_account_switching(auth.reserve_account_transition_revision());
         status.state = ExtensionAccountState::Unavailable;
         if account_id.is_some() {
-            status.preparation_phase = Some(extension::AccountPreparationPhase::OpeningChats);
+            status.preparation_phase = Some(if decryption_started {
+                extension::AccountPreparationPhase::DecryptingChats
+            } else {
+                extension::AccountPreparationPhase::OpeningChats
+            });
         }
         status.detail = Some(error.to_string());
         if latest.is_some() || last_progress.is_some() {

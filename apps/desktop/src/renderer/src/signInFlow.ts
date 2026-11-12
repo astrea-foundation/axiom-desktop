@@ -39,10 +39,11 @@ export function accountPresentation(
     };
   }
   if (account?.state === "unavailable") {
-    const storage = account.preparationPhase === "opening_chats";
+    const storage = account.preparationPhase === "opening_chats" || account.preparationPhase === "decrypting_chats";
     const switching = account.preparationPhase === "switching_account";
     return {
       kind: "unavailable",
+      phase: account.preparationPhase ?? undefined,
       title: storage ? "Couldn’t open your chats" : switching ? "Couldn’t update your account" : "Couldn’t check your sign-in",
       detail: storage
         ? "Axiom couldn’t unlock local chat storage. Try again."
@@ -57,13 +58,18 @@ export function accountPresentation(
       title: "Updating your account…",
       detail: "Finishing the local account change.",
     };
+    if (account?.preparationPhase === "decrypting_chats") return {
+      kind: "starting", phase: "decrypting_chats",
+      title: "Decrypting your chats",
+      detail: "Opening your saved conversations on this device.",
+    };
     const storage = account?.preparationPhase === "opening_chats";
     return {
       kind: "starting",
       phase: storage ? "opening_chats" : "checking_sign_in",
-      title: storage ? "Opening your chats…" : "Checking your sign-in…",
+      title: storage ? "Unlocking your chats" : "Checking your sign-in…",
       detail: storage
-        ? "Accessing your saved encryption key and opening local chat storage."
+        ? "Getting the key for your encrypted chats on this device."
         : "Restoring your saved session and confirming it’s still active.",
     };
   }

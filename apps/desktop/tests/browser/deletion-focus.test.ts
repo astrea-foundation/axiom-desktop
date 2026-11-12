@@ -402,7 +402,8 @@ async function openApp(platform = "linux", failDelete = false, thinkingLevels: s
   await page.addInitScript({ content: `window.__name = (fn) => fn; (${installBridge.toString()})(${JSON.stringify({ platform, failDelete, thinkingLevels, rememberedThinking, supportsImages, modelCatalog, rememberedModel, recoverLegacy, initialAccount })});` });
   await page.goto(origin);
   try {
-    if (modelCatalog || initialAccount) await page.locator("textarea[data-chat-input]").waitFor();
+    if (initialAccount?.state === "starting") await page.getByRole("region", { name: "Chat preparation", exact: true }).waitFor();
+    else if (modelCatalog || initialAccount) await page.locator("textarea[data-chat-input]").waitFor();
     else await page.getByRole("button", { name: "Test model" }).waitFor();
   } catch (error) {
     console.error("Renderer startup failed", errors, await page.locator("body").innerText());
@@ -808,12 +809,16 @@ for (const batched of [false, true]) for (const change of ["disconnect", "runtim
         else app.setRuntime(change === "runtime" ? "another-runtime" : "test-runtime", change !== "disconnect");
         if (batched) { app.setAccount("test-account"); app.setRuntime("test-runtime"); }
       }, { change, batched });
-      await input.waitFor({ state: "visible" });
+      if (!batched && change === "disconnect") {
+        await page.getByRole("region", { name: "Chat preparation", exact: true }).waitFor();
+        assert.equal(await input.count(), 0, "the composer is replaced while the runtime reconnects");
+      } else await input.waitFor({ state: "visible" });
       await page.waitForFunction(() => !document.querySelector('[aria-label="Sending message"]'));
       if (!batched) await page.evaluate(() => {
         const app = (window as any).__deletionTest;
         app.setAccount("test-account"); app.setRuntime("test-runtime");
       });
+      await input.waitFor({ state: "visible" });
       const queue = page.getByRole("region", { name: "Message queue" });
       await queue.getByText("Restored after reconnect. Review and send when ready.", { exact: true }).waitFor();
       await page.evaluate(() => (window as any).__deletionTest.releaseSetup("new"));
@@ -1659,7 +1664,8 @@ for (const platform of ["linux", "win32", "darwin"]) {
       await page.waitForFunction(() => (window as any).__deletionTest.calls.some((call: any) => call.method === "prompt" && call.webEnabled === true));
 
       await page.evaluate(() => (window as any).__deletionTest.setRuntime("restarted-runtime", false));
-      await expectWeb(false); // A disconnected runtime cannot inherit permission.
+      await page.getByRole("region", { name: "Chat preparation", exact: true }).waitFor();
+      assert.equal(await web.count(), 0, "a disconnected runtime has no composer or Web control");
       await page.evaluate(() => (window as any).__deletionTest.setRuntime("restarted-runtime"));
       await expectWeb(true);
       await page.evaluate(() => (window as any).__deletionTest.setAccount("another-account"));
@@ -2622,53 +2628,103 @@ test("sign in opens browser authorization directly and leaves the composer usabl
   } finally { await page.close(); }
 });
 
-test("startup names the native operation, preserves drafts and keeps Settings accessible", async () => {
-  const { page, errors } = await openApp("darwin", false, [], "medium", false, true, undefined, "test-model", false,
-    { revision: 1, state: "starting", preparationPhase: "checking_sign_in" });
+test("decryption screen replaces the composer, preserves drafts and keeps Settings accessible", async () => {
+  const { page, errors } = await openApp("darwin");
   try {
     await page.locator("textarea[data-chat-input]").fill("Keep this draft while my chats open");
-    const status = page.getByRole("status", { name: "Preparing your account", exact: true });
-    await status.getByText("Checking your sign-in…", { exact: true }).waitFor();
+    const starting = (phase: string, revision: number) => page.evaluate(({ phase, revision }) => {
+      const bridge = (window as any).__deletionTest;
+      bridge.setAccountState({ revision, state: "starting", preparationPhase: phase });
+    }, { phase, revision });
+    await starting("checking_sign_in", 2);
+    const status = page.getByRole("region", { name: "Chat preparation", exact: true });
+    await status.waitFor();
+    await status.getByRole("heading", { name: "Checking your sign-in", exact: true }).waitFor();
     assert.equal(await page.getByRole("button", { name: "Try again", exact: true }).count(), 0);
     assert.equal(await page.getByRole("button", { name: "Sign in", exact: true }).count(), 0);
-    await page.evaluate(() => (window as any).__deletionTest.setAccountState({ revision: 4, state: "starting", preparationPhase: "opening_chats" }));
-    await status.getByText("Opening your chats…", { exact: true }).waitFor();
-    assert.match(await status.innerText(), /saved encryption key/);
+    await starting("opening_chats", 3);
+    await status.getByRole("heading", { name: "Unlocking your chats", exact: true }).waitFor();
+    assert.match(await status.innerText(), /key for your encrypted chats/);
     assert.doesNotMatch(await status.innerText(), /unavailable|decrypting/i);
+    await starting("decrypting_chats", 4);
+    await status.getByRole("heading", { name: "Decrypting your chats", exact: true }).waitFor();
+    assert.equal(await status.locator('li[aria-current="step"]').innerText(), "Decrypt chats\nIn progress");
+    assert.match(await status.innerText(), /on this device/);
     assert.equal(await page.getByRole("alert").count(), 0, (await page.getByRole("alert").allTextContents()).join("; "));
     assert.equal(await page.getByRole("progressbar").count(), 0);
-    assert.equal(await page.getByRole("button", { name: "Send", exact: true }).isEnabled(), false);
-    assert.equal(await page.locator("textarea[data-chat-input]").inputValue(), "Keep this draft while my chats open");
+    assert.equal(await page.getByRole("button", { name: "Send", exact: true }).count(), 0);
+    assert.equal(await page.locator("textarea[data-chat-input]").count(), 0);
+    assert.equal(await page.getByRole("button", { name: "Web", exact: true }).count(), 0);
+    assert.equal(await page.getByRole("button", { name: "Agent", exact: true }).count(), 0);
+    assert.equal(await page.getByRole("dialog").count(), 0);
     assert.equal(await page.locator(".astrea-banner").count(), 0);
     for (const theme of ["dark", "light"] as const) {
       await page.emulateMedia({ colorScheme: theme, reducedMotion: "reduce" });
       await page.waitForFunction((expected) => document.documentElement.dataset.theme === expected, theme);
       if (process.env.AXIOM_STARTUP_CAPTURE_DIR) await page.screenshot({ path: `${process.env.AXIOM_STARTUP_CAPTURE_DIR}/startup-${theme}.png`, animations: "disabled" });
     }
+    await page.setViewportSize({ width: 720, height: 740 });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    assert.equal(await page.locator(".chat-preparation-activity span").evaluate(element => getComputedStyle(element).animationName), "none");
+    if (process.env.AXIOM_STARTUP_CAPTURE_DIR) await page.screenshot({ path: `${process.env.AXIOM_STARTUP_CAPTURE_DIR}/startup-narrow.png`, animations: "disabled" });
+    await page.setViewportSize({ width: 1320, height: 900 });
     await page.getByRole("button", { name: "Account menu", exact: true }).click();
     await page.getByRole("menuitem", { name: "Settings", exact: true }).click();
     const settings = page.getByRole("region", { name: "Settings", exact: true });
     await settings.waitFor();
     await settings.getByRole("tab", { name: "Account", exact: true }).click();
-    await settings.getByText("Opening your chats…", { exact: true }).waitFor();
+    await settings.getByText("Decrypting your chats", { exact: true }).waitFor();
     assert.equal(await settings.getByRole("button", { name: "Getting ready…", exact: true }).isEnabled(), false);
     await page.setViewportSize({ width: 720, height: 740 });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    await page.evaluate(() => (window as any).__deletionTest.setAccountState({ revision: 5, state: "valid", account: { id: "test-account", displayName: "Test User", verifiedEmail: "test@example.invalid", linkedMethods: ["password"] } }));
+    await page.waitForFunction(() => document.querySelector('textarea[data-chat-input]'));
+    assert.equal(await page.locator("textarea[data-chat-input]").inputValue(), "Keep this draft while my chats open");
+    assert.equal(await settings.evaluate(element => element.contains(document.activeElement)), true, "ready does not steal focus from Settings");
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
 });
 
-test("a real chat-storage failure offers retry with diagnostics rather than remaining in progress", async () => {
+test("a real chat-storage failure stays in the preparation screen with retry and diagnostics", async () => {
   const { page, errors } = await openApp();
   try {
     await page.evaluate(() => (window as any).__deletionTest.setAccountState({ revision: 2, state: "unavailable", preparationPhase: "opening_chats", detail: "Synthetic key access was denied" }));
-    const alert = page.getByRole("alert");
-    await alert.getByText("Couldn’t open your chats", { exact: true }).waitFor();
-    assert.equal(await page.getByRole("status", { name: "Preparing your account", exact: true }).count(), 0);
-    await alert.getByRole("button", { name: "Try again", exact: true }).waitFor();
-    await alert.getByText("Details", { exact: true }).click();
-    await alert.getByText("Synthetic key access was denied", { exact: true }).waitFor();
+    const screen = page.getByRole("region", { name: "Chat preparation", exact: true });
+    await screen.getByRole("heading", { name: "Couldn’t open your chats", exact: true }).waitFor();
+    assert.equal(await page.locator("textarea[data-chat-input]").count(), 0);
+    assert.equal(await screen.getByText("In progress", { exact: true }).count(), 0);
+    await screen.getByRole("button", { name: "Try again", exact: true }).waitFor();
+    await screen.getByText("Details", { exact: true }).click();
+    await screen.getByText(/Synthetic key access was denied/).waitFor();
     if (process.env.AXIOM_STARTUP_CAPTURE_DIR) await page.screenshot({ path: `${process.env.AXIOM_STARTUP_CAPTURE_DIR}/startup-failure.png`, animations: "disabled" });
+    await page.evaluate(() => {
+      (window as any).axiomDesktop.agent.accountStatus = async () => { throw new Error("Synthetic fresh retry failure"); };
+    });
+    await screen.getByRole("button", { name: "Try again", exact: true }).click();
+    await screen.getByText(/Synthetic fresh retry failure/).waitFor();
+    assert.equal(await page.getByRole("button", { name: "Dismiss notice", exact: true }).count(), 0, "retry errors stay in the preparation screen");
+    await page.evaluate(() => {
+      (window as any).axiomDesktop.agent.accountStatus = async () => {
+        (window as any).__deletionTest.setAccountState({ revision: 3, state: "starting", preparationPhase: "checking_sign_in" });
+        return { status: { revision: 3, state: "starting", preparationPhase: "checking_sign_in" } };
+      };
+    });
+    await screen.getByRole("button", { name: "Try again", exact: true }).click();
+    await screen.getByRole("heading", { name: "Checking your sign-in", exact: true }).waitFor();
+    assert.equal(await screen.getByText("Done", { exact: true }).count(), 0, "a failed stage never becomes a completed stage on retry");
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("a decryption observation shows only stages the native runtime actually reported", async () => {
+  const { page, errors } = await openApp("darwin", false, [], "medium", false, true, undefined, "test-model", false,
+    { revision: 1, state: "starting", preparationPhase: "decrypting_chats" });
+  try {
+    const screen = page.getByRole("region", { name: "Chat preparation", exact: true });
+    await screen.getByRole("heading", { name: "Decrypting your chats", exact: true }).waitFor();
+    assert.equal(await screen.getByRole("listitem").count(), 1);
+    assert.equal(await screen.getByText("Done", { exact: true }).count(), 0);
+    assert.equal(await page.locator("textarea[data-chat-input]").count(), 0);
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
 });
@@ -4792,6 +4848,7 @@ test("Agent close waits for acknowledgement and repeated dismissals never duplic
     assert.equal((await calls(page)).filter(call => call.method === "configureAgent").length, 1);
     await page.evaluate(() => (window as any).__deletionTest.releaseSetup("agent"));
     await dialog.waitFor({ state: "hidden" });
+    await page.waitForFunction(() => document.querySelector('[data-agent-toggle]')?.getAttribute("aria-pressed") === "true");
     assert.equal(await page.getByRole("button", { name: "Agent", exact: true }).getAttribute("aria-pressed"), "true");
     await page.getByRole("button", { name: "Agent", exact: true }).click();
     assert.equal(await dialog.getByRole("radio", { name: "Full access", exact: true }).isChecked(), true);

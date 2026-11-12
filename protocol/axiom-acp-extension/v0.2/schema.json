@@ -2684,6 +2684,7 @@
       "enum": [
         "checking_sign_in",
         "opening_chats",
+        "decrypting_chats",
         "switching_account"
       ]
     },

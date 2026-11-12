@@ -18,21 +18,23 @@ use super::{AccountRoute, ConnectionGuard, SessionStore, StoreBinding, StoreStat
 
 impl SessionStore {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        Self::open_with_progress(path.as_ref(), &|_| {})
+        Self::open_with_progress(path.as_ref(), &|_| {}, &|| {})
     }
 
     fn open_with_progress(
         path: &Path,
         progress: &crate::storage_progress::Observer<'_>,
+        decrypting: &dyn Fn(),
     ) -> Result<Self> {
         #[cfg(not(test))]
-        let opened = crate::local_storage::open_database_with_progress(path, progress)?;
+        let opened = crate::local_storage::open_database_with_progress(path, progress, decrypting)?;
         // Unit fixtures must never touch the user's operating-system keychain.
         #[cfg(test)]
         let opened = crate::local_storage::open_database_with_key_and_progress(
             path,
             Arc::new(crate::local_storage::StorageKey::from_bytes([0x53; 32])),
             progress,
+            decrypting,
         )?;
         Self::from_opened_with_progress(path, opened, progress)
     }
@@ -77,7 +79,7 @@ impl SessionStore {
     ) -> Result<Self> {
         Self::from_opened_with_progress(
             path,
-            crate::local_storage::open_database_with_key_and_progress(path, key, progress)?,
+            crate::local_storage::open_database_with_key_and_progress(path, key, progress, &|| {})?,
             progress,
         )
     }
@@ -204,8 +206,11 @@ impl SessionStore {
         &self,
         account_id: &str,
         progress: &crate::storage_progress::Observer<'_>,
+        decrypting: &dyn Fn(),
     ) -> Result<()> {
-        self.activate_with_opener(account_id, |path| Self::open_with_progress(path, progress))
+        self.activate_with_opener(account_id, |path| {
+            Self::open_with_progress(path, progress, decrypting)
+        })
     }
 
     #[cfg(debug_assertions)]
