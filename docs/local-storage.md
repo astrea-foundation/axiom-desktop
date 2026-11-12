@@ -58,11 +58,28 @@ an encrypted backup and recovery key before moving the store to another device.
 The schema migration decodes recognized image/file slots in accepted attachments,
 generated-image timeline content, authoritative events and exact model-message
 checkpoints. It writes durable ciphertext files before committing asset references
-and preserves message/checkpoint IDs and hashes of hydrated model messages.
-Malformed inline media prevents the forward conversion from committing; the
-original database is retained for recovery. Once media uses external encrypted
-assets, unavailable files are isolated as described below. Cleanup removes
-obsolete payload pages and truncates the WAL before migration completes.
+and preserves checkpoint message IDs and untouched message hashes. In these
+explicit typed slots, malformed or missing inline media is omitted during
+conversion. Byte-free unavailable attachment slots preserve original positions
+and surviving image IDs. Usable text, tool outcomes and unaffected media remain
+available. New uploads cannot supply these migration-only markers.
+
+Before committing an omission, migration archives the exact original record in
+encrypted, thread-owned recovery assets. Large records use ordered chunks. These
+records are never loaded as media, remain available for offline recovery and
+portable backup, and are released when their thread is deleted. An omitted
+canonical message keeps its numeric checkpoint ID and receives a separate
+recovery deduplication identity; its original digest is retained in the recovery
+record. Reintroducing the original valid message can therefore succeed without a
+false digest collision. Valid untouched message digests stay stable.
+
+Omission, recovery ownership and reference updates commit in the same migration
+transaction. A storage-write failure leaves the original database records intact
+for retry; orphan staged ciphertext is reclaimed after a successful retry.
+Unsupported schemas, invalid database/key authentication and unrelated malformed
+records remain errors. The converter never scans text or arbitrary tool arguments
+for media. Cleanup removes obsolete payload pages and truncates the WAL before
+migration completes.
 
 Only unreferenced ciphertext is reclaimed. Compaction alone does not erase
 original images or history needed for viewing, editing, revision or replay.
