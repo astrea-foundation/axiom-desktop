@@ -1,16 +1,45 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFileSync } from "node:fs";
+import { inflateSync } from "node:zlib";
 import { NativePersistence, type NativeLocalApi, type LegacyPayloadStore } from "../src/renderer/src/nativePersistence";
 import { MessageQueue, type QueueApi, type QueuedMessage, type QueueStore } from "@axiom/chat-core/messageQueue";
 import type { PromptPayload, PayloadStore } from "@axiom/chat-core/localPayloads";
 import type { ClientState } from "@axiom/axiom-acp-client";
 import { localPayloadRequest, requireLocalPayloadAccount } from "../src/main/local-payload";
+import { promptPayload } from "../src/shared/local-payload";
 
 const queueKey = "axiom.message-queue.v1:alice";
 const queueId = "axiom.message-queue.v1";
 const draftKey = "axiom.draft.v1:alice:new";
 const scope = (account: string, id: string) => JSON.stringify([account, id]);
 const payload = (text: string): PromptPayload => ({ text, attachments: [] });
+const png = readFileSync(new URL("../../axiomcli/src/session/fixtures/storage-original.png", import.meta.url)).toString("base64");
+function readableImage(data: string): boolean {
+  try {
+    const bytes = Buffer.from(data, "base64");
+    if (bytes.toString("base64") !== data || bytes.length > 5 * 1024 * 1024 || bytes.subarray(0, 8).toString("hex") !== "89504e470d0a1a0a") return false;
+    let width = 0, height = 0, ended = false; const pixels: Buffer[] = [];
+    for (let at = 8; at + 12 <= bytes.length;) {
+      const length = bytes.readUInt32BE(at), type = bytes.toString("ascii", at + 4, at + 8);
+      if (at + length + 12 > bytes.length) return false;
+      if (type === "IHDR") { width = bytes.readUInt32BE(at + 8); height = bytes.readUInt32BE(at + 12); }
+      if (type === "IDAT") pixels.push(bytes.subarray(at + 8, at + 8 + length));
+      if (type === "IEND") { ended = true; break; }
+      at += length + 12;
+    }
+    return ended && width > 0 && height > 0 && width <= 8192 && height <= 8192
+      && inflateSync(Buffer.concat(pixels), { maxOutputLength: 128 * 1024 * 1024 }).length === (1 + width * 4) * height;
+  } catch { return false; }
+}
+function requireNativeImages(value: unknown): void {
+  if (!value || typeof value !== "object") return;
+  const envelope = value as any;
+  const payloads = envelope.kind === "prompt" ? [envelope.payload] : envelope.items ?? [];
+  for (const payload of payloads) for (const file of payload.attachments ?? []) {
+    if (file.kind === "image" && (!readableImage(file.image?.data) || file.image?.mimeType !== "image/png")) throw Error("saved image cannot be decoded within storage limits");
+  }
+}
 const item = (id: string, extra: Partial<QueuedMessage> = {}): QueuedMessage => ({
   id, threadId: "thread", text: "queued text", webEnabled: false, agentRevision: 0, status: "queued", ...extra,
 });
@@ -22,13 +51,32 @@ function deferred<T>() {
 const settle = () => new Promise(resolve => setImmediate(resolve));
 function fixture() {
   const native = new Map<string, unknown>(), legacy = new Map<string, PromptPayload>(), storage = new Map<string, string>();
+  const recovery = new Map<string, unknown[]>();
   const calls: Parameters<NativeLocalApi["localPayload"]>[0][] = [];
   const api: NativeLocalApi = { localPayload: async request => {
     calls.push(structuredClone(request));
     const key = scope(request.accountId, request.id);
     if (request.action.kind === "get") return { value: structuredClone(native.get(key)) };
-    if (request.action.kind === "put") native.set(key, structuredClone(request.action.value));
-    else native.delete(key);
+    if (request.action.kind === "put") { requireNativeImages(request.action.value); native.set(key, structuredClone(request.action.value)); }
+    else if (request.action.kind === "import_legacy") {
+      const source = JSON.parse(JSON.stringify(request.action.value));
+      const value = structuredClone(source) as typeof request.action.value;
+      let omittedMedia = 0;
+      const payloads = value.kind === "prompt" ? [value.payload] : value.items;
+      for (const payload of payloads) {
+        payload.attachments = (payload.attachments ?? []).filter(file => {
+          try { promptPayload({ text: "", attachments: [file] }); requireNativeImages({ kind: "prompt", payload: { attachments: [file] } }); return true; }
+          catch { omittedMedia++; return false; }
+        });
+      }
+      if (omittedMedia) {
+        const originals = recovery.get(key) ?? [];
+        if (!originals.some(value => JSON.stringify(value) === JSON.stringify(source))) originals.push(source);
+        recovery.set(key, originals);
+      }
+      if (!request.action.preview && !native.has(key)) native.set(key, structuredClone(value));
+      return { value, omittedMedia };
+    } else { native.delete(key); recovery.delete(key); }
     return {};
   } };
   const legacyApi: LegacyPayloadStore = {
@@ -53,14 +101,14 @@ function fixture() {
   };
   const persistence = new NativePersistence(() => api, legacyApi, () => browser);
   persistence.setContext("alice", "runtime", 1);
-  return { native, legacy, storage, calls, api, legacyApi, browser, persistence };
+  return { native, legacy, recovery, storage, calls, api, legacyApi, browser, persistence };
 }
 
 test("migration encrypts text mirrors, attachment drafts, failed/preparing queue payloads and metadata before cleanup", async () => {
   const f = fixture();
   f.storage.set(draftKey, "newer synchronous draft");
   f.legacy.set(scope("alice", draftKey), payload("older indexed draft"));
-  const image = { kind: "image" as const, name: "private.png", image: { mimeType: "image/png", data: "iVBORw0KGgo=" } };
+  const image = { kind: "image" as const, name: "private.png", image: { mimeType: "image/png", data: png } };
   f.legacy.set(scope("alice", "draft-attachments:new"), { text: "", attachments: [image] });
   f.legacy.set(scope("alice", "pending"), { text: "pending text", attachments: [image] });
   f.storage.set(queueKey, JSON.stringify([
@@ -265,6 +313,12 @@ test("main IPC payload validation allowlists actions and enforces the exact acti
   assert.throws(() => localPayloadRequest({ accountId: "alice", id: "draft", action: { kind: "export-key" } }));
   assert.throws(() => localPayloadRequest({ accountId: "alice", id: "draft", action: { kind: "put", value: { version: 1, kind: "arbitrary" } } }));
   assert.deepEqual(localPayloadRequest({ accountId: "alice", id: "draft", action: { kind: "put", value: { version: 1, kind: "prompt", payload: payload("text") } } }).action.kind, "put");
+  const malformed = { version: 1, kind: "prompt", payload: { text: "text", attachments: [{ kind: "image", name: "bad.png", image: { mimeType: "image/png", data: "!invalid!" } }] } };
+  assert.throws(() => localPayloadRequest({ accountId: "alice", id: "draft", action: { kind: "put", value: malformed } }));
+  assert.equal(localPayloadRequest({ accountId: "alice", id: "draft", action: { kind: "import_legacy", value: malformed, preview: true } }).action.kind, "import_legacy");
+  assert.throws(() => localPayloadRequest({ accountId: "alice", id: "draft", action: { kind: "import_legacy", value: malformed, preview: "true" } }));
+  assert.throws(() => localPayloadRequest({ accountId: "alice", id: "draft", action: { kind: "import_legacy", value: { ...malformed, kind: "unknown" } } }));
+  assert.throws(() => localPayloadRequest({ accountId: "alice", id: "draft", action: { kind: "import_legacy", value: { ...malformed, payload: { ...malformed.payload, unknownSchema: 2 } } } }));
 });
 
 test("failed encrypted removal keeps the queued message visible and its payload intact", async () => {
@@ -316,7 +370,7 @@ test("anonymous conflict is a reviewable preparation alongside a full outbox and
   const f = fixture();
   f.native.set(scope("alice", draftKey), { version: 1, kind: "prompt", payload: payload("authored draft") });
   f.storage.set("axiom.draft.v1:anonymous:new", "unsigned draft text");
-  const image = { kind: "image" as const, name: "anonymous.png", image: { mimeType: "image/png", data: "iVBORw0KGgo=" } };
+  const image = { kind: "image" as const, name: "anonymous.png", image: { mimeType: "image/png", data: png } };
   f.legacy.set(scope("anonymous", "draft-attachments:new"), { text: "", attachments: [image] });
   f.storage.set(queueKey, JSON.stringify(Array.from({ length: 32 }, (_, index) => item(`queued-${index}`))));
   const state = { connected: true, runtimeInstanceId: "runtime", account: { state: "valid", account: { id: "alice" } }, sessions: { thread: { running: false, timeline: [] } } } as unknown as ClientState;
@@ -340,4 +394,128 @@ test("anonymous conflict is a reviewable preparation alongside a full outbox and
   queue.remove(id); await queue.flush(); await settle();
   assert.equal(await f.persistence.get("alice", id), undefined);
   assert.equal((await f.persistence.get("alice", draftKey))?.text, "authored draft");
+});
+
+test("damaged legacy images must not block unrelated new native payload operations", async () => {
+  const f = fixture();
+  const damaged = { text: "keep legacy text", attachments: [{ kind: "image" as const, name: "old.png", image: { mimeType: "image/png", data: "iVBORw0KGgo=" } }] };
+  f.legacy.set(scope("alice", "old-draft"), damaged);
+  await f.persistence.put("alice", "unrelated", payload("new usable text"));
+  assert.equal((await f.persistence.get("alice", "unrelated"))?.text, "new usable text");
+  assert.equal((await f.persistence.get("alice", "old-draft"))?.attachments.length, 0);
+});
+
+const brokenImage = { kind: "image" as const, name: "damaged.png", image: { mimeType: "image/png", data: "iVBORw0KGgo=" } };
+const healthyImage = { kind: "image" as const, name: "healthy.png", image: { mimeType: "image/png", data: png } };
+
+test("lost legacy import ACK retries sanitized content without collision or overwriting newer native text", async () => {
+  const f = fixture();
+  const source = { text: "original authored text", attachments: [brokenImage, healthyImage] };
+  f.legacy.set(scope("alice", draftKey), source);
+  const original = f.api.localPayload;
+  let fail = true;
+  f.api.localPayload = async request => {
+    const result = await original(request);
+    if (fail && request.action.kind === "import_legacy" && !request.action.preview && request.id.startsWith("recovered-legacy:")) { fail = false; throw Error("lost normalized import ACK"); }
+    return result;
+  };
+  await assert.rejects(f.persistence.load("alice"), /lost normalized import ACK/);
+  assert.deepEqual(f.legacy.get(scope("alice", draftKey)), source);
+  f.native.set(scope("alice", draftKey), { version: 1, kind: "prompt", payload: payload("newer native text") });
+  const restored = await f.persistence.load("alice");
+  assert.equal(restored.length, 1);
+  assert.equal(restored[0]?.preparing, true);
+  assert.match(restored[0]!.error!, /omitted.*[Rr]eview/);
+  assert.deepEqual(await f.persistence.get("alice", restored[0]!.payloadId!), { text: source.text, attachments: [healthyImage] });
+  assert.equal((await f.persistence.get("alice", draftKey))?.text, "newer native text");
+  assert.equal(f.legacy.size, 0);
+  const originals = f.recovery.get(scope("alice", draftKey));
+  assert.deepEqual(originals, [{ version: 1, kind: "prompt", payload: source }]);
+  await f.persistence.put("alice", draftKey, payload("later ordinary edit"));
+  assert.deepEqual(f.recovery.get(scope("alice", draftKey)), originals);
+  await f.persistence.remove("alice", draftKey);
+  assert.equal(f.recovery.has(scope("alice", draftKey)), false);
+});
+
+test("boundary-length authored text with damaged media imports unchanged and fresh damaged writes remain strict", async () => {
+  const f = fixture();
+  const text = "x".repeat(4 * 1024 * 1024);
+  const source = { text, attachments: [brokenImage] };
+  f.legacy.set(scope("alice", draftKey), source);
+  assert.deepEqual(await f.persistence.get("alice", draftKey), { text, attachments: [] });
+  const restored = await f.persistence.load("alice");
+  assert.equal(restored.length, 1);
+  assert.equal((await f.persistence.get("alice", restored[0]!.payloadId!))?.text, text);
+  assert.equal(f.legacy.size, 0);
+  await assert.rejects(f.persistence.put("alice", "fresh", { text: "new", attachments: [brokenImage] }), /cannot be decoded/);
+  assert.equal(await f.persistence.get("alice", "fresh"), undefined);
+});
+
+test("damaged anonymous and queued imports preserve healthy inputs, require review and never auto-send", async () => {
+  const f = fixture();
+  const anonymous = { text: "anonymous original", attachments: [brokenImage, healthyImage] };
+  f.legacy.set(scope("anonymous", "draft-attachments:new"), anonymous);
+  f.legacy.set(scope("alice", "queued-input"), { text: "referenced text", attachments: [brokenImage, healthyImage] });
+  f.storage.set(queueKey, JSON.stringify([
+    item("referenced", { text: "", payloadId: "queued-input", status: "sending" }),
+    item("inline-damaged", { attachments: [brokenImage, healthyImage], error: "previous delivery failed" }),
+  ]));
+  const restored = await f.persistence.load("alice");
+  for (const id of ["referenced", "inline-damaged"]) {
+    const queued = restored.find(item => item.id === id)!;
+    assert.equal(queued.status, "queued");
+    assert.match(queued.error!, /omitted.*[Rr]eview/);
+    assert.deepEqual((await f.persistence.get("alice", queued.payloadId!))?.attachments, [healthyImage]);
+  }
+  assert.match(restored.find(item => item.id === "inline-damaged")!.error!, /previous delivery failed/);
+  assert.deepEqual(f.recovery.get(scope("alice", queueId)), [{ version: 1, kind: "queue", items: [item("inline-damaged", { attachments: [brokenImage, healthyImage], error: "previous delivery failed" })] }], "archive retains complete damaged queue metadata");
+  assert.equal((await f.persistence.get("alice", draftKey))?.text, anonymous.text);
+  assert.deepEqual((await f.persistence.get("alice", "draft-attachments:new"))?.attachments, [healthyImage]);
+  assert.ok(restored.find(item => item.preparing && /omitted/.test(item.error ?? "")));
+  assert.deepEqual(f.recovery.get(scope("alice", "draft-attachments:new"))?.[0], { version: 1, kind: "prompt", payload: anonymous });
+  const state = { connected: true, runtimeInstanceId: "runtime", account: { state: "valid", account: { id: "alice" } }, sessions: { thread: { running: false, timeline: [] } } } as unknown as ClientState;
+  const sends: string[] = [];
+  const queue = new MessageQueue(null, () => {}, error => { throw Error(error); }, f.persistence, f.persistence);
+  queue.sync(state, { getState: async () => state, cancel: async () => {}, promptWithWebConsent: async (_, __, id) => { sends.push(id); return { stopReason: "end_turn" }; } });
+  await queue.flush(); await settle();
+  assert.deepEqual(sends, []);
+  assert.equal(queue.list("thread").length, 2);
+  assert.match(queue.list("thread")[0]!.error!, /[Rr]eview/);
+});
+
+test("legacy recovery archives precede cleanup and survive changed-source cleanup retry", async () => {
+  const f = fixture();
+  const source = { text: "old IDB text", attachments: [brokenImage] };
+  f.legacy.set(scope("alice", draftKey), source);
+  f.storage.set(draftKey, "newer synchronous text");
+  const remove = f.legacyApi.removeIfUnchanged;
+  let changed = false;
+  f.legacyApi.removeIfUnchanged = async (account, id, expected) => {
+    assert.deepEqual(f.recovery.get(scope("alice", draftKey))?.[0], { version: 1, kind: "prompt", payload: source });
+    if (!changed) { changed = true; f.legacy.set(scope(account, id), { ...source, text: "changed during cleanup" }); }
+    return remove(account, id, expected);
+  };
+  await assert.rejects(f.persistence.load("alice"), /attachment changed/);
+  assert.equal(f.legacy.get(scope("alice", draftKey))?.text, "changed during cleanup");
+  const restored = await f.persistence.load("alice");
+  assert.ok((await Promise.all(restored.map(item => f.persistence.get("alice", item.payloadId!)))).some(value => value?.text === "changed during cleanup"));
+  assert.equal((await f.persistence.get("alice", draftKey))?.text, "newer synchronous text");
+  assert.equal(f.legacy.size, 0);
+});
+
+test("explicit legacy import failures and older native capabilities keep source and block cleanup", async () => {
+  for (const error of ["archive write failed", "store authentication failed", "updated native app required"]) {
+    const f = fixture();
+    const source = { text: "source retained", attachments: [brokenImage] };
+    f.legacy.set(scope("alice", draftKey), source);
+    const original = f.api.localPayload;
+    f.api.localPayload = async request => {
+      if (request.action.kind === "import_legacy") throw Error(error);
+      return original(request);
+    };
+    await assert.rejects(f.persistence.put("alice", "unrelated", payload("unsaved")), new RegExp(error));
+    assert.deepEqual(f.legacy.get(scope("alice", draftKey)), source);
+    assert.ok(![...f.native.keys()].some(id => id.includes("legacy-import:")));
+    assert.equal(f.native.has(scope("alice", "unrelated")), false);
+  }
 });

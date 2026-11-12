@@ -152,6 +152,26 @@ durable submission instead of falling back to plaintext browser storage. Encrypt
 receipts make browser cleanup retryable without replaying already imported queue
 entries or discarding a draft edited after an earlier import.
 
+The `localPayload@2` legacy-import action validates only recognized typed media
+slots, omits damaged image/file inputs and returns the normalized source plus an
+omission count. Authored text remains exact, including at the prompt-size limit.
+Ordinary new writes continue to reject malformed media. Native creates an import
+destination only if absent; acknowledgement retries compare the normalized source
+and preserve newer native edits as well as changed browser sources. A preview
+mode archives and normalizes anonymous inputs before deciding whether both
+composer fields can be adopted. It never creates or overwrites those fields.
+
+Before browser cleanup, the import transaction archives omitted prompt inputs
+and complete affected queue-item records as encrypted recovery capsules. Each
+capsule identifies the SHA-256 of the full serialized source, so ordered chunks
+from multiple changed versions can be reconstructed independently. Recovery uses
+separate `payload-recovery:` ownership: ordinary draft/outbox replacement retains
+the archive, while explicit payload or account deletion releases it. Damaged
+imports add review notices to saved queue/error metadata or recovered preparations,
+without appending notices to authored text or resending messages. A sidecar that
+supports only `localPayload@1` can still perform ordinary persistence; legacy
+import requires an updated native app and keeps its browser source until then.
+
 Text draft writes use a short debounce. Normal window close, quit, update restart
 and explicit account transitions flush pending writes and wait for native
 acknowledgement before closing the current storage context. A failed or timed-out

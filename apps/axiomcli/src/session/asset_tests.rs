@@ -437,16 +437,18 @@ async fn large_valid_generated_original_is_omitted_only_from_five_mib_input_slot
     store.verify_asset_integrity().unwrap();
 }
 fn recovery_records(store: &SessionStore, id: &SessionId) -> Vec<Value> {
+    owned_recovery_records(store, &super::assets::thread_owner(&id.to_string()))
+}
+fn owned_recovery_records(store: &SessionStore, owner: &str) -> Vec<Value> {
     let connection = store.lock().unwrap();
-    let owner = super::assets::thread_owner(&id.to_string());
     let mut statement = connection.prepare("SELECT a.id,a.sha256,a.byte_length FROM binary_assets a JOIN asset_owners o ON o.asset_id=a.id WHERE o.owner=?1").unwrap();
-    let references = statement.query_map([&owner], |row| Ok(json!({"version":1,"id":row.get::<_,String>(0)?,"sha256":row.get::<_,String>(1)?,"bytes":row.get::<_,i64>(2)?}))).unwrap();
+    let references = statement.query_map([owner], |row| Ok(json!({"version":1,"id":row.get::<_,String>(0)?,"sha256":row.get::<_,String>(1)?,"bytes":row.get::<_,i64>(2)?}))).unwrap();
     references
         .filter_map(|reference| {
             let reference = serde_json::from_value(reference.unwrap()).unwrap();
             let encoded = connection
                 .assets()
-                .resolve(&connection, &owner, &reference)
+                .resolve(&connection, owner, &reference)
                 .unwrap();
             let value: Value = serde_json::from_slice(&STANDARD.decode(encoded).unwrap()).ok()?;
             (value["kind"] == "legacy_media_recovery").then_some(value)
@@ -1784,5 +1786,240 @@ fn selective_restore_retains_only_context_reports_that_still_cover_the_checkpoin
                 matches!(&loaded[checkpoint + 1].event, AppEvent::ContextUsageUpdated { usage: value } if value == &usage)
             );
         }
+    }
+}
+
+#[test]
+fn legacy_payload_import_archives_exact_source_and_survives_edit_restart_and_lost_ack() {
+    let root = tempdir().unwrap();
+    let path = root.path().join("state.sqlite3");
+    let store = SessionStore::open_protected_with_key(&path, key()).unwrap();
+    store.set_local_payload("healthy", &payload()).unwrap();
+    let valid_path = asset_path(&store, &path, ORIGINAL);
+    let original_ciphertext = std::fs::read(&valid_path).unwrap();
+    let mut source = payload();
+    source["payload"]["attachments"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({
+            "kind":"image", "name":"damaged.png", "image":image(b"\x89PNG\r\n\x1a\n")
+        }));
+    assert!(
+        store.set_local_payload("draft", &source).is_err(),
+        "ordinary new writes stay strict"
+    );
+    let (normalized, omitted) = store.import_local_payload("draft", &source, false).unwrap();
+    assert_eq!(omitted, 1);
+    assert_eq!(normalized, payload());
+    assert_eq!(
+        store.local_payload("draft").unwrap(),
+        Some(normalized.clone())
+    );
+    assert_eq!(std::fs::read(&valid_path).unwrap(), original_ciphertext);
+    let owner = super::assets::payload_recovery_owner("draft");
+    let capsules = owned_recovery_records(&store, &owner);
+    assert_eq!(capsules.len(), 1);
+    assert_eq!(capsules[0]["sourceKind"], 4);
+    assert_eq!(capsules[0]["sourceId"], "draft");
+    let exact: Value = serde_json::from_slice(
+        &STANDARD
+            .decode(capsules[0]["originalPayloadBase64"].as_str().unwrap())
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(exact, source);
+    let edited = json!({"version":1,"kind":"prompt","payload":{"text":"newer native draft","attachments":[]}});
+    store.set_local_payload("draft", &edited).unwrap();
+    assert_eq!(
+        owned_recovery_records(&store, &owner),
+        capsules,
+        "normal edits retain recovery ownership"
+    );
+    drop(store);
+    let store = SessionStore::open_protected_with_key(&path, key()).unwrap();
+    assert_eq!(
+        store.import_local_payload("draft", &source, false).unwrap(),
+        (normalized, 1),
+        "lost ACK retries return normalized source"
+    );
+    assert_eq!(store.local_payload("draft").unwrap(), Some(edited));
+    assert_eq!(
+        owned_recovery_records(&store, &owner),
+        capsules,
+        "retry deduplicates recovery bytes"
+    );
+    store.remove_local_payload("draft").unwrap();
+    assert!(owned_recovery_records(&store, &owner).is_empty());
+    assert_eq!(store.local_payload("healthy").unwrap(), Some(payload()));
+    assert_eq!(std::fs::read(&valid_path).unwrap(), original_ciphertext);
+    store.remove_local_payload("healthy").unwrap();
+    assert_eq!(
+        std::fs::read_dir(asset_directory_for_database(&path))
+            .unwrap()
+            .count(),
+        0
+    );
+}
+
+#[test]
+fn legacy_payload_preview_archives_without_creating_or_overwriting_and_import_failure_retries() {
+    let root = tempdir().unwrap();
+    let path = root.path().join("state.sqlite3");
+    let store = SessionStore::open_protected_with_key(&path, key()).unwrap();
+    let mut source = payload();
+    source["payload"]["attachments"][0]["image"] = image(b"\x89PNG\r\n\x1a\n");
+    let empty =
+        json!({"version":1,"kind":"prompt","payload":{"text":"saved draft","attachments":[]}});
+    assert_eq!(
+        store
+            .import_local_payload("preview", &source, true)
+            .unwrap(),
+        (empty.clone(), 1)
+    );
+    assert!(store.local_payload("preview").unwrap().is_none());
+    assert_eq!(
+        owned_recovery_records(&store, &super::assets::payload_recovery_owner("preview")).len(),
+        1
+    );
+    store.set_local_payload("preview", &payload()).unwrap();
+    assert_eq!(
+        store
+            .import_local_payload("preview", &source, true)
+            .unwrap(),
+        (empty.clone(), 1)
+    );
+    assert_eq!(store.local_payload("preview").unwrap(), Some(payload()));
+    store.remove_local_payload("preview").unwrap();
+    store.lock().unwrap().execute_batch("CREATE TRIGGER import_failure BEFORE INSERT ON local_payloads BEGIN SELECT RAISE(ABORT, 'fixture import failure'); END;").unwrap();
+    assert!(
+        store
+            .import_local_payload("retry", &source, false)
+            .unwrap_err()
+            .to_string()
+            .contains("fixture import failure")
+    );
+    assert!(store.local_payload("retry").unwrap().is_none());
+    assert!(
+        owned_recovery_records(&store, &super::assets::payload_recovery_owner("retry")).is_empty()
+    );
+    let owners: i64 = store
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT count(*) FROM asset_owners WHERE owner LIKE 'payload-import:%'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(owners, 0);
+    store
+        .lock()
+        .unwrap()
+        .execute_batch("DROP TRIGGER import_failure")
+        .unwrap();
+    assert_eq!(
+        store.import_local_payload("retry", &source, false).unwrap(),
+        (empty.clone(), 1)
+    );
+    assert_eq!(store.local_payload("retry").unwrap(), Some(empty));
+    let mut unknown = source;
+    unknown["kind"] = json!("unknown");
+    assert!(
+        store
+            .import_local_payload("unknown", &unknown, false)
+            .is_err()
+    );
+}
+
+#[test]
+fn legacy_payload_import_preserves_boundary_text_and_marks_omitted_queue_for_review() {
+    let root = tempdir().unwrap();
+    let store =
+        SessionStore::open_protected_with_key(&root.path().join("state.sqlite3"), key()).unwrap();
+    let text = "x".repeat(4 * 1024 * 1024);
+    let damaged =
+        json!({"kind":"image", "name":"damaged.png", "image":image(b"\x89PNG\r\n\x1a\n")});
+    let source =
+        json!({"version":1,"kind":"prompt","payload":{"text":text,"attachments":[damaged]}});
+    let (normalized, omitted) = store
+        .import_local_payload("boundary", &source, false)
+        .unwrap();
+    assert_eq!(omitted, 1);
+    assert_eq!(
+        normalized["payload"]["text"], text,
+        "omission metadata never changes authored text"
+    );
+    assert_eq!(normalized["payload"]["attachments"], json!([]));
+    let mut capsules =
+        owned_recovery_records(&store, &super::assets::payload_recovery_owner("boundary"));
+    capsules.sort_by_key(|record| record["part"].as_u64().unwrap());
+    let exact: Vec<u8> = capsules
+        .iter()
+        .flat_map(|record| {
+            STANDARD
+                .decode(record["originalPayloadBase64"].as_str().unwrap())
+                .unwrap()
+        })
+        .collect();
+    assert_eq!(serde_json::from_slice::<Value>(&exact).unwrap(), source);
+    let source = json!({"version":1,"kind":"queue","items":[{"id":"queued","threadId":"thread","text":"keep queued text","attachments":[damaged,attachment()],"status":"sending","webEnabled":false,"agentRevision":0}]});
+    assert!(store.set_local_payload("strict-queue", &source).is_err());
+    let (normalized, omitted) = store.import_local_payload("queue", &source, false).unwrap();
+    assert_eq!(omitted, 1);
+    assert_eq!(normalized["items"][0]["text"], "keep queued text");
+    assert_eq!(normalized["items"][0]["attachments"], json!([attachment()]));
+    assert_eq!(normalized["items"][0]["status"], "queued");
+    assert_eq!(
+        normalized["items"][0]["error"],
+        super::asset_codec::MEDIA_OMITTED
+    );
+}
+
+#[test]
+fn legacy_payload_recovery_groups_changed_multichunk_sources_by_full_source_hash() {
+    let root = tempdir().unwrap();
+    let path = root.path().join("state.sqlite3");
+    let store = SessionStore::open_protected_with_key(&path, key()).unwrap();
+    let mut originals = std::collections::BTreeMap::new();
+    for suffix in ["first", "later"] {
+        let source = json!({"version":1,"kind":"prompt","payload":{"text":format!("{}{}", "x".repeat(2*1024*1024), suffix),"attachments":[{"kind":"image","name":"bad.png","image":image(b"\x89PNG\r\n\x1a\n")}]}});
+        let serialized = serde_json::to_vec(&source).unwrap();
+        let digest = hex::encode(Sha256::digest(&serialized));
+        originals.insert(digest, serialized);
+        assert_eq!(
+            store
+                .import_local_payload("changed", &source, true)
+                .unwrap()
+                .1,
+            1
+        );
+    }
+    drop(store);
+    let store = SessionStore::open_protected_with_key(&path, key()).unwrap();
+    let capsules =
+        owned_recovery_records(&store, &super::assets::payload_recovery_owner("changed"));
+    let mut versions = std::collections::BTreeMap::<String, Vec<Value>>::new();
+    for record in capsules {
+        assert_eq!(record["sourceId"], "changed");
+        assert_eq!(record["parts"], 3);
+        versions
+            .entry(record["sourceSha256"].as_str().unwrap().to_owned())
+            .or_default()
+            .push(record);
+    }
+    assert_eq!(versions.len(), 2);
+    for (hash, mut parts) in versions {
+        parts.sort_by_key(|record| record["part"].as_u64().unwrap());
+        assert_eq!(parts.len(), 3);
+        let reconstructed: Vec<u8> = parts
+            .iter()
+            .flat_map(|record| {
+                STANDARD
+                    .decode(record["originalPayloadBase64"].as_str().unwrap())
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(hash, hex::encode(Sha256::digest(&reconstructed)));
+        assert_eq!(reconstructed, originals[&hash]);
     }
 }

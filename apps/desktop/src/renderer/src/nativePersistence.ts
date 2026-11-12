@@ -1,15 +1,16 @@
 import type { PayloadStore, PromptPayload } from "@axiom/chat-core/localPayloads";
 import type { QueueStore, QueuedMessage } from "@axiom/chat-core/messageQueue";
-import { localEnvelope, promptPayload, queueItems, type LocalEnvelope } from "../../shared/local-payload";
+import { legacyPromptPayload, localEnvelope, promptPayload, queueItems, type LocalEnvelope } from "../../shared/local-payload";
 
 export interface NativeLocalApi {
-  localPayload(request: { accountId: string; id: string; action: { kind: "get" | "remove" } | { kind: "put"; value: LocalEnvelope } }): Promise<{ value?: unknown }>;
+  localPayload(request: { accountId: string; id: string; action: { kind: "get" | "remove" } | { kind: "put"; value: LocalEnvelope } | { kind: "import_legacy"; value: LocalEnvelope; preview?: boolean } }): Promise<{ value?: unknown; omittedMedia?: number | null }>;
 }
 export interface LegacyPayloadStore extends PayloadStore {
   entries(account: string): Promise<Array<[string, PromptPayload]>>;
   removeIfUnchanged(account: string, id: string, expected: PromptPayload): Promise<boolean>;
 }
 export type LegacyStorage = Pick<Storage, "getItem" | "removeItem" | "key" | "length">;
+const OMITTED_REVIEW = "Some damaged legacy media was omitted. Review this message before sending.";
 const QUEUE_ID = "axiom.message-queue.v1";
 const queueKey = (account: string) => `${QUEUE_ID}:${encodeURIComponent(account)}`;
 const draftPrefix = (account: string) => `axiom.draft.v1:${encodeURIComponent(account)}:`;
@@ -75,11 +76,23 @@ export class NativePersistence implements PayloadStore, QueueStore {
     const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(stableJson(value)));
     return `${prefix}:${Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("")}`;
   }
+  private async importEnvelope(native: NativeLocalApi, accountId: string, id: string, source: LocalEnvelope, preview = false): Promise<{ value: LocalEnvelope; omitted: number }> {
+    const response = await native.localPayload({ accountId, id, action: { kind: "import_legacy", value: localEnvelope(source, true), preview } });
+    if (response.value == null || !Number.isSafeInteger(response.omittedMedia) || response.omittedMedia! < 0) throw new Error("The legacy import was not acknowledged. Your original local data was kept.");
+    const value = localEnvelope(response.value);
+    return { value, omitted: response.omittedMedia! };
+  }
+  private async importPrompt(native: NativeLocalApi, accountId: string, id: string, payload: PromptPayload, preview = false): Promise<{ payload: PromptPayload; omitted: number }> {
+    const { value, omitted } = await this.importEnvelope(native, accountId, id, { version: 1, kind: "prompt", payload }, preview);
+    if (value.kind !== "prompt") throw new Error("Invalid normalized draft.");
+    return { payload: value.payload, omitted };
+  }
   private async preserveRecovery(native: NativeLocalApi, account: string, prefix: string, id: string, payload: PromptPayload): Promise<string> {
     const recoveryId = await this.digestId(prefix, [id, payload]);
+    const normalized = await this.importPrompt(native, account, recoveryId, payload);
     const saved = await this.read(native, account, recoveryId);
-    if (!saved) await this.write(native, account, recoveryId, { version: 1, kind: "prompt", payload });
-    else if (saved.kind !== "prompt" || stableJson(saved.payload) !== stableJson(payload)) throw new Error("A recovered draft could not be verified. Nothing was removed.");
+    // Compare with the acknowledged normalized source, including after lost ACK.
+    if (saved?.kind !== "prompt" || stableJson(saved.payload) !== stableJson(normalized.payload)) throw new Error("A recovered draft could not be verified. Nothing was removed.");
     return recoveryId;
   }
 
@@ -102,7 +115,16 @@ export class NativePersistence implements PayloadStore, QueueStore {
     };
     for (const [owner, values, target] of [[account, entries, payloads], ["anonymous", anonymousEntries, anonymous]] as const) {
       for (const [id, value] of values) {
-        if (await needsImport(["payload", owner, id, value])) target.set(id, promptPayload(value));
+        if (await needsImport(["payload", owner, id, value])) {
+          const payload = legacyPromptPayload(value);
+          // Archive the exact IDB source before a newer text mirror is combined.
+          const composer = id.startsWith(draftPrefix("anonymous")) ? decodeURIComponent(id.slice(draftPrefix("anonymous").length))
+            : id.startsWith("draft-attachments:") ? id.slice("draft-attachments:".length) : id;
+          const destination = owner === account ? id : payload.attachments.length
+            ? `draft-attachments:${composer}` : draftPrefix(account) + encodeURIComponent(composer);
+          await this.importPrompt(native, account, destination, payload, true);
+          target.set(id, payload);
+        }
       }
     }
     const textKeys = new Map<string, string>();
@@ -115,13 +137,13 @@ export class NativePersistence implements PayloadStore, QueueStore {
           textKeys.set(id, text);
           if (await needsImport(["text", id, text])) {
             const target = id.startsWith(draftPrefix(account)) ? payloads : anonymous;
-            target.set(id, promptPayload({ text, attachments: target.get(id)?.attachments ?? [] }));
+            target.set(id, legacyPromptPayload({ text, attachments: target.get(id)?.attachments ?? [] }));
           }
         }
       }
     }
     const legacyQueueText = storage.getItem(queueKey(account));
-    const oldQueue = legacyQueueText === null ? [] : queueItems(JSON.parse(legacyQueueText));
+    const oldQueue = legacyQueueText === null ? [] : queueItems(JSON.parse(legacyQueueText), true);
     const savedQueue = await this.read(native, account, QUEUE_ID);
     if (savedQueue && savedQueue.kind !== "queue") throw new Error("Invalid native queue record.");
     const recovered: QueuedMessage[] = [];
@@ -129,14 +151,19 @@ export class NativePersistence implements PayloadStore, QueueStore {
       id, threadId: `pending:${id}`, payloadId: id, text: "", webEnabled: false,
       agentRevision: 0, status: "queued", preparing: true, error,
     });
+    const imported = new Map<string, { id: string; omitted: number }>();
+    const queuedPayloads = new Set(oldQueue.map(item => item.payloadId ?? item.id));
     for (const [id, payload] of payloads) {
+      const normalized = await this.importPrompt(native, account, id, payload);
       const saved = await this.read(native, account, id);
-      if (saved && saved.kind !== "prompt") throw new Error("Invalid native draft record.");
-      if (!saved) await this.write(native, account, id, { version: 1, kind: "prompt", payload });
-      else if (stableJson(saved.payload) !== stableJson(payload)) {
-        const recoveryId = await this.preserveRecovery(native, account, "recovered-legacy", id, payload);
-        prepareRecovery(recoveryId, "Recovered an earlier saved draft. Review it before sending.");
+      if (saved?.kind !== "prompt") throw new Error("Invalid native draft record.");
+      const conflict = stableJson(saved.payload) !== stableJson(normalized.payload);
+      let importedId = id;
+      if (conflict || (normalized.omitted && !queuedPayloads.has(id))) {
+        importedId = await this.preserveRecovery(native, account, "recovered-legacy", id, payload);
+        if (!queuedPayloads.has(id)) prepareRecovery(importedId, normalized.omitted ? OMITTED_REVIEW : "Recovered an earlier saved draft. Review it before sending.");
       }
+      imported.set(id, { id: importedId, omitted: normalized.omitted });
     }
     {
       const composers = new Map<string, PromptPayload>();
@@ -144,7 +171,7 @@ export class NativePersistence implements PayloadStore, QueueStore {
         const composer = id.startsWith(draftPrefix("anonymous")) ? decodeURIComponent(id.slice(draftPrefix("anonymous").length))
           : id.startsWith("draft-attachments:") ? id.slice("draft-attachments:".length) : id;
         const previous = composers.get(composer) ?? { text: "", attachments: [] };
-        composers.set(composer, promptPayload({
+        composers.set(composer, legacyPromptPayload({
           text: [previous.text, payload.text].filter(Boolean).join("\n\n"),
           attachments: [...previous.attachments, ...payload.attachments],
         }));
@@ -153,18 +180,24 @@ export class NativePersistence implements PayloadStore, QueueStore {
         if (!payload.text && !payload.attachments.length) continue;
         const textId = draftPrefix(account) + encodeURIComponent(composer);
         const attachmentId = `draft-attachments:${composer}`;
+        const normalized = await this.importPrompt(native, account, attachmentId, payload, true);
         const text = await this.read(native, account, textId);
         const attachments = await this.read(native, account, attachmentId);
-        const wantedText = { text: payload.text, attachments: [] };
-        const wantedAttachments = { text: "", attachments: payload.attachments };
+        if ((text && text.kind !== "prompt") || (attachments && attachments.kind !== "prompt")) throw new Error("Invalid native draft record.");
+        const wantedText = { text: normalized.payload.text, attachments: [] };
+        const wantedAttachments = { text: "", attachments: normalized.payload.attachments };
         const occupied = (text?.kind === "prompt" && (text.payload.text || text.payload.attachments.length) && stableJson(text.payload) !== stableJson(wantedText))
           || (attachments?.kind === "prompt" && (attachments.payload.text || attachments.payload.attachments.length) && stableJson(attachments.payload) !== stableJson(wantedAttachments));
         if (occupied) {
           const id = await this.preserveRecovery(native, account, "recovered-anonymous", composer, payload);
-          prepareRecovery(id, "Recovered a draft from before sign-in. Review it before sending.");
+          prepareRecovery(id, normalized.omitted ? OMITTED_REVIEW : "Recovered a draft from before sign-in. Review it before sending.");
         } else {
-          await this.write(native, account, textId, { version: 1, kind: "prompt", payload: { text: payload.text, attachments: [] } });
-          await this.write(native, account, attachmentId, { version: 1, kind: "prompt", payload: { text: "", attachments: payload.attachments } });
+          await this.write(native, account, textId, { version: 1, kind: "prompt", payload: wantedText });
+          await this.write(native, account, attachmentId, { version: 1, kind: "prompt", payload: wantedAttachments });
+          if (normalized.omitted) {
+            const id = await this.preserveRecovery(native, account, "recovered-anonymous", composer, payload);
+            prepareRecovery(id, OMITTED_REVIEW);
+          }
         }
       }
     }
@@ -175,19 +208,30 @@ export class NativePersistence implements PayloadStore, QueueStore {
         // Queue IDs identify one submission even if its delivery status changed.
         // A receipt prevents an old browser snapshot replaying a delivered item.
         if (!await needsImport(["queue", item.id])) continue;
+        // Archive a damaged item's complete original metadata too, before
+        // splitting its input into a separately stored prompt. Bound each call
+        // to one item so large legacy outboxes do not exceed ACP frame limits.
+        await this.importEnvelope(native, account, QUEUE_ID, { version: 1, kind: "queue", items: [item] }, true);
         if (merged.has(item.id)) continue;
+        let payloadId = item.payloadId ?? item.id;
+        let omitted = 0;
         if (item.payloadId) {
-          const payload = await this.read(native, account, item.payloadId);
+          const source = imported.get(item.payloadId);
+          payloadId = source?.id ?? item.payloadId;
+          omitted = source?.omitted ?? 0;
+          const payload = await this.read(native, account, payloadId);
           if (payload?.kind !== "prompt") throw new Error("A queued message's saved input is missing. Nothing was removed.");
-        }
-        if (!item.payloadId) {
-          // Split legacy inline queues into per-message records before the
-          // metadata commit, keeping each ACP frame within existing bounds.
+        } else {
+          const source = { text: item.text, attachments: item.attachments ?? [] };
+          const normalized = await this.importPrompt(native, account, item.id, source);
           const saved = await this.read(native, account, item.id);
-          if (saved && saved.kind !== "prompt") throw new Error("Invalid queued payload record.");
-          if (!saved) await this.write(native, account, item.id, { version: 1, kind: "prompt", payload: { text: item.text, attachments: item.attachments ?? [] } });
+          if (saved?.kind !== "prompt") throw new Error("Invalid queued payload record.");
+          if (stableJson(saved.payload) !== stableJson(normalized.payload)) payloadId = await this.preserveRecovery(native, account, "recovered-queue", item.id, source);
+          omitted = normalized.omitted;
         }
-        merged.set(item.id, { ...item, payloadId: item.payloadId ?? item.id, text: "", attachments: undefined });
+        merged.set(item.id, { ...item, payloadId, text: "", attachments: undefined,
+          ...(omitted ? { status: "queued", error: [item.error, OMITTED_REVIEW].filter(Boolean).join(" ") } : {}),
+        });
       }
       await this.write(native, account, QUEUE_ID, { version: 1, kind: "queue", items: [...merged.values()], legacyImported: true });
     }

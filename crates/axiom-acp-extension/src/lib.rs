@@ -69,7 +69,8 @@ pub struct FeatureVersions {
     pub desktop_chat: u16,
     pub desktop_agent: u16,
     pub desktop_mcp: u16,
-    /// Account-bound encrypted local drafts and outbox data.
+    /// Account-bound encrypted local drafts and outbox data. Version 2 adds
+    /// transactional, omission-tolerant legacy browser import.
     pub local_payload: u16,
     pub thread_catalog: u16,
     pub timeline: u16,
@@ -103,7 +104,7 @@ impl FeatureVersions {
             desktop_chat: 1,
             desktop_agent: 1,
             desktop_mcp: 2,
-            local_payload: 1,
+            local_payload: 2,
             thread_catalog: 1,
             timeline: 2,
             model_catalog: 1,
@@ -161,7 +162,17 @@ pub struct LocalPayloadRequest {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum LocalPayloadAction {
     Get,
-    Put { value: serde_json::Value },
+    Put {
+        value: serde_json::Value,
+    },
+    /// Normalize and archive legacy media; create only a missing destination.
+    /// The response value is the normalized source, even if the ID was occupied.
+    ImportLegacy {
+        value: serde_json::Value,
+        /// Normalize/archive without creating the destination (composer merge).
+        #[serde(default)]
+        preview: bool,
+    },
     Remove,
 }
 
@@ -170,6 +181,9 @@ pub enum LocalPayloadAction {
 pub struct LocalPayloadResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub value: Option<serde_json::Value>,
+    /// Media omitted during an explicit legacy import; authored text is unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub omitted_media: Option<usize>,
 }
 
 impl std::fmt::Debug for LocalPayloadRequest {
