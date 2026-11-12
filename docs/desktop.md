@@ -301,6 +301,10 @@ readable in saved history but cannot be submitted as new uploads.
 
 ## Edit, regenerate and compaction
 
+Each user message has a **Regenerate** action next to **Edit**. Regenerate resends
+that message with its original text and attachments, including attachment-only
+messages, through the same replacement confirmation as editing and sending.
+
 Edit and Regenerate use the negotiated `messageRevision@1` flow. The client
 submits the original user item ID and expected thread revision. AxiomCLI
 atomically truncates that turn and later local history, preserves request

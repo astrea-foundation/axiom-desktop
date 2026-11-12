@@ -22,12 +22,13 @@ export function MessageBubble({ message, onRevise, revisionText, revisionHasAtta
   const [revisionMode, setRevisionMode] = useState<"edit" | "regenerate" | null>(null);
   const [revisionDraft, setRevisionDraft] = useState("");
   const [revising, setRevising] = useState(false);
+  const originalText = revisionText ?? (message.role === "user" ? message.content : "");
   const revisionControls = revisionMode ? <div data-preserve-follow className="my-2 rounded-lg border border-[var(--color-border)] p-3 text-[12px]">
     {revisionMode === "edit" ? <textarea aria-label="Edited message" value={revisionDraft} onChange={(event) => setRevisionDraft(event.target.value)}
       className="mb-2 min-h-24 w-full rounded bg-[var(--color-bg-surface)] p-2 text-[14px]" /> : null}
     <p>This replaces the reply and all later messages. Files already changed stay as they are.</p>
-    <div className="mt-2 flex gap-3"><button type="button" disabled={!onRevise || revising || (!revisionHasAttachments && !(revisionMode === "edit" ? revisionDraft : revisionText)?.trim())}
-      onClick={() => { setRevising(true); void onRevise?.(revisionMode === "edit" ? revisionDraft : revisionText!)
+    <div className="mt-2 flex gap-3"><button type="button" disabled={!onRevise || revising || (!revisionHasAttachments && !(revisionMode === "edit" ? revisionDraft : originalText).trim())}
+      onClick={() => { setRevising(true); void onRevise?.(revisionMode === "edit" ? revisionDraft : originalText)
         .then(() => setRevisionMode(null)).catch(() => {}).finally(() => setRevising(false)); }}
       className="rounded bg-[var(--color-cherry)] px-3 py-1.5 text-on-accent disabled:opacity-40">{revisionMode === "edit" ? "Save and send" : "Regenerate from here"}</button>
     <button type="button" disabled={revising} onClick={() => setRevisionMode(null)}>Cancel</button></div>
@@ -63,6 +64,16 @@ export function MessageBubble({ message, onRevise, revisionText, revisionHasAtta
               title="Edit and resend from this message"
             >
               <Pencil size={13} />
+            </button>
+            <button
+              type="button"
+              className="rounded-md p-1.5 text-[var(--color-text-tertiary)] transition-colors disabled:cursor-not-allowed disabled:opacity-35"
+              aria-label="Regenerate message"
+              disabled={!onRevise || revising}
+              onClick={() => setRevisionMode("regenerate")}
+              title="Regenerate from this message"
+            >
+              <RotateCcw size={13} />
             </button>
           </div>}
           {revisionControls}

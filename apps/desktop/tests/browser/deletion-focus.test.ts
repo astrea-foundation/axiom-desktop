@@ -2959,12 +2959,22 @@ test("Edit and Regenerate confirm native revisions and disable while a reply is 
     assert.equal(await page.evaluate(() => (window as any).__deletionTest.calls.filter((call: any) => call.method === "revise").length), 0);
     await page.getByRole("button", { name: "Save and send", exact: true }).click();
     await page.getByRole("textbox", { name: "Edited message" }).waitFor({ state: "hidden" });
+    const regenerateMessage = page.getByRole("button", { name: "Regenerate message", exact: true });
+    assert.equal(await page.getByRole("button", { name: "Edit message", exact: true }).evaluate((button) => button.nextElementSibling?.getAttribute("aria-label")), "Regenerate message");
+    await regenerateMessage.click();
+    assert.equal(await page.getByRole("textbox", { name: "Edited message" }).count(), 0);
+    await page.getByRole("button", { name: "Cancel", exact: true }).click();
+    assert.equal(await page.evaluate(() => (window as any).__deletionTest.calls.filter((call: any) => call.method === "revise").length), 1);
+    await regenerateMessage.click();
+    await page.getByRole("button", { name: "Regenerate from here", exact: true }).click();
+    await page.getByRole("button", { name: "Regenerate from here", exact: true }).waitFor({ state: "hidden" });
     await page.getByRole("button", { name: "Regenerate", exact: true }).click();
     await page.getByRole("button", { name: "Regenerate from here", exact: true }).click();
     await page.getByRole("button", { name: "Regenerate from here", exact: true }).waitFor({ state: "hidden" });
     const calls = await page.evaluate(() => (window as any).__deletionTest.calls.filter((call: any) => call.method === "revise"));
     assert.deepEqual(calls.map(({ id, text, userItemId, expectedRevision }: any) => ({ id, text, userItemId, expectedRevision })), [
       { id: "old-thread", text: "Changed message", userItemId: "user", expectedRevision: 1 },
+      { id: "old-thread", text: "Original message", userItemId: "user", expectedRevision: 1 },
       { id: "old-thread", text: "Original message", userItemId: "user", expectedRevision: 1 },
     ]);
     await page.evaluate(() => (window as any).__deletionTest.setTimeline([
@@ -2973,7 +2983,48 @@ test("Edit and Regenerate confirm native revisions and disable while a reply is 
     ], true));
     await page.waitForFunction(() => (document.querySelector('button[aria-label="Edit message"]') as HTMLButtonElement)?.disabled);
     assert.equal(await page.getByRole("button", { name: "Edit message", exact: true }).isDisabled(), true);
+    assert.equal(await regenerateMessage.isDisabled(), true);
     assert.equal(await page.getByRole("button", { name: "Regenerate", exact: true }).evaluateAll((buttons) => buttons.every((button) => (button as HTMLButtonElement).disabled)), true);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("user-message regeneration resends the selected original text or attachment-only prompt", async () => {
+  const { page, errors } = await openApp("linux", false, [], "medium", true);
+  try {
+    await page.getByRole("button", { name: "Viewed Existing thread", exact: true }).click();
+    for (const text of ["  Original **request**\n日本語 and trailing spaces  ", ""]) {
+      await page.evaluate(({ text, image }) => {
+        const attachment = { id: "reference", name: "reference.png", kind: "image", mimeType: "image/png", size: 69,
+          image: { mimeType: "image/png", data: image } };
+        (window as any).axiomDesktop.agent.getAttachments = async () => [attachment];
+        (window as any).__deletionTest.setTimeline([
+          { id: "earlier-user", turnId: "earlier", kind: "user", text, status: "completed",
+            ...(text ? {} : { raw: { metadata: { attachments: [{ name: "reference.png", kind: "image" }] } } }) },
+          { id: "earlier-answer", turnId: "earlier", kind: "assistant", text: "Earlier answer", status: "completed" },
+          { id: "later-user", turnId: "later", kind: "user", text: "A different later request", status: "completed" },
+          { id: "later-answer", turnId: "later", kind: "assistant", text: "Later answer", status: "completed" },
+        ]);
+      }, { text, image: tinyPng.toString("base64") });
+      const row = page.locator('[data-timeline-kind="user"]').first();
+      await row.getByRole("button", { name: "Regenerate message", exact: true }).click();
+      assert.equal(await page.getByRole("textbox", { name: "Edited message" }).count(), 0);
+      const confirm = row.getByRole("button", { name: "Regenerate from here", exact: true });
+      assert.equal(await confirm.isEnabled(), true);
+      await confirm.click();
+      await confirm.waitFor({ state: "hidden" });
+      const requests = await page.evaluate(() => (window as any).__deletionTest.calls.filter((call: any) => call.method === "revise"));
+      const latest = requests.at(-1);
+      assert.equal(latest.id, "old-thread");
+      assert.equal(latest.userItemId, "earlier-user");
+      assert.equal(latest.text, text);
+      assert.equal(latest.expectedRevision, 1);
+      if (text && process.env.AXIOM_REGENERATE_SCREENSHOT) {
+        await row.getByRole("button", { name: "Regenerate message", exact: true }).focus();
+        await row.locator(".group > div").first().screenshot({ path: process.env.AXIOM_REGENERATE_SCREENSHOT, animations: "disabled" });
+      }
+    }
+    assert.equal((await calls(page)).filter(call => call.method === "revise").length, 2);
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
 });
