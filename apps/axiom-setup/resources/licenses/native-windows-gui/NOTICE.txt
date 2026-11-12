@@ -1,0 +1,7 @@
+native-windows-gui 1.0.13 is MIT-licensed. Its Cargo package omits the repository
+license file, so this unchanged copy is retained from the upstream repository's
+license-file commit. The crate's recorded source commit is no longer publicly
+available; its manifest and README both identify MIT as the package license.
+
+Source: https://github.com/gabdube/native-windows-gui/blob/9a72f0fc727c3f03e1c9956ece45ed574b3ec009/LICENSE
+Retrieved: September 30, 2026.

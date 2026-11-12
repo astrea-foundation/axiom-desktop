@@ -1,0 +1,119 @@
+name: Candidate validation (unpublished)
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Native unsigned candidate to validate after exact-revision CI
+        type: choice
+        default: linux
+        options: [linux, macos-intel, macos-arm64, windows-x64, windows-arm64, all]
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.target }}
+  cancel-in-progress: true
+env:
+  CARGO_BUILD_JOBS: 2
+  RUST_TEST_THREADS: 2
+  # Preview binaries must never compile stable-feed trust, even on a maintainer run.
+  AXIOM_UPDATE_PUBLIC_KEYS: ''
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Require an untagged development revision with matching existing versions
+        shell: bash
+        run: |
+          test "$GITHUB_REF_TYPE" = branch
+          test "$GITHUB_REF_NAME" != main
+          version=$(node -p "require('./apps/desktop/package.json').version")
+          node apps/desktop/scripts/set-release-version.mjs "$version" --check-only
+      - name: Require successful CI for this exact source and selected platforms
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_TARGET: ${{ inputs.target }}
+        run: python3 scripts/verify-release-ci.py "$GITHUB_SHA" --candidate "$CANDIDATE_TARGET"
+  package:
+    needs: validate
+    name: Candidate ${{ matrix.platform }} ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include: >-
+          ${{ fromJSON(inputs.target == 'linux' && '[{"platform":"linux","arch":"x64","runner":"ubuntu-22.04"}]' ||
+            inputs.target == 'macos-intel' && '[{"platform":"mac","arch":"x64","runner":"macos-15-intel"}]' ||
+            inputs.target == 'macos-arm64' && '[{"platform":"mac","arch":"arm64","runner":"macos-15"}]' ||
+            inputs.target == 'windows-x64' && '[{"platform":"win","arch":"x64","runner":"windows-2025"}]' ||
+            inputs.target == 'windows-arm64' && '[{"platform":"win","arch":"arm64","runner":"windows-11-arm"}]' ||
+            '[{"platform":"linux","arch":"x64","runner":"ubuntu-22.04"},{"platform":"mac","arch":"x64","runner":"macos-15-intel"},{"platform":"mac","arch":"arm64","runner":"macos-15"},{"platform":"win","arch":"x64","runner":"windows-2025"},{"platform":"win","arch":"arm64","runner":"windows-11-arm"}]') }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          architecture: ${{ matrix.arch }}
+          cache: pnpm
+      - name: Require Node to match the native candidate architecture
+        env:
+          EXPECTED_NODE_ARCH: ${{ matrix.arch }}
+        run: node -e "if (process.arch !== process.env.EXPECTED_NODE_ARCH) throw new Error('Candidate Node architecture mismatch')"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pnpm install --frozen-lockfile
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap libarchive-tools libfuse2 rpm
+      - if: runner.os == 'Windows'
+        run: choco install nsis --version=3.11 --no-progress -y
+      # Source tests already passed the exact-revision gate. Validate newly
+      # built verifier and installer bytes here without repeating those suites.
+      - name: Build and self-test the bundled native verifier
+        run: node scripts/build-direct-bundle.mjs --output .local/direct/bundle
+      - run: cargo build --locked --release -p axiomcli -p axiom-proxy
+      - name: Package unsigned preview installers without stable update trust
+        shell: bash
+        env:
+          AXIOM_DIRECT_BUNDLE: .local/direct/bundle
+        run: |
+          node apps/desktop/scripts/package-desktop.mjs --${{ matrix.platform }} --${{ matrix.arch }} --unsigned
+          node scripts/package-cli.mjs --${{ matrix.platform }} --${{ matrix.arch }} --unsigned
+      - name: Validate complete candidate inventory and source hashes
+        shell: bash
+        run: |
+          version=$(node -p "require('./apps/desktop/package.json').version")
+          node scripts/download-manifest.mjs apps/desktop/dist "$version" unsigned
+          node scripts/verify-candidate.mjs apps/desktop/dist "${{ matrix.platform }}" "${{ matrix.arch }}" "$GITHUB_SHA" "$version"
+          git diff --exit-code
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-${{ github.sha }}-${{ matrix.platform }}-${{ matrix.arch }}
+          retention-days: 7
+          if-no-files-found: error
+          path: |
+            apps/desktop/dist/*.exe
+            apps/desktop/dist/*.pkg
+            apps/desktop/dist/*.AppImage
+            apps/desktop/dist/*.deb
+            apps/desktop/dist/*.pkg.tar.xz
+            apps/desktop/dist/*.sh
+            apps/desktop/dist/manifest.json
+            apps/desktop/dist/SHA256SUMS
+            apps/desktop/dist/candidate-validation.json
