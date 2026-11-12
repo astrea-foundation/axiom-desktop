@@ -136,13 +136,41 @@ compaction fails before a turn, original context and media remain recoverable.
 The turn fails with an explicit retry/choose-larger-context message; it never
 substitutes a local excerpt for the source history.
 
+Provider requests project interruption/recovery notes into quoted application
+context at their original position, so only the initial message has the system
+role. Recovery warnings and unknown side-effect outcomes remain intact; this
+context grants no new user authorization. Canonical local history retains its
+original roles and reasoning. Empty assistant messages are omitted from requests;
+reasoning-only assistants receive an incomplete-response status body only when
+the selected model supports reasoning replay. Refusals and complete tool batches
+remain available.
+
+Automatic compaction checks estimated/reported tokens, tool/template overhead,
+provider transport bytes and message-count limits before ordinary inference and
+between tool steps. Direct transport accounting includes nested JSON escaping,
+tool schemas and envelope headroom. Pre-turn compaction keeps the new prompt and its attachments
+verbatim while summarizing older history. A prompt that cannot fit on its own
+fails recoverably; its original remains visible locally, while a model-history
+checkpoint keeps it out of subsequent requests and restored context.
+
 Compaction first checks whether the native conversation and summary output fit
-one request, using the current context count when available. Historical system
+one request, using provider-reported context counts when available. Local token
+estimates alone use a conservative UTF-8 text-byte bound to select raw requests
+or fragments; native image/file bytes are excluded from that text bound. This
+prevents repeated underestimated raw requests even when a provider cannot prove
+that its error preceded generation. Historical system
 notes are demoted to untrusted context and reasoning/refusal text is preserved
 even when the selected model cannot replay its original fields. Fallback grouping
 keeps consecutive serialized fragments and native attachments together until a
 token or provider request limit is reached. All passes must succeed before the
-successor context replaces the original; partial summaries never commit.
+successor context replaces the original; partial summaries never commit. An
+explicit authenticated pre-generation context-size rejection uses the stable
+`CONTEXT_LENGTH_EXCEEDED` code and allows at most four progressively smaller
+fragment replans of the rejected pass. Completed passes are preserved. Generic
+request errors, unauthenticated rejection bodies, transport interruptions and
+failures after generation starts do not authorize this recovery. Currently the
+Tinfoil EHBP parser exposes this code for an explicit context rejection after
+clean authenticated EOF; protocols without such proof retain the failure.
 
 Account databases migrate transactionally to schema 7. Each thread has a
 versioned authoritative semantic history independent of presentation rows.
