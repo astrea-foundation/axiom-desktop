@@ -1,0 +1,117 @@
+import { contextBridge, ipcRenderer } from "electron";
+import { agentApi, type AgentApi } from "./agent-api";
+import { proxyApi } from "./proxy-api";
+import type { ProxyApi } from "../shared/proxy";
+import type { UpdatesApi } from "../shared/updates";
+
+export type DesktopApi = {
+  platform: NodeJS.Platform;
+  factoryReset: (confirmation: string) => Promise<void>;
+  minimize: () => void;
+  maximize: () => void;
+  close: () => void;
+  onBeforeLocalStateChange: (flush: (reason: "close" | "account") => Promise<void>, release: () => void) => () => void;
+  isMaximized: () => Promise<boolean>;
+  onMaximizedChange: (callback: (maximized: boolean) => void) => () => void;
+  isFullScreen: () => Promise<boolean>;
+  onFullScreenChange: (callback: (fullScreen: boolean) => void) => () => void;
+  isFocused: () => Promise<boolean>;
+  onActiveChange: (callback: (active: boolean) => void) => () => void;
+  setTheme: (preference: "light" | "dark" | "system", resolved: "light" | "dark") => void;
+  astreaBanner: {
+    isDismissed: () => Promise<boolean>;
+    dismiss: () => Promise<void>;
+  };
+  agent: AgentApi;
+  proxy: ProxyApi;
+  updates: UpdatesApi;
+};
+
+const previewArgument = process.argv.find((argument) => argument.startsWith("--axiom-platform-preview="));
+const previewPlatform = previewArgument?.slice("--axiom-platform-preview=".length) as NodeJS.Platform | undefined;
+
+const api: DesktopApi = {
+  platform: previewPlatform ?? process.platform,
+  astreaBanner: {
+    isDismissed: () => ipcRenderer.invoke("astrea-banner:is-dismissed"),
+    dismiss: () => ipcRenderer.invoke("astrea-banner:dismiss"),
+  },
+  factoryReset: (confirmation) => ipcRenderer.invoke("app:factory-reset", confirmation),
+  minimize: () => {
+    ipcRenderer.send("window:minimize");
+  },
+  maximize: () => {
+    ipcRenderer.send("window:maximize");
+  },
+  close: () => {
+    ipcRenderer.send("window:close");
+  },
+  onBeforeLocalStateChange: (flush, release) => {
+    const prepare = (_event: unknown, token: string, reason: "close" | "account") => {
+      void flush(reason).then(() => ipcRenderer.send("local-state:flushed", token, null), () => ipcRenderer.send("local-state:flushed", token, true));
+    };
+    ipcRenderer.on("local-state:prepare", prepare);
+    ipcRenderer.on("local-state:release", release);
+    return () => {
+      ipcRenderer.removeListener("local-state:prepare", prepare);
+      ipcRenderer.removeListener("local-state:release", release);
+    };
+  },
+  isMaximized: () => ipcRenderer.invoke("window:isMaximized"),
+  onMaximizedChange: (callback) => {
+    const listener = (_event: unknown, maximized: boolean) => {
+      callback(maximized);
+    };
+    ipcRenderer.on("window:maximized-changed", listener);
+    return () => {
+      ipcRenderer.removeListener("window:maximized-changed", listener);
+    };
+  },
+  isFullScreen: () => ipcRenderer.invoke("window:isFullScreen"),
+  onFullScreenChange: (callback) => {
+    const listener = (_event: unknown, fullScreen: boolean) => {
+      callback(fullScreen);
+    };
+    ipcRenderer.on("window:fullscreen-changed", listener);
+    return () => {
+      ipcRenderer.removeListener("window:fullscreen-changed", listener);
+    };
+  },
+  isFocused: () => ipcRenderer.invoke("window:isFocused"),
+  setTheme: (preference, resolved) => {
+    ipcRenderer.send("window:set-theme", preference, resolved);
+  },
+  onActiveChange: (callback) => {
+    const listener = (_event: unknown, active: boolean) => {
+      callback(active);
+    };
+    ipcRenderer.on("window:active-changed", listener);
+    return () => {
+      ipcRenderer.removeListener("window:active-changed", listener);
+    };
+  },
+  agent: agentApi,
+  proxy: proxyApi,
+  updates: {
+    onBeforeRestart: callback => {
+      const listener = (_event: unknown, token: string) => {
+        void callback().then(() => ipcRenderer.send('updates:flushed', token, null), () => ipcRenderer.send('updates:flushed', token, true));
+      };
+      ipcRenderer.on('updates:prepare-restart', listener);
+      return () => ipcRenderer.removeListener('updates:prepare-restart', listener);
+    },
+    getState: () => ipcRenderer.invoke("updates:state"),
+    check: () => ipcRenderer.invoke("updates:check"),
+    install: () => ipcRenderer.invoke("updates:install"),
+    cancel: () => ipcRenderer.invoke("updates:cancel"),
+    ready: () => ipcRenderer.invoke("updates:ready"),
+    continue: () => ipcRenderer.invoke("updates:continue"),
+    onStateChange: (callback) => {
+      const listener = (_event: unknown, state: Parameters<typeof callback>[0]) => callback(state);
+      ipcRenderer.on("updates:state-changed", listener);
+      return () => ipcRenderer.removeListener("updates:state-changed", listener);
+    },
+  },
+};
+
+contextBridge.exposeInMainWorld("axiomDesktop", api);
