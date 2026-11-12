@@ -36,3 +36,41 @@ for (const supported of [false, true]) {
     await assert.rejects(pending, /account|connection/i);
   });
 }
+
+for (const version of [1, 2]) {
+  test(`legacy imports require localPayload@2 while ordinary persistence works at version ${version}`, async t => {
+    const client = new AxiomAcpClient({ command: process.execPath, args: ["-e", "process.stdin.resume()"] });
+    t.after(() => client.close());
+    const calls: string[] = [];
+    let finish!: (value: unknown) => void;
+    let delay = false;
+    t.mock.method(client.process, "request", async (method: string, request?: { action: { kind: string } }) => {
+      if (method === "initialize") return {
+        protocolVersion: 1, agentCapabilities: { _meta: { axiom: {
+          protocolVersion: "0.2", runtimeInstanceId: "fixture",
+          features: { desktopChat: 1, threadCatalog: 1, timeline: 2, modelCatalog: 1,
+            profilePreferences: 1, collections: 1, account: 2, billing: 4, securityEvidence: 4, webConsent: 1, localPayload: version },
+        } } },
+      };
+      assert.equal(method, "_axiom/desktop/local-payload"); calls.push(request!.action.kind);
+      if (delay) return new Promise(resolve => { finish = resolve; });
+      return { value: { version: 1, kind: "prompt", payload: { text: "normalized", attachments: [] } }, omittedMedia: 1 };
+    });
+    await client.initialize();
+    client.state.setAccount({ revision: 1, state: "valid", account: { id: "alice", linkedMethods: [] } });
+    await client.localPayload({ accountId: "alice", id: "draft", action: { kind: "get" } });
+    const request = { accountId: "alice", id: "draft", action: { kind: "import_legacy" as const, value: { version: 1, kind: "prompt", payload: { text: "raw", attachments: [] } }, preview: true } };
+    if (version === 1) {
+      await assert.rejects(client.localPayload(request), /updated native app.*original local data was kept/i);
+      assert.deepEqual(calls, ["get"]);
+    } else {
+      assert.equal((await client.localPayload(request)).omittedMedia, 1);
+      assert.deepEqual(calls, ["get", "import_legacy"]);
+      delay = true;
+      const pending = client.localPayload(request);
+      client.state.setAccount({ revision: 2, state: "valid", account: { id: "bob", linkedMethods: [] } });
+      finish({ value: "stale normalized source", omittedMedia: 1 });
+      await assert.rejects(pending, /account|connection/i);
+    }
+  });
+}

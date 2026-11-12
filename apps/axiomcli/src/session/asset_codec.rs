@@ -15,8 +15,8 @@ pub(super) const MEDIA_OMITTED: &str =
 pub(super) enum Direction {
     Store,
     Load,
-    /// Only the authenticated, transactional pre-v7 conversion may omit bad
-    /// inline media. Ordinary writes never accept migration tombstones.
+    /// Only transactional schema conversion and explicit legacy payload import
+    /// may omit bad inline media. Ordinary writes reject migration tombstones.
     Migrate,
 }
 #[derive(Clone, Copy)]

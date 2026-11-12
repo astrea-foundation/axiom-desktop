@@ -381,6 +381,27 @@
           ]
         },
         {
+          "description": "Normalize and archive legacy media; create only a missing destination.\nThe response value is the normalized source, even if the ID was occupied.",
+          "type": "object",
+          "properties": {
+            "value": true,
+            "preview": {
+              "description": "Normalize/archive without creating the destination (composer merge).",
+              "type": "boolean",
+              "default": false
+            },
+            "kind": {
+              "type": "string",
+              "const": "import_legacy"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "value"
+          ]
+        },
+        {
           "type": "object",
           "properties": {
             "kind": {
@@ -398,7 +419,16 @@
     "LocalPayloadResponse": {
       "type": "object",
       "properties": {
-        "value": true
+        "value": true,
+        "omittedMedia": {
+          "description": "Media omitted during an explicit legacy import; authored text is unchanged.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0
+        }
       },
       "additionalProperties": false
     },
@@ -1043,7 +1073,7 @@
           "default": 0
         },
         "localPayload": {
-          "description": "Account-bound encrypted local drafts and outbox data.",
+          "description": "Account-bound encrypted local drafts and outbox data. Version 2 adds\ntransactional, omission-tolerant legacy browser import.",
           "type": "integer",
           "format": "uint16",
           "minimum": 0,

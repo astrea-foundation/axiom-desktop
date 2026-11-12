@@ -2,7 +2,7 @@
 use super::{
     SessionStore,
     asset_codec::{Direction, MediaCodec},
-    assets::payload_owner,
+    assets::{payload_owner, payload_recovery_owner},
     codec::storage_error,
 };
 use crate::{AxiomError, Result};
@@ -15,6 +15,77 @@ fn validate_id(id: &str) -> Result<()> {
     Ok(())
 }
 impl SessionStore {
+    /// Explicit browser migration: return the normalized source and create the
+    /// destination only when absent. Existing/newer native drafts are untouched.
+    pub fn import_local_payload(
+        &self,
+        id: &str,
+        source: &Value,
+        preview: bool,
+    ) -> Result<(Value, usize)> {
+        validate_id(id)?;
+        let mut connection = self.lock()?;
+        let assets = connection.assets().clone();
+        let transaction = connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(storage_error)?;
+        let staging = format!("payload-import:{}", uuid::Uuid::new_v4());
+        let mut normalized = source.clone();
+        let omitted = MediaCodec {
+            assets: &assets,
+            connection: &transaction,
+            owner: &staging,
+            direction: Direction::Migrate,
+        }
+        .local_payload(&mut normalized)?;
+        MediaCodec {
+            assets: &assets,
+            connection: &transaction,
+            owner: &staging,
+            direction: Direction::Load,
+        }
+        .local_payload(&mut normalized)?;
+        if omitted > 0 {
+            super::asset_migration::preserve_record(
+                &transaction,
+                &assets,
+                &payload_recovery_owner(id),
+                4,
+                id,
+                &serde_json::to_string(source)?,
+                None,
+            )?;
+        }
+        let exists: bool = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM local_payloads WHERE id=?1)",
+                [id],
+                |row| row.get(0),
+            )
+            .map_err(storage_error)?;
+        if !exists && !preview {
+            let mut stored = normalized.clone();
+            MediaCodec {
+                assets: &assets,
+                connection: &transaction,
+                owner: &payload_owner(id),
+                direction: Direction::Store,
+            }
+            .local_payload(&mut stored)?;
+            transaction
+                .execute(
+                    "INSERT INTO local_payloads(id,payload) VALUES(?1,?2)",
+                    params![id, serde_json::to_string(&stored)?],
+                )
+                .map_err(storage_error)?;
+        }
+        transaction
+            .execute("DELETE FROM asset_owners WHERE owner=?1", [staging])
+            .map_err(storage_error)?;
+        transaction.commit().map_err(storage_error)?;
+        assets.collect_after_commit(&mut connection);
+        Ok((normalized, omitted))
+    }
     pub fn local_payload(&self, id: &str) -> Result<Option<Value>> {
         validate_id(id)?;
         let connection = self.lock()?;
@@ -85,6 +156,12 @@ impl SessionStore {
             .execute(
                 "DELETE FROM asset_owners WHERE owner=?1",
                 [payload_owner(id)],
+            )
+            .map_err(storage_error)?;
+        transaction
+            .execute(
+                "DELETE FROM asset_owners WHERE owner=?1",
+                [payload_recovery_owner(id)],
             )
             .map_err(storage_error)?;
         transaction.commit().map_err(storage_error)?;

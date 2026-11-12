@@ -65,6 +65,9 @@ pub(super) fn thread_owner(id: &str) -> String {
 pub(super) fn payload_owner(id: &str) -> String {
     format!("payload:{id}")
 }
+pub(super) fn payload_recovery_owner(id: &str) -> String {
+    format!("payload-recovery:{id}")
+}
 fn invalid(message: &str) -> AxiomError {
     AxiomError::Storage(message.into())
 }

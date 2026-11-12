@@ -10,6 +10,7 @@ use crate::storage_progress::{self, Observer, Phase};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use rusqlite::{Connection, params};
 use serde_json::Value;
+use sha2::{Digest as _, Sha256};
 
 pub(super) fn migrate(
     connection: &Connection,
@@ -95,19 +96,15 @@ pub(super) fn migrate(
                 } else {
                     None
                 };
-                let chunks = payload.as_bytes().chunks(1024 * 1024);
-                let total = chunks.len();
-                for (part, chunk) in chunks.enumerate() {
-                    let recovery = serde_json::json!({"kind":"legacy_media_recovery","version":1,
-                        "sourceKind":kind,"sourceId":id,"part":part,"parts":total,
-                        "originalDigest":original_digest,
-                        "originalPayloadBase64":STANDARD.encode(chunk)});
-                    assets.intern(
-                        connection,
-                        &owner,
-                        &STANDARD.encode(serde_json::to_vec(&recovery)?),
-                    )?;
-                }
+                preserve_record(
+                    connection,
+                    assets,
+                    &owner,
+                    kind,
+                    &id,
+                    &payload,
+                    original_digest.as_deref(),
+                )?;
                 if let Some(digest) = original_digest {
                     // Preserve checkpoint IDs, but do not let the old digest
                     // collide with a later valid original message. Recovery
@@ -132,6 +129,31 @@ pub(super) fn migrate(
             completed += 1;
             storage_progress::count(progress, Phase::MovingMedia, completed, total);
         }
+    }
+    Ok(())
+}
+
+pub(super) fn preserve_record(
+    connection: &Connection,
+    assets: &AssetManager,
+    owner: &str,
+    kind: u8,
+    id: &str,
+    payload: &str,
+    original_digest: Option<&str>,
+) -> Result<()> {
+    let source_sha256 = hex::encode(Sha256::digest(payload.as_bytes()));
+    let chunks = payload.as_bytes().chunks(1024 * 1024);
+    let total = chunks.len();
+    for (part, chunk) in chunks.enumerate() {
+        let recovery = serde_json::json!({"kind":"legacy_media_recovery","version":1,
+            "sourceKind":kind,"sourceId":id,"sourceSha256":source_sha256,"part":part,"parts":total,
+            "originalDigest":original_digest,"originalPayloadBase64":STANDARD.encode(chunk)});
+        assets.intern(
+            connection,
+            owner,
+            &STANDARD.encode(serde_json::to_vec(&recovery)?),
+        )?;
     }
     Ok(())
 }

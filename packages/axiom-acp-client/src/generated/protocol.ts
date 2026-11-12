@@ -9,6 +9,14 @@ export type LocalPayloadAction =
       kind: "put";
     }
   | {
+      value: unknown;
+      /**
+       * Normalize/archive without creating the destination (composer merge).
+       */
+      preview?: boolean;
+      kind: "import_legacy";
+    }
+  | {
       kind: "remove";
     };
 export type DesktopMcpAction =
@@ -255,6 +263,10 @@ export interface LocalPayloadRequest {
 }
 export interface LocalPayloadResponse {
   value?: unknown;
+  /**
+   * Media omitted during an explicit legacy import; authored text is unchanged.
+   */
+  omittedMedia?: number | null;
 }
 export interface DesktopMcpRequest {
   threadId?: string | null;
@@ -378,7 +390,8 @@ export interface FeatureVersions {
   desktopAgent?: number;
   desktopMcp?: number;
   /**
-   * Account-bound encrypted local drafts and outbox data.
+   * Account-bound encrypted local drafts and outbox data. Version 2 adds
+   * transactional, omission-tolerant legacy browser import.
    */
   localPayload?: number;
   threadCatalog?: number;

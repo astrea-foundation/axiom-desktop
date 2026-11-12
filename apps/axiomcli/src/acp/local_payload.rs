@@ -24,6 +24,7 @@ fn execute(
             "local payload account changed".into(),
         ));
     }
+    let mut omitted_media = None;
     let value = match &request.action {
         extension::LocalPayloadAction::Get => {
             account.read(|store| store.local_payload(&request.id))?
@@ -48,8 +49,17 @@ fn execute(
             account.mutate(|store| store.remove_local_payload(&request.id))?;
             None
         }
+        extension::LocalPayloadAction::ImportLegacy { value, preview } => {
+            let (normalized, omitted) =
+                account.mutate(|store| store.import_local_payload(&request.id, value, *preview))?;
+            omitted_media = Some(omitted);
+            Some(normalized)
+        }
     };
-    Ok(extension::LocalPayloadResponse { value })
+    Ok(extension::LocalPayloadResponse {
+        value,
+        omitted_media,
+    })
 }
 
 pub(super) async fn handle(
@@ -60,6 +70,13 @@ pub(super) async fn handle(
 ) -> agent_client_protocol::Result<()> {
     if context.frontend != FrontendKind::DesktopChat
         || !extension_enabled(&context.extension_state, ExtensionFeature::LocalPayload)
+        || matches!(
+            request.action,
+            extension::LocalPayloadAction::ImportLegacy { .. }
+        ) && !extension_enabled(
+            &context.extension_state,
+            ExtensionFeature::LegacyPayloadImport,
+        )
     {
         return responder.respond_with_error(extension_not_negotiated());
     }
@@ -83,6 +100,21 @@ mod tests {
     use super::*;
     use crate::acp::AccountWorkTracker;
     use std::sync::Arc;
+
+    #[test]
+    fn legacy_import_requires_local_payload_version_two() {
+        let state = super::super::ExtensionState::new();
+        let mut features = extension::FeatureVersions::all();
+        features.local_payload = 1;
+        state.negotiate(Some(features));
+        assert!(state.feature_enabled(ExtensionFeature::LocalPayload));
+        assert!(!state.feature_enabled(ExtensionFeature::LegacyPayloadImport));
+        features.local_payload = 2;
+        state.negotiate(Some(features));
+        assert!(state.feature_enabled(ExtensionFeature::LegacyPayloadImport));
+        state.negotiate(None);
+        assert!(!state.feature_enabled(ExtensionFeature::LegacyPayloadImport));
+    }
 
     fn request(
         owner: &str,
@@ -124,6 +156,10 @@ mod tests {
             extension::LocalPayloadAction::Put {
                 value: value.clone(),
             },
+            extension::LocalPayloadAction::ImportLegacy {
+                value: value.clone(),
+                preview: false,
+            },
         ] {
             assert!(execute(&alice, &request("bob", action)).is_err());
         }
@@ -137,6 +173,19 @@ mod tests {
             Some(value.clone())
         );
         store.activate_fixture_account("bob").unwrap();
+        assert!(
+            execute(
+                &alice,
+                &request(
+                    "alice",
+                    extension::LocalPayloadAction::ImportLegacy {
+                        value: value.clone(),
+                        preview: false
+                    }
+                )
+            )
+            .is_err()
+        );
         assert!(
             execute(
                 &alice,
