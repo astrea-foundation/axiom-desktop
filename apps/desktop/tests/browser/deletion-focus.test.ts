@@ -2586,6 +2586,74 @@ test("sign in opens browser authorization directly and leaves the composer usabl
   } finally { await page.close(); }
 });
 
+test("storage migration replaces browser approval with live progress until saved data is ready", async () => {
+  const { page, errors } = await openApp();
+  try {
+    await page.evaluate(() => (window as any).__deletionTest.setAccountState({ revision: 2, state: "signed_out" }));
+    await page.locator("textarea[data-chat-input]").fill("Keep my sign-in draft");
+    await page.getByRole("button", { name: "Sign in", exact: true }).first().click();
+    await page.getByRole("region", { name: "Browser sign-in" }).getByText("ABCD-1234", { exact: true }).waitFor();
+    await page.evaluate(() => (window as any).__deletionTest.setAccountState({ revision: 3, state: "starting", storageMigration: { phase: "encrypting" } }));
+    const heading = page.getByRole("heading", { name: "Updating your local chat storage" });
+    await heading.waitFor();
+    await page.waitForFunction(() => document.activeElement?.id === "storage-migration-title");
+    assert.equal(await page.getByRole("region", { name: "Browser sign-in" }).count(), 0);
+    assert.equal(await page.locator("textarea[data-chat-input]").count(), 0);
+    const progress = page.getByRole("progressbar", { name: "Current storage update step" });
+    assert.equal(await progress.getAttribute("aria-valuenow"), null, "database conversion has no invented percentage");
+    await page.evaluate(() => (window as any).__deletionTest.setAccountState({ revision: 4, state: "starting", storageMigration: { phase: "moving_media", completed: 4, total: 10 } }));
+    await page.getByRole("status").filter({ hasText: "4 of 10 saved records" }).waitFor();
+    assert.equal(await progress.getAttribute("aria-valuenow"), "40");
+    if (process.env.AXIOM_MIGRATION_SCREENSHOT) await page.screenshot({ path: process.env.AXIOM_MIGRATION_SCREENSHOT });
+    await page.evaluate(() => (window as any).__deletionTest.setAccountState({ revision: 5, state: "starting", storageMigration: { phase: "checking", completed: 3, total: 3 } }));
+    await page.getByRole("status").filter({ hasText: "3 of 3 files" }).waitFor();
+    await page.evaluate(() => (window as any).__deletionTest.setAccountState({ revision: 6, state: "starting", storageMigration: { phase: "finalizing" } }));
+    await page.getByRole("status").filter({ hasText: "Finishing up" }).waitFor();
+    assert.equal(await progress.getAttribute("aria-valuenow"), null);
+    assert.equal((await calls(page)).filter(call => call.method === "nativeLoginStart").length, 1);
+    await page.evaluate(() => (window as any).__deletionTest.finishLogin("test-login-1"));
+    await heading.waitFor({ state: "detached" });
+    await page.waitForFunction(() => (document.querySelector("textarea[data-chat-input]") as HTMLTextAreaElement)?.value === "Keep my sign-in draft");
+    assert.equal((await calls(page)).some(call => call.method === "prompt"), false);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("restored-account migration failure stays visible and retries without browser sign-in", async () => {
+  const { page, errors } = await openApp();
+  try {
+    await page.evaluate(() => (window as any).__deletionTest.setAccountState({ revision: 2, state: "starting", storageMigration: { phase: "checking", completed: 0, total: 2 } }));
+    await page.getByRole("heading", { name: "Updating your local chat storage" }).waitFor();
+    await page.evaluate(() => (window as any).__deletionTest.setAccountState({ revision: 3, state: "unavailable", detail: "Synthetic media check failed. Saved data retained.", storageMigration: { phase: "failed" } }));
+    await page.getByRole("heading", { name: "Your storage update needs attention" }).waitFor();
+    await page.getByText("Details", { exact: true }).click();
+    await page.getByText("Synthetic media check failed. Saved data retained.", { exact: true }).waitFor();
+    assert.equal(await page.locator("textarea[data-chat-input]").count(), 0);
+    await page.evaluate(() => {
+      const fixture = (window as any).__deletionTest;
+      (window as any).axiomDesktop.agent.accountStatus = async () => {
+        fixture.calls.push({ method: "migrationRetry" });
+        fixture.setAccountState({ revision: 4, state: "starting", storageMigration: { phase: "finalizing" } });
+        await new Promise<void>(resolve => { (window as any).__finishMigrationRetry = resolve; });
+        const status = { revision: 5, state: "valid", account: { id: "test-account", displayName: "Test User", linkedMethods: ["passkey"] } };
+        fixture.setAccountState(status);
+        return { status };
+      };
+    });
+    await page.getByRole("button", { name: "Try again", exact: true }).click();
+    await page.getByRole("status").filter({ hasText: "Finishing up" }).waitFor();
+    await page.setViewportSize({ width: 640, height: 700 });
+    await page.emulateMedia({ reducedMotion: "reduce", colorScheme: "dark" });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
+    await page.evaluate(() => (window as any).__finishMigrationRetry());
+    await page.getByRole("heading", { name: "Updating your local chat storage" }).waitFor({ state: "detached" });
+    await page.getByRole("button", { name: "Test model", exact: true }).waitFor();
+    assert.equal((await calls(page)).filter(call => call.method === "migrationRetry").length, 1);
+    assert.equal((await calls(page)).some(call => call.method === "nativeLoginStart" || call.method === "prompt"), false);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
 test("sign in ignores repeated starts and cancels authorizations that arrive after dismissal", async () => {
   const { page, errors } = await openApp();
   try {

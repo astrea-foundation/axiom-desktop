@@ -358,7 +358,16 @@ async fn main() -> anyhow::Result<()> {
                 .activate_fixture("local-test-account")
                 .context("failed to initialize isolated test account storage")?;
         }
-    } else if let ValidationStatus::Valid(account) = auth.validate().await {
+    } else if !matches!(
+        &cli.command,
+        Some(Command::Acp {
+            frontend: FrontendKind::DesktopChat,
+            ..
+        })
+    ) && let ValidationStatus::Valid(account) = auth.validate().await
+    {
+        // Desktop opens the store from account_status after ACP is connected,
+        // so the renderer can display migration progress on restored sessions.
         account_store_router
             .activate(&account.account.id)
             .context("failed to open account-scoped local state")?;

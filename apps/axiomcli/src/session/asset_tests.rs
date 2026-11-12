@@ -17,6 +17,62 @@ const FILE: &[u8] = b"%PDF-1.7\nsynthetic-file-asset-unique-sentinel";
 fn key() -> Arc<StorageKey> {
     Arc::new(StorageKey::from_bytes([0x71; 32]))
 }
+
+#[test]
+fn migration_reports_phases_and_exact_counts_only_for_existing_upgrades() {
+    use crate::storage_progress::Phase;
+    use std::cell::RefCell;
+    let root = tempdir().unwrap();
+    let path = root.path().join("state.sqlite3");
+    let _legacy = legacy(&path, 6);
+    let updates = RefCell::new(Vec::new());
+    let observe = |progress| updates.borrow_mut().push(progress);
+    let migrated =
+        SessionStore::open_protected_with_key_and_progress(&path, key(), &observe).unwrap();
+    let progress = updates.take();
+    assert_eq!(progress.first().unwrap().phase, Phase::Encrypting);
+    assert_eq!(progress.last().unwrap().phase, Phase::Finalizing);
+    let mut previous_phase = 0;
+    for update in &progress {
+        let phase = match update.phase {
+            Phase::Encrypting => 0,
+            Phase::MovingMedia => 1,
+            Phase::Checking => 2,
+            Phase::Finalizing => 3,
+            Phase::Failed => panic!("successful migration cannot report failure"),
+        };
+        assert!(phase >= previous_phase);
+        previous_phase = phase;
+        if let (Some(completed), Some(total)) = (update.completed, update.total) {
+            assert!(completed <= total);
+        }
+    }
+    for phase in [Phase::MovingMedia, Phase::Checking] {
+        let counts: Vec<_> = progress.iter().filter(|p| p.phase == phase).collect();
+        assert_eq!(counts.first().unwrap().completed, Some(0));
+        let last = counts.last().unwrap();
+        assert_eq!(last.completed, last.total);
+        assert!(last.total.unwrap() > 0);
+        assert!(
+            counts
+                .windows(2)
+                .all(|pair| pair[0].completed <= pair[1].completed)
+        );
+    }
+    assert_no_embedded_bytes(&migrated);
+    drop(migrated);
+    drop(SessionStore::open_protected_with_key_and_progress(&path, key(), &observe).unwrap());
+    assert!(
+        updates.borrow().is_empty(),
+        "current stores must not claim to migrate again"
+    );
+    let fresh = root.path().join("new.sqlite3");
+    drop(SessionStore::open_protected_with_key_and_progress(&fresh, key(), &observe).unwrap());
+    assert!(
+        updates.borrow().is_empty(),
+        "a new account has nothing to migrate"
+    );
+}
 fn image(bytes: &[u8]) -> Value {
     json!({"mimeType":"image/png","data":STANDARD.encode(bytes)})
 }

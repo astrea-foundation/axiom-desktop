@@ -2,6 +2,7 @@
 
 use rusqlite::Connection;
 
+use crate::storage_progress::{self, Observer, Phase};
 use crate::{AxiomError, Result};
 
 use super::SessionStore;
@@ -32,6 +33,10 @@ pub(crate) fn needs_maintenance(connection: &Connection) -> Result<bool> {
 
 impl SessionStore {
     pub(super) fn initialize(&self) -> Result<()> {
+        self.initialize_with_progress(&|_| {})
+    }
+
+    pub(super) fn initialize_with_progress(&self, progress: &Observer<'_>) -> Result<()> {
         let mut connection = self.lock()?;
         connection
             .execute_batch(
@@ -85,7 +90,11 @@ impl SessionStore {
         }
         validate_schema(&transaction)?;
         if version < 7 {
-            super::asset_migration::migrate(&transaction, &assets)?;
+            super::asset_migration::migrate(
+                &transaction,
+                &assets,
+                if version > 0 { progress } else { &|_| {} },
+            )?;
             if version > 0 {
                 transaction
                     .execute(
@@ -95,16 +104,20 @@ impl SessionStore {
                     .map_err(storage_error)?;
             }
         }
-        assets.verify_and_clean(&transaction)?;
-        transaction.commit().map_err(storage_error)?;
-        let pending: bool = connection
+        let pending: bool = transaction
             .query_row(
                 "SELECT purge_pending FROM asset_maintenance WHERE id=1",
                 [],
                 |row| row.get(0),
             )
             .map_err(storage_error)?;
+        assets.verify_and_clean_with_progress(
+            &transaction,
+            if pending { progress } else { &|_| {} },
+        )?;
+        transaction.commit().map_err(storage_error)?;
         if pending {
+            storage_progress::phase(progress, Phase::Finalizing);
             // Remove historical free-page copies as well as old WAL frames.
             // The marker survives errors/crashes and forces a retry on open.
             connection.execute_batch("VACUUM;").map_err(storage_error)?;

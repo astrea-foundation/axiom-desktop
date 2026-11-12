@@ -43,6 +43,15 @@ validates schema, row contents and references before replacement. Synced migrati
 markers make interrupted replacement recoverable, and missing/wrong keys never
 authorize deleting the original. Other native writers must be closed for storage
 maintenance; a busy migration is retried rather than bypassing the fence.
+Desktop shows a dedicated storage-update screen while an existing account is
+upgraded, including after browser approval and when restoring a signed-in
+session. It reports database encryption, media conversion, verification and
+final cleanup. Record/file counters describe the current phase; indivisible
+database work has an indeterminate indicator. Storage work runs outside the ACP
+executor so progress remains visible. The account becomes usable only after the
+upgrade succeeds. Failure keeps a recovery screen with details and retry;
+reconnecting resumes through the same durable migration markers. New accounts
+and stores that are already current do not show a migration screen.
 Older builds without SQLCipher support cannot open the migrated store. Preserve
 an encrypted backup and recovery key before moving the store to another device.
 

@@ -252,6 +252,14 @@ preparations that require review. These checks never open real customer stores
 or real credential entries.
 The sign-in draft regression delays both native reads and adoption writes;
 model-picker readiness alone does not establish acknowledged draft hydration.
+Migration-progress fixtures cover real legacy database/media conversion with
+ordered phases and exact phase counters, no migration indicator for fresh/current
+stores, revision fencing against late updates, and a dedicated Desktop screen
+during browser completion or signed-in restoration. Chromium holds migration
+open, checks indeterminate database work and counted media work, failure/retry,
+draft restoration without sending, keyboard focus and a small dark window.
+Native activation runs outside the ACP executor; signed installer/OS-keystore
+qualification must still verify visible progress during the actual upgrade.
 
 Keep the SQLite security baseline in the SQLCipher-enabled build at 3.54.1 or
 newer. The regular `libsqlite3-sys` bundled version alone does not establish
@@ -363,11 +371,12 @@ changes.
 
 Single-request compaction fixtures cover a 1M-token model at its 85% threshold,
 fourteen interleaved image messages, historical system notes, and reasoning and
-refusal fields on a model without reasoning replay. Fallback fixtures verify
-batching interleaved image messages into two requests at the eight-image protocol
-limit, reserving summary output space, and splitting encoded payloads at the
-provider request byte ceiling. These limits affect compaction request planning;
-they do not trigger automatic compaction.
+refusal fields on a model without reasoning replay. A fitting history containing
+110 images uses one summary request. Fallback fixtures verify splitting a
+token-limited interleaved history into two requests, reserving summary output
+space, and splitting encoded payloads at the provider request byte ceiling.
+Request planning has no aggregate image-count cap; byte bounds do not trigger
+automatic compaction.
 
 Compaction progress checks cover cumulative streamed summary/reasoning estimates,
 replacement with provider token counts, pass totals, spinner rendering and cleanup

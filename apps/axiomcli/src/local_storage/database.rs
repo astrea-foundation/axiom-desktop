@@ -107,6 +107,14 @@ impl StorePaths {
             || self.candidate.exists()
             || kind(&self.database)? != DatabaseKind::Encrypted)
     }
+
+    pub fn has_migration(&self) -> Result<bool> {
+        Ok(self.marker.exists()
+            || self.marker_staging.exists()
+            || self.previous.exists()
+            || self.candidate.exists()
+            || kind(&self.database)? == DatabaseKind::Plaintext)
+    }
 }
 
 fn sibling(path: &Path, suffix: &str) -> PathBuf {

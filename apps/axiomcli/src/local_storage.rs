@@ -88,11 +88,22 @@ pub(crate) struct OpenedDatabase {
     pub maintenance: Option<crate::factory_reset::MaintenanceGuard>,
 }
 
+#[cfg(test)]
 pub(crate) fn open_database(path: &Path) -> Result<OpenedDatabase> {
+    open_database_with_progress(path, &|_| {})
+}
+
+pub(crate) fn open_database_with_progress(
+    path: &Path,
+    progress: &crate::storage_progress::Observer<'_>,
+) -> Result<OpenedDatabase> {
     check_restore_marker(path)?;
     let paths = database::StorePaths::prepare(path)?;
     let _lock = paths.lock()?;
     check_restore_marker(&paths.database)?;
+    if paths.has_migration()? {
+        crate::storage_progress::phase(progress, crate::storage_progress::Phase::Encrypting);
+    }
     let mut maintenance = initial_maintenance(&paths)?;
     let key = Arc::new(keys::obtain(&paths)?);
     let connection = database::open_locked(&paths, &key)?;
@@ -123,8 +134,19 @@ pub(crate) fn restore_marker_for_database(path: &Path) -> std::path::PathBuf {
 }
 
 pub(crate) fn open_database_with_key(path: &Path, key: Arc<StorageKey>) -> Result<OpenedDatabase> {
+    open_database_with_key_and_progress(path, key, &|_| {})
+}
+
+pub(crate) fn open_database_with_key_and_progress(
+    path: &Path,
+    key: Arc<StorageKey>,
+    progress: &crate::storage_progress::Observer<'_>,
+) -> Result<OpenedDatabase> {
     let paths = database::StorePaths::prepare(path)?;
     let _lock = paths.lock()?;
+    if paths.has_migration()? {
+        crate::storage_progress::phase(progress, crate::storage_progress::Phase::Encrypting);
+    }
     let mut maintenance = initial_maintenance(&paths)?;
     let connection = database::open_locked(&paths, &key)?;
     finish_open_maintenance(&paths, &connection, &mut maintenance)?;

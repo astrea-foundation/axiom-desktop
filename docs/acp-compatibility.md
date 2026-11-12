@@ -132,6 +132,16 @@ plans, modes and configuration. `_axiom/event` carries additional typed account,
 security, context/accounting and activity state with `runtimeInstanceId`, monotonic
 `sequence`, RFC 3339 `occurredAt`, and optional thread/correlation IDs.
 
+`account_changed.status` may include optional `storageMigration` progress with
+phase `encrypting`, `moving_media`, `checking`, `finalizing` or `failed` and
+optional `completed`/`total` counters for that phase. During an upgrade the account
+state is `starting`, with no usable account/store context. Each progress update
+uses a newer account revision; final validation or failure has a later revision.
+Clients must apply the usual account/runtime fences so delayed progress cannot
+replace a ready account. A failed upgrade publishes `unavailable`, recovery
+details and phase `failed`; `account/status` retries opening the existing store.
+This is additive presentation metadata on `account@2`. Older clients ignore it.
+
 ## Durable timeline and recovery
 
 Compaction activity includes optional `progress` counters: `completed` and `total`

@@ -18,15 +18,23 @@ use super::{AccountRoute, ConnectionGuard, SessionStore, StoreBinding, StoreStat
 
 impl SessionStore {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        Self::open_with_progress(path.as_ref(), &|_| {})
+    }
+
+    fn open_with_progress(
+        path: &Path,
+        progress: &crate::storage_progress::Observer<'_>,
+    ) -> Result<Self> {
         #[cfg(not(test))]
-        let opened = crate::local_storage::open_database(path.as_ref())?;
+        let opened = crate::local_storage::open_database_with_progress(path, progress)?;
         // Unit fixtures must never touch the user's operating-system keychain.
         #[cfg(test)]
-        let opened = crate::local_storage::open_database_with_key(
-            path.as_ref(),
+        let opened = crate::local_storage::open_database_with_key_and_progress(
+            path,
             Arc::new(crate::local_storage::StorageKey::from_bytes([0x53; 32])),
+            progress,
         )?;
-        Self::from_opened(path.as_ref(), opened)
+        Self::from_opened_with_progress(path, opened, progress)
     }
 
     /// Explicit synthetic fixture only. Never used by the application opener.
@@ -61,7 +69,28 @@ impl SessionStore {
         )
     }
 
+    #[cfg(test)]
+    pub(super) fn open_protected_with_key_and_progress(
+        path: &Path,
+        key: Arc<crate::local_storage::StorageKey>,
+        progress: &crate::storage_progress::Observer<'_>,
+    ) -> Result<Self> {
+        Self::from_opened_with_progress(
+            path,
+            crate::local_storage::open_database_with_key_and_progress(path, key, progress)?,
+            progress,
+        )
+    }
+
     fn from_opened(path: &Path, opened: crate::local_storage::OpenedDatabase) -> Result<Self> {
+        Self::from_opened_with_progress(path, opened, &|_| {})
+    }
+
+    fn from_opened_with_progress(
+        path: &Path,
+        opened: crate::local_storage::OpenedDatabase,
+        progress: &crate::storage_progress::Observer<'_>,
+    ) -> Result<Self> {
         // Keep the process-wide exclusive migration fence through schema/media
         // conversion, physical cleanup and interrupted-turn recovery.
         let _maintenance = opened.maintenance;
@@ -86,7 +115,7 @@ impl SessionStore {
             route: None,
             binding: None,
         };
-        store.initialize()?;
+        store.initialize_with_progress(progress)?;
         store.interrupt_incomplete_turns()?;
         Ok(store)
     }
@@ -169,6 +198,14 @@ impl SessionStore {
     /// leaves every clone inactive and never falls back to the old store.
     pub fn activate_account(&self, account_id: &str) -> Result<()> {
         self.activate_with_opener(account_id, |path| Self::open(path))
+    }
+
+    pub(crate) fn activate_account_with_progress(
+        &self,
+        account_id: &str,
+        progress: &crate::storage_progress::Observer<'_>,
+    ) -> Result<()> {
+        self.activate_with_opener(account_id, |path| Self::open_with_progress(path, progress))
     }
 
     #[cfg(debug_assertions)]

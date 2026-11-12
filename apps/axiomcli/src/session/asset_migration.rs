@@ -6,10 +6,17 @@ use super::{
     codec::storage_error,
 };
 use crate::Result;
+use crate::storage_progress::{self, Observer, Phase};
 use rusqlite::{Connection, params};
 use serde_json::Value;
 
-pub(super) fn migrate(connection: &Connection, assets: &AssetManager) -> Result<()> {
+pub(super) fn migrate(
+    connection: &Connection,
+    assets: &AssetManager,
+    progress: &Observer<'_>,
+) -> Result<()> {
+    let mut groups = Vec::new();
+    let mut total = 0;
     for (select, update, kind) in [
         (
             "SELECT p.user_item_id,i.thread_id FROM prompt_attachments p JOIN timeline_items i ON i.id=p.user_item_id",
@@ -39,6 +46,12 @@ pub(super) fn migrate(connection: &Connection, assets: &AssetManager) -> Result<
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(storage_error)?;
         drop(statement);
+        total += rows.len() as u64;
+        groups.push((rows, update, kind));
+    }
+    let mut completed = 0;
+    storage_progress::count(progress, Phase::MovingMedia, completed, total);
+    for (rows, update, kind) in groups {
         for (id, thread) in rows {
             let read = match kind {
                 0 => "SELECT payload FROM prompt_attachments WHERE user_item_id=?1",
@@ -71,6 +84,8 @@ pub(super) fn migrate(connection: &Connection, assets: &AssetManager) -> Result<
             }
             // model_messages.digest remains the digest of the hydrated runtime
             // message, preserving its identity and all checkpoint message IDs.
+            completed += 1;
+            storage_progress::count(progress, Phase::MovingMedia, completed, total);
         }
     }
     Ok(())

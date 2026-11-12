@@ -211,6 +211,22 @@ impl AssetManager {
         Ok(())
     }
     pub(super) fn verify(&self, connection: &Connection) -> Result<()> {
+        self.verify_with_progress(connection, &|_| {})
+    }
+
+    fn verify_with_progress(
+        &self,
+        connection: &Connection,
+        progress: &crate::storage_progress::Observer<'_>,
+    ) -> Result<()> {
+        use crate::storage_progress::{self, Phase};
+        let total: u64 = connection
+            .query_row("SELECT COUNT(*) FROM binary_assets", [], |row| {
+                super::codec::checked_u64_sql(row.get(0)?)
+            })
+            .map_err(storage_error)?;
+        let mut completed = 0;
+        storage_progress::count(progress, Phase::Checking, completed, total);
         let mut statement = connection
             .prepare("SELECT id,sha256,byte_length FROM binary_assets")
             .map_err(storage_error)?;
@@ -224,13 +240,19 @@ impl AssetManager {
                     .map_err(storage_error)?,
             };
             self.read_bytes(&reference)?;
+            completed += 1;
+            storage_progress::count(progress, Phase::Checking, completed, total);
         }
         Ok(())
     }
     /// Called only while holding `SQLite`'s IMMEDIATE write transaction. No other
     /// writer can have an uncommitted asset file when orphan cleanup runs.
-    pub(super) fn verify_and_clean(&self, connection: &Connection) -> Result<()> {
-        self.verify(connection)?;
+    pub(super) fn verify_and_clean_with_progress(
+        &self,
+        connection: &Connection,
+        progress: &crate::storage_progress::Observer<'_>,
+    ) -> Result<()> {
+        self.verify_with_progress(connection, progress)?;
         self.clean_orphans(connection)
     }
     fn clean_orphans(&self, connection: &Connection) -> Result<()> {

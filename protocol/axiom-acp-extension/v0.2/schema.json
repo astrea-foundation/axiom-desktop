@@ -2390,6 +2390,17 @@
             "string",
             "null"
           ]
+        },
+        "storageMigration": {
+          "description": "Local storage work must finish before this account becomes usable.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StorageMigrationProgress"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
@@ -2465,6 +2476,44 @@
       "required": [
         "expiresAt",
         "credentialStore"
+      ]
+    },
+    "StorageMigrationProgress": {
+      "type": "object",
+      "properties": {
+        "phase": {
+          "$ref": "#/$defs/StorageMigrationPhase"
+        },
+        "completed": {
+          "description": "Counts describe this phase only; omitted for indivisible database work.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "total": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "phase"
+      ]
+    },
+    "StorageMigrationPhase": {
+      "type": "string",
+      "enum": [
+        "encrypting",
+        "moving_media",
+        "checking",
+        "finalizing",
+        "failed"
       ]
     },
     "NativeLoginStartRequest": {

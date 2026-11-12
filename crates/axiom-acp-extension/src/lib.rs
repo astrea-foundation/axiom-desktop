@@ -670,6 +670,30 @@ pub struct AccountStatus {
     pub session: Option<NativeSession>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    /// Local storage work must finish before this account becomes usable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage_migration: Option<StorageMigrationProgress>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StorageMigrationProgress {
+    pub phase: StorageMigrationPhase,
+    /// Counts describe this phase only; omitted for indivisible database work.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum StorageMigrationPhase {
+    Encrypting,
+    MovingMedia,
+    Checking,
+    Finalizing,
+    Failed,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]

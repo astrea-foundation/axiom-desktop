@@ -27,6 +27,7 @@ pub mod session_title;
 pub mod slash;
 pub mod steering;
 pub mod storage_backup;
+mod storage_progress;
 pub mod tools;
 pub mod tui;
 pub mod updates;
