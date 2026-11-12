@@ -11,11 +11,430 @@ use sha2::{Digest as _, Sha256};
 use std::{path::Path, sync::Arc};
 use tempfile::tempdir;
 
-const ORIGINAL: &[u8] = b"\x89PNG\r\n\x1a\nsynthetic-original-asset-unique-sentinel";
-const PREVIEW: &[u8] = b"\x89PNG\r\n\x1a\nsynthetic-exact-preview-unique-sentinel";
+const ORIGINAL: &[u8] = include_bytes!("fixtures/storage-original.png");
+const PREVIEW: &[u8] = include_bytes!("fixtures/storage-preview.png");
 const FILE: &[u8] = b"%PDF-1.7\nsynthetic-file-asset-unique-sentinel";
 fn key() -> Arc<StorageKey> {
     Arc::new(StorageKey::from_bytes([0x71; 32]))
+}
+fn damaged_images() -> [(&'static str, &'static [u8], &'static str); 4] {
+    [
+        ("signature", b"\x89PNG\r\n\x1a\n", "image/png"),
+        (
+            "truncated",
+            include_bytes!("fixtures/storage-truncated.png"),
+            "image/png",
+        ),
+        (
+            "bounds",
+            include_bytes!("fixtures/storage-too-wide.png"),
+            "image/png",
+        ),
+        ("mime", ORIGINAL, "image/jpeg"),
+    ]
+}
+
+#[derive(Default)]
+struct DecodingProvider {
+    requests: tokio::sync::Mutex<Vec<axiom_inference::InferenceRequest>>,
+}
+#[async_trait::async_trait]
+impl crate::provider::InferenceProvider for DecodingProvider {
+    async fn models(
+        &self,
+        _: tokio_util::sync::CancellationToken,
+    ) -> crate::Result<Vec<axiom_inference::ModelInfo>> {
+        Ok(vec![axiom_inference::ModelInfo {
+            id: "storage-vision-fixture".into(),
+            supports_images: true,
+            context_window_tokens: 65_536,
+            max_output_tokens: 4096,
+            ..Default::default()
+        }])
+    }
+    async fn stream(
+        &self,
+        request: axiom_inference::InferenceRequest,
+        events: tokio::sync::mpsc::Sender<axiom_inference::ProviderEvent>,
+        _: tokio_util::sync::CancellationToken,
+    ) -> crate::Result<axiom_inference::AssistantTurn> {
+        request
+            .validate()
+            .map_err(|error| crate::AxiomError::Provider(error.to_string()))?;
+        for image in request.messages.iter().flat_map(|message| &message.images) {
+            let raw = STANDARD.decode(&image.data).unwrap();
+            let format = image::ImageFormat::from_mime_type(&image.mime_type).unwrap();
+            let mut reader = image::ImageReader::with_format(std::io::Cursor::new(raw), format);
+            let mut limits = image::Limits::default();
+            limits.max_image_width = Some(8192);
+            limits.max_image_height = Some(8192);
+            limits.max_alloc = Some(128 * 1024 * 1024);
+            reader.limits(limits);
+            reader.decode().map_err(|error| {
+                crate::AxiomError::Provider(format!(
+                    "synthetic provider cannot decode saved image: {error}"
+                ))
+            })?;
+        }
+        self.requests.lock().await.push(request);
+        events
+            .send(axiom_inference::ProviderEvent::ResponseVerified)
+            .await
+            .unwrap();
+        Ok(axiom_inference::AssistantTurn {
+            text: "Synthetic usable continuation and summary.".into(),
+            ..Default::default()
+        })
+    }
+}
+
+async fn continuation_and_compaction(
+    id: &SessionId,
+    history: &[crate::app::EventEnvelope],
+) -> Vec<AppEvent> {
+    use crate::agent::{AgentEngine, TurnContext, TurnRunner as _};
+    use tokio_util::sync::CancellationToken;
+    let provider = Arc::new(DecodingProvider::default());
+    let engine = AgentEngine::new(
+        provider.clone(),
+        Arc::new(crate::tools::ToolRegistry::new()),
+        "storage-vision-fixture",
+        3,
+    );
+    engine.restore_session(id, history).await.unwrap();
+    let (events, mut receiver) = tokio::sync::mpsc::channel(256);
+    engine
+        .run(
+            TurnContext {
+                session_id: id.clone(),
+                turn_id: TurnId::new(),
+                cwd: "/tmp".into(),
+                permission_profile: PermissionProfile::Web,
+                web_enabled: false,
+                image_tools_available: false,
+                attachments: vec![],
+                mcp: None,
+                steering: None,
+                approval: None,
+                questions: None,
+            },
+            "Continue using readable text".into(),
+            events,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    let mut updates = Vec::new();
+    while let Ok(event) = receiver.try_recv() {
+        if matches!(event, AppEvent::ModelHistoryCheckpoint { .. }) {
+            updates.push(event);
+        }
+    }
+    let (events, mut receiver) = tokio::sync::mpsc::channel(256);
+    engine
+        .compact(id, None, events, CancellationToken::new())
+        .await
+        .unwrap();
+    let requests = provider.requests.lock().await;
+    assert!(
+        requests.len() >= 2,
+        "continuation and compaction both reached the synthetic provider"
+    );
+    assert_eq!(
+        requests[0]
+            .messages
+            .iter()
+            .map(|message| message.images.len())
+            .sum::<usize>(),
+        1
+    );
+    assert!(
+        requests
+            .iter()
+            .flat_map(|request| &request.messages)
+            .flat_map(|message| &message.images)
+            .all(|image| image.data == STANDARD.encode(PREVIEW)),
+        "healthy original image bytes remain exact"
+    );
+    while let Ok(event) = receiver.try_recv() {
+        if matches!(
+            event,
+            AppEvent::ModelHistoryCheckpoint { .. } | AppEvent::ContextCompacted { .. }
+        ) {
+            updates.push(event);
+        }
+    }
+    updates
+}
+
+#[tokio::test]
+async fn authenticated_external_bad_images_are_omitted_before_continuation_and_compaction() {
+    // Header dimensions alone are insufficient: this PNG has a real IHDR and
+    // IDAT header but its pixel stream is truncated.
+    let truncated = include_bytes!("fixtures/storage-truncated.png");
+    assert_eq!(&truncated[16..24], &ORIGINAL[16..24]);
+    for (case, raw, mime) in damaged_images() {
+        let root = tempdir().unwrap();
+        let path = root.path().join("state.sqlite3");
+        let fixture = legacy(&path, 6);
+        let store = SessionStore::open_protected_with_key(&path, key()).unwrap();
+        append(
+            &store,
+            &fixture.id,
+            AppEvent::ModelHistoryCheckpoint {
+                version: 1,
+                messages: json!([{"role":"system","content":"system"},{"role":"user","content":"Preserve readable text","images":[image(ORIGINAL),image(PREVIEW)]}]),
+            },
+        );
+        let owner = super::assets::thread_owner(&fixture.id.to_string());
+        let (bad_path, saved_payload, saved_digest) = {
+            let mut connection = store.lock().unwrap();
+            let assets = connection.assets().clone();
+            let transaction = connection.transaction().unwrap();
+            // Simulate an older schema-7 writer: cryptographically valid stored
+            // bytes, which had only been checked for MIME magic at that time.
+            let bad_ref = serde_json::to_value(
+                assets
+                    .intern(&transaction, &owner, &STANDARD.encode(raw))
+                    .unwrap(),
+            )
+            .unwrap();
+            let preview = serde_json::to_value(
+                assets
+                    .intern(&transaction, &owner, &STANDARD.encode(PREVIEW))
+                    .unwrap(),
+            )
+            .unwrap();
+            let bad_image = json!({"mimeType":mime,"_axiom_asset":bad_ref});
+            let good_image = json!({"mimeType":"image/png","_axiom_asset":preview});
+            let attachments = json!([{"kind":"image","name":"damaged.png","image":bad_image},{"kind":"image","name":"surviving.png","image":good_image}]);
+            transaction
+                .execute(
+                    "UPDATE prompt_attachments SET payload=?1",
+                    [attachments.to_string()],
+                )
+                .unwrap();
+            transaction.execute("UPDATE model_history SET payload=json_set(payload,'$.attachments',json(?1)) WHERE json_extract(payload,'$.kind')='prompt_accepted'",[attachments.to_string()]).unwrap();
+            transaction.execute("UPDATE model_history SET payload=json_set(payload,'$.image.mimeType',?1,'$.image._axiom_asset',json(?2)) WHERE json_extract(payload,'$.kind')='image_generated'",params![mime,bad_ref.to_string()]).unwrap();
+            let mut block = bad_image.clone();
+            block["type"] = json!("image");
+            transaction.execute("UPDATE timeline_items SET metadata=json_set(metadata,'$.content[0].content',json(?1)) WHERE id='tool'",[block.to_string()]).unwrap();
+            let mut message = json!({"role":"user","content":"Preserve readable text","images":[bad_image,good_image]});
+            let stored = message.to_string();
+            message["images"] =
+                json!([{"mimeType":mime,"data":STANDARD.encode(raw)},image(PREVIEW)]);
+            let digest = hex::encode(Sha256::digest(message.to_string().as_bytes()));
+            transaction.execute("UPDATE model_messages SET payload=?1,digest=?2 WHERE json_extract(payload,'$.content')='Preserve readable text'",params![stored,digest]).unwrap();
+            let draft_owner = super::assets::payload_owner("previous-draft");
+            assets
+                .intern(&transaction, &draft_owner, &STANDARD.encode(raw))
+                .unwrap();
+            let mut draft = payload();
+            draft["payload"]["attachments"][0]["image"] = bad_image;
+            transaction
+                .execute(
+                    "INSERT INTO local_payloads(id,payload) VALUES('previous-draft',?1)",
+                    [draft.to_string()],
+                )
+                .unwrap();
+            transaction.commit().unwrap();
+            (
+                asset_directory_for_database(&path).join(bad_ref["id"].as_str().unwrap()),
+                stored,
+                digest,
+            )
+        };
+        let ciphertext = std::fs::read(&bad_path).unwrap();
+        store.verify_asset_integrity().unwrap();
+        drop(store);
+        let store = SessionStore::open_protected_with_key(&path, key()).unwrap();
+        let outcome = store.load_recovering(&fixture.id).unwrap();
+        assert!(!outcome.warnings.is_empty(), "{case}");
+        assert!(
+            !outcome
+                .events
+                .iter()
+                .any(|event| matches!(event.event, AppEvent::ImageGenerated { .. })),
+            "{case}"
+        );
+        let attachments = store.prompt_attachments(&fixture.id, "user").unwrap();
+        assert_eq!(
+            serde_json::to_value(attachments).unwrap(),
+            json!([{"kind":"image","name":"surviving.png","image":image(PREVIEW)}]),
+            "{case}"
+        );
+        let draft = store.local_payload("previous-draft").unwrap().unwrap();
+        assert_eq!(draft["payload"]["text"], "saved draft");
+        assert_eq!(draft["payload"]["attachments"], json!([]));
+        assert!(
+            store
+                .generated_image(&fixture.id, "call", &fixture.image.sha256)
+                .is_err()
+        );
+        let updates = continuation_and_compaction(&fixture.id, &outcome.events).await;
+        let connection = store.lock().unwrap();
+        let unchanged:(String,String) = connection.query_row("SELECT payload,digest FROM model_messages WHERE json_extract(payload,'$.content')='Preserve readable text'",[],|row| Ok((row.get(0)?,row.get(1)?))).unwrap();
+        assert_eq!(
+            unchanged,
+            (saved_payload, saved_digest),
+            "reads preserve original references/digest"
+        );
+        assert_eq!(
+            std::fs::read(&bad_path).unwrap(),
+            ciphertext,
+            "reads retain original ciphertext"
+        );
+        drop(connection);
+        let mut rejected = payload();
+        rejected["payload"]["attachments"][0]["image"] =
+            json!({"mimeType":mime,"data":STANDARD.encode(raw)});
+        assert!(
+            store.set_local_payload("new-damaged", &rejected).is_err(),
+            "{case}"
+        );
+        for update in updates {
+            append(&store, &fixture.id, update);
+        }
+        drop(store);
+        let reopened = SessionStore::open_protected_with_key(&path, key()).unwrap();
+        assert!(reopened.load(&fixture.id).is_ok());
+        assert_eq!(std::fs::read(&bad_path).unwrap(), ciphertext);
+    }
+}
+
+#[tokio::test]
+async fn large_valid_generated_original_is_omitted_only_from_five_mib_input_slots() {
+    let root = tempdir().unwrap();
+    let path = root.path().join("state.sqlite3");
+    let fixture = legacy(&path, 6);
+    let mut large = ORIGINAL.to_vec();
+    large.resize(6 * 1024 * 1024, 0);
+    let data = STANDARD.encode(&large);
+    let mut generated = fixture.image.clone();
+    generated.data = data.clone();
+    generated.sha256 = hex::encode(Sha256::digest(&large));
+    let mut proof = serde_json::to_value(&generated).unwrap();
+    proof.as_object_mut().unwrap().remove("data");
+    let attachments = json!([{"kind":"image","name":"large-upload.png","image":image(&large)},
+        {"kind":"image","name":"surviving.png","image":image(PREVIEW)},fixture.attachments[1]]);
+    let message = json!({"role":"user","content":"Large input retains readable text","images":[image(&large),image(PREVIEW)]});
+    let raw = Connection::open(&path).unwrap();
+    raw.execute(
+        "UPDATE prompt_attachments SET payload=?1",
+        [attachments.to_string()],
+    )
+    .unwrap();
+    raw.execute("UPDATE model_history SET payload=json_set(payload,'$.attachments',json(?1)) WHERE json_extract(payload,'$.kind')='prompt_accepted'",[attachments.to_string()]).unwrap();
+    raw.execute("UPDATE model_history SET payload=json_set(payload,'$.image',json(?1)) WHERE json_extract(payload,'$.kind')='image_generated'",[serde_json::to_string(&generated).unwrap()]).unwrap();
+    raw.execute("UPDATE timeline_items SET metadata=json_set(metadata,'$.generated_image',json(?1),'$.content[0].content.data',?2) WHERE id='tool'",params![proof.to_string(),data]).unwrap();
+    raw.execute(
+        "UPDATE model_messages SET payload=?1,digest=?2 WHERE id=41",
+        params![
+            message.to_string(),
+            hex::encode(Sha256::digest(message.to_string().as_bytes()))
+        ],
+    )
+    .unwrap();
+    let system = json!({"role":"system","content":"system"});
+    raw.execute(
+        "UPDATE model_messages SET payload=?1,digest=?2 WHERE id=42",
+        params![
+            system.to_string(),
+            hex::encode(Sha256::digest(system.to_string().as_bytes()))
+        ],
+    )
+    .unwrap();
+    raw.execute("UPDATE model_history SET payload=json_set(payload,'$.messages',json('[42,41]')) WHERE json_extract(payload,'$.kind')='model_history_checkpoint'",[]).unwrap();
+    drop(raw);
+    let store = SessionStore::open_protected_with_key(&path, key()).unwrap();
+    assert!(
+        recovery_records(&store, &fixture.id)
+            .iter()
+            .any(|record| record["sourceKind"] == 3)
+    );
+    for phase in ["migrated", "external"] {
+        if phase == "external" {
+            let connection = store.lock().unwrap();
+            let metadata: String = connection
+                .query_row(
+                    "SELECT metadata FROM timeline_items WHERE id='tool'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let metadata: Value = serde_json::from_str(&metadata).unwrap();
+            let reference = metadata["content"][0]["content"]["_axiom_asset"].clone();
+            let original: String = connection
+                .query_row(
+                    "SELECT payload FROM model_messages WHERE id=41",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let mut external: Value = serde_json::from_str(&original).unwrap();
+            external["images"]
+                .as_array_mut()
+                .unwrap()
+                .insert(0, json!({"mimeType":"image/png","_axiom_asset":reference}));
+            connection
+                .execute(
+                    "UPDATE model_messages SET payload=?1 WHERE id=41",
+                    [external.to_string()],
+                )
+                .unwrap();
+        }
+        let outcome = store.load_recovering(&fixture.id).unwrap();
+        let messages = outcome
+            .events
+            .iter()
+            .find_map(|event| match &event.event {
+                AppEvent::ModelHistoryCheckpoint { messages, .. } => Some(messages),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(messages[1]["images"], json!([image(PREVIEW)]), "{phase}");
+        assert_eq!(messages[1]["content"], "Large input retains readable text");
+        assert_eq!(
+            store
+                .generated_image(&fixture.id, "call", &generated.sha256)
+                .unwrap()
+                .data,
+            data,
+            "10 MiB generated-original slot remains available"
+        );
+        let catalog =
+            crate::image_tool::ImageCatalog::from_history(&fixture.id, &outcome.events).unwrap();
+        assert_eq!(
+            catalog
+                .resolve(&format!("img_{}", generated.request_id))
+                .unwrap()
+                .image
+                .data,
+            data
+        );
+        continuation_and_compaction(&fixture.id, &outcome.events).await;
+    }
+    let mut draft = payload();
+    draft["payload"]["attachments"][0]["image"] = image(&large);
+    assert!(store.set_local_payload("oversized-upload", &draft).is_err());
+    assert!(
+        store
+            .append(&crate::app::EventEnvelope {
+                schema_version: 1,
+                sequence: 1,
+                turn_id: None,
+                occurred_at: chrono::Utc::now(),
+                correlation_id: crate::app::CorrelationId::new(),
+                origin: crate::app::Origin::Test,
+                session_id: fixture.id.clone(),
+                event: AppEvent::ModelHistoryCheckpoint {
+                    version: 1,
+                    messages: json!([system, message])
+                }
+            })
+            .is_err()
+    );
+    store.verify_asset_integrity().unwrap();
 }
 fn recovery_records(store: &SessionStore, id: &SessionId) -> Vec<Value> {
     let connection = store.lock().unwrap();
@@ -127,7 +546,7 @@ fn payload() -> Value {
 }
 fn generated() -> axiom_secure_client::GeneratedImage {
     serde_json::from_value(json!({
-        "requestId":"11".repeat(16),"data":STANDARD.encode(ORIGINAL),"mimeType":"image/png","width":1024,"height":1024,
+        "requestId":"11".repeat(16),"data":STANDARD.encode(ORIGINAL),"mimeType":"image/png","width":256,"height":256,
         "sha256":hex::encode(Sha256::digest(ORIGINAL)),"sourceImageIds":["img_parent_b","img_parent_a"],
         "evidence":{"state":"verified","provider_id":"axiom-direct","model_id":"direct:qwen3.8-27b","attestation_protocol":"synthetic-unit-fixture","e2ee_protocol":"synthetic-unit-fixture","e2ee_encryption_version":1,"trust_policy_version":"unit-test","verified_at_unix_seconds":1,"model_key_fingerprint":"00".repeat(32),"tls_spki_fingerprint":null,"checks":[],"provider_claims":[]},
         "usage":{"requestId":"11".repeat(16),"providerId":"axiom-direct","modelId":"direct:qwen3.8-27b","settled":true,"responseVerified":true}
@@ -674,7 +1093,16 @@ fn migration_failure_retries_and_cleans_only_orphan_ciphertext() {
 #[test]
 fn legacy_inline_media_damage_preserves_usable_history_positions_and_recovery_records() {
     for version in [2, 6] {
-        for damage in ["base64", "missing", "shape", "magic"] {
+        for damage in [
+            "base64",
+            "missing",
+            "shape",
+            "magic",
+            "signature",
+            "truncated",
+            "bounds",
+            "mime",
+        ] {
             let root = tempdir().unwrap();
             let path = root.path().join("state.sqlite3");
             let fixture = legacy(&path, version);
@@ -693,9 +1121,18 @@ fn legacy_inline_media_damage_preserves_usable_history_positions_and_recovery_re
                     bad_image["image"] = json!({"data":17,"mimeType":false});
                     bad_file["file"] = json!({"name":null,"data":[],"mimeType":false});
                 }
-                _ => {
+                "magic" => {
                     bad_image["image"]["data"] = json!(STANDARD.encode(b"not image bytes"));
                     bad_file["file"]["mimeType"] = json!("not/a-supported-file");
+                }
+                _ => {
+                    let (_, bytes, mime) = damaged_images()
+                        .into_iter()
+                        .find(|(name, _, _)| *name == damage)
+                        .unwrap();
+                    bad_image["image"]["data"] = json!(STANDARD.encode(bytes));
+                    bad_image["image"]["mimeType"] = json!(mime);
+                    bad_file["file"]["data"] = json!("!invalid-file!");
                 }
             }
             let good_image = json!({"kind":"image","name":"surviving.png","image":image(PREVIEW)});

@@ -100,6 +100,15 @@ queued records remain saved for review after reconnect and are not automatically
 sent. Lazy timeline image descriptors do not authenticate or load an image;
 opening an unavailable image reports that it cannot be restored.
 
+Recognized images must decode completely through their first frame with a MIME
+type matching the encoded format. The storage boundary checks canonical base64,
+encoded byte limits (5 MiB for uploads/model inputs, 10 MiB for generated originals),
+an 8192-pixel edge limit, a 32-megapixel source limit and a
+128 MiB decoder allocation limit. Signature-only or truncated images are omitted
+on both legacy migration and current external-asset reads; malformed new image
+writes are rejected. Validation never re-encodes or substitutes valid bytes.
+Unreadable external originals and their ownership remain intact for recovery.
+
 Semantic replay uses text-only omission markers where needed to preserve original
 attachment positions and the IDs of surviving uploaded images. A media-only
 canonical message receives a short unavailable-media note if omitting its bytes
