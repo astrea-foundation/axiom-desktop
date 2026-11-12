@@ -31,6 +31,48 @@ export class LocalPayloadStore implements PayloadStore {
       transaction.onerror = () => reject(transaction.error);
     });
   }
+  /** Enumerate only one owner's legacy records for a host-controlled migration. */
+  async entries(account: string): Promise<Array<[string, PromptPayload]>> {
+    const db = await this.open();
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction("payloads", "readonly");
+      const values: Array<[string, PromptPayload]> = [];
+      const request = transaction.objectStore("payloads").openCursor();
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (!cursor) return;
+        try {
+          const scope: unknown = typeof cursor.key === "string" ? JSON.parse(cursor.key) : null;
+          if (Array.isArray(scope) && scope.length === 2 && scope[0] === account && typeof scope[1] === "string") {
+            values.push([scope[1], cursor.value as PromptPayload]);
+          }
+        } catch { /* Unrelated legacy keys are never imported or deleted. */ }
+        cursor.continue();
+      };
+      transaction.oncomplete = () => resolve(values);
+      transaction.onabort = () => reject(transaction.error ?? new Error("Local storage migration failed."));
+      transaction.onerror = () => reject(transaction.error);
+    });
+  }
+  /** Migration deletes the acknowledged version under the same IDB write lock
+   * as its comparison, so an older window cannot replace it between requests. */
+  async removeIfUnchanged(account: string, id: string, expected: PromptPayload): Promise<boolean> {
+    const db = await this.open();
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction("payloads", "readwrite");
+      const store = transaction.objectStore("payloads");
+      const key = JSON.stringify([account, id]);
+      const request = store.get(key);
+      let unchanged = false;
+      request.onsuccess = () => {
+        unchanged = request.result === undefined || JSON.stringify(request.result) === JSON.stringify(expected);
+        if (unchanged) store.delete(key);
+      };
+      transaction.oncomplete = () => resolve(unchanged);
+      transaction.onabort = () => reject(transaction.error ?? new Error("Local storage migration failed."));
+      transaction.onerror = () => reject(transaction.error);
+    });
+  }
   get(account: string, id: string): Promise<PromptPayload | undefined> { return this.transact(account, id, "readonly", (store, key) => store.get(key)); }
   async put(account: string, id: string, payload: PromptPayload): Promise<void> { await this.transact(account, id, "readwrite", (store, key) => store.put(payload, key)); }
   async remove(account: string, id: string): Promise<void> { await this.transact(account, id, "readwrite", (store, key) => store.delete(key)); }

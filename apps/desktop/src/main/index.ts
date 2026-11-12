@@ -1,4 +1,6 @@
-import {prepareUpdateRestart} from './update-lifecycle';
+import { localPayloadRequest, requireLocalPayloadAccount } from "./local-payload";
+import {prepareUpdateRestart, prepareLocalState, releaseLocalState} from './update-lifecycle';
+import {LocalStateLifecycle} from './local-state-lifecycle';
 import { validatePrompt } from "@axiom/axiom-acp-client";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
@@ -54,8 +56,26 @@ let shutdownStarted = false;
 // and a new desktop launch always starts with the banner enabled.
 let astreaBannerDismissed = false;
 let updates: UpdateService | undefined;
+const allowedCloses = new WeakSet<BrowserWindow>();
+const localLifecycle = new LocalStateLifecycle<BrowserWindow>({
+  flush: prepareLocalState,
+  release: releaseLocalState,
+  close: window => {
+    if (!window.isDestroyed()) { allowedCloses.add(window); window.close(); }
+  },
+  stop: async () => { await Promise.allSettled([proxy.dispose(), sidecar.stop(), updates?.dispose()]); },
+  quit: () => { shutdownStarted = true; app.quit(); },
+  failed: error => {
+    const message = error instanceof Error ? error.message : "Local data could not be saved. Keep Axiom open and retry.";
+    const window = BrowserWindow.getAllWindows().find(window => !window.isDestroyed());
+    if (window) {
+      window.show(); window.focus();
+      void dialog.showMessageBox(window, { type: "error", title: "Axiom stayed open", message: "Your drafts could not be saved.", detail: message, buttons: ["Keep Axiom open"] });
+    }
+  },
+});
 const factoryReset = new FactoryResetController({
-  isInstalling: () => updates?.snapshot().status === "installing" || shutdownStarted,
+  isInstalling: () => updates?.snapshot().status === "installing" || shutdownStarted || localLifecycle.busy,
   prepare: async () => {
     const executable = await resolveSidecar();
     await checkFactoryResetSupport(executable);
@@ -139,6 +159,9 @@ function agentHandle(channel: string, handler: AgentHandler): void {
       throw new Error("agent IPC rejected an untrusted renderer");
     }
     if (factoryReset.isPending()) throw new Error("Axiom is resetting. Wait for it to reopen.");
+    if (localLifecycle.busy && (channel.startsWith("agent:prompt") || channel === "proxy:start")) {
+      throw new Error("Axiom is saving local data before closing or changing accounts. Retry when it finishes.");
+    }
     if (updates?.snapshot().status === 'installing' && (channel.startsWith('agent:prompt') || channel === 'proxy:start')) {
       throw new Error('Axiom is installing an update. Wait for it to restart.');
     }
@@ -169,6 +192,13 @@ function installAgentIpc(): void {
     requirePaymentAccount(id, sidecar.state());
     const result = await sidecar.usageSummary({ period, timezone: zone });
     requirePaymentAccount(id, sidecar.state());
+    return result;
+  });
+  agentHandle("agent:local-payload", async (_event, value: unknown) => {
+    const request = localPayloadRequest(value);
+    requireLocalPayloadAccount(request.accountId, sidecar.state());
+    const result = await sidecar.localPayload(request);
+    requireLocalPayloadAccount(request.accountId, sidecar.state());
     return result;
   });
   agentHandle("agent:desktop-bootstrap", () => sidecar.desktopBootstrap());
@@ -355,14 +385,20 @@ function installAgentIpc(): void {
   agentHandle("agent:native-login-start", (_event, methodHint: unknown) =>
     sidecar.nativeLoginStart(loginMethod(methodHint)),
   );
-  agentHandle("agent:native-login-complete", (_event, loginId: unknown) =>
-    sidecar.nativeLoginComplete(boundedString(loginId, "login ID", 128)),
-  );
+  agentHandle("agent:native-login-complete", (_event, loginId: unknown) => {
+    const id = boundedString(loginId, "login ID", 128);
+    let cancelled = false;
+    return localLifecycle.account(async () => {
+      await proxy.stop();
+      if (cancelled) throw new Error("Account change cancelled while closing Axiom.");
+      return sidecar.nativeLoginComplete(id);
+    }, () => { cancelled = true; return sidecar.nativeLoginCancel(id); });
+  });
   agentHandle("agent:native-login-cancel", (_event, loginId: unknown) =>
     sidecar.nativeLoginCancel(boundedString(loginId, "login ID", 128)),
   );
   agentHandle("agent:account-open", () => sidecar.openAccountPortal());
-  agentHandle("agent:logout", async () => { await proxy.stop(); return sidecar.logout(); });
+  agentHandle("agent:logout", () => localLifecycle.account(async () => { await proxy.stop(); return sidecar.logout(); }));
   agentHandle("agent:security-prewarm", (_event, modelId: unknown) =>
     sidecar.prewarmSecurity(boundedString(modelId, "model ID", 512)),
   );
@@ -509,6 +545,13 @@ function createWindow(): BrowserWindow {
   });
 
   window.setMenuBarVisibility(false);
+  window.on("close", event => {
+    if (shutdownStarted || allowedCloses.has(window)) { allowedCloses.delete(window); return; }
+    event.preventDefault();
+    if (factoryReset.isPending()) return;
+    if (process.platform !== "darwin" && BrowserWindow.getAllWindows().length === 1) void localLifecycle.quit();
+    else void localLifecycle.close(window);
+  });
   installApplicationMenu();
   installPageContextMenu(window, app.getPath("downloads"), (items) => Menu.buildFromTemplate(items));
   if (PLATFORM_PREVIEW && process.platform === "darwin") window.setWindowButtonVisibility(false);
@@ -645,10 +688,12 @@ if (primaryInstance) void app.whenReady().then(async () => {
     run: nativeUpdates(resolveSidecar),
     parentPid: process.pid,
     prepareRestart: prepareUpdateRestart,
-    canRestart: () => !factoryReset.isPending() && !Object.values(sidecar.state().sessions).some(session => session.running)
+    canRestart: () => !localLifecycle.busy && !factoryReset.isPending() && !Object.values(sidecar.state().sessions).some(session => session.running)
       && !['running', 'starting', 'stopping'].includes(proxy.snapshot().status),
     restart: async () => {
       await Promise.all([proxy.dispose(), sidecar.stop()]);
+      // The updater already received renderer ACKs before stopping native.
+      shutdownStarted = true;
       app.quit();
     },
     emit: (state) => {
@@ -727,6 +772,5 @@ app.on("before-quit", (event) => {
   if (shutdownStarted) return;
   event.preventDefault();
   if (factoryReset.isPending()) return;
-  shutdownStarted = true;
-  void Promise.all([proxy.dispose(), sidecar.stop(), updates?.dispose()]).finally(() => app.quit());
+  void localLifecycle.quit();
 });

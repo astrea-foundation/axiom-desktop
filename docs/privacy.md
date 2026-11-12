@@ -68,12 +68,19 @@ GitHub links offer identical installers without embedding GitHub credentials.
 
 ## Local data and credentials
 
-Conversations live in account/frontend-specific SQLite databases. Desktop also
-stores account-scoped drafts, queues and Web preferences locally. They are not
-synchronized through a plaintext backend cache. AxiomCLI does not encrypt its
-conversation database at rest; OS-account and disk protections apply. Sensitive
-content can also appear in workspace files, exports and the system clipboard.
-Signing out closes the store but does not erase all local history or workspace files.
+Conversations live in account/frontend-specific SQLCipher databases. Managed
+image and document bytes live in authenticated encrypted external asset files;
+the database stores their references and metadata. Desktop persists drafts and
+queues through the same encrypted native store, including a forward import of
+legacy browser copies after the owning account unlocks. They are not synchronized
+through a plaintext backend cache. An independent random storage key is protected
+by the OS credential store. Signing out closes the store without erasing saved
+history or its durable key. See [encrypted local storage](local-storage.md) for
+migration, backup and recovery behavior.
+
+Sensitive content can also appear in user-selected workspace files, explicit
+exports and the system clipboard. Those outputs are outside the encrypted chat
+store; an unlocked running application necessarily holds plaintext in memory.
 
 Native method credentials remain in the browser/hosted account flow. Access
 tokens remain in AxiomCLI memory; rotating refresh tokens require the OS credential
@@ -111,11 +118,14 @@ for paths and the account-scoped reset command.
 
 ## Local attachments
 
-Desktop reads original file bytes and keeps attachment drafts and queued payloads
-in account-scoped IndexedDB. Accepted inputs are also stored in the native
-account-local conversation database for resume, inspection and regeneration.
+Desktop reads accepted file bytes and stores attachment drafts, queued payloads
+and saved inputs in the native encrypted account store. Binary payloads are
+deduplicated encrypted external files, with references for resume, inspection,
+regeneration and exact history replay. Legacy IndexedDB/localStorage copies are
+deleted only after native storage acknowledges their import.
 No local PDF/text extraction or OCR is performed. Original bytes and filenames
 reach the selected provider only inside its attested, authenticated E2EE request;
 Tinfoil's attested services handle document processing. Hosted Axiom services
-cannot parse files or see extracted content. These local stores are not an additional at-rest encryption boundary.
+cannot parse files or see extracted content. The local encryption key is separate
+from provider-E2EE inference keys and never goes to the provider or backend.
 Upload availability follows the current model capabilities; see [Desktop](desktop.md#images-and-files).

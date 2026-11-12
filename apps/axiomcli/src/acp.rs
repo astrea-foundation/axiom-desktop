@@ -67,6 +67,7 @@ mod account;
 mod catalog;
 mod collections;
 mod images;
+mod local_payload;
 mod mcp;
 mod prompts;
 mod security;
@@ -685,6 +686,7 @@ fn extension_account_status(status: VersionedValidationStatus) -> ExtensionAccou
     match status.status {
         ValidationStatus::Missing => ExtensionAccountStatus {
             revision,
+            storage_migration: None,
             state: ExtensionAccountState::SignedOut,
             account: None,
             session: None,
@@ -692,6 +694,7 @@ fn extension_account_status(status: VersionedValidationStatus) -> ExtensionAccou
         },
         ValidationStatus::Valid(account) => ExtensionAccountStatus {
             revision,
+            storage_migration: None,
             state: ExtensionAccountState::Valid,
             account: Some(extension::AccountProfile {
                 id: account.account.id,
@@ -713,6 +716,7 @@ fn extension_account_status(status: VersionedValidationStatus) -> ExtensionAccou
         },
         ValidationStatus::Expired => ExtensionAccountStatus {
             revision,
+            storage_migration: None,
             state: ExtensionAccountState::Expired,
             account: None,
             session: None,
@@ -720,6 +724,7 @@ fn extension_account_status(status: VersionedValidationStatus) -> ExtensionAccou
         },
         ValidationStatus::Unavailable(detail) => ExtensionAccountStatus {
             revision,
+            storage_migration: None,
             state: ExtensionAccountState::Unavailable,
             account: None,
             session: None,
@@ -731,6 +736,7 @@ fn extension_account_status(status: VersionedValidationStatus) -> ExtensionAccou
 fn extension_account_switching(revision: u64) -> ExtensionAccountStatus {
     ExtensionAccountStatus {
         revision,
+        storage_migration: None,
         state: ExtensionAccountState::Unavailable,
         account: None,
         session: None,
@@ -1408,13 +1414,117 @@ async fn commit_account_store_switch(
     account_id: Option<&str>,
 ) -> crate::Result<()> {
     drain_account_switch(sessions, work_tracker).await?;
-    let result = match (store, account_id) {
-        (Some(store), Some(account_id)) => store.activate_account(account_id),
-        (Some(store), None) => store.deactivate_account(),
-        (None, _) => Ok(()),
-    };
+    let result = store_switch_task(store, account_id, None)
+        .await
+        .unwrap_or_else(|error| {
+            Err(crate::AxiomError::Storage(format!(
+                "Local storage task failed: {error}"
+            )))
+        });
     finish_account_switch(sessions, work_tracker).await;
     result
+}
+
+/// All `SQLite`, key-store and media work runs off the ACP executor. The switch
+/// barrier remains held until the task actually finishes, even on failure.
+fn store_switch_task(
+    store: Option<&SessionStore>,
+    account_id: Option<&str>,
+    progress: Option<tokio::sync::watch::Sender<Option<crate::storage_progress::Progress>>>,
+) -> tokio::task::JoinHandle<crate::Result<()>> {
+    let store = store.cloned();
+    let account_id = account_id.map(str::to_owned);
+    tokio::task::spawn_blocking(move || match (store, account_id) {
+        (Some(store), Some(account_id)) => {
+            store.activate_account_with_progress(&account_id, &|update| {
+                if let Some(sender) = &progress {
+                    sender.send_replace(Some(update));
+                }
+            })
+        }
+        (Some(store), None) => store.deactivate_account(),
+        (None, _) => Ok(()),
+    })
+}
+
+async fn commit_account_store_switch_reporting(
+    sessions: &Sessions,
+    work_tracker: &AccountWorkTracker,
+    store: Option<&SessionStore>,
+    account_id: Option<&str>,
+    connection: &ConnectionTo<Client>,
+    extension_state: &ExtensionState,
+    auth: &AuthManager,
+) -> crate::Result<()> {
+    drain_account_switch(sessions, work_tracker).await?;
+    let (sender, mut updates) = tokio::sync::watch::channel(None);
+    let mut task = store_switch_task(store, account_id, Some(sender));
+    let mut last_progress = None;
+    let result = loop {
+        tokio::select! {
+            result = &mut task => break result,
+            changed = updates.changed() => {
+                if changed.is_err() {
+                    break task.await;
+                }
+                let progress = updates.borrow_and_update().clone();
+                if let Some(progress) = progress {
+                    publish_storage_progress(connection, extension_state, auth, progress.clone());
+                    last_progress = Some(progress);
+                }
+            }
+        }
+    }
+    .unwrap_or_else(|error| {
+        Err(crate::AxiomError::Storage(format!(
+            "Local storage task failed: {error}"
+        )))
+    });
+    // The task may finish before the executor consumes its last observation.
+    let latest = updates.borrow().clone();
+    if latest != last_progress
+        && let Some(progress) = latest.as_ref()
+    {
+        publish_storage_progress(connection, extension_state, auth, progress.clone());
+    }
+    finish_account_switch(sessions, work_tracker).await;
+    if let Err(error) = &result {
+        let mut status = extension_account_switching(auth.reserve_account_transition_revision());
+        status.detail = Some(error.to_string());
+        if latest.is_some() || last_progress.is_some() {
+            status.storage_migration = Some(crate::storage_progress::Progress {
+                phase: crate::storage_progress::Phase::Failed,
+                completed: None,
+                total: None,
+            });
+        }
+        let _ = send_extension_activity(
+            connection,
+            extension_state,
+            None,
+            ActivityEvent::AccountChanged { status },
+        );
+    }
+    result
+}
+
+fn publish_storage_progress(
+    connection: &ConnectionTo<Client>,
+    extension_state: &ExtensionState,
+    auth: &AuthManager,
+    progress: crate::storage_progress::Progress,
+) {
+    let mut status = extension_account_switching(auth.reserve_account_transition_revision());
+    status.state = ExtensionAccountState::Starting;
+    status.detail = None;
+    status.storage_migration = Some(progress);
+    // A disconnected renderer must not abort a durable migration mid-commit.
+    let _ = send_extension_activity(
+        connection,
+        extension_state,
+        None,
+        ActivityEvent::AccountChanged { status },
+    );
 }
 
 fn work_matches(registry: &SessionRegistry, internal_id: &SessionId, work: &SessionWork) -> bool {
@@ -1494,6 +1604,7 @@ struct PendingDelete {
 
 #[derive(Clone, Copy)]
 enum ExtensionFeature {
+    LocalPayload = 1 << 23,
     CommandInvocation = 1 << 22,
     Steering = 1 << 11,
     ThreadCatalog = 1 << 0,
@@ -1561,6 +1672,9 @@ impl ExtensionState {
             return;
         };
         let mut mask = 0;
+        if features.local_payload >= 1 {
+            mask |= ExtensionFeature::LocalPayload as u64;
+        }
         if features.command_invocation >= 1 {
             mask |= ExtensionFeature::CommandInvocation as u64;
         }

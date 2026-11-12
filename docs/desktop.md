@@ -171,13 +171,22 @@ has been sent, use Stop on its reply.
 
 Prompt text may use up to **4 MiB of UTF-8**; direct file bounds are listed below.
 The model's context capacity and the configured native context budget still apply.
-Queues hold at most 32 messages and 64 MiB of payloads, scoped to the account.
-Large payloads commit to local IndexedDB before the draft is cleared; localStorage
-holds only the outbox manifest. Stable
+New queue reservations allow at most 32 messages and 64 MiB of payloads, scoped to
+the account. Importing legacy saved preparations can restore more entries so
+existing drafts survive migration; new reservations retain the normal bounds.
+Payloads and outbox metadata commit to encrypted native storage before the draft
+is cleared. Images/documents are encrypted external files, referenced by the
+database. Existing localStorage/IndexedDB payloads import on account unlock,
+with acknowledgement before removal. Recovered conflicts appear as saved
+preparations requiring explicit review. Stable
 client IDs reconcile delivery with the native transcript. Stop pauses automatic
 queue delivery. Restored or uncertain submissions require review; disconnect,
 restart or account changes never justify silently resending them. A fresh prompt
 after Stop can start normally when no older queued message needs review.
+Normal window close, quit and explicit account changes wait for pending native
+draft/outbox writes. A failed save keeps Axiom open for retry. Text edits are
+debounced; an abrupt process kill or raw page reload before acknowledgement can
+lose an uncommitted edit.
 
 ## Images and files
 
@@ -259,7 +268,7 @@ OCR, conversion or rasterization. Document processing belongs to the attested
 provider. Unsupported files remain visible in the draft and block sending until
 you remove them or select a model that supports them.
 
-A message can contain eight attachments, up to 5 MiB per image, 10 MiB per file,
+A message can contain ten attachments, up to 5 MiB per image, 10 MiB per file,
 and 16 MiB of text plus base64-encoded attachment payloads. Text remains bounded
 to 4 MiB. Model context and native budgets still apply; inputs are never silently
 truncated. Audio/video and remote URLs are unsupported.
@@ -334,8 +343,10 @@ New uploads and successful `view_image` observations count toward the next
 request's context; the meter updates when the provider reports that request.
 Image generation alone does not add visual input to the chat model. Encoded
 image/file data has per-message native size limits. These transport limits are
-independent of compaction. AstreaAI's eight-image request limit produces a provider
-limit error; it never causes automatic summarization or removal of earlier images.
+independent of compaction. Ten attachments is a per-message upload limit: later
+messages can add ten more, and image views and generation have no conversation
+count limit. Compaction preserves saved assets and their reference IDs for later
+use.
 Tinfoil uses upstream's remaining-context generation default. Other protocols
 use the advertised output ceiling and estimated remaining request space (including
 tools/images and a margin). Exact tokenization and final context enforcement belong

@@ -13,6 +13,7 @@ import type { SettingsCategory } from "./components/SettingsPanel";
 import { SettingsSheet } from "./components/SettingsSheet";
 import { Sidebar } from "./components/Sidebar";
 import { SignInStatus } from "./components/SignInStatus";
+import { StorageMigrationScreen } from "./components/StorageMigrationScreen";
 import { TrafficLightGhost } from "./components/TrafficLightGhost";
 import { UpdateNotice } from "./components/UpdateNotice";
 import { WebConsentDialog } from "./components/WebConsentDialog";
@@ -156,6 +157,14 @@ export function App() {
     <WindowControls />
     <div className="drag-region fixed left-0 right-[112px] top-0 h-8" aria-hidden="true" />
     <FirstLaunchUpdate updates={updates} />
+  </div>;
+
+  if (agentState.account?.storageMigration) return <div className="app-canvas flex h-full overflow-hidden p-2.5 text-[var(--color-text-primary)]">
+    <TrafficLightGhost />
+    {windowControlsCutout ? <WindowControls /> : null}
+    <div className="drag-region fixed left-0 right-[112px] top-0 h-8" aria-hidden="true" />
+    <StorageMigrationScreen progress={agentState.account.storageMigration} detail={agentState.account.detail ?? agentState.error} disconnected={!agentState.connected}
+      onRetry={async () => { setSignInState({ kind: "closed" }); await refreshAccount(); }} />
   </div>;
 
   return (

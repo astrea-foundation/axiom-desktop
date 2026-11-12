@@ -114,12 +114,21 @@ impl SessionStore {
         sha256: &str,
     ) -> Result<axiom_secure_client::GeneratedImage> {
         let connection = self.lock()?;
-        let item = connection.query_row(
+        let mut item = connection.query_row(
             "SELECT id,thread_id,turn_id,sequence,kind,status,client_item_id,external_id,content,metadata,created_at,updated_at
              FROM timeline_items WHERE thread_id=?1 AND external_id=?2 AND kind='tool_call' AND status='completed'",
             params![id.to_string(), call_id], StoredTimelineItem::from_row,
         ).map_err(storage_error)?.decode()?;
-        drop(connection);
+        if item.metadata["generated_image"]["sha256"] != sha256 {
+            return Err(AxiomError::Storage("saved image identity differs".into()));
+        }
+        super::asset_codec::MediaCodec {
+            assets: connection.assets(),
+            connection: &connection,
+            owner: &super::assets::thread_owner(&id.to_string()),
+            direction: super::asset_codec::Direction::Load,
+        }
+        .timeline(&mut item.metadata)?;
         let image = super::projection::generated_image(&item)?
             .ok_or_else(|| AxiomError::Storage("saved image is unavailable".into()))?;
         if image.sha256 != sha256 || image.mime_type != "image/png" {
@@ -273,6 +282,7 @@ impl SessionStore {
             )));
         }
         let mut connection = self.lock()?;
+        let assets = connection.assets().clone();
         let transaction = connection.transaction().map_err(storage_error)?;
         let thread = query_thread_summary(&transaction, id)?;
         let turns = query_turns_filtered(&transaction, id, paged)?;
@@ -346,9 +356,16 @@ impl SessionStore {
         let mut bytes = 0;
         let mut next_cursor = None;
         while let Some(row) = rows.next().map_err(storage_error)? {
-            let item = StoredTimelineItem::from_row(row)
+            let mut item = StoredTimelineItem::from_row(row)
                 .map_err(storage_error)?
                 .decode()?;
+            super::asset_codec::MediaCodec {
+                assets: &assets,
+                connection: &transaction,
+                owner: &super::assets::thread_owner(&id.to_string()),
+                direction: super::asset_codec::Direction::Load,
+            }
+            .timeline(&mut item.metadata)?;
             // Count JSON bytes, including escaping, rather than raw message text.
             let item_bytes = if paged {
                 serde_json::to_vec(&item)?.len()
@@ -421,7 +438,8 @@ impl SessionStore {
         id: &SessionId,
         item_id: &str,
     ) -> Result<Vec<axiom_inference::PromptAttachment>> {
-        query_prompt_attachments(&*self.lock()?, id, item_id)
+        let connection = self.lock()?;
+        query_prompt_attachments(&connection, connection.assets(), id, item_id)
     }
 
     pub fn history_before_user_message(
@@ -446,9 +464,13 @@ impl SessionStore {
         let turn = turn.ok_or_else(|| {
             AxiomError::InvalidTransition("Choose the message that started this turn.".into())
         })?;
-        if let Some(events) = super::model_history::before_turn(&*self.lock()?, id, &turn)? {
+        let connection = self.lock()?;
+        if let Some(events) =
+            super::model_history::before_turn(&connection, connection.assets(), id, &turn)?
+        {
             return Ok(events);
         }
+        drop(connection);
         let mut events = self.load(id)?;
         let boundary = events.iter().position(|event| matches!(&event.event, AppEvent::PromptAccepted { turn_id, .. } if turn_id.to_string() == turn))
             .ok_or_else(|| AxiomError::Storage("The original prompt is unavailable.".into()))?;
@@ -534,9 +556,18 @@ impl SessionStore {
             return Ok(0);
         }
         let mut connection = self.lock()?;
-        let transaction = connection.transaction().map_err(storage_error)?;
+        let assets = connection.assets().clone();
+        let transaction = connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(storage_error)?;
         let mut deleted = 0_usize;
         for id in ids {
+            transaction
+                .execute(
+                    "DELETE FROM asset_owners WHERE owner=?1",
+                    [super::assets::thread_owner(&id.to_string())],
+                )
+                .map_err(storage_error)?;
             deleted = deleted.saturating_add(
                 transaction
                     .execute("DELETE FROM threads WHERE id=?1", [id.to_string()])
@@ -544,6 +575,7 @@ impl SessionStore {
             );
         }
         transaction.commit().map_err(storage_error)?;
+        assets.collect_after_commit(&mut connection);
         Ok(deleted)
     }
 
@@ -749,6 +781,7 @@ pub(super) fn decode_thread_cursor(cursor: &str) -> Result<(String, String)> {
 
 pub(super) fn query_prompt_attachments(
     connection: &Connection,
+    assets: &super::assets::AssetManager,
     id: &SessionId,
     item_id: &str,
 ) -> Result<Vec<axiom_inference::PromptAttachment>> {
@@ -757,25 +790,26 @@ pub(super) fn query_prompt_attachments(
         params![id.to_string(), item_id], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?)),
     ).map_err(storage_error)?;
     if let Some(payload) = payload {
-        let values = serde_json::from_str::<Vec<Value>>(&payload).unwrap_or_default();
-        let mut attachments = Vec::new();
-        for value in values {
-            let Ok(attachment) = serde_json::from_value(value) else {
-                continue;
-            };
-            attachments.push(attachment);
-            if axiom_inference::validate_stored_prompt(&text, &attachments).is_err() {
-                attachments.pop();
-            }
+        let mut values: Value = serde_json::from_str(&payload)?;
+        super::asset_codec::MediaCodec {
+            assets,
+            connection,
+            owner: &super::assets::thread_owner(&id.to_string()),
+            direction: super::asset_codec::Direction::Load,
         }
+        .attachments(&mut values)?;
+        let attachments: Vec<axiom_inference::PromptAttachment> = serde_json::from_value(values)?;
+        axiom_inference::validate_stored_prompt(&text, &attachments)
+            .map_err(|error| AxiomError::Storage(error.to_string()))?;
         Ok(attachments)
     } else if serde_json::from_str::<Value>(&metadata)
         .unwrap_or_default()
         .get("attachments")
         .is_some()
     {
-        tracing::warn!(%id, "missing saved attachment contents omitted from runtime context");
-        Ok(Vec::new())
+        Err(AxiomError::Storage(
+            "saved attachment contents are missing".into(),
+        ))
     } else {
         Ok(Vec::new())
     }

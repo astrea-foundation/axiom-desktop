@@ -17,6 +17,7 @@ axiom-secure-client.workspace = true
 axiom-proxy = { version = "0.1.0", path = "../axiom-proxy" }
 base64 = "0.22.1"
 chrono = { version = "0.4.42", features = ["serde"] }
+chacha20poly1305 = "0.10.1"
 clap = { version = "4.5.50", features = ["derive", "env"] }
 # Level-triggered Unix polling retains keyboard readiness when resize and input
 # arrive together; the default Mio backend can lose that readiness edge.
@@ -24,6 +25,7 @@ crossterm = { version = "0.29.0", features = ["event-stream", "use-dev-tty"] }
 directories = "6.0.0"
 ed25519-dalek = "2.2.0"
 hex = "0.4.3"
+hkdf = "0.12.4"
 tempfile = "3.23.0"
 futures = "0.3.31"
 fs2 = "0.4.3"
@@ -40,11 +42,14 @@ pulldown-cmark = { version = "0.13.4", default-features = false }
 ratatui = "0.30.2"
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "query", "rustls", "stream"] }
 rmcp = { version = "3.9.0", default-features = false, features = ["client", "server", "transport-child-process", "transport-io", "transport-streamable-http-client-reqwest", "reqwest", "auth"] }
-rusqlite = { version = "0.41.1", features = ["bundled", "chrono", "uuid"] }
+# 0.42.0 pins SQLCipher 4.20.0 / SQLite 3.54.1; the 0.41 SQLCipher
+# bundle still contains the engine affected by RUSTSEC-2026-0459.
+rusqlite = { version = "=0.42.0", features = ["bundled-sqlcipher-vendored-openssl", "chrono", "uuid"] }
 secrecy = "0.10.3"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 sha2 = "0.10.9"
+subtle = "2.6.1"
 shell-words = "1.1.1"
 sse-stream = "0.2.6"
 similar = "3.0.2"
@@ -59,6 +64,7 @@ unicode-segmentation = "1.12.0"
 unicode-width = "0.2.2"
 url = { version = "2.5.7", features = ["serde"] }
 uuid = { version = "1.18.1", features = ["v4", "serde"] }
+zeroize = "1.8.2"
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.31.3", features = ["process", "signal"] }

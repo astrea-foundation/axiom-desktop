@@ -71,7 +71,6 @@ impl Limits {
         );
         ensure!(
             self.image_pixels <= crate::vision::MAX_GENERATED_PIXELS
-                && self.input_image_pixels <= crate::vision::MAX_INPUT_PIXELS
                 && self.image_steps <= 8
                 && self.deadline > now
                 && self.deadline <= now.saturating_add(600),
@@ -252,7 +251,6 @@ impl Input {
                     "invalid reasoning/tools"
                 );
                 crate::tools::definitions(tools)?;
-                let mut image_count = 0usize;
                 let mut image_pixels = 0u64;
                 for m in messages {
                     ensure!(
@@ -280,11 +278,6 @@ impl Input {
                         "images require a user message"
                     );
                     for image in &m.images {
-                        image_count += 1;
-                        ensure!(
-                            image_count <= crate::vision::MAX_IMAGES,
-                            "input image count limit"
-                        );
                         image_pixels = image_pixels
                             .checked_add(image.validate()?)
                             .ok_or_else(|| anyhow::anyhow!("input image pixel overflow"))?;

@@ -296,6 +296,40 @@ mod tests {
     }
 
     #[test]
+    fn ten_uploads_are_allowed_in_each_user_message() {
+        let image = PromptAttachment::Image {
+            name: "image.png".into(),
+            image: ImageContent {
+                mime_type: "image/png".into(),
+                data: STANDARD.encode(b"\x89PNG\r\n\x1a\nfixture"),
+            },
+        };
+        let attachments = vec![image.clone(); 10];
+        validate_prompt("first", &attachments).unwrap();
+        validate_prompt("second", &attachments).unwrap();
+        let request = crate::InferenceRequest::streaming(
+            "vision",
+            vec![
+                user_message("first", &attachments),
+                user_message("second", &attachments),
+            ],
+            vec![],
+        );
+        request.validate().unwrap();
+        let eleven = vec![image; 11];
+        assert!(validate_prompt("too many", &eleven).is_err());
+        assert!(
+            crate::InferenceRequest::streaming(
+                "vision",
+                vec![user_message("too many", &eleven)],
+                vec![]
+            )
+            .validate()
+            .is_err()
+        );
+    }
+
+    #[test]
     fn text_attachments_are_bounded_together_with_the_prompt() {
         let attachments = vec![PromptAttachment::Text {
             name: "notes.md".into(),

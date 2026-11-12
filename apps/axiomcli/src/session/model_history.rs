@@ -4,6 +4,10 @@
 use super::codec::{
     decode_path, encode_path, origin_from_name, origin_name, parse_time, storage_error,
 };
+use super::{
+    asset_codec::{Direction, MediaCodec},
+    assets::{AssetManager, thread_owner},
+};
 use crate::{
     AxiomError, Result,
     app::{AppEvent, CorrelationId, EventEnvelope, SessionId},
@@ -13,6 +17,7 @@ use sha2::{Digest as _, Sha256};
 
 pub(super) fn append(
     transaction: &Transaction<'_>,
+    assets: &AssetManager,
     envelope: &EventEnvelope,
     turn: Option<&str>,
 ) -> Result<()> {
@@ -47,8 +52,16 @@ pub(super) fn append(
         })?;
         let mut references = Vec::with_capacity(messages.len());
         for message in messages {
-            let message = serde_json::to_string(message)?;
-            let digest = hex::encode(Sha256::digest(message.as_bytes()));
+            let digest = hex::encode(Sha256::digest(serde_json::to_string(message)?.as_bytes()));
+            let mut message = message.clone();
+            MediaCodec {
+                assets,
+                connection: transaction,
+                owner: &thread_owner(&id),
+                direction: Direction::Store,
+            }
+            .message(&mut message)?;
+            let message = serde_json::to_string(&message)?;
             transaction.execute("INSERT OR IGNORE INTO model_messages(thread_id,digest,payload) VALUES (?1,?2,?3)", params![id, digest, message]).map_err(storage_error)?;
             let (reference, stored): (i64, String) = transaction
                 .query_row(
@@ -70,6 +83,13 @@ pub(super) fn append(
         // payload is stored once; checkpoints contain only local message IDs.
         transaction.execute("DELETE FROM model_history WHERE thread_id=?1 AND turn_id IS ?2 AND json_extract(payload,'$.kind')='model_history_checkpoint'", params![id, turn]).map_err(storage_error)?;
     }
+    MediaCodec {
+        assets,
+        connection: transaction,
+        owner: &thread_owner(&id),
+        direction: Direction::Store,
+    }
+    .event(&mut payload)?;
     transaction.execute("INSERT INTO model_history(thread_id,version,turn_id,occurred_at,origin,payload) VALUES (?1,1,?2,?3,?4,?5)", params![id, turn, envelope.occurred_at.to_rfc3339(), origin_name(envelope.origin), serde_json::to_string(&payload)?]).map_err(storage_error)?;
     Ok(())
 }
@@ -92,12 +112,17 @@ pub(super) fn exists(connection: &Connection, id: &SessionId) -> Result<bool> {
     }
 }
 
-pub(super) fn load(connection: &Connection, id: &SessionId) -> Result<Option<Vec<EventEnvelope>>> {
-    load_range(connection, id, i64::MAX)
+pub(super) fn load(
+    connection: &Connection,
+    assets: &AssetManager,
+    id: &SessionId,
+) -> Result<Option<Vec<EventEnvelope>>> {
+    load_range(connection, assets, id, i64::MAX)
 }
 
 pub(super) fn before_turn(
     connection: &Connection,
+    assets: &AssetManager,
     id: &SessionId,
     turn: &str,
 ) -> Result<Option<Vec<EventEnvelope>>> {
@@ -105,11 +130,12 @@ pub(super) fn before_turn(
         return Ok(None);
     }
     let boundary: i64 = connection.query_row("SELECT MIN(sequence) FROM model_history WHERE thread_id=?1 AND turn_id=?2 AND json_extract(payload,'$.kind')='prompt_accepted'", params![id.to_string(), turn], |row| row.get(0)).map_err(storage_error)?;
-    load_range(connection, id, boundary)
+    load_range(connection, assets, id, boundary)
 }
 
 fn load_range(
     connection: &Connection,
+    assets: &AssetManager,
     id: &SessionId,
     before: i64,
 ) -> Result<Option<Vec<EventEnvelope>>> {
@@ -147,7 +173,7 @@ fn load_range(
             correlation_id: CorrelationId::new(),
             origin: origin_from_name(&origin)?,
             session_id: id.clone(),
-            event: decode_event(connection, id, &payload)?,
+            event: decode_event(connection, assets, id, &payload)?,
         });
     }
     Ok(Some(events))
@@ -170,7 +196,12 @@ fn encode_event(event: &AppEvent) -> Result<serde_json::Value> {
     Ok(value)
 }
 
-fn decode_event(connection: &Connection, id: &SessionId, payload: &str) -> Result<AppEvent> {
+fn decode_event(
+    connection: &Connection,
+    assets: &AssetManager,
+    id: &SessionId,
+    payload: &str,
+) -> Result<AppEvent> {
     let mut value: serde_json::Value = serde_json::from_str(payload).map_err(|error| {
         AxiomError::Storage(format!("invalid authoritative model history: {error}"))
     })?;
@@ -197,7 +228,18 @@ fn decode_event(connection: &Connection, id: &SessionId, payload: &str) -> Resul
             )?);
         }
         value["messages"] = serde_json::Value::Array(messages);
+        value
+            .as_object_mut()
+            .expect("event object")
+            .remove("_axiom_message_refs");
     }
+    MediaCodec {
+        assets,
+        connection,
+        owner: &thread_owner(&id.to_string()),
+        direction: Direction::Load,
+    }
+    .event(&mut value)?;
     let cwd = value
         .as_object_mut()
         .and_then(|object| object.remove("_axiom_cwd"));

@@ -69,6 +69,8 @@ pub struct FeatureVersions {
     pub desktop_chat: u16,
     pub desktop_agent: u16,
     pub desktop_mcp: u16,
+    /// Account-bound encrypted local drafts and outbox data.
+    pub local_payload: u16,
     pub thread_catalog: u16,
     pub timeline: u16,
     pub model_catalog: u16,
@@ -101,6 +103,7 @@ impl FeatureVersions {
             desktop_chat: 1,
             desktop_agent: 1,
             desktop_mcp: 2,
+            local_payload: 1,
             thread_catalog: 1,
             timeline: 2,
             model_catalog: 1,
@@ -142,6 +145,44 @@ pub struct DesktopBootstrapResponse {
     /// Settings `AxiomCLI` will apply to the next thread. On a clean profile the
     /// thinking level is `medium`; afterward these are the last-used values.
     pub new_thread_settings: ProfilePreferences,
+}
+
+/// Native-only local persistence. The renderer never receives encryption keys.
+#[derive(Clone, Serialize, Deserialize, JsonSchema, JsonRpcRequest)]
+#[request(method = "_axiom/desktop/local-payload", response = LocalPayloadResponse)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LocalPayloadRequest {
+    pub account_id: String,
+    pub id: String,
+    pub action: LocalPayloadAction,
+}
+
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum LocalPayloadAction {
+    Get,
+    Put { value: serde_json::Value },
+    Remove,
+}
+
+#[derive(Clone, Serialize, Deserialize, JsonSchema, JsonRpcResponse)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LocalPayloadResponse {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<serde_json::Value>,
+}
+
+impl std::fmt::Debug for LocalPayloadRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LocalPayloadRequest")
+            .finish_non_exhaustive()
+    }
+}
+impl std::fmt::Debug for LocalPayloadResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LocalPayloadResponse")
+            .finish_non_exhaustive()
+    }
 }
 
 /// Application controls selected explicitly by the client. Never infer this
@@ -683,6 +724,30 @@ pub struct AccountStatus {
     pub session: Option<NativeSession>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    /// Local storage work must finish before this account becomes usable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage_migration: Option<StorageMigrationProgress>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StorageMigrationProgress {
+    pub phase: StorageMigrationPhase,
+    /// Counts describe this phase only; omitted for indivisible database work.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum StorageMigrationPhase {
+    Encrypting,
+    MovingMedia,
+    Checking,
+    Finalizing,
+    Failed,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -1555,6 +1620,8 @@ pub struct SteerTurnResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ProtocolSchema {
+    pub local_payload_request: LocalPayloadRequest,
+    pub local_payload_response: LocalPayloadResponse,
     pub desktop_mcp_request: DesktopMcpRequest,
     pub desktop_mcp_response: DesktopMcpResponse,
     pub configure_desktop_agent_request: ConfigureDesktopAgentRequest,

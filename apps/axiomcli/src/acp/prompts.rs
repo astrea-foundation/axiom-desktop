@@ -503,11 +503,14 @@ async fn prompt_with_invocation(
                     ctx_runner.as_ref(),
                 )
                 .await?;
-                commit_account_store_switch(
+                super::commit_account_store_switch_reporting(
                     &ctx_sessions,
                     &ctx_account_work,
                     ctx_store.as_ref(),
                     Some(&account.account.id),
+                    &connection,
+                    &ctx_extension_state,
+                    &ctx_auth,
                 )
                 .await
                 .map_err(agent_error)?;

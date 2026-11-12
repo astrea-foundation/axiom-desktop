@@ -54,6 +54,15 @@ prompts and can use standard mode/configuration methods for controls.
 
 ## Extension negotiation
 
+`localPayload@1` provides `_axiom/localPayload` for Desktop's encrypted drafts
+and outbox. Requests bind the exact authenticated account and native store
+generation, with get/put/remove operations on version-1 prompt or queue envelopes.
+Accepted binary image/file slots are externalized by native storage. Keys never
+cross ACP. Missing feature support, account changes or persistence errors fail
+closed; Desktop does not fall back to plaintext browser writes. Legacy browser
+imports require native acknowledgement before deletion. See
+[encrypted local storage](local-storage.md).
+
 Clients advertise `clientCapabilities._meta.axiom`. AxiomCLI advertises its
 extension at initialization but sends custom notifications and accepts custom
 calls only after compatible negotiation. `protocolVersion` shares a leading-number
@@ -122,6 +131,16 @@ are the sole live representation of user/assistant/reasoning content, tools,
 plans, modes and configuration. `_axiom/event` carries additional typed account,
 security, context/accounting and activity state with `runtimeInstanceId`, monotonic
 `sequence`, RFC 3339 `occurredAt`, and optional thread/correlation IDs.
+
+`account_changed.status` may include optional `storageMigration` progress with
+phase `encrypting`, `moving_media`, `checking`, `finalizing` or `failed` and
+optional `completed`/`total` counters for that phase. During an upgrade the account
+state is `starting`, with no usable account/store context. Each progress update
+uses a newer account revision; final validation or failure has a later revision.
+Clients must apply the usual account/runtime fences so delayed progress cannot
+replace a ready account. A failed upgrade publishes `unavailable`, recovery
+details and phase `failed`; `account/status` retries opening the existing store.
+This is additive presentation metadata on `account@2`. Older clients ignore it.
 
 ## Durable timeline and recovery
 

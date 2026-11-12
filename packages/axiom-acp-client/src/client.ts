@@ -1,6 +1,8 @@
 import { EventEmitter } from "node:events";
 import type {
   AccountStatusResponse,
+  LocalPayloadRequest,
+  LocalPayloadResponse,
   PromptAttachment,
   GetAttachmentsResponse,
   AssignThreadCollectionResponse,
@@ -68,6 +70,7 @@ const EXTENSION_CAPABILITIES = {
     desktopChat: 1,
     desktopAgent: 1,
     desktopMcp: 2,
+    localPayload: 1,
     account: 2,
     billing: 5,
     usage: 1,
@@ -168,6 +171,7 @@ export class AxiomAcpClient extends EventEmitter {
   private supportsMessageRevision = false;
   private supportsCommandInvocation = false;
   private supportsMcp = false;
+  private supportsLocalPayload = false;
   private supportsImageGeneration = false;
   private supportsImageRegeneration = false;
   private supportsImageResources = false;
@@ -252,6 +256,7 @@ export class AxiomAcpClient extends EventEmitter {
     this.supportsCommandInvocation = (meta?.features?.commandInvocation ?? 0) >= 1;
     this.supportsMessageRevision = (meta?.features?.messageRevision ?? 0) >= 1;
     this.supportsMcp = (meta?.features?.desktopMcp ?? 0) >= 1;
+    this.supportsLocalPayload = (meta?.features?.localPayload ?? 0) >= 1;
     this.supportsImageGeneration = (meta?.features?.imageGeneration ?? 0) >= 3;
     this.supportsImageRegeneration = (meta?.features?.imageGeneration ?? 0) >= 4;
     this.supportsImageResources = (meta?.features?.imageResources ?? 0) >= 1;
@@ -316,6 +321,19 @@ export class AxiomAcpClient extends EventEmitter {
     const page = await this.process.request<GetThreadTimelineResponse>("_axiom/thread/timeline", { threadId, limit: 1 });
     this.assertAccountContext(accountContext);
     return this.loadSession(threadId, page.thread.cwd);
+  }
+
+  async localPayload(request: LocalPayloadRequest): Promise<LocalPayloadResponse> {
+    this.assertInitialized();
+    if (!this.supportsLocalPayload) throw new ProtocolError("Restart Axiom with the updated native app to save encrypted drafts.");
+    const state = this.state.snapshot();
+    if (!state.connected || state.account?.state !== "valid" || state.account.account?.id !== request.accountId) {
+      throw new ProtocolError("The account changed. Local data was not accessed.");
+    }
+    const context = this.state.accountContextToken();
+    const result = await this.process.request<LocalPayloadResponse>("_axiom/desktop/local-payload", request);
+    this.assertAccountContext(context);
+    return result;
   }
 
   async desktopMcp(request: DesktopMcpRequest): Promise<DesktopMcpResponse> {

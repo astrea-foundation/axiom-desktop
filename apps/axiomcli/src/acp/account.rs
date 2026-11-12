@@ -6,9 +6,10 @@ use super::{
     NativeLoginCompleteRequest, NativeLoginStartRequest, NativeLoginStartResponse,
     NativeLoginState, Responder, ServerContext, ValidationStatus, VersionedValidationStatus,
     agent_error, auth_login_method, await_request_future, begin_account_switch,
-    commit_account_store_switch, extension, extension_account_status, extension_billing_status,
-    extension_enabled, extension_not_negotiated, publish_account_switch_started,
-    send_extension_activity, validation_status_if_current,
+    commit_account_store_switch, commit_account_store_switch_reporting, extension,
+    extension_account_status, extension_billing_status, extension_enabled,
+    extension_not_negotiated, publish_account_switch_started, send_extension_activity,
+    validation_status_if_current,
 };
 
 pub(super) fn account_status(
@@ -66,11 +67,14 @@ pub(super) fn account_status(
             .await?;
             respond_or_return!(
                 responder,
-                commit_account_store_switch(
+                commit_account_store_switch_reporting(
                     &ctx_sessions,
                     &ctx_account_work,
                     ctx_store.as_ref(),
                     target.as_deref(),
+                    &connection,
+                    &ctx_extension_state,
+                    &ctx_auth,
                 )
                 .await
                 .map_err(agent_error)
@@ -219,11 +223,14 @@ pub(super) fn native_login_complete(
         .await?;
         respond_or_return!(
             responder,
-            commit_account_store_switch(
+            commit_account_store_switch_reporting(
                 &ctx_sessions,
                 &ctx_account_work,
                 ctx_store.as_ref(),
                 Some(&account.account.id),
+                &connection,
+                &ctx_extension_state,
+                &ctx_auth,
             )
             .await
             .map_err(agent_error)

@@ -91,6 +91,7 @@ fn live_native_frontends_exclude_reset_and_reset_excludes_startup() {
     let plan = isolated_plan(root.path());
     let cli = runtime_lease(&plan.paths).unwrap();
     let proxy = runtime_lease(&plan.paths).unwrap();
+    assert!(maintenance_lease(&plan.paths).is_err());
     assert!(
         plan.erase(|| panic!("must fail before touching credentials"))
             .is_err()
@@ -101,6 +102,10 @@ fn live_native_frontends_exclude_reset_and_reset_excludes_startup() {
     let reset = reset_lease(&plan.paths).unwrap();
     assert!(runtime_lease(&plan.paths).is_err());
     drop(reset);
+    let maintenance = maintenance_lease(&plan.paths).unwrap();
+    assert!(runtime_lease(&plan.paths).is_err());
+    assert!(reset_lease(&plan.paths).is_err());
+    drop(maintenance);
     plan.erase(|| Ok(())).unwrap();
 }
 
@@ -156,8 +161,11 @@ fn vault_cleanup_erases_old_logins_and_orphaned_mcp_secrets_only_in_axiom_servic
     let mcp = store
         .build(desktop_mcp::KEYRING_SERVICE, "orphaned:server:old-id", None)
         .unwrap();
+    let storage = store
+        .build(local_storage::KEYRING_SERVICE, "profile:database", None)
+        .unwrap();
     let other = store.build("other-app", "saved-account", None).unwrap();
-    for entry in [&login, &mcp, &other] {
+    for entry in [&login, &mcp, &storage, &other] {
         entry.set_password("synthetic secret").unwrap();
     }
     erase_matching_credentials(|spec| store.search(spec), |_, _| Ok(true)).unwrap();
@@ -170,6 +178,72 @@ fn vault_cleanup_erases_old_logins_and_orphaned_mcp_secrets_only_in_axiom_servic
         Err(keyring_core::Error::NoEntry)
     ));
     assert_eq!(other.get_password().unwrap(), "synthetic secret");
+    assert!(matches!(
+        storage.get_password(),
+        Err(keyring_core::Error::NoEntry)
+    ));
+}
+
+#[cfg(not(windows))]
+#[test]
+fn system_reset_only_removes_storage_keys_for_the_canonical_root_being_erased() {
+    use keyring_core::api::CredentialStoreApi as _;
+    let root = tempfile::tempdir().unwrap();
+    let plan = isolated_plan(root.path());
+    fs::create_dir_all(plan.paths.data_root()).unwrap();
+    let scope = storage_credential_scope(&plan.paths).unwrap();
+    assert_eq!(
+        scope,
+        local_storage::scope_prefix(&plan.paths.data_root().canonicalize().unwrap())
+    );
+    let other_scope = local_storage::scope_prefix(
+        &root
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("staging/data/axiom"),
+    );
+    let store = keyring_core::mock::Store::new().unwrap();
+    let selected = store
+        .build(
+            local_storage::KEYRING_SERVICE,
+            &format!("{scope}database-one"),
+            None,
+        )
+        .unwrap();
+    let other = store
+        .build(
+            local_storage::KEYRING_SERVICE,
+            &format!("{other_scope}database-two"),
+            None,
+        )
+        .unwrap();
+    let login = store
+        .build(auth::KEYRING_SERVICE, "legacy-login", None)
+        .unwrap();
+    for entry in [&selected, &other, &login] {
+        entry.set_password("synthetic key").unwrap();
+    }
+    erase_matching_credentials(
+        |spec| store.search(spec),
+        |service, entry| {
+            if service == local_storage::KEYRING_SERVICE {
+                storage_credential_matches(entry, &scope)
+            } else {
+                Ok(true)
+            }
+        },
+    )
+    .unwrap();
+    assert!(matches!(
+        selected.get_password(),
+        Err(keyring_core::Error::NoEntry)
+    ));
+    assert!(matches!(
+        login.get_password(),
+        Err(keyring_core::Error::NoEntry)
+    ));
+    assert_eq!(other.get_password().unwrap(), "synthetic key");
 }
 
 #[cfg(windows)]
@@ -182,6 +256,10 @@ fn windows_search_anchors_the_full_axiom_service_name() {
     assert_eq!(
         credential_search(desktop_mcp::KEYRING_SERVICE)["pattern"],
         r"\.stream\.axiom\.desktop\.mcp$"
+    );
+    assert_eq!(
+        credential_search(local_storage::KEYRING_SERVICE)["pattern"],
+        r"\.stream\.axiom\.local-storage$"
     );
 }
 

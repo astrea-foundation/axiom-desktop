@@ -13,7 +13,11 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use directories::BaseDirs;
 use sha2::{Digest as _, Sha256};
 
-use crate::{auth, desktop_mcp, paths::AxiomPaths};
+use crate::{auth, desktop_mcp, local_storage, paths::AxiomPaths};
+
+mod lease;
+pub use lease::RuntimeLease;
+pub(crate) use lease::{MaintenanceGuard, maintenance_for_database};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
 pub enum Profile {
@@ -50,9 +54,7 @@ pub struct Arguments {
 /// outside the deleted tree, so a CLI cannot recreate credentials or databases
 /// while Desktop is resetting. The empty coordination file intentionally stays.
 fn open_lease(paths: &AxiomPaths) -> anyhow::Result<File> {
-    let parent = paths.data_root().parent().context("Missing data parent")?;
-    fs::create_dir_all(parent)?;
-    let path = parent.join(".axiom-factory-reset.lock");
+    let path = lease_path(paths)?;
     if let Ok(metadata) = fs::symlink_metadata(&path) {
         ensure!(
             metadata.is_file() && !metadata.is_symlink(),
@@ -67,19 +69,24 @@ fn open_lease(paths: &AxiomPaths) -> anyhow::Result<File> {
         .open(path)?)
 }
 
-pub fn runtime_lease(paths: &AxiomPaths) -> anyhow::Result<File> {
-    let lease = open_lease(paths)?;
-    fs2::FileExt::try_lock_shared(&lease)
-        .context("Axiom is being factory reset. Try again after it finishes.")?;
-    Ok(lease)
+fn lease_path(paths: &AxiomPaths) -> anyhow::Result<PathBuf> {
+    let parent = paths.data_root().parent().context("Missing data parent")?;
+    fs::create_dir_all(parent)?;
+    Ok(parent.canonicalize()?.join(".axiom-factory-reset.lock"))
 }
 
-fn reset_lease(paths: &AxiomPaths) -> anyhow::Result<File> {
-    let lease = open_lease(paths)?;
-    fs2::FileExt::try_lock_exclusive(&lease).context(
-        "Close all other AxiomCLI and Axiom proxy processes, then try factory reset again.",
-    )?;
-    Ok(lease)
+pub fn runtime_lease(paths: &AxiomPaths) -> anyhow::Result<RuntimeLease> {
+    lease::runtime(paths)
+}
+
+fn reset_lease(paths: &AxiomPaths) -> anyhow::Result<MaintenanceGuard> {
+    lease::offline(paths)
+}
+
+/// Offline backup/recovery uses the same exclusive fence as reset, before the
+/// ordinary frontend takes its shared runtime lease.
+pub(crate) fn maintenance_lease(paths: &AxiomPaths) -> anyhow::Result<MaintenanceGuard> {
+    lease::offline(paths)
 }
 
 struct ResetPlan {
@@ -219,7 +226,11 @@ fn erase_matching_credentials(
     search: impl Fn(&HashMap<&str, &str>) -> keyring_core::Result<Vec<keyring_core::Entry>>,
     include: impl Fn(&str, &keyring_core::Entry) -> anyhow::Result<bool>,
 ) -> anyhow::Result<()> {
-    for service in [auth::KEYRING_SERVICE, desktop_mcp::KEYRING_SERVICE] {
+    for service in [
+        auth::KEYRING_SERVICE,
+        desktop_mcp::KEYRING_SERVICE,
+        local_storage::KEYRING_SERVICE,
+    ] {
         let spec = credential_search(service);
         let spec = spec
             .iter()
@@ -249,6 +260,9 @@ fn erase_system_credentials(plan: &ResetPlan) -> anyhow::Result<()> {
     } else {
         Some(development_credential_scope(plan)?)
     };
+    // Storage roots keep independent keys even for System reset. Clearing a
+    // development profile's key while retaining its database would destroy it.
+    let storage_scope = storage_credential_scope(&plan.paths)?;
     let (send, receive) = std::sync::mpsc::sync_channel(1);
     std::thread::spawn(move || {
         let result = (|| {
@@ -256,6 +270,9 @@ fn erase_system_credentials(plan: &ResetPlan) -> anyhow::Result<()> {
                 anyhow::anyhow!("System credential store is unavailable. Unlock it and retry.")
             })?;
             erase_matching_credentials(keyring_core::Entry::search, |service, entry| {
+                if service == local_storage::KEYRING_SERVICE {
+                    return storage_credential_matches(entry, &storage_scope);
+                }
                 let Some((login, mcp)) = &scope else {
                     return Ok(true);
                 };
@@ -281,6 +298,34 @@ fn erase_system_credentials(plan: &ResetPlan) -> anyhow::Result<()> {
     receive.recv_timeout(Duration::from_secs(30)).context(
         "The system credential store did not respond. Unlock it and retry factory reset.",
     )?
+}
+
+fn storage_credential_scope(paths: &AxiomPaths) -> anyhow::Result<String> {
+    let root = paths.data_root();
+    let canonical = if root.exists() {
+        root.canonicalize()?
+    } else if let Some(parent) = root.parent().filter(|p| p.exists()) {
+        parent
+            .canonicalize()?
+            .join(root.file_name().context("Missing storage root name")?)
+    } else {
+        root.to_owned()
+    };
+    Ok(local_storage::scope_prefix(&canonical))
+}
+
+fn storage_credential_matches(entry: &keyring_core::Entry, scope: &str) -> anyhow::Result<bool> {
+    #[cfg(windows)]
+    let user = entry
+        .get_attributes()?
+        .remove("username")
+        .context("Missing credential account")?;
+    #[cfg(not(windows))]
+    let user = entry
+        .get_specifiers()
+        .map(|(_, user)| user)
+        .context("Missing credential account")?;
+    Ok(user.starts_with(scope))
 }
 
 fn development_credential_scope(plan: &ResetPlan) -> anyhow::Result<(String, BTreeSet<String>)> {

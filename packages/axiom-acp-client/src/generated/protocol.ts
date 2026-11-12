@@ -1,5 +1,16 @@
 /* Generated from protocol/axiom-acp-extension/v0.2/schema.json. Do not edit. */
 
+export type LocalPayloadAction =
+  | {
+      kind: "get";
+    }
+  | {
+      value: unknown;
+      kind: "put";
+    }
+  | {
+      kind: "remove";
+    };
 export type DesktopMcpAction =
   | {
       kind: "list";
@@ -59,6 +70,7 @@ export type TimelineItemKind = "user_message" | "assistant_message" | "reasoning
 export type TimelineItemStatus = "pending" | "in_progress" | "completed" | "cancelled" | "failed" | "interrupted";
 export type AccountState = "starting" | "signed_out" | "valid" | "expired" | "unavailable";
 export type LoginMethod = "passkey" | "google" | "password" | "ethereum_wallet";
+export type StorageMigrationPhase = "encrypting" | "moving_media" | "checking" | "finalizing" | "failed";
 export type CryptoInvoiceAction = "cancel" | "check" | "refresh";
 export type SecurityState =
   "unverified" | "verifying" | "unattested_development" | "verified" | "degraded" | "outdated" | "failed";
@@ -149,6 +161,8 @@ export type ExtensionErrorCode =
  * Schema root used to generate the checked-in language-neutral contract.
  */
 export interface ProtocolSchema {
+  localPayloadRequest: LocalPayloadRequest;
+  localPayloadResponse: LocalPayloadResponse;
   desktopMcpRequest: DesktopMcpRequest;
   desktopMcpResponse: DesktopMcpResponse;
   configureDesktopAgentRequest: ConfigureDesktopAgentRequest;
@@ -230,6 +244,17 @@ export interface ProtocolSchema {
     [k: string]: unknown;
   };
   [k: string]: unknown;
+}
+/**
+ * Native-only local persistence. The renderer never receives encryption keys.
+ */
+export interface LocalPayloadRequest {
+  accountId: string;
+  id: string;
+  action: LocalPayloadAction;
+}
+export interface LocalPayloadResponse {
+  value?: unknown;
 }
 export interface DesktopMcpRequest {
   threadId?: string | null;
@@ -352,6 +377,10 @@ export interface FeatureVersions {
   desktopChat?: number;
   desktopAgent?: number;
   desktopMcp?: number;
+  /**
+   * Account-bound encrypted local drafts and outbox data.
+   */
+  localPayload?: number;
   threadCatalog?: number;
   timeline?: number;
   modelCatalog?: number;
@@ -795,6 +824,10 @@ export interface AccountStatus {
   account?: AccountProfile | null;
   session?: NativeSession | null;
   detail?: string | null;
+  /**
+   * Local storage work must finish before this account becomes usable.
+   */
+  storageMigration?: StorageMigrationProgress | null;
   [k: string]: unknown;
 }
 export interface AccountProfile {
@@ -808,6 +841,15 @@ export interface AccountProfile {
 export interface NativeSession {
   expiresAt: string;
   credentialStore: string;
+  [k: string]: unknown;
+}
+export interface StorageMigrationProgress {
+  phase: StorageMigrationPhase;
+  /**
+   * Counts describe this phase only; omitted for indivisible database work.
+   */
+  completed?: number | null;
+  total?: number | null;
   [k: string]: unknown;
 }
 export interface NativeLoginStartRequest {

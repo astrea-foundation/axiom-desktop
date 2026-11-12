@@ -24,6 +24,12 @@ allow = [
   "Unicode-3.0",
   "Zlib",
 ]
+# sqlcipher-src 420.0.0 includes SQLite's public-domain blessing and
+# LibTomCrypt's public-domain/WTFPL option. Reviewed package license files;
+# native builds use vendored OpenSSL, while this source crate also ships LTC.
+exceptions = [
+  { name = "sqlcipher-src", version = "=420.0.0", allow = ["blessing", "WTFPL"] },
+]
 
 [bans]
 multiple-versions = "warn"

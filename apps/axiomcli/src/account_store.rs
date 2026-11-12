@@ -52,6 +52,13 @@ impl SessionStoreRouter {
         Ok(self.generation.fetch_add(1, Ordering::AcqRel) + 1)
     }
 
+    /// Explicit synthetic subprocess fixture; absent from release binaries.
+    #[cfg(debug_assertions)]
+    pub fn activate_fixture(&self, account_id: &str) -> Result<u64> {
+        self.store.activate_fixture_account(account_id)?;
+        Ok(self.generation.fetch_add(1, Ordering::AcqRel) + 1)
+    }
+
     pub fn deactivate(&self) -> Result<u64> {
         self.store.deactivate_account()?;
         Ok(self.generation.fetch_add(1, Ordering::AcqRel) + 1)

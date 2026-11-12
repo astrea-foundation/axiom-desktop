@@ -30,6 +30,7 @@ impl SessionStore {
         let now = Utc::now().to_rfc3339();
         let mut connection = self.lock()?;
         let path = connection.guard.path.clone();
+        let assets = connection.assets().clone();
         let transaction = connection
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(storage_error)?;
@@ -85,6 +86,7 @@ impl SessionStore {
                         .map_err(|_| crate::AxiomError::Storage("invalid saved turn ID".into()))?;
                     super::model_history::append(
                         &transaction,
+                        &assets,
                         &EventEnvelope {
                             schema_version: 1,
                             sequence: 0,
@@ -127,7 +129,7 @@ impl SessionStore {
     pub fn load_recovering(&self, id: &SessionId) -> Result<LoadOutcome> {
         let thread = self.thread_summary(id)?;
         let connection = self.lock()?;
-        if let Some(events) = super::model_history::load(&connection, id)? {
+        if let Some(events) = super::model_history::load(&connection, connection.assets(), id)? {
             return Ok(LoadOutcome {
                 events,
                 warnings: Vec::new(),
@@ -164,6 +166,15 @@ impl SessionStore {
                 "thread {id} exceeds the {MAX_TIMELINE_ITEMS_PER_LOAD}-item runtime restore limit"
             ));
         }
+        for item in &mut items {
+            super::asset_codec::MediaCodec {
+                assets: connection.assets(),
+                connection: &connection,
+                owner: &super::assets::thread_owner(&id.to_string()),
+                direction: super::asset_codec::Direction::Load,
+            }
+            .timeline(&mut item.metadata)?;
+        }
         let mut attachments = HashMap::new();
         for item in &items {
             if item.kind == TimelineItemKind::UserMessage
@@ -171,7 +182,7 @@ impl SessionStore {
             {
                 attachments.insert(
                     item.id.clone(),
-                    query_prompt_attachments(&connection, id, &item.id)?,
+                    query_prompt_attachments(&connection, connection.assets(), id, &item.id)?,
                 );
             }
         }
@@ -292,6 +303,15 @@ impl SessionStore {
             for turn in &mut turns {
                 turn.error = None;
             }
+        }
+        for item in &mut items {
+            super::asset_codec::MediaCodec {
+                assets: connection.assets(),
+                connection: &connection,
+                owner: &super::assets::thread_owner(&id.to_string()),
+                direction: super::asset_codec::Direction::Load,
+            }
+            .timeline(&mut item.metadata)?;
         }
         drop(statement);
         drop(connection);

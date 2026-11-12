@@ -6,7 +6,7 @@ import { createServer, type ViteDevServer } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { securityEvidence } from "../../../../fixtures/desktop-security.mts";
-import type { ClientState, DesktopMcpRequest, DesktopMcpResponse, ApiKeyRecord, AccountStatus, BillingStatus, ClientSessionState, ClientTimelineItem, ContextUsage, ConfigureDesktopAgentRequest, DesktopAgentSettings, ListModelsResponse } from "@axiom/axiom-acp-client";
+import type { ClientState, DesktopMcpRequest, DesktopMcpResponse, ApiKeyRecord, AccountStatus, BillingStatus, ClientSessionState, ClientTimelineItem, ContextUsage, ConfigureDesktopAgentRequest, DesktopAgentSettings, ListModelsResponse, LocalPayloadRequest } from "@axiom/axiom-acp-client";
 
 // Real renderer/DOM focus tests, but no Electron window, OS input, account,
 // sidecar, or provider request. The bridge below operates only on fake threads.
@@ -47,8 +47,22 @@ after(async () => {
   await server?.close();
 });
 
-async function openApp(platform = "linux", failDelete = false, thinkingLevels: string[] = [], rememberedThinking = "medium", supportsImages = false, bypassCSP = true, modelCatalog?: ListModelsResponse, rememberedModel = "test-model") {
+async function openApp(platform = "linux", failDelete = false, thinkingLevels: string[] = [], rememberedThinking = "medium", supportsImages = false, bypassCSP = true, modelCatalog?: ListModelsResponse, rememberedModel = "test-model", recoverLegacy = false) {
   const page = await browser.newPage({ viewport: { width: 1320, height: 900 }, bypassCSP });
+  // Synthetic native persistence lives in the test process, survives renderer
+  // reloads, and never writes draft/outbox data into browser storage.
+  const nativePayloads = new Map<string, any>();
+  if (recoverLegacy) nativePayloads.set(JSON.stringify(["test-account", "axiom.draft.v1:test-account:new"]), {
+    version: 1, kind: "prompt", payload: { text: "Keep this authored account draft", attachments: [] },
+  });
+  await page.exposeFunction("__nativeLocalPayload", (request: LocalPayloadRequest) => {
+    const key = JSON.stringify([request.accountId, request.id]);
+    if (request.action.kind === "get") return { value: structuredClone(nativePayloads.get(key)) };
+    if (request.action.kind === "put") nativePayloads.set(key, structuredClone(request.action.value));
+    else if (request.action.kind === "remove") nativePayloads.delete(key);
+    else throw new Error("Unsupported fixture local storage action");
+    return {};
+  });
   page.setDefaultTimeout(8_000);
   const errors: string[] = [];
   const nativeDialogs: string[] = [];
@@ -61,7 +75,8 @@ async function openApp(platform = "linux", failDelete = false, thinkingLevels: s
     if (route.request().url().startsWith(origin)) return route.continue();
     return route.abort();
   });
-  const installBridge = ({ platform, failDelete, thinkingLevels, rememberedThinking, supportsImages, modelCatalog, rememberedModel }: { platform: string; failDelete: boolean; thinkingLevels: string[]; rememberedThinking: string; supportsImages: boolean; modelCatalog?: ListModelsResponse; rememberedModel: string }) => {
+  const installBridge = ({ platform, failDelete, thinkingLevels, rememberedThinking, supportsImages, modelCatalog, rememberedModel, recoverLegacy }: { platform: string; failDelete: boolean; thinkingLevels: string[]; rememberedThinking: string; supportsImages: boolean; modelCatalog?: ListModelsResponse; rememberedModel: string; recoverLegacy: boolean }) => {
+    if (recoverLegacy) localStorage.setItem("axiom.draft.v1:anonymous:new", "Recovered draft from before sign-in. Review before sending.");
     const savedThinking = () => localStorage.getItem("test-thinking") ?? rememberedThinking;
     const settingsCalls: { threadId: string; model?: string; thinkingLevel?: string }[] = [];
     const defaultDirectory = (id: string) => platform === "win32" ? `C:\\Axiom\\chat\\${id}` : `/axiom/chat/${id}`;
@@ -106,10 +121,20 @@ async function openApp(platform = "linux", failDelete = false, thinkingLevels: s
     const setupGates = new Map<string, { promise: Promise<void>; resolve: () => void; reject: (error: Error) => void }>();
     const waitForSetup = async (stage: string) => { await setupGates.get(stage)?.promise; };
     const listeners = new Set<(state: unknown) => void>();
+    let flushLocal: () => Promise<void> = async () => { throw new Error("Local flush handler not registered"); };
+    let releaseLocal = () => {};
     const emit = () => {
       for (const listener of listeners) listener(structuredClone(state));
     };
     const agent = {
+      localPayload: async (request: LocalPayloadRequest) => {
+        const owner = state.account.account?.id, runtime = state.runtimeInstanceId;
+        if (!state.connected || state.account.state !== "valid" || owner !== request.accountId) throw new Error("Fixture account changed");
+        if (request.action.kind !== "get") await waitForSetup("local-save");
+        const result = await (window as any).__nativeLocalPayload(request);
+        if (!state.connected || state.account.account?.id !== owner || state.runtimeInstanceId !== runtime) throw new Error("Fixture account changed");
+        return result;
+      },
       onState: (listener: (state: unknown) => void) => { listeners.add(listener); return () => listeners.delete(listener); },
       prewarmSecurity: async (modelId: string) => {
         calls.push({ method: "prewarm", id: modelId });
@@ -359,6 +384,13 @@ async function openApp(platform = "linux", failDelete = false, thinkingLevels: s
       },
       axiomDesktop: {
         platform, agent, setTheme: () => {},
+        onBeforeLocalStateChange: (flush: () => Promise<void>, release: () => void) => {
+          flushLocal = flush; releaseLocal = release; return () => {};
+        },
+        close: async () => {
+          try { await flushLocal(); calls.push({ method: "close" }); }
+          finally { releaseLocal(); }
+        },
         isFullScreen: async () => false, onFullScreenChange: () => () => {},
         isFocused: async () => true, onActiveChange: () => () => {},
         isMaximized: async () => false, onMaximizedChange: () => () => {},
@@ -367,7 +399,7 @@ async function openApp(platform = "linux", failDelete = false, thinkingLevels: s
   };
   // tsx adds a function-name helper to nested callbacks; serialized browser
   // fixtures must define that helper in their own JavaScript realm.
-  await page.addInitScript({ content: `window.__name = (fn) => fn; (${installBridge.toString()})(${JSON.stringify({ platform, failDelete, thinkingLevels, rememberedThinking, supportsImages, modelCatalog, rememberedModel })});` });
+  await page.addInitScript({ content: `window.__name = (fn) => fn; (${installBridge.toString()})(${JSON.stringify({ platform, failDelete, thinkingLevels, rememberedThinking, supportsImages, modelCatalog, rememberedModel, recoverLegacy })});` });
   await page.goto(origin);
   try {
     if (modelCatalog) await page.locator("textarea[data-chat-input]").waitFor();
@@ -377,8 +409,94 @@ async function openApp(platform = "linux", failDelete = false, thinkingLevels: s
     await page.close();
     throw error;
   }
-  return { page, errors, nativeDialogs };
+  return { page, errors, nativeDialogs, nativePayloads };
 }
+
+test("legacy anonymous conflict becomes a saved preparation without overwriting or automatic sending", async () => {
+  const { page, errors, nativePayloads } = await openApp("linux", false, [], "medium", false, true, undefined, "test-model", true);
+  try {
+    const input = page.locator("textarea[data-chat-input]");
+    const queue = page.getByRole("region", { name: "Message queue" });
+    await queue.getByText(/Recovered a draft from before sign-in/).waitFor();
+    await page.waitForFunction(() => (document.querySelector("textarea[data-chat-input]") as HTMLTextAreaElement)?.value === "Keep this authored account draft");
+    assert.equal((await calls(page)).some(call => call.method === "prompt" || call.method === "attachments"), false);
+    assert.equal(await page.evaluate(() => localStorage.getItem("axiom.draft.v1:anonymous:new")), null);
+    const saved = nativePayloads.get(JSON.stringify(["test-account", "axiom.message-queue.v1"]));
+    assert.equal(saved.items.length, 1);
+    assert.equal(saved.items[0].preparing, true);
+    if (process.env.AXIOM_RECOVERY_SCREENSHOT) await page.screenshot({ path: process.env.AXIOM_RECOVERY_SCREENSHOT, animations: "disabled" });
+    await page.reload();
+    await queue.getByText(/Recovered a draft from before sign-in/).waitFor();
+    assert.equal(await queue.getByRole("button", { name: "Review draft", exact: true }).count(), 1);
+    assert.equal((await calls(page)).some(call => call.method === "prompt" || call.method === "attachments"), false);
+    await input.fill("");
+    await queue.getByRole("button", { name: "Review draft", exact: true }).click();
+    await page.waitForFunction(() => (document.querySelector("textarea[data-chat-input]") as HTMLTextAreaElement)?.value === "Recovered draft from before sign-in. Review before sending.");
+    await queue.waitFor({ state: "hidden" });
+    assert.equal((await calls(page)).some(call => call.method === "prompt" || call.method === "attachments"), false);
+    await input.press("Enter");
+    await page.waitForFunction(() => (window as any).__deletionTest.calls.some((call: any) => call.method === "prompt"));
+    assert.equal((await calls(page)).filter(call => call.method === "prompt").length, 1);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("ordinary close flushes the latest draft before its debounce and waits for native acknowledgement", async () => {
+  const { page, errors, nativePayloads } = await openApp();
+  try {
+    await page.evaluate(() => (window as any).__deletionTest.holdSetup("local-save"));
+    await page.locator("textarea[data-chat-input]").fill("Last edit before closing");
+    assert.equal(nativePayloads.has(JSON.stringify(["test-account", "axiom.draft.v1:test-account:new"])), false);
+    await page.evaluate(() => { (window as any).__closeResult = (window as any).axiomDesktop.close(); });
+    assert.equal((await calls(page)).some(call => call.method === "close"), false);
+    await page.evaluate(() => (window as any).__deletionTest.releaseSetup("local-save"));
+    await page.evaluate(() => (window as any).__closeResult);
+    assert.equal(nativePayloads.get(JSON.stringify(["test-account", "axiom.draft.v1:test-account:new"]))?.payload.text, "Last edit before closing");
+    assert.equal((await calls(page)).filter(call => call.method === "close").length, 1);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("a failed ordinary close preserves the draft and leaves input usable for retry", async () => {
+  const { page, errors, nativePayloads } = await openApp();
+  try {
+    await page.locator("textarea[data-chat-input]").fill("Keep this unsaved edit");
+    await page.evaluate(() => {
+      const agent = (window as any).axiomDesktop.agent, original = agent.localPayload;
+      agent.localPayload = async (request: LocalPayloadRequest) => {
+        if (request.action.kind === "put") throw Error("Fixture keyring locked");
+        return original(request);
+      };
+      (window as any).__restoreLocalPayload = () => { agent.localPayload = original; };
+    });
+    const error = await page.evaluate(() => (window as any).axiomDesktop.close().then(() => null, (error: Error) => error.message));
+    assert.match(error, /keyring locked/);
+    assert.equal((await calls(page)).some(call => call.method === "close"), false);
+    assert.equal(await page.locator("textarea[data-chat-input]").inputValue(), "Keep this unsaved edit");
+    await page.evaluate(() => (window as any).__restoreLocalPayload());
+    await page.locator("textarea[data-chat-input]").fill("Latest edit after retry");
+    await page.evaluate(() => (window as any).axiomDesktop.close());
+    assert.equal(nativePayloads.get(JSON.stringify(["test-account", "axiom.draft.v1:test-account:new"]))?.payload.text, "Latest edit after retry");
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("close racing a recovered draft replacement cannot flush an older empty draft over it", async () => {
+  const { page, errors, nativePayloads } = await openApp("linux", false, [], "medium", false, true, undefined, "test-model", true);
+  try {
+    const review = page.getByRole("region", { name: "Message queue" }).getByRole("button", { name: "Review draft", exact: true });
+    await review.waitFor();
+    await page.evaluate(() => (window as any).__deletionTest.holdSetup("local-save"));
+    await page.locator("textarea[data-chat-input]").fill("");
+    await review.click();
+    await page.evaluate(() => { (window as any).__closeResult = (window as any).axiomDesktop.close(); });
+    await page.evaluate(() => (window as any).__deletionTest.releaseSetup("local-save"));
+    await page.evaluate(() => (window as any).__closeResult);
+    assert.equal(nativePayloads.get(JSON.stringify(["test-account", "axiom.draft.v1:test-account:new"]))?.payload.text, "Recovered draft from before sign-in. Review before sending.");
+    assert.equal((await calls(page)).some(call => call.method === "prompt"), false);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
 
 for (const ending of ["completion", "stop", "failure"]) test(`model selection stays locked through generation until ${ending}`, async () => {
   const modelCatalog: ListModelsResponse = { models: ["test-model", "other-model"].map(id => ({
@@ -639,7 +757,7 @@ for (const stage of ["new", "settings", "agent"]) {
 
 for (const destination of ["new", "existing", "account", "runtime"]) {
   test(`leaving thread preparation for ${destination} preserves the message without stealing focus`, async () => {
-    const { page, errors } = await openApp();
+    const { page, errors, nativePayloads } = await openApp();
     try {
       await page.evaluate(() => (window as any).__deletionTest.holdSetup("new"));
       await page.locator("textarea[data-chat-input]").fill("Private pending message");
@@ -663,12 +781,10 @@ for (const destination of ["new", "existing", "account", "runtime"]) {
       } else {
         assert.equal((await calls(page)).some((call) => call.method === "prompt"), false);
         assert.equal(await page.evaluate(() => (window as any).__deletionTest.settingsCalls.length), 0);
-        const saved = await page.evaluate(() => JSON.parse(localStorage.getItem("axiom.message-queue.v1:test-account")!));
-        assert.equal(saved[0].text, "", "large payloads are not stored in localStorage");
-        const payload = await page.evaluate(async (id: string) => {
-          const { localPayloads } = await import(`${location.origin}/src/localPayloads.ts`);
-          return localPayloads.get("test-account", id);
-        }, saved[0].payloadId);
+        assert.equal(await page.evaluate(() => localStorage.getItem("axiom.message-queue.v1:test-account")), null);
+        const saved = nativePayloads.get(JSON.stringify(["test-account", "axiom.message-queue.v1"]))!.items;
+        assert.equal(saved[0].text, "", "queue metadata refers to the separately saved payload");
+        const payload = nativePayloads.get(JSON.stringify(["test-account", saved[0].payloadId]))!.payload;
         assert.equal(payload.text, "Private pending message");
         assert.equal(saved[0].preparing, true);
       }
@@ -703,6 +819,7 @@ for (const batched of [false, true]) for (const change of ["disconnect", "runtim
       await page.evaluate(() => (window as any).__deletionTest.releaseSetup("new"));
       await page.waitForFunction(() => document.querySelector('[data-thread-id="new-thread"]'));
       assert.equal((await calls(page)).some(call => call.method === "prompt"), false);
+      await queue.getByRole("button", { name: "Review draft", exact: true }).waitFor();
       assert.equal(await queue.getByRole("button", { name: "Review draft", exact: true }).count(), 1);
       assert.equal(await input.isEnabled(), true, "the privacy lock does not disable the welcome composer");
       await queue.getByRole("button", { name: "Review draft", exact: true }).click();
@@ -1225,6 +1342,9 @@ for (const platform of ["linux", "win32", "darwin"]) {
       assert.equal(await queue.locator("[data-queued-message]").count(), 1, "only the waiting follow-up remains queued");
       await page.evaluate(() => (window as any).__deletionTest.releaseSetup("prompt"));
       await queue.waitFor({ state: "hidden" });
+      // The next item enters its sending state before its native outbox commit
+      // acknowledges dispatch; wait for that asynchronous boundary as well.
+      await page.waitForFunction(() => (window as any).__deletionTest.calls.filter((call: any) => call.method === "prompt").length === 2);
       assert.deepEqual((await calls(page)).filter((call) => call.method === "prompt").map((call) => call.text), [
         "Use the revised requirements instead.", "After that, summarize the result.",
       ]);
@@ -2470,6 +2590,74 @@ test("sign in opens browser authorization directly and leaves the composer usabl
   } finally { await page.close(); }
 });
 
+test("storage migration replaces browser approval with live progress until saved data is ready", async () => {
+  const { page, errors } = await openApp();
+  try {
+    await page.evaluate(() => (window as any).__deletionTest.setAccountState({ revision: 2, state: "signed_out" }));
+    await page.locator("textarea[data-chat-input]").fill("Keep my sign-in draft");
+    await page.getByRole("button", { name: "Sign in", exact: true }).first().click();
+    await page.getByRole("region", { name: "Browser sign-in" }).getByText("ABCD-1234", { exact: true }).waitFor();
+    await page.evaluate(() => (window as any).__deletionTest.setAccountState({ revision: 3, state: "starting", storageMigration: { phase: "encrypting" } }));
+    const heading = page.getByRole("heading", { name: "Updating your local chat storage" });
+    await heading.waitFor();
+    await page.waitForFunction(() => document.activeElement?.id === "storage-migration-title");
+    assert.equal(await page.getByRole("region", { name: "Browser sign-in" }).count(), 0);
+    assert.equal(await page.locator("textarea[data-chat-input]").count(), 0);
+    const progress = page.getByRole("progressbar", { name: "Current storage update step" });
+    assert.equal(await progress.getAttribute("aria-valuenow"), null, "database conversion has no invented percentage");
+    await page.evaluate(() => (window as any).__deletionTest.setAccountState({ revision: 4, state: "starting", storageMigration: { phase: "moving_media", completed: 4, total: 10 } }));
+    await page.getByRole("status").filter({ hasText: "4 of 10 saved records" }).waitFor();
+    assert.equal(await progress.getAttribute("aria-valuenow"), "40");
+    if (process.env.AXIOM_MIGRATION_SCREENSHOT) await page.screenshot({ path: process.env.AXIOM_MIGRATION_SCREENSHOT });
+    await page.evaluate(() => (window as any).__deletionTest.setAccountState({ revision: 5, state: "starting", storageMigration: { phase: "checking", completed: 3, total: 3 } }));
+    await page.getByRole("status").filter({ hasText: "3 of 3 files" }).waitFor();
+    await page.evaluate(() => (window as any).__deletionTest.setAccountState({ revision: 6, state: "starting", storageMigration: { phase: "finalizing" } }));
+    await page.getByRole("status").filter({ hasText: "Finishing up" }).waitFor();
+    assert.equal(await progress.getAttribute("aria-valuenow"), null);
+    assert.equal((await calls(page)).filter(call => call.method === "nativeLoginStart").length, 1);
+    await page.evaluate(() => (window as any).__deletionTest.finishLogin("test-login-1"));
+    await heading.waitFor({ state: "detached" });
+    await page.waitForFunction(() => (document.querySelector("textarea[data-chat-input]") as HTMLTextAreaElement)?.value === "Keep my sign-in draft");
+    assert.equal((await calls(page)).some(call => call.method === "prompt"), false);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("restored-account migration failure stays visible and retries without browser sign-in", async () => {
+  const { page, errors } = await openApp();
+  try {
+    await page.evaluate(() => (window as any).__deletionTest.setAccountState({ revision: 2, state: "starting", storageMigration: { phase: "checking", completed: 0, total: 2 } }));
+    await page.getByRole("heading", { name: "Updating your local chat storage" }).waitFor();
+    await page.evaluate(() => (window as any).__deletionTest.setAccountState({ revision: 3, state: "unavailable", detail: "Synthetic media check failed. Saved data retained.", storageMigration: { phase: "failed" } }));
+    await page.getByRole("heading", { name: "Your storage update needs attention" }).waitFor();
+    await page.getByText("Details", { exact: true }).click();
+    await page.getByText("Synthetic media check failed. Saved data retained.", { exact: true }).waitFor();
+    assert.equal(await page.locator("textarea[data-chat-input]").count(), 0);
+    await page.evaluate(() => {
+      const fixture = (window as any).__deletionTest;
+      (window as any).axiomDesktop.agent.accountStatus = async () => {
+        fixture.calls.push({ method: "migrationRetry" });
+        fixture.setAccountState({ revision: 4, state: "starting", storageMigration: { phase: "finalizing" } });
+        await new Promise<void>(resolve => { (window as any).__finishMigrationRetry = resolve; });
+        const status = { revision: 5, state: "valid", account: { id: "test-account", displayName: "Test User", linkedMethods: ["passkey"] } };
+        fixture.setAccountState(status);
+        return { status };
+      };
+    });
+    await page.getByRole("button", { name: "Try again", exact: true }).click();
+    await page.getByRole("status").filter({ hasText: "Finishing up" }).waitFor();
+    await page.setViewportSize({ width: 640, height: 700 });
+    await page.emulateMedia({ reducedMotion: "reduce", colorScheme: "dark" });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
+    await page.evaluate(() => (window as any).__finishMigrationRetry());
+    await page.getByRole("heading", { name: "Updating your local chat storage" }).waitFor({ state: "detached" });
+    await page.getByRole("button", { name: "Test model", exact: true }).waitFor();
+    assert.equal((await calls(page)).filter(call => call.method === "migrationRetry").length, 1);
+    assert.equal((await calls(page)).some(call => call.method === "nativeLoginStart" || call.method === "prompt"), false);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
 test("sign in ignores repeated starts and cancels authorizations that arrive after dismissal", async () => {
   const { page, errors } = await openApp();
   try {
@@ -2799,21 +2987,72 @@ test("proxy view follows native state and sends start, restart, stop and clipboa
 });
 
 test("an anonymous draft follows sign-in and each account recovers only its own draft", async () => {
-  const { page, errors } = await openApp();
+  const { page, errors, nativePayloads } = await openApp();
   try {
     const input = page.locator("textarea[data-chat-input]");
     await input.fill("Old account secret");
-    await page.evaluate(() => (window as any).axiomDesktop.agent.logout());
+    await page.evaluate(async () => {
+      // The mock logout changes accounts immediately; perform the same draft
+      // flush that Electron's account lifecycle awaits before native logout.
+      const { flushLocalState, releaseLocalStateFlush } = await import(`${location.origin}/src/updateFlush.ts`);
+      try {
+        await flushLocalState("account");
+        await (window as any).axiomDesktop.agent.logout();
+      } finally { releaseLocalStateFlush(); }
+    });
+    assert.equal(nativePayloads.get(JSON.stringify(["test-account", "axiom.draft.v1:test-account:new"]))?.payload.text, "Old account secret");
     await page.getByRole("button", { name: "Sign in", exact: true }).waitFor();
     assert.equal(await input.inputValue(), "");
     await input.fill("New draft written while signed out");
+    await page.evaluate(() => {
+      const hydration = {
+        readRequested: false, writeRequested: false, writeAcknowledged: false,
+        releaseRead: () => {}, releaseWrite: () => {},
+      };
+      const read = new Promise<void>(resolve => { hydration.releaseRead = resolve; });
+      const write = new Promise<void>(resolve => { hydration.releaseWrite = resolve; });
+      const agent = (window as any).axiomDesktop.agent, original = agent.localPayload;
+      agent.localPayload = async (request: LocalPayloadRequest) => {
+        const draft = request.accountId === "account-b" && request.id === "axiom.draft.v1:account-b:new";
+        if (draft && request.action.kind === "get") { hydration.readRequested = true; await read; }
+        if (draft && request.action.kind === "put") { hydration.writeRequested = true; await write; }
+        const result = await original(request);
+        if (draft && request.action.kind === "put") hydration.writeAcknowledged = true;
+        return result;
+      };
+      (window as any).__draftHydration = hydration;
+    });
     await page.evaluate(() => (window as any).__deletionTest.setAccountState({ revision: 3, state: "valid", account: { id: "account-b", displayName: "B", linkedMethods: ["password"] } }));
     await page.getByRole("button", { name: "Test model", exact: true }).waitFor();
-    assert.equal(await input.inputValue(), "New draft written while signed out");
+    await page.waitForFunction(() => (window as any).__draftHydration.readRequested);
+    // Model readiness precedes draft hydration. Hold both native operations so
+    // the composer cannot appear ready merely because local storage was fast.
+    assert.equal(await input.inputValue(), "");
+    assert.equal(nativePayloads.has(JSON.stringify(["account-b", "axiom.draft.v1:account-b:new"])), false);
+    await page.evaluate(() => (window as any).__draftHydration.releaseRead());
+    await page.waitForFunction(() => (window as any).__draftHydration.writeRequested);
+    assert.equal(await page.evaluate(() => (window as any).__draftHydration.writeAcknowledged), false);
+    assert.equal(await input.inputValue(), "");
+    assert.equal(nativePayloads.has(JSON.stringify(["account-b", "axiom.draft.v1:account-b:new"])), false);
+    await page.evaluate(() => (window as any).__draftHydration.releaseWrite());
+    await page.waitForFunction(() => (window as any).__draftHydration.writeAcknowledged
+      && (document.querySelector("textarea[data-chat-input]") as HTMLTextAreaElement)?.value === "New draft written while signed out");
+    assert.equal(nativePayloads.get(JSON.stringify(["account-b", "axiom.draft.v1:account-b:new"]))?.payload.text, "New draft written while signed out");
     await page.evaluate(() => (window as any).__deletionTest.setAccount("test-account"));
     await page.waitForFunction(() => (document.querySelector("textarea[data-chat-input]") as HTMLTextAreaElement)?.value === "Old account secret");
+    assert.equal(nativePayloads.get(JSON.stringify(["test-account", "axiom.draft.v1:test-account:new"]))?.payload.text, "Old account secret");
+    await page.evaluate(() => (window as any).__deletionTest.setAccount("account-b"));
+    await page.waitForFunction(() => (document.querySelector("textarea[data-chat-input]") as HTMLTextAreaElement)?.value === "New draft written while signed out");
+    assert.equal((await calls(page)).some(call => call.method === "prompt" || call.method === "attachments"), false);
     assert.deepEqual(errors, []);
-  } finally { await page.close(); }
+  } finally {
+    try {
+      await page.evaluate(() => {
+        (window as any).__draftHydration?.releaseRead();
+        (window as any).__draftHydration?.releaseWrite();
+      });
+    } finally { await page.close(); }
+  }
 });
 
 test("usage shows model shares in both themes, exact small charges, and an honest empty state", async () => {
@@ -2977,7 +3216,7 @@ test("API keys discard a creation response after account switching", async () =>
 
 
 test("drafts survive reselecting, switching threads, reloading, and account changes", async () => {
-  const { page, errors } = await openApp();
+  const { page, errors, nativePayloads } = await openApp();
   try {
     const input = page.locator("textarea[data-chat-input]");
     const existing = page.locator('[data-thread-id="old-thread"]');
@@ -2989,10 +3228,18 @@ test("drafts survive reselecting, switching threads, reloading, and account chan
     assert.equal(await input.inputValue(), "Existing conversation draft");
     await page.getByRole("button", { name: "New thread", exact: true }).click();
     assert.equal(await input.inputValue(), "New conversation draft");
+    // Raw renderer reload does not run the app's coordinated restart flush.
+    // Await the asynchronous draft commits before testing their restoration.
+    await page.evaluate(async () => {
+      const { flushForUpdate, releaseUpdateFlush } = await import(`${location.origin}/src/updateFlush.ts`);
+      await flushForUpdate(); releaseUpdateFlush();
+    });
+    assert.equal(nativePayloads.get(JSON.stringify(["test-account", "axiom.draft.v1:test-account:old-thread"]))?.payload.text, "Existing conversation draft");
     await page.reload();
     await input.waitFor();
     await page.waitForFunction(() => (document.querySelector("textarea[data-chat-input]") as HTMLTextAreaElement)?.value === "New conversation draft");
     await existing.click();
+    await page.waitForFunction(() => (document.querySelector("textarea[data-chat-input]") as HTMLTextAreaElement)?.value === "Existing conversation draft");
     assert.equal(await input.inputValue(), "Existing conversation draft");
     await page.evaluate(() => (window as any).__deletionTest.setAccount("account-b"));
     await page.waitForFunction(() => (document.querySelector("textarea[data-chat-input]") as HTMLTextAreaElement)?.value === "");
@@ -3529,6 +3776,7 @@ for (const existing of [false, true]) {
       if (existing) await page.locator('[data-thread-id="old-thread"]').click();
       const zone = page.locator("[data-chat-drop-zone]");
       for (const [index, selector] of ["[data-chat-drop-zone]", "[data-chat-drop-zone] header", "textarea[data-chat-input]"].entries()) {
+        await page.waitForFunction(() => (document.querySelector('button[aria-label="Attach files"]') as HTMLButtonElement | null)?.disabled === false);
         const transfer = await page.evaluateHandle((name) => {
           const data = new DataTransfer();
           data.items.add(new File(["Dropped original bytes"], name, { type: "text/plain" }));

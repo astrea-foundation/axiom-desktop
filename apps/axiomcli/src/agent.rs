@@ -3057,10 +3057,6 @@ impl TurnRunner for AgentEngine {
             // Providers require every tool reply before the next user message.
             // Queue visual observations until this complete call batch is answered.
             let mut image_observations = Vec::new();
-            let mut image_count = messages
-                .iter()
-                .map(|message| message.images.len())
-                .sum::<usize>();
             for call in assistant.tool_calls {
                 if context
                     .steering
@@ -3239,17 +3235,7 @@ impl TurnRunner for AgentEngine {
                 };
                 let tool_images = std::mem::take(&mut tool_result.images);
                 if tool_result.success && !tool_images.is_empty() {
-                    let image_limit = model_context_image_limit(&model);
-                    if image_count.saturating_add(tool_images.len()) > image_limit {
-                        tool_result.success = false;
-                        tool_result.content = format!(
-                            "This provider's request protocol supports at most {image_limit} images. Choose a provider that supports more images to view another one; the conversation was retained."
-                        );
-                        tool_result.events.clear();
-                    } else {
-                        image_count += tool_images.len();
-                        image_observations.push(image_observation(&call.id, tool_images));
-                    }
+                    image_observations.push(image_observation(&call.id, tool_images));
                 }
                 for mut event in std::mem::take(&mut tool_result.events) {
                     if let AppEvent::ImageGenerated { call_id, .. } = &mut event {
@@ -3668,15 +3654,7 @@ fn compaction_request_fits(
     model: &axiom_inference::ModelInfo,
     request: &InferenceRequest,
 ) -> Result<bool> {
-    if !request.tools.is_empty()
-        || request.validate().is_err()
-        || request
-            .messages
-            .iter()
-            .map(|message| message.images.len())
-            .sum::<usize>()
-            > model_context_image_limit(model)
-    {
+    if !request.tools.is_empty() || request.validate().is_err() {
         return Ok(false);
     }
     let byte_limit = compaction_request_byte_limit(model);
@@ -3699,9 +3677,7 @@ fn compaction_passes(
     let mut passes = Vec::new();
     let mut inputs = Vec::new();
     let mut tokens = 0_u64;
-    let mut images = 0_usize;
     let mut bytes = 0_usize;
-    let max_images = model_context_image_limit(model);
     let byte_limit = compaction_request_byte_limit(model);
     // Include worst-case JSON escaping for prior summary and control text.
     let max_bytes =
@@ -3718,15 +3694,11 @@ fn compaction_passes(
         } else {
             serialized_bytes(&part)?.saturating_add(512)
         };
-        if part_tokens > max_input_tokens as u64
-            || part.images.len() > max_images
-            || part_bytes > max_bytes
-        {
+        if part_tokens > max_input_tokens as u64 || part_bytes > max_bytes {
             return Err(AxiomError::Provider("A compaction fragment exceeds the model or protocol budget; original context was retained.".into()));
         }
         if !inputs.is_empty()
             && (tokens.saturating_add(part_tokens) > max_input_tokens as u64
-                || images.saturating_add(part.images.len()) > max_images
                 || bytes.saturating_add(part_bytes) > max_bytes)
         {
             passes.push(CompactionPass::Transcript {
@@ -3734,11 +3706,9 @@ fn compaction_passes(
                 tokens,
             });
             tokens = 0;
-            images = 0;
             bytes = 0;
         }
         tokens = tokens.saturating_add(part_tokens);
-        images = images.saturating_add(part.images.len());
         bytes = bytes.saturating_add(part_bytes);
         inputs.push(part);
     }
@@ -3805,7 +3775,6 @@ fn compaction_inputs(
             while images.peek().is_some_and(|image| {
                 media_bytes.saturating_add(image.data.len()) <= attachment_bytes.saturating_sub(256)
             }) && media_tokens.saturating_add(image_tokens) <= media_budget
-                && input_images.len() < model_context_image_limit(model)
                 && input_images.len() < axiom_inference::MAX_ATTACHMENTS
             {
                 media_bytes = media_bytes.saturating_add(images.peek().unwrap().data.len());
@@ -4117,16 +4086,6 @@ fn image_context_tokens(model: &axiom_inference::ModelInfo) -> usize {
         1024
     } else {
         8192
-    }
-}
-
-fn model_context_image_limit(model: &axiom_inference::ModelInfo) -> usize {
-    // AstreaAI's attested vision protocol bounds the whole request to eight
-    // images, including prior uploads and optional generated-image views.
-    if model.provider_id == "axiom-direct" || model.id == "direct:qwen3.8-27b" {
-        8
-    } else {
-        usize::MAX
     }
 }
 
@@ -4657,11 +4616,11 @@ mod engine_tests {
             ..Default::default()
         };
         let mut message =
-            ChatMessage::text(ChatRole::User, "Read the letters in these eight images.");
+            ChatMessage::text(ChatRole::User, "Read the letters in these ten images.");
         message.images = vec![axiom_inference::ImageContent {
             mime_type: "image/png".into(),
             data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC".into(),
-        }; 8];
+        }; 10];
         let request = inference_request_for_model(
             &model,
             model.id.clone(),
@@ -6543,7 +6502,7 @@ mod engine_tests {
     }
 
     #[tokio::test]
-    async fn view_image_keeps_more_than_ten_images_without_compaction() {
+    async fn view_image_after_ten_uploads_succeeds() {
         use crate::image_tool::{
             ImageCatalog, ImageGenerationTool, ViewImageTool, tests::generated_fixture,
         };
@@ -6561,7 +6520,7 @@ mod engine_tests {
                 )],
             },
             AssistantTurn {
-                text: "The eleventh image is visible.".into(),
+                text: "I can inspect another image after ten uploads.".into(),
                 reasoning: None,
                 tool_calls: vec![],
             },
@@ -6621,7 +6580,14 @@ mod engine_tests {
                 .iter()
                 .any(|event| matches!(event, AppEvent::ToolCompleted { success: true, .. }))
         );
-        for (index, request) in provider.requests.lock().await.iter().enumerate() {
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, AppEvent::ToolCompleted { success: false, .. }))
+        );
+        let requests = provider.requests.lock().await;
+        assert_eq!(requests.len(), 2);
+        for (request, count) in requests.iter().zip([10, 11]) {
             request.validate().unwrap();
             assert_eq!(
                 request
@@ -6629,8 +6595,230 @@ mod engine_tests {
                     .iter()
                     .map(|message| message.images.len())
                     .sum::<usize>(),
-                10 + index
+                count
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn ten_uploads_in_each_of_two_turns_reach_the_provider() {
+        let mut scripted = ScriptedProvider::new(
+            (0..2)
+                .map(|_| AssistantTurn {
+                    text: "Seen".into(),
+                    reasoning: None,
+                    tool_calls: vec![],
+                })
+                .collect(),
+        );
+        scripted.model_details = Some(vec![axiom_inference::ModelInfo {
+            id: "direct:qwen3.8-27b".into(),
+            provider_id: "axiom-direct".into(),
+            supports_images: true,
+            context_window_tokens: 32768,
+            max_output_tokens: 4096,
+            ..Default::default()
+        }]);
+        let provider = Arc::new(scripted);
+        let engine = AgentEngine::new(
+            provider.clone(),
+            Arc::new(ToolRegistry::new()),
+            "direct:qwen3.8-27b",
+            3,
+        );
+        let session_id = SessionId::new();
+        for turn in 0..2 {
+            let ctx = TurnContext {
+                session_id: session_id.clone(),
+                attachments: (0..10).map(|index| axiom_inference::PromptAttachment::Image {
+                    name: format!("upload-{turn}-{index}.png"),
+                    image: axiom_inference::ImageContent {
+                        mime_type: "image/png".into(),
+                        data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC".into(),
+                    },
+                }).collect(),
+                ..context()
+            };
+            let (tx, mut rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
+            engine
+                .run(
+                    ctx,
+                    "Inspect this batch".into(),
+                    tx,
+                    CancellationToken::new(),
+                )
+                .await
+                .unwrap();
+            assert!(
+                !drain(&mut rx)
+                    .iter()
+                    .any(|event| matches!(event, AppEvent::ContextCompacted { .. }))
+            );
+        }
+        let requests = provider.requests.lock().await;
+        assert_eq!(requests.len(), 2);
+        for (request, expected) in requests.iter().zip([10, 20]) {
+            request.validate().unwrap();
+            assert_eq!(
+                request
+                    .messages
+                    .iter()
+                    .map(|message| message.images.len())
+                    .sum::<usize>(),
+                expected
+            );
+            assert!(
+                request
+                    .messages
+                    .iter()
+                    .all(|message| message.images.len() <= 10)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn one_hundred_views_continue_across_normal_token_compaction() {
+        use crate::image_tool::{ImageCatalog, ImageGenerationTool, ViewImageTool};
+        struct CompactingScript(ScriptedProvider);
+        #[async_trait]
+        impl InferenceProvider for CompactingScript {
+            async fn models(
+                &self,
+                cancellation: CancellationToken,
+            ) -> Result<Vec<axiom_inference::ModelInfo>> {
+                self.0.models(cancellation).await
+            }
+            async fn stream(
+                &self,
+                request: InferenceRequest,
+                events: mpsc::Sender<ProviderEvent>,
+                cancellation: CancellationToken,
+            ) -> Result<AssistantTurn> {
+                if request.messages.first().is_some_and(|message| {
+                    message
+                        .content
+                        .starts_with("Create a faithful successor summary")
+                }) {
+                    self.0.requests.lock().await.push(request);
+                    Ok(AssistantTurn {
+                        text: "Continue inspecting the remaining images.".into(),
+                        reasoning: None,
+                        tool_calls: vec![],
+                    })
+                } else {
+                    self.0.stream(request, events, cancellation).await
+                }
+            }
+        }
+        let images = ImageCatalog::default();
+        for index in 0..110 {
+            images.add_uploads("own", &index.to_string(), &[axiom_inference::PromptAttachment::Image {
+                name: format!("upload-{index}.png"),
+                image: axiom_inference::ImageContent {
+                    mime_type: "image/png".into(),
+                    data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC".into(),
+                },
+            }]).unwrap();
+        }
+        let manifest: Vec<Value> = serde_json::from_str(&images.manifest().unwrap()).unwrap();
+        let mut turns = manifest
+            .chunks(10)
+            .enumerate()
+            .map(|(batch, assets)| AssistantTurn {
+                text: String::new(),
+                reasoning: None,
+                tool_calls: assets
+                    .iter()
+                    .enumerate()
+                    .map(|(index, asset)| {
+                        tool_call(
+                            &format!("view-{batch}-{index}"),
+                            "view_image",
+                            &json!({"image_id":asset["image_id"]}).to_string(),
+                        )
+                    })
+                    .collect(),
+            })
+            .collect::<Vec<_>>();
+        turns.push(AssistantTurn {
+            text: "All 110 images inspected.".into(),
+            reasoning: None,
+            tool_calls: vec![],
+        });
+        let mut scripted = ScriptedProvider::new(turns);
+        scripted.model_details = Some(vec![axiom_inference::ModelInfo {
+            id: "direct:qwen3.8-27b".into(),
+            provider_id: "axiom-direct".into(),
+            supports_images: true,
+            context_window_tokens: 32768,
+            max_output_tokens: 4096,
+            ..Default::default()
+        }]);
+        let provider = Arc::new(CompactingScript(scripted));
+        let mut registry = ToolRegistry::new();
+        registry
+            .register(Arc::new(ImageGenerationTool {
+                provider: provider.clone(),
+            }))
+            .unwrap();
+        registry.register(Arc::new(ViewImageTool)).unwrap();
+        let engine = AgentEngine::new(
+            provider.clone(),
+            Arc::new(registry),
+            "direct:qwen3.8-27b",
+            16,
+        );
+        let ctx = TurnContext {
+            permission_profile: PermissionProfile::Web,
+            web_enabled: false,
+            image_tools_available: true,
+            ..context()
+        };
+        engine
+            .image_catalogs
+            .lock()
+            .await
+            .insert(ctx.session_id.clone(), images.clone());
+        let (tx, mut rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
+        let collect = tokio::spawn(async move {
+            let mut events = Vec::new();
+            while let Some(event) = rx.recv().await {
+                events.push(event);
+            }
+            events
+        });
+        engine
+            .run(
+                ctx,
+                "Inspect each image".into(),
+                tx,
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let events = collect.await.unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, AppEvent::ToolCompleted { success: true, .. }))
+                .count(),
+            110
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, AppEvent::ToolCompleted { success: false, .. }))
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, AppEvent::ContextCompacted { .. }))
+        );
+        for request in provider.0.requests.lock().await.iter() {
+            request.validate().unwrap();
+        }
+        for asset in manifest {
+            images.resolve(asset["image_id"].as_str().unwrap()).unwrap();
         }
     }
 
