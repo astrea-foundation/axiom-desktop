@@ -49,7 +49,7 @@ remain untrusted. Desktop keeps [MCP connections](mcp.md) account-scoped,
 uses the OS credential store for environment values, bearer tokens and OAuth
 grants, and lets each conversation select
 its tools. Connected services can receive tool inputs/results outside the model
-TEE. Remote connection setup, the Tools picker, approvals and call activity
+TEE. Remote connection setup, MCP selection under Agent, approvals and call activity
 identify this sharing boundary and its destination. Model context is assembled and encrypted locally. See [security](threat-model.md#local-tools-and-processes).
 
 ## Update checks

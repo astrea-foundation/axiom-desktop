@@ -2,6 +2,7 @@
 import { Bot, FolderOpen, Info, LoaderCircle, ShieldCheck, Terminal, X } from "lucide-react";
 import { useId, useLayoutEffect, useRef, useState } from "react";
 import type { AgentControlOptions } from "./AgentModeControl";
+import { McpToolSelection } from "./McpToolSelection";
 
 const PERMISSIONS = [
   { value: "approve_commands", label: "Approve commands", description: "Ask before each tool action.", icon: ShieldCheck },
@@ -49,6 +50,7 @@ export function AgentSettingsDialog({ options, onClose }: { options: AgentContro
   };
   const save = async () => {
     if (inFlight.current || blocked) return;
+    if ((draft.mcpTools?.length ?? 0) > 256) { setError("Select up to 256 tools for this conversation."); return; }
     inFlight.current = true;
     setBusy("saving"); setError(null);
     try {
@@ -77,18 +79,18 @@ export function AgentSettingsDialog({ options, onClose }: { options: AgentContro
       if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
       else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
     }}
-    className="no-drag glass-panel-solid shadow-glass-pop m-auto max-h-[calc(100dvh-40px)] w-[520px] max-w-[calc(100%_-_40px)] overflow-y-auto rounded-[22px] border-0 p-0 text-[var(--color-text-primary)] backdrop:bg-[var(--surface-scrim)] backdrop:backdrop-blur-[4px]">
-    <form onSubmit={(event) => { event.preventDefault(); void save(); }}>
-      <header className="flex items-start gap-3.5 px-7 pt-7">
+    className="no-drag glass-panel-solid shadow-glass-pop m-auto max-h-[calc(100dvh-40px)] w-[520px] max-w-[calc(100%_-_40px)] overflow-hidden rounded-[22px] border-0 p-0 text-[var(--color-text-primary)] backdrop:bg-[var(--surface-scrim)] backdrop:backdrop-blur-[4px]">
+    <form className="flex max-h-[calc(100dvh-40px)] flex-col" onSubmit={(event) => { event.preventDefault(); void save(); }}>
+      <header className="flex shrink-0 items-start gap-3.5 px-7 pt-7">
         <div className="shadow-glass-tile flex h-10 w-10 shrink-0 items-center justify-center rounded-[13px] bg-[var(--surface-tile)] text-[var(--color-text-secondary)]"><Bot size={20} aria-hidden="true" /></div>
         <div className="min-w-0 flex-1">
           <h2 className="text-[20px] font-medium tracking-tight">Agent mode</h2>
-          <p id={`${id}-description`} className="mt-1 text-[13px] leading-5 text-[var(--color-text-secondary)]">Configure local tools for this thread.</p>
+          <p id={`${id}-description`} className="mt-1 text-[13px] leading-5 text-[var(--color-text-secondary)]">Set permissions and choose connections for this thread.</p>
         </div>
         <button type="button" disabled={!!busy} aria-label="Close Agent settings" onClick={dismiss} className="-mr-1 -mt-1 rounded-lg p-1.5 text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--wash-chip-hover)] hover:text-[var(--color-text-primary)] disabled:opacity-40"><X size={16} /></button>
       </header>
 
-      <div className="space-y-5 px-7 py-6">
+      <div className="min-h-0 space-y-5 overflow-y-auto px-7 py-6">
         <div className="flex items-center justify-between gap-4 rounded-[13px] bg-[var(--wash-chip)] px-4 py-3.5">
           <div><label id={`${id}-enable`} htmlFor={`${id}-toggle`} className="cursor-pointer text-[13px] font-medium">Enable agent mode</label><p className="mt-0.5 text-[12px] text-[var(--color-text-tertiary)]">Only for this thread</p></div>
           <button ref={toggle} id={`${id}-toggle`} type="button" role="switch" aria-checked={draft.enabled} aria-labelledby={`${id}-enable`} disabled={blocked}
@@ -127,10 +129,12 @@ export function AgentSettingsDialog({ options, onClose }: { options: AgentContro
         </section>
 
         <p className="flex items-start gap-2 text-[12px] leading-[18px] text-[var(--color-text-tertiary)]"><Info size={13} className="mt-0.5 shrink-0" aria-hidden="true" /><span>Commands use your computer’s permissions and can access files and the network outside this folder.</span></p>
+        <McpToolSelection servers={options.mcpServers} error={options.mcpError} selected={draft.mcpTools ?? []} disabled={blocked}
+          onChange={mcpTools => { setDraft(value => ({ ...value, mcpTools })); setError(null); }} />
         {error || (options.disabledReason && !busy) ? <p role={error ? "alert" : "status"} className={`rounded-[10px] px-3 py-2.5 text-[12px] leading-5 ${error ? "bg-[var(--color-danger-soft)] text-[var(--color-danger-strong)]" : "bg-[var(--wash-chip)] text-[var(--color-text-secondary)]"}`}>{error || options.disabledReason}</p> : null}
       </div>
 
-      <footer className="flex justify-end gap-2 border-t border-[var(--color-border)] px-7 py-4">
+      <footer className="flex shrink-0 justify-end gap-2 border-t border-[var(--color-border)] px-7 py-4">
         <button type="button" disabled={!!busy} onClick={dismiss} className="rounded-[9px] bg-[var(--wash-chip)] px-4 py-2 text-[13px] text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--wash-chip-hover)] disabled:opacity-40">Cancel</button>
         <button type="submit" disabled={blocked} className="flex items-center gap-2 rounded-[9px] bg-[var(--color-cherry)] px-4 py-2 text-[13px] font-medium text-on-accent transition-colors hover:bg-[var(--color-cherry-bright)] disabled:opacity-40">{busy === "saving" ? <LoaderCircle size={14} className="animate-spin" aria-hidden="true" /> : null}{busy === "saving" ? "Saving…" : "Save changes"}</button>
       </footer>

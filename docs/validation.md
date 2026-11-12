@@ -320,9 +320,11 @@ then require a fresh ready snapshot. These checks preserve normal provider
 verification and never replay an interrupted image job or local tool action.
 
 Before releasing cross-provider AstreaAI image support, qualify verified
-1536-square generation and ordered five-reference editing from vision-capable
-Tinfoil and NEAR chats. Check that image provenance and regeneration retain the
-originating chat model while image evidence and settled usage identify AstreaAI.
+1536-square generation and ordered five-reference editing from tool-capable
+Tinfoil and NEAR chats, including generation from models without vision. Check
+that only vision-capable chat models can inspect images or upload new images.
+Check that image provenance and regeneration retain the originating chat model
+while image evidence and settled usage identify AstreaAI.
 Hosted browser support also requires a newly measured gateway whose shared
 client pin includes the same routing fix; updating the browser alone does not
 update the image-provider implementation inside the gateway.
@@ -595,6 +597,6 @@ Before publishing remote MCP support, qualify the native credential store and
 browser OAuth callback on macOS, Windows and Linux with real public and
 registered-client OAuth services. Verify refresh, cancellation, account switches,
 locked credential stores, sign-out and factory reset. Confirm the Remote
-connection form, separate Tools picker, destination-aware approvals/activity and
+connection form, MCP selection under Agent, destination-aware approvals/activity and
 privacy proof disclosures in each supported platform/theme. Local HTTP fixture
 and browser harness results do not establish live-service or Windows qualification.

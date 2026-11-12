@@ -136,7 +136,7 @@ annotation cannot grant that classification. MCP initialization/discovery retain
 the absolute deadline. Stop and timeout use bounded transport-specific MCP cancellation.
 A timed-out tool is never automatically replayed, even when marked read-only.
 Desktop uses its own account-scoped [MCP connections](mcp.md), managed
-through Settings and selected per conversation in the Tools menu. It does not launch
+through Settings and selected per conversation in the Agent dialog. It does not launch
 servers from shared CLI configuration.
 
 | Tool profile | Behavior |
@@ -235,10 +235,12 @@ Conversation image IDs remain available for later viewing and reference use.
 Successful views are restored from their tool records and conversation-local
 references or saved model checkpoints.
 
-Native code withholds and rejects image tools for nonvision models, including
-after a model switch, and rejects their new image uploads. Other file types
-retain their own model capability checks. Image tools work independently of
-Web and Agent mode and never grant local or Web permissions. Image work starts
+Native code enables `generate` when the installed image service passes its
+verified capability preflight, independently of chat vision support. It withholds
+and rejects `view_image` for chat models without vision, including after a model
+switch, and rejects their new image uploads. Other file types retain their own
+model capability checks. Image tools work independently of Web, MCP connections
+and Agent mode and never grant local or Web permissions. Image work starts
 through the LLM tool loop or an explicit per-image Regenerate action. The latter
 runs only the stored image request in a new image-only turn, preserving the chat
 prompt, original image, and later messages. The UI renders verified results with an

@@ -3452,7 +3452,7 @@ for (const vision of [false, true]) {
       const send = page.getByRole("button", { name: "Send", exact: true });
       if (!vision) {
         assert.ok(await send.isDisabled());
-        await page.getByText("Enable Images for image editing, or choose a model that supports these files.").waitFor();
+        await page.getByText("Choose a model that supports these image or file uploads.").waitFor();
       } else {
         await send.click();
         await page.waitForFunction(() => (window as any).__deletionTest.calls.some((call: any) => call.method === "attachments"));
@@ -3501,7 +3501,7 @@ test("PDF bytes upload directly and unsupported documents keep the draft", async
     assert.equal(JSON.parse(call.text!).attachments[0].file.data, textPdf("Local PDF fact").toString("base64"));
     await page.locator("textarea[data-chat-input]").fill("Keep this draft");
     await page.locator('input[type="file"]').setInputFiles({ name: "binary.docx", mimeType: "application/octet-stream", buffer: Buffer.from("binary") });
-    await page.getByRole("alert").filter({ hasText: "Choose a model that supports these files" }).waitFor();
+    await page.getByRole("alert").filter({ hasText: "Choose a model that supports these image or file uploads." }).waitFor();
     assert.ok(await page.getByRole("button", { name: "Send", exact: true }).isDisabled());
     assert.equal(await page.locator("textarea[data-chat-input]").inputValue(), "Keep this draft");
     assert.deepEqual(errors, []);
@@ -4714,22 +4714,44 @@ test("only editing the signed-in composer starts model-only verification, includ
   } finally { await page.close(); }
 });
 
-test("MCP selection in Tools applies only to that thread with Agent off", async () => {
+test("composer has no separate Tools control, including with configured MCP connections", async () => {
+  const { page, errors } = await openApp();
+  try {
+    const tools = page.getByRole("button", { name: "Tools", exact: true });
+    assert.equal(await tools.count(), 0);
+    assert.equal(await page.getByRole("button", { name: "Web", exact: true }).count(), 1);
+    assert.equal(await page.getByRole("button", { name: "Agent", exact: true }).count(), 1);
+    await page.evaluate(() => (window as any).__deletionTest.enableMcp());
+    assert.equal(await tools.count(), 0);
+    if (process.env.AXIOM_COMPOSER_SCREENSHOT) await page.locator(".composer-shell").screenshot({ path: process.env.AXIOM_COMPOSER_SCREENSHOT, animations: "disabled" });
+    await page.getByRole("button", { name: "Agent", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Agent settings", exact: true });
+    await dialog.waitFor();
+    await dialog.getByRole("region", { name: "MCP connections", exact: true }).getByRole("checkbox", { name: /echo Echo from a local server/ }).waitFor();
+    await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+    await page.evaluate(() => (window as any).axiomDesktop.agent.desktopMcp({ expectedRevision: 1, action: { kind: "delete", name: "fixture" } }));
+    assert.equal(await tools.count(), 0);
+    assert.equal(await page.getByRole("dialog", { name: "Tools for this conversation", exact: true }).count(), 0);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("MCP selection under Agent applies only to that thread with Agent off", async () => {
   const { page, errors } = await openApp();
   try {
     await page.evaluate(() => (window as any).__deletionTest.enableMcp());
     await page.getByRole("button", { name: "Viewed Existing thread", exact: true }).click();
-    await page.getByRole("button", { name: "Tools", exact: true }).click();
-    const dialog = page.getByRole("dialog", { name: "Tools for this conversation" });
+    await page.getByRole("button", { name: "Agent", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Agent settings" });
     await dialog.getByRole("checkbox", { name: /echo Echo from a local server/ }).check();
     assert.equal(await page.getByRole("button", { name: "Agent", exact: true }).getAttribute("aria-pressed"), "false");
-    await dialog.getByRole("button", { name: "Save tools" }).click();
+    await dialog.getByRole("button", { name: "Save changes" }).click();
     await dialog.waitFor({ state: "hidden" });
-    await page.getByRole("button", { name: "Tools", exact: true }).click();
+    await page.getByRole("button", { name: "Agent", exact: true }).click();
     assert.equal(await dialog.getByRole("checkbox", { name: /echo Echo from a local server/ }).isChecked(), true);
     await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
     await page.getByRole("button", { name: "New thread", exact: true }).click();
-    await page.getByRole("button", { name: "Tools", exact: true }).click();
+    await page.getByRole("button", { name: "Agent", exact: true }).click();
     assert.equal(await dialog.getByRole("checkbox", { name: /echo Echo from a local server/ }).isChecked(), false);
     assert.deepEqual(errors, []);
   } finally { await page.close(); }

@@ -284,14 +284,16 @@ adds `fileMimeTypes`; `supportsImages` remains separate. See [direct uploads](de
 Model discovery also adds optional catalog `tags` (`id`, `label`,
 `tone`, `position`); see [model tags](provider-catalogs.md#model-tags-and-picker-filters).
 
-`imageGeneration@3` exposes `generate` and `view_image` automatically for a
-vision-capable selected model when the native image service is installed. A
+`imageGeneration@3` exposes `generate` automatically when the native image
+service is installed and passes its verified capability preflight. `view_image`
+also requires a vision-capable selected chat model; generation does not. A
 prompt creates an image; an optional `reference_image_ids` array selects up to
 five distinct conversation-local images for editing or composition. The array
 defines `<image1>`, `<image2>`, etc. for that call. Prompt metadata has no Images toggle or
 per-message image permission. Native code checks model capability on every
-turn and rejects unadvertised image calls and nonvision image uploads. The earlier
-version-1 toggle and version-2 singular-reference contracts are not negotiated
+turn and rejects unavailable image calls and nonvision image uploads. Failed
+service preflights withhold both tools and provide their diagnostic to the chat
+model. The earlier version-1 toggle and version-2 singular-reference contracts are not negotiated
 for new calls; their saved tool records remain renderable. Instructions
 require an explicit user request for image creation or editing; image analysis
 alone is not such a request. Web consent and Agent/MCP authority remain separate.

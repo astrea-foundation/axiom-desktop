@@ -135,7 +135,7 @@ also requires an empty queue. Prompts and steering carry the saved settings
 revision, so queued text cannot silently inherit a different permission/directory
 configuration. A change clears cached policy grants and file-change tracking.
 Desktop supports explicitly configured [MCP connections](mcp.md). The
-Tools menu selects MCP tools per conversation independently of shell/filesystem
+Agent dialog selects MCP tools per conversation independently of shell/filesystem
 permissions; MCP can be used while Agent is off. Settings provides connection
 management, testing, tool inspection and configuration import.
 
@@ -203,22 +203,26 @@ lose an uncommitted edit.
 
 ## Images and files
 
-Image creation and editing are automatically available to vision-capable chat
-models when the native image service is installed. There is no Images toggle.
+Image creation and editing are automatically available to tool-capable chat
+models when the native image service is installed and passes its verified
+capability preflight. Generation does not require the chat model to support
+vision. There is no Images toggle, and no MCP connection, Agent mode or Web
+setting is needed.
 Ask the model to create an image or edit an uploaded or earlier generated image;
 an upload or request to describe it does not by itself request generation.
 The model uses `generate` for both operations, with up to five optional reference
 images. It refers to them as `<image1>`, `<image2>`, etc. in the order supplied
 to the tool. The image service uses ComfyUI inside the encrypted worker.
-With AstreaAI installed, vision-capable NEAR and Tinfoil chats use that same
+With AstreaAI installed, NEAR and Tinfoil chats use that same
 attested image service while keeping their selected chat model. Image receipts
 and billing identify the AstreaAI worker; saved image provenance retains the
 originating chat model for regeneration.
 Images from chat models with the catalog's **Uncensored** tag (such as the
 abliterated DeepSeek V4.1 Flash and Qwen3.8 Uncensored) use the pinned uncensored
-LoRA at strength 0.9; other chat models use the base image model. The model can optionally call
-`view_image` to inspect an uploaded or generated result before finishing its
-turn, including deciding whether a correction is needed. Its row names the
+LoRA at strength 0.9; other chat models use the base image model. Vision-capable
+chat models can optionally call `view_image` to inspect an uploaded or generated
+result before finishing a turn, including deciding whether a correction is
+needed. Its row names the
 inspected image ID; expand it to see that image. Expand an image request to see
 its prompt, aspect ratio, output size and any reference images as cards labelled
 `<image1>`, `<image2>`, etc., above the result. While the model is writing a
@@ -232,8 +236,11 @@ to select a destination. Generated images are attributed to AstreaAI beneath the
 Save image also remains available beneath the result;
 each save suggests a fresh random PNG filename. Image generation and editing show a
 live percentage and progress bar. Queued work displays 0%; finishing stays at
-99% until the verified result is ready; the percentage and bar then disappear. Nonvision
-models cannot use image tools or accept new image uploads.
+99% until the verified result is ready; the percentage and bar then disappear.
+Chat models without vision can create images and edit earlier generated images
+by their conversation-local IDs, but cannot inspect results or accept new image
+uploads. A failed image-service preflight withholds image tools and supplies
+the native diagnostic to the chat model, so it can explain the service failure.
 
 Opening an image-heavy conversation loads its messages and image dimensions
 first. Original generated images load as they approach the visible part of the

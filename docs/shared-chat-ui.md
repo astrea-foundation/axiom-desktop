@@ -18,6 +18,9 @@ ACP remains a native adapter: no Node transport or Electron implementation is
 included in either package. `ChatHostProvider` injects native attachment reads,
 usage, interaction resolution and window chrome; the browser supplies its own
 ports. Agent/MCP presentation is enabled only when a host supplies that control.
+Per-conversation MCP selection lives inside the Agent dialog and remains usable
+with Agent mode off; the composer has no separate Tools control. Connection
+management stays in Settings.
 
 `VaultScreen` supplies callback-driven first-use password confirmation, recovery
 code download/copy and saved-code acknowledgment, password unlock, recovery with

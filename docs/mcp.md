@@ -91,9 +91,9 @@ reconnection and review. Concurrent turns share token-refresh coordination.
 
 ## Choose tools per conversation
 
-Open **Tools** beside the composer. Connections are grouped as **Remote
-services** and **On this device**. Select a connection's tools together or
-individual tools from enabled, tested connections, then **Save tools**.
+Open **Agent** beside the composer and use **MCP connections**. Connections are
+grouped as **Remote services** and **On this device**. Select a connection's tools
+together or individual tools from enabled, tested connections, then **Save changes**.
 Selections persist with that conversation. Other and new conversations start
 without those tools; tools can also be selected before a new conversation's
 first message.
@@ -104,9 +104,12 @@ authorize MCP. Calls ask for approval unless narrow access has been granted
 for the conversation. Grants expire when the native runtime restarts or
 authority changes; configured deny/ask rules remain binding.
 
-Remote selections show a globe indicator on **Tools** and a sharing notice in
-the picker. Approvals show the destination and inputs before dispatch. Tool
-activity records the connection and destination used at the time of the call,
+There is no separate Tools control. Built-in Web and image generation are
+independent of MCP connections.
+
+Remote selections show a globe indicator on **Agent** and a sharing notice in
+its MCP connections section. Approvals show the destination and inputs before
+dispatch. Tool activity records the connection and destination used at the time of the call,
 so editing or removing a connection does not rewrite historical disclosure.
 Details distinguish completed calls, attempts with potentially unknown outcomes,
 and proposed calls that never started. Request start is not proof that the

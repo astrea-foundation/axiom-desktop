@@ -56,7 +56,7 @@ pub(crate) fn configure_runtime_definition(
         "Omit aspect_ratio to retain a reference's shape."
     };
     tool.function.description = format!(
-        "Create or change one image only when the user requests it. Images work best at higher resolutions; the native client computes the largest supported dimensions. Available aspect ratios: {}. New images default to {} at {}×{}. Use up to {} distinct conversation-local reference_image_ids; refer to them as <image1>, <image2>, etc. in order and describe what to preserve. {} Results appear automatically; use view_image if you want to inspect the result before answering.",
+        "Create or change one image only when the user requests it. Images work best at higher resolutions; the native client computes the largest supported dimensions. Available aspect ratios: {}. New images default to {} at {}×{}. Use up to {} distinct conversation-local reference_image_ids; refer to them as <image1>, <image2>, etc. in order and describe what to preserve. {} Results appear automatically; if view_image is available, you may use it to inspect the result before answering.",
         p.aspect_ratios.join(", "),
         p.default_aspect_ratio,
         size.width,
@@ -353,7 +353,7 @@ fn image_result(
 ) -> Result<ToolResult> {
     let id = context.images.add_generated(&image)?;
     let mut result = ToolResult::success(format!(
-        "Created one {}×{} image. Image ID: {id}. It is displayed in this conversation. Cost: {} microUSD. Call view_image with this image_id to inspect the result, or generate with this image_id in reference_image_ids for further changes; do not invent a download URL.",
+        "Created one {}×{} image. Image ID: {id}. It is displayed in this conversation. Cost: {} microUSD. If view_image is available, call it with this image_id to inspect the result. Use generate with this image_id in reference_image_ids for further changes; do not invent a download URL.",
         image.width,
         image.height,
         image.usage.cost_microusd.as_deref().unwrap_or("unknown")
@@ -374,7 +374,7 @@ impl Tool for ImageGenerationTool {
         "generate"
     }
     fn description(&self) -> &'static str {
-        "Create one image with Axiom's encrypted image service only when the user requests image creation or changes. Provide a self-contained prompt and optional aspect_ratio such as 1:1, 16:9, 9:16, 3:2 or 4:3. Images work best at higher resolutions: the native client chooses the largest supported image with that exact aspect ratio on the 32-pixel grid, within 2,359,296 pixels. New images default to 1:1 square at 1536×1536. Available aspect ratios: 1:1, 2:3, 3:2, 3:4, 4:3, 9:16, 16:9, 1:2, 2:1, 9:21 and 21:9. To edit or use references, supply up to five exact conversation-local image IDs in reference_image_ids. In the prompt refer to them as <image1>, <image2>, etc. in that array's order; describe each reference's role and what to preserve. Without an aspect_ratio, reference-based calls preserve the first reference's output dimensions or aspect ratio within the limits. The result is displayed automatically. You may call view_image to inspect it before answering."
+        "Create one image with Axiom's encrypted image service only when the user requests image creation or changes. Provide a self-contained prompt and optional aspect_ratio such as 1:1, 16:9, 9:16, 3:2 or 4:3. Images work best at higher resolutions: the native client chooses the largest supported image with that exact aspect ratio on the 32-pixel grid, within 2,359,296 pixels. New images default to 1:1 square at 1536×1536. Available aspect ratios: 1:1, 2:3, 3:2, 3:4, 4:3, 9:16, 16:9, 1:2, 2:1, 9:21 and 21:9. To edit or use references, supply up to five exact conversation-local image IDs in reference_image_ids. In the prompt refer to them as <image1>, <image2>, etc. in that array's order; describe each reference's role and what to preserve. Without an aspect_ratio, reference-based calls preserve the first reference's output dimensions or aspect ratio within the limits. The result is displayed automatically. If view_image is available, you may call it to inspect the result before answering."
     }
     fn parameters(&self) -> Value {
         json!({"type":"object", "properties":{
