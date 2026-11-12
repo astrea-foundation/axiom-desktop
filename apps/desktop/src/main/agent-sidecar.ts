@@ -252,6 +252,7 @@ export class AgentSidecar {
 
   getAttachments(threadId: string, userItemId: string) { return this.requireClient().getAttachments(threadId, userItemId); }
   regenerateImage(threadId: string, callId: string) { return this.requireClient().regenerateImage(threadId, callId); }
+  resolveImage(threadId: string, imageId: string) { return this.requireClient().resolveImage(threadId, imageId); }
 
   prompt(sessionId: string, text: string, clientItemId: string, webEnabled = false, agentRevision = 0, revision?: { userItemId: string; expectedRevision: number }, attachments: PromptAttachment[] = [], mcpRevision?: number) {
     return this.requireClient().prompt(sessionId, text, clientItemId, webEnabled, agentRevision, revision, attachments, mcpRevision);

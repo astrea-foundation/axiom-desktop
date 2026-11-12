@@ -77,6 +77,8 @@ export interface ClientSessionState {
   interactions: PendingInteraction[];
   running: boolean;
   activeTurnId?: string | null;
+  /** Turn whose model output is currently writing a tool call; display-only. */
+  toolCallDraftTurnId?: string | null;
   desktopAgent?: DesktopAgentSettings | null;
   desktopMcp?: Pick<DesktopMcpResponse, "revision" | "selectedTools"> | null;
   needsResync: boolean;
@@ -551,7 +553,7 @@ export class AxiomStateStore extends EventEmitter {
   setRunning(sessionId: string, running: boolean): void {
     const session = (this.value.sessions[sessionId] ??= emptySession(sessionId));
     session.running = running;
-    if (!running) session.activeTurnId = null;
+    if (!running) { session.activeTurnId = null; session.toolCallDraftTurnId = null; }
     this.changed();
   }
 
@@ -608,6 +610,7 @@ export class AxiomStateStore extends EventEmitter {
       }
       const kind = type === "user_message_chunk" ? "user" : type === "agent_message_chunk" ? "assistant" : "reasoning";
       const text = textFromContent(update.content);
+      if (kind === "assistant" && text) session.toolCallDraftTurnId = null;
       const messageId = typeof update.messageId === "string"
         ? update.messageId
         : metadata?.timelineItemId ?? metadata?.clientItemId ?? crypto.randomUUID();
@@ -640,6 +643,8 @@ export class AxiomStateStore extends EventEmitter {
       });
       if (metadata) this.textRevisions.set(record.sessionId, metadata.threadRevision);
     } else if (type === "tool_call" || type === "tool_call_update") {
+      // The validated call replaces the transient "writing tool call" row.
+      session.toolCallDraftTurnId = null;
       const callId = String(update.toolCallId ?? update.id ?? metadata?.timelineItemId ?? crypto.randomUUID());
       const existing = session.timeline.find((item) => item.id === callId || item.tool?.callId === callId);
       if (existing) {
@@ -732,7 +737,7 @@ export class AxiomStateStore extends EventEmitter {
     if (session.settings?.model && session.settings.model !== thread.selectedModel) this.invalidateSecurity(session);
     session.settings = settingsFromThread(thread);
     session.running = !["ready", "closed"].includes(thread.lifecycle);
-    if (!session.running) session.activeTurnId = null;
+    if (!session.running) { session.activeTurnId = null; session.toolCallDraftTurnId = null; }
     session.threadRevision = thread.revision;
     session.lastTimelineSequence = thread.lastTimelineSequence;
     session.lastMessageAt = thread.lastMessageAt ?? null;
@@ -753,6 +758,12 @@ export class AxiomStateStore extends EventEmitter {
     else if (event.kind === "active_turn_changed" && sessionId) {
       const session = (this.value.sessions[sessionId] ??= emptySession(sessionId));
       session.activeTurnId = event.turnId ?? null;
+      session.toolCallDraftTurnId = null;
+    }
+    else if (event.kind === "tool_call_drafting" && sessionId) {
+      const session = this.value.sessions[sessionId];
+      if (session?.running && typeof event.turnId === "string"
+        && (!session.activeTurnId || session.activeTurnId === event.turnId)) session.toolCallDraftTurnId = event.turnId;
     }
     else if (event.kind === "collections_changed") {
       if (event.state.revision >= this.value.collections.revision) this.value.collections = event.state;

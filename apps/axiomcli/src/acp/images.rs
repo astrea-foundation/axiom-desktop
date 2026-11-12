@@ -56,6 +56,55 @@ pub(super) async fn read(
     result.map_err(|error| agent_client_protocol::util::internal_error(error.to_string()))?
 }
 
+/// Resolve one conversation-local `img_…` ID for display. The catalog is
+/// rebuilt from this thread's saved history only, so the result is exactly the
+/// image an image tool in this conversation would receive for the same ID.
+pub(super) async fn resolve(
+    context: &ServerContext,
+    request: extension::ResolveImageRequest,
+    responder: Responder<extension::ResolveImageResponse>,
+    _connection: &ConnectionTo<Client>,
+) -> agent_client_protocol::Result<()> {
+    if !extension_enabled(&context.extension_state, ExtensionFeature::ImageResolution) {
+        return responder.respond_with_error(extension_not_negotiated());
+    }
+    if !crate::image_tool::valid_image_id(&request.image_id) {
+        return responder.respond_with_internal_error("invalid image ID");
+    }
+    let Some(store) = &context.store else {
+        return responder.respond_with_internal_error("image storage is unavailable");
+    };
+    let account = match context.account_work.register_store(store) {
+        Ok(account) => account,
+        Err(error) => return responder.respond_with_error(agent_error(error)),
+    };
+    let Ok(thread_id) = request.thread_id.parse::<crate::app::SessionId>() else {
+        return responder.respond_with_internal_error("invalid thread ID");
+    };
+    // Loading history and hashing uploads must not block other native requests.
+    let result = tokio::task::spawn_blocking(move || {
+        let image = account.read(|store| {
+            let history = store.load(&thread_id)?;
+            crate::image_tool::ImageCatalog::from_history(&thread_id, &history)?
+                .resolve(&request.image_id)
+        });
+        match image {
+            Ok(image) => account.publish(|| {
+                responder.respond(extension::ResolveImageResponse {
+                    image_id: image.id,
+                    origin: image.origin.into(),
+                    name: image.name,
+                    data: image.image.data.clone(),
+                    mime_type: image.image.mime_type.clone(),
+                })
+            }),
+            Err(error) => responder.respond_with_error(agent_error(error)),
+        }
+    })
+    .await;
+    result.map_err(|error| agent_client_protocol::util::internal_error(error.to_string()))?
+}
+
 fn recipe(
     history: &[crate::app::EventEnvelope],
     source: &str,

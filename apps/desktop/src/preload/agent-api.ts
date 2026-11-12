@@ -2,7 +2,7 @@ import { ipcRenderer } from "electron";
 import { AgentStateImages } from "./agent-state-images";
 import type { AgentImagePacket, AgentStatePacket } from "../shared/agent-state";
 import type { GeneratedImageUrl } from "./agent-state-images";
-import type { PromptAttachment, GetAttachmentsResponse } from "@axiom/axiom-acp-client";
+import type { PromptAttachment, GetAttachmentsResponse, ResolveImageResponse } from "@axiom/axiom-acp-client";
 import type {
   AccountStatusResponse,
   BillingStatusResponse,
@@ -59,6 +59,7 @@ export interface AgentApi {
   promptWithAttachments: (sessionId: string, text: string, clientItemId: string, webEnabled: boolean, agentRevision: number, attachments: PromptAttachment[], mcpRevision?: number) => Promise<PromptResult>;
   getAttachments: (threadId: string, userItemId: string) => Promise<GetAttachmentsResponse>;
   regenerateImage: (threadId: string, callId: string) => Promise<{ callId: string }>;
+  resolveImage: (threadId: string, imageId: string) => Promise<ResolveImageResponse>;
   loadGeneratedImage: (assetId: string) => Promise<GeneratedImageUrl>;
   releaseGeneratedImage: (assetId: string) => void;
   revisePrompt: (sessionId: string, text: string, userItemId: string, expectedRevision: number, webEnabled: boolean, agentRevision: number, mcpRevision?: number) => Promise<PromptResult>;
@@ -131,6 +132,7 @@ export const agentApi: AgentApi = {
   promptWithAttachments: (sessionId, text, clientItemId, webEnabled, agentRevision, attachments, mcpRevision) => invoke("prompt-with-attachments", sessionId, text, clientItemId, webEnabled, agentRevision, attachments, mcpRevision),
   getAttachments: (threadId, userItemId) => invoke("attachments", threadId, userItemId),
   regenerateImage: (threadId, callId) => invoke("image-regenerate", threadId, callId),
+  resolveImage: (threadId, imageId) => invoke("image-resolve", threadId, imageId),
   loadGeneratedImage: (assetId) => stateImages.load(assetId, (context, id) => invoke<AgentImagePacket>("image-read", context, id)),
   releaseGeneratedImage: (assetId) => stateImages.release(assetId),
   revisePrompt: (sessionId, text, userItemId, expectedRevision, webEnabled, agentRevision, mcpRevision) => invoke("prompt-revise", sessionId, text, userItemId, expectedRevision, webEnabled, agentRevision, mcpRevision),

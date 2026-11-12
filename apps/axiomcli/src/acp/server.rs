@@ -188,6 +188,14 @@ pub async fn serve_stdio(
         async,
         builder,
         context,
+        images::resolve,
+        extension::ResolveImageRequest,
+        extension::ResolveImageResponse
+    );
+    let builder = request_handler!(
+        async,
+        builder,
+        context,
         threads::delete_preview,
         DeletePreviewRequest,
         DeletePreviewResponse

@@ -2062,6 +2062,33 @@ async fn desktop_timeline_restore_transfers_saved_images_once_and_preserves_acp_
                         .await;
                     assert!(resumed.response(request_id).await.get("error").is_some());
                 }
+                // Conversation-local IDs resolve to the exact saved image the
+                // image tools use, and never across threads.
+                let image_id = format!("img_{:032x}", 1);
+                resumed
+                    .send(
+                        &json!({"jsonrpc":"2.0","id":8,"method":"_axiom/image/resolve",
+                    "params":{"threadId":session,"imageId":image_id}}),
+                    )
+                    .await;
+                let resolved = resumed.response(8).await;
+                assert_eq!(resolved["result"]["imageId"], image_id);
+                assert_eq!(resolved["result"]["origin"], "generated");
+                assert_eq!(resolved["result"]["mimeType"], "image/png");
+                assert_eq!(resolved["result"]["data"], saved_images[1]);
+                for (request_id, thread, image) in [
+                    (9, session.clone(), format!("img_{:032x}", 9)),
+                    (10, SessionId::new().to_string(), image_id.clone()),
+                    (11, session.clone(), "img_../../secret".to_owned()),
+                ] {
+                    resumed
+                        .send(
+                            &json!({"jsonrpc":"2.0","id":request_id,"method":"_axiom/image/resolve",
+                        "params":{"threadId":thread,"imageId":image}}),
+                        )
+                        .await;
+                    assert!(resumed.response(request_id).await.get("error").is_some());
+                }
                 resumed.close().await;
                 continue;
             }

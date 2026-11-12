@@ -82,11 +82,13 @@ pub struct FeatureVersions {
     /// Version 2 exposes one image tool automatically for vision models.
     pub image_generation: u16,
     /// Metadata-only image presentation with account-scoped on-demand reads.
+    /// Version 2 adds conversation-local image ID resolution.
     pub image_resources: u16,
     pub steering: u16,
     pub message_revision: u16,
     pub attachments: u16,
     pub compaction: u16,
+    /// Version 2 adds display-only tool-call drafting activity.
     pub activity: u16,
     /// Explicit application command invocation; prompt text stays literal.
     pub command_invocation: u16,
@@ -110,12 +112,12 @@ impl FeatureVersions {
             security_evidence: 4,
             web_consent: 1,
             image_generation: 4,
-            image_resources: 1,
+            image_resources: 2,
             steering: 1,
             message_revision: 1,
             attachments: 2,
             compaction: 1,
-            activity: 1,
+            activity: 2,
             command_invocation: 1,
         }
     }
@@ -847,6 +849,13 @@ pub enum ActivityEvent {
     ProfilePreferencesChanged {
         preferences: ProfilePreferences,
     },
+    /// The model began emitting tool-call arguments in this turn. Display-only:
+    /// no name or arguments are exposed, and the call itself arrives later as
+    /// an ordinary validated ACP tool call.
+    ToolCallDrafting {
+        #[serde(rename = "turnId")]
+        turn_id: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -996,6 +1005,28 @@ pub struct ReadImageResponse {
     pub width: u32,
     pub height: u32,
     pub sha256: String,
+}
+
+/// Read one conversation-local image by the exact `img_…` ID that image tools
+/// accept, so a client can show what `view_image` inspected or which references
+/// an image request used. IDs never resolve across threads or accounts.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcRequest)]
+#[request(method = "_axiom/image/resolve", response = ResolveImageResponse)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ResolveImageRequest {
+    pub thread_id: String,
+    pub image_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcResponse)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolveImageResponse {
+    pub image_id: String,
+    /// `uploaded`, `generated` or `edited`.
+    pub origin: String,
+    pub name: String,
+    pub data: String,
+    pub mime_type: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcRequest)]
@@ -1474,6 +1505,8 @@ pub struct ProtocolSchema {
     pub regenerate_image_response: RegenerateImageResponse,
     pub read_image_request: ReadImageRequest,
     pub read_image_response: ReadImageResponse,
+    pub resolve_image_request: ResolveImageRequest,
+    pub resolve_image_response: ResolveImageResponse,
     pub delivery_metadata: DeliveryMetadata,
     pub list_threads_request: ListThreadsRequest,
     pub list_threads_response: ListThreadsResponse,

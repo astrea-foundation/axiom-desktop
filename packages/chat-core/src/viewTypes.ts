@@ -425,6 +425,8 @@ export interface ClientSessionState {
   interactions: PendingInteraction[];
   running: boolean;
   activeTurnId?: string | null;
+  /** Turn whose model output is currently writing a tool call; display-only. */
+  toolCallDraftTurnId?: string | null;
   desktopAgent?: DesktopAgentSettings | null;
   desktopMcp?: Pick<DesktopMcpResponse, "revision" | "selectedTools"> | null;
   needsResync: boolean;

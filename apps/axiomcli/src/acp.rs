@@ -955,6 +955,9 @@ fn extension_activity(event: &AppEvent) -> Option<ActivityEvent> {
                 .map(|path| path.display().to_string())
                 .collect(),
         }),
+        AppEvent::ToolCallDrafting { turn_id } => Some(ActivityEvent::ToolCallDrafting {
+            turn_id: turn_id.to_string(),
+        }),
         AppEvent::ContextCompacted {
             messages_before, ..
         } => Some(ActivityEvent::Compaction {
@@ -1508,6 +1511,8 @@ enum ExtensionFeature {
     ImageGeneration = 1 << 19,
     ImageRegeneration = 1 << 20,
     ImageResources = 1 << 21,
+    ImageResolution = 1 << 23,
+    ToolCallDrafting = 1 << 24,
 }
 
 struct ExtensionState {
@@ -1554,6 +1559,9 @@ impl ExtensionState {
         }
         if features.image_resources >= 1 {
             mask |= ExtensionFeature::ImageResources as u64;
+        }
+        if features.image_resources >= 2 {
+            mask |= ExtensionFeature::ImageResolution as u64;
         }
         if features.attachments >= 2 {
             mask |= ExtensionFeature::Attachments as u64;
@@ -1602,6 +1610,9 @@ impl ExtensionState {
         }
         if features.activity >= 1 {
             mask |= ExtensionFeature::Activity as u64;
+        }
+        if features.activity >= 2 {
+            mask |= ExtensionFeature::ToolCallDrafting as u64;
         }
         if features.desktop_chat >= 1 {
             mask |= ExtensionFeature::DesktopChat as u64;
@@ -1847,6 +1858,8 @@ fn send_event(
     } = delivery;
     if let Some(extension_state) = extension_state
         && let Some(activity) = extension_activity(&event)
+        && (!matches!(activity, ActivityEvent::ToolCallDrafting { .. })
+            || extension_state.feature_enabled(ExtensionFeature::ToolCallDrafting))
     {
         send_extension_activity_correlated(
             connection,
@@ -2364,6 +2377,30 @@ mod tests {
                 }
             })
         );
+    }
+
+    #[test]
+    fn tool_call_drafting_is_negotiated_display_progress_without_call_details() {
+        let turn_id = TurnId::new();
+        let event = extension_activity(&AppEvent::ToolCallDrafting {
+            turn_id: turn_id.clone(),
+        })
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(event).unwrap(),
+            serde_json::json!({"kind": "tool_call_drafting", "turnId": turn_id.to_string()})
+        );
+        let state = ExtensionState::new();
+        let mut features = FeatureVersions::all();
+        features.activity = 1;
+        features.image_resources = 1;
+        state.negotiate(Some(features));
+        assert!(state.feature_enabled(ExtensionFeature::Activity));
+        assert!(!state.feature_enabled(ExtensionFeature::ToolCallDrafting));
+        assert!(!state.feature_enabled(ExtensionFeature::ImageResolution));
+        state.negotiate(Some(FeatureVersions::all()));
+        assert!(state.feature_enabled(ExtensionFeature::ToolCallDrafting));
+        assert!(state.feature_enabled(ExtensionFeature::ImageResolution));
     }
 
     #[tokio::test]

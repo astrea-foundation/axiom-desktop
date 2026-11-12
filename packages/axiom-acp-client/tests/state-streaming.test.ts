@@ -373,3 +373,24 @@ test("account switches clear stream revision tracking with the account-local tim
   store.standardUpdate(delta(1, "new"));
   assert.equal(store.snapshot().sessions.thread!.timeline[0]?.text, "new");
 });
+
+test("tool-call drafting shows only for the running turn and the validated call replaces it", () => {
+  const store = new AxiomStateStore();
+  store.replaceTimeline([{ ...page(1, "Let me edit that."), activeTurnId: "turn" }]);
+  const drafting = (sequence: number, turnId: string) => store.extensionEvent({ runtimeInstanceId: "runtime", sessionId: "thread",
+    sequence, threadRevision: 1, occurredAt: "2026-09-07T00:00:00Z", event: { kind: "tool_call_drafting", turnId } });
+  drafting(1, "older-turn");
+  assert.equal(store.snapshot().sessions.thread!.toolCallDraftTurnId ?? null, null, "a stale turn cannot show progress");
+  drafting(2, "turn");
+  assert.equal(store.snapshot().sessions.thread!.toolCallDraftTurnId, "turn");
+  store.standardUpdate(toolUpdate(2, "call"));
+  assert.equal(store.snapshot().sessions.thread!.toolCallDraftTurnId, null);
+  assert.equal(store.snapshot().sessions.thread!.timeline.at(-1)!.tool?.callId, "call");
+
+  drafting(3, "turn");
+  store.standardUpdate(delta(3, " More text."));
+  assert.equal(store.snapshot().sessions.thread!.toolCallDraftTurnId, null, "resumed text ends the draft");
+  drafting(4, "turn");
+  store.setRunning("thread", false);
+  assert.equal(store.snapshot().sessions.thread!.toolCallDraftTurnId, null, "an ended turn cannot leave a draft row");
+});

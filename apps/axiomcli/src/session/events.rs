@@ -1064,7 +1064,11 @@ pub(super) fn persist_event(
         }
         // Attestation reports are public but ephemeral; persist terminal receipt
         // verification separately and never restore a live lease from history.
-        AppEvent::SecurityEvidenceUpdated { .. } | AppEvent::ModelHistoryCheckpoint { .. } => {}
+        // Drafting progress is display-only; the validated tool call that
+        // follows is the durable timeline item.
+        AppEvent::SecurityEvidenceUpdated { .. }
+        | AppEvent::ModelHistoryCheckpoint { .. }
+        | AppEvent::ToolCallDrafting { .. } => {}
         AppEvent::ResponseVerified { turn_id } => {
             mark_response_verified(transaction, &thread_id, &turn_id.to_string(), &now)?;
         }

@@ -4,7 +4,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ToolActivity } from "@axiom/axiom-acp-client";
 import { ToolCallCard } from "../src/renderer/src/components/ToolCallCard";
-import { toolFailureReason, toolLabel, toolSearchSources } from "../src/renderer/src/components/toolPresentation";
+import { imageRequestSummary, toolFailureReason, toolLabel, toolSearchSources, viewedImageId } from "../src/renderer/src/components/toolPresentation";
 
 const search: ToolActivity = {
   callId: "search", title: "web_search", kind: "search", status: "completed",
@@ -47,6 +47,39 @@ test("generate renders ordered references and preserves percentage progress", ()
   assert.equal(toolLabel({...image, input: {prompt: "A blue mug", reference_image_ids: []}}), "Generating image · 38%");
   const html = renderToStaticMarkup(createElement(ToolCallCard, {tool: image}));
   assert.match(html, /aria-valuenow="38"/);
+});
+
+test("view_image names the inspected image and never shows raw tool output", () => {
+  const id = `img_${"3e".repeat(16)}`;
+  const view: ToolActivity = { callId: "view", name: "view_image", title: "view_image", kind: "other", status: "completed",
+    input: { image_id: id }, locations: [],
+    content: [{ type: "text", text: `Viewed image ${id}. The image is supplied as visual input after the tool responses.` }] };
+  assert.equal(viewedImageId(view), id);
+  assert.equal(toolLabel(view), `Viewed image ${id}`);
+  assert.equal(toolLabel({ ...view, status: "in_progress" }), `Viewing image ${id}`);
+  assert.equal(toolLabel({ ...view, input: { image_id: "../../etc/passwd" } }), "Viewed image");
+  assert.match(toolLabel({ ...view, status: "failed" }), /^Image viewing failed/);
+  const html = renderToStaticMarkup(createElement(ToolCallCard, { tool: view, threadId: "thread" }));
+  assert.match(html, /aria-expanded="false"/);
+  assert.doesNotMatch(html, /supplied as visual input|&quot;input&quot;|"output"/);
+  const failed = renderToStaticMarkup(createElement(ToolCallCard, { tool: { ...view, status: "failed" } }));
+  assert.doesNotMatch(failed, /aria-expanded/, "a failed view has no image to show");
+});
+
+test("image requests summarize prompt, aspect ratio and ordered references without raw arguments", () => {
+  const first = `img_${"a".repeat(32)}`, second = `img_${"b".repeat(32)}`;
+  const tool: ToolActivity = { callId: "image", name: "generate", title: "generate", kind: "other", status: "completed",
+    input: { prompt: "Put <image1> on <image2>", reference_image_ids: [first, second, "not-an-id"], aspect_ratio: "16:9" },
+    content: [], locations: [] };
+  assert.deepEqual(imageRequestSummary(tool), { prompt: "Put <image1> on <image2>", aspectRatio: "16:9", references: [first, second] });
+  assert.deepEqual(imageRequestSummary({ ...tool, input: { prompt: "A mug" } }), { prompt: "A mug", aspectRatio: null, references: [] });
+  assert.deepEqual(imageRequestSummary({ ...tool, name: "generate_image", input: { prompt: "Blue", image_id: first, width: 1024, height: 768 } }),
+    { prompt: "Blue", aspectRatio: "4:3", references: [first] });
+  assert.equal(imageRequestSummary({ ...tool, input: { prompt: "Again", width: 1216, height: 1824 } })!.aspectRatio, "2:3");
+  assert.equal(imageRequestSummary({ ...tool, input: {} }), null);
+  assert.equal(imageRequestSummary({ ...tool, name: "web_search", input: { prompt: "x" } }), null);
+  const failed = renderToStaticMarkup(createElement(ToolCallCard, { tool: { ...tool, status: "failed" } }));
+  assert.match(failed, /aria-expanded="false"/, "a failed request keeps its prompt viewable");
 });
 
 test("web tools use phase-aware TUI-style action and target labels", () => {
