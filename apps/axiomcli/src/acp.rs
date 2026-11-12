@@ -1628,9 +1628,9 @@ enum ExtensionFeature {
     ImageGeneration = 1 << 19,
     ImageRegeneration = 1 << 20,
     ImageResources = 1 << 21,
-    RemoteMcp = 1 << 23,
-    ImageResolution = 1 << 24,
-    ToolCallDrafting = 1 << 25,
+    RemoteMcp = 1 << 24,
+    ImageResolution = 1 << 25,
+    ToolCallDrafting = 1 << 26,
 }
 
 struct ExtensionState {

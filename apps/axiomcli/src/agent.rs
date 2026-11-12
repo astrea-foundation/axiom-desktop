@@ -9110,8 +9110,6 @@ mod engine_tests {
         assert_eq!(messages.last().unwrap().content, "What marker?");
     }
 
-
-
     #[tokio::test]
     async fn provider_failure_retains_partial_response_for_the_next_prompt() {
         let provider = Arc::new(PartialFailureProvider {
