@@ -258,13 +258,22 @@ pub(super) fn project_tool(
     projection.push(
         parse_time(&item.created_at),
         AppEvent::ToolProposed {
+            mcp_source: item
+                .metadata
+                .get("mcp_source")
+                .and_then(|v| serde_json::from_value(v.clone()).ok()),
             turn_id,
             call_id: call_id.clone(),
             name: name.clone(),
             arguments,
         },
     );
-    if item.status != TimelineItemStatus::Pending {
+    if item
+        .metadata
+        .get("started")
+        .and_then(Value::as_bool)
+        .unwrap_or(item.status != TimelineItemStatus::Pending)
+    {
         projection.push(
             parse_time(&item.created_at),
             AppEvent::ToolStarted {

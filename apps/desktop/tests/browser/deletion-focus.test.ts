@@ -3156,7 +3156,7 @@ test("PDF bytes upload directly and unsupported documents keep the draft", async
 });
 
 
-test("gift redemption is masked, updates balance, retries safely and clears on account switch", async () => {
+test("gift redemption shows the code, updates balance, retries safely and clears on account switch", async () => {
   const {page, errors} = await openApp();
   try {
     await page.evaluate(() => {
@@ -3176,8 +3176,8 @@ test("gift redemption is masked, updates balance, retries safely and clears on a
     const code = "AXG-AAAA-AAAA-AAAA-AAAA-AAAA-AAAA-AAAA-AAAA";
     const field = page.getByLabel("Gift code", {exact: true});
     await field.fill(code);
-    assert.equal(await field.getAttribute("type"), "password");
-    if (process.env.AXIOM_GIFT_CAPTURE_PATH) await page.screenshot({path: process.env.AXIOM_GIFT_CAPTURE_PATH});
+    assert.equal(await field.getAttribute("type"), "text");
+    if (process.env.AXIOM_GIFT_CAPTURE_PATH) await page.screenshot({path: process.env.AXIOM_GIFT_CAPTURE_PATH, animations: "disabled"});
     await page.getByRole("button", {name: "Redeem", exact: true}).click();
     await page.getByRole("status").filter({hasText: "$25.00 added to your account."}).waitFor();
     assert.equal(await field.inputValue(), "");
@@ -4255,22 +4255,22 @@ test("only editing the signed-in composer starts model-only verification, includ
   } finally { await page.close(); }
 });
 
-test("MCP selection in Agent settings applies only to that thread with Agent off", async () => {
+test("MCP selection in Tools applies only to that thread with Agent off", async () => {
   const { page, errors } = await openApp();
   try {
     await page.evaluate(() => (window as any).__deletionTest.enableMcp());
     await page.getByRole("button", { name: "Viewed Existing thread", exact: true }).click();
-    await page.getByRole("button", { name: "Agent", exact: true }).click();
-    const dialog = page.getByRole("dialog", { name: "Agent settings" });
+    await page.getByRole("button", { name: "Tools", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Tools for this conversation" });
     await dialog.getByRole("checkbox", { name: /echo Echo from a local server/ }).check();
-    assert.equal(await dialog.getByRole("switch", { name: "Enable agent mode" }).getAttribute("aria-checked"), "false");
-    await dialog.getByRole("button", { name: "Save changes" }).click();
+    assert.equal(await page.getByRole("button", { name: "Agent", exact: true }).getAttribute("aria-pressed"), "false");
+    await dialog.getByRole("button", { name: "Save tools" }).click();
     await dialog.waitFor({ state: "hidden" });
-    await page.getByRole("button", { name: "Agent", exact: true }).click();
+    await page.getByRole("button", { name: "Tools", exact: true }).click();
     assert.equal(await dialog.getByRole("checkbox", { name: /echo Echo from a local server/ }).isChecked(), true);
     await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
     await page.getByRole("button", { name: "New thread", exact: true }).click();
-    await page.getByRole("button", { name: "Agent", exact: true }).click();
+    await page.getByRole("button", { name: "Tools", exact: true }).click();
     assert.equal(await dialog.getByRole("checkbox", { name: /echo Echo from a local server/ }).isChecked(), false);
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
@@ -4282,17 +4282,18 @@ test("MCP settings add and test a local server without displaying saved secrets"
     await page.evaluate(() => (window as any).__deletionTest.enableMcp());
     await openAccountScreen(page, "Settings");
     await page.getByRole("tab", { name: "MCP connections", exact: true }).click();
-    await page.getByRole("button", { name: "Add local server" }).click();
-    await page.getByRole("textbox", { name: "Name", exact: true }).fill("new_local");
+    await page.getByRole("button", { name: "Add connection" }).click();
+    await page.getByRole("radio", { name: "Local process", exact: true }).check();
+    await page.getByRole("textbox", { name: /^Name/ }).fill("new_local");
     await page.getByRole("textbox", { name: "Command", exact: true }).fill("npx");
     await page.getByRole("textbox", { name: "Arguments (JSON array)" }).fill('["-y","example-server"]');
     await page.getByRole("button", { name: "Add variable", exact: true }).click();
     await page.getByRole("textbox", { name: "Variable 1 name" }).fill("API_KEY");
     await page.getByLabel("Variable 1 value").fill("browser-fixture-secret-value");
     await page.getByRole("button", { name: "Save connection" }).click();
-    const server = page.getByRole("heading", { name: "new_local", exact: true }).locator("..").locator("..");
+    const server = page.getByRole("region", { name: "new_local connection" });
     await server.getByRole("button", { name: "Test connection" }).click();
-    await server.getByText(/Tested · 1 tools/).waitFor();
+    await server.getByText(/Ready · 1 tool/).waitFor();
     await server.getByText("Inspect tools").click();
     await server.getByText("mcp__new_local__echo", { exact: true }).waitFor();
     await server.getByRole("button", { name: "Edit", exact: true }).click();

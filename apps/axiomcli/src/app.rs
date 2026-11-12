@@ -445,6 +445,8 @@ pub enum AppEvent {
         call_id: String,
         name: String,
         arguments: serde_json::Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mcp_source: Option<axiom_acp_extension::McpToolSource>,
     },
     PermissionRequired {
         request_id: String,

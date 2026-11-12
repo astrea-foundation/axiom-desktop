@@ -220,7 +220,10 @@ generated-image viewer. Installed app checks, cross-platform release validation
 and broader load tests remain release requirements; source-mode qualification
 does not replace them.
 
-Generated-image presentation checks also cover one-time binary IPC payloads,
+Generated-image presentation checks cover metadata-only initial timelines,
+viewport-triggered reads, explicit retry, stable placeholder geometry, bounded
+read concurrency and cache eviction, delayed account/runtime/deletion responses,
+and opaque per-window resource handles. Compatibility checks cover binary IPC payloads,
 stable Blob URLs through streaming updates, account/runtime resource revocation,
 late bootstrap recovery, 1536-pixel viewing while typing, and cancellable inline
 decoding that yields to UI tasks. These local transport checks do not change
@@ -316,7 +319,7 @@ require live qualification; local encrypted fixtures do not establish it.
 | Provider security | Current catalog, fresh local attestation, authenticated encrypted completion, stream cancellation/truncation, proof expiry, and explicit degraded-TEE consent/reset |
 | Conversation state | Draft/queue/history retention, attachments, edit/regenerate, compaction, interrupted-turn recovery, restart and account isolation |
 | Tools | Approval, denial, cancellation and workspace boundaries on each supported OS; Web consent and search's distinct privacy boundary |
-| Account credit | Address provisioning, deposit progress and USD valuation, posted usage, gift-code masking/redemption, trial-capacity retry/paid continuation, six-hour invoice timers, five-active-invoice enforcement, server cancellation and account-switch cleanup; coordinate real settlement/reorg checks with platform maintainers |
+| Account credit | Address provisioning, deposit progress and USD valuation, posted usage, visible Desktop gift-code entry/redemption, masked TUI gift-code entry, trial-capacity retry/paid continuation, six-hour invoice timers, five-active-invoice enforcement, server cancellation and account-switch cleanup; coordinate real settlement/reorg checks with platform maintainers |
 | Automatic updates | Signed A-to-B upgrades from idle and busy Desktop/TUI; same-terminal workspace/session restoration, GUI reopen, matching CLI version and preserved drafts/history |
 | Update failure paths | Denied OS authorization, cancellation, locked-process waits, interruption/repair, corrupt or wrong-target artifacts, rollback rejection and duplicate updater attempts; staging cleanup, including Windows helpers still in use and abandoned downloads |
 | Publication | Matching source tag, signed inventory, complete installer matrix, verified mirrors, feed activation and safe publication retries |
@@ -500,3 +503,13 @@ stricter certificate-lifetime cap recorded explicitly. VMPL, signer, TCB and
 missing alias-complete negatives carry valid synthetic VCEK signatures; signature
 corruption and padding remain separate rejection cases. All named valid corpus
 cases are required to stay positive.
+
+## Remote MCP release acceptance
+
+Before publishing remote MCP support, qualify the native credential store and
+browser OAuth callback on macOS, Windows and Linux with real public and
+registered-client OAuth services. Verify refresh, cancellation, account switches,
+locked credential stores, sign-out and factory reset. Confirm the Remote
+connection form, separate Tools picker, destination-aware approvals/activity and
+privacy proof disclosures in each supported platform/theme. Local HTTP fixture
+and browser harness results do not establish live-service or Windows qualification.

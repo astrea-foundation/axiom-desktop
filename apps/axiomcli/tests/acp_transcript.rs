@@ -1925,6 +1925,7 @@ async fn desktop_timeline_restore_transfers_saved_images_once_and_preserves_acp_
         let call_id = format!("image-{index}");
         for event in [
             AppEvent::ToolProposed {
+                mcp_source: None,
                 turn_id: turn_id.clone(),
                 call_id: call_id.clone(),
                 name: "generate".into(),

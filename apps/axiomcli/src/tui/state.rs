@@ -731,6 +731,7 @@ impl TuiState {
                 call_id,
                 name,
                 arguments,
+                ..
             } => {
                 let cwd = self.cwd.clone();
                 let mut activity = None;

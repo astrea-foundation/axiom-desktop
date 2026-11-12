@@ -139,6 +139,30 @@ refresh is insufficient. Standard notifications can include `_meta.axiom`
 delivery identity; stable prompt `clientItemId` values reconcile optimistic
 messages with durable rows.
 
+Desktop opts into `session/load` metadata
+`_meta.axiom.skipHistoryReplay: true` and then fetches the complete authoritative
+timeline before marking the thread loaded. With the Desktop frontend and
+`timeline@2` negotiated, native code restores the full conversation and image
+catalog without also replaying historical presentation notifications. This
+avoids transferring generated images twice and broadcasting partial history
+for every saved event. Ordinary ACP loads retain transcript replay; older
+sidecars can ignore the metadata and the timeline still replaces their replay.
+The local pipe reader buffers fragments until a complete frame arrives, so
+large image pages require linear copying while keeping the 64 MiB frame limit.
+
+Optional `imageResources@1` makes generated-image timeline content metadata-only:
+`{type:"image", mimeType:"image/png", width, height, imageResource:{callId,sha256}}`.
+Live tool updates carry the same descriptor in `rawOutput.imageResource`.
+`_axiom/image/read` accepts `{threadId,callId,sha256}` and returns one original
+PNG only after resolving the exact completed tool under the current account
+and checking its saved proof, digest and size. Older clients keep inline image
+content. Saved-image reads remain available without an installed image provider.
+Desktop mints a separate opaque handle for each window/document; renderer callers
+cannot supply a native path, URL or another thread identity. Its viewport loader
+keeps at most two reads in flight, shares duplicate reads and caches up to 32 MiB
+of idle originals. Active viewers pin their URLs. Account/runtime changes,
+disconnect, deletion and document unload invalidate handles and delayed replies.
+
 `lastMessageAt` describes nonempty user/assistant/reasoning activity.
 `lastUserMessageAt` advances on user submissions and is the current catalog sort
 key, descending with empty threads last and ID as tie-breaker. Clients must not
@@ -175,15 +199,22 @@ keeps its embedded system prompt and does not start servers from CLI configurati
 
 Optional `desktopMcp@1` adds `_axiom/desktop/mcp` for account-scoped local stdio
 connections: `list`, `save`, `delete`, `test`, `import` and per-thread `select`.
+`desktopMcp@2` adds remote Streamable HTTP, `connect`, `cancel_connect` and
+`disconnect`. `remoteSupported` reports whether both peers support remote
+connections; older peers receive only local connections and cannot execute saved
+remote selections. Missing `remote` fields preserve existing local configuration.
 Mutations carry `expectedRevision` and require idle work. Secrets are write-only
-OS-credential-store variables; only their names and opaque references are
+OS-credential-store variables, bearer tokens and OAuth grants; only variable names and opaque references are
 returned. Thread selections expose only the chosen MCP tools, without granting
 builtin Agent or Web authority. Prompts with `_meta.axiom.mcpRevision` bind to the
 current account-wide configuration/selection revision; mismatches fail before
 acceptance. Missing metadata exposes no Desktop MCP tools, preserving safe older
 client behavior. Connection changes invalidate affected selections/grants;
 MCP schema hashes are rechecked before each turn. This optional feature is
-advertised only by the Desktop frontend. See [local MCP connections](mcp.md).
+advertised only by the Desktop frontend. Native tool-call notifications carry
+`_meta.axiomMcpSource` and durable timeline metadata preserves `mcp_source` and
+`started`, identifying the call-time connection/destination and whether execution
+started. These describe tool activity, not inference attestation. See [MCP connections](mcp.md).
 
 Every Desktop prompt supplies `_meta.axiom.webEnabled`; only explicit boolean
 `true` permits built-in Web tools. Missing consent is false, and malformed

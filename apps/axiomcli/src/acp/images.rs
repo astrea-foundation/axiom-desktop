@@ -324,6 +324,7 @@ mod tests {
         let arguments = json!({"prompt":"Use <image1> with the colors of <image2>","reference_image_ids":refs,"aspect_ratio":"1:1"});
         for event in [
             AppEvent::ToolProposed {
+                mcp_source: None,
                 turn_id: turn.clone(),
                 call_id: "original-image".into(),
                 name: "generate".into(),
@@ -405,6 +406,7 @@ mod tests {
         regenerated.usage.request_id = regenerated.request_id.clone();
         for event in [
             AppEvent::ToolProposed {
+                mcp_source: None,
                 turn_id: next.clone(),
                 call_id: "new-image".into(),
                 name: "generate".into(),

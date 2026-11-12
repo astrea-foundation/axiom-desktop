@@ -1057,6 +1057,7 @@ impl TurnRunner for WorkspaceEditTurnRunner {
         });
         events
             .send(AppEvent::ToolProposed {
+                mcp_source: None,
                 turn_id: context.turn_id.clone(),
                 call_id: call_id.clone(),
                 name: "replace_text".into(),
@@ -1946,6 +1947,14 @@ impl AgentEngine {
                         request.explanation.push('\n');
                         request.explanation.push_str(&concrete_effects);
                     }
+                    if let Some(source) = tools.mcp_source(tool_name)
+                        && let Some(destination) = source.destination
+                    {
+                        request.explanation = format!(
+                            "Remote service · {}\nThis will send the inputs below to {}, outside Axiom’s attested environment. Inputs may include conversation or file content.\n\n{}",
+                            source.server, destination, request.explanation
+                        );
+                    }
                     events
                         .send(AppEvent::PermissionRequired {
                             request_id: request.request_id.clone(),
@@ -2502,6 +2511,7 @@ impl TurnRunner for AgentEngine {
         };
         events
             .send(AppEvent::ToolProposed {
+                mcp_source: None,
                 turn_id: context.turn_id,
                 call_id: call_id.clone(),
                 name: "generate".into(),
@@ -3122,6 +3132,7 @@ impl TurnRunner for AgentEngine {
                 };
                 events
                     .send(AppEvent::ToolProposed {
+                        mcp_source: tools.mcp_source(&call.function.name),
                         turn_id: context.turn_id.clone(),
                         call_id: call.id.clone(),
                         name: call.function.name.clone(),
@@ -4236,6 +4247,7 @@ async fn emit_repairable_tool_failure(
 ) -> Result<()> {
     events
         .send(AppEvent::ToolProposed {
+            mcp_source: None,
             turn_id: turn_id.clone(),
             call_id: call.id.clone(),
             name: call.function.name.clone(),
@@ -7807,6 +7819,7 @@ mod engine_tests {
                 image: Box::new(broken),
             },
             AppEvent::ToolProposed {
+                mcp_source: None,
                 turn_id: turn.clone(),
                 call_id: "unfinished".into(),
                 name: "fake".into(),
@@ -7817,6 +7830,7 @@ mod engine_tests {
                 name: "fake".into(),
             },
             AppEvent::ToolProposed {
+                mcp_source: None,
                 turn_id: turn.clone(),
                 call_id: "old-view".into(),
                 name: "view_image".into(),
@@ -8822,6 +8836,8 @@ mod engine_tests {
         );
         assert_eq!(messages.last().unwrap().content, "What marker?");
     }
+
+
 
     #[tokio::test]
     async fn provider_failure_retains_partial_response_for_the_next_prompt() {

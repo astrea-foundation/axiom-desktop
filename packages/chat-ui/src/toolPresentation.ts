@@ -88,8 +88,8 @@ export function toolLabel(tool: ToolActivity): string {
   let label: string;
   if (name.startsWith("mcp__")) {
     const [server, ...parts] = name.slice(5).split("__");
-    const target = compact(`${server} / ${parts.join("__").replaceAll("_", " ")}`, 120);
-    label = `${failed ? "Failed to call" : done ? "Called" : "Calling"} ${target} · MCP`;
+    const target = compact(`${tool.mcpSource?.server ?? server} / ${parts.join("__").replaceAll("_", " ")}`, 120);
+    label = `${failed ? "Failed to call" : done ? "Called" : tool.status === "pending" ? "Preparing" : "Calling"} ${target} · MCP`;
   } else if (name === "view_image") {
     label = failed ? `Image viewing failed${reason ? `: ${reason}` : ""}` : done ? "Viewed image" : "Viewing image";
   } else if (name === "edit_image" || ((name === "generate" && Array.isArray(input?.reference_image_ids) && input.reference_image_ids.length > 0) || (name === "generate_image" && typeof input?.image_id === "string"))) {

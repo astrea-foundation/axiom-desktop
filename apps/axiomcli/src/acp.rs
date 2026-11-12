@@ -1514,6 +1514,7 @@ enum ExtensionFeature {
     ImageGeneration = 1 << 19,
     ImageRegeneration = 1 << 20,
     ImageResources = 1 << 21,
+    RemoteMcp = 1 << 23,
 }
 
 struct ExtensionState {
@@ -1617,6 +1618,9 @@ impl ExtensionState {
         }
         if features.desktop_mcp >= 1 {
             mask |= ExtensionFeature::DesktopMcp as u64;
+        }
+        if features.desktop_mcp >= 2 {
+            mask |= ExtensionFeature::RemoteMcp as u64;
         }
         if features.image_generation >= 3 {
             mask |= ExtensionFeature::ImageGeneration as u64;
@@ -2060,6 +2064,7 @@ fn send_event(
             call_id,
             name,
             arguments,
+            mcp_source,
             ..
         } => {
             let kind = tool_kind(&name);
@@ -2077,6 +2082,10 @@ fn send_event(
                     protocol::ToolCall::new(call_id, title)
                         .kind(kind)
                         .status(protocol::ToolCallStatus::Pending)
+                        .meta(protocol::Meta::from_iter([(
+                            "axiomMcpSource".into(),
+                            serde_json::to_value(mcp_source).unwrap_or_default(),
+                        )]))
                         .raw_input(arguments),
                 ),
                 revision,

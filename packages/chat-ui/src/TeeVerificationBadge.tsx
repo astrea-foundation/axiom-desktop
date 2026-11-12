@@ -1,7 +1,7 @@
 /** @jsxRuntime automatic */
 import { Check, RotateCcw, Shield, X } from "lucide-react";
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
-import type { ClientSessionState } from "@axiom/chat-core/viewTypes";
+import type { ClientSessionState, DesktopMcpServer } from "@axiom/chat-core/viewTypes";
 import type { ProviderModel } from "@axiom/chat-core/types";
 import { PROOF_IDLE_AFTER_MS, PROOF_REFRESH_MAX_RETRY_MS, PROOF_REFRESH_RETRY_MS, proofBadge, proofRefreshDue, proofState } from "./privacyProof";
 import { PrivacyProofDialog } from "./PrivacyProofDialog";
@@ -11,12 +11,14 @@ type TeeVerificationBadgeProps = {
   model?: ProviderModel;
   modelId: string;
   webEnabled: boolean;
+  mcpServers?: DesktopMcpServer[];
+  selectedMcpTools?: string[];
   disabledReason?: string;
   onVerify: () => void | Promise<unknown>;
   onEnsure?: () => void | Promise<unknown>;
 };
 
-export function TeeVerificationBadge({ session, model, modelId, webEnabled, disabledReason, onVerify, onEnsure }: TeeVerificationBadgeProps) {
+export function TeeVerificationBadge({ session, model, modelId, webEnabled, mcpServers, selectedMcpTools, disabledReason, onVerify, onEnsure }: TeeVerificationBadgeProps) {
   const [open, setOpen] = useState(false);
   const [now, setNow] = useState(Date.now);
   const [refreshing, setRefreshing] = useState(false);
@@ -109,7 +111,7 @@ export function TeeVerificationBadge({ session, model, modelId, webEnabled, disa
   return <>
     <div className="inline-flex h-7 shrink-0 items-center rounded-full bg-[var(--surface-tile)] text-[11.5px] font-medium tracking-[-0.01em] text-[var(--color-text-secondary)] shadow-[0_0_0_1px_var(--ring-hairline),0_1px_2px_var(--shade-xs)]">
       <button type="button" onClick={() => setOpen(true)} aria-haspopup="dialog" aria-expanded={open}
-        aria-label={`${badge.label}. View privacy proof`} title="View privacy proof"
+        aria-label={`${badge.label}. View privacy proof`} title={`Model inference: ${badge.label}. View privacy proof`}
         className="inline-flex h-full items-center gap-1.5 rounded-l-full pl-2 pr-2 transition-colors hover:bg-[var(--wash-chip-hover)]">
         <span className="relative flex h-4 w-4 items-center justify-center" aria-hidden="true">
           <Shield size={15} strokeWidth={0} fill={color} />
@@ -123,7 +125,7 @@ export function TeeVerificationBadge({ session, model, modelId, webEnabled, disa
         <RotateCcw size={12} aria-hidden="true" className={verifying ? "animate-spin motion-reduce:animate-none" : ""} />
       </button>
     </div>
-    {open ? <PrivacyProofDialog session={session} model={model} modelId={modelId} state={state} now={now} webEnabled={webEnabled}
+    {open ? <PrivacyProofDialog session={session} model={model} modelId={modelId} state={state} now={now} webEnabled={webEnabled} mcpServers={mcpServers} selectedMcpTools={selectedMcpTools}
       error={error ?? session.securityVerificationError ?? null} disabledReason={reason} onRefresh={() => void refresh()} onClose={() => setOpen(false)} /> : null}
   </>;
 }

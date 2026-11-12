@@ -1176,6 +1176,10 @@ async fn prompt_with_invocation(
                 let thread = internal_id.clone();
                 crate::desktop_mcp::credential_task(move || crate::desktop_mcp::turn_config(&store, &thread, expected)).await.map_err(agent_error)?
             } else { None };
+            if mcp.as_ref().is_some_and(|turn| turn.servers.iter().any(|s| s.remote.is_some()))
+                && !extension_enabled(&task_extension, ExtensionFeature::RemoteMcp) {
+                return Err(agent_error(crate::AxiomError::Config("restart the updated Desktop app before using remote MCP connections".into())));
+            }
             let run = task_runner.run(
                 crate::agent::TurnContext {
                     mcp,

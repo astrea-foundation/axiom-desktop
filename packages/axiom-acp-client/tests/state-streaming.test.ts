@@ -394,3 +394,25 @@ test("account switches clear stream revision tracking with the account-local tim
   store.standardUpdate(delta(1, "new"));
   assert.equal(store.snapshot().sessions.thread!.timeline[0]?.text, "new");
 });
+
+test("MCP destinations survive live updates and durable reload independently of connection settings", () => {
+  const store = new AxiomStateStore();
+  store.replaceTimeline([page(1)]);
+  const proposed = toolUpdate(2, "mcp-call");
+  Object.assign(proposed.update, {title:"Calling MCP · mcp__project__search", rawInput:{query:"customer onboarding"},
+    _meta:{axiomMcpSource:{server:"project",destination:"https://original.example.com/mcp"}}});
+  store.standardUpdate(proposed);
+  const tool=()=>store.snapshot().sessions.thread!.timeline.find(item=>item.tool?.callId==="mcp-call")!.tool!;
+  assert.equal(tool().mcpSource?.destination,"https://original.example.com/mcp");
+  assert.equal(tool().started,false);
+  store.standardUpdate(toolUpdate(3,"mcp-call","in_progress"));
+  assert.equal(tool().started,true);
+  store.standardUpdate(toolUpdate(4,"mcp-call","completed"));
+  assert.equal(tool().mcpSource?.destination,"https://original.example.com/mcp");
+  const durable=page(5);durable.thread.lastTimelineSequence=2;
+  durable.items.push({...durable.items[0]!,id:"saved-call",externalId:"mcp-call",sequence:2,kind:"tool_call",content:"result",status:"completed",
+    metadata:{name:"mcp__project__search",arguments:{query:"customer onboarding"},started:true,mcp_source:{server:"project",destination:"https://original.example.com/mcp"}}});
+  store.replaceTimeline([durable]);
+  assert.equal(tool().mcpSource?.destination,"https://original.example.com/mcp");
+  assert.equal(tool().started,true);
+});

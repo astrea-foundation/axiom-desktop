@@ -172,7 +172,7 @@ export function SettingsSheet({
             /> : null}
           </SettingsPanel>
           <SettingsPanel category="mcp" active={category} idPrefix={id}>
-            {category === "mcp" ? connected && signedIn ? <McpConnectionsPanel key={`${runtimeInstanceId}:${account.account?.id}`} /> : <p>Sign in and connect to manage local MCP servers.</p> : null}
+            {category === "mcp" ? connected && signedIn ? <McpConnectionsPanel key={`${runtimeInstanceId}:${account.account?.id}`} /> : <p>Sign in and connect to manage MCP connections.</p> : null}
           </SettingsPanel>
           <SettingsPanel category="api-keys" active={category} idPrefix={id}>
             {category === "api-keys" && (connected && signedIn && account.account ? <ApiKeysPanel

@@ -1,3 +1,5 @@
+mod http;
+
 use std::{
     collections::{BTreeMap, HashSet},
     process::Stdio,
@@ -31,10 +33,130 @@ use crate::{
 };
 
 type McpService = RunningService<RoleClient, ()>;
+type OAuthManager = tokio::sync::Mutex<rmcp::transport::auth::AuthorizationManager>;
+type OAuthManagers = std::sync::Mutex<BTreeMap<String, std::sync::Weak<OAuthManager>>>;
+static OAUTH_MANAGERS: std::sync::OnceLock<OAuthManagers> = std::sync::OnceLock::new();
+
+#[derive(Clone)]
+struct SharedOAuthStore(Arc<dyn rmcp::transport::auth::CredentialStore>);
+
+#[async_trait]
+impl rmcp::transport::auth::CredentialStore for SharedOAuthStore {
+    async fn load(
+        &self,
+    ) -> std::result::Result<
+        Option<rmcp::transport::auth::StoredCredentials>,
+        rmcp::transport::auth::AuthError,
+    > {
+        self.0.load().await
+    }
+    async fn save(
+        &self,
+        mut value: rmcp::transport::auth::StoredCredentials,
+    ) -> std::result::Result<(), rmcp::transport::auth::AuthError> {
+        // RFC 6749: an omitted scope on refresh preserves the existing grant.
+        // rmcp's restored manager may have no in-memory scope set yet.
+        if let Some(token) = &value.token_response {
+            let token = serde_json::to_value(token).map_err(|_| {
+                rmcp::transport::auth::AuthError::InternalError(
+                    "could not inspect refreshed MCP credentials".into(),
+                )
+            })?;
+            if token.get("scope").is_none()
+                && let Some(previous) = self.0.load().await?
+                && previous.client_id == value.client_id
+                && previous.issuer == value.issuer
+            {
+                value.granted_scopes = previous.granted_scopes;
+            }
+        }
+        self.0.save(value).await
+    }
+    async fn clear(&self) -> std::result::Result<(), rmcp::transport::auth::AuthError> {
+        self.0.clear().await
+    }
+}
+
+async fn connect_remote(config: &McpServerConfig) -> Result<ConnectedMcp> {
+    use axiom_acp_extension::McpAuthentication;
+    use rmcp::{
+        ClientLifecycleMode, ClientServiceExt,
+        model::ProtocolVersion,
+        transport::{
+            StreamableHttpClientTransport, auth::AuthClient,
+            streamable_http_client::StreamableHttpClientTransportConfig,
+        },
+    };
+    let remote = config.remote.as_ref().expect("remote connection");
+    crate::desktop_mcp::remote::validate_connection(remote)?;
+    let mut transport_config = StreamableHttpClientTransportConfig::with_uri(remote.url.clone())
+        .max_sse_event_size(1024 * 1024)
+        .reinit_on_expired_session(false);
+    let lifecycle = ClientLifecycleMode::Auto {
+        preferred_versions: vec![ProtocolVersion::V_2026_07_28, ProtocolVersion::V_2025_11_25],
+        legacy_version: Some(ProtocolVersion::V_2025_11_25),
+    };
+    let http = http::BoundedHttpClient(crate::desktop_mcp::remote::http_client()?);
+    let service = if remote.auth == McpAuthentication::Oauth {
+        let credentials = config.oauth_credentials.as_ref().ok_or_else(|| {
+            bounded_mcp_error(&config.name, "sign in to this service in Settings")
+        })?;
+        let mut manager = crate::desktop_mcp::remote::auth_manager(remote).await?;
+        manager.set_credential_store(SharedOAuthStore(credentials.clone()));
+        if !manager.initialize_from_store().await.map_err(|_| {
+            bounded_mcp_error(
+                &config.name,
+                "MCP sign-in expired or changed; reconnect in Settings",
+            )
+        })? {
+            return Err(bounded_mcp_error(
+                &config.name,
+                "sign in to this service in Settings",
+            ));
+        }
+        let mut client = AuthClient::new(http, manager);
+        // Refresh tokens can rotate. All simultaneous turns for one saved grant
+        // share the SDK's mutex so they cannot race refresh or lose a new token.
+        if let Some(identity) = &config.oauth_identity {
+            let mut managers = OAUTH_MANAGERS
+                .get_or_init(Default::default)
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            managers.retain(|_, manager| manager.strong_count() > 0);
+            if let Some(shared) = managers.get(identity).and_then(std::sync::Weak::upgrade) {
+                client.auth_manager = shared;
+            } else {
+                managers.insert(identity.clone(), Arc::downgrade(&client.auth_manager));
+            }
+        }
+        let transport = StreamableHttpClientTransport::with_client(client, transport_config);
+        ().serve_with_lifecycle(transport, lifecycle).await
+    } else {
+        if remote.auth == McpAuthentication::Bearer {
+            let token = config
+                .env
+                .get(crate::desktop_mcp::remote::BEARER_KEY)
+                .ok_or_else(|| bounded_mcp_error(&config.name, "MCP API token is missing"))?;
+            transport_config = transport_config.auth_header(token);
+        }
+        let transport = StreamableHttpClientTransport::with_client(http, transport_config);
+        ().serve_with_lifecycle(transport, lifecycle).await
+    }
+    .map_err(|_| {
+        bounded_mcp_error(
+            &config.name,
+            "cannot initialize the remote service; check its URL and sign-in in Settings",
+        )
+    })?;
+    Ok(ConnectedMcp {
+        service,
+        process_group: None,
+    })
+}
 
 struct ConnectedMcp {
     service: McpService,
-    process_group: crate::process_env::ProcessGroupGuard,
+    process_group: Option<crate::process_env::ProcessGroupGuard>,
 }
 
 const MIN_OUTPUT_BYTES: usize = 1024;
@@ -53,7 +175,7 @@ struct ConnectionState {
     service: Arc<McpService>,
     generation: u64,
     descriptors: BTreeMap<String, ToolDescriptor>,
-    _process_group: crate::process_env::ProcessGroupGuard,
+    _process_group: Option<crate::process_env::ProcessGroupGuard>,
 }
 
 struct McpConnection {
@@ -195,6 +317,8 @@ pub async fn connect_tools(
             process_groups,
             descriptors.clone(),
         ));
+        let mut secrets = config.env.clone();
+        collect_oauth_secrets(config, &mut secrets).await?;
 
         for descriptor in descriptors.into_values() {
             let public_name = format!(
@@ -215,7 +339,7 @@ pub async fn connect_tools(
                 public_name,
                 remote_name: descriptor.remote_name,
                 server_name: config.name.clone(),
-                description: redact_environment_text(&descriptor.description, &config.env),
+                description: redact_environment_text(&descriptor.description, &secrets),
                 schema: descriptor.schema,
                 trusted_read_only,
                 connection: connection.clone(),
@@ -231,6 +355,11 @@ async fn connect(
     config: &McpServerConfig,
     process_groups: &crate::process_env::ProcessGroupRegistry,
 ) -> Result<ConnectedMcp> {
+    if config.remote.is_some() {
+        return tokio::time::timeout(MCP_REQUEST_TIMEOUT, connect_remote(config))
+            .await
+            .map_err(|_| bounded_mcp_error(&config.name, "remote initialization timed out"))?;
+    }
     let mut command = configured_command(config)?;
     crate::process_env::apply_sanitized_environment(&mut command);
     command.envs(&config.env);
@@ -257,7 +386,7 @@ async fn connect(
         .map_err(|error| bounded_mcp_error(&config.name, error))?;
     Ok(ConnectedMcp {
         service,
-        process_group,
+        process_group: Some(process_group),
     })
 }
 
@@ -370,10 +499,38 @@ async fn discover_tools(
     service: &McpService,
     server_name: &str,
 ) -> Result<BTreeMap<String, ToolDescriptor>> {
-    let tools = tokio::time::timeout(MCP_REQUEST_TIMEOUT, service.list_all_tools())
-        .await
-        .map_err(|_| bounded_mcp_error(server_name, "tool discovery timed out"))?
-        .map_err(|error| bounded_mcp_error(server_name, error))?;
+    let tools = tokio::time::timeout(MCP_REQUEST_TIMEOUT, async {
+        let mut tools = Vec::new();
+        let mut cursor = None;
+        let mut seen = HashSet::new();
+        loop {
+            let page = service
+                .list_tools(Some(
+                    rmcp::model::PaginatedRequestParams::default().with_cursor(cursor),
+                ))
+                .await
+                .map_err(|error| bounded_mcp_error(server_name, error))?;
+            if tools.len() + page.tools.len() > 512 {
+                return Err(bounded_mcp_error(
+                    server_name,
+                    "discovery exceeds 512 tools",
+                ));
+            }
+            tools.extend(page.tools);
+            let Some(next) = page.next_cursor else {
+                return Ok(tools);
+            };
+            if next.len() > 4096 || seen.len() >= 512 || !seen.insert(next.clone()) {
+                return Err(bounded_mcp_error(
+                    server_name,
+                    "invalid or excessive tool discovery pagination",
+                ));
+            }
+            cursor = Some(next);
+        }
+    })
+    .await
+    .map_err(|_| bounded_mcp_error(server_name, "tool discovery timed out"))??;
     let mut descriptors = BTreeMap::new();
     for tool in tools {
         let descriptor = normalize_descriptor(server_name, tool)?;
@@ -445,7 +602,17 @@ fn validate_server_config(config: &McpServerConfig) -> Result<()> {
             "MCP tool_timeout_secs must be between 1 and 86400".into(),
         ));
     }
-    if config.name.trim().is_empty() || config.command.trim().is_empty() {
+    if let Some(remote) = &config.remote {
+        crate::desktop_mcp::remote::validate_connection(remote)?;
+        if !config.command.is_empty() || !config.args.is_empty() {
+            return Err(AxiomError::Config(
+                "remote MCP connections cannot contain a command".into(),
+            ));
+        }
+    }
+    if config.name.trim().is_empty()
+        || (config.remote.is_none() && config.command.trim().is_empty())
+    {
         return Err(AxiomError::Config(
             "MCP server name and command cannot be empty".into(),
         ));
@@ -492,6 +659,22 @@ struct McpTool {
 
 #[async_trait]
 impl Tool for McpTool {
+    fn mcp_source(&self) -> Option<axiom_acp_extension::McpToolSource> {
+        Some(axiom_acp_extension::McpToolSource {
+            server: self
+                .connection
+                .config
+                .display_name
+                .clone()
+                .unwrap_or_else(|| self.server_name.clone()),
+            destination: self
+                .connection
+                .config
+                .remote
+                .as_ref()
+                .map(|r| r.url.clone()),
+        })
+    }
     fn name(&self) -> &str {
         &self.public_name
     }
@@ -536,6 +719,11 @@ impl Tool for McpTool {
         arguments: Value,
         cancellation: CancellationToken,
     ) -> Result<ToolResult> {
+        if cancellation.is_cancelled() {
+            return Err(AxiomError::Cancelled);
+        }
+        let mut secrets = self.connection.config.env.clone();
+        collect_oauth_secrets(&self.connection.config, &mut secrets).await?;
         let outcome = async {
         let arguments: JsonObject = arguments
             .as_object()
@@ -603,7 +791,10 @@ impl Tool for McpTool {
             "content_trust": "untrusted MCP result",
             "result": result,
         });
-        let serialized = serialize_result_content(&envelope, &self.connection.config.env)?;
+        // OAuth tokens are secrets injected for this server, like its environment.
+        let mut secrets = self.connection.config.env.clone();
+        collect_oauth_secrets(&self.connection.config, &mut secrets).await?;
+        let serialized = serialize_result_content(&envelope, &secrets)?;
         let (content, truncated) = truncate(&serialized, self.max_output_bytes);
         Ok(ToolResult {
             images: Vec::new(),
@@ -618,11 +809,17 @@ impl Tool for McpTool {
             questions: None,
         })
         }.await;
+        if matches!(outcome, Err(AxiomError::Cancelled)) {
+            return outcome;
+        }
+        // A rejected or interrupted request can also contain a server-provided
+        // error. Refresh the secret set before exposing that text to a model.
+        collect_oauth_secrets(&self.connection.config, &mut secrets).await?;
         match outcome {
             Err(AxiomError::Cancelled) => Err(AxiomError::Cancelled),
             Err(error) => Err(AxiomError::Tool(redact_environment_text(
                 &error.to_string(),
-                &self.connection.config.env,
+                &secrets,
             ))),
             Ok(result) => Ok(result),
         }
@@ -636,6 +833,41 @@ fn serialize_result_content(envelope: &Value, env: &BTreeMap<String, String>) ->
         &serde_json::to_string_pretty(envelope)?,
         env,
     ))
+}
+
+async fn collect_oauth_secrets(
+    config: &McpServerConfig,
+    secrets: &mut BTreeMap<String, String>,
+) -> Result<()> {
+    if let Some(store) = &config.oauth_credentials {
+        let credentials = store.load().await.map_err(|_| {
+            bounded_mcp_error(
+                &config.name,
+                "cannot read MCP credentials to redact the service response",
+            )
+        })?;
+        if let Some(credentials) = credentials {
+            fn collect(value: &Value, secrets: &mut BTreeMap<String, String>) {
+                if let Value::Object(object) = value {
+                    for (key, value) in object {
+                        if matches!(
+                            key.as_str(),
+                            "access_token" | "refresh_token" | "client_secret" | "id_token"
+                        ) {
+                            if let Some(secret) = value.as_str() {
+                                secrets
+                                    .insert(format!("secret_{}", secrets.len()), secret.to_owned());
+                            }
+                        } else {
+                            collect(value, secrets);
+                        }
+                    }
+                }
+            }
+            collect(&serde_json::to_value(credentials)?, secrets);
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn redact_environment_text(text: &str, env: &BTreeMap<String, String>) -> String {

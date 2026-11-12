@@ -66,7 +66,7 @@ const EXTENSION_CAPABILITIES = {
     collections: 1,
     desktopChat: 1,
     desktopAgent: 1,
-    desktopMcp: 1,
+    desktopMcp: 2,
     account: 2,
     billing: 5,
     usage: 1,

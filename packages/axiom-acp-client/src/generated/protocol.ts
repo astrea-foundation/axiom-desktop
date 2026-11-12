@@ -17,6 +17,18 @@ export type DesktopMcpAction =
       kind: "test";
     }
   | {
+      name: string;
+      kind: "connect";
+    }
+  | {
+      name: string;
+      kind: "cancel_connect";
+    }
+  | {
+      name: string;
+      kind: "disconnect";
+    }
+  | {
       tools: string[];
       kind: "select";
     }
@@ -218,11 +230,13 @@ export interface DesktopMcpRequest {
   action: DesktopMcpAction;
 }
 /**
- * Local stdio configuration. Environment values are write-only secrets.
+ * Missing remote configuration preserves existing local stdio connections.
+ * Environment values and bearer tokens are write-only secrets.
  */
 export interface DesktopMcpServerInput {
   name: string;
-  command: string;
+  displayName?: string | null;
+  command?: string;
   args?: string[];
   enabled: boolean;
   /**
@@ -231,8 +245,23 @@ export interface DesktopMcpServerInput {
   env?: {
     [k: string]: string;
   } | null;
+  remote?: McpRemoteConnection | null;
+  /**
+   * None preserves the saved token; an empty string clears it.
+   */
+  bearerToken?: string | null;
+}
+/**
+ * Public remote connection identity. Secrets never appear in snapshots.
+ */
+export interface McpRemoteConnection {
+  url: string;
+  auth?: "none" | "bearer" | "oauth";
+  clientId?: string | null;
+  clientMetadataUrl?: string | null;
 }
 export interface DesktopMcpResponse {
+  remoteSupported?: boolean;
   revision: number;
   servers: DesktopMcpServer[];
   selectedTools: string[];
@@ -240,8 +269,10 @@ export interface DesktopMcpResponse {
 }
 export interface DesktopMcpServer {
   name: string;
+  displayName?: string | null;
   command: string;
   args: string[];
+  remote?: McpRemoteConnection | null;
   enabled: boolean;
   environmentKeys: string[];
   credentialId?: string | null;

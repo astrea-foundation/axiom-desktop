@@ -167,11 +167,11 @@ export function useConversations(agentState: ClientState, connection: ReturnType
     defaultDirectory: currentAgent?.defaultWorkingDirectory,
     mcpServers: agentState.mcp?.servers,
     mcpError,
-    disabledReason: !billingAccountId || !agentState.connected ? "Sign in and connect to configure Agent mode."
+    disabledReason: !billingAccountId || !agentState.connected ? "Sign in and connect to configure tools and Agent mode."
       : typeof window.axiomDesktop?.agent.configureDesktopAgent !== "function" ? "Restart Axiom to enable the Agent controls."
         : surface === "thread" && !currentAgent ? "Agent settings are unavailable. Restart Axiom to load the updated native app."
           : agentSettingsBusy ? "Saving Agent settings…"
-            : activeSession?.running || messageQueue.current!.list(activeThreadId, billingAccountId).length > 0 ? "Finish the current reply and send or remove queued messages before changing Agent settings."
+            : activeSession?.running || messageQueue.current!.list(activeThreadId, billingAccountId).length > 0 ? "Finish the current reply and send or remove queued messages before changing tools or Agent settings."
               : undefined,
     onChooseDirectory: async (current) => {
       const api = window.axiomDesktop?.agent;

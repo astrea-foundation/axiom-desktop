@@ -24,6 +24,8 @@ import type {
 import type { PendingInteraction, SessionConfigOption, SessionMode } from "./types.js";
 
 export type ToolActivity = {
+  mcpSource?: { server: string; destination?: string | null };
+  started?: boolean;
   callId: string;
   name?: string;
   title: string;
@@ -160,6 +162,18 @@ function deliveryMetadata(record: Record<string, unknown>, update: Record<string
   return candidate as DeliveryMetadata;
 }
 
+function mcpSource(value: unknown): ToolActivity["mcpSource"] {
+  const source = object(value);
+  if (typeof source?.server !== "string" || source.server.length > 128) return undefined;
+  if (source.destination == null) return { server: source.server, destination: null };
+  if (typeof source.destination !== "string" || source.destination.length > 4096) return undefined;
+  try {
+    const url = new URL(source.destination);
+    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) return undefined;
+    return { server: source.server, destination: url.href };
+  } catch { return undefined; }
+}
+
 function imageProgress(value: unknown, previous?: ToolActivity["imageProgress"]): ToolActivity["imageProgress"] {
   const progress = object(value);
   const stages = ["queued", "generating", "finishing"] as const;
@@ -183,6 +197,8 @@ function mergeTool(
   const locations = Array.isArray(update.locations) ? update.locations : [];
   return {
     callId,
+    mcpSource: mcpSource(object(update._meta)?.axiomMcpSource) ?? previous?.mcpSource,
+    started: update.status === "in_progress" ? true : previous?.started ?? false,
     name: typeof update.title === "string" && /(?:^| · )[a-z][a-z0-9_]*$/.test(update.title)
       ? update.title.split(" · ").at(-1) : previous?.name,
     title: typeof update.title === "string" ? update.title : (previous?.title ?? "Tool activity"),
@@ -216,6 +232,8 @@ function durableTool(item: DurableTimelineItem): ToolActivity {
       : [];
   return {
     callId: item.externalId ?? item.id,
+    mcpSource: mcpSource(metadata.mcp_source),
+    started: typeof metadata.started === "boolean" ? metadata.started : undefined,
     name: typeof metadata.name === "string" ? metadata.name : undefined,
     title: typeof metadata.title === "string"
       ? metadata.title

@@ -5,6 +5,7 @@ import type { ToolActivity } from "@axiom/chat-core/viewTypes";
 import { isFetchTool, redactToolText, toolFailed, toolImageProgress, toolLabel, toolName, toolSearchSources } from "./toolPresentation";
 import { ImagePreviewDialog } from "./ImagePreviewDialog";
 import { decodeGeneratedPng } from "./generatedImage";
+import { McpSourceLabel, mcpHost } from "./McpPrivacy";
 import { useChatHost } from "./ChatHost";
 
 const MAX_DETAIL_CHARS = 16_000;
@@ -150,7 +151,8 @@ export function ToolCallCard({ tool, threadId, responseActive = false }: { tool:
   const sources = useMemo(() => toolSearchSources(tool), [tool]);
   const images = ["generate", "generate_image", "edit_image"].includes(toolName(tool)) && tool.status === "completed"
     ? tool.content.map(imageBlock).filter((image): image is NonNullable<typeof image> => image !== null) : [];
-  const hasDetails = !isFetchTool(tool) && !toolFailed(tool)
+  const remoteHost = mcpHost(tool.mcpSource?.destination);
+  const hasDetails = !isFetchTool(tool) && (!toolFailed(tool) || !!remoteHost)
     && (tool.input != null || tool.content.length > 0 || tool.locations.length > 0);
   const details = useMemo(
     () => open && hasDetails && !sources ? safeDetail({ input: tool.input, output: tool.content.map(c=>imageBlock(c) ? {type:"image",mimeType:"image/png"} : c), locations: tool.locations }) : "",
@@ -160,6 +162,7 @@ export function ToolCallCard({ tool, threadId, responseActive = false }: { tool:
   const row = <>
     <span className="shrink-0 text-[var(--color-text-tertiary)]" aria-hidden="true">{toolIcon(tool)}</span>
     <span className="min-w-0 truncate">{label}</span>
+    {tool.mcpSource ? <McpSourceLabel source={tool.mcpSource} /> : null}
     {sources ? <span className="shrink-0 text-[11px] text-[var(--color-text-tertiary)]">{sources.length} {sources.length === 1 ? "source" : "sources"}</span> : null}
     {hasDetails ? <ChevronDown aria-hidden="true" size={12} className={`shrink-0 text-[var(--color-text-tertiary)] transition-transform ${open ? "rotate-0" : "-rotate-90"}`} /> : null}
   </>;
@@ -186,6 +189,11 @@ export function ToolCallCard({ tool, threadId, responseActive = false }: { tool:
         onRegenerate={threadId && host.regenerateImage ? () => host.regenerateImage!(threadId, tool.callId) : undefined} />)}
       {hasDetails && open ? (
         <div id={detailsId} className="selectable ml-3.5 mt-1 max-h-80 overflow-auto border-l border-[var(--color-border)] pl-4 pr-2 text-[12px] leading-5 text-[var(--color-text-secondary)]">
+          {remoteHost ? <div className="mb-2 space-y-1 pt-1 text-[12px] leading-5">
+            <p className="break-all"><strong>Destination:</strong> {remoteHost}</p>
+            <p>{tool.status === "completed" ? "Inputs sent to this service." : tool.started === true ? "Request attempted. If interrupted, the service may have received these inputs or completed the action." : tool.started === false ? (tool.status === "pending" ? "Inputs will be sent if this call is approved." : "This call did not start; inputs were not sent by this call.") : "Transmission status is unavailable for this saved call."}</p>
+            <p className="text-[var(--color-text-tertiary)]">Remote tool calls are outside Axiom’s attested environment.</p>
+          </div> : null}
           {sources ? (
             sources.length ? <ul className="space-y-3 py-1">
               {sources.map((source, index) => <li key={`${index}:${source.url}`} className="min-w-0 break-words">

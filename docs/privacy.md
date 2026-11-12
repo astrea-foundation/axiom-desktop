@@ -45,10 +45,12 @@ process tools require Bubblewrap. macOS/Windows process execution does not
 provide equivalent OS isolation. The Web toggle controls Axiom's Web tools,
 not networking by host-authority programs or MCP servers on any platform. A configured MCP
 executable is trusted local code at startup; its results and authority claims
-remain untrusted. Desktop keeps [local MCP connections](mcp.md) account-scoped,
-uses the OS credential store for environment values and lets each thread select
+remain untrusted. Desktop keeps [MCP connections](mcp.md) account-scoped,
+uses the OS credential store for environment values, bearer tokens and OAuth
+grants, and lets each conversation select
 its tools. Connected services can receive tool inputs/results outside the model
-TEE. Model context is assembled and encrypted locally. See [security](threat-model.md#local-tools-and-processes).
+TEE. Remote connection setup, the Tools picker, approvals and call activity
+identify this sharing boundary and its destination. Model context is assembled and encrypted locally. See [security](threat-model.md#local-tools-and-processes).
 
 ## Update checks
 

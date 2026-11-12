@@ -122,15 +122,15 @@ tool_timeout_secs = 300 # per-call absolute deadline; 1–86400 seconds
 Set `model` to an ID discovered by `axiomcli models` or use the model picker.
 Model availability, prices, context capacity and reasoning capabilities come
 from the authenticated catalog and are validated by the registered provider.
-MCP names are unique and names/commands cannot be empty. `read_only_tools` is
+MCP names are unique; local connections require nonempty commands. `read_only_tools` is
 an explicit trust decision about a user-configured executable; a server's own
 annotation cannot grant that classification. MCP initialization/discovery retain a
 30-second deadline. Tool calls default to five minutes and use the server's
 `tool_timeout_secs`, including any progress notifications; progress does not reset
-the absolute deadline. Stop and timeout send a bounded MCP cancellation notification.
+the absolute deadline. Stop and timeout use bounded transport-specific MCP cancellation.
 A timed-out tool is never automatically replayed, even when marked read-only.
-Desktop uses its own account-scoped [local MCP connections](mcp.md), managed
-through Settings and selected per thread in the Agent menu. It does not launch
+Desktop uses its own account-scoped [MCP connections](mcp.md), managed
+through Settings and selected per conversation in the Tools menu. It does not launch
 servers from shared CLI configuration.
 
 | Tool profile | Behavior |

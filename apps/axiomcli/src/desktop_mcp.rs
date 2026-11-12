@@ -1,4 +1,5 @@
-//! Desktop-owned local MCP configuration. No tool payload crosses the hosted backend.
+//! Desktop-owned MCP configuration. No tool payload crosses the hosted backend.
+pub(crate) mod remote;
 use crate::{AxiomError, Result, app::SessionId, config::McpServerConfig, session::SessionStore};
 use axiom_acp_extension::{DesktopMcpResponse, DesktopMcpServer, DesktopMcpServerInput};
 use serde::{Deserialize, Serialize};
@@ -35,6 +36,16 @@ pub struct DesktopMcpTurn {
 }
 
 pub(crate) fn validate_input(input: &DesktopMcpServerInput) -> Result<()> {
+    if input.display_name.as_ref().is_some_and(|name| {
+        name.trim().is_empty()
+            || name.len() > 512
+            || name.chars().count() > 128
+            || name.chars().any(char::is_control)
+    }) {
+        return Err(AxiomError::Config(
+            "MCP display names must contain 1–128 visible characters".into(),
+        ));
+    }
     if input.name.is_empty()
         || input.name.len() > 48
         || !input
@@ -49,18 +60,49 @@ pub(crate) fn validate_input(input: &DesktopMcpServerInput) -> Result<()> {
                 .into(),
         ));
     }
-    if input.command.trim().is_empty()
-        || input.command.len() > 4096
-        || input.command.contains(['\0', '\n', '\r'])
-        || input.args.len() > 128
-        || input
-            .args
-            .iter()
-            .any(|s| s.len() > 8192 || s.contains('\0'))
+    if input.remote.is_none()
+        && (input.command.trim().is_empty()
+            || input.command.len() > 4096
+            || input.command.contains(['\0', '\n', '\r'])
+            || input.args.len() > 128
+            || input
+                .args
+                .iter()
+                .any(|s| s.len() > 8192 || s.contains('\0')))
     {
         return Err(AxiomError::Config(
             "invalid MCP command or arguments".into(),
         ));
+    }
+    if let Some(remote) = &input.remote {
+        remote::validate_connection(remote)?;
+        if !input.command.is_empty()
+            || !input.args.is_empty()
+            || input.env.as_ref().is_some_and(|e| !e.is_empty())
+        {
+            return Err(AxiomError::Config(
+                "remote MCP connections cannot contain process commands or environment variables"
+                    .into(),
+            ));
+        }
+        if input.bearer_token.is_some()
+            && remote.auth != axiom_acp_extension::McpAuthentication::Bearer
+        {
+            return Err(AxiomError::Config(
+                "a bearer token requires bearer authentication".into(),
+            ));
+        }
+    } else if input.bearer_token.is_some() {
+        return Err(AxiomError::Config(
+            "bearer tokens are only valid for remote MCP connections".into(),
+        ));
+    }
+    if input
+        .bearer_token
+        .as_ref()
+        .is_some_and(|s| s.len() > 16_384 || s.contains(['\0', '\r', '\n']))
+    {
+        return Err(AxiomError::Config("invalid MCP bearer token".into()));
     }
     if let Some(env) = &input.env
         && (env.len() > 64
@@ -80,7 +122,7 @@ pub(crate) fn validate_input(input: &DesktopMcpServerInput) -> Result<()> {
     Ok(())
 }
 
-fn credential_entry(store: &SessionStore, name: &str) -> Result<keyring::Entry> {
+pub(crate) fn credential_entry(store: &SessionStore, name: &str) -> Result<keyring::Entry> {
     let account_root = store.active_desktop_cwd()?;
     let scope = Sha256::digest(account_root.as_os_str().to_string_lossy().as_bytes());
     keyring::Entry::new(KEYRING_SERVICE, &format!("{scope:x}:{name}"))
@@ -109,6 +151,9 @@ pub(crate) fn launch_config(
     store: &SessionStore,
     server: &DesktopMcpServer,
 ) -> Result<McpServerConfig> {
+    if server.remote.is_some() {
+        return remote::launch_config(store, server);
+    }
     let env = if server.environment_keys.is_empty() {
         BTreeMap::new()
     } else {
@@ -130,9 +175,13 @@ pub(crate) fn launch_config(
     };
     Ok(McpServerConfig {
         name: server.name.clone(),
+        display_name: server.display_name.clone(),
         command: server.command.clone(),
         args: server.args.clone(),
         env,
+        remote: None,
+        oauth_credentials: None,
+        oauth_identity: None,
         read_only_tools: Vec::new(),
         tool_timeout_secs: 300,
     })
@@ -179,6 +228,7 @@ pub fn schema_hash(value: &serde_json::Value) -> String {
 
 pub(crate) fn response(state: DesktopMcpState, selected_tools: Vec<String>) -> DesktopMcpResponse {
     DesktopMcpResponse {
+        remote_supported: true,
         revision: state.revision,
         servers: state.servers.into_values().collect(),
         selected_tools,
@@ -191,6 +241,9 @@ mod tests {
     #[test]
     fn local_input_is_bounded_and_debug_omits_credentials() {
         let mut input = DesktopMcpServerInput {
+            display_name: None,
+            remote: None,
+            bearer_token: None,
             name: "local".into(),
             command: "server".into(),
             args: vec![],
@@ -209,5 +262,26 @@ mod tests {
             .insert("INVALID=NAME".into(), "value".into());
         assert!(validate_input(&input).is_err());
         assert!(serde_json::from_value::<DesktopMcpServerInput>(serde_json::json!({"name":"remote","url":"https://example.invalid/mcp","enabled":true})).is_err());
+    }
+
+    #[test]
+    fn remote_secrets_are_write_only_and_old_saved_connections_still_load() {
+        let mut remote: DesktopMcpServerInput = serde_json::from_value(serde_json::json!({
+            "name":"tracker", "displayName":"Project tracker", "enabled":true,
+            "remote":{"url":"https://mcp.example.com/mcp","auth":"bearer"},
+            "bearerToken":"private-fixture-value",
+        }))
+        .unwrap();
+        validate_input(&remote).unwrap();
+        assert!(!format!("{remote:?}").contains("private-fixture-value"));
+        remote.command = "unexpected-process".into();
+        assert!(validate_input(&remote).is_err());
+        let old: DesktopMcpServer = serde_json::from_value(serde_json::json!({
+            "name":"local","command":"server","args":[],"enabled":true,
+            "environmentKeys":[],"credentialId":null,"tools":[],"status":"untested","error":null,
+        }))
+        .unwrap();
+        assert!(old.remote.is_none());
+        assert!(old.display_name.is_none());
     }
 }

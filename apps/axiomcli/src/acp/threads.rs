@@ -171,14 +171,7 @@ pub(super) async fn get_thread_timeline(
         let _ = account_store.read(|store| store.reconcile_request_usage(&thread_id, &records));
         snapshot = respond_or_return!(
             responder,
-            account_store
-                .read(|store| store.thread_page(
-                    &thread_id,
-                    request.after_sequence,
-                    request.after_request_id.as_deref(),
-                    limit
-                ))
-                .map_err(agent_error)
+            account_store.read(read_page).map_err(agent_error)
         );
     }
     account_store.publish(|| {

@@ -31,6 +31,7 @@ fn fixture(
             turn_id: turn.clone(),
         },
         AppEvent::ToolProposed {
+            mcp_source: None,
             turn_id: turn.clone(),
             call_id: "edit-1".into(),
             name: "apply_patch".into(),

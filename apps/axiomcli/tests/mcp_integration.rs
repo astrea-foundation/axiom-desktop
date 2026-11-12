@@ -223,6 +223,10 @@ fn config(mode: &str, state: Option<&Path>, read_only: bool) -> McpServerConfig 
         "1".into(),
     ]);
     McpServerConfig {
+        display_name: None,
+        remote: None,
+        oauth_credentials: None,
+        oauth_identity: None,
         env: std::collections::BTreeMap::default(),
         name: "Blossom Fixture".into(),
         command: "env".into(),

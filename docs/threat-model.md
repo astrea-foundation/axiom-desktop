@@ -160,14 +160,20 @@ exit all terminate the job. This retains the process-wide exit-cleanup job.
 Output readers are cancelled with their command and have a bounded join after
 termination, including when a descendant inherited a pipe.
 MCP executables are trusted user-selected host code on every OS. Desktop starts
-only explicitly tested, selected [local connections](mcp.md), with per-thread
+only explicitly tested, selected [connections](mcp.md), with per-thread
 tool authority and approval separate from builtin Agent permissions. Account and
 revision checks prevent queued messages inheriting changed MCP authority.
-Environment secrets use immutable OS credential references and are never part
+Environment secrets and remote grants use immutable OS credential references and are never part
 of public snapshots. Server processes belong to their turn and are closed on
 completion/cancellation; returned schemas,
 text and side-effect claims stay untrusted. Ambiguous side-effecting calls are
 never automatically replayed. Read-only reconnect retry requires unchanged schema.
+Remote Streamable HTTP runs in the native client with a separate HTTP client,
+HTTPS endpoints (loopback HTTP for development), bounded bodies/events and
+redirects/POST retries disabled. OAuth uses native PKCE/state/issuer validation
+and account-scoped system credentials. Remote-aware capability negotiation is
+required to select or execute remote tools. Recorded call destinations are
+independent of later connection edits. Tool sharing lies outside model attestation.
 
 ## Accounts, local state and recovery
 
