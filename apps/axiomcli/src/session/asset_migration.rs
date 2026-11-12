@@ -75,7 +75,7 @@ pub(super) fn migrate(
                 1 => codec.timeline(&mut value)?,
                 2 => codec.event(&mut value)?,
                 _ => codec.message(&mut value)?,
-            }
+            };
             let encoded = serde_json::to_string(&value)?;
             if encoded != payload {
                 connection

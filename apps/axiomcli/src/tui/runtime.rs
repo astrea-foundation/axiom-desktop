@@ -565,6 +565,7 @@ pub(super) async fn restore_tui_session(
         )));
     }
     let loaded = store.load_recovering(session_id)?;
+    let presentation = store.load_presentation(session_id)?;
     let resumed_model = model_for_resume(&loaded.events, &state.model);
     let resumed_thinking = thinking_for_resume(&loaded.events, state.thinking);
     let models = runner
@@ -598,7 +599,7 @@ pub(super) async fn restore_tui_session(
             .await?;
     }
     state.profile = PermissionProfile::from_str(&summary.profile).unwrap_or(state.profile);
-    for envelope in &loaded.events {
+    for envelope in &presentation.events {
         // Older versions persisted this routine edit summary as a warning on
         // every resume. Keep the journal and WorkspaceChanged events intact,
         // but do not replay the retired synthetic notice into the transcript.

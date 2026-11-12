@@ -59,14 +59,62 @@ The schema migration decodes recognized image/file slots in accepted attachments
 generated-image timeline content, authoritative events and exact model-message
 checkpoints. It writes durable ciphertext files before committing asset references
 and preserves message/checkpoint IDs and hashes of hydrated model messages.
-Corrupt/missing media causes a recoverable error, not silent omission. Cleanup
-removes obsolete payload pages and truncates the WAL before migration completes.
+Malformed inline media prevents the forward conversion from committing; the
+original database is retained for recovery. Once media uses external encrypted
+assets, unavailable files are isolated as described below. Cleanup removes
+obsolete payload pages and truncates the WAL before migration completes.
 
 Only unreferenced ciphertext is reclaimed. Compaction alone does not erase
 original images or history needed for viewing, editing, revision or replay.
 Draft replacement updates its asset ownership; deleting a draft or thread releases
 its owners. Cleanup is serialized with SQLite writers so rollback cannot restore
 a reference to a prematurely deleted file.
+
+## Unavailable saved media
+
+A missing, unreadable, tampered or wrong-key external asset does not prevent
+opening the account or using unaffected conversations. Reads still verify the
+owning record, asset identity, ciphertext authentication, length and content hash
+before returning any bytes. An unavailable asset supplies no image or file bytes.
+History, generated-image records, exact checkpoints, attachments, drafts and queued
+preparations omit the unavailable media while preserving usable text, tool
+arguments and recorded tool outcomes. Recovery warnings identify the omission;
+queued records remain saved for review after reconnect and are not automatically
+sent. Lazy timeline image descriptors do not authenticate or load an image;
+opening an unavailable image reports that it cannot be restored.
+
+Semantic replay uses text-only omission markers where needed to preserve original
+attachment positions and the IDs of surviving uploaded images. A media-only
+canonical message receives a short unavailable-media note if omitting its bytes
+would leave it empty. These recovery projections do not rewrite the original
+saved records, invent authenticated media, restore live provider trust, or imply
+that an interrupted tool operation succeeded. Unrelated text and JSON are never
+interpreted as asset references.
+
+Broken references retain their ownership and any original ciphertext. Opening
+and compaction do not delete them. Reattaching the exact original valid bytes
+repairs an unavailable deduplicated asset under the storage write lock, preserving
+its ID and existing owners. Before replacement, a damaged regular file is moved
+beside the assets under an opaque `.unavailable-` name. Such quarantine files are
+never resolved as media and remain available for offline recovery; ordinary
+orphan collection does not remove them. Ordinary draft/thread deletion still
+releases live ownership as before. Explicit portable-backup verification remains
+strict and reports unavailable live assets rather than certifying a damaged
+archive as complete; conversation export can preserve usable text and tool
+outcomes with omission warnings.
+
+Runtime semantic restore selects the newest authoritative checkpoint before the
+requested revision boundary and the events after it. Earlier assistant text,
+reasoning, tool outputs, file bytes and superseded checkpoint media are not
+hydrated. A small earlier state/lifecycle projection retains model and thinking
+settings, workspace changes, turn IDs and unknown interrupted side effects.
+Earlier valid uploads and generated images remain available to the image catalog;
+the current catalog still hydrates those images, so catalog size can contribute
+to restore cost. TUI and standard ACP transcript replay use a separate complete
+presentation load; image regeneration reads its original recipe through that
+same path. Desktop can skip presentation replay and fetch timeline pages instead.
+The complete presentation timeline, export source and earlier revision checkpoints
+remain in storage.
 
 Desktop migrates existing browser drafts and outbox records after the owning
 account unlocks. Native commits acknowledge imported data before localStorage or

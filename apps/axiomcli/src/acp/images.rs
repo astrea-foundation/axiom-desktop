@@ -238,7 +238,8 @@ pub(super) async fn regenerate(
     };
     let prepared = account.read(|store| {
         let history = store.load(&internal_id)?;
-        let (arguments, origin_model) = recipe(&history, &request.call_id)?;
+        let presentation = store.load_presentation(&internal_id)?;
+        let (arguments, origin_model) = recipe(&presentation.events, &request.call_id)?;
         Ok((history, arguments, origin_model))
     });
     let (history, arguments, origin_model) = match prepared {
@@ -416,7 +417,16 @@ mod tests {
                     .unwrap(),
             )
             .unwrap();
-        let history = store.load(&id).unwrap();
+        store.append(&runtime.emit(id.clone(), AppEvent::ModelHistoryCheckpoint {
+            version: 1, messages: json!([{"role":"system","content":"system"},{"role":"user","content":"compacted context"}]),
+        }).await.unwrap()).unwrap();
+        let model = store.load(&id).unwrap();
+        assert!(
+            !model
+                .iter()
+                .any(|event| matches!(event.event, AppEvent::ToolProposed { .. }))
+        );
+        let history = store.load_presentation(&id).unwrap().events;
         let (replay, origin_model) = recipe(&history, "original-image").unwrap();
         assert_eq!(origin_model.as_deref(), Some("direct:qwen3.8-27b"));
         assert_eq!(
@@ -494,7 +504,7 @@ mod tests {
                     .unwrap(),
             )
             .unwrap();
-        let history = store.load(&id).unwrap();
+        let history = store.load_presentation(&id).unwrap().events;
         assert_eq!(
             history
                 .iter()

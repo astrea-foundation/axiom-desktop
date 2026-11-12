@@ -18,7 +18,7 @@ use crate::{
 use super::codec::storage_error;
 use super::projection::project_runtime_events;
 use super::queries::{
-    StoredTimelineItem, ensure_thread_exists_connection, query_prompt_attachments, query_turns,
+    StoredTimelineItem, ensure_thread_exists_connection, query_replay_attachments, query_turns,
 };
 use super::records::{
     ExportOptions, InterruptedTool, LoadOutcome, RecoveryStatus, TimelineItemKind,
@@ -127,13 +127,29 @@ impl SessionStore {
     }
 
     pub fn load_recovering(&self, id: &SessionId) -> Result<LoadOutcome> {
+        self.load_history(id, false)
+    }
+
+    /// Complete transcript/recipe events, including model bodies superseded by
+    /// checkpoints. Only presentation consumers should pay for full hydration.
+    pub fn load_presentation(&self, id: &SessionId) -> Result<LoadOutcome> {
+        self.load_history(id, true)
+    }
+
+    fn load_history(&self, id: &SessionId, presentation: bool) -> Result<LoadOutcome> {
         let thread = self.thread_summary(id)?;
         let connection = self.lock()?;
-        if let Some(events) = super::model_history::load(&connection, connection.assets(), id)? {
-            return Ok(LoadOutcome {
-                events,
-                warnings: Vec::new(),
-            });
+        let canonical = if presentation {
+            super::model_history::load_presentation(&connection, connection.assets(), id)?
+        } else {
+            super::model_history::load(&connection, connection.assets(), id)?
+        };
+        if let Some(events) = canonical {
+            let warnings = if events.iter().any(|event| matches!(&event.event,
+                crate::app::AppEvent::WarningRaised { message } if message == super::asset_codec::MEDIA_OMITTED)) {
+                vec![super::asset_codec::MEDIA_OMITTED.into()]
+            } else { Vec::new() };
+            return Ok(LoadOutcome { events, warnings });
         }
         let turns = query_turns(&connection, id)?;
         let mut statement = connection
@@ -167,13 +183,16 @@ impl SessionStore {
             ));
         }
         for item in &mut items {
-            super::asset_codec::MediaCodec {
+            let omitted = super::asset_codec::MediaCodec {
                 assets: connection.assets(),
                 connection: &connection,
                 owner: &super::assets::thread_owner(&id.to_string()),
                 direction: super::asset_codec::Direction::Load,
             }
             .timeline(&mut item.metadata)?;
+            if omitted > 0 && warnings.is_empty() {
+                warnings.push(super::asset_codec::MEDIA_OMITTED.into());
+            }
         }
         let mut attachments = HashMap::new();
         for item in &items {
@@ -182,7 +201,7 @@ impl SessionStore {
             {
                 attachments.insert(
                     item.id.clone(),
-                    query_prompt_attachments(&connection, connection.assets(), id, &item.id)?,
+                    query_replay_attachments(&connection, connection.assets(), id, &item.id)?,
                 );
             }
         }

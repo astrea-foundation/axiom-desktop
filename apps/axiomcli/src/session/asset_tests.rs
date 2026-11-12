@@ -17,6 +17,32 @@ const FILE: &[u8] = b"%PDF-1.7\nsynthetic-file-asset-unique-sentinel";
 fn key() -> Arc<StorageKey> {
     Arc::new(StorageKey::from_bytes([0x71; 32]))
 }
+fn append(store: &SessionStore, id: &SessionId, event: AppEvent) {
+    store
+        .append(&crate::app::EventEnvelope {
+            schema_version: 1,
+            sequence: 1,
+            turn_id: event.turn_id().cloned(),
+            occurred_at: chrono::Utc::now(),
+            correlation_id: crate::app::CorrelationId::new(),
+            origin: crate::app::Origin::Test,
+            session_id: id.clone(),
+            event,
+        })
+        .unwrap();
+}
+fn asset_path(store: &SessionStore, path: &Path, bytes: &[u8]) -> std::path::PathBuf {
+    let asset: String = store
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT id FROM binary_assets WHERE sha256=?1",
+            [hex::encode(Sha256::digest(bytes))],
+            |r| r.get(0),
+        )
+        .unwrap();
+    asset_directory_for_database(path).join(asset)
+}
 
 #[test]
 fn migration_reports_phases_and_exact_counts_only_for_existing_upgrades() {
@@ -245,7 +271,13 @@ fn legacy_v2_and_v6_externalize_all_known_slots_and_replay_exactly() {
             format!("img_{}", legacy.image.request_id)
         );
         let events = store.load(&legacy.id).unwrap();
-        assert!(events.iter().any(|e|matches!(&e.event,AppEvent::PromptAccepted{attachments,..} if serde_json::to_value(attachments).unwrap()==legacy.attachments)));
+        if version == 2 {
+            assert!(events.iter().any(|e|matches!(&e.event,AppEvent::PromptAccepted{attachments,..} if serde_json::to_value(attachments).unwrap()==legacy.attachments)));
+        } else {
+            assert!(events.iter().any(|e| matches!(&e.event, AppEvent::PromptAccepted { text, attachments, .. }
+                if text.is_empty() && serde_json::to_value(&attachments[0]).unwrap() == legacy.attachments[0]
+                && matches!(attachments[1], axiom_inference::PromptAttachment::Text { .. }))));
+        }
         if version == 6 {
             assert!(events.iter().any(|e|matches!(&e.event,AppEvent::ModelHistoryCheckpoint{messages,..} if messages==&legacy.messages)));
             let connection = store.lock().unwrap();
@@ -338,7 +370,7 @@ fn legacy_v6_recovers_unrelated_broken_metadata_but_rejects_invalid_image_data()
         assert_eq!(recovered.content, "recoverable assistant text");
         assert!(recovered.metadata["recovery_warning"].is_string());
         let events = store.load(&legacy.id).unwrap();
-        assert!(events.iter().any(|e| matches!(&e.event, AppEvent::PromptAccepted { attachments, .. } if serde_json::to_value(attachments).unwrap() == legacy.attachments)));
+        assert!(events.iter().any(|e| matches!(&e.event, AppEvent::PromptAccepted { attachments, .. } if serde_json::to_value(&attachments[0]).unwrap() == legacy.attachments[0])));
         assert!(events.iter().any(|e| matches!(&e.event, AppEvent::ImageGenerated { image, .. } if image.as_ref() == &legacy.image)));
         assert!(events.iter().any(|e| matches!(&e.event, AppEvent::ModelHistoryCheckpoint { messages, .. } if messages == &legacy.messages)));
         {
@@ -379,11 +411,38 @@ fn legacy_v6_recovers_unrelated_broken_metadata_but_rejects_invalid_image_data()
 }
 
 #[test]
-fn missing_tampered_and_wrong_store_assets_fail_closed() {
+fn missing_tampered_and_wrong_store_assets_omit_bytes_and_reopen_usable_accounts() {
     for failure in ["missing", "tampered", "wrong-key"] {
         let root = tempdir().unwrap();
         let path = root.path().join("state.sqlite3");
         let store = SessionStore::open_protected_with_key(&path, key()).unwrap();
+        let unrelated = SessionId::new();
+        append(
+            &store,
+            &unrelated,
+            AppEvent::SessionCreated {
+                cwd: "/tmp".into(),
+                origin: crate::app::Origin::Test,
+                profile: PermissionProfile::Confirm,
+            },
+        );
+        let unrelated_turn = TurnId::new();
+        append(
+            &store,
+            &unrelated,
+            AppEvent::PromptAccepted {
+                turn_id: unrelated_turn.clone(),
+                text: "unrelated usable conversation".into(),
+                attachments: Vec::new(),
+            },
+        );
+        append(
+            &store,
+            &unrelated,
+            AppEvent::TurnCompleted {
+                turn_id: unrelated_turn,
+            },
+        );
         store.set_local_payload("draft", &payload()).unwrap();
         let asset = std::fs::read_dir(asset_directory_for_database(&path))
             .unwrap()
@@ -392,12 +451,12 @@ fn missing_tampered_and_wrong_store_assets_fail_closed() {
             .unwrap()
             .path();
         match failure {
-            "missing" => std::fs::remove_file(asset).unwrap(),
+            "missing" => std::fs::remove_file(&asset).unwrap(),
             "tampered" => {
                 let mut data = std::fs::read(&asset).unwrap();
                 let last = data.len() - 1;
                 data[last] ^= 1;
-                std::fs::write(asset, data).unwrap();
+                std::fs::write(&asset, data).unwrap();
             }
             _ => {
                 let other_path = root.path().join("other.sqlite3");
@@ -413,13 +472,63 @@ fn missing_tampered_and_wrong_store_assets_fail_closed() {
                     .unwrap()
                     .unwrap()
                     .path();
-                std::fs::copy(other_asset, asset).unwrap();
+                std::fs::copy(other_asset, &asset).unwrap();
             }
         }
-        assert!(store.local_payload("draft").is_err());
+        let damaged_ciphertext = asset.exists().then(|| std::fs::read(&asset).unwrap());
+        let mut recovered = payload();
+        recovered["payload"]["attachments"] = json!([]);
+        assert_eq!(
+            store.local_payload("draft").unwrap(),
+            Some(recovered.clone())
+        );
         assert!(store.verify_asset_integrity().is_err());
         drop(store);
-        assert!(SessionStore::open_protected_with_key(&path, key()).is_err());
+        let reopened = SessionStore::open_protected_with_key(&path, key()).unwrap();
+        assert_eq!(reopened.local_payload("draft").unwrap(), Some(recovered));
+        assert!(reopened.thread_summary(&unrelated).is_ok());
+        assert!(
+            reopened
+                .load(&unrelated)
+                .unwrap()
+                .iter()
+                .any(|event| matches!(&event.event,
+            AppEvent::PromptAccepted { text, .. } if text == "unrelated usable conversation"))
+        );
+        assert_eq!(
+            asset.exists().then(|| std::fs::read(&asset).unwrap()),
+            damaged_ciphertext,
+            "opening must preserve damaged ciphertext for recovery"
+        );
+        assert!(reopened.verify_asset_integrity().is_err());
+        let identity_before: (String, i64) = reopened.lock().unwrap().query_row(
+            "SELECT id,(SELECT COUNT(*) FROM asset_owners WHERE asset_id=binary_assets.id) FROM binary_assets", [], |r| Ok((r.get(0)?,r.get(1)?)),
+        ).unwrap();
+        // Reuploading the exact original bytes repairs the deduplicated asset;
+        // old references become readable again, without adopting damaged data.
+        reopened.set_local_payload("reupload", &payload()).unwrap();
+        assert_eq!(reopened.local_payload("draft").unwrap(), Some(payload()));
+        reopened.verify_asset_integrity().unwrap();
+        let identity_after: (String, i64) = reopened.lock().unwrap().query_row(
+            "SELECT id,(SELECT COUNT(*) FROM asset_owners WHERE asset_id=binary_assets.id) FROM binary_assets", [], |r| Ok((r.get(0)?,r.get(1)?)),
+        ).unwrap();
+        assert_eq!(identity_after, (identity_before.0, identity_before.1 + 1));
+        if let Some(damaged) = damaged_ciphertext {
+            let saved = std::fs::read_dir(asset_directory_for_database(&path))
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .find(|path| {
+                    path.file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .contains(".unavailable-")
+                })
+                .unwrap();
+            assert_eq!(std::fs::read(saved).unwrap(), damaged);
+        }
+        drop(reopened);
+        let reopened = SessionStore::open_protected_with_key(&path, key()).unwrap();
+        assert_eq!(reopened.local_payload("draft").unwrap(), Some(payload()));
     }
 }
 
@@ -570,4 +679,437 @@ fn pending_physical_migration_cleanup_retries_on_reopen() {
         .unwrap();
     assert!(!pending);
     assert_eq!(store.local_payload("draft").unwrap(), Some(payload()));
+}
+
+#[test]
+fn damaged_media_is_omitted_from_history_checkpoints_attachments_queue_and_export_after_restart() {
+    let root = tempdir().unwrap();
+    let path = root.path().join("state.sqlite3");
+    let fixture = legacy(&path, 6);
+    let store = SessionStore::open_protected_with_key(&path, key()).unwrap();
+    store.set_local_payload("draft", &payload()).unwrap();
+    let queue = json!({"version":1,"kind":"queue","items":[
+        {"id":"damaged","threadId":fixture.id,"text":"keep queued text","attachments":[attachment()],"status":"sending","preparing":true,"webEnabled":false,"agentRevision":0},
+        {"id":"unaffected","threadId":fixture.id,"text":"other queue entry","attachments":[],"status":"queued","webEnabled":false,"agentRevision":0}
+    ]});
+    store.set_local_payload("queue", &queue).unwrap();
+    let valid_preview = asset_path(&store, &path, PREVIEW);
+    let valid_ciphertext = std::fs::read(&valid_preview).unwrap();
+    let original = asset_path(&store, &path, ORIGINAL);
+    let mut damaged = std::fs::read(&original).unwrap();
+    let end = damaged.len() - 1;
+    damaged[end] ^= 1;
+    std::fs::write(&original, &damaged).unwrap();
+    drop(store);
+    let store = SessionStore::open_protected_with_key(&path, key()).unwrap();
+    let outcome = store.load_recovering(&fixture.id).unwrap();
+    assert_eq!(outcome.warnings, vec![super::asset_codec::MEDIA_OMITTED]);
+    assert!(
+        !outcome
+            .events
+            .iter()
+            .any(|event| matches!(event.event, AppEvent::ImageGenerated { .. }))
+    );
+    assert!(outcome.events.iter().any(|event| matches!(&event.event,
+        AppEvent::PromptAccepted { attachments, .. } if matches!(attachments[0], axiom_inference::PromptAttachment::Text { .. }))));
+    let checkpoint = outcome
+        .events
+        .iter()
+        .find_map(|event| match &event.event {
+            AppEvent::ModelHistoryCheckpoint { messages, .. } => Some(messages),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(checkpoint[0]["content"], "look");
+    assert_eq!(checkpoint[0]["images"], json!([]));
+    assert_eq!(checkpoint[0]["files"], fixture.messages[0]["files"]);
+    assert_eq!(
+        checkpoint[1], fixture.messages[1],
+        "valid exact preview remains unchanged"
+    );
+    let attachments = store.prompt_attachments(&fixture.id, "user").unwrap();
+    assert_eq!(
+        serde_json::to_value(attachments).unwrap(),
+        json!([fixture.attachments[1]])
+    );
+    assert!(
+        store
+            .generated_image(&fixture.id, "call", &fixture.image.sha256)
+            .is_err()
+    );
+    let snapshot = store.thread_snapshot(&fixture.id, None, 100).unwrap();
+    let tool = snapshot
+        .items
+        .iter()
+        .find(|item| item.id == "tool")
+        .unwrap();
+    assert!(tool.metadata.get("generated_image").is_none());
+    assert_eq!(tool.metadata["success"], true);
+    assert_eq!(
+        tool.metadata["arguments"]["prompt"],
+        "exact arguments remain"
+    );
+    assert!(tool.metadata["recovery_warning"].is_string());
+    let queue_after = store.local_payload("queue").unwrap().unwrap();
+    assert_eq!(queue_after["items"][0]["text"], "keep queued text");
+    assert_eq!(queue_after["items"][0]["attachments"], json!([]));
+    assert_eq!(queue_after["items"][0]["status"], "queued");
+    assert_eq!(queue_after["items"][0]["preparing"], true);
+    assert!(
+        queue_after["items"][0]["error"]
+            .as_str()
+            .unwrap()
+            .contains("omitted")
+    );
+    assert_eq!(queue_after["items"][1], queue["items"][1]);
+    let export = store.export(&fixture.id).unwrap();
+    assert!(export.contains("look") && export.contains("exact arguments remain"));
+    assert!(!export.contains(&STANDARD.encode(ORIGINAL)));
+    assert_eq!(std::fs::read(&valid_preview).unwrap(), valid_ciphertext);
+    assert_eq!(std::fs::read(&original).unwrap(), damaged);
+    // A canonical checkpoint written after recovery persists only usable media.
+    let checkpoint = checkpoint.clone();
+    append(
+        &store,
+        &fixture.id,
+        AppEvent::ModelHistoryCheckpoint {
+            version: 1,
+            messages: checkpoint.clone(),
+        },
+    );
+    drop(store);
+    let reopened = SessionStore::open_protected_with_key(&path, key()).unwrap();
+    assert!(
+        reopened
+            .load(&fixture.id)
+            .unwrap()
+            .iter()
+            .any(|event| matches!(&event.event,
+        AppEvent::ModelHistoryCheckpoint { messages, .. } if messages == &checkpoint))
+    );
+    assert_eq!(std::fs::read(&valid_preview).unwrap(), valid_ciphertext);
+}
+
+#[test]
+fn malformed_unrelated_metadata_and_unowned_asset_markers_never_become_media() {
+    let store = SessionStore::in_memory().unwrap();
+    store.set_local_payload("owner", &payload()).unwrap();
+    let raw: String = store
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT payload FROM local_payloads WHERE id='owner'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let raw: Value = serde_json::from_str(&raw).unwrap();
+    let mut stolen = raw.clone();
+    stolen["payload"]["text"] = json!("preserve unowned record text");
+    store
+        .lock()
+        .unwrap()
+        .execute(
+            "INSERT INTO local_payloads(id,payload) VALUES('unowned',?1)",
+            [stolen.to_string()],
+        )
+        .unwrap();
+    let recovered = store.local_payload("unowned").unwrap().unwrap();
+    assert_eq!(recovered["payload"]["text"], "preserve unowned record text");
+    assert_eq!(recovered["payload"]["attachments"], json!([]));
+    assert_eq!(store.local_payload("owner").unwrap(), Some(payload()));
+    let connection = store.lock().unwrap();
+    let codec = super::asset_codec::MediaCodec {
+        assets: connection.assets(),
+        connection: &connection,
+        owner: "unowned",
+        direction: super::asset_codec::Direction::Load,
+    };
+    let mut metadata = json!({"generated_image":"unrelated malformed metadata", "content":[
+        {"type":"image","_axiom_asset":raw["payload"]["attachments"][0]["image"]["_axiom_asset"]}
+    ], "arguments":{"images":[{"_axiom_asset":{"id":"not-an-asset"}}]}});
+    let original = metadata.clone();
+    assert_eq!(codec.timeline(&mut metadata).unwrap(), 0);
+    assert_eq!(
+        metadata, original,
+        "unrecognized metadata must not trigger media lookup"
+    );
+    let mut message = json!({"role":"tool", "content":original.to_string(), "tool_calls":[{"function":{"arguments":original}}]});
+    let original = message.clone();
+    assert_eq!(codec.message(&mut message).unwrap(), 0);
+    assert_eq!(message, original);
+}
+
+#[test]
+fn semantic_restore_selects_checkpoint_without_old_bodies_files_or_obsolete_media() {
+    let root = tempdir().unwrap();
+    let path = root.path().join("state.sqlite3");
+    let fixture = legacy(&path, 6);
+    // A non-image preceding the upload is significant: image IDs include its
+    // original attachment index, even when that file is no longer hydrated.
+    let raw = Connection::open(&path).unwrap();
+    let attachments = json!([fixture.attachments[1], fixture.attachments[0]]);
+    raw.execute(
+        "UPDATE prompt_attachments SET payload=?1",
+        [attachments.to_string()],
+    )
+    .unwrap();
+    raw.execute("UPDATE model_history SET payload=json_set(payload,'$.attachments',json(?1)) WHERE json_extract(payload,'$.kind')='prompt_accepted'", [attachments.to_string()]).unwrap();
+    drop(raw);
+    let store = SessionStore::open_protected_with_key(&path, key()).unwrap();
+    let catalog = crate::image_tool::ImageCatalog::default();
+    catalog
+        .add_uploads(
+            &fixture.id.to_string(),
+            &fixture.turn.to_string(),
+            &serde_json::from_value::<Vec<axiom_inference::PromptAttachment>>(attachments.clone())
+                .unwrap(),
+        )
+        .unwrap();
+    catalog.add_generated(&fixture.image).unwrap();
+    let expected_manifest = catalog.manifest().unwrap();
+    let current = json!([
+        {"role":"system","content":"canonical system"},
+        {"role":"user","content":"compacted summary with exact facts"}
+    ]);
+    {
+        let mut connection = store.lock().unwrap();
+        let transaction = connection.transaction().unwrap();
+        let text = "old token-dense text ".repeat(200);
+        for _ in 0..1_000 {
+            transaction.execute("INSERT INTO model_history(thread_id,version,turn_id,occurred_at,origin,payload) VALUES(?1,1,?2,'2026-11-11T00:00:00Z','test',?3)", params![fixture.id.to_string(),fixture.turn.to_string(),json!({"kind":"text_delta","turn_id":fixture.turn,"text":text}).to_string()]).unwrap();
+        }
+        transaction.commit().unwrap();
+    }
+    for event in [
+        AppEvent::ModelChanged {
+            model: "selected-model".into(),
+        },
+        AppEvent::ThinkingLevelChanged {
+            level: crate::app::ThinkingLevel::High,
+        },
+        AppEvent::PermissionProfileChanged {
+            profile: PermissionProfile::FullAccess,
+        },
+        AppEvent::WorkspaceChanged {
+            paths: vec!["/tmp/changed-file".into()],
+        },
+        AppEvent::ToolStarted {
+            call_id: "unknown-side-effect".into(),
+            name: "synthetic-tool".into(),
+        },
+        AppEvent::ModelHistoryCheckpoint {
+            version: 1,
+            messages: current.clone(),
+        },
+    ] {
+        append(&store, &fixture.id, event);
+    }
+    std::fs::remove_file(asset_path(&store, &path, PREVIEW)).unwrap();
+    std::fs::remove_file(asset_path(&store, &path, FILE)).unwrap();
+    drop(store);
+    let store = SessionStore::open_protected_with_key(&path, key()).unwrap();
+    let outcome = store.load_recovering(&fixture.id).unwrap();
+    assert!(
+        outcome.warnings.is_empty(),
+        "media used only in superseded model state is not hydrated"
+    );
+    assert_eq!(
+        super::permission_for_resume(&outcome.events, PermissionProfile::Confirm),
+        PermissionProfile::FullAccess
+    );
+    assert_eq!(
+        super::thinking_for_resume(&outcome.events, crate::app::ThinkingLevel::Low),
+        crate::app::ThinkingLevel::High
+    );
+    assert!(
+        outcome.events.len() < 15,
+        "text deltas before the checkpoint must not scale runtime replay"
+    );
+    assert!(
+        !outcome
+            .events
+            .iter()
+            .any(|event| matches!(event.event, AppEvent::TextDelta { .. }))
+    );
+    assert_eq!(
+        outcome
+            .events
+            .iter()
+            .filter(|event| matches!(event.event, AppEvent::ModelHistoryCheckpoint { .. }))
+            .count(),
+        1
+    );
+    assert!(outcome.events.iter().any(|event| matches!(&event.event, AppEvent::ModelHistoryCheckpoint { messages, .. } if messages == &current)));
+    assert!(outcome.events.iter().any(|event| matches!(&event.event, AppEvent::ToolStarted { call_id, .. } if call_id == "unknown-side-effect")));
+    assert!(outcome.events.iter().any(|event| matches!(&event.event, AppEvent::WorkspaceChanged { paths } if paths == &vec![std::path::PathBuf::from("/tmp/changed-file")])));
+    let loaded_catalog =
+        crate::image_tool::ImageCatalog::from_history(&fixture.id, &outcome.events).unwrap();
+    assert_eq!(loaded_catalog.manifest().unwrap(), expected_manifest);
+    let page = store.thread_snapshot(&fixture.id, None, 100).unwrap();
+    assert!(page.items.iter().any(|item| item.content == "look"));
+    assert!(
+        store
+            .export(&fixture.id)
+            .unwrap()
+            .contains("exact arguments remain")
+    );
+    assert_eq!(store.lock().unwrap().query_row("SELECT COUNT(*) FROM model_history WHERE json_extract(payload,'$.kind')='text_delta'", [], |r| r.get::<_, i64>(0)).unwrap(), 1_000,
+        "selective restore must not delete the saved journal");
+}
+
+#[test]
+fn unavailable_attachment_preserves_surviving_uploaded_image_identity() {
+    for canonical in [false, true] {
+        let root = tempdir().unwrap();
+        let path = root.path().join("state.sqlite3");
+        let store = SessionStore::open_protected_with_key(&path, key()).unwrap();
+        let id = SessionId::new();
+        let turn = TurnId::new();
+        append(
+            &store,
+            &id,
+            AppEvent::SessionCreated {
+                cwd: "/tmp".into(),
+                origin: crate::app::Origin::Test,
+                profile: PermissionProfile::Confirm,
+            },
+        );
+        let attachments = vec![
+            serde_json::from_value::<axiom_inference::PromptAttachment>(attachment()).unwrap(),
+            serde_json::from_value(
+                json!({"kind":"image","name":"preview.png","image":image(PREVIEW)}),
+            )
+            .unwrap(),
+        ];
+        let expected = crate::image_tool::ImageCatalog::default();
+        expected
+            .add_uploads(&id.to_string(), &turn.to_string(), &attachments)
+            .unwrap();
+        let expected: Value = serde_json::from_str(&expected.manifest().unwrap()).unwrap();
+        append(
+            &store,
+            &id,
+            AppEvent::PromptAccepted {
+                turn_id: turn.clone(),
+                text: "keep this text".into(),
+                attachments,
+            },
+        );
+        append(
+            &store,
+            &id,
+            AppEvent::TurnCompleted {
+                turn_id: turn.clone(),
+            },
+        );
+        if !canonical {
+            store.lock().unwrap().execute_batch("DELETE FROM model_history; DELETE FROM model_history_threads; DELETE FROM model_messages;").unwrap();
+        }
+        std::fs::remove_file(asset_path(&store, &path, ORIGINAL)).unwrap();
+        drop(store);
+        let reopened = SessionStore::open_protected_with_key(&path, key()).unwrap();
+        let history = reopened.load(&id).unwrap();
+        assert!(history.iter().any(|event| matches!(&event.event, AppEvent::PromptAccepted { text, attachments, turn_id } if text == "keep this text" && turn_id == &turn && attachments.len() == 2)));
+        let restored = crate::image_tool::ImageCatalog::from_history(&id, &history).unwrap();
+        let restored: Value = serde_json::from_str(&restored.manifest().unwrap()).unwrap();
+        assert_eq!(restored.as_array().unwrap().len(), 1);
+        assert_eq!(restored[0]["image_id"], expected[1]["image_id"]);
+        assert_eq!(restored[0]["name"], "preview.png");
+        append(
+            &reopened,
+            &id,
+            AppEvent::ModelChanged {
+                model: "model-after-recovery".into(),
+            },
+        );
+        drop(reopened);
+        let reopened = SessionStore::open_protected_with_key(&path, key()).unwrap();
+        let catalog =
+            crate::image_tool::ImageCatalog::from_history(&id, &reopened.load(&id).unwrap())
+                .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&catalog.manifest().unwrap()).unwrap()[0]["image_id"],
+            expected[1]["image_id"]
+        );
+    }
+}
+
+#[test]
+fn selective_restore_retains_only_context_reports_that_still_cover_the_checkpoint() {
+    for changed in [false, true] {
+        let store = SessionStore::in_memory().unwrap();
+        let id = SessionId::new();
+        append(
+            &store,
+            &id,
+            AppEvent::SessionCreated {
+                cwd: "/tmp".into(),
+                origin: crate::app::Origin::Test,
+                profile: PermissionProfile::Confirm,
+            },
+        );
+        let messages =
+            json!([{"role":"system","content":"system"},{"role":"assistant","content":"reply"}]);
+        append(
+            &store,
+            &id,
+            AppEvent::ModelHistoryCheckpoint {
+                version: 1,
+                messages: messages.clone(),
+            },
+        );
+        let usage = axiom_acp_extension::ContextUsage {
+            input_tokens: 70_000,
+            output_tokens: 1_000,
+            model_id: "model".into(),
+            reported_at: "2026-11-12T00:00:00Z".into(),
+            context_window_tokens: Some(100_000),
+            auto_compact_threshold_tokens: Some(85_000),
+        };
+        append(
+            &store,
+            &id,
+            AppEvent::ContextUsageUpdated {
+                usage: usage.clone(),
+            },
+        );
+        if changed {
+            append(
+                &store,
+                &id,
+                AppEvent::ContextCompacted {
+                    summary: "different state".into(),
+                    messages_before: 2,
+                },
+            );
+        }
+        append(
+            &store,
+            &id,
+            AppEvent::ModelHistoryCheckpoint {
+                version: 1,
+                messages,
+            },
+        );
+        let loaded = store.load(&id).unwrap();
+        let report = loaded
+            .iter()
+            .position(|event| matches!(event.event, AppEvent::ContextUsageUpdated { .. }));
+        if changed {
+            assert!(
+                report.is_none(),
+                "compaction invalidates the earlier report"
+            );
+        } else {
+            let checkpoint = loaded
+                .iter()
+                .position(|event| matches!(event.event, AppEvent::ModelHistoryCheckpoint { .. }))
+                .unwrap();
+            assert_eq!(report, Some(checkpoint + 1));
+            assert!(
+                matches!(&loaded[checkpoint + 1].event, AppEvent::ContextUsageUpdated { usage: value } if value == &usage)
+            );
+        }
+    }
 }

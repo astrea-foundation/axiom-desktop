@@ -716,7 +716,7 @@ fn begin_turn(
 }
 
 #[test]
-fn missing_presentation_media_fails_closed_without_damaging_authoritative_history() {
+fn missing_presentation_media_is_omitted_without_damaging_authoritative_history() {
     for corrupt_metadata in [false, true] {
         let store = SessionStore::in_memory().unwrap();
         let id = SessionId::new();
@@ -781,16 +781,13 @@ fn missing_presentation_media_fails_closed_without_damaging_authoritative_histor
                 .iter()
                 .any(|event| matches!(event.event, AppEvent::ImageGenerated { .. }))
         );
-        assert!(store.prompt_attachments(&id, &user_id).is_err());
+        assert!(store.prompt_attachments(&id, &user_id).unwrap().is_empty());
         let revision = axiom_acp_extension::PromptRevision {
             user_item_id: user_id,
             expected_revision: store.thread_summary(&id).unwrap().revision,
         };
         assert!(store.history_before_user_message(&id, &revision).is_ok());
-        assert_eq!(
-            store.thread_snapshot(&id, None, 100).is_ok(),
-            corrupt_metadata
-        );
+        assert!(store.thread_snapshot(&id, None, 100).is_ok());
         begin_turn(&store, &id, &TurnId::new(), Some("after-recovery"));
     }
 }

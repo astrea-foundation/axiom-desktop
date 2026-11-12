@@ -29,13 +29,16 @@ impl SessionStore {
         payload
             .map(|payload| {
                 let mut value = serde_json::from_str(&payload)?;
-                MediaCodec {
+                let omitted = MediaCodec {
                     assets: connection.assets(),
                     connection: &connection,
                     owner: &payload_owner(id),
                     direction: Direction::Load,
                 }
                 .local_payload(&mut value)?;
+                if omitted > 0 {
+                    tracing::warn!(omitted, "{}", super::asset_codec::MEDIA_OMITTED);
+                }
                 Ok(value)
             })
             .transpose()
