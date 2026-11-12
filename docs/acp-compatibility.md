@@ -72,13 +72,13 @@ runtime changes still invalidate account and session state. Restored message
 preparations require review and a fresh send; an old setup callback cannot
 reactivate them after an account or connection changes and returns.
 
-`account`, `timeline`, and `attachments` are version **2**;
-`billing` is version **4** and `securityEvidence` is version **4**.
+`account`, `timeline`, `attachments`, `imageResources` and `activity` are
+version **2**; `billing` is version **4** and `securityEvidence` is version **4**.
 Other advertised features are version **1**:
 `desktopChat`, `desktopAgent`, `threadCatalog`, `modelCatalog`,
 `profilePreferences`, `collections`, `usage`,
-`webConsent`, `steering`, `messageRevision`, `compaction`, `imageResources`,
-`activity`, and `commandInvocation`.
+`webConsent`, `steering`, `messageRevision`, `compaction`, and
+`commandInvocation`.
 The source `FeatureVersions` and generated schema are authoritative.
 
 `securityEvidence@4` carries verified hardware, key, freshness and provenance
@@ -183,6 +183,22 @@ renderer an opaque document-scoped handle. Reads near the viewport are limited
 to two at a time, with a bounded cache for inactive image URLs. Account/runtime
 changes revoke handles and reject late replies; loading errors keep the rest
 of the conversation usable and offer an explicit retry.
+
+`imageResources@2` adds `_axiom/image/resolve` for one exact conversation-local
+`img_…` ID. Native code rebuilds the image catalog from that thread's saved
+history alone, exactly as on restore, and returns the uploaded, generated or
+edited original with its origin and name. IDs never resolve across threads or
+accounts. Desktop uses it to show the image a `view_image` call inspected and the
+reference images of an image request, and only when a person expands that row.
+
+`activity@2` adds `tool_call_drafting` with the active `turnId` once per provider
+response, when the model starts writing a tool call. It carries no tool name or
+arguments; the call still arrives only as the validated ACP tool call, which
+replaces Desktop's transient "Writing tool call…" row. The event is excluded
+from saved model history and the timeline. NEAR relay streams send this content-free signal before their signed
+transcript is verified; tool names and arguments remain gated on verification.
+Providers that return tool calls only with the complete response emit it at that
+point.
 
 A Desktop client with the timeline extension may send
 `_meta.axiom.skipHistoryReplay: true` on `session/load`. Native runtime history

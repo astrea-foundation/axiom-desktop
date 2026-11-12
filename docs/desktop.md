@@ -196,7 +196,11 @@ Images from chat models with the catalog's **Uncensored** tag (such as the
 abliterated DeepSeek V4.1 Flash and Qwen3.8 Uncensored) use the pinned uncensored
 LoRA at strength 0.9; other chat models use the base image model. The model can optionally call
 `view_image` to inspect an uploaded or generated result before finishing its
-turn, including deciding whether a correction is needed. Click a generated or edited
+turn, including deciding whether a correction is needed. Its row names the
+inspected image ID; expand it to see that image. Expand an image request to see
+its prompt, aspect ratio, output size and any reference images as cards labelled
+`<image1>`, `<image2>`, etc., above the result. While the model is writing a
+tool call, a "Writing tool call…" row appears until the call itself is shown. Click a generated or edited
 image to view it in the larger viewer; Escape, the close button or a backdrop
 click closes it. Click the image to zoom in, scroll to move around the larger
 image, and click again to fit it in the viewer. Enter or Space on the image

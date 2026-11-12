@@ -109,6 +109,10 @@ export function TimelineView({
   }
   const lastAlreadyShowsGeneration = !showPendingUser
     && hasActiveResponse(presentation);
+  // Shown only while the model streams a tool call; the validated tool row
+  // takes its place as soon as the call itself arrives.
+  const draftingToolCall = !showPendingUser && session.running && Boolean(session.toolCallDraftTurnId)
+    && (!session.activeTurnId || session.activeTurnId === session.toolCallDraftTurnId);
 
   return (
     <div className="chat-timeline">
@@ -123,7 +127,14 @@ export function TimelineView({
           </span>
         </div>
       ) : null}
-      {session.running && !session.compaction && !lastAlreadyShowsGeneration ? (
+      {draftingToolCall && !session.compaction ? (
+        <div data-timeline-kind="tool" data-tool-call-draft role="status" className="min-w-0 text-[13px]">
+          <div className="flex min-h-8 max-w-full items-center gap-2 rounded-md px-1.5 py-1 leading-5 text-[var(--color-text-secondary)]">
+            <span className="shrink-0 text-[var(--color-text-tertiary)]" aria-hidden="true"><LoaderCircle size={14} className="animate-spin motion-reduce:animate-none" /></span>
+            <span className="min-w-0 truncate">Writing tool call…</span>
+          </div>
+        </div>
+      ) : session.running && !session.compaction && !lastAlreadyShowsGeneration ? (
         <div data-timeline-kind="assistant"><MessageBubble
           responseActive
           message={{ id: "active-generation", role: "assistant", status: "streaming", content: "" }}

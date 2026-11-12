@@ -440,6 +440,12 @@ pub enum AppEvent {
     TaskListUpdated {
         items: Vec<TaskItem>,
     },
+    /// The provider began streaming tool-call arguments for this turn. This is
+    /// display-only progress: it carries no tool name or arguments, and the
+    /// executable call is still proposed only from the validated response.
+    ToolCallDrafting {
+        turn_id: TurnId,
+    },
     ToolProposed {
         turn_id: TurnId,
         call_id: String,
@@ -589,6 +595,7 @@ impl AppEvent {
             | Self::TurnStarted { turn_id }
             | Self::TextDelta { turn_id, .. }
             | Self::ReasoningDelta { turn_id, .. }
+            | Self::ToolCallDrafting { turn_id }
             | Self::ToolProposed { turn_id, .. }
             | Self::ResponseVerified { turn_id }
             | Self::TurnCompleted { turn_id }

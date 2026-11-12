@@ -1785,6 +1785,7 @@ impl AgentEngine {
         tokio::pin!(future);
         let mut response_verified = false;
         let mut usage = None;
+        let mut drafting_reported = false;
         let result = loop {
             tokio::select! {
                 result = &mut future => break result,
@@ -1793,6 +1794,7 @@ impl AgentEngine {
                     capture_streamed_text(&event, streamed_text);
                     response_verified |= matches!(event, ProviderEvent::ResponseVerified);
                     capture_provider_usage(&event, &mut usage);
+                    report_tool_call_drafting(output, &context.turn_id, &event, &mut drafting_reported).await?;
                     forward_provider_event(output, &context.turn_id, event).await?;
                 }
             }
@@ -1801,6 +1803,8 @@ impl AgentEngine {
             capture_streamed_text(&event, streamed_text);
             response_verified |= matches!(event, ProviderEvent::ResponseVerified);
             capture_provider_usage(&event, &mut usage);
+            report_tool_call_drafting(output, &context.turn_id, &event, &mut drafting_reported)
+                .await?;
             forward_provider_event(output, &context.turn_id, event).await?;
         }
         result.map(|assistant| (assistant, response_verified, usage))
@@ -2157,32 +2161,7 @@ impl TurnRunner for AgentEngine {
         session_id: &SessionId,
         events: &[EventEnvelope],
     ) -> Result<()> {
-        let images = crate::image_tool::ImageCatalog::default();
-        for envelope in events {
-            if envelope.session_id != *session_id {
-                return Err(AxiomError::Storage(
-                    "image history belongs to another conversation".into(),
-                ));
-            }
-            match &envelope.event {
-                AppEvent::PromptAccepted {
-                    turn_id,
-                    attachments,
-                    ..
-                } => {
-                    if images
-                        .add_uploads(&session_id.to_string(), &turn_id.to_string(), attachments)
-                        .is_err()
-                    {
-                        tracing::warn!(%session_id, "unusable saved image uploads omitted from runtime catalog");
-                    }
-                }
-                AppEvent::ImageGenerated { image, .. } if images.add_generated(image).is_err() => {
-                    tracing::warn!(%session_id, "unusable saved generated image omitted from runtime catalog");
-                }
-                _ => {}
-            }
-        }
+        let images = crate::image_tool::ImageCatalog::from_history(session_id, events)?;
         let mut settings = self.default_settings();
         if let Some(created) = events
             .iter()
@@ -4365,6 +4344,32 @@ fn capture_provider_usage(event: &ProviderEvent, usage: &mut Option<(u64, u64)>)
     }
 }
 
+/// Report, once per provider response, that the model has started writing a
+/// tool call. Only the fact is forwarded; fragments stay unexecutable and are
+/// never displayed until the validated response proposes the complete call.
+async fn report_tool_call_drafting(
+    output: &mpsc::Sender<AppEvent>,
+    turn_id: &TurnId,
+    event: &ProviderEvent,
+    reported: &mut bool,
+) -> Result<()> {
+    if *reported
+        || !matches!(
+            event,
+            ProviderEvent::ToolCallStarted | ProviderEvent::ToolCallDelta(_)
+        )
+    {
+        return Ok(());
+    }
+    *reported = true;
+    output
+        .send(AppEvent::ToolCallDrafting {
+            turn_id: turn_id.clone(),
+        })
+        .await
+        .map_err(|_| AxiomError::Cancelled)
+}
+
 async fn forward_provider_event(
     output: &mpsc::Sender<AppEvent>,
     turn_id: &TurnId,
@@ -4404,6 +4409,7 @@ async fn forward_provider_event(
         // complete, validated AssistantTurn. Streaming fragments are useful to
         // compatibility clients but never become executable here.
         ProviderEvent::ResponseVerified
+        | ProviderEvent::ToolCallStarted
         | ProviderEvent::ToolCallDelta(_)
         | ProviderEvent::Finished(_) => return Ok(()),
         ProviderEvent::Usage {
@@ -4459,6 +4465,7 @@ async fn forward_compaction_provider_event(
         | ProviderEvent::ReasoningDelta(_)
         | ProviderEvent::RefusalDelta(_)
         | ProviderEvent::ResponseVerified
+        | ProviderEvent::ToolCallStarted
         | ProviderEvent::ToolCallDelta(_)
         | ProviderEvent::Finished(_) => None,
     };
@@ -5715,6 +5722,84 @@ mod engine_tests {
             events.push(event);
         }
         (result, events)
+    }
+
+    struct DraftingProvider;
+
+    #[async_trait]
+    impl InferenceProvider for DraftingProvider {
+        async fn stream(
+            &self,
+            _request: InferenceRequest,
+            events: mpsc::Sender<ProviderEvent>,
+            _cancellation: CancellationToken,
+        ) -> Result<AssistantTurn> {
+            for event in [
+                ProviderEvent::TextDelta("Let me write that.".into()),
+                ProviderEvent::ToolCallStarted,
+                ProviderEvent::ToolCallDelta(axiom_inference::ToolCallDelta {
+                    index: 0,
+                    id: Some("call-1".into()),
+                    kind: Some("function".into()),
+                    name: Some("secret_tool_name".into()),
+                    arguments: Some("{\"prompt\":\"secret".into()),
+                }),
+                ProviderEvent::ToolCallDelta(axiom_inference::ToolCallDelta {
+                    index: 0,
+                    arguments: Some(" arguments\"}".into()),
+                    ..Default::default()
+                }),
+            ] {
+                events
+                    .send(event)
+                    .await
+                    .map_err(|_| AxiomError::Cancelled)?;
+            }
+            Ok(AssistantTurn {
+                reasoning: None,
+                text: "Let me write that.".into(),
+                tool_calls: Vec::new(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn streamed_tool_calls_report_drafting_once_without_names_or_arguments() {
+        let engine = AgentEngine::new(
+            Arc::new(DraftingProvider),
+            Arc::new(ToolRegistry::new()),
+            "test-model",
+            1,
+        );
+        let (tx, mut rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
+        let turn = context();
+        let turn_id = turn.turn_id.clone();
+        engine
+            .run(turn, "draft a call".into(), tx, CancellationToken::new())
+            .await
+            .expect("run");
+        let mut events = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            events.push(event);
+        }
+        let drafting = events
+            .iter()
+            .filter(|event| matches!(event, AppEvent::ToolCallDrafting { turn_id: id } if *id == turn_id))
+            .count();
+        assert_eq!(drafting, 1, "one progress signal per provider response");
+        let text = events
+            .iter()
+            .position(|event| matches!(event, AppEvent::TextDelta { .. }))
+            .expect("text is still streamed");
+        let started = events
+            .iter()
+            .position(|event| matches!(event, AppEvent::ToolCallDrafting { .. }))
+            .unwrap();
+        assert!(text < started, "drafting follows the text that preceded it");
+        let serialized = serde_json::to_string(&events).unwrap();
+        assert!(
+            !serialized.contains("secret_tool_name") && !serialized.contains("secret arguments")
+        );
     }
 
     #[tokio::test]

@@ -18,11 +18,13 @@ pub(super) fn append(
 ) -> Result<()> {
     // Historical response authentication is retained separately. A saved
     // attestation report or live provider state must never restore a lease.
+    // Tool-call drafting is display-only progress with no replay meaning.
     if matches!(
         envelope.event,
         AppEvent::SecurityStatusChanged { .. }
             | AppEvent::SecurityEvidenceUpdated { .. }
             | AppEvent::CompactionProgressUpdated { .. }
+            | AppEvent::ToolCallDrafting { .. }
     ) {
         return Ok(());
     }

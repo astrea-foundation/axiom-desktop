@@ -529,6 +529,11 @@ struct PartialToolCall {
 }
 
 impl ToolCallAccumulator {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.calls.is_empty()
+    }
+
     pub fn push(&mut self, delta: ToolCallDelta) -> Result<(), ValidationError> {
         if delta.index >= MAX_TOOL_CALLS {
             return Err(ValidationError::count("tool_call_delta.index"));
@@ -617,6 +622,10 @@ pub enum ProviderEvent {
     TextDelta(String),
     ReasoningDelta(String),
     RefusalDelta(String),
+    /// Content-free progress: the model began emitting a tool call. Adapters
+    /// may send this before verification because it reveals no tool name or
+    /// arguments; consumers must never treat it as an executable call.
+    ToolCallStarted,
     ToolCallDelta(ToolCallDelta),
     Usage {
         input_tokens: u64,

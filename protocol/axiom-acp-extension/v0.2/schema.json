@@ -49,6 +49,12 @@
     "readImageResponse": {
       "$ref": "#/$defs/ReadImageResponse"
     },
+    "resolveImageRequest": {
+      "$ref": "#/$defs/ResolveImageRequest"
+    },
+    "resolveImageResponse": {
+      "$ref": "#/$defs/ResolveImageResponse"
+    },
     "deliveryMetadata": {
       "$ref": "#/$defs/DeliveryMetadata"
     },
@@ -250,6 +256,8 @@
     "regenerateImageResponse",
     "readImageRequest",
     "readImageResponse",
+    "resolveImageRequest",
+    "resolveImageResponse",
     "deliveryMetadata",
     "listThreadsRequest",
     "listThreadsResponse",
@@ -1032,7 +1040,7 @@
           "default": 0
         },
         "imageResources": {
-          "description": "Metadata-only image presentation with account-scoped on-demand reads.",
+          "description": "Metadata-only image presentation with account-scoped on-demand reads.\nVersion 2 adds conversation-local image ID resolution.",
           "type": "integer",
           "format": "uint16",
           "minimum": 0,
@@ -1068,6 +1076,7 @@
           "default": 0
         },
         "activity": {
+          "description": "Version 2 adds display-only tool-call drafting activity.",
           "type": "integer",
           "format": "uint16",
           "minimum": 0,
@@ -1434,6 +1443,51 @@
         "width",
         "height",
         "sha256"
+      ]
+    },
+    "ResolveImageRequest": {
+      "description": "Read one conversation-local image by the exact `img_…` ID that image tools\naccept, so a client can show what `view_image` inspected or which references\nan image request used. IDs never resolve across threads or accounts.",
+      "type": "object",
+      "properties": {
+        "threadId": {
+          "type": "string"
+        },
+        "imageId": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "threadId",
+        "imageId"
+      ]
+    },
+    "ResolveImageResponse": {
+      "type": "object",
+      "properties": {
+        "imageId": {
+          "type": "string"
+        },
+        "origin": {
+          "description": "`uploaded`, `generated` or `edited`.",
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "data": {
+          "type": "string"
+        },
+        "mimeType": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "imageId",
+        "origin",
+        "name",
+        "data",
+        "mimeType"
       ]
     },
     "DeliveryMetadata": {
@@ -3935,6 +3989,23 @@
           "required": [
             "kind",
             "preferences"
+          ]
+        },
+        {
+          "description": "The model began emitting tool-call arguments in this turn. Display-only:\nno name or arguments are exposed, and the call itself arrives later as\nan ordinary validated ACP tool call.",
+          "type": "object",
+          "properties": {
+            "turnId": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "tool_call_drafting"
+            }
+          },
+          "required": [
+            "kind",
+            "turnId"
           ]
         }
       ]

@@ -196,6 +196,42 @@ impl ImageCatalog {
         })
     }
 
+    /// Rebuild exactly the catalog a restored conversation gives its image
+    /// tools: uploads and verified generated images from this thread only.
+    /// Unusable saved images are omitted with a warning, as on restore.
+    pub fn from_history(
+        session_id: &crate::app::SessionId,
+        events: &[crate::app::EventEnvelope],
+    ) -> Result<Self> {
+        let images = Self::default();
+        for envelope in events {
+            if envelope.session_id != *session_id {
+                return Err(AxiomError::Storage(
+                    "image history belongs to another conversation".into(),
+                ));
+            }
+            match &envelope.event {
+                AppEvent::PromptAccepted {
+                    turn_id,
+                    attachments,
+                    ..
+                } => {
+                    if images
+                        .add_uploads(&session_id.to_string(), &turn_id.to_string(), attachments)
+                        .is_err()
+                    {
+                        tracing::warn!(%session_id, "unusable saved image uploads omitted from runtime catalog");
+                    }
+                }
+                AppEvent::ImageGenerated { image, .. } if images.add_generated(image).is_err() => {
+                    tracing::warn!(%session_id, "unusable saved generated image omitted from runtime catalog");
+                }
+                _ => {}
+            }
+        }
+        Ok(images)
+    }
+
     pub fn resolve(&self, id: &str) -> Result<LocalImage> {
         self.0.lock().map_err(|_| AxiomError::Storage("image catalog unavailable".into()))?
             .get(id).cloned().ok_or_else(|| AxiomError::Tool("Image is not available in this conversation. Use an image ID from this thread or attach the image here.".into()))
@@ -659,7 +695,7 @@ async fn report_progress(
 
 /// A missing reference means generation; an explicitly null/invalid reference
 /// is an error, not permission to generate a different image.
-fn valid_image_id(id: &str) -> bool {
+pub(crate) fn valid_image_id(id: &str) -> bool {
     id.len() == 36
         && id.starts_with("img_")
         && id.as_bytes()[4..]
@@ -790,6 +826,90 @@ pub(crate) mod tests {
                 ..Default::default()
             },
         }
+    }
+
+    #[test]
+    fn saved_history_resolves_the_same_ids_image_tools_use_and_only_for_its_thread() {
+        use crate::app::{CorrelationId, EventEnvelope, Origin, TurnId};
+        let session = SessionId::new();
+        let turn = TurnId::new();
+        let envelope = |session_id: &SessionId, event: AppEvent| EventEnvelope {
+            schema_version: 1,
+            turn_id: event.turn_id().cloned(),
+            sequence: 1,
+            occurred_at: chrono::Utc::now(),
+            correlation_id: CorrelationId::new(),
+            origin: Origin::Test,
+            session_id: session_id.clone(),
+            event,
+        };
+        let upload = png(64, 32);
+        let mut edited = generated_fixture();
+        edited.source_image_ids = vec![format!("img_{}", "12".repeat(16))];
+        edited.request_id = "34".repeat(16);
+        edited.usage.request_id.clone_from(&edited.request_id);
+        let history = vec![
+            envelope(
+                &session,
+                AppEvent::PromptAccepted {
+                    turn_id: turn.clone(),
+                    text: "edit this".into(),
+                    attachments: vec![PromptAttachment::Image {
+                        name: "cat.png".into(),
+                        image: upload.clone(),
+                    }],
+                },
+            ),
+            envelope(
+                &session,
+                AppEvent::ImageGenerated {
+                    call_id: "first".into(),
+                    image: Box::new(generated_fixture()),
+                },
+            ),
+            envelope(
+                &session,
+                AppEvent::ImageGenerated {
+                    call_id: "second".into(),
+                    image: Box::new(edited),
+                },
+            ),
+        ];
+        let live = ImageCatalog::default();
+        live.add_uploads(
+            &session.to_string(),
+            &turn.to_string(),
+            &[PromptAttachment::Image {
+                name: "cat.png".into(),
+                image: upload.clone(),
+            }],
+        )
+        .unwrap();
+        let upload_id = id(&live);
+        let saved = ImageCatalog::from_history(&session, &history).unwrap();
+        let uploaded = saved.resolve(&upload_id).unwrap();
+        assert_eq!(
+            (uploaded.origin, uploaded.name.as_str()),
+            ("uploaded", "cat.png")
+        );
+        assert_eq!(*uploaded.image, upload);
+        let generated = saved.resolve(&format!("img_{}", "12".repeat(16))).unwrap();
+        assert_eq!(generated.origin, "generated");
+        assert_eq!(
+            saved
+                .resolve(&format!("img_{}", "34".repeat(16)))
+                .unwrap()
+                .origin,
+            "edited"
+        );
+        assert!(saved.resolve(&format!("img_{}", "56".repeat(16))).is_err());
+
+        let mut foreign = history.clone();
+        foreign.push(envelope(
+            &SessionId::new(),
+            AppEvent::TurnStarted { turn_id: turn },
+        ));
+        assert!(ImageCatalog::from_history(&session, &foreign).is_err());
     }
 
     #[test]

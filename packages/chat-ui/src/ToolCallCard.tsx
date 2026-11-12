@@ -2,8 +2,9 @@
 import { ChevronDown, Globe2, Image as ImageIcon, LoaderCircle, RotateCcw, Search, Wrench, X } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { ToolActivity } from "@axiom/chat-core/viewTypes";
-import { isFetchTool, redactToolText, toolFailed, toolImageProgress, toolLabel, toolName, toolSearchSources } from "./toolPresentation";
+import { imageRequestSummary, isFetchTool, isImageGenerationTool, redactToolText, toolFailed, toolImageProgress, toolLabel, toolName, toolSearchSources, viewedImageId } from "./toolPresentation";
 import { ImagePreviewDialog } from "./ImagePreviewDialog";
+import { ImageRequestDetails, ViewedImageDetails } from "./ImageToolDetails";
 import { decodeGeneratedPng } from "./generatedImage";
 import { McpSourceLabel, mcpHost } from "./McpPrivacy";
 import { useChatHost } from "./ChatHost";
@@ -136,7 +137,7 @@ function safeDetail(value: unknown): string {
 function toolIcon(tool: ToolActivity) {
   if (toolFailed(tool)) return <X size={14} className="text-[var(--color-danger)]" />;
   if (tool.status !== "completed") return <LoaderCircle size={14} className="animate-spin motion-reduce:animate-none" />;
-  if (["generate", "generate_image", "edit_image"].includes(toolName(tool))) return <ImageIcon size={14} />;
+  if (isImageGenerationTool(tool) || toolName(tool) === "view_image") return <ImageIcon size={14} />;
   if (toolName(tool) === "fetch_url" || tool.kind === "fetch" || tool.kind === "web") return <Globe2 size={14} />;
   if (toolName(tool) === "web_search" || tool.kind === "search") return <Search size={14} />;
   return <Wrench size={14} />;
@@ -149,15 +150,22 @@ export function ToolCallCard({ tool, threadId, responseActive = false }: { tool:
   const label = toolLabel(tool);
   const progress = toolImageProgress(tool);
   const sources = useMemo(() => toolSearchSources(tool), [tool]);
-  const images = ["generate", "generate_image", "edit_image"].includes(toolName(tool)) && tool.status === "completed"
+  const images = isImageGenerationTool(tool) && tool.status === "completed"
     ? tool.content.map(imageBlock).filter((image): image is NonNullable<typeof image> => image !== null) : [];
   const remoteHost = mcpHost(tool.mcpSource?.destination);
-  const hasDetails = !isFetchTool(tool) && (!toolFailed(tool) || !!remoteHost)
-    && (tool.input != null || tool.content.length > 0 || tool.locations.length > 0);
+  // Image tools get purpose-built details instead of their raw arguments and
+  // tool-result text. A request's prompt stays viewable even if it failed.
+  const imageRequest = useMemo(() => imageRequestSummary(tool), [tool]);
+  const viewedImage = toolFailed(tool) ? null : viewedImageId(tool);
+  const imageDetails = imageRequest !== null || viewedImage !== null;
+  const rawDetails = !isImageGenerationTool(tool) && toolName(tool) !== "view_image";
+  const hasDetails = imageDetails || (rawDetails && !isFetchTool(tool) && (!toolFailed(tool) || !!remoteHost)
+    && (tool.input != null || tool.content.length > 0 || tool.locations.length > 0));
   const details = useMemo(
-    () => open && hasDetails && !sources ? safeDetail({ input: tool.input, output: tool.content.map(c=>imageBlock(c) ? {type:"image",mimeType:"image/png"} : c), locations: tool.locations }) : "",
-    [tool, open, hasDetails, sources],
+    () => open && hasDetails && rawDetails && !sources ? safeDetail({ input: tool.input, output: tool.content.map(c=>imageBlock(c) ? {type:"image",mimeType:"image/png"} : c), locations: tool.locations }) : "",
+    [tool, open, hasDetails, rawDetails, sources],
   );
+  const outputSize = images.find((image) => image.width && image.height);
   const rowClass = "flex min-h-8 max-w-full items-center gap-2 rounded-md px-1.5 py-1 text-left leading-5 text-[var(--color-text-secondary)]";
   const row = <>
     <span className="shrink-0 text-[var(--color-text-tertiary)]" aria-hidden="true">{toolIcon(tool)}</span>
@@ -184,10 +192,17 @@ export function ToolCallCard({ tool, threadId, responseActive = false }: { tool:
         aria-valuenow={progress.percent} className="mx-1.5 mt-1 h-1 max-w-[32rem] overflow-hidden rounded-full bg-[var(--color-border)]">
         <div className="h-full rounded-full bg-[var(--color-text-secondary)] transition-[width] motion-reduce:transition-none" style={{width: `${progress.percent}%`}} />
       </div> : null}
+      {hasDetails && open && imageDetails ? (
+        <div id={detailsId} className="selectable ml-3.5 mt-1 border-l border-[var(--color-border)] pl-4 pr-2 text-[12px] leading-5 text-[var(--color-text-secondary)]">
+          {imageRequest ? <ImageRequestDetails threadId={threadId} request={imageRequest}
+            outputSize={outputSize ? { width: outputSize.width!, height: outputSize.height! } : null} />
+            : viewedImage ? <ViewedImageDetails threadId={threadId} imageId={viewedImage} /> : null}
+        </div>
+      ) : null}
       {images.map((image,index)=><GeneratedToolImage key={index} image={image}
         regenerationDisabled={responseActive}
         onRegenerate={threadId && host.regenerateImage ? () => host.regenerateImage!(threadId, tool.callId) : undefined} />)}
-      {hasDetails && open ? (
+      {hasDetails && open && !imageDetails ? (
         <div id={detailsId} className="selectable ml-3.5 mt-1 max-h-80 overflow-auto border-l border-[var(--color-border)] pl-4 pr-2 text-[12px] leading-5 text-[var(--color-text-secondary)]">
           {remoteHost ? <div className="mb-2 space-y-1 pt-1 text-[12px] leading-5">
             <p className="break-all"><strong>Destination:</strong> {remoteHost}</p>

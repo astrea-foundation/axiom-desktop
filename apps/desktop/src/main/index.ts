@@ -197,6 +197,11 @@ function installAgentIpc(): void {
     sidecar.getAttachments(boundedString(threadId, "thread ID", 128), boundedString(userItemId, "user message ID", 512)));
   agentHandle("agent:image-regenerate", (_event, threadId: unknown, callId: unknown) =>
     sidecar.regenerateImage(boundedString(threadId, "thread ID", 128), boundedString(callId, "image call ID", 512)));
+  agentHandle("agent:image-resolve", (_event, threadId: unknown, imageId: unknown) => {
+    const id = boundedString(imageId, "image ID", 36);
+    if (!/^img_[0-9a-f]{32}$/.test(id)) throw new Error("Invalid image ID");
+    return sidecar.resolveImage(boundedString(threadId, "thread ID", 128), id);
+  });
   agentHandle("agent:prompt-revise", (_event, sessionId: unknown, text: unknown, userItemId: unknown, expectedRevision: unknown, webEnabled: unknown, revision: unknown, mcpRevision: unknown) => {
     if (typeof webEnabled !== "boolean") throw new Error("webEnabled must be a boolean");
     if (typeof text !== "string") throw new Error("Invalid prompt input");

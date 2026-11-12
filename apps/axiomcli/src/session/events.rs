@@ -1067,10 +1067,12 @@ pub(super) fn persist_event(
         }
         // Attestation reports are public but ephemeral; persist terminal receipt
         // verification separately and never restore a live lease from history.
-        // Live compaction counters also never become timeline text or model input.
+        // Live compaction counters and drafting progress are display-only; the
+        // validated tool call that follows is the durable timeline item.
         AppEvent::SecurityEvidenceUpdated { .. }
         | AppEvent::ModelHistoryCheckpoint { .. }
-        | AppEvent::CompactionProgressUpdated { .. } => {}
+        | AppEvent::CompactionProgressUpdated { .. }
+        | AppEvent::ToolCallDrafting { .. } => {}
         AppEvent::ResponseVerified { turn_id } => {
             mark_response_verified(transaction, &thread_id, &turn_id.to_string(), &now)?;
         }

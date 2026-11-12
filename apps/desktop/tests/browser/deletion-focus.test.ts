@@ -328,6 +328,10 @@ async function openApp(platform = "linux", failDelete = false, thinkingLevels: s
           state.sessions["old-thread"]!.activeTurnId = running ? "active-test-turn" : null;
           emit();
         },
+        setToolCallDraft: (turnId: string | null) => {
+          (state.sessions["old-thread"] as ClientSessionState).toolCallDraftTurnId = turnId;
+          emit();
+        },
         setRequestUsage: (usage: NonNullable<ClientSessionState["requestUsage"]>) => { state.sessions["old-thread"]!.requestUsage = usage; emit(); },
         setContextUsage: (usage: ContextUsage | null) => {
           state.sessions["old-thread"]!.contextUsage = usage;
@@ -3841,6 +3845,111 @@ test("generated and edited images open the local viewer with keyboard and backdr
     // This fixture reloads the same synthetic timeline for either account.
     // Its new component must still discard the previous account's Blob URL.
     await page.waitForFunction(url => !Array.from(document.querySelectorAll("img")).some(image => image.src === url), source);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("image tool details show the viewed image, request cards above the result, and a writing row until the call arrives", async () => {
+  const { page, errors } = await openApp("linux", false, [], "medium", true, false);
+  const viewed = `img_${"3e".repeat(16)}`, first = `img_${"a1".repeat(16)}`, second = `img_${"b2".repeat(16)}`;
+  try {
+    await page.locator('[data-thread-id="old-thread"]').click();
+    await page.evaluate(async ({ viewed, first, second }) => {
+      const draw = async (color: string, label: string, width = 768, height = 512) => {
+        const canvas = document.createElement("canvas"); canvas.width = width; canvas.height = height;
+        const context = canvas.getContext("2d")!;
+        context.fillStyle = color; context.fillRect(0, 0, width, height);
+        context.fillStyle = "white"; context.font = "56px sans-serif"; context.fillText(label, 40, height / 2);
+        return canvas;
+      };
+      const base64 = async (color: string, label: string) => (await draw(color, label)).toDataURL("image/png").split(",")[1]!;
+      const images: Record<string, { origin: string; name: string; mimeType: string; data: string }> = {
+        [viewed]: { origin: "uploaded", name: "cat.png", mimeType: "image/png", data: await base64("#0e7490", "Uploaded cat") },
+        [first]: { origin: "uploaded", name: "cat.png", mimeType: "image/png", data: await base64("#7c3aed", "Reference one") },
+        [second]: { origin: "generated", name: "Axiom image", mimeType: "image/png", data: await base64("#db2777", "Reference two") },
+      };
+      (window as any).__resolveCalls = [];
+      (window as any).axiomDesktop.agent.resolveImage = async (threadId: string, imageId: string) => {
+        (window as any).__resolveCalls.push([threadId, imageId]);
+        const image = images[imageId];
+        if (!image) throw new Error("missing image");
+        return { imageId, ...image };
+      };
+      const result = await draw("#164e63", "Generated result", 2048, 1152);
+      const blob = await new Promise<Blob>(resolve => result.toBlob(value => resolve(value!), "image/png"));
+      (window as any).__timeline = [
+        { id: "view", kind: "tool", text: "view_image", status: "completed", tool: {
+          callId: "view", name: "view_image", title: "view_image", kind: "other", status: "completed",
+          input: { image_id: viewed }, locations: [],
+          content: [{ type: "text", text: `Viewed image ${viewed}. The image is supplied as visual input after the tool responses.` }],
+        } },
+        { id: "generated", kind: "tool", text: "generate", status: "completed", tool: {
+          callId: "generated", name: "generate", title: "generate", kind: "other", status: "completed",
+          input: { prompt: "Place <image1> on the sofa from <image2> at golden hour.", reference_image_ids: [first, second], aspect_ratio: "16:9" },
+          locations: [], content: [{ type: "image", mimeType: "image/png", imageUrl: URL.createObjectURL(blob), width: 2048, height: 1152 }],
+        } },
+      ];
+      (window as any).__deletionTest.setTimeline((window as any).__timeline);
+    }, { viewed, first, second });
+
+    await page.getByRole("button", { name: `Viewed image ${viewed}; show details`, exact: true }).click();
+    const viewedFigure = page.locator(`[data-viewed-image="${viewed}"]`);
+    const viewedImage = viewedFigure.getByRole("button", { name: `View image ${viewed}`, exact: true });
+    await viewedImage.waitFor();
+    await page.waitForFunction((id) => document.querySelector<HTMLImageElement>(`[data-viewed-image="${id}"] img`)?.naturalWidth === 768, viewed);
+    assert.match(await viewedFigure.innerText(), new RegExp(`${viewed}[\\s\\S]*Uploaded image · cat\\.png`));
+    assert.equal(await page.getByText("supplied as visual input").count(), 0, "raw tool output stays hidden");
+    assert.equal(await page.getByText('"input"').count(), 0);
+    await viewedImage.click();
+    const dialog = page.getByRole("dialog", { name: "Image preview: cat.png", exact: true });
+    await dialog.waitFor();
+    await page.keyboard.press("Escape"); await dialog.waitFor({ state: "detached" });
+
+    await page.getByRole("button", { name: "Edited image; show details", exact: true }).click();
+    const details = page.locator("[data-image-request-details]");
+    await details.waitFor();
+    const text = await details.innerText();
+    assert.match(text, /Prompt\s+Place <image1> on the sofa from <image2> at golden hour\./);
+    assert.match(text, /Aspect ratio\s+16:9/);
+    assert.match(text, /Size\s+2048 × 1152/);
+    const cards = details.locator("[data-reference-image]");
+    assert.equal(await cards.count(), 2);
+    assert.match(await cards.nth(0).innerText(), new RegExp(`<image1>\\s+${first}`));
+    assert.match(await cards.nth(1).innerText(), new RegExp(`<image2>\\s+${second}`));
+    await details.getByRole("button", { name: "View reference image 2", exact: true }).waitFor();
+    const result = page.getByRole("button", { name: "View generated image", exact: true });
+    await result.waitFor();
+    assert.ok(await details.evaluate((element, trigger) => Boolean(element.compareDocumentPosition(trigger!) & Node.DOCUMENT_POSITION_FOLLOWING),
+      await result.elementHandle()), "request details appear above the generated image");
+    assert.deepEqual(new Set(await page.evaluate(() => (window as any).__resolveCalls.map((call: string[]) => call.join(" ")))),
+      new Set([viewed, first, second].map((id) => `old-thread ${id}`)));
+    if (process.env.AXIOM_VIEWED_IMAGE_CAPTURE) await page.screenshot({ path: process.env.AXIOM_VIEWED_IMAGE_CAPTURE, animations: "disabled" });
+    await page.getByRole("button", { name: `Viewed image ${viewed}; show details`, exact: true }).click();
+    await viewedFigure.waitFor({ state: "detached" });
+    if (process.env.AXIOM_IMAGE_TOOL_DETAILS_CAPTURE) {
+      await result.scrollIntoViewIfNeeded();
+      await page.screenshot({ path: process.env.AXIOM_IMAGE_TOOL_DETAILS_CAPTURE, animations: "disabled" });
+    }
+
+    await page.evaluate(() => {
+      (window as any).__deletionTest.setTimeline([{ id: "answer", turnId: "active-test-turn", kind: "assistant", text: "I'll make that edit.", status: "completed" }], true);
+      (window as any).__deletionTest.setToolCallDraft("active-test-turn");
+    });
+    const writing = page.getByText("Writing tool call…", { exact: true });
+    await writing.waitFor();
+    if (process.env.AXIOM_TOOL_DRAFT_CAPTURE) await page.screenshot({ path: process.env.AXIOM_TOOL_DRAFT_CAPTURE, animations: "disabled" });
+    await page.evaluate(() => {
+      (window as any).__deletionTest.setToolCallDraft(null);
+      (window as any).__deletionTest.setTimeline([
+        { id: "answer", turnId: "active-test-turn", kind: "assistant", text: "I'll make that edit.", status: "completed" },
+        { id: "pending", turnId: "active-test-turn", kind: "tool", text: "generate", status: "in_progress", tool: {
+          callId: "pending", name: "generate", title: "generate", kind: "other", status: "in_progress",
+          input: { prompt: "Make it blue" }, locations: [], content: [],
+        } },
+      ], true);
+    });
+    await page.getByText("Generating image", { exact: true }).waitFor();
+    assert.equal(await writing.count(), 0, "the validated call replaces the writing row");
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
 });

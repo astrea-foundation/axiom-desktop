@@ -28,6 +28,7 @@ import type {
   EventNotification,
   GetThreadTimelineResponse,
   ReadImageResponse,
+  ResolveImageResponse,
   ListModelsResponse,
   ListThreadsRequest,
   ListThreadsResponse,
@@ -73,12 +74,12 @@ const EXTENSION_CAPABILITIES = {
     securityEvidence: 4,
     webConsent: 1,
     imageGeneration: 4,
-    imageResources: 1,
+    imageResources: 2,
     steering: 1,
     messageRevision: 1,
     attachments: 2,
     compaction: 1,
-    activity: 1,
+    activity: 2,
     commandInvocation: 1,
   },
 } as const;
@@ -170,6 +171,7 @@ export class AxiomAcpClient extends EventEmitter {
   private supportsImageGeneration = false;
   private supportsImageRegeneration = false;
   private supportsImageResources = false;
+  private supportsImageResolution = false;
   private supportsCryptoInvoices = false;
   private supportsAttachments = false;
   private desktopBootstrap: DesktopBootstrapResponse | null = null;
@@ -253,6 +255,7 @@ export class AxiomAcpClient extends EventEmitter {
     this.supportsImageGeneration = (meta?.features?.imageGeneration ?? 0) >= 3;
     this.supportsImageRegeneration = (meta?.features?.imageGeneration ?? 0) >= 4;
     this.supportsImageResources = (meta?.features?.imageResources ?? 0) >= 1;
+    this.supportsImageResolution = (meta?.features?.imageResources ?? 0) >= 2;
     this.state.setImageGenerationAvailable(this.supportsImageGeneration);
     this.supportsCryptoInvoices = (meta?.features?.billing ?? 0) >= 5;
     this.supportsAttachments = (meta?.features?.attachments ?? 0) >= 2;
@@ -472,6 +475,21 @@ export class AxiomAcpClient extends EventEmitter {
     this.assertAccountContext(context);
     if (result.sha256 !== sha256 || result.mimeType !== "image/png" || typeof result.data !== "string" || result.data.length > 14_000_000) {
       throw new ProtocolError("Saved image identity differs");
+    }
+    return result;
+  }
+
+  /** Resolve a conversation-local `img_…` ID to the exact image image tools see. */
+  async resolveImage(threadId: string, imageId: string): Promise<ResolveImageResponse> {
+    if (!this.supportsImageResolution) throw new ProtocolError("Restart Axiom to show conversation images.");
+    if (!threadId || threadId.length > 128 || !/^img_[0-9a-f]{32}$/.test(imageId)) throw new ProtocolError("Invalid image identity");
+    const context = this.state.accountContextToken();
+    const result = await this.process.request<ResolveImageResponse>("_axiom/image/resolve", { threadId, imageId });
+    this.assertAccountContext(context);
+    if (result.imageId !== imageId || !/^image\/(?:png|jpeg|webp|gif)$/.test(result.mimeType)
+      || typeof result.data !== "string" || result.data.length > 14_000_000
+      || !["uploaded", "generated", "edited"].includes(result.origin) || typeof result.name !== "string") {
+      throw new ProtocolError("Conversation image identity differs");
     }
     return result;
   }

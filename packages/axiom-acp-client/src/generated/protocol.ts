@@ -124,6 +124,11 @@ export type ActivityEvent =
       preferences: ProfilePreferences1;
       kind: "profile_preferences_changed";
       [k: string]: unknown;
+    }
+  | {
+      turnId: string;
+      kind: "tool_call_drafting";
+      [k: string]: unknown;
     };
 export type CompactionPhase = "started" | "summarizing" | "replacing_context" | "completed" | "cancelled" | "failed";
 export type ExtensionErrorCode =
@@ -159,6 +164,8 @@ export interface ProtocolSchema {
   regenerateImageResponse: RegenerateImageResponse;
   readImageRequest: ReadImageRequest;
   readImageResponse: ReadImageResponse;
+  resolveImageRequest: ResolveImageRequest;
+  resolveImageResponse: ResolveImageResponse;
   deliveryMetadata: DeliveryMetadata;
   listThreadsRequest: ListThreadsRequest;
   listThreadsResponse: ListThreadsResponse;
@@ -361,12 +368,16 @@ export interface FeatureVersions {
   imageGeneration?: number;
   /**
    * Metadata-only image presentation with account-scoped on-demand reads.
+   * Version 2 adds conversation-local image ID resolution.
    */
   imageResources?: number;
   steering?: number;
   messageRevision?: number;
   attachments?: number;
   compaction?: number;
+  /**
+   * Version 2 adds display-only tool-call drafting activity.
+   */
   activity?: number;
   /**
    * Explicit application command invocation; prompt text stays literal.
@@ -485,6 +496,26 @@ export interface ReadImageResponse {
   width: number;
   height: number;
   sha256: string;
+  [k: string]: unknown;
+}
+/**
+ * Read one conversation-local image by the exact `img_…` ID that image tools
+ * accept, so a client can show what `view_image` inspected or which references
+ * an image request used. IDs never resolve across threads or accounts.
+ */
+export interface ResolveImageRequest {
+  threadId: string;
+  imageId: string;
+}
+export interface ResolveImageResponse {
+  imageId: string;
+  /**
+   * `uploaded`, `generated` or `edited`.
+   */
+  origin: string;
+  name: string;
+  data: string;
+  mimeType: string;
   [k: string]: unknown;
 }
 /**
