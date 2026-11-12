@@ -3,8 +3,10 @@
 use super::assets::{AssetLoad, AssetManager, AssetRef};
 use crate::{AxiomError, Result};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
+use image::{ImageDecoder as _, ImageFormat, ImageReader};
 use rusqlite::Connection;
 use serde_json::Value;
+use std::io::Cursor;
 
 pub(super) const MEDIA_OMITTED: &str =
     "Unavailable saved media was omitted; usable text and tool outcomes were preserved.";
@@ -20,7 +22,17 @@ pub(super) enum Direction {
 #[derive(Clone, Copy)]
 enum MediaKind {
     Image,
+    GeneratedImage,
     File,
+}
+impl MediaKind {
+    fn image_limit(self) -> Option<usize> {
+        match self {
+            Self::Image => Some(axiom_inference::MAX_IMAGE_BYTES),
+            Self::GeneratedImage => Some(axiom_inference::MAX_GENERATED_IMAGE_BYTES),
+            Self::File => None,
+        }
+    }
 }
 pub(super) struct MediaCodec<'a> {
     pub assets: &'a AssetManager,
@@ -66,6 +78,18 @@ impl MediaCodec<'_> {
             };
             return match self.assets.load(self.connection, self.owner, &reference)? {
                 AssetLoad::Available(data) => {
+                    if let Some(limit) = kind.image_limit()
+                        && !valid_image_bytes(
+                            &data,
+                            object
+                                .get("mimeType")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default(),
+                            limit,
+                        )
+                    {
+                        return Ok(false);
+                    }
                     object.remove("_axiom_asset");
                     object.insert("data".into(), Value::String(data));
                     Ok(true)
@@ -98,13 +122,42 @@ impl MediaCodec<'_> {
                     let data = data
                         .as_str()
                         .ok_or_else(|| AxiomError::Storage("invalid media data".into()))?;
+                    if let Some(limit) = kind.image_limit()
+                        && !valid_image_bytes(
+                            data,
+                            object
+                                .get("mimeType")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default(),
+                            limit,
+                        )
+                    {
+                        return Err(AxiomError::Storage(
+                            "saved image cannot be decoded within storage limits".into(),
+                        ));
+                    }
                     let reference = self.assets.intern(self.connection, self.owner, data)?;
                     object.remove("data");
                     object.insert("_axiom_asset".into(), serde_json::to_value(reference)?);
                 } else if let Some(reference) = object.get("_axiom_asset") {
                     let reference: AssetRef = serde_json::from_value(reference.clone())?;
-                    self.assets
+                    let data = self
+                        .assets
                         .resolve(self.connection, self.owner, &reference)?;
+                    if let Some(limit) = kind.image_limit()
+                        && !valid_image_bytes(
+                            &data,
+                            object
+                                .get("mimeType")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default(),
+                            limit,
+                        )
+                    {
+                        return Err(AxiomError::Storage(
+                            "saved image cannot be decoded within storage limits".into(),
+                        ));
+                    }
                 } else {
                     return Err(AxiomError::Storage("saved media bytes are missing".into()));
                 }
@@ -253,7 +306,7 @@ impl MediaCodec<'_> {
                 }
             }
             Some("image_generated") => {
-                if !self.media(&mut value["image"], MediaKind::Image)? {
+                if !self.media(&mut value["image"], MediaKind::GeneratedImage)? {
                     *value = serde_json::json!({"kind":"warning_raised", "message":MEDIA_OMITTED});
                     omitted += 1;
                 }
@@ -304,7 +357,7 @@ impl MediaCodec<'_> {
                         usable.push(block);
                         continue;
                     }
-                    if !self.media(image, MediaKind::Image)? {
+                    if !self.media(image, MediaKind::GeneratedImage)? {
                         omitted += 1;
                         continue;
                     }
@@ -396,7 +449,9 @@ fn omitted_attachment() -> Value {
 
 fn unavailable_media(kind: MediaKind) -> Value {
     match kind {
-        MediaKind::Image => serde_json::json!({"mimeType":"image/png","_axiom_unavailable":true}),
+        MediaKind::Image | MediaKind::GeneratedImage => {
+            serde_json::json!({"mimeType":"image/png","_axiom_unavailable":true})
+        }
         MediaKind::File => {
             serde_json::json!({"name":"Unavailable attachment","mimeType":"application/octet-stream","_axiom_unavailable":true})
         }
@@ -413,13 +468,10 @@ fn valid_inline_media(value: &Value, kind: MediaKind) -> bool {
     let Some(mime_type) = value["mimeType"].as_str() else {
         return false;
     };
-    let valid = match kind {
-        MediaKind::Image => axiom_inference::ImageContent {
-            data: data.into(),
-            mime_type: mime_type.into(),
+    match kind {
+        MediaKind::Image | MediaKind::GeneratedImage => {
+            valid_image_bytes(data, mime_type, kind.image_limit().expect("image kind"))
         }
-        .validate_bounded(axiom_inference::MAX_GENERATED_IMAGE_BYTES)
-        .is_ok(),
         MediaKind::File => value["name"].as_str().is_some_and(|name| {
             axiom_inference::FileContent {
                 name: name.into(),
@@ -428,10 +480,52 @@ fn valid_inline_media(value: &Value, kind: MediaKind) -> bool {
             }
             .validate()
             .is_ok()
+                && STANDARD
+                    .decode(data)
+                    .is_ok_and(|bytes| STANDARD.encode(bytes) == data)
         }),
+    }
+}
+
+/// Verify the complete first image frame without normalizing or replacing the
+/// original bytes. Match the direct upload source bounds before provider calls.
+fn valid_image_bytes(data: &str, mime_type: &str, max_bytes: usize) -> bool {
+    if !matches!(
+        mime_type,
+        "image/png" | "image/jpeg" | "image/webp" | "image/gif"
+    ) || data.len() > max_bytes.div_ceil(3) * 4
+    {
+        return false;
+    }
+    let Ok(raw) = STANDARD.decode(data) else {
+        return false;
     };
-    valid
-        && STANDARD
-            .decode(data)
-            .is_ok_and(|bytes| STANDARD.encode(bytes) == data)
+    if raw.len() > max_bytes || STANDARD.encode(&raw) != data {
+        return false;
+    }
+    let Ok(mut reader) = ImageReader::new(Cursor::new(&raw)).with_guessed_format() else {
+        return false;
+    };
+    if reader.format() != ImageFormat::from_mime_type(mime_type) {
+        return false;
+    }
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(8192);
+    limits.max_image_height = Some(8192);
+    limits.max_alloc = Some(128 * 1024 * 1024);
+    reader.limits(limits);
+    let Ok(decoder) = reader.into_decoder() else {
+        return false;
+    };
+    let (width, height) = decoder.dimensions();
+    if width == 0
+        || height == 0
+        || width > 8192
+        || height > 8192
+        || u64::from(width) * u64::from(height) > 32 * 1024 * 1024
+        || decoder.total_bytes() > 128 * 1024 * 1024
+    {
+        return false;
+    }
+    image::DynamicImage::from_decoder(decoder).is_ok()
 }

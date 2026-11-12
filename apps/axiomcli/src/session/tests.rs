@@ -2231,13 +2231,13 @@ fn generated_and_edited_images_restore_from_their_owning_durable_tool_records() 
     })).unwrap();
     for (index, name) in [(0, "generate_image"), (1, "edit_image"), (2, "generate")] {
         let request_id = format!("{:02x}", 0x11 * (index + 1)).repeat(16);
-        let raw = b"\x89PNG\r\n\x1a\nsynthetic-local-image";
+        let raw = include_bytes!("fixtures/storage-original.png");
         let image = axiom_secure_client::GeneratedImage {
             request_id: request_id.clone(),
             data: STANDARD.encode(raw),
             mime_type: "image/png".into(),
-            width: 1024,
-            height: 1024,
+            width: 256,
+            height: 256,
             sha256: hex::encode(Sha256::digest(raw)),
             source_image_ids: if index == 0 {
                 vec![]
