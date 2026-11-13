@@ -1,5 +1,4 @@
 /** @jsxRuntime automatic */
-/** @jsxRuntime automatic */
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 
 const FADE_WIDTH = 24;

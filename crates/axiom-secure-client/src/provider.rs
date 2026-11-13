@@ -29,9 +29,6 @@ pub trait VerifiedSession: sealed::Session + Send {
         cancellation: CancellationToken,
     ) -> Result<InferenceResponse>;
 
-    /// Deltas remain provisional until protocol-specific completion checks pass.
-    /// Emit `ResponseVerified` after those checks; callers must also require a
-    /// successful return, since cancellation or event delivery can still fail.
     async fn stream(
         &mut self,
         request: InferenceRequest,
@@ -80,6 +77,12 @@ impl ProviderRegistry {
         config: crate::SecureClientConfig,
         credential: Arc<ApiCredential>,
     ) -> Result<Self> {
+        let pool = config.pool.as_ref().map(|_| {
+            Arc::new(crate::providers::pool::PoolProvider::new(
+                config.clone(),
+                Arc::clone(&credential),
+            )) as Arc<dyn SecureProvider>
+        });
         #[cfg(not(feature = "test-fixture"))]
         {
             let near = Arc::new(crate::providers::near::NearProvider::new(
@@ -89,7 +92,7 @@ impl ProviderRegistry {
             let tinfoil = Arc::new(crate::providers::tinfoil::TinfoilProvider::new(
                 config, credential,
             )) as Arc<dyn SecureProvider>;
-            Self::new([near, tinfoil])
+            Self::new([near, tinfoil].into_iter().chain(pool))
         }
         #[cfg(feature = "test-fixture")]
         {
@@ -102,6 +105,9 @@ impl ProviderRegistry {
                 Arc::clone(&credential),
             )) as Arc<dyn SecureProvider>;
             let mut providers = vec![near, tinfoil];
+            if let Some(pool) = pool {
+                providers.push(pool);
+            }
             if config.uses_test_fixture() {
                 providers.push(Arc::new(crate::providers::fixture::FixtureProvider::new(
                     config, credential,

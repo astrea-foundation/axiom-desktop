@@ -15,6 +15,8 @@ test-fixture = []
 anyhow = "1.0.100"
 async-trait = "0.1.89"
 axiom-inference.workspace = true
+axiom-pool-client = { path = "../../vendor/axiom-pool-client" }
+axiom-pool-protocol = { path = "../../vendor/axiom-pool-protocol" }
 base64 = "0.22.1"
 chacha20poly1305 = "0.10.1"
 curve25519-dalek = "4.1.3"

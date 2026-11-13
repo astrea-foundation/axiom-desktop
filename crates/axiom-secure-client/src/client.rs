@@ -83,6 +83,22 @@ impl SecureClient {
             &cancellation,
         )
         .await;
+        let configured_pool = crate::providers::pool::models(&self.config);
+        let result = if configured_pool.is_empty() {
+            result
+        } else {
+            match result {
+                Ok(mut models) => {
+                    for model in configured_pool {
+                        if !models.iter().any(|m| m.id == model.id) {
+                            models.push(model);
+                        }
+                    }
+                    Ok(models)
+                }
+                Err(_) => Ok(configured_pool),
+            }
+        };
         self.accept_catalog(result).await
     }
 

@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import type { AccountStatus, BillingStatus } from "@axiom/axiom-acp-client";
 import { desktopErrorMessage } from "../signInFlow";
 import { usdFromMicrousd } from "../lib/currency";
-import { FundingPanel } from "./FundingPanel";
+import { DepositPanel } from "./DepositPanel";
 import { AccountScreen } from "./AccountScreen";
 import { GiftCodePanel } from "./GiftCodePanel";
 
@@ -19,46 +19,29 @@ interface BalanceScreenProps {
 export function BalanceScreen({ onClose, connected, account, billing, onRefreshBilling, onLogin }: BalanceScreenProps) {
   const [billingBusy, setBillingBusy] = useState(false);
   const [billingError, setBillingError] = useState<string | null>(null);
-  const generation = useRef(0);
   const content = useRef<HTMLElement>(null);
   const signedIn = account?.state === "valid";
   const shouldPoll = !billing || !!billing.paymentAccount;
-  const pollEnabled = useRef(shouldPoll);
-  pollEnabled.current = shouldPoll;
   useEffect(() => { content.current?.focus({ preventScroll: true }); }, []);
   useEffect(() => {
-    generation.current++;
     setBillingError(null);
     setBillingBusy(false);
-    return () => { generation.current++; };
-  }, [account?.account?.id, account?.state, connected]);
+  }, [account?.account?.id, account?.state]);
 
   useEffect(() => {
     if (!signedIn || !connected) return;
     let stopped = false;
-    let failures = 0;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const poll = async () => {
-      setBillingBusy(true);
       try {
         await onRefreshBilling();
-        if (!stopped) { failures = 0; setBillingError(null); }
+        if (!stopped) setBillingError(null);
       } catch (error) {
-        if (!stopped) {
-          failures++;
-          // A balance read can fail before any deposit request exists. Keep
-          // its actual error visible rather than blaming deposit processing.
-          setBillingError(desktopErrorMessage(error, "Could not load your balance."));
-        }
+        if (!stopped) setBillingError(shouldPoll
+          ? "Deposit status is temporarily unavailable. Retrying…"
+          : desktopErrorMessage(error, "Could not load your balance."));
       } finally {
-        if (!stopped) {
-          setBillingBusy(false);
-          // Successful deposit monitoring stays responsive; outages back off
-          // to one request per minute. Never loop immediately on a rejection.
-          if (pollEnabled.current) timer = setTimeout(() => {
-            if (pollEnabled.current) void poll();
-          }, Math.min(60_000, 5_000 * 2 ** Math.min(failures, 4)));
-        }
+        if (!stopped && shouldPoll) timer = setTimeout(() => void poll(), 5_000);
       }
     };
     void poll();
@@ -66,17 +49,14 @@ export function BalanceScreen({ onClose, connected, account, billing, onRefreshB
   }, [signedIn, connected, account?.account?.id, shouldPoll, onRefreshBilling]);
 
   const refreshBilling = async () => {
-    // A late manual request cannot replace another account's error or clear
-    // its in-flight indicator after an account/connection change or unmount.
-    const current = generation.current;
     setBillingBusy(true);
     setBillingError(null);
     try {
       await onRefreshBilling();
     } catch (error) {
-      if (current === generation.current) setBillingError(desktopErrorMessage(error, "Could not load your balance."));
+      setBillingError(desktopErrorMessage(error, "Could not load your balance."));
     } finally {
-      if (current === generation.current) setBillingBusy(false);
+      setBillingBusy(false);
     }
   };
 
@@ -91,7 +71,7 @@ export function BalanceScreen({ onClose, connected, account, billing, onRefreshB
                   <div className="text-[32px] font-semibold tracking-[-0.03em] text-[var(--color-text-primary)]">
                     {billing ? usdFromMicrousd(billing.availableMicrousd, 2) : "—"}
                   </div>
-                  {!billing ? <div role="status" className="mt-0.5 text-[12px] text-[var(--color-text-tertiary)]">{!connected ? "Connect to load your balance." : billingError ? "Balance unavailable" : "Loading balance…"}</div> : null}
+                  {!billing ? <div className="mt-0.5 text-[12px] text-[var(--color-text-tertiary)]">Loading balance…</div> : null}
                   {billing && billing.postedMicrousd < 0 ? <p role="status" className="mt-2 text-[12px] text-[var(--color-text-secondary)]">Top up to send another message.</p> : null}
                 </div>
                 <button
@@ -117,7 +97,9 @@ export function BalanceScreen({ onClose, connected, account, billing, onRefreshB
                 </details>
               ) : null}
               {billing?.paymentReviewRequired ? <p role="alert" className="mt-4 text-[12px] text-[var(--color-warning-strong)]">Spending is paused while a deposit is reviewed. Your trial credit is unchanged.</p> : null}
-              {account?.account?.id ? <FundingPanel key={`funding:${account.account.id}`} accountId={account.account.id} payment={billing ? billing.paymentAccount ?? null : undefined} connected={connected} quote={billing?.zecUsdQuote} onRefreshBilling={onRefreshBilling} /> : null}
+              {billing?.paymentAccount ? <DepositPanel key={`deposit:${account?.account?.id}`} payment={billing.paymentAccount} connected={connected} quote={billing.zecUsdQuote} /> : billing ? (
+                <p className="mt-4 text-[12px] text-[var(--color-text-tertiary)]">Deposits are temporarily unavailable.</p>
+              ) : null}
 
               {account?.account?.id ? <GiftCodePanel key={`gift:${account.account.id}`} accountId={account.account.id} connected={connected} /> : null}
 

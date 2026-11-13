@@ -47,7 +47,6 @@ export type TimelineItemKind = "user_message" | "assistant_message" | "reasoning
 export type TimelineItemStatus = "pending" | "in_progress" | "completed" | "cancelled" | "failed" | "interrupted";
 export type AccountState = "starting" | "signed_out" | "valid" | "expired" | "unavailable";
 export type LoginMethod = "passkey" | "google" | "password" | "ethereum_wallet";
-export type CryptoInvoiceAction = "cancel" | "check" | "refresh";
 export type SecurityState =
   "unverified" | "verifying" | "unattested_development" | "verified" | "degraded" | "outdated" | "failed";
 export type ActivityEvent =
@@ -171,13 +170,6 @@ export interface ProtocolSchema {
   logoutRequest: LogoutRequest;
   billingStatusRequest: BillingStatusRequest;
   billingStatusResponse: BillingStatusResponse;
-  cryptoOptionsRequest: CryptoOptionsRequest;
-  cryptoOptionsResponse: CryptoOptionsResponse;
-  createCryptoPaymentRequest: CreateCryptoPaymentRequest;
-  cryptoPaymentResponse: CryptoPaymentResponse;
-  cryptoPaymentsRequest: CryptoPaymentsRequest;
-  cryptoInvoiceActionRequest: CryptoInvoiceActionRequest;
-  cryptoPaymentsResponse: CryptoPaymentsResponse;
   giftCodeRedeemRequest: GiftCodeRedeemRequest;
   giftCodeRedeemResponse: GiftCodeRedeemResponse;
   usageSummaryRequest: UsageSummaryRequest;
@@ -720,7 +712,6 @@ export interface BillingStatus {
   currency: string;
   paymentAccount?: PaymentAccount | null;
   zecUsdQuote?: ZecUsdQuote | null;
-  trialCapacity?: TrialCapacity | null;
   [k: string]: unknown;
 }
 /**
@@ -765,72 +756,6 @@ export interface ZecUsdQuote {
   source: string;
   as_of: string;
   expires_at: string;
-}
-export interface TrialCapacity {
-  available: boolean;
-  capacity_microusd: number;
-  spent_microusd: string;
-  retry_at?: string | null;
-}
-export interface CryptoOptionsRequest {
-  [k: string]: unknown;
-}
-export interface CryptoOptionsResponse {
-  options: CryptoOptions;
-  [k: string]: unknown;
-}
-export interface CryptoOptions {
-  enabled: boolean;
-  zcash_discount_bps: number;
-  min_amount_microusd: number;
-  max_amount_microusd: number;
-  currencies: CryptoCurrency[];
-}
-/**
- * Independent funding contract; billing/status remains compatible with older clients.
- */
-export interface CryptoCurrency {
-  code: string;
-  name: string;
-  network: string;
-}
-export interface CreateCryptoPaymentRequest {
-  id: string;
-  amountMicrousd: number;
-  payCurrency: string;
-}
-export interface CryptoPaymentResponse {
-  payment: CryptoPayment;
-  [k: string]: unknown;
-}
-export interface CryptoPayment {
-  id: string;
-  quote_id?: string | null;
-  invoice_expires_at?: string | null;
-  active?: boolean | null;
-  status: string;
-  amount_microusd: number;
-  credited_microusd: number;
-  pay_currency: string;
-  pay_amount?: string | null;
-  pay_address?: string | null;
-  payin_extra_id?: string | null;
-  expires_at?: string | null;
-  review_required: boolean;
-  created_at: string;
-}
-export interface CryptoPaymentsRequest {
-  [k: string]: unknown;
-}
-export interface CryptoInvoiceActionRequest {
-  invoiceId: string;
-  action: CryptoInvoiceAction;
-  id?: string | null;
-  previousQuoteId?: string | null;
-}
-export interface CryptoPaymentsResponse {
-  payments: CryptoPayment[];
-  [k: string]: unknown;
 }
 export interface GiftCodeRedeemRequest {
   code: string;

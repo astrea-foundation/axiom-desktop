@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "canonical_repository": "https://github.com/astrea-foundation/axiom-inference",
+  "package": "axiom-pool-client",
+  "files": {
+    "Cargo.toml": "1231bd8f070009170ec8a2a8e1b8e264b7032f559e8c8a9c27145c58af046a02",
+    "src/attestation.rs": "8ec72785d79f3d0d6d8964c87af4d8bd6581b469eef52954526480aea4ce3738",
+    "src/lib.rs": "cbee71bf8d1a608e2385b521730bb85cdfb5f2eeb4c5c15f25e6f8164d05641c",
+    "examples/smoke.rs": "1a2777da51da3df07a83a897e5e6a7b84bb016986fda64ef1852c9e104cbaa51"
+  }
+}

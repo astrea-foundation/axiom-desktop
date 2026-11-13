@@ -34,61 +34,21 @@ draft; navigation, reselecting a thread and reload preserve them. An anonymous
 draft can follow the first sign-in. Pending first-message setup has its own
 identity, so navigating away does not silently discard or redirect it.
 
-## Balance and payments
+## Balance and gift credit
 
 Open the account menu and choose **Balance** to view credit and top up with mainnet
-Zcash. **5% off** means $9.50 of Zcash buys $10 of credit, using the rate at
-confirmation. The reusable address stays available.
-
-Balance refreshes reuse a ready address instead of provisioning it again. A
-temporary deposit-service failure leaves validated credit visible while an
-unfinished address remains pending. If the balance read itself fails, the screen
-shows **Balance unavailable** and the error instead of loading indefinitely or
-assuming the credit is zero. **Refresh balance** retries immediately. Automatic
-monitoring backs off after failures, up to one refresh per minute, and stops when
-you leave the screen or disconnect.
-
-Choose **Other crypto** to open the deposit window. Pick a coin from the dropdown
-with its icon, enter the USD credit amount and create a payment. Send the exact
-crypto amount on the displayed network, including the memo if shown, before the
-countdown ends. The countdown uses the
-fixed-rate quote's expiry and updates every second. **Send within … for this rate**
-is the time to send, not a confirmation deadline. An unsent quote renews automatically
-while the deposit window is open, with a fresh amount and address. Old quotes
-remain tracked separately under the same invoice. Failed renewal offers **Retry quote** without
-duplicating the order; it never loops on a failed or stale quote.
-
-Choose **I’ve sent it** after sending to stop renewal while the transfer is detected
-and confirmed. This hint is saved on this device for the signed-in account; it
-does not authorize credit. Confirming payments continue beyond the rate deadline.
-The invoice has its own **Invoice expires in** countdown and lasts six hours;
-refreshing a rate never extends that deadline. You can have five active invoices.
-**Cancel invoice** releases a slot on the server and hides its payment instructions.
-It does not reverse funds already sent; the invoice remains in recent payments
-and late transfers continue to be processed. **New payment** returns to the coin
-selector. **Check payment status** requests reconciliation even after expiry or
-cancellation.
-Each payment has its own address. ETH, USDC, USDT and assets offered on multiple
-networks show the exact network and a permanent-loss warning before payment
-creation and beside the deposit details. Status updates automatically; recent
-payments remain available when you reopen Balance. Partial payments need review.
-Provider fees are covered by Axiom.
-The discount applies to Zcash only. Crypto availability requires backend setup.
-
-Automatic and manual balance refreshes preserve an entered gift code.
+Zcash. The reusable address and QR code appear once; automatic and manual balance
+refreshes update that panel in place without clearing an entered gift code.
 **Redeem a gift code** adds its USD value to the signed-in account. Code
 entry is masked and cleared on success, closing the screen, disconnect or account
 change. It is never a chat message or saved draft. A failed/uncertain request can
 be retried with the same code without duplicate credit; a code already redeemed
 by this account reports that result and refreshes the balance.
 
-Gift credit is part of **Other credit**. Trial credit is normally spent first.
-A shared $15 rolling-24-hour trial admission threshold can pause new trial-funded
-requests with a retry time. Already running responses finish normally. Paid credit
-remains usable and is spent first while trial capacity is full. Gift
+Gift credit is part of **Other credit**; trial credit is spent first. Gift
 redemption does not clear payment-review holds. It requires a native interactive
 account and a backend with gift redemption deployed. Desktop and its bundled
-sidecar negotiate `billing@4`; older sidecars must be updated together.
+sidecar negotiate `billing@3`; older sidecars must be updated together.
 
 ## Agent and Web controls
 
@@ -233,9 +193,6 @@ shield while streaming, **Reply verified** with a checkmark only after native au
 or **Reply incomplete** / **Reply check failed** when completion is absent
 or fails. A newer turn cannot inherit an older reply's verification. Expiry or
 renewal of the cached attestation report does not change a reply's verification.
-An authoritative rate-limit rejection before any reply shows **No reply received**.
-Unknown errors, failed TEE checks and response-authentication failures retain the
-failure warning; this label never marks a request verified or resends it.
 Before any reply, the badge summarizes the report instead; an expired report
 shows **Report needs refresh**.
 

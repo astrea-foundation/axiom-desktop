@@ -9,7 +9,6 @@ pub enum SecureErrorCode {
     Authentication,
     InsufficientCredit,
     RateLimited,
-    TrialCapacity,
     ModelUnavailable,
     CapabilityMismatch,
     AttestationUnavailable,
@@ -37,7 +36,6 @@ impl SecureErrorCode {
             Self::Authentication => "AUTHENTICATION_FAILED",
             Self::InsufficientCredit => "INSUFFICIENT_CREDIT",
             Self::RateLimited => "RATE_LIMITED",
-            Self::TrialCapacity => "TRIAL_CAPACITY",
             Self::ModelUnavailable => "MODEL_UNAVAILABLE",
             Self::CapabilityMismatch => "CAPABILITY_MISMATCH",
             Self::AttestationUnavailable => "ATTESTATION_UNAVAILABLE",
@@ -66,7 +64,6 @@ pub struct SecureClientError {
     code: SecureErrorCode,
     safe_detail: &'static str,
     retryable: bool,
-    retry_at: Option<i64>,
 }
 
 impl SecureClientError {
@@ -77,7 +74,6 @@ impl SecureClientError {
             code: default_code(kind),
             safe_detail,
             retryable: default_retryable(kind),
-            retry_at: None,
         }
     }
 
@@ -93,7 +89,6 @@ impl SecureClientError {
             code,
             safe_detail,
             retryable,
-            retry_at: None,
         }
     }
 
@@ -115,16 +110,6 @@ impl SecureClientError {
     #[must_use]
     pub const fn retryable(&self) -> bool {
         self.retryable
-    }
-
-    #[must_use]
-    pub const fn retry_at(&self) -> Option<i64> {
-        self.retry_at
-    }
-
-    pub(crate) fn with_retry_at(mut self, retry_at: Option<i64>) -> Self {
-        self.retry_at = retry_at;
-        self
     }
 
     #[must_use]

@@ -1,5 +1,4 @@
 /** @jsxRuntime automatic */
-/** @jsxRuntime automatic */
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeKatex from "rehype-katex";

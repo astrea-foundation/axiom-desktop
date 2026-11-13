@@ -15,7 +15,6 @@ import { browserConsentStorage } from "./webConsent";
 
 import { type useConversationNavigation } from "./useConversationNavigation";
 import { type useModelCatalog } from "./useModelCatalog";
-import { type useDesktopState } from "./useDesktopState";
 
 function relativeTime(value: string): string {
   const elapsed = Date.now() - Date.parse(value);
@@ -25,7 +24,7 @@ function relativeTime(value: string): string {
   return `${Math.floor(elapsed / 86_400_000)}d`;
 }
 
-export function useConversations(agentState: ClientState, connection: ReturnType<typeof useDesktopState>["connectionContext"], navigation: ReturnType<typeof useConversationNavigation>,
+export function useConversations(agentState: ClientState, navigation: ReturnType<typeof useConversationNavigation>,
   catalog: ReturnType<typeof useModelCatalog>, requiresSignIn: boolean,
   openSignIn: () => void, setUiError: (error: string | null) => void) {
   const { surface, setSurface, activeThreadId, setActiveThreadId, activeThreadIdRef,
@@ -39,7 +38,6 @@ export function useConversations(agentState: ClientState, connection: ReturnType
   const [agentSettingsBusy, setAgentSettingsBusy] = useState(false);
   const messageQueue = useRef<MessageQueueController | null>(null);
   const submittingDraft = useRef(new Map<string, string>());
-  const queueConnectionRevision = useRef(connection.revision);
 
   if (!messageQueue.current) messageQueue.current = new MessageQueueController(browserConsentStorage(), () => setQueueRevision((value) => value + 1), setUiError);
 
@@ -60,16 +58,8 @@ export function useConversations(agentState: ClientState, connection: ReturnType
   const resetNewWeb = webAccess.resetNew;
 
   useEffect(() => {
-    if (connection.latest.current !== connection.revision) return;
-    if (queueConnectionRevision.current !== connection.revision) {
-      queueConnectionRevision.current = connection.revision;
-      submittingDraft.current.clear();
-      // Observe every context transition, including away-and-back events that
-      // React combines into the original final account/runtime snapshot.
-      messageQueue.current!.dispose();
-    }
     messageQueue.current!.sync(agentState, window.axiomDesktop?.agent ?? null);
-  }, [agentState, queueRevision, connection.revision]);
+  }, [agentState, queueRevision]);
 
   useEffect(() => () => messageQueue.current?.dispose(), []);
 
@@ -219,12 +209,12 @@ export function useConversations(agentState: ClientState, connection: ReturnType
 
   useEffect(() => {
     if (!threadPreparation || (agentState.connected && agentState.account?.state === "valid"
-      && threadPreparation.accountId === billingAccountId && threadPreparation.runtimeId === agentState.runtimeInstanceId
-      && threadPreparation.connectionRevision === connection.revision)) return;
+      && threadPreparation.accountId === billingAccountId && threadPreparation.runtimeId === agentState.runtimeInstanceId)) return;
     cancelThreadPreparation();
     setSurface("welcome");
     setUiError("The account or connection changed. Nothing was sent.");
-  }, [threadPreparation, billingAccountId, agentState.connected, agentState.account?.state, agentState.runtimeInstanceId, connection.revision, cancelThreadPreparation, setDraft]);
+  }, [threadPreparation, billingAccountId, agentState.connected, agentState.account?.state, agentState.runtimeInstanceId, cancelThreadPreparation, setDraft]);
+
   useEffect(() => () => { submittingDraft.current.clear(); }, []);
 
   const ensureThreadLoaded = useCallback(async (id: string, retry = false) => {
@@ -334,11 +324,8 @@ export function useConversations(agentState: ClientState, connection: ReturnType
     const text = draft.trim();
     const api = window.axiomDesktop?.agent;
     const viewRevision = navigationRevision.current;
-    const scope = `${billingAccountId}:${agentState.runtimeInstanceId}:${connection.revision}:${viewRevision}:${activeThreadId ?? "new"}`;
-    // Capture the rendered context, not a newer notification paired with stale
-    // account/model controls. The live revision changes synchronously at IPC.
-    const connectionRevision = connection.revision;
-    if (connection.latest.current !== connectionRevision || (!text && !attachmentDraft.attachments.length) || attachmentDraft.attachmentsBusy || savingDraft.current || !api || !agentState.connected || [...submittingDraft.current.values()].includes(scope) || agentSettingsBusy) return;
+    const scope = `${billingAccountId}:${agentState.runtimeInstanceId}:${viewRevision}:${activeThreadId ?? "new"}`;
+    if ((!text && !attachmentDraft.attachments.length) || attachmentDraft.attachmentsBusy || savingDraft.current || !api || !agentState.connected || [...submittingDraft.current.values()].includes(scope) || agentSettingsBusy) return;
     if (requiresSignIn) {
       openSignIn();
       return;
@@ -367,7 +354,6 @@ export function useConversations(agentState: ClientState, connection: ReturnType
       setUiError(desktopErrorMessage(error, "Your message could not be saved. Your draft was kept."));
       return;
     } finally { savingDraft.current = false; }
-    if (connection.latest.current !== connectionRevision) return;
     submittingDraft.current.set(submissionId, scope);
     attachmentPreviews.remember(submissionId, files);
     // Clear only the captured draft. A navigation/account change or newer typing
@@ -379,17 +365,16 @@ export function useConversations(agentState: ClientState, connection: ReturnType
     setUiError(null);
     if (creatingThread && stillSelected()) {
       // Navigation can dismiss this view without cancelling the durable submission.
-      setThreadPreparation({ id: submissionId, text, attachments: files, accountId: billingAccountId, runtimeId: agentState.runtimeInstanceId, connectionRevision });
+      setThreadPreparation({ id: submissionId, text, attachments: files, accountId: billingAccountId, runtimeId: agentState.runtimeInstanceId });
       activeThreadIdRef.current = null;
       setActiveThreadId(null);
       setThreadLoadError(null);
       setSurface("thread");
     }
-    const submissionCurrent = () => submittingDraft.current.has(submissionId) && connection.latest.current === connectionRevision;
     const currentSubmissionState = async () => {
-      if (!submissionCurrent()) return null;
+      if (!submittingDraft.current.has(submissionId)) return null;
       const current = await api.getState();
-      if (!submissionCurrent()) return null;
+      if (!submittingDraft.current.has(submissionId)) return null;
       if (!current.connected || current.account?.state !== "valid" || current.account.account?.id !== billingAccountId
         || current.runtimeInstanceId !== agentState.runtimeInstanceId) {
         throw new Error("The account or connection changed. Nothing was sent.");
@@ -409,11 +394,9 @@ export function useConversations(agentState: ClientState, connection: ReturnType
           if (typeof api.configureDesktopAgent !== "function") throw new Error("Restart Axiom to enable Agent mode. Your draft was kept.");
           const { mcpTools: _mcpTools, ...agentSelection } = newAgentSelection;
           await api.configureDesktopAgent({ threadId: sessionId, expectedRevision: 0, ...agentSelection });
-          if (!submissionCurrent()) return;
         }
         if (newAgentSelection.mcpTools?.length) {
           const mcp = await api.desktopMcp({ threadId: sessionId, action: { kind: "list" } });
-          if (!submissionCurrent()) return;
           await api.desktopMcp({ threadId: sessionId, expectedRevision: mcp.revision, action: { kind: "select", tools: newAgentSelection.mcpTools } });
         }
       } else if (sessionId && !agentState.sessions[sessionId]) {
@@ -441,11 +424,11 @@ export function useConversations(agentState: ClientState, connection: ReturnType
     } catch (error) {
       // A late completion must never reopen a thread, restore an old draft, or
       // overwrite the error belonging to a newer submission/account.
-      if (!submissionCurrent()) return;
+      if (!submittingDraft.current.has(submissionId)) return;
       messageQueue.current!.failPreparation(submissionId, desktopErrorMessage(error, "Thread setup failed. Your message is saved for review."));
       if (!stillSelected()) return;
       const current = await api.getState().catch(() => null);
-      if (!submissionCurrent() || !stillSelected() || current?.account?.account?.id !== billingAccountId || current?.runtimeInstanceId !== agentState.runtimeInstanceId) return;
+      if (current?.account?.account?.id !== billingAccountId || current?.runtimeInstanceId !== agentState.runtimeInstanceId) return;
       try {
         if (!files.length && writeDraft(creatingThread ? null : activeThreadId, (previous) => previous ? `${previous}\n\n${text}` : text, true)) {
           messageQueue.current!.remove(submissionId);

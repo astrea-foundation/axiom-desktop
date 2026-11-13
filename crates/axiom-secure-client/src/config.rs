@@ -28,6 +28,8 @@ pub struct SecureClientConfig {
     pub trust_policy_refresh_interval: Duration,
     pub limits: SecureClientLimits,
     pub endpoint_policy: EndpointPolicy,
+    /// Installed operator configuration; never populated from a model catalog.
+    pub pool: Option<crate::PoolClientConfig>,
     #[cfg(feature = "test-fixture")]
     test_fixture: bool,
 }
@@ -52,6 +54,7 @@ impl SecureClientConfig {
             trust_policy_refresh_interval: Duration::from_secs(300),
             limits: SecureClientLimits::default(),
             endpoint_policy: EndpointPolicy::default(),
+            pool: crate::providers::pool::installed_config()?,
             #[cfg(feature = "test-fixture")]
             test_fixture: false,
         })
@@ -86,6 +89,7 @@ impl SecureClientConfig {
                 reject_local_addresses: false,
                 allow_redirects: false,
             },
+            pool: None,
             test_fixture: true,
         })
     }

@@ -14,12 +14,6 @@ TypeScript checks, Desktop unit/browser tests and the production build. Use the
 candidate instead of repeating unrelated jobs. The live release gate uses the
 registered provider's attested E2EE protocol; it does not replace interactive QA.
 
-The Desktop unit suite also builds the production Electron main entry and
-rejects runtime imports of workspace TypeScript packages. Native installer
-qualification must launch the installed app and reach its first window; a
-successful renderer build or source-mode launch does not establish that the
-packaged main process can start.
-
 ## Interactive qualification
 
 | Area | Required evidence |
@@ -29,7 +23,7 @@ packaged main process can start.
 | Provider security | Current catalog, fresh local attestation, authenticated encrypted completion, stream cancellation/truncation, proof expiry, and explicit degraded-TEE consent/reset |
 | Conversation state | Draft/queue/history retention, attachments, edit/regenerate, compaction, interrupted-turn recovery, restart and account isolation |
 | Tools | Approval, denial, cancellation and workspace boundaries on each supported OS; Web consent and search's distinct privacy boundary |
-| Account credit | Address provisioning, deposit progress and USD valuation, posted usage, gift-code masking/redemption, trial-capacity retry/paid continuation, six-hour invoice timers, five-active-invoice enforcement, server cancellation and account-switch cleanup; coordinate real settlement/reorg checks with platform maintainers |
+| Account credit | Address provisioning, deposit progress and USD valuation, posted usage, gift-code masking/redemption and account-switch cleanup; coordinate real settlement/reorg checks with platform maintainers |
 | Automatic updates | Signed A-to-B upgrades from idle and busy Desktop/TUI; same-terminal workspace/session restoration, GUI reopen, matching CLI version and preserved drafts/history |
 | Update failure paths | Denied OS authorization, cancellation, locked-process waits, interruption/repair, corrupt or wrong-target artifacts, rollback rejection and duplicate updater attempts; staging cleanup, including Windows helpers still in use and abandoned downloads |
 | Publication | Matching source tag, signed inventory, complete installer matrix, verified mirrors, feed activation and safe publication retries |
@@ -42,25 +36,6 @@ vaults and signed installers rather than treating mocks as acceptance evidence.
 Backend rollback, payment-receiver recovery and secret management are separate
 platform operations. Coordinate their acceptance with compatible native releases;
 this document does not authorize a production reset or deployment.
-
-## Dependency maintenance
-
-The 0.1.15 candidate updates Rustls to 0.23.46, resolving
-[RUSTSEC-2026-0346](https://rustsec.org/advisories/RUSTSEC-2026-0346.html),
-[RUSTSEC-2026-0347](https://rustsec.org/advisories/RUSTSEC-2026-0347.html),
-[RUSTSEC-2026-0348](https://rustsec.org/advisories/RUSTSEC-2026-0348.html) and
-[RUSTSEC-2026-0349](https://rustsec.org/advisories/RUSTSEC-2026-0349.html).
-
-The Linux Secret Service credential-store chain still requires zbus 5 and its
-standalone zvariant, zbus_names and zvariant_derive crates. Upstream merged those
-crates into zbus 6 and issued informational maintenance notices
-[RUSTSEC-2026-0370](https://rustsec.org/advisories/RUSTSEC-2026-0370.html),
-[RUSTSEC-2026-0371](https://rustsec.org/advisories/RUSTSEC-2026-0371.html) and
-[RUSTSEC-2026-0372](https://rustsec.org/advisories/RUSTSEC-2026-0372.html).
-The specific exceptions in [deny.toml](../deny.toml) cover those notices while
-the published keyring backend requires zbus 5; they do not suppress vulnerability
-advisories. Migrate when the credential-store backend supports zbus 6, verify
-existing Linux credentials remain readable, and remove all three exceptions.
 
 ## Recording results
 
@@ -141,16 +116,3 @@ The release workflow emits `windows-store-submission` with immutable full-packag
 references and remaining fields. Private maintainer records live in the platform
 repository. Store approval covers its initial installation channel; direct website
 downloads and subsequent updates can still receive Windows reputation prompts.
-
-
-## Crypto funding release qualification
-
-NOWPayments and the Zcash discount have local native, SDK, Desktop and browser
-coverage. Before release, qualify the matching backend's merchant configuration
-and sandbox payments, then verify Balance/network/memo/status/account switching,
-the deposit dialog's keyboard picker, focus restoration, countdown expiry,
-automatic renewal with the updated amount/address, safe renewal retries,
-cancel-and-restart flow, the saved sent-transfer hint, continued tracking beyond
-the quote deadline and small-window layout
-on Windows and macOS previews. Keep Desktop and its bundled `billing@4` sidecar
-together. Installer publishing remains separate release work.

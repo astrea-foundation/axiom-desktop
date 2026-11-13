@@ -5,11 +5,6 @@ import type {
   GetAttachmentsResponse,
   AssignThreadCollectionResponse,
   BillingStatusResponse,
-  CryptoOptionsResponse,
-  CryptoPaymentResponse,
-  CryptoPaymentsResponse,
-  CreateCryptoPaymentRequest,
-  CryptoInvoiceActionRequest,
   GiftCodeRedeemResponse,
   UsageSummaryResponse,
   UsageSummaryRequest,
@@ -67,7 +62,7 @@ const EXTENSION_CAPABILITIES = {
     desktopAgent: 1,
     desktopMcp: 1,
     account: 2,
-    billing: 5,
+    billing: 3,
     usage: 1,
     securityEvidence: 4,
     webConsent: 1,
@@ -112,7 +107,7 @@ export function validateDesktopExtension(meta: {
     throw new ProtocolError("AxiomCLI does not support the required Axiom desktop extension");
   }
   for (const feature of REQUIRED_DESKTOP_FEATURES) {
-    const requiredVersion = feature === "billing" ? 4 : EXTENSION_CAPABILITIES.features[feature];
+    const requiredVersion = EXTENSION_CAPABILITIES.features[feature];
     if ((meta?.features?.[feature] ?? 0) < requiredVersion) {
       throw new ProtocolError(`AxiomCLI does not support required desktop feature ${feature}@${requiredVersion}`);
     }
@@ -150,7 +145,6 @@ export class AxiomAcpClient extends EventEmitter {
   private readonly interactions = new Map<string, InteractionResolver>();
   private readonly background = new Set<Promise<void>>();
   private readonly refreshingThreads = new Map<string, Promise<GetThreadTimelineResponse>>();
-  private billingRefresh: { context: number; promise: Promise<BillingStatusResponse> } | null = null;
   private readonly securityWarmups = new Map<string, {
     context: number; promise: Promise<VerifySecurityResponse>; pending: boolean; validUntil: number; retryAt: number; failures: number;
   }>();
@@ -161,7 +155,6 @@ export class AxiomAcpClient extends EventEmitter {
   private initialized = false;
   private supportsMessageRevision = false;
   private supportsMcp = false;
-  private supportsCryptoInvoices = false;
   private supportsAttachments = false;
   private desktopBootstrap: DesktopBootstrapResponse | null = null;
   private closing = false;
@@ -231,16 +224,10 @@ export class AxiomAcpClient extends EventEmitter {
     const meta = result.agentCapabilities._meta?.axiom as {
       protocolVersion?: string;
       features?: Record<string, number>;
-      runtimeInstanceId?: unknown;
     } | undefined;
     validateDesktopExtension(meta);
-    // The first account/billing/preferences event can arrive only after the
-    // user starts a chat. Publish the handshake identity first so that event
-    // cannot masquerade as a restart and invalidate an in-flight submission.
-    this.state.initializeRuntime(meta?.runtimeInstanceId);
     this.supportsMessageRevision = (meta?.features?.messageRevision ?? 0) >= 1;
     this.supportsMcp = (meta?.features?.desktopMcp ?? 0) >= 1;
-    this.supportsCryptoInvoices = (meta?.features?.billing ?? 0) >= 5;
     this.supportsAttachments = (meta?.features?.attachments ?? 0) >= 2;
     this.initialized = true;
     this.state.setConnected(true);
@@ -641,59 +628,11 @@ export class AxiomAcpClient extends EventEmitter {
     return result;
   }
 
-  billingStatus(): Promise<BillingStatusResponse> {
+  async billingStatus(): Promise<BillingStatusResponse> {
     const accountContext = this.state.accountContextToken();
-    if (this.billingRefresh?.context === accountContext) return this.billingRefresh.promise;
-    // Startup, the account menu and the balance/deposit screens can all request
-    // the same balance at once. Share only in-flight work for this exact account
-    // generation; never cache a settled balance or join an old owner's request.
-    const promise = this.process.request<BillingStatusResponse>("_axiom/billing/status", {}).then((result) => {
-      this.assertAccountContext(accountContext);
-      this.state.setBilling(result.status);
-      return result;
-    }).finally(() => {
-      // An old account's completion must not detach a newer account's request.
-      if (this.billingRefresh?.promise === promise) this.billingRefresh = null;
-    });
-    this.billingRefresh = { context: accountContext, promise };
-    return promise;
-  }
-
-  async cryptoOptions(): Promise<CryptoOptionsResponse> {
-    const context = this.state.accountContextToken();
-    const result = await this.process.request<CryptoOptionsResponse>("_axiom/billing/crypto_options", {});
-    this.assertAccountContext(context);
-    return result;
-  }
-
-  async cryptoPayments(): Promise<CryptoPaymentsResponse> {
-    const context = this.state.accountContextToken();
-    const result = await this.process.request<CryptoPaymentsResponse>("_axiom/billing/crypto_payments", {});
-    this.assertAccountContext(context);
-    return result;
-  }
-
-  async createCryptoPayment(request: CreateCryptoPaymentRequest): Promise<CryptoPaymentResponse> {
-    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(request.id)
-      || !Number.isSafeInteger(request.amountMicrousd) || request.amountMicrousd < 5_000_000 || request.amountMicrousd > 1_000_000_000
-      || request.amountMicrousd % 10_000 !== 0 || !/^[a-z0-9]{1,32}$/.test(request.payCurrency) || request.payCurrency === "zec") {
-      throw new ProtocolError("Invalid payment request.");
-    }
-    const context = this.state.accountContextToken();
-    const result = await this.process.request<CryptoPaymentResponse>("_axiom/billing/create_crypto_payment", request);
-    this.assertAccountContext(context);
-    return result;
-  }
-
-  async cryptoInvoiceAction(request: CryptoInvoiceActionRequest): Promise<CryptoPaymentResponse> {
-    if (!this.supportsCryptoInvoices) throw new ProtocolError("Restart Axiom with the updated native app to manage invoices.");
-    const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-    if (!uuid.test(request.invoiceId) || !["cancel","check","refresh"].includes(request.action)
-      || (request.action === "refresh" ? !uuid.test(request.id ?? "") || !uuid.test(request.previousQuoteId ?? "")
-        : Boolean(request.id || request.previousQuoteId))) throw new ProtocolError("Invalid invoice action.");
-    const context = this.state.accountContextToken();
-    const result = await this.process.request<CryptoPaymentResponse>("_axiom/billing/crypto_invoice_action", request);
-    this.assertAccountContext(context);
+    const result = await this.process.request<BillingStatusResponse>("_axiom/billing/status", {});
+    this.assertAccountContext(accountContext);
+    this.state.setBilling(result.status);
     return result;
   }
 

@@ -429,7 +429,6 @@ mod tests {
                     currency: "microUSD".into(),
                     payment_account: None,
                     zec_usd_quote: None,
-                    trial_capacity: None,
                 },
                 message: Some("Credit added".into()),
             }),
@@ -487,7 +486,6 @@ mod tests {
                 payment_review_required: true,
                 payment_account: None,
                 zec_usd_quote: None,
-                trial_capacity: None,
             }),
             ..BillingView::default()
         };

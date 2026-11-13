@@ -268,46 +268,6 @@ function installAgentIpc(): void {
     return result;
   });
   agentHandle("agent:billing-status", () => sidecar.billingStatus());
-  agentHandle("agent:crypto-options", async (_event, accountId: unknown) => {
-    const id = boundedString(accountId, "account ID", 128);
-    requirePaymentAccount(id, sidecar.state());
-    const result = await sidecar.cryptoOptions();
-    requirePaymentAccount(id, sidecar.state());
-    return result;
-  });
-  agentHandle("agent:crypto-payments", async (_event, accountId: unknown) => {
-    const id = boundedString(accountId, "account ID", 128);
-    requirePaymentAccount(id, sidecar.state());
-    const result = await sidecar.cryptoPayments();
-    requirePaymentAccount(id, sidecar.state());
-    return result;
-  });
-  agentHandle("agent:crypto-invoice-action", async (_event, request: unknown, accountId: unknown) => {
-    const id = boundedString(accountId,"account ID",128);
-    requirePaymentAccount(id,sidecar.state());
-    if (!request || typeof request !== "object" || Array.isArray(request)) throw new Error("Invalid invoice action.");
-    const fields=request as Record<string,unknown>;
-    if (Object.keys(fields).some(key => !["invoiceId","action","id","previousQuoteId"].includes(key))
-      || !["cancel","check","refresh"].includes(String(fields.action))) throw new Error("Invalid invoice action.");
-    const result=await sidecar.cryptoInvoiceAction({invoiceId:boundedString(fields.invoiceId,"invoice ID",36),
-      action:fields.action as "cancel" | "check" | "refresh",
-      ...(fields.id === undefined ? {} : {id:boundedString(fields.id,"quote ID",36)}),
-      ...(fields.previousQuoteId === undefined ? {} : {previousQuoteId:boundedString(fields.previousQuoteId,"previous quote ID",36)})});
-    requirePaymentAccount(id,sidecar.state());
-    return result;
-  });
-  agentHandle("agent:create-crypto-payment", async (_event, request: unknown, accountId: unknown) => {
-    const id = boundedString(accountId, "account ID", 128);
-    requirePaymentAccount(id, sidecar.state());
-    if (!request || typeof request !== "object" || Array.isArray(request)) throw new Error("Invalid payment request.");
-    const fields = request as Record<string, unknown>;
-    if (Object.keys(fields).some((key) => !["id", "amountMicrousd", "payCurrency"].includes(key))
-      || typeof fields.amountMicrousd !== "number" || !Number.isSafeInteger(fields.amountMicrousd)) throw new Error("Invalid payment request.");
-    const result = await sidecar.createCryptoPayment({id: boundedString(fields.id, "payment ID", 36),
-      amountMicrousd: fields.amountMicrousd, payCurrency: boundedString(fields.payCurrency, "crypto", 32)});
-    requirePaymentAccount(id, sidecar.state());
-    return result;
-  });
   agentHandle("agent:redeem-gift-code", async (_event, code: unknown, accountId: unknown) => {
     const id = boundedString(accountId, "account ID", 128);
     requirePaymentAccount(id, sidecar.state());

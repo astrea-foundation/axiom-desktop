@@ -49,19 +49,8 @@ family; each named feature negotiates its own version. Missing/zero versions
 mean unsupported. Desktop checks its required feature set and negotiates optional
 features separately.
 
-The agent's initialization metadata must also include a nonempty
-`runtimeInstanceId` of at most 128 characters without whitespace or control
-characters. The Node client binds it before publishing a connected state; it
-does not wait for the first activity event. An earlier event must identify the
-same runtime, and its sequence is preserved. Missing, malformed or conflicting
-identities reject initialization. This local process identity is separate from
-provider TEE evidence and never grants inference or tool authority. Actual
-runtime changes still invalidate account and session state. Restored message
-preparations require review and a fresh send; an old setup callback cannot
-reactivate them after an account or connection changes and returns.
-
 `account`, `timeline`, and `attachments` are version **2**;
-`billing` is version **4** and `securityEvidence` is version **4**.
+`billing` is version **3** and `securityEvidence` is version **4**.
 Other advertised features are version **1**:
 `desktopChat`, `desktopAgent`, `threadCatalog`, `modelCatalog`,
 `profilePreferences`, `collections`, `usage`,
@@ -99,7 +88,7 @@ are never an instruction to send conversation plaintext through a hosted endpoin
 | Collections | `collection/list`, `collection/create`, `collection/rename`, `collection/set_collapsed`, `collection/move`, `collection/delete`, `collection/assign` |
 | Native account | `account/status`, `account/native_login_start`, `account/native_login_complete`, `account/native_login_cancel`, `account/logout` |
 | Automation-key management | `account/api_keys`, `account/api_key_create`, `account/api_key_revoke` |
-| Billing | `billing/status`, `billing/redeem_gift_code`, `billing/crypto_options`, `billing/create_crypto_payment`, `billing/crypto_payments` |
+| Billing | `billing/status`, `billing/redeem_gift_code` |
 | Usage | `usage/summary` (optional `period`: `week`/`month`/`all_time`, IANA `timezone`; defaults: all time/UTC) |
 | Evidence/compaction/steering | `security/verify`, `security/prewarm`, `compaction/start`, `turn/steer` |
 
@@ -197,37 +186,11 @@ spend by model.
 
 `billing@3` adds private gift redemption. Its bounded `code` request returns
 `creditedMicrousd`, `alreadyRedeemed` and `status`; only the updated billing status
-is published as activity. Never log or persist the code. Gift redemption requires version
+is published as activity. Never log or persist the code. Desktop requires version
 3 and carries its captured account ID through the IPC boundary. New sidecars still
 serve `billing/status` to negotiated version 2 clients, but reject redemption until
 version 3 is negotiated. Retrying the same gift code after an uncertain response
 uses backend exact-once redemption; cancellation does not prove that credit failed.
-
-`billing@4` adds crypto options, create and recent-payment reads. Funding objects
-retain the backend's snake_case fields and exact decimal strings. The create
-request carries UUID `id`, integer `amountMicrousd` and `payCurrency`; responses
-carry `options`, `payment` or `payments`. Native tokens and account-operation
-cancellation guard every request. Currency codes accept 1–32 lowercase letters
-or digits, including one-letter provider asset codes. IPC and the SDK discard
-replies after account changes. Merchant keys stay on the backend. A repeated UUID retrieves its prior
-intent; cancellation never authorizes creating a replacement automatically.
-Desktop and its bundled sidecar require version 4 together. A new sidecar talking
-to an older backend hides Other crypto and leaves existing billing available.
-
-`billing@5` adds `_axiom/billing/crypto_invoice_action` with `invoiceId`, action
-`cancel`, `check`, or `refresh`. Refresh also supplies a new UUID `id` and
-`previousQuoteId`; other actions omit those fields. Version 4 remains the required
-baseline; invoice actions are rejected until version 5 is negotiated. Captured
-account identity and operation cancellation guard IPC, RPC, and HTTP replies.
-Payment responses add optional `quote_id`, `invoice_expires_at`, and `active` for
-older-server compatibility, preserving the server's snake_case funding contract.
-The native client checks that invoice metadata appears together, expiry is exactly
-six hours after creation, and rate expiry never exceeds invoice expiry.
-
-Billing status can include shared `trial_capacity` metadata. Trial admission
-errors are typed `TRIAL_CAPACITY` with a retry timestamp; clients show a capacity
-message and retry time. Existing work finishes normally and paid funding stays
-usable when new trial requests are paused. No plaintext inference path is added.
 
 Security projections require the registered provider identity, accepted key
 fingerprints and hard expiry. NEAR require positive lease generation;

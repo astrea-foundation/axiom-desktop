@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "canonical_repository": "https://github.com/astrea-foundation/axiom-inference",
+  "package": "axiom-pool-protocol",
+  "files": {
+    "Cargo.toml": "2f1b150363cd9ba3274aa58cf639d36bcbabb3ed6af5a8133be1a89a49388507",
+    "src/authorization.rs": "b88fc26dafa615cd0b4e529fb9a7bba30938aae41c38db51838eb93f0293aa0a",
+    "src/crypto.rs": "44d631ed676328601e0cd43a9bdec6b4af6faf33d61626cdca16615f0a12e107",
+    "src/frames.rs": "267dd00d84a58ef3fab65a41e025d50c9b3dc2dfe3f45ad76ad05f573046416f",
+    "src/lib.rs": "0ba95e5ade78f2d4272d65db29c6812c47662d1a92f4067d35c140380e27cb90",
+    "src/strict.rs": "e1cee46660ae266bab4c4c1e96a3b5854f9601b68e09f97b9c2d368c2093e953",
+    "src/test_support.rs": "3d375540395d7c307df5509c3b45333cbd34975c3fb9ca92c8fda53689c41e43",
+    "src/types.rs": "c07a924669965f218c38cec625115f8a07cefa33d27d9e576523698a081fc09f",
+    "examples/generate_vectors.rs": "574e4cfdbec81f69484b922d2b3d0acf21c61ba3f7894216e302f79812c13fdb"
+  }
+}

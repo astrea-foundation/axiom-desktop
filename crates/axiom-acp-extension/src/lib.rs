@@ -99,7 +99,7 @@ impl FeatureVersions {
             profile_preferences: 1,
             collections: 1,
             account: 2,
-            billing: 5,
+            billing: 3,
             usage: 1,
             security_evidence: 4,
             web_consent: 1,
@@ -614,58 +614,6 @@ pub struct BillingStatus {
     pub payment_account: Option<PaymentAccount>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub zec_usd_quote: Option<ZecUsdQuote>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub trial_capacity: Option<Box<TrialCapacity>>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct TrialCapacity {
-    pub available: bool,
-    pub capacity_microusd: u64,
-    pub spent_microusd: String,
-    pub retry_at: Option<String>,
-}
-
-/// Independent funding contract; billing/status remains compatible with older clients.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct CryptoCurrency {
-    pub code: String,
-    pub name: String,
-    pub network: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct CryptoOptions {
-    pub enabled: bool,
-    pub zcash_discount_bps: u16,
-    pub min_amount_microusd: u64,
-    pub max_amount_microusd: u64,
-    pub currencies: Vec<CryptoCurrency>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct CryptoPayment {
-    pub id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub quote_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub invoice_expires_at: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub active: Option<bool>,
-    pub status: String,
-    pub amount_microusd: u64,
-    pub credited_microusd: u64,
-    pub pay_currency: String,
-    pub pay_amount: Option<String>,
-    pub pay_address: Option<String>,
-    pub payin_extra_id: Option<String>,
-    pub expires_at: Option<String>,
-    pub review_required: bool,
-    pub created_at: String,
 }
 
 /// Indicative live market price; deposit credit uses its confirmation-time rate.
@@ -1063,56 +1011,6 @@ pub struct LogoutRequest {}
 #[request(method = "_axiom/billing/status", response = BillingStatusResponse)]
 pub struct BillingStatusRequest {}
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, JsonRpcRequest)]
-#[request(method = "_axiom/billing/crypto_options", response = CryptoOptionsResponse)]
-pub struct CryptoOptionsRequest {}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, JsonRpcRequest)]
-#[request(method = "_axiom/billing/create_crypto_payment", response = CryptoPaymentResponse)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CreateCryptoPaymentRequest {
-    pub id: String,
-    pub amount_microusd: u64,
-    pub pay_currency: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, JsonRpcRequest)]
-#[request(method = "_axiom/billing/crypto_payments", response = CryptoPaymentsResponse)]
-pub struct CryptoPaymentsRequest {}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, JsonRpcRequest)]
-#[request(method = "_axiom/billing/crypto_invoice_action", response = CryptoPaymentResponse)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CryptoInvoiceActionRequest {
-    pub invoice_id: String,
-    pub action: CryptoInvoiceAction,
-    pub id: Option<String>,
-    pub previous_quote_id: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum CryptoInvoiceAction {
-    Cancel,
-    Check,
-    Refresh,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, JsonRpcResponse)]
-pub struct CryptoOptionsResponse {
-    pub options: CryptoOptions,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, JsonRpcResponse)]
-pub struct CryptoPaymentResponse {
-    pub payment: CryptoPayment,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, JsonRpcResponse)]
-pub struct CryptoPaymentsResponse {
-    pub payments: Vec<CryptoPayment>,
-}
-
 #[derive(Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcRequest)]
 #[request(method = "_axiom/billing/redeem_gift_code", response = GiftCodeRedeemResponse)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -1384,13 +1282,6 @@ pub struct ProtocolSchema {
     pub logout_request: LogoutRequest,
     pub billing_status_request: BillingStatusRequest,
     pub billing_status_response: BillingStatusResponse,
-    pub crypto_options_request: CryptoOptionsRequest,
-    pub crypto_options_response: CryptoOptionsResponse,
-    pub create_crypto_payment_request: CreateCryptoPaymentRequest,
-    pub crypto_payment_response: CryptoPaymentResponse,
-    pub crypto_payments_request: CryptoPaymentsRequest,
-    pub crypto_invoice_action_request: CryptoInvoiceActionRequest,
-    pub crypto_payments_response: CryptoPaymentsResponse,
     pub gift_code_redeem_request: GiftCodeRedeemRequest,
     pub gift_code_redeem_response: GiftCodeRedeemResponse,
     pub usage_summary_request: UsageSummaryRequest,

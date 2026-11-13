@@ -340,38 +340,6 @@ pub async fn serve_stdio(
         sync,
         builder,
         context,
-        account::crypto_options,
-        extension::CryptoOptionsRequest,
-        extension::CryptoOptionsResponse
-    );
-    let builder = request_handler!(
-        sync,
-        builder,
-        context,
-        account::create_crypto_payment,
-        extension::CreateCryptoPaymentRequest,
-        extension::CryptoPaymentResponse
-    );
-    let builder = request_handler!(
-        sync,
-        builder,
-        context,
-        account::crypto_invoice_action,
-        extension::CryptoInvoiceActionRequest,
-        extension::CryptoPaymentResponse
-    );
-    let builder = request_handler!(
-        sync,
-        builder,
-        context,
-        account::crypto_payments,
-        extension::CryptoPaymentsRequest,
-        extension::CryptoPaymentsResponse
-    );
-    let builder = request_handler!(
-        sync,
-        builder,
-        context,
         account::redeem_gift_code,
         extension::GiftCodeRedeemRequest,
         extension::GiftCodeRedeemResponse

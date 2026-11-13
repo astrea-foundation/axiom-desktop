@@ -1,5 +1,8 @@
 # Axiom native documentation
 
+[Confidential pool provider](inference-pool.md) describes installed issuer and
+verifier pins, model discovery, worker E2EE and preview capabilities.
+
 These guides describe Desktop, AxiomCLI and the local proxy. Release acceptance
 must be recorded against the actual source revision and signed installers.
 
@@ -15,8 +18,6 @@ must be recorded against the actual source revision and signed installers.
 | [Configuration](configuration.md) | Configuration precedence, paths and limits |
 | [Privacy](privacy.md) | Local storage, credentials and what leaves the device |
 | [Troubleshooting](troubleshooting.md) | Diagnosis and recovery |
-| [0.1.15 release notes](releases/0.1.15.md) | First-message recovery, resilient balances and rate-limit guidance |
-| [0.1.14 candidate notes](releases/0.1.14.md) | Unpublished candidate; included in 0.1.15 |
 | [0.1.10 release notes](releases/0.1.10.md) | Windows setup and first-launch updates |
 | [0.1.9 release notes](releases/0.1.9.md) | Previous release |
 | [0.1.8 release notes](releases/0.1.8.md) | Previous release |
@@ -47,5 +48,3 @@ in the private platform repository. Native builds and tests are self-contained.
 Keep one current guide per topic. Internal plans, incident records and dated QA
 captures belong in private maintainer records. Preserve outstanding qualification
 requirements in [release acceptance](validation.md) when consolidating documents.
-
-- [Axiom 0.1.13](releases/0.1.13.md): shared chat, local MCP, crypto funding and updater fixes.

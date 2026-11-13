@@ -46,18 +46,6 @@ Axiom payment mode uses a mainnet ZEC deposit address and indicative valuation.
 See [Desktop credit and usage](desktop.md). Payment state never substitutes for
 local response verification.
 
-A rate-limit error can mean temporary service throttling or too many active
-requests for the account. Wait for a running reply to finish, or stop it before
-trying again. Axiom does not automatically replay the inference request. A
-rate-limit rejection recorded before any reply shows **No reply received**;
-response-authentication failures still show **Reply check failed**.
-
-**Balance unavailable** means the balance could not be fetched, not that the
-account has no credit. Use **Refresh balance** to retry. Valid credit remains
-visible if only deposit provisioning is temporarily unavailable; the address
-stays pending until it can be validated. Billing and inference have separate
-limits, so a balance error alone does not identify the cause of a chat rejection.
-
 ## Local proxy
 
 [The proxy guide](proxy.md) owns environment variables, endpoints and limits.
@@ -117,13 +105,6 @@ workspace must still exist and match any `--cwd`, and the active account must ow
 the session. Signing out closes the account store; switching accounts does not
 expose another account's threads. Desktop drafts and account data persist locally.
 
-Desktop holds pending messages after a reconnect rather than automatically
-resending them. On the welcome screen, **Review draft** moves a saved first
-message back into an empty composer; review it and press Send. In an existing
-thread, check the transcript before using **Send now** when delivery is uncertain.
-The composer's lock icon indicates encrypted model conversations and does not
-disable typing.
-
 Incomplete turns are marked interrupted after restart; tools are not replayed.
 Accounting reconciliation cannot turn incomplete text into a verified response.
 Export with `sessions export` while the database can still be read. Unknown,
@@ -142,17 +123,6 @@ and `v` opens its full viewer. `Esc` clears focus/closes an overlay. Two consecu
 Use `AXIOMCLI_COLOR=none`, `NO_COLOR=1`, `AXIOMCLI_ASCII=1` or
 `AXIOMCLI_REDUCED_MOTION=1` for terminal compatibility/accessibility. Terminal
 restoration is guarded for normal exit and panic.
-
-## Trial and invoice capacity
-
-If free trials are at capacity, use the displayed retry time or add paid credit.
-A running response continues; this limit affects new trial-funded requests. Retry
-times can move when other admitted requests settle.
-
-If five invoices are active, open Balance → Other crypto → Recent payments and
-cancel an unpaid invoice. This releases a slot immediately. Refreshed rate quotes
-keep the same six-hour invoice deadline. Use Check payment status for an expired
-or cancelled invoice if a transfer was already sent; do not resend to stale rates.
 
 ## Updates
 

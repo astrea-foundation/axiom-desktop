@@ -782,7 +782,6 @@ fn extension_billing_status(
         currency: status.currency,
         payment_account: status.payment_account,
         zec_usd_quote: status.zec_usd_quote,
-        trial_capacity: status.trial_capacity,
     }
 }
 
@@ -1478,8 +1477,6 @@ enum ExtensionFeature {
     Attachments = 1 << 14,
     GiftCodes = 1 << 15,
     DesktopMcp = 1 << 16,
-    CryptoPayments = 1 << 17,
-    CryptoInvoices = 1 << 18,
 }
 
 struct ExtensionState {
@@ -1550,12 +1547,6 @@ impl ExtensionState {
         }
         if features.billing >= 3 {
             mask |= ExtensionFeature::GiftCodes as u64;
-        }
-        if features.billing >= 4 {
-            mask |= ExtensionFeature::CryptoPayments as u64;
-        }
-        if features.billing >= 5 {
-            mask |= ExtensionFeature::CryptoInvoices as u64;
         }
         if features.usage >= 1 {
             mask |= ExtensionFeature::Usage as u64;
@@ -2233,19 +2224,6 @@ mod tests {
         features.timeline = 2;
         state.negotiate(Some(features));
         assert!(state.feature_enabled(ExtensionFeature::Timeline));
-    }
-
-    #[test]
-    fn invoice_actions_require_billing_five_without_disabling_basic_funding() {
-        let state = ExtensionState::new();
-        let mut features = FeatureVersions::all();
-        features.billing = 4;
-        state.negotiate(Some(features));
-        assert!(state.feature_enabled(ExtensionFeature::CryptoPayments));
-        assert!(!state.feature_enabled(ExtensionFeature::CryptoInvoices));
-        features.billing = 5;
-        state.negotiate(Some(features));
-        assert!(state.feature_enabled(ExtensionFeature::CryptoInvoices));
     }
 
     #[test]
