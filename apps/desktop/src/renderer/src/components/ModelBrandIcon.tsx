@@ -1,5 +1,4 @@
 import { Box } from "lucide-react";
-import tinfoilIcon from "../../../../resources/licenses/tinfoil-logo/tinfoil.svg?url";
 import alibabaIcon from "@lobehub/icons-static-svg/icons/alibaba-color.svg?url";
 import anthropicIcon from "@lobehub/icons-static-svg/icons/anthropic.svg?url";
 import cohereIcon from "@lobehub/icons-static-svg/icons/cohere-color.svg?url";
@@ -84,6 +83,14 @@ function NearAiMark({ className }: { className: string }) {
   );
 }
 
+function PhalaMark({ className }: { className: string }) {
+  return (
+    <svg viewBox="0 0 44.39 44" aria-hidden="true" className={className}>
+      <path fill="#d7ff3f" d="M35.508 21.983H8.878v8.795h26.63v-8.795ZM44.39 8.794h-8.878v13.189h8.878V8.794ZM8.878 30.778H0v13.189h8.878V30.778ZM35.512 0H0v21.984h8.878V8.794h26.634V0Z" />
+    </svg>
+  );
+}
+
 function GenericBrandIcon({ className }: { className: string }) {
   return <Box aria-hidden="true" className={className} strokeWidth={1.8} />;
 }
@@ -104,11 +111,11 @@ export function ProviderBrandIcon({ providerId, providerLabel, className = "h-3.
   className?: string;
 }) {
   const normalized = normalizeCompanyName(`${providerId} ${providerLabel}`);
-  if (hasAlias(normalized, "tinfoil")) {
-    return <AssetIcon asset={{ name: "Tinfoil", src: tinfoilIcon, monochrome: true }} className={className} />;
-  }
   if (hasAlias(normalized, "near") || hasAlias(normalized, "near ai")) {
     return <NearAiMark className={className} />;
+  }
+  if (hasAlias(normalized, "phala") || hasAlias(normalized, "phala network")) {
+    return <PhalaMark className={className} />;
   }
   const asset = resolveBrand(normalized);
   return asset

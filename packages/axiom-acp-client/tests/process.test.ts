@@ -40,7 +40,7 @@ test("Desktop sidecar allowlist excludes inherited application secrets", () => {
       AXIOM_API_KEY: "axm_secret",
       axiom_auth_url: "https://attacker.example",
       DATABASE_URL: "postgres://secret",
-      WALLET_SEED: "zcash-secret",
+      SHIELDZ_WALLET_SEED: "zcash-secret",
       OPENAI_API_KEY: "provider-secret",
     },
     {
@@ -61,7 +61,7 @@ test("Desktop sidecar allowlist excludes inherited application secrets", () => {
     "axiom_api_key",
     "axiom_auth_url",
     "DATABASE_URL",
-    "WALLET_SEED",
+    "SHIELDZ_WALLET_SEED",
     "OPENAI_API_KEY",
   ]) {
     assert.equal(environment[name], undefined, `${name} leaked into the sidecar`);
@@ -115,9 +115,6 @@ function fixtureReady(sidecar: AcpProcess): Promise<number> {
         return;
       }
       clearTimeout(timer);
-      // closeSync(0) is a no-op on Windows. Close the actual parent pipe there;
-      // Unix keeps exercising EPIPE from a child that closes its read end.
-      if (process.platform === "win32") sidecar.child.stdin.destroy();
       resolvePid(pid);
     });
   });
@@ -130,7 +127,7 @@ function closedInputSidecar(mode = "passive"): AcpProcess {
   });
 }
 
-test("request rejects and aborts when a live sidecar input pipe is closed", { timeout: 10_000 }, async () => {
+test("request rejects and aborts when a live sidecar has closed stdin", { timeout: 10_000 }, async () => {
   const sidecar = closedInputSidecar();
   try {
     const ready = fixtureReady(sidecar);
@@ -139,7 +136,7 @@ test("request rejects and aborts when a live sidecar input pipe is closed", { ti
     assert.equal(processExists(pid), true);
 
     await assert.rejects(
-      sidecar.request("fixture/request", {}, 5_000),
+      sidecar.request("fixture/request", {}),
       (error: unknown) => error instanceof ProtocolError && /write|input stream/i.test(error.message),
     );
     const [error] = await exited;
@@ -150,7 +147,7 @@ test("request rejects and aborts when a live sidecar input pipe is closed", { ti
   }
 });
 
-test("notification rejects and aborts when a live sidecar input pipe is closed", {
+test("notification rejects and aborts when a live sidecar has closed stdin", {
   timeout: 10_000,
 }, async () => {
   const sidecar = closedInputSidecar();
@@ -172,7 +169,7 @@ test("notification rejects and aborts when a live sidecar input pipe is closed",
   }
 });
 
-test("permission response to a closed pipe during shutdown exits without an unhandled rejection", {
+test("permission response EPIPE during shutdown exits without an unhandled rejection", {
   timeout: 10_000,
 }, async () => {
   const sidecar = closedInputSidecar("permission");

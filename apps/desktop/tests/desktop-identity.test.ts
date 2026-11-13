@@ -48,9 +48,8 @@ test("installer writes Axiom's launcher and its own icon; staging remains opt-in
       env: { ...process.env, XDG_DATA_HOME: dataDir }, encoding: "utf8",
     });
     assert.equal(result.status, 0, result.stderr);
-    const filename = staging ? `${APP_ID}.staging.desktop` : LINUX_DESKTOP_FILE;
-    const entry = readFileSync(join(dataDir, "applications", filename), "utf8");
-    assert.match(entry, staging ? /^Name=Axiom Staging$/m : /^Name=Axiom$/m);
+    const entry = readFileSync(join(dataDir, "applications", LINUX_DESKTOP_FILE), "utf8");
+    assert.match(entry, /^Name=Axiom$/m);
     assert.match(entry, /^StartupWMClass=Axiom$/m);
     assert.match(entry, new RegExp(`^Icon=${APP_ID.replaceAll(".", "\\.")}$`, "m"));
     assert.match(entry, staging ? / desktop:staging\n/ : / desktop\n/);
@@ -60,8 +59,4 @@ test("installer writes Axiom's launcher and its own icon; staging remains opt-in
       readFileSync(new URL("../resources/icon.png", import.meta.url)),
     );
   }
-  const production = readFileSync(join(dataDir, "applications", LINUX_DESKTOP_FILE), "utf8");
-  assert.match(production, /^Name=Axiom$/m);
-  assert.match(production, / desktop\n/);
-  assert.doesNotMatch(production, /desktop:staging/);
 });

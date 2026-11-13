@@ -46,7 +46,6 @@ interface SidebarProps {
   onMoveThread: (threadId: string, folderId: string | null) => void;
   account: AccountPresentation;
   onSignIn: () => void;
-  onLogout: AccountMenuProps["onLogout"];
   onOpenSettings: AccountMenuProps["onOpenSettings"];
   onOpenBalance: AccountMenuProps["onOpenBalance"];
   onRefreshBalance: AccountMenuProps["onRefreshBalance"];
@@ -191,7 +190,6 @@ export function Sidebar({
   onMoveThread,
   account,
   onSignIn,
-  onLogout,
   onOpenSettings,
   onOpenBalance,
   onRefreshBalance,
@@ -265,7 +263,6 @@ export function Sidebar({
         onDeleteThread={onDeleteThread}
         account={account}
         onSignIn={onSignIn}
-        onLogout={onLogout}
         onOpenSettings={onOpenSettings}
         onOpenBalance={onOpenBalance}
         onRefreshBalance={onRefreshBalance}
@@ -299,7 +296,6 @@ function SidebarFrame({
   onDeleteThread,
   account,
   onSignIn,
-  onLogout,
   onOpenSettings,
   onOpenBalance,
   onRefreshBalance,
@@ -328,7 +324,6 @@ function SidebarFrame({
   onDeleteThread: (id: string) => void;
   account: AccountPresentation;
   onSignIn: () => void;
-  onLogout: AccountMenuProps["onLogout"];
   onOpenSettings: AccountMenuProps["onOpenSettings"];
   onOpenBalance: AccountMenuProps["onOpenBalance"];
   onRefreshBalance: AccountMenuProps["onRefreshBalance"];
@@ -476,7 +471,7 @@ function SidebarFrame({
 
         <div className="no-drag px-2 py-2">
           <AccountMenu account={account} accountId={accountId} connected={connected} billing={billing}
-            onSignIn={onSignIn} onLogout={onLogout} onOpenSettings={onOpenSettings} onOpenBalance={onOpenBalance} onRefreshBalance={onRefreshBalance} />
+            onSignIn={onSignIn} onOpenSettings={onOpenSettings} onOpenBalance={onOpenBalance} onRefreshBalance={onRefreshBalance} />
         </div>
       </aside>
       {menu ? <SidebarContextMenu

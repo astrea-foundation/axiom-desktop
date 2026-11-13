@@ -12,5 +12,5 @@ export function formatModelPricing(model: Pick<ProviderModel,
   const input = model.inputPriceMicrousdPerMillionTokens;
   const output = model.outputPriceMicrousdPerMillionTokens;
   if (input === null || output === null) return null;
-  return `${formatUsdMicrousd(input)} in, ${formatUsdMicrousd(output)} out`;
+  return `${formatUsdMicrousd(input)} in · ${formatUsdMicrousd(output)} out`;
 }

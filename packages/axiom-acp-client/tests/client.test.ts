@@ -84,13 +84,13 @@ test("extension negotiation accepts additive families and optional features only
   const required = {
     desktopChat: 1,
     threadCatalog: 1,
-    timeline: 2,
+    timeline: 1,
     modelCatalog: 1,
     profilePreferences: 1,
     collections: 1,
     account: 2,
-    billing: 3,
-    securityEvidence: 3,
+    billing: 1,
+    securityEvidence: 1,
     webConsent: 1,
     futureFeature: 7,
   };
@@ -102,14 +102,6 @@ test("extension negotiation accepts additive families and optional features only
     protocolVersion: "1.0",
     features: required,
   }));
-  assert.throws(() => validateDesktopExtension({
-    protocolVersion: "0.2",
-    features: { ...required, timeline: 1 },
-  }));
-  assert.throws(() => validateDesktopExtension({
-    protocolVersion: "0.2",
-    features: { ...required, securityEvidence: 1 },
-  }), /securityEvidence/);
   const { timeline: _, ...missingTimeline } = required;
   assert.throws(() => validateDesktopExtension({
     protocolVersion: "0.2",
@@ -371,16 +363,28 @@ test("an account-context change atomically clears every previous account project
   });
   store.setBilling({
     revision: 3,
-    postedMicrousd: 10_000_000, trialMicrousd: 0, paidMicrousd: 10_000_000,
-    availableMicrousd: 10_000_000,
+    postedMicrousd: 10_000_000,
+    heldMicrousd: 1_000_000,
+    availableMicrousd: 9_000_000,
     ledgerSequence: 7,
     currency: "microUSD",
+    invoicesEnabled: true,
+    invoiceMinUsdCents: 500,
+    invoiceMaxUsdCents: 100_000,
+    settlementAsset: "USDC",
     paymentAccount: {
-      network: "mainnet", asset: "ZEC", conversion_status: "none", state: "ready",
-      address: "u1account-a", payment_uri: "zcash:u1account-a", monitoring_status: "ready",
+      network: "testnet", asset: "ZEC", conversion_status: "not_implemented", state: "ready",
+      address: "utest1account-a", payment_uri: "zcash:utest1account-a", monitoring_status: "ready",
       required_confirmations: "10", confirmed_zatoshis: "9007199254740993",
       confirming_zatoshis: "0", review_required: false, deposits: [],
     },
+  });
+  store.setInvoice({
+    revision: 4,
+    id: "a".repeat(32),
+    amountUsdCents: 2_500,
+    state: "pending",
+    payUrl: "https://shieldz.cash/pay/opaque",
   });
   const accountAContext = store.accountContextToken();
 
@@ -408,6 +412,7 @@ test("an account-context change atomically clears every previous account project
   assert.deepEqual(snapshot.collections, { revision: 0, collections: [] });
   assert.equal(snapshot.preferences, null);
   assert.equal(snapshot.billing, null);
+  assert.equal(snapshot.invoice, null);
   assert.equal(snapshot.account?.account?.id, "account-b");
   assert.ok(store.accountContextToken() > accountAContext);
 });
@@ -425,14 +430,33 @@ test("billing projections are monotonic within an account and clear on account s
   });
   const newest = {
     revision: 2,
-    postedMicrousd: 12_000_000, trialMicrousd: 0, paidMicrousd: 12_000_000,
-    availableMicrousd: 12_000_000,
+    postedMicrousd: 12_000_000,
+    heldMicrousd: 2_000_000,
+    availableMicrousd: 10_000_000,
     ledgerSequence: 9,
     currency: "microUSD",
+    invoicesEnabled: true,
+    invoiceMinUsdCents: 500,
+    invoiceMaxUsdCents: 100_000,
+    settlementAsset: "USDC",
   } as const;
   store.setBilling(newest);
   store.setBilling({ ...newest, revision: 3, ledgerSequence: 8, availableMicrousd: 1 });
-  assert.equal(store.snapshot().billing?.availableMicrousd, 12_000_000);
+  store.setInvoice({
+    revision: 4,
+    id: "b".repeat(32),
+    amountUsdCents: 2_500,
+    state: "pending",
+    payUrl: "https://shieldz.cash/pay/opaque",
+  });
+  store.setInvoice({
+    revision: 5,
+    id: "b".repeat(32),
+    amountUsdCents: 2_500,
+    state: "creating",
+  });
+  assert.equal(store.snapshot().billing?.availableMicrousd, 10_000_000);
+  assert.equal(store.snapshot().invoice?.state, "pending");
 
   store.setAccount({
     revision: 2,
@@ -444,6 +468,7 @@ test("billing projections are monotonic within an account and clear on account s
     },
   });
   assert.equal(store.snapshot().billing, null);
+  assert.equal(store.snapshot().invoice, null);
 });
 
 test("switching state rejects delayed old-account events before account B becomes valid", () => {
@@ -656,34 +681,6 @@ test("permission requests remain owned by AxiomCLI and resolve through the clien
   } finally {
     await client.close();
   }
-});
-
-test("cancelling during verification prevents a waiting prompt from starting later", async () => {
-  const { client, workspace } = await fixture();
-  try {
-    const created = await client.newSession(workspace);
-    await client.verifySecurity(created.sessionId);
-    const request = client.process.request.bind(client.process);
-    let rejectVerification!: (error: Error) => void;
-    let prompts = 0;
-    client.process.request = <T>(method: string, params: unknown, timeoutMs?: number, signal?: AbortSignal): Promise<T> => {
-      if (method === "_axiom/security/verify") return new Promise<T>((_resolve, reject) => { rejectVerification = reject; });
-      if (method === "session/prompt") prompts++;
-      return request<T>(method, params, timeoutMs, signal);
-    };
-    const verification = assert.rejects(client.verifySecurity(created.sessionId), /stopped/);
-    await new Promise((resolve) => setImmediate(resolve));
-    const pending = client.prompt(created.sessionId, "cancel before sending", "cancel-preflight");
-    await client.cancel(created.sessionId);
-    rejectVerification(new Error("verification stopped"));
-    await verification;
-    assert.equal((await pending).stopReason, "cancelled");
-    assert.equal(prompts, 0);
-    assert.equal(client.getState().sessions[created.sessionId]?.running, false);
-    client.process.request = request;
-    assert.equal((await client.prompt(created.sessionId, "new instruction", "after-cancel")).stopReason, "end_turn");
-    assert.equal(client.getState().sessions[created.sessionId]?.timeline.some((item) => item.clientItemId === "cancel-preflight"), false);
-  } finally { await client.close(); }
 });
 
 test("cancelling fail-closes and clears a pending permission", async () => {
@@ -1108,7 +1105,7 @@ test("timeline and collections survive a sidecar restart", async () => {
   try {
     await second.initialize();
     const restoredBootstrap = await second.bootstrapDesktop();
-    assert.equal(restoredBootstrap.newThreadSettings.thinkingLevel, "xhigh");
+    assert.equal(restoredBootstrap.newThreadSettings.thinkingLevel, "provider_default");
     await second.initializeDesktopState();
     assert.ok(second.getState().collections.collections.some((collection) =>
       collection.id === collectionId && collection.name === "Renamed research" && collection.threadIds.includes(sessionId),
@@ -1122,190 +1119,4 @@ test("timeline and collections survive a sidecar restart", async () => {
   } finally {
     await second.close();
   }
-});
-
-test("usage summary preserves exact values and rejects responses from the previous account", async () => {
-  const { client } = await fixture();
-  const summary = { period: "all_time", totalCostMicrousd: "9007199254740993", models: [
-    { provider: "test", modelId: "test", modelName: "Test", costMicrousd: "9007199254740993" },
-  ] };
-  try {
-    const state = (client as unknown as { state: AxiomStateStore }).state;
-    state.setAccount({ revision: 1, state: "valid", account: { id: "account-a", linkedMethods: ["password"] } });
-    const request = client.process.request.bind(client.process);
-    const requests: unknown[] = [];
-    let complete: ((value: unknown) => void) | undefined;
-    client.process.request = <T>(method: string, params: unknown, timeoutMs?: number, signal?: AbortSignal): Promise<T> => {
-      if (method === "_axiom/usage/summary") {
-        requests.push(params);
-        return new Promise<T>(resolve => { complete = resolve as (value: unknown) => void; });
-      }
-      return request<T>(method, params, timeoutMs, signal);
-    };
-    const first = client.usageSummary();
-    complete!({ summary });
-    assert.deepEqual(await first, { summary });
-    const week = client.usageSummary({ period: "week", timezone: "America/Los_Angeles" });
-    complete!({ summary: { ...summary, period: "week" } });
-    assert.equal((await week).summary.period, "week");
-    assert.deepEqual(requests, [{}, { period: "week", timezone: "America/Los_Angeles" }]);
-    const wrongPeriod = client.usageSummary({ period: "month", timezone: "America/Los_Angeles" });
-    complete!({ summary }); // An old server/sidecar may ignore the period argument.
-    await assert.rejects(wrongPeriod, /selected period/i);
-    const stale = client.usageSummary();
-    state.setAccount({ revision: 2, state: "valid", account: { id: "account-b", linkedMethods: ["password"] } });
-    complete!({ summary });
-    await assert.rejects(stale, /account changed/i);
-  } finally { await client.close(); }
-});
-
-test("API key operations reject responses after the account changes and never update shared state", async () => {
-  const {client} = await fixture();
-  try {
-    const state = (client as unknown as {state: AxiomStateStore}).state;
-    let revision = 0;
-    const setAccount = (id: string) => state.setAccount({revision: ++revision, state: "valid", account: {id, linkedMethods: ["password"]}});
-    let complete: ((value: unknown) => void) | undefined;
-    const methods: string[] = [];
-    const original = client.process.request.bind(client.process);
-    client.process.request = <T>(method: string, params: unknown, timeoutMs?: number, signal?: AbortSignal): Promise<T> => {
-      if (method.startsWith("_axiom/account/api_key")) {
-        methods.push(method);
-        return new Promise<T>(resolve => {complete = resolve as (value: unknown) => void;});
-      }
-      return original<T>(method, params, timeoutMs, signal);
-    };
-    for (const operation of [() => client.apiKeys(), () => client.createApiKey("Coding tools"), () => client.revokeApiKey("key-1")]) {
-      setAccount("account-a");
-      const pending = operation();
-      setAccount("account-b");
-      complete!({keys: [], key: {id: "key-1"}, token: "axm_never_share_old_account_key"});
-      await assert.rejects(pending, /account changed/i);
-    }
-    assert.deepEqual(methods, ["_axiom/account/api_keys", "_axiom/account/api_key_create", "_axiom/account/api_key_revoke"]);
-    assert(!JSON.stringify(client.getState()).includes("axm_never_share"));
-    await assert.rejects(client.createApiKey("bad\nname"), /Invalid API key name/);
-    await assert.rejects(client.revokeApiKey("../another-key"), /Invalid API key ID/);
-  } finally {await client.close();}
-});
-
-test("gift redemption updates billing and discards a receipt after an account switch", async (t) => {
-  const { client } = await fixture();
-  t.after(() => client.close());
-  const state = (client as unknown as { state: AxiomStateStore }).state;
-  const code = "AXG-AAAA-AAAA-AAAA-AAAA-AAAA-AAAA-AAAA-AAAA";
-  state.setAccount({revision: 1, state: "valid", account: {id: "account-a", linkedMethods: ["password"]}});
-  let complete!: (value: unknown) => void;
-  const original = client.process.request.bind(client.process);
-  client.process.request = <T>(method: string, params: unknown, timeoutMs?: number, signal?: AbortSignal): Promise<T> => {
-    if (method === "_axiom/billing/redeem_gift_code") {
-      assert.deepEqual(params, {code});
-      return new Promise<T>(resolve => { complete = resolve as (value: unknown) => void; });
-    }
-    return original<T>(method, params, timeoutMs, signal);
-  };
-  const receipt = {creditedMicrousd: 5_000_000, alreadyRedeemed: false, status: {
-    revision: 1, ledgerSequence: 1, currency: "microUSD", postedMicrousd: 5_000_000,
-    availableMicrousd: 5_000_000, paidMicrousd: 5_000_000, trialMicrousd: 0,
-    paymentReviewRequired: false, paymentAccount: null, zecUsdQuote: null,
-  }};
-  const first = client.redeemGiftCode(code);
-  complete(receipt);
-  assert.deepEqual(await first, receipt);
-  assert.equal(client.getState().billing?.paidMicrousd, 5_000_000);
-  assert(!JSON.stringify(client.getState()).includes(code));
-  const stale = client.redeemGiftCode(code);
-  state.setAccount({revision: 2, state: "valid", account: {id: "account-b", linkedMethods: ["password"]}});
-  complete(receipt);
-  await assert.rejects(stale, /account changed/i);
-  assert.equal(client.getState().billing, null);
-  await assert.rejects(client.redeemGiftCode("x".repeat(65)), /valid Axiom gift code/);
-});
-
-
-test("native message revision replaces local history, rejects stale edits, and survives reload", async () => {
-  let { client, workspace } = await fixture();
-  try {
-    const created = await client.newSession(workspace);
-    await client.prompt(created.sessionId, "first original", "revision-first");
-    await client.prompt(created.sessionId, "later original", "revision-later");
-    const prior = client.getState().sessions[created.sessionId]!;
-    const user = prior.timeline.find((item) => item.kind === "user")!;
-    await client.prompt(created.sessionId, "replacement", "revision-replacement", false, 0,
-      { userItemId: user.id, expectedRevision: prior.threadRevision });
-    const revised = client.getState().sessions[created.sessionId]!;
-    assert.deepEqual(revised.timeline.filter((item) => item.kind === "user").map((item) => item.text), ["replacement"]);
-    assert.ok(revised.timeline.some((item) => item.kind === "assistant" && item.text.includes("replacement")));
-    await assert.rejects(client.prompt(created.sessionId, "stale", "revision-stale", false, 0,
-      { userItemId: user.id, expectedRevision: prior.threadRevision }), /conversation changed/i);
-    await client.close();
-    client = new AxiomAcpClient({ command: binary, args: ["acp"], env: {
-      AXIOMCLI_TEST_RUNNER: "echo", XDG_CONFIG_HOME: resolve(dirname(workspace), "config"),
-      XDG_DATA_HOME: resolve(dirname(workspace), "data"),
-    } });
-    await client.initialize();
-    await client.loadSession(created.sessionId, workspace);
-    assert.deepEqual(client.getState().sessions[created.sessionId]!.timeline.filter((item) => item.kind === "user").map((item) => item.text), ["replacement"]);
-  } finally { await client.close(); }
-});
-
-test("real ACP attachment submission, inspection, reload, and text revision retain the same local input", async () => {
-  let { client, workspace } = await fixture();
-  try {
-    const { sessionId } = await client.newSession(workspace);
-    const attachments = [{ kind: "file" as const, name: "notes.txt", file: { name: "notes.txt", mimeType: "text/plain", data: Buffer.from("private local attachment\n".repeat(4000)).toString("base64") } }];
-    await client.prompt(sessionId, "", "attached-client-id", false, 0, undefined, attachments);
-    let session = client.getState().sessions[sessionId]!;
-    let user = session.timeline.find((item) => item.clientItemId === "attached-client-id")!;
-    assert.ok(user);
-    assert.deepEqual((await client.getAttachments(sessionId, user.id)).attachments, attachments);
-    assert.ok(!JSON.stringify(session.timeline).includes("private local attachment"), "state only broadcasts attachment summaries");
-    await client.close();
-    const root = dirname(workspace);
-    client = new AxiomAcpClient({ command: binary, args: ["acp"], env: {
-      AXIOMCLI_TEST_RUNNER: "echo", XDG_CONFIG_HOME: resolve(root, "config"), XDG_DATA_HOME: resolve(root, "data"),
-    } });
-    await client.initialize();
-    await client.loadSession(sessionId, workspace);
-    session = client.getState().sessions[sessionId]!;
-    user = session.timeline.find((item) => item.clientItemId === "attached-client-id")!;
-    await client.prompt(sessionId, "Read the attached notes again", "attachment-edit", false, 0, { userItemId: user.id, expectedRevision: session.threadRevision });
-    session = client.getState().sessions[sessionId]!;
-    user = session.timeline.find((item) => item.clientItemId === "attachment-edit")!;
-    assert.equal(user.text, "Read the attached notes again");
-    assert.deepEqual((await client.getAttachments(sessionId, user.id)).attachments, attachments);
-  } finally { await client.close(); }
-});
-
-test("timeline assembly independently drains accounting pages and rejects repeated cursors", async (t) => {
-  const first = timelinePage();
-  const a = { requestId: "a".repeat(32), modelId: "model", providerId: "near" };
-  const b = { ...a, requestId: "b".repeat(32) };
-  first.requestUsage = [a];
-  first.nextRequestUsageCursor = a.requestId;
-  const second = { ...first, items: [], requestUsage: [b], nextRequestUsageCursor: undefined };
-  const client = new AxiomAcpClient({ command: binary, args: ["acp"] });
-  t.after(() => client.close());
-  const internal = client as unknown as {
-    process: { request: (method: string, params: Record<string, unknown>) => Promise<GetThreadTimelineResponse> };
-    state: AxiomStateStore;
-    fetchTimeline: (id: string, context: number) => Promise<GetThreadTimelineResponse>;
-  };
-  let calls = 0;
-  internal.process.request = async (_, params) => {
-    if (calls++ === 0) return first;
-    assert.equal(params.afterSequence, 1);
-    assert.equal(params.afterRequestId, a.requestId);
-    return second;
-  };
-  await internal.fetchTimeline("session", internal.state.accountContextToken());
-  assert.equal(calls, 2);
-  assert.deepEqual(client.getState().sessions.session!.requestUsage, [a, b]);
-  calls = 0;
-  internal.process.request = async () => { calls++; return first; };
-  await assert.rejects(internal.fetchTimeline("session", internal.state.accountContextToken()), /non-progressing/);
-  assert.equal(calls, 2);
-  assert.deepEqual(client.getState().sessions.session!.requestUsage, [a, b]);
-  assert.throws(() => internal.state.replaceTimeline([first, { ...second, requestUsage: [a] }]), /identity/);
-  assert.throws(() => internal.state.replaceTimeline([first, { ...second, thread: { ...first.thread, revision: 2 } }]), /changed/);
 });

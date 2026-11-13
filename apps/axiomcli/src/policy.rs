@@ -13,7 +13,6 @@ use crate::{AxiomError, Result, app::PermissionProfile};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolAccess {
-    Interaction,
     Web,
     Read,
     Write,
@@ -25,7 +24,7 @@ impl ToolAccess {
         match profile {
             PermissionProfile::None => false,
             PermissionProfile::Web => matches!(self, Self::Web),
-            PermissionProfile::Observe => matches!(self, Self::Read | Self::Interaction),
+            PermissionProfile::Observe => matches!(self, Self::Read),
             PermissionProfile::Confirm | PermissionProfile::FullAccess => true,
         }
     }
@@ -762,17 +761,6 @@ fn profile_default(
 ) -> (DecisionKind, &'static str, bool) {
     match (profile, effect) {
         (PermissionProfile::None, _) => (DecisionKind::Deny, "tools are disabled", false),
-        (
-            _,
-            Effect::ToolUse {
-                access: ToolAccess::Interaction,
-                ..
-            },
-        ) => (
-            DecisionKind::Allow,
-            "the user decides whether to answer",
-            false,
-        ),
         (
             PermissionProfile::Web,
             Effect::ToolUse {

@@ -76,7 +76,6 @@ pub struct RequestUsage {
 }
 
 impl RequestUsage {
-    #[must_use]
     pub fn validate_counters(&self) -> bool {
         let parse = |v: &Option<String>| -> Option<Option<u64>> {
             match v {

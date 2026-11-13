@@ -2,7 +2,7 @@
   "name": "axiom-desktop",
   "productName": "Axiom",
   "desktopName": "stream.axiom.desktop.desktop",
-  "version": "0.1.7",
+  "version": "0.1.1",
   "private": true,
   "description": "Axiom private desktop chat driven by AxiomCLI over ACP",
   "homepage": "https://axiom.stream",
@@ -18,7 +18,7 @@
     "dev:staging": "node ./scripts/ensure-electron.mjs && node ./scripts/run-electron.mjs staging dev",
     "install:desktop": "node ./scripts/install-linux-desktop-entry.mjs",
     "build": "electron-vite build",
-    "test": "tsx --test tests/*.test.ts ../../packages/desktop-releases/manifest.test.mjs",
+    "test": "tsx --test tests/*.test.ts",
     "test:browser": "tsx --test tests/browser/*.test.ts",
     "preview": "node ./scripts/ensure-electron.mjs && node ./scripts/run-electron.mjs vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.json --composite false",
@@ -29,7 +29,6 @@
   },
   "dependencies": {
     "@axiom/axiom-acp-client": "workspace:*",
-    "@axiom/brand": "workspace:*",
     "@dnd-kit/core": "^6.3.1",
     "@fontsource-variable/dm-sans": "^5.3.0",
     "@fontsource/dm-mono": "^5.3.0",
@@ -40,11 +39,9 @@
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "react-markdown": "^10.1.0",
-    "rehype-highlight": "7.0.2",
     "rehype-katex": "7.0.1",
     "remark-gfm": "^4.0.1",
-    "remark-math": "6.0.0",
-    "unist-util-visit": "5.1.0"
+    "remark-math": "6.0.0"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.0",

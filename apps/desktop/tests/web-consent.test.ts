@@ -7,13 +7,14 @@ import { rememberWebWarning, skipWebWarning } from "../src/renderer/src/webConse
 
 test("warning is vendor-neutral and clearly separates web disclosure from private model traffic", () => {
   const html = renderToStaticMarkup(createElement(WebConsentDialog, { onCancel: () => {}, onConfirm: () => {} }));
-  assert.match(html, /Web searches run outside Axiom’s verified private environment\./);
-  assert.match(html, /Queries are sent to web search providers to retrieve results\./);
-  assert.match(html, /Your model conversation remains end-to-end encrypted, but search queries may contain details from your messages\./);
+  assert.match(html, /cannot operate inside Axiom’s private environment/);
+  assert.match(html, /Search queries are shared with Axiom’s search service\./);
+  assert.doesNotMatch(html, /external search services|Opening web pages also contacts those websites/);
+  assert.match(html, /search queries may contain details from your messages/);
   assert.match(html, /No thanks/);
-  assert.match(html, />Yes, I understand<\/button>/);
+  assert.match(html, /Yes, I understand/);
   assert.match(html, /Don’t show this warning again/);
-  assert.doesNotMatch(html, /Decodo|window\.confirm|checked=""/i);
+  assert.doesNotMatch(html, /Decodo|SearXNG|window\.confirm|checked=""/i);
 });
 
 test("warning preference is per-account, exact, and fail-closed when storage is unavailable", () => {

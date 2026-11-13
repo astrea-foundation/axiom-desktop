@@ -42,30 +42,6 @@ function toolUpdate(revision: number, callId: string, status = "pending") {
 
 const report = (inputTokens: number) => ({ inputTokens, outputTokens: 10, modelId: "model", reportedAt: "2026-09-07T00:00:00Z", contextWindowTokens: 100_000, autoCompactThresholdTokens: 85_000 });
 
-test("late generated titles update the sidebar without replacing chat or recency", () => {
-  const store = new AxiomStateStore();
-  const snapshot = page(1, "The answer");
-  store.setCatalog([snapshot.thread]);
-  store.replaceTimeline([snapshot]);
-  store.standardUpdate({
-    sessionId: "thread",
-    _meta: { axiom: { threadRevision: 2, lastTimelineSequence: 1 } },
-    update: { sessionUpdate: "session_info_update", title: "Generated title" },
-  });
-  assert.equal(store.snapshot().catalog[0]!.title, "Generated title");
-  assert.equal(store.snapshot().sessions.thread!.title, "Generated title");
-  assert.equal(store.snapshot().sessions.thread!.timeline[0]!.text, "The answer");
-  assert.equal(store.snapshot().catalog[0]!.updatedAt, snapshot.thread.updatedAt);
-  store.applyThreadRename({ ...snapshot.thread, revision: 4, title: "My manual title" });
-  store.standardUpdate({
-    sessionId: "thread",
-    _meta: { axiom: { threadRevision: 3, lastTimelineSequence: 1 } },
-    update: { sessionUpdate: "session_info_update", title: "Stale generated title" },
-  });
-  assert.equal(store.snapshot().catalog[0]!.title, "My manual title");
-  assert.equal(store.snapshot().sessions.thread!.title, "My manual title");
-});
-
 test("steering identity survives snapshots and separates same-turn assistant segments", () => {
   const store = new AxiomStateStore();
   store.replaceTimeline([{ ...page(1, "Before the update."), activeTurnId: "turn" }]);

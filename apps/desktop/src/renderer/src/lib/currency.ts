@@ -1,8 +1,8 @@
-export function usdFromMicrousd(value: number, maximumFractionDigits = 6): string {
+export function usdFromMicrousd(value: number): string {
   return new Intl.NumberFormat(undefined, {
     style: "currency",
     currency: "USD",
     minimumFractionDigits: 2,
-    maximumFractionDigits,
+    maximumFractionDigits: 6,
   }).format(value / 1_000_000);
 }

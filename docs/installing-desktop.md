@@ -2,14 +2,11 @@
 
 Each desktop download includes the matching command-line program, `axiomcli`.
 You do not need Rust, Node.js, or a separate CLI download. Choose the build for
-your operating system from the published download catalog.
-These filenames illustrate version 0.1.7; they do not assert its current
-availability. [Supported build targets](releasing.md#supported-platforms) and
-[Desktop behavior](desktop.md) are documented separately.
+your operating system and processor. These examples use version 0.1.0.
 
 ## Windows
 
-Run `Axiom-0.1.7-win-universal.exe`. It selects the native x64 or ARM64 payload,
+Run `Axiom-0.1.0-win-x64.exe`, or the `arm64.exe` build on Windows on ARM,
 and complete the installation wizard. Open Axiom from the Start menu. Open a
 new terminal window and run:
 
@@ -29,13 +26,16 @@ See [Microsoft's SmartScreen documentation](https://learn.microsoft.com/en-us/wi
 
 ## macOS
 
-Requires macOS 11 (Big Sur) or newer. One universal download supports Intel and
-Apple Silicon; the app includes its runtime and needs no Homebrew installation.
-
 The **PKG** is the easiest way to install both programs. Choose
-`Axiom-0.1.7-mac-universal.pkg` for either processor. Run the installer and approve its normal
+`Axiom-0.1.0-mac-arm64.pkg` for Apple Silicon or
+`Axiom-0.1.0-mac-x64.pkg` for Intel. Run the installer and approve its normal
 administrator prompt. It installs `/Applications/Axiom.app` and makes
 `axiomcli` available from Terminal through `/usr/local/bin/axiomcli`.
+
+For the **DMG or ZIP**, copy Axiom.app into Applications, open it, and choose
+**Axiom → Install Command-Line Tool…** to register the CLI. This step also
+requires administrator authorization. An unrelated command already named
+`/usr/local/bin/axiomcli` is preserved; resolve that collision first.
 
 Unsigned early-access builds are not notarized or signed with an Apple
 Developer ID. After attempting to open the trusted Axiom download, use
@@ -51,7 +51,7 @@ format for your distribution so its package manager installs the dependencies.
 Ubuntu/Debian:
 
 ```sh
-sudo apt install ./Axiom-0.1.7-linux-amd64.deb
+sudo apt install ./Axiom-0.1.0-linux-amd64.deb
 axiomcli --version
 ```
 
@@ -69,62 +69,28 @@ For an installation under your home directory, run the **AppImage** installer
 as your normal user:
 
 ```sh
-chmod +x Axiom-0.1.7-linux-x86_64.AppImage
-./Axiom-0.1.7-linux-x86_64.AppImage --install
+chmod +x Axiom-0.1.0-linux-x86_64.AppImage
+./Axiom-0.1.0-linux-x86_64.AppImage --install
 ```
 
 Open a new terminal to use `axiomcli`. The installed app and CLI use a durable
 copy under `~/.local/share/axiom-desktop`; you can then remove the original
 download. Running the AppImage without `--install` opens it portably. Use
-`./Axiom-0.1.7-linux-x86_64.AppImage --axiom-cli --help` for the portable CLI.
+`./Axiom-0.1.0-linux-x86_64.AppImage --axiom-cli --help` for the portable CLI.
 
 AppImages require working FUSE support and the desktop's system libraries.
 If mounting fails, use your distribution's package above or follow the
 [AppImage FUSE setup instructions](https://docs.appimage.org/user-guide/troubleshooting/fuse.html).
 
-## Standalone CLI and proxy
-
-Choose the **AxiomCLI** installer when you do not need Desktop: NSIS EXE on
-Windows x64/ARM64, PKG on macOS Intel/Apple Silicon, or SH on Linux x64.
-Public releases offer the same installer bytes from the CDN and the public
-[GitHub distribution repository](https://github.com/astrea-foundation/axiom-releases/releases).
-Availability follows release qualification; source build targets are not a claim
-that these files have already been published.
-
-On Linux run `sh AxiomCLI-VERSION-linux-x64.sh`. It installs into
-`${XDG_DATA_HOME:-~/.local/share}/axiom-cli` and links commands into
-`${XDG_BIN_HOME:-~/.local/bin}`. Add that command directory to PATH if necessary.
-Use `--prefix /absolute/dedicated/directory` for a different program location.
-Version directories contain the CLI and proxy together. For removal, run
-`sh INSTALL_ROOT/current/uninstall.sh --yes` after stopping both programs.
-
-The macOS standalone PKG owns `/usr/local/lib/axiom-cli` and links both commands
-from `/usr/local/bin`; removal is
-`sudo sh /usr/local/lib/axiom-cli/uninstall.sh --yes`. Windows installs per-user,
-adds its launcher directory to PATH, and provides an Apps/Settings uninstaller.
-Uninstall preserves account data. Desktop and standalone CLI command collisions
-must be resolved before changing the installation owner.
-
 ## Install a newer version
 
-Open **Settings → Updates → Update and restart**. Axiom downloads and verifies
-its matching installer, waits for running chats and its proxy to finish, saves
-local drafts, closes, installs and reopens. Cancellation is available before
-installation starts. Stop other CLI/proxy sessions when asked; they are never
-forcibly killed. System packages may display the OS authorization dialog.
+Quit Axiom and any running AxiomCLI sessions, then install the newer download
+using the same format and installation location. The Windows EXE, macOS PKG,
+DEB, and Arch package replace the existing program. For DMG/ZIP, replace
+`/Applications/Axiom.app`; the existing CLI link continues to work. For
+AppImage, run the newer file with `--install` again.
 
-In the TUI use `/update`, or run `axiomcli update`; use `--check` to check without
-installing. A bundled TUI updates the whole Desktop package even when Desktop is
-closed. A standalone TUI updates CLI and proxy together. The TUI resumes its
-workspace/session; runtime-only attestation consent resets on restart.
-
-Checks run on startup and every six hours. Update metadata has an Ed25519
-signature verified by a key compiled into the client, and every download must
-match its signed size and SHA-256. There are no account credentials in update
-requests. Source builds and unsigned previews do not receive stable updates.
-
-A failed download or verification leaves installed programs untouched. For an
-installer failure, retry the same package from the signed release. Programs keep
-account data separately from installation files. Keep the same package format;
-use the OS uninstaller before switching installation owners to avoid duplicate
-launchers. See [troubleshooting](troubleshooting.md#updates).
+These installers keep account data separately from program files and preserve
+it during replacement. Avoid mixing the AppImage and system-package installs:
+remove the previous program installation when switching formats to prevent
+duplicate launchers. Automatic in-app updating is not part of these installers.

@@ -42,7 +42,8 @@ export function WebConsentDialog({ onCancel, onConfirm }: {
     <Globe2 size={22} className="mb-4 text-[var(--color-warning)]" aria-hidden="true" />
     <h2 id={titleId} className="text-[20px] font-medium tracking-tight">Turn on Web?</h2>
     <div id={descriptionId} className="mt-3 space-y-3 text-[13.5px] leading-6 text-[var(--color-text-secondary)]">
-      <p>Web searches run outside Axiom’s verified private environment. Queries are sent to web search providers to retrieve results.</p>
+      <p>Web searches cannot operate inside Axiom’s private environment.</p>
+      <p>Search queries are shared with Axiom’s search service. These requests are not protected by Axiom’s end-to-end encryption.</p>
       <p>Your model conversation remains end-to-end encrypted, but search queries may contain details from your messages.</p>
     </div>
     <label className="mt-5 flex cursor-pointer items-center gap-2 text-[12.5px] text-[var(--color-text-secondary)]">

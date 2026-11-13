@@ -21,10 +21,12 @@ pub const MAX_QUERY_BYTES: usize = 512;
 pub const MAX_FOCUS_BYTES: usize = 4 * 1024;
 pub const MAX_EVIDENCE_CLAIMS: usize = 128;
 pub const MAX_EVIDENCE_VALUE_BYTES: usize = 8 * 1024;
-pub const MAX_WORKLOAD_MANIFEST_BYTES: usize = 1024 * 1024;
+pub const MAX_WORKLOAD_MANIFEST_BYTES: usize = 64 * 1024;
 pub const MAX_IDENTIFIER_BYTES: usize = 512;
 pub const MAX_COLLECTION_NAME_BYTES: usize = 256;
 pub const MAX_TIMELINE_PAGE_SIZE: u32 = 500;
+pub const MAX_INVOICE_USD_CENTS: u64 = 10_000_000;
+pub const MAX_CLIENT_REQUEST_ID_BYTES: usize = 128;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -75,12 +77,9 @@ pub struct FeatureVersions {
     pub collections: u16,
     pub account: u16,
     pub billing: u16,
-    pub usage: u16,
     pub security_evidence: u16,
     pub web_consent: u16,
     pub steering: u16,
-    pub message_revision: u16,
-    pub attachments: u16,
     pub compaction: u16,
     pub activity: u16,
 }
@@ -92,18 +91,15 @@ impl FeatureVersions {
             desktop_chat: 1,
             desktop_agent: 1,
             thread_catalog: 1,
-            timeline: 2,
+            timeline: 1,
             model_catalog: 1,
             profile_preferences: 1,
             collections: 1,
             account: 2,
-            billing: 3,
-            usage: 1,
-            security_evidence: 3,
+            billing: 1,
+            security_evidence: 1,
             web_consent: 1,
             steering: 1,
-            message_revision: 1,
-            attachments: 2,
             compaction: 1,
             activity: 1,
         }
@@ -144,19 +140,6 @@ pub struct PromptMetadata {
     /// Bind queued input to the exact locally approved Agent configuration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_revision: Option<u64>,
-    /// Replace local history starting at this user message before the normal
-    /// native E2EE turn. Never interpreted by the hosted backend.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub revision: Option<PromptRevision>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub attachments: Vec<axiom_inference::PromptAttachment>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct PromptRevision {
-    pub user_item_id: String,
-    pub expected_revision: u64,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -210,9 +193,6 @@ pub struct DeliveryMetadata {
     /// Latest actual message activity; operational updates do not advance it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_message_at: Option<String>,
-    /// Latest user submission. Streaming output does not advance sidebar order.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_user_message_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeline_item_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -278,9 +258,6 @@ pub struct ThreadSummary {
     /// Latest actual message activity, absent for message-free threads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_message_at: Option<String>,
-    /// Latest user submission. Streaming output does not advance sidebar order.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_user_message_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -332,8 +309,6 @@ pub enum SecurityState {
     Verifying,
     UnattestedDevelopment,
     Verified,
-    Degraded,
-    Outdated,
     Failed,
 }
 
@@ -371,9 +346,7 @@ pub struct SecurityEvidence {
     pub e2ee_encryption_version: u16,
     pub trust_policy_version: String,
     pub verified_at_unix_seconds: u64,
-    /// Relay lease generation, when the provider protocol uses relay leases.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub attestation_generation: Option<u64>,
+    pub attestation_generation: u64,
     pub hard_expires_at_unix_seconds: u64,
     pub model_key_fingerprint: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -382,6 +355,8 @@ pub struct SecurityEvidence {
     pub provider_claims: Vec<EvidenceClaim>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workload_manifest: Option<String>,
+    pub workload_identity_allowlist_configured: bool,
+    pub approved_workload_identity: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -396,10 +371,6 @@ pub struct ModelInfo {
     pub thinking_levels: Vec<String>,
     pub context_window_tokens: u32,
     pub max_output_tokens: u32,
-    #[serde(default)]
-    pub supports_images: bool,
-    #[serde(default)]
-    pub file_mime_types: Vec<String>,
     pub auto_compact_threshold_tokens: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_price_microusd_per_million_tokens: Option<u64>,
@@ -520,28 +491,24 @@ pub struct NativeLoginState {
 pub struct BillingStatus {
     /// Monotonic within one agent runtime; clients ignore older projections.
     pub revision: u64,
-    pub posted_microusd: i64,
-    pub available_microusd: i64,
+    pub posted_microusd: u64,
+    pub held_microusd: u64,
+    pub available_microusd: u64,
     pub ledger_sequence: u64,
-    pub trial_microusd: u64,
-    pub paid_microusd: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trial_microusd: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paid_microusd: Option<u64>,
     #[serde(default)]
     pub payment_review_required: bool,
     pub currency: String,
+    pub invoices_enabled: bool,
+    pub invoice_min_usd_cents: u64,
+    pub invoice_max_usd_cents: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settlement_asset: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payment_account: Option<PaymentAccount>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub zec_usd_quote: Option<ZecUsdQuote>,
-}
-
-/// Indicative live market price; deposit credit uses its confirmation-time rate.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct ZecUsdQuote {
-    pub price_microusd_per_zec: String,
-    pub source: String,
-    pub as_of: String,
-    pub expires_at: String,
 }
 
 /// Payment-service values remain exact decimal strings across Rust/ACP/JS.
@@ -588,6 +555,33 @@ pub struct DepositReceipt {
     pub priced_at: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum InvoiceState {
+    Creating,
+    Pending,
+    Paid,
+    Expired,
+    Failed,
+    Review,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BillingInvoice {
+    /// Monotonic within one agent runtime; clients ignore older invoice state.
+    pub revision: u64,
+    pub id: String,
+    pub amount_usd_cents: u64,
+    pub state: InvoiceState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paid_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pay_url: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ActivityEvent {
@@ -609,6 +603,9 @@ pub enum ActivityEvent {
     },
     BillingChanged {
         status: BillingStatus,
+    },
+    InvoiceChanged {
+        invoice: BillingInvoice,
     },
     BackgroundTask {
         task_id: String,
@@ -706,8 +703,6 @@ pub struct GetThreadTimelineRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub after_sequence: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub after_request_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<u32>,
 }
 
@@ -727,22 +722,6 @@ pub struct GetThreadTimelineResponse {
     pub items: Vec<TimelineItem>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub next_request_usage_cursor: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcRequest)]
-#[request(method = "_axiom/thread/attachments", response = GetAttachmentsResponse)]
-#[serde(rename_all = "camelCase")]
-pub struct GetAttachmentsRequest {
-    pub thread_id: String,
-    pub user_item_id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcResponse)]
-#[serde(rename_all = "camelCase")]
-pub struct GetAttachmentsResponse {
-    pub attachments: Vec<axiom_inference::PromptAttachment>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcRequest)]
@@ -929,162 +908,6 @@ pub struct LogoutRequest {}
 #[request(method = "_axiom/billing/status", response = BillingStatusResponse)]
 pub struct BillingStatusRequest {}
 
-#[derive(Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcRequest)]
-#[request(method = "_axiom/billing/redeem_gift_code", response = GiftCodeRedeemResponse)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct GiftCodeRedeemRequest {
-    #[schemars(length(min = 1, max = 64))]
-    pub code: String,
-}
-
-impl std::fmt::Debug for GiftCodeRedeemRequest {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("GiftCodeRedeemRequest { code: [REDACTED] }")
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcResponse)]
-#[serde(rename_all = "camelCase")]
-pub struct GiftCodeRedeemResponse {
-    pub credited_microusd: u64,
-    pub already_redeemed: bool,
-    pub status: BillingStatus,
-}
-
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum UsagePeriod {
-    Week,
-    Month,
-    #[default]
-    AllTime,
-}
-
-impl UsagePeriod {
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Week => "week",
-            Self::Month => "month",
-            Self::AllTime => "all_time",
-        }
-    }
-}
-
-#[derive(
-    Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcRequest,
-)]
-#[request(method = "_axiom/usage/summary", response = UsageSummaryResponse)]
-pub struct UsageSummaryRequest {
-    #[serde(default)]
-    pub period: UsagePeriod,
-    /// IANA timezone for calendar boundaries. Omitted clients retain UTC/all-time behavior.
-    #[schemars(length(min = 1, max = 128))]
-    pub timezone: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ModelSpend {
-    pub provider: String,
-    pub model_id: Option<String>,
-    pub model_name: Option<String>,
-    /// Exact USD millionths; never an IEEE-754 amount.
-    pub cost_microusd: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct UsageSummary {
-    pub period: String,
-    pub total_cost_microusd: String,
-    pub models: Vec<ModelSpend>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcResponse)]
-#[serde(rename_all = "camelCase")]
-pub struct UsageSummaryResponse {
-    pub summary: UsageSummary,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ApiKeyUsage {
-    #[serde(alias = "request_count")]
-    pub request_count: String,
-    #[serde(alias = "input_tokens")]
-    pub input_tokens: String,
-    #[serde(alias = "cached_input_tokens")]
-    pub cached_input_tokens: String,
-    #[serde(alias = "output_tokens")]
-    pub output_tokens: String,
-    #[serde(alias = "cost_microusd")]
-    pub cost_microusd: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ApiKeyRecord {
-    pub id: String,
-    pub name: String,
-    pub scopes: Vec<String>,
-    #[serde(alias = "created_at")]
-    pub created_at: String,
-    #[serde(alias = "last_used_at")]
-    pub last_used_at: Option<String>,
-    #[serde(alias = "expires_at")]
-    pub expires_at: Option<String>,
-    #[serde(alias = "revoked_at")]
-    pub revoked_at: Option<String>,
-    #[serde(alias = "usage_started_at")]
-    pub usage_started_at: String,
-    pub usage: ApiKeyUsage,
-}
-
-#[derive(
-    Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcRequest,
-)]
-#[request(method = "_axiom/account/api_keys", response = ApiKeyListResponse)]
-pub struct ApiKeyListRequest {}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcResponse)]
-#[serde(deny_unknown_fields)]
-pub struct ApiKeyListResponse {
-    pub keys: Vec<ApiKeyRecord>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcRequest)]
-#[request(method = "_axiom/account/api_key_create", response = ApiKeyCreatedResponse)]
-#[serde(deny_unknown_fields)]
-pub struct ApiKeyCreateRequest {
-    pub name: String,
-}
-
-// A newly issued key is intentionally shown once, never included in account state or Debug output.
-#[derive(Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcResponse)]
-pub struct ApiKeyCreatedResponse {
-    pub key: ApiKeyRecord,
-    pub token: String,
-}
-
-impl std::fmt::Debug for ApiKeyCreatedResponse {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ApiKeyCreatedResponse")
-            .field("key", &self.key)
-            .finish_non_exhaustive()
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcRequest)]
-#[request(method = "_axiom/account/api_key_revoke", response = ApiKeyRevokeResponse)]
-#[serde(deny_unknown_fields)]
-pub struct ApiKeyRevokeRequest {
-    pub id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcResponse)]
-pub struct ApiKeyRevokeResponse {}
-
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcResponse)]
 #[serde(rename_all = "camelCase")]
 pub struct BillingStatusResponse {
@@ -1092,14 +915,31 @@ pub struct BillingStatusResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcRequest)]
+#[request(method = "_axiom/billing/invoice_create", response = BillingInvoiceResponse)]
+#[serde(rename_all = "camelCase")]
+pub struct BillingInvoiceCreateRequest {
+    pub amount_usd_cents: u64,
+    pub client_request_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcRequest)]
+#[request(method = "_axiom/billing/invoice_status", response = BillingInvoiceResponse)]
+#[serde(rename_all = "camelCase")]
+pub struct BillingInvoiceStatusRequest {
+    pub invoice_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcResponse)]
+#[serde(rename_all = "camelCase")]
+pub struct BillingInvoiceResponse {
+    pub invoice: BillingInvoice,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcRequest)]
 #[request(method = "_axiom/security/verify", response = VerifySecurityResponse)]
 #[serde(rename_all = "camelCase")]
 pub struct VerifySecurityRequest {
     pub thread_id: String,
-    #[serde(default)]
-    pub accept_outdated_tee: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcResponse)]
@@ -1154,8 +994,6 @@ pub struct ProtocolSchema {
     pub desktop_bootstrap_request: DesktopBootstrapRequest,
     pub desktop_bootstrap_response: DesktopBootstrapResponse,
     pub prompt_metadata: PromptMetadata,
-    pub get_attachments_request: GetAttachmentsRequest,
-    pub get_attachments_response: GetAttachmentsResponse,
     pub delivery_metadata: DeliveryMetadata,
     pub list_threads_request: ListThreadsRequest,
     pub list_threads_response: ListThreadsResponse,
@@ -1190,16 +1028,9 @@ pub struct ProtocolSchema {
     pub logout_request: LogoutRequest,
     pub billing_status_request: BillingStatusRequest,
     pub billing_status_response: BillingStatusResponse,
-    pub gift_code_redeem_request: GiftCodeRedeemRequest,
-    pub gift_code_redeem_response: GiftCodeRedeemResponse,
-    pub usage_summary_request: UsageSummaryRequest,
-    pub usage_summary_response: UsageSummaryResponse,
-    pub api_key_list_request: ApiKeyListRequest,
-    pub api_key_list_response: ApiKeyListResponse,
-    pub api_key_create_request: ApiKeyCreateRequest,
-    pub api_key_created_response: ApiKeyCreatedResponse,
-    pub api_key_revoke_request: ApiKeyRevokeRequest,
-    pub api_key_revoke_response: ApiKeyRevokeResponse,
+    pub billing_invoice_create_request: BillingInvoiceCreateRequest,
+    pub billing_invoice_status_request: BillingInvoiceStatusRequest,
+    pub billing_invoice_response: BillingInvoiceResponse,
     pub verify_security_request: VerifySecurityRequest,
     pub verify_security_response: VerifySecurityResponse,
     pub compact_request: CompactRequest,
@@ -1262,6 +1093,7 @@ mod tests {
             "SetProfilePreferencesRequest",
             "CreateCollectionRequest",
             "NativeLoginStartRequest",
+            "BillingInvoiceCreateRequest",
             "VerifySecurityRequest",
             "CompactRequest",
             "EventNotification",

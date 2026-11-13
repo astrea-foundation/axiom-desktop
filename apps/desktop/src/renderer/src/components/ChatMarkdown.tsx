@@ -2,17 +2,10 @@ import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
-import { rehypeCodeHighlight } from "../codeHighlight";
 
 // Keep component identities stable: chat interaction/streaming can rerender
 // Markdown between pointer-down and click, and must not replace the link DOM.
 const markdownComponents: Components = {
-  ol: ({ start = 1, children, node }) => {
-    const count = node?.children.filter((child) => child.type === "element" && child.tagName === "li").length ?? 1;
-    const digits = Math.max(String(start).length, String(start + count - 1).length);
-    return <ol start={start} style={{ paddingInlineStart: `max(1.5em, ${digits + 2}ch)` }}>{children}</ol>;
-  },
-  table: ({ children }) => <div className="markdown-table-scroll"><table>{children}</table></div>,
   // Electron blocks in-app navigation. New-window links go through main's
   // HTTP(S)-only handler and open in the default browser.
   a: ({ href, title, children }) => (
@@ -34,7 +27,7 @@ export function ChatMarkdown({ text }: { text: string }) {
           maxExpand: 1_000,
           maxSize: 20,
           output: "htmlAndMathml",
-        }], rehypeCodeHighlight]}
+        }]]}
       >{text}</ReactMarkdown>
     </div>
   );

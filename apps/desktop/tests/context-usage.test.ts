@@ -40,7 +40,7 @@ test("context meter shows last provider-reported input plus output and pinned li
   const view = contextUsagePresentation(sample);
   assert.equal(view.percentage, 76);
   assert.equal(view.usageLabel, "76,000 tokens");
-  assert.equal(view.breakdownLabel, "75,000 input, 1,000 output");
+  assert.equal(view.breakdownLabel, "75,000 input · 1,000 output");
   assert.equal(view.capacityLabel, "100,000 token context window");
   assert.equal(view.compactionLabel, "Auto-compacts at 85,000 tokens (85%)");
   const markup = renderToStaticMarkup(createElement(ContextUsageIndicator, sample));

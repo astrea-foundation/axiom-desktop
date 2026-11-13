@@ -39,16 +39,7 @@ async fn main() -> anyhow::Result<()> {
     );
     anyhow::ensure!(payment.monitoring_status == "ready", "Scanner not ready");
     if std::env::args().any(|arg| arg == "--valuation") {
-        anyhow::ensure!(
-            payment.valuation_enabled,
-            "Deposit valuation is not enabled"
-        );
-    }
-    if std::env::args().any(|arg| arg == "--quote") {
-        anyhow::ensure!(
-            status.zec_usd_quote.is_some(),
-            "A fresh ZEC/USD quote is unavailable"
-        );
+        anyhow::ensure!(payment.valuation_enabled, "Deposit valuation is not enabled");
     }
     let repeated = billing.status(&cancel).await?;
     anyhow::ensure!(
@@ -56,9 +47,8 @@ async fn main() -> anyhow::Result<()> {
         "Persistent address changed"
     );
     anyhow::ensure!(
-        i64::try_from(status.trial_microusd)?.checked_add(status.paid_microusd)
-            == Some(status.posted_microusd),
-        "Inconsistent source-separated credit"
+        status.trial_microusd.is_some() && status.paid_microusd.is_some(),
+        "Missing source-separated credit"
     );
     println!(
         "{}",
@@ -66,7 +56,6 @@ async fn main() -> anyhow::Result<()> {
         "address_ready":true,"persistent_address":true,"monitoring_status":payment.monitoring_status,
         "posted_microusd":status.posted_microusd,"trial_microusd":status.trial_microusd,
         "other_credit_microusd":status.paid_microusd,"confirmed_zatoshis":payment.confirmed_zatoshis,
-        "zec_usd_quote":status.zec_usd_quote,
         "conversion_status":payment.conversion_status,"credentials_printed":false,"funds_sent":false})
     );
     Ok(())

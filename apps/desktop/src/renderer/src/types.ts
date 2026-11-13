@@ -1,5 +1,3 @@
-import type { PromptAttachment } from "@axiom/axiom-acp-client";
-
 export type ReasoningEffort = "provider_default" | "enabled" | "disabled" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
 export type ChatRole = "user" | "assistant";
@@ -19,8 +17,6 @@ export interface ProviderModel {
   inputPriceMicrousdPerMillionTokens: number | null;
   outputPriceMicrousdPerMillionTokens: number | null;
   contextWindowTokens?: number;
-  supportsImages?: boolean;
-  fileMimeTypes?: string[];
   autoCompactThresholdTokens?: number;
 }
 
@@ -41,7 +37,6 @@ export interface PendingUserMessage {
   id: string;
   sessionId: string;
   text: string;
-  attachments?: PromptAttachment[];
 }
 
 export type ThreadStatus = "idle" | "unread" | "working";
@@ -52,7 +47,6 @@ export interface Thread {
   folderId: string | null;
   updatedAt: string;
   lastMessageAt?: string | null;
-  lastUserMessageAt?: string | null;
   status: ThreadStatus;
   messages: Message[];
 }

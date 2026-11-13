@@ -1,10 +1,9 @@
-import { ChevronUp, LogIn, LogOut, Settings, WalletCards } from "lucide-react";
+import { ChevronUp, LogIn, Settings, WalletCards } from "lucide-react";
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { BillingStatus } from "@axiom/axiom-acp-client";
 import type { AccountPresentation } from "../signInFlow";
 import { usdFromMicrousd } from "../lib/currency";
-import { accountAvatar } from "../lib/accountAvatar";
 
 export interface AccountMenuProps {
   account: AccountPresentation;
@@ -13,13 +12,11 @@ export interface AccountMenuProps {
   connected: boolean;
   onRefreshBalance: () => Promise<void>;
   onSignIn: () => void;
-  onLogout: () => void;
   onOpenSettings: (trigger: HTMLElement) => void;
   onOpenBalance: (trigger: HTMLElement) => void;
 }
 
-export function AccountMenu({ account, accountId, billing, connected, onRefreshBalance, onSignIn, onLogout, onOpenSettings, onOpenBalance }: AccountMenuProps) {
-  const avatar = accountAvatar(account.kind === "valid" ? account.title : null);
+export function AccountMenu({ account, accountId, billing, connected, onRefreshBalance, onSignIn, onOpenSettings, onOpenBalance }: AccountMenuProps) {
   const [open, setOpen] = useState(false);
   const [refresh, setRefresh] = useState<"loading" | "ready" | "failed">("ready");
   const trigger = useRef<HTMLButtonElement>(null);
@@ -67,20 +64,19 @@ export function AccountMenu({ account, accountId, billing, connected, onRefreshB
   }, [open, dismiss]);
 
   const balance = account.kind !== "valid" ? "Sign in" : !connected ? "Offline" : refresh === "failed" ? "Unavailable"
-    : billing ? usdFromMicrousd(billing.availableMicrousd, 2) : refresh === "loading" ? "Loading…" : "Unavailable";
+    : billing ? usdFromMicrousd(billing.availableMicrousd) : refresh === "loading" ? "Loading…" : "Unavailable";
   const itemClass = "flex w-full items-center gap-2.5 rounded-[7px] px-3 py-2.5 text-left text-[13px] text-[var(--color-text-secondary)] hover:bg-[var(--wash-hover)] focus:bg-[var(--wash-hover)] focus:text-[var(--color-text-primary)] focus:outline-none";
   return <>
     <button ref={trigger} type="button" aria-label="Account menu" aria-haspopup="menu" aria-expanded={open} aria-controls={open ? id : undefined}
       onClick={() => setOpen((value) => !value)}
       onKeyDown={(event) => { if (event.key === "ArrowUp" || event.key === "ArrowDown") { event.preventDefault(); setOpen(true); } }}
       className={`flex w-full min-w-0 items-center gap-2.5 rounded-[10px] px-2 py-2 text-left transition-colors hover:bg-[var(--wash-hover)] ${open ? "bg-[var(--wash-hover)]" : ""}`}>
-      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--color-cherry)] text-[11px] font-semibold text-on-accent"
-        style={account.kind === "valid" ? {background: avatar.background, color: avatar.color} : undefined} aria-hidden="true">
-        {account.kind === "valid" ? avatar.initials : <LogIn size={13} strokeWidth={2.3} />}
+      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--color-cherry)] text-[11px] font-semibold text-on-accent">
+        {account.kind === "valid" ? "AX" : <LogIn size={13} strokeWidth={2.3} />}
       </span>
       <span className="flex min-w-0 flex-1 flex-col items-start leading-tight">
         <span className="max-w-full truncate text-[12.5px] text-[var(--color-text-primary)]">{account.title}</span>
-        {account.detail ? <span className="max-w-full truncate text-[11px] text-[var(--color-text-tertiary)]">{account.detail}</span> : null}
+        <span className="max-w-full truncate text-[11px] text-[var(--color-text-tertiary)]">{account.detail}</span>
       </span>
       <ChevronUp size={13} aria-hidden="true" className={`shrink-0 text-[var(--color-text-tertiary)] transition-transform motion-reduce:transition-none ${open ? "rotate-180" : ""}`} />
     </button>
@@ -101,10 +97,6 @@ export function AccountMenu({ account, accountId, billing, connected, onRefreshB
       <button type="button" role="menuitem" className={itemClass} onClick={() => { restore(); onOpenBalance(trigger.current!); }}>
         <WalletCards size={15} className="shrink-0" aria-hidden="true" /><span>Balance</span><span className="ml-auto text-[12px] tabular-nums text-[var(--color-text-tertiary)]">{balance}</span>
       </button>
-      {account.kind === "valid" ? <>
-        <div className="mx-2 my-1 h-px bg-[var(--color-border)]" />
-        <button type="button" role="menuitem" className={itemClass} onClick={() => { restore(); onLogout(); }}><LogOut size={15} aria-hidden="true" />Log out</button>
-      </> : null}
       {account.kind === "signed-out" || account.kind === "expired" ? <>
         <div className="mx-2 my-1 h-px bg-[var(--color-border)]" />
         <button type="button" role="menuitem" className={itemClass} onClick={() => { restore(); onSignIn(); }}><LogIn size={15} aria-hidden="true" />{account.kind === "expired" ? "Sign in again" : "Sign in"}</button>

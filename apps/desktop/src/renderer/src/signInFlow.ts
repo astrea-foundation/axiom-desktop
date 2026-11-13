@@ -1,9 +1,21 @@
-import type { AccountStatus, NativeLoginState } from "@axiom/axiom-acp-client";
+import type { AccountStatus, LoginMethod, NativeLoginState } from "@axiom/axiom-acp-client";
+
+export const LOGIN_CHOICES: ReadonlyArray<{ method: LoginMethod; label: string; detail: string }> = [
+  { method: "passkey", label: "Passkey", detail: "Use Touch ID, Windows Hello, or a security key" },
+  { method: "google", label: "Google", detail: "Continue with your Google account" },
+  { method: "password", label: "Email and password", detail: "Use your verified email address" },
+  { method: "ethereum_wallet", label: "Ethereum wallet", detail: "Sign a standard SIWE message" },
+];
+
+export function loginMethodLabel(method: LoginMethod): string {
+  return LOGIN_CHOICES.find((choice) => choice.method === method)?.label ?? "Axiom";
+}
 
 export type SignInState =
   | { kind: "closed" }
-  | { kind: "starting" }
-  | { kind: "waiting"; login: NativeLoginState }
+  | { kind: "choose" }
+  | { kind: "starting"; method: LoginMethod }
+  | { kind: "waiting"; login: NativeLoginState; method: LoginMethod }
   | { kind: "success" }
   | { kind: "error"; message: string };
 
@@ -22,8 +34,8 @@ export function accountPresentation(
   if (!connected || !desktopReady) {
     return {
       kind: "starting",
-      title: "Starting Axiom…",
-      detail: "",
+      title: "AxiomCLI is starting",
+      detail: "Your local agent is connecting…",
     };
   }
   if (account?.state === "valid" && account.account) {
@@ -52,14 +64,14 @@ export function accountPresentation(
   if (account?.state === "starting") {
     return {
       kind: "starting",
-      title: "Checking your account…",
-      detail: "",
+      title: "Checking your Axiom account",
+      detail: account.detail?.trim() || "Your local agent is restoring its secure session…",
     };
   }
   return {
     kind: "signed-out",
-    title: "Sign in",
-    detail: "Continue in your browser.",
+    title: "Connect your Axiom account",
+    detail: "Sign in securely in your browser to access models.",
   };
 }
 

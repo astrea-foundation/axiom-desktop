@@ -1,4 +1,3 @@
-import type { PromptAttachment } from "@axiom/axiom-acp-client";
 import { access, stat } from "node:fs/promises";
 import { constants } from "node:fs";
 import { join, resolve } from "node:path";
@@ -16,7 +15,6 @@ import {
   type PermissionOutcome,
   type ThreadSettingsRequest,
   type SteerTurnRequest,
-  type UsageSummaryRequest,
 } from "@axiom/axiom-acp-client";
 import { RestartPolicy } from "./restart-policy";
 import { actionableAcpError } from "./agent-errors";
@@ -41,7 +39,7 @@ async function executable(path: string): Promise<boolean> {
   }
 }
 
-export async function resolveSidecar(): Promise<string> {
+async function resolveSidecar(): Promise<string> {
   const packaged = resolve(process.resourcesPath, "bin", process.platform === "win32" ? "axiomcli.exe" : "axiomcli");
   if (app.isPackaged) {
     if (!(await executable(packaged))) throw new Error(`Packaged AxiomCLI sidecar is missing: ${packaged}`);
@@ -58,7 +56,6 @@ export async function resolveSidecar(): Promise<string> {
 }
 
 export class AgentSidecar {
-  constructor(private readonly stateChanged: (state: ClientState) => void = () => {}) {}
   private client: AxiomAcpClient | null = null;
   private initializingClient: AxiomAcpClient | null = null;
   private lastState: ClientState = {
@@ -71,6 +68,7 @@ export class AgentSidecar {
     preferences: null,
     account: null,
     billing: null,
+    invoice: null,
     diagnostic: "",
     error: null,
   };
@@ -126,7 +124,6 @@ export class AgentSidecar {
           ? state
           : { ...state, connected: false };
         this.lastState = visibleState;
-        this.stateChanged(visibleState);
         broadcast(AGENT_STATE_CHANNEL, visibleState);
       });
       client.on("interaction", (interaction: PendingInteraction) => {
@@ -141,7 +138,7 @@ export class AgentSidecar {
         if (this.initializingClient === client) this.initializingClient = null;
         if (owned) this.scheduleRestart();
       });
-      await client.initialize(app.getVersion());
+      await client.initialize();
       const bootstrap = await client.bootstrapDesktop();
       await client.initializeDesktopState();
       if (this.shuttingDown || this.initializingClient !== client) {
@@ -152,7 +149,6 @@ export class AgentSidecar {
       this.bootstrap = bootstrap;
       const readyState = client.getState();
       this.lastState = readyState;
-      this.stateChanged(readyState);
       broadcast(AGENT_STATE_CHANNEL, readyState);
       this.restartPolicy.markReady(() => !this.shuttingDown && this.client === client);
       this.refreshAccountInBackground(client);
@@ -167,7 +163,6 @@ export class AgentSidecar {
         connected: false,
         error: error instanceof Error ? error.message : String(error),
       };
-      this.stateChanged(this.lastState);
       broadcast(AGENT_STATE_CHANNEL, this.lastState);
       this.scheduleRestart();
       throw error;
@@ -232,10 +227,8 @@ export class AgentSidecar {
 
   configureDesktopAgent(request: ConfigureDesktopAgentRequest) { return this.requireClient().configureDesktopAgent(request); }
 
-  getAttachments(threadId: string, userItemId: string) { return this.requireClient().getAttachments(threadId, userItemId); }
-
-  prompt(sessionId: string, text: string, clientItemId: string, webEnabled = false, agentRevision = 0, revision?: { userItemId: string; expectedRevision: number }, attachments: PromptAttachment[] = []) {
-    return this.requireClient().prompt(sessionId, text, clientItemId, webEnabled, agentRevision, revision, attachments);
+  prompt(sessionId: string, text: string, clientItemId: string, webEnabled = false, agentRevision = 0) {
+    return this.requireClient().prompt(sessionId, text, clientItemId, webEnabled, agentRevision);
   }
 
   steer(request: SteerTurnRequest) { return this.requireClient().steer(request); }
@@ -282,40 +275,26 @@ export class AgentSidecar {
     });
   }
 
-  redeemGiftCode(code: string) {
-    return this.requireClient().redeemGiftCode(code).catch((error: unknown) => {
+  createBillingInvoice(amountUsdCents: number, clientRequestId: string) {
+    return this.requireClient().createBillingInvoice(amountUsdCents, clientRequestId).catch((error: unknown) => {
       throw actionableAcpError(error);
     });
   }
 
-  apiKeys() {
-    return this.requireClient().apiKeys().catch((error: unknown) => { throw actionableAcpError(error); });
-  }
-
-  createApiKey(name: string) {
-    return this.requireClient().createApiKey(name).catch((error: unknown) => { throw actionableAcpError(error); });
-  }
-
-  revokeApiKey(id: string) {
-    return this.requireClient().revokeApiKey(id).catch((error: unknown) => { throw actionableAcpError(error); });
-  }
-
-  usageSummary(request: UsageSummaryRequest = {}) {
-    return this.requireClient().usageSummary(request).catch((error: unknown) => {
+  billingInvoiceStatus(invoiceId: string) {
+    return this.requireClient().billingInvoiceStatus(invoiceId).catch((error: unknown) => {
       throw actionableAcpError(error);
     });
   }
 
   async nativeLoginStart(methodHint?: LoginMethod) {
-    const result = await this.requireClient().nativeLoginStart(methodHint).catch((error: unknown) => {
-      throw actionableAcpError(error);
-    });
+    const result = await this.requireClient().nativeLoginStart(methodHint);
     const authorizationUrl = trustedNativeAuthorizationUrl(
       result.login.authorizationUrl,
       this.origins.auth,
     );
     if (!result.login.browserOpened) await shell.openExternal(authorizationUrl);
-    return { ...result, login: { ...result.login, browserOpened: true } };
+    return result;
   }
 
   async nativeLoginComplete(loginId: string) {
@@ -343,8 +322,8 @@ export class AgentSidecar {
     return this.requireClient().logout();
   }
 
-  verifySecurity(sessionId: string, acceptOutdatedTee = false, modelId?: string) {
-    return this.requireClient().verifySecurity(sessionId, acceptOutdatedTee, modelId);
+  verifySecurity(sessionId: string) {
+    return this.requireClient().verifySecurity(sessionId);
   }
 
   compact(sessionId: string, focus?: string) {

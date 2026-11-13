@@ -8,14 +8,9 @@ use std::{collections::BTreeMap, fmt};
 
 use serde::{Deserialize, Serialize};
 mod accounting;
-mod attachments;
 pub use accounting::{InvocationPurpose, InvocationState, RequestUsage, UsageCompleteness};
-pub use attachments::{
-    FILE_MIME_TYPES, FileContent, ImageContent, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS,
-    MAX_FILE_BYTES, MAX_IMAGE_BYTES, PromptAttachment, user_message, validate_prompt,
-    validate_stored_prompt,
-};
 
+pub const MAX_MESSAGES: usize = 101;
 pub const MAX_TOOLS: usize = 128;
 pub const MAX_TOOL_CALLS: usize = 128;
 pub const MAX_TOOL_CALL_ID_CHARS: usize = 256;
@@ -40,10 +35,6 @@ pub struct ChatMessage {
     pub role: ChatRole,
     #[serde(default)]
     pub content: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub images: Vec<ImageContent>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub files: Vec<FileContent>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -62,8 +53,6 @@ impl ChatMessage {
         Self {
             role,
             content: content.into(),
-            images: Vec::new(),
-            files: Vec::new(),
             reasoning_content: None,
             name: None,
             refusal: None,
@@ -217,38 +206,13 @@ impl InferenceRequest {
         {
             return Err(ValidationError::invalid("model"));
         }
-        if self.messages.is_empty() {
+        if self.messages.is_empty() || self.messages.len() > MAX_MESSAGES {
             return Err(ValidationError::count("messages"));
         }
         if self.tools.len() > MAX_TOOLS {
             return Err(ValidationError::count("tools"));
         }
         for message in &self.messages {
-            if !message.files.is_empty()
-                && (message.role != ChatRole::User
-                    || message.files.len() + message.images.len() > MAX_ATTACHMENTS)
-            {
-                return Err(ValidationError::invalid("message.files"));
-            }
-            let mut attachment_bytes = message.content.len();
-            for file in &message.files {
-                file.validate()?;
-                attachment_bytes = attachment_bytes.saturating_add(file.data.len());
-            }
-            for image in &message.images {
-                attachment_bytes = attachment_bytes.saturating_add(image.data.len());
-            }
-            if attachment_bytes > MAX_ATTACHMENT_BYTES {
-                return Err(ValidationError::invalid("message.attachments"));
-            }
-            if !message.images.is_empty()
-                && (message.role != ChatRole::User || message.images.len() > MAX_ATTACHMENTS)
-            {
-                return Err(ValidationError::invalid("message.images"));
-            }
-            for image in &message.images {
-                image.validate()?;
-            }
             validate_bytes("message.content", &message.content, MAX_MESSAGE_TEXT_BYTES)?;
             validate_optional_bytes(
                 "message.reasoning_content",
@@ -425,7 +389,7 @@ fn validate_call_id(value: &str) -> Result<(), ValidationError> {
     }
 }
 
-pub fn validate_tool_calls(calls: &[ToolCall]) -> Result<(), ValidationError> {
+fn validate_tool_calls(calls: &[ToolCall]) -> Result<(), ValidationError> {
     if calls.len() > MAX_TOOL_CALLS {
         return Err(ValidationError::count("tool_calls"));
     }
@@ -559,7 +523,7 @@ fn merge_stable(
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProviderEvent {
-    Accounting(Box<RequestUsage>),
+    Accounting(RequestUsage),
     SecurityState(ProviderSecurityState),
     /// The exact response associated with this provider call passed its
     /// terminal cryptographic verification. Secure adapters emit this only
@@ -588,8 +552,6 @@ pub enum ProviderSecurityState {
     Unverified,
     Verifying,
     Verified,
-    Degraded,
-    Outdated,
     Failed,
     UnattestedDevelopment,
 }
@@ -611,10 +573,6 @@ pub struct InferenceResponse {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "Provider capabilities are independent catalog flags, not mutually exclusive states"
-)]
 pub struct ModelInfo {
     pub id: String,
     #[serde(default)]
@@ -657,14 +615,6 @@ pub struct ModelInfo {
     pub supports_parallel_tools: bool,
     #[serde(default)]
     pub supports_streaming: bool,
-    #[serde(default)]
-    pub supports_images: bool,
-    #[serde(default)]
-    pub file_mime_types: Vec<String>,
-    #[serde(default)]
-    pub reasoning_parameters: std::collections::BTreeMap<String, serde_json::Value>,
-    #[serde(default)]
-    pub thinking_parameters: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 pub const AUTO_COMPACT_CONTEXT_PERCENT: u32 = 85;
@@ -734,15 +684,6 @@ mod tests {
         assert_eq!(request.reasoning_effort, ReasoningEffort::Medium);
         assert_eq!(request.tool_choice, ToolChoice::Auto);
         assert_eq!(request.response_format, ResponseFormat::Text);
-    }
-
-    #[test]
-    fn requests_still_require_at_least_one_message() {
-        let request = InferenceRequest::streaming("cherry", Vec::new(), Vec::new());
-
-        let error = request.validate().unwrap_err();
-        assert_eq!(error.kind, ValidationErrorKind::Count);
-        assert_eq!(error.field, "messages");
     }
 
     #[test]

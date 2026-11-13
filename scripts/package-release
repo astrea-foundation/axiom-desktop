@@ -116,21 +116,23 @@ done < <(
     | @tsv
   ' <<< "$metadata"
 )
-# Installed docs are a subset of the source tree. Resolve navigation/source links
-# against this exact revision so they also work outside a repository checkout.
-source_revision=$(git -C "$workspace_root" rev-parse HEAD)
-source_url="https://github.com/astrea-foundation/axiomai/blob/$source_revision"
-for document in README.md docs/acp-compatibility.md docs/configuration.md \
-  docs/privacy.md docs/troubleshooting.md docs/versioning.md; do
-  document_directory=""
-  if [[ $document == docs/* ]]; then
-    document_directory="docs/"
-  fi
-  destination="$package_root/share/doc/axiomcli/${document##*/}"
-  sed -E "s@\]\(([^#/:][^:[:space:]()]*)\)@]($source_url/$document_directory\1)@g" \
-    "$workspace_root/$document" > "$destination"
-  chmod 0644 "$destination"
-done
+mkdir -p "$third_party_files/axiom-phala-core-0.1.0"
+install -m 0644 "$workspace_root/crates/axiom-phala-core/LICENSE" \
+  "$third_party_files/axiom-phala-core-0.1.0/LICENSE"
+install -m 0644 "$workspace_root/crates/axiom-phala-core/ORIGIN.md" \
+  "$third_party_files/axiom-phala-core-0.1.0/ORIGIN.md"
+printf '%s\t%s\t%s\t%s\n' \
+  'axiom-phala-core' '0.1.0' 'MIT' 'axiom-phala-core-0.1.0/LICENSE' \
+  >> "$third_party_manifest"
+printf '%s\t%s\t%s\t%s\n' \
+  'axiom-phala-core' '0.1.0' 'MIT' 'axiom-phala-core-0.1.0/ORIGIN.md' \
+  >> "$third_party_manifest"
+install -m 0644 "$workspace_root/README.md" "$package_root/share/doc/axiomcli/README.md"
+install -m 0644 "$workspace_root/docs/acp-compatibility.md" "$package_root/share/doc/axiomcli/acp-compatibility.md"
+install -m 0644 "$workspace_root/docs/configuration.md" "$package_root/share/doc/axiomcli/configuration.md"
+install -m 0644 "$workspace_root/docs/privacy.md" "$package_root/share/doc/axiomcli/privacy.md"
+install -m 0644 "$workspace_root/docs/troubleshooting.md" "$package_root/share/doc/axiomcli/troubleshooting.md"
+install -m 0644 "$workspace_root/docs/versioning.md" "$package_root/share/doc/axiomcli/versioning.md"
 printf 'name=axiomai\nversion=%s\ntarget=%s\nsource_date_epoch=%s\ncargo_deny_version=%s\ncomponents=axiomcli,axiom-proxy\n' \
   "$version" "$host" "$source_date_epoch" "$required_cargo_deny_version" \
   > "$package_root/share/doc/axiomcli/BUILD-METADATA"

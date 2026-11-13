@@ -43,13 +43,6 @@ test("the preload preserves captured Agent settings revisions", async () => {
   assert.deepEqual(calls, [["agent:prompt-with-agent-context", "thread", "question", "message", false, 7]]);
 });
 
-test("gift redemption crosses the billing IPC boundary with its captured account", async () => {
-  const calls: unknown[][] = [];
-  const api = preload(async (...args) => { calls.push(args); return {}; });
-  await api.redeemGiftCode("test-gift", "account-a");
-  assert.deepEqual(calls, [["agent:redeem-gift-code", "test-gift", "account-a"]]);
-});
-
 test("a new preload with an old main process fails before any legacy prompt is sent", async () => {
   let legacyPrompts = 0;
   const api = preload(async (channel) => {

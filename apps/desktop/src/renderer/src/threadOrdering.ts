@@ -15,8 +15,8 @@ export function newestMessageAt(...values: (string | null | undefined)[]): strin
 }
 
 export function compareThreadMessages(a: Thread, b: Thread): number {
-  const aTime = messageTime(a.lastUserMessageAt);
-  const bTime = messageTime(b.lastUserMessageAt);
+  const aTime = messageTime(a.lastMessageAt);
+  const bTime = messageTime(b.lastMessageAt);
   if (aTime !== bTime) return aTime > bTime ? -1 : 1;
   return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
 }
@@ -26,7 +26,7 @@ export function orderFoldersByMessages(folders: Folder[], threads: Thread[]): Fo
   const latest = new Map<string, number>();
   for (const thread of threads) {
     if (thread.folderId) latest.set(thread.folderId, Math.max(
-      latest.get(thread.folderId) ?? -Infinity, messageTime(thread.lastUserMessageAt),
+      latest.get(thread.folderId) ?? -Infinity, messageTime(thread.lastMessageAt),
     ));
   }
   return [...folders].sort((a, b) => {

@@ -3,28 +3,12 @@
 export type DesktopAgentPermission = "approve_commands" | "full_access";
 export type ThreadLifecycle =
   "ready" | "running" | "waiting_for_approval" | "waiting_for_answer" | "compacting" | "closed";
-export type PromptAttachment =
-  | {
-      name: string;
-      text: string;
-      kind: "text";
-    }
-  | {
-      name: string;
-      image: ImageContent;
-      kind: "image";
-    }
-  | {
-      name: string;
-      file: FileContent;
-      kind: "file";
-    };
 export type TimelineItemKind = "user_message" | "assistant_message" | "reasoning" | "tool_call" | "plan" | "notice";
 export type TimelineItemStatus = "pending" | "in_progress" | "completed" | "cancelled" | "failed" | "interrupted";
 export type AccountState = "starting" | "signed_out" | "valid" | "expired" | "unavailable";
 export type LoginMethod = "passkey" | "google" | "password" | "ethereum_wallet";
-export type SecurityState =
-  "unverified" | "verifying" | "unattested_development" | "verified" | "degraded" | "outdated" | "failed";
+export type InvoiceState = "creating" | "pending" | "paid" | "expired" | "failed" | "review";
+export type SecurityState = "unverified" | "verifying" | "unattested_development" | "verified" | "failed";
 export type ActivityEvent =
   | {
       turnId?: string | null;
@@ -54,6 +38,11 @@ export type ActivityEvent =
   | {
       status: BillingStatus;
       kind: "billing_changed";
+      [k: string]: unknown;
+    }
+  | {
+      invoice: BillingInvoice;
+      kind: "invoice_changed";
       [k: string]: unknown;
     }
   | {
@@ -108,8 +97,6 @@ export interface ProtocolSchema {
   desktopBootstrapRequest: DesktopBootstrapRequest;
   desktopBootstrapResponse: DesktopBootstrapResponse;
   promptMetadata: PromptMetadata;
-  getAttachmentsRequest: GetAttachmentsRequest;
-  getAttachmentsResponse: GetAttachmentsResponse;
   deliveryMetadata: DeliveryMetadata;
   listThreadsRequest: ListThreadsRequest;
   listThreadsResponse: ListThreadsResponse;
@@ -144,16 +131,9 @@ export interface ProtocolSchema {
   logoutRequest: LogoutRequest;
   billingStatusRequest: BillingStatusRequest;
   billingStatusResponse: BillingStatusResponse;
-  giftCodeRedeemRequest: GiftCodeRedeemRequest;
-  giftCodeRedeemResponse: GiftCodeRedeemResponse;
-  usageSummaryRequest: UsageSummaryRequest;
-  usageSummaryResponse: UsageSummaryResponse;
-  apiKeyListRequest: ApiKeyListRequest;
-  apiKeyListResponse: ApiKeyListResponse;
-  apiKeyCreateRequest: ApiKeyCreateRequest;
-  apiKeyCreatedResponse: ApiKeyCreatedResponse;
-  apiKeyRevokeRequest: ApiKeyRevokeRequest;
-  apiKeyRevokeResponse: ApiKeyRevokeResponse;
+  billingInvoiceCreateRequest: BillingInvoiceCreateRequest;
+  billingInvoiceStatusRequest: BillingInvoiceStatusRequest;
+  billingInvoiceResponse: BillingInvoiceResponse;
   verifySecurityRequest: VerifySecurityRequest;
   verifySecurityResponse: VerifySecurityResponse;
   compactRequest: CompactRequest;
@@ -201,10 +181,6 @@ export interface ThreadSummary {
    * Latest actual message activity, absent for message-free threads.
    */
   lastMessageAt?: string | null;
-  /**
-   * Latest user submission. Streaming output does not advance sidebar order.
-   */
-  lastUserMessageAt?: string | null;
   [k: string]: unknown;
 }
 export interface DesktopAgentSettings {
@@ -231,12 +207,9 @@ export interface FeatureVersions {
   collections?: number;
   account?: number;
   billing?: number;
-  usage?: number;
   securityEvidence?: number;
   webConsent?: number;
   steering?: number;
-  messageRevision?: number;
-  attachments?: number;
   compaction?: number;
   activity?: number;
   [k: string]: unknown;
@@ -285,40 +258,6 @@ export interface PromptMetadata {
    * Bind queued input to the exact locally approved Agent configuration.
    */
   agentRevision?: number | null;
-  /**
-   * Replace local history starting at this user message before the normal
-   * native E2EE turn. Never interpreted by the hosted backend.
-   */
-  revision?: PromptRevision | null;
-  attachments?: PromptAttachment[];
-  [k: string]: unknown;
-}
-export interface PromptRevision {
-  userItemId: string;
-  expectedRevision: number;
-}
-export interface ImageContent {
-  mimeType: string;
-  /**
-   * Canonical base64, without a data-URL prefix. Remote URLs are not images.
-   */
-  data: string;
-}
-/**
- * Original file bytes. Extraction belongs to the attested provider, not Axiom.
- */
-export interface FileContent {
-  name: string;
-  mimeType: string;
-  data: string;
-}
-export interface GetAttachmentsRequest {
-  threadId: string;
-  userItemId: string;
-  [k: string]: unknown;
-}
-export interface GetAttachmentsResponse {
-  attachments: PromptAttachment[];
   [k: string]: unknown;
 }
 /**
@@ -333,10 +272,6 @@ export interface DeliveryMetadata {
    * Latest actual message activity; operational updates do not advance it.
    */
   lastMessageAt?: string | null;
-  /**
-   * Latest user submission. Streaming output does not advance sidebar order.
-   */
-  lastUserMessageAt?: string | null;
   timelineItemId?: string | null;
   clientItemId?: string | null;
   [k: string]: unknown;
@@ -368,7 +303,6 @@ export interface RenameThreadResponse {
 export interface GetThreadTimelineRequest {
   threadId: string;
   afterSequence?: number | null;
-  afterRequestId?: string | null;
   limit?: number | null;
   [k: string]: unknown;
 }
@@ -383,7 +317,6 @@ export interface GetThreadTimelineResponse {
   requestUsage?: RequestUsage[];
   items: TimelineItem[];
   nextCursor?: number | null;
-  nextRequestUsageCursor?: string | null;
   [k: string]: unknown;
 }
 /**
@@ -478,8 +411,6 @@ export interface ModelInfo {
   thinkingLevels: string[];
   contextWindowTokens: number;
   maxOutputTokens: number;
-  supportsImages?: boolean;
-  fileMimeTypes?: string[];
   autoCompactThresholdTokens: number;
   inputPriceMicrousdPerMillionTokens?: number | null;
   outputPriceMicrousdPerMillionTokens?: number | null;
@@ -631,14 +562,18 @@ export interface BillingStatus {
    */
   revision: number;
   postedMicrousd: number;
+  heldMicrousd: number;
   availableMicrousd: number;
   ledgerSequence: number;
-  trialMicrousd: number;
-  paidMicrousd: number;
+  trialMicrousd?: number | null;
+  paidMicrousd?: number | null;
   paymentReviewRequired?: boolean;
   currency: string;
+  invoicesEnabled: boolean;
+  invoiceMinUsdCents: number;
+  invoiceMaxUsdCents: number;
+  settlementAsset?: string | null;
   paymentAccount?: PaymentAccount | null;
-  zecUsdQuote?: ZecUsdQuote | null;
   [k: string]: unknown;
 }
 /**
@@ -675,94 +610,34 @@ export interface DepositReceipt {
   price_source?: string | null;
   priced_at?: string | null;
 }
-/**
- * Indicative live market price; deposit credit uses its confirmation-time rate.
- */
-export interface ZecUsdQuote {
-  price_microusd_per_zec: string;
-  source: string;
-  as_of: string;
-  expires_at: string;
-}
-export interface GiftCodeRedeemRequest {
-  code: string;
-}
-export interface GiftCodeRedeemResponse {
-  creditedMicrousd: number;
-  alreadyRedeemed: boolean;
-  status: BillingStatus;
+export interface BillingInvoiceCreateRequest {
+  amountUsdCents: number;
+  clientRequestId: string;
   [k: string]: unknown;
 }
-export interface UsageSummaryRequest {
-  period?: "week" | "month" | "all_time";
+export interface BillingInvoiceStatusRequest {
+  invoiceId: string;
+  [k: string]: unknown;
+}
+export interface BillingInvoiceResponse {
+  invoice: BillingInvoice;
+  [k: string]: unknown;
+}
+export interface BillingInvoice {
   /**
-   * IANA timezone for calendar boundaries. Omitted clients retain UTC/all-time behavior.
+   * Monotonic within one agent runtime; clients ignore older invoice state.
    */
-  timezone?: string | null;
-  [k: string]: unknown;
-}
-export interface UsageSummaryResponse {
-  summary: UsageSummary;
-  [k: string]: unknown;
-}
-export interface UsageSummary {
-  period: string;
-  totalCostMicrousd: string;
-  models: ModelSpend[];
-  [k: string]: unknown;
-}
-export interface ModelSpend {
-  provider: string;
-  modelId?: string | null;
-  modelName?: string | null;
-  /**
-   * Exact USD millionths; never an IEEE-754 amount.
-   */
-  costMicrousd: string;
-  [k: string]: unknown;
-}
-export interface ApiKeyListRequest {
-  [k: string]: unknown;
-}
-export interface ApiKeyListResponse {
-  keys: ApiKeyRecord[];
-}
-export interface ApiKeyRecord {
+  revision: number;
   id: string;
-  name: string;
-  scopes: string[];
-  createdAt: string;
-  lastUsedAt?: string | null;
+  amountUsdCents: number;
+  state: InvoiceState;
   expiresAt?: string | null;
-  revokedAt?: string | null;
-  usageStartedAt: string;
-  usage: ApiKeyUsage;
-}
-export interface ApiKeyUsage {
-  requestCount: string;
-  inputTokens: string;
-  cachedInputTokens: string;
-  outputTokens: string;
-  costMicrousd: string;
-}
-export interface ApiKeyCreateRequest {
-  name: string;
-}
-export interface ApiKeyCreatedResponse {
-  key: ApiKeyRecord;
-  token: string;
-  [k: string]: unknown;
-}
-export interface ApiKeyRevokeRequest {
-  id: string;
-}
-export interface ApiKeyRevokeResponse {
+  paidAt?: string | null;
+  payUrl?: string | null;
   [k: string]: unknown;
 }
 export interface VerifySecurityRequest {
   threadId: string;
-  acceptOutdatedTee?: boolean;
-  modelId?: string | null;
   [k: string]: unknown;
 }
 export interface VerifySecurityResponse {
@@ -779,16 +654,15 @@ export interface SecurityEvidence {
   e2eeEncryptionVersion: number;
   trustPolicyVersion: string;
   verifiedAtUnixSeconds: number;
-  /**
-   * Relay lease generation, when the provider protocol uses relay leases.
-   */
-  attestationGeneration?: number | null;
+  attestationGeneration: number;
   hardExpiresAtUnixSeconds: number;
   modelKeyFingerprint: string;
   tlsSpkiFingerprint?: string | null;
   checks: EvidenceCheck[];
   providerClaims: EvidenceClaim[];
   workloadManifest?: string | null;
+  workloadIdentityAllowlistConfigured: boolean;
+  approvedWorkloadIdentity: boolean;
   [k: string]: unknown;
 }
 export interface SecurityStatus {

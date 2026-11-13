@@ -57,7 +57,7 @@ export function DeleteConfirmationDialog({ kind, title, onCancel, onConfirm }: D
       <h2 id={titleId} className="text-[20px] font-medium tracking-tight">Delete {kind}?</h2>
       <p id={descriptionId} className="mt-3 break-words text-[13.5px] leading-5 text-[var(--color-text-secondary)]">
         {kind === "thread"
-          ? `“${title}” will be permanently deleted. Any active response will be stopped.`
+          ? `“${title}” will be permanently deleted. Any active response or background check will be stopped.`
           : `“${title}” will be deleted. Its threads will remain available.`}
       </p>
       <div className="mt-6 flex justify-end gap-2">

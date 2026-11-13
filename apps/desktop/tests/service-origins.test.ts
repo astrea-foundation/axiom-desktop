@@ -7,7 +7,9 @@ import {
   STAGING_API_ORIGIN,
   STAGING_AUTH_ORIGIN,
   resolveServiceOrigins,
+  activeInvoicePaymentUrl,
   requirePaymentAccount,
+  trustedInvoicePaymentUrl,
   trustedNativeAuthorizationUrl,
 } from "../src/main/service-origins";
 
@@ -36,9 +38,52 @@ test("staging is an explicit coherent development audience, never a packaged ove
   assert.throws(() => resolveServiceOrigins({ packaged: false, apiUrl: STAGING_API_ORIGIN }));
 });
 
+test("automatic checkout must match the active account's unexpired pending invoice", () => {
+  const url = "https://shieldz.cash/pay/shieldz_invoice_1";
+  const state: Parameters<typeof activeInvoicePaymentUrl>[1] = {
+    connected: true,
+    account: { revision: 1, state: "valid", account: { id: "account-a", linkedMethods: [] } },
+    invoice: {
+      revision: 1, id: "a".repeat(32), amountUsdCents: 2_500, state: "pending",
+      payUrl: url, expiresAt: "2030-01-01T00:00:00.000Z",
+    },
+  };
+  const now = Date.parse("2029-01-01T00:00:00.000Z");
+  const validate = (value: string, current: typeof state) => activeInvoicePaymentUrl(value, current, "account-a", now);
+  assert.equal(validate(url, state), url);
+  assert.throws(() => validate(url, { ...state, connected: false }));
+  assert.throws(() => validate(url, { ...state, account: null }));
+  assert.throws(() => validate(url, { ...state, account: { revision: 2, state: "expired" } }));
+  assert.throws(() => validate(url, { ...state, invoice: null }));
+  assert.throws(() => validate(url + "_different", state));
+  assert.throws(() => activeInvoicePaymentUrl(url, state, "account-b", now), /account changed/);
+  assert.throws(() => requirePaymentAccount("account-b", state), /account changed/);
+  assert.throws(() => requirePaymentAccount("", state), /account changed/);
+  for (const status of ["paid", "expired", "failed", "review"] as const) {
+    assert.throws(() => validate(url, { ...state, invoice: { ...state.invoice!, state: status } }));
+  }
+  for (const expiresAt of [null, "invalid", "2029-01-01T00:00:00.000Z"]) {
+    assert.throws(() => validate(url, { ...state, invoice: { ...state.invoice!, expiresAt } }));
+  }
+  const foreignUrl = "https://evil.example/pay/shieldz_invoice_1";
+  assert.throws(() => validate(foreignUrl, { ...state, invoice: { ...state.invoice!, payUrl: foreignUrl } }));
+});
 
-
-
+test("invoice checkout accepts only the bounded Shieldz payment capability", () => {
+  const valid = "https://shieldz.cash/pay/shieldz_invoice_1";
+  assert.equal(trustedInvoicePaymentUrl(valid), valid);
+  for (const invalid of [
+    "http://shieldz.cash/pay/shieldz_invoice_1",
+    "https://evil.example/pay/shieldz_invoice_1",
+    "https://user@shieldz.cash/pay/shieldz_invoice_1",
+    "https://shieldz.cash/other/shieldz_invoice_1",
+    "https://shieldz.cash/pay/shieldz_invoice_1?next=https://evil.example",
+    "https://shieldz.cash/pay/shieldz_invoice_1#fragment",
+    "https://shieldz.cash/pay/../account",
+  ]) {
+    assert.throws(() => trustedInvoicePaymentUrl(invalid));
+  }
+});
 
 test("development overrides must form a coherent bounded deployment pair", () => {
   assert.deepEqual(

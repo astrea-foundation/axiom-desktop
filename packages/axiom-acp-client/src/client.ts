@@ -1,16 +1,9 @@
 import { EventEmitter } from "node:events";
 import type {
   AccountStatusResponse,
-  PromptAttachment,
-  GetAttachmentsResponse,
   AssignThreadCollectionResponse,
+  BillingInvoiceResponse,
   BillingStatusResponse,
-  GiftCodeRedeemResponse,
-  UsageSummaryResponse,
-  UsageSummaryRequest,
-  ApiKeyListResponse,
-  ApiKeyCreatedResponse,
-  ApiKeyRevokeResponse,
   CollectionStateResponse,
   CompactResponse,
   DeleteConfirmResponse,
@@ -32,11 +25,9 @@ import type {
   SteerTurnResponse,
   VerifySecurityResponse,
 } from "./generated/protocol.js";
-import { validatePrompt } from "./attachments.js";
 import { AcpError, ProtocolError } from "./errors.js";
 import { AcpProcess, type IncomingRequest, type SidecarProcessOptions } from "./process.js";
 import { AxiomStateStore, type ClientState } from "./state.js";
-import { publicSecurityEvidence } from "./security-evidence.js";
 import type {
   ElicitationOutcome,
   InitializeResult,
@@ -52,20 +43,17 @@ const EXTENSION_CAPABILITIES = {
   protocolVersion: "0.2",
   features: {
     threadCatalog: 1,
-    timeline: 2,
+    timeline: 1,
     modelCatalog: 1,
     profilePreferences: 1,
     collections: 1,
     desktopChat: 1,
     desktopAgent: 1,
     account: 2,
-    billing: 3,
-    usage: 1,
-    securityEvidence: 3,
+    billing: 1,
+    securityEvidence: 1,
     webConsent: 1,
     steering: 1,
-    messageRevision: 1,
-    attachments: 2,
     compaction: 1,
     activity: 1,
   },
@@ -143,13 +131,9 @@ export class AxiomAcpClient extends EventEmitter {
   private readonly background = new Set<Promise<void>>();
   private readonly refreshingThreads = new Map<string, Promise<GetThreadTimelineResponse>>();
   private readonly securityPreflights = new Map<string, Promise<void>>();
-  private readonly securityVerifications = new Map<string, { context: object; promise: Promise<VerifySecurityResponse> }>();
-  private readonly pendingPrompts = new Set<{ threadId: string; cancelled: boolean }>();
   private fullResync: Promise<void> | null = null;
   private fullResyncRequired = false;
   private initialized = false;
-  private supportsMessageRevision = false;
-  private supportsAttachments = false;
   private desktopBootstrap: DesktopBootstrapResponse | null = null;
   private closing = false;
   private accountingTimer: ReturnType<typeof setTimeout> | null = null;
@@ -168,37 +152,27 @@ export class AxiomAcpClient extends EventEmitter {
   private scheduleAccountingRecovery(state: ClientState): void {
     if (this.closing || this.accountingTimer || !state.connected) return;
     const context = this.state.accountContextToken();
-    const requestKey = (id: string) => context + ":" + id;
-    const unresolved = new Set(Object.values(state.sessions).flatMap((session) =>
-      session.requestUsage?.filter((request) => !request.settled).map((request) => requestKey(request.requestId)) ?? []));
-    for (const key of this.accountingRecoveryAttempts.keys()) {
-      if (!unresolved.has(key)) this.accountingRecoveryAttempts.delete(key);
-    }
-    const pending = Object.values(state.sessions).map((session) => ({
-      threadId: session.sessionId,
-      requests: session.requestUsage?.filter((request) => !request.settled && request.state !== "running"
-        && (this.accountingRecoveryAttempts.get(requestKey(request.requestId)) ?? 0) < 80) ?? [],
-    })).filter((session) => session.requests.length);
+    const pending = Object.values(state.sessions).filter((session) =>
+      session.requestUsage?.some((request) => !request.settled && request.state !== "running")
+      && (this.accountingRecoveryAttempts.get(context + ":" + session.sessionId) ?? 0) < 20);
     if (!pending.length) return;
     this.accountingTimer = setTimeout(() => {
       this.accountingTimer = null;
       if (this.closing) return;
       if (this.state.accountContextToken() !== context) { this.scheduleAccountingRecovery(this.state.snapshot()); return; }
       for (const session of pending) {
-        for (const request of session.requests) {
-          const key = requestKey(request.requestId);
-          this.accountingRecoveryAttempts.set(key, (this.accountingRecoveryAttempts.get(key) ?? 0) + 1);
-        }
+        const key = context + ":" + session.sessionId;
+        this.accountingRecoveryAttempts.set(key, (this.accountingRecoveryAttempts.get(key) ?? 0) + 1);
         // Metadata-only reconciliation. Never retry the inference POST, steal
         // focus, show a modal or promote a lost receipt to verified.
-        this.runBackground(this.refreshThread(session.threadId).catch(() => undefined)
+        this.runBackground(this.refreshThread(session.sessionId).catch(() => undefined)
           .finally(() => this.scheduleAccountingRecovery(this.state.snapshot())));
       }
     }, 15_000);
     this.accountingTimer.unref();
   }
 
-  async initialize(expectedProductVersion?: string): Promise<InitializeResult> {
+  async initialize(): Promise<InitializeResult> {
     const result = await this.process.request<InitializeResult>("initialize", {
       protocolVersion: 1,
       clientCapabilities: {
@@ -211,17 +185,12 @@ export class AxiomAcpClient extends EventEmitter {
         title: "Axiom Desktop",
       },
     });
-    if (expectedProductVersion !== undefined && result.agentInfo?.version !== expectedProductVersion) {
-      throw new ProtocolError(`Axiom Desktop ${expectedProductVersion} requires AxiomCLI ${expectedProductVersion}; received ${result.agentInfo?.version ?? 'no version'}. Quit Axiom and all AxiomCLI sessions, then reinstall the matching release (or rebuild the development sidecar).`);
-    }
     if (result.protocolVersion !== 1) throw new ProtocolError("AxiomCLI selected an unsupported ACP version");
     const meta = result.agentCapabilities._meta?.axiom as {
       protocolVersion?: string;
       features?: Record<string, number>;
     } | undefined;
     validateDesktopExtension(meta);
-    this.supportsMessageRevision = (meta?.features?.messageRevision ?? 0) >= 1;
-    this.supportsAttachments = (meta?.features?.attachments ?? 0) >= 2;
     this.initialized = true;
     this.state.setConnected(true);
     return result;
@@ -318,27 +287,14 @@ export class AxiomAcpClient extends EventEmitter {
     return { ...result, sessionId: threadId };
   }
 
-  async prompt(threadId: string, text: string, clientItemId: string, webEnabled = false, agentRevision = this.state.snapshot().sessions[threadId]?.desktopAgent?.revision ?? 0, revision?: { userItemId: string; expectedRevision: number }, attachments: PromptAttachment[] = []): Promise<PromptResult> {
-    if (revision && (!this.supportsMessageRevision || !revision.userItemId || revision.userItemId.length > 512
-      || !Number.isSafeInteger(revision.expectedRevision) || revision.expectedRevision < 0)) {
-      throw new ProtocolError("Restart Axiom before editing or regenerating messages.");
-    }
-    if (revision && this.state.snapshot().sessions[threadId]?.running) throw new ProtocolError("Stop the current reply first.");
+  async prompt(threadId: string, text: string, clientItemId: string, webEnabled = false, agentRevision = this.state.snapshot().sessions[threadId]?.desktopAgent?.revision ?? 0): Promise<PromptResult> {
     if (typeof webEnabled !== "boolean") throw new ProtocolError("webEnabled must be a boolean");
     if (!Number.isSafeInteger(agentRevision) || agentRevision < 0) throw new ProtocolError("invalid Agent settings revision");
-    validatePrompt(text, attachments, Boolean(revision));
-    if (attachments.length && !this.supportsAttachments) throw new ProtocolError("Restart Axiom to enable attachments. No message was sent.");
+    if (!text.trim()) throw new ProtocolError("prompt cannot be empty");
     if (!clientItemId || clientItemId.length > 512) throw new ProtocolError("invalid client item ID");
     const accountContext = this.state.accountContextToken();
-    const pending = { threadId, cancelled: false };
-    this.pendingPrompts.add(pending);
-    try {
-      await this.waitForSecurityPreflight(threadId);
-    } finally {
-      this.pendingPrompts.delete(pending);
-    }
+    await this.waitForSecurityPreflight(threadId);
     this.assertAccountContext(accountContext);
-    if (pending.cancelled) return { stopReason: "cancelled" };
     this.state.setRunning(threadId, true);
     try {
       const result = await this.process.request<PromptResult>(
@@ -346,15 +302,12 @@ export class AxiomAcpClient extends EventEmitter {
         {
           sessionId: threadId,
           prompt: [{ type: "text", text }],
-          _meta: { axiom: { clientItemId, webEnabled, agentRevision, ...(revision ? { revision } : {}), ...(attachments.length ? { attachments } : {}) } },
+          _meta: { axiom: { clientItemId, webEnabled, agentRevision } },
         },
         0,
       );
       this.assertAccountContext(accountContext);
       return result;
-    } catch (error) {
-      if (revision && error instanceof AcpError && typeof error.data === "string") throw new ProtocolError(error.data);
-      throw error;
     } finally {
       if (this.state.accountContextToken() === accountContext) {
         this.state.setRunning(threadId, false);
@@ -363,17 +316,7 @@ export class AxiomAcpClient extends EventEmitter {
     }
   }
 
-  async getAttachments(threadId: string, userItemId: string): Promise<GetAttachmentsResponse> {
-    if (!this.supportsAttachments) throw new ProtocolError("Restart Axiom to view attachments.");
-    const context = this.state.accountContextToken();
-    const result = await this.process.request<GetAttachmentsResponse>("_axiom/thread/attachments", { threadId, userItemId });
-    this.assertAccountContext(context);
-    return result;
-  }
-
   async cancel(threadId: string): Promise<void> {
-    // A prompt waiting for attestation must not start after Stop was sent.
-    for (const pending of this.pendingPrompts) if (pending.threadId === threadId) pending.cancelled = true;
     try {
       await this.process.notify("session/cancel", { sessionId: threadId });
     } finally {
@@ -417,7 +360,6 @@ export class AxiomAcpClient extends EventEmitter {
 
   async setSettings(request: ThreadSettingsRequest): Promise<ThreadSettingsResult> {
     if (!request.model && !request.thinkingLevel) throw new ProtocolError("no settings were provided");
-    const previousModel = this.state.snapshot().sessions[request.threadId]?.settings?.model;
     let configOptions = request.model
       ? await this.setConfig(request.threadId, "model", request.model)
       : null;
@@ -438,7 +380,6 @@ export class AxiomAcpClient extends EventEmitter {
     if (!session?.settings?.model) {
       throw new ProtocolError("AxiomCLI returned no authoritative active-thread settings");
     }
-    if (request.model && previousModel !== session.settings.model) this.startSecurityPreflight(request.threadId);
     return {
       ...preferences,
       threadId: request.threadId,
@@ -572,39 +513,6 @@ export class AxiomAcpClient extends EventEmitter {
     return this.accountRequest("_axiom/account/logout", {});
   }
 
-  async usageSummary(request: UsageSummaryRequest = {}): Promise<UsageSummaryResponse> {
-    const accountContext = this.state.accountContextToken();
-    const result = await this.process.request<UsageSummaryResponse>("_axiom/usage/summary", request);
-    this.assertAccountContext(accountContext);
-    if (result.summary.period !== (request.period ?? "all_time")) {
-      throw new Error("Usage is unavailable for the selected period");
-    }
-    return result;
-  }
-
-  async apiKeys(): Promise<ApiKeyListResponse> {
-    const context = this.state.accountContextToken();
-    const result = await this.process.request<ApiKeyListResponse>("_axiom/account/api_keys", {});
-    this.assertAccountContext(context);
-    return result;
-  }
-
-  async createApiKey(name: string): Promise<ApiKeyCreatedResponse> {
-    if (!name.trim() || [...name].length > 120 || /[\u0000-\u001f\u007f]/.test(name)) throw new ProtocolError("Invalid API key name");
-    const context = this.state.accountContextToken();
-    const result = await this.process.request<ApiKeyCreatedResponse>("_axiom/account/api_key_create", {name: name.normalize("NFC").trim()});
-    this.assertAccountContext(context);
-    return result;
-  }
-
-  async revokeApiKey(id: string): Promise<ApiKeyRevokeResponse> {
-    if (!/^[A-Za-z0-9_-]{1,128}$/.test(id)) throw new ProtocolError("Invalid API key ID");
-    const context = this.state.accountContextToken();
-    const result = await this.process.request<ApiKeyRevokeResponse>("_axiom/account/api_key_revoke", {id});
-    this.assertAccountContext(context);
-    return result;
-  }
-
   async billingStatus(): Promise<BillingStatusResponse> {
     const accountContext = this.state.accountContextToken();
     const result = await this.process.request<BillingStatusResponse>("_axiom/billing/status", {});
@@ -613,57 +521,52 @@ export class AxiomAcpClient extends EventEmitter {
     return result;
   }
 
-  async redeemGiftCode(code: string): Promise<GiftCodeRedeemResponse> {
-    if (typeof code !== "string" || !code.trim() || code.length > 64 || /[^\x20-\x7e]/.test(code)) {
-      throw new ProtocolError("Enter a valid Axiom gift code.");
+  async createBillingInvoice(
+    amountUsdCents: number,
+    clientRequestId: string,
+  ): Promise<BillingInvoiceResponse> {
+    if (!Number.isSafeInteger(amountUsdCents) || amountUsdCents <= 0 || amountUsdCents > 10_000_000) {
+      throw new ProtocolError("invalid invoice amount");
+    }
+    if (!/^[A-Za-z0-9_.:-]{1,128}$/.test(clientRequestId)) {
+      throw new ProtocolError("invalid invoice client request ID");
     }
     const accountContext = this.state.accountContextToken();
-    const result = await this.process.request<GiftCodeRedeemResponse>("_axiom/billing/redeem_gift_code", {code});
+    const result = await this.process.request<BillingInvoiceResponse>(
+      "_axiom/billing/invoice_create",
+      { amountUsdCents, clientRequestId },
+      0,
+    );
     this.assertAccountContext(accountContext);
-    this.state.setBilling(result.status);
+    this.state.setInvoice(result.invoice);
     return result;
   }
 
-  verifySecurity(threadId: string, acceptOutdatedTee = false, expectedModelId?: string): Promise<VerifySecurityResponse> {
-    const context = this.state.securityContextToken(threadId);
+  async billingInvoiceStatus(invoiceId: string): Promise<BillingInvoiceResponse> {
+    if (!/^[0-9a-f]{32}$/.test(invoiceId)) throw new ProtocolError("invalid invoice ID");
     const accountContext = this.state.accountContextToken();
-    const session = this.state.snapshot().sessions[threadId];
-    const modelId = session?.settings?.model;
-    if (!context || !modelId) return Promise.reject(new ProtocolError("Load this thread before verifying its model"));
-    if (acceptOutdatedTee && expectedModelId !== modelId) return Promise.reject(new ProtocolError("The selected model changed; review its warning before continuing."));
-    const current = () => this.state.accountContextToken() === accountContext
-      && this.state.securityContextToken(threadId) === context;
-    const existing = this.securityVerifications.get(threadId);
-    if (existing?.context === context) return acceptOutdatedTee
-      ? existing.promise.catch(() => undefined).then(() => {
-        if (!current()) throw new ProtocolError("The verification context changed; review its warning before continuing.");
-        return this.verifySecurity(threadId, true, expectedModelId);
-      })
-      : existing.promise;
-    if (session.running) return Promise.reject(new ProtocolError("Wait for the current reply before refreshing verification"));
-    this.state.setSecurityVerification(threadId, { pending: true });
-    // Defer dispatch until the map entry exists, including synchronous bridges.
-    const promise = Promise.resolve().then(async () => {
-      try {
-        if (!current()) throw new ProtocolError("The verification context changed; review its warning before continuing.");
-        const result = await this.process.request<VerifySecurityResponse>("_axiom/security/verify", { threadId, ...(acceptOutdatedTee ? { acceptOutdatedTee: true, modelId } : {}) }, 0);
-        if (!current()) throw new ProtocolError("The verification context changed; refresh the selected model");
-        const evidence = publicSecurityEvidence(result, modelId);
-        this.state.setSecurityVerification(threadId, { pending: false, evidence });
-        return { status: result.status, evidence };
-      } catch (error) {
-        if (current()) this.state.setSecurityVerification(threadId, {
-          pending: false, error: error instanceof AcpError && error.code === -32001
-            ? "Refresh your Axiom account or sign in again before verifying this connection."
-            : "Couldn’t refresh the verification report. Try again.",
-        });
-        throw error;
-      } finally {
-        if (this.securityVerifications.get(threadId)?.context === context) this.securityVerifications.delete(threadId);
-      }
-    });
-    this.securityVerifications.set(threadId, { context, promise });
-    return promise;
+    const result = await this.process.request<BillingInvoiceResponse>(
+      "_axiom/billing/invoice_status",
+      { invoiceId },
+    );
+    this.assertAccountContext(accountContext);
+    this.state.setInvoice(result.invoice);
+    return result;
+  }
+
+  async verifySecurity(threadId: string): Promise<VerifySecurityResponse> {
+    const result = await this.process.request<VerifySecurityResponse>("_axiom/security/verify", { threadId }, 0);
+    if (
+      result.status.state === "verified"
+      && (
+        !result.evidence
+        || result.evidence.attestationGeneration <= 0
+        || result.evidence.hardExpiresAtUnixSeconds <= 0
+      )
+    ) {
+      throw new ProtocolError("AxiomCLI returned verified security without complete lease-bound evidence");
+    }
+    return result;
   }
 
   compact(threadId: string, focus?: string): Promise<CompactResponse> {
@@ -764,14 +667,11 @@ export class AxiomAcpClient extends EventEmitter {
     for (let attempt = 0; attempt < TIMELINE_RESTART_LIMIT; attempt += 1) {
       const pages: GetThreadTimelineResponse[] = [];
       let cursor: number | undefined;
-      let usageCursor: string | undefined;
-      let hasMore: boolean;
       let restart = false;
       do {
         const page = await this.process.request<GetThreadTimelineResponse>("_axiom/thread/timeline", {
           threadId,
           afterSequence: cursor,
-          afterRequestId: usageCursor,
           limit: TIMELINE_PAGE_SIZE,
         });
         this.assertAccountContext(accountContext);
@@ -784,18 +684,9 @@ export class AxiomAcpClient extends EventEmitter {
           restart = true;
           break;
         }
-        if (page.thread.threadId !== threadId
-          || (page.nextCursor != null && (page.nextCursor <= (cursor ?? 0)
-            || page.nextCursor !== page.items.at(-1)?.sequence))
-          || (page.nextRequestUsageCursor != null && (page.nextRequestUsageCursor <= (usageCursor ?? "")
-            || page.nextRequestUsageCursor !== page.requestUsage?.at(-1)?.requestId))) {
-          throw new ProtocolError("AxiomCLI returned a non-progressing timeline cursor");
-        }
         pages.push(page);
-        hasMore = page.nextCursor != null || page.nextRequestUsageCursor != null;
-        cursor = page.nextCursor ?? page.thread.lastTimelineSequence;
-        usageCursor = page.nextRequestUsageCursor ?? page.requestUsage?.at(-1)?.requestId ?? usageCursor;
-      } while (hasMore);
+        cursor = page.nextCursor ?? undefined;
+      } while (cursor !== undefined);
       if (restart) continue;
       if (!this.state.replaceTimeline(pages)) continue;
       return pages.at(-1) ?? (() => { throw new ProtocolError("AxiomCLI returned no timeline page"); })();
@@ -884,7 +775,6 @@ export class AxiomAcpClient extends EventEmitter {
     this.desktopBootstrap = null;
     this.refreshingThreads.clear();
     this.securityPreflights.clear();
-    this.securityVerifications.clear();
     this.fullResync = null;
     this.fullResyncRequired = false;
     for (const [interactionId, pending] of this.interactions) {
@@ -918,7 +808,6 @@ export class AxiomAcpClient extends EventEmitter {
 
   private async waitForSecurityPreflight(threadId: string): Promise<void> {
     await this.securityPreflights.get(threadId);
-    await this.securityVerifications.get(threadId)?.promise.catch(() => undefined);
   }
 
   private resyncAll(): Promise<void> {

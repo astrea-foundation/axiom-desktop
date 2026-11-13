@@ -57,16 +57,15 @@ export function useWebAccess(accountId: string | null, runtimeId: string | null,
   const resetNew = useCallback(() => {
     setState((previous) => ({ ...previous, enabled: { ...previous.enabled, new: false }, warning: null, error: null }));
   }, []);
-  const adoptThread = (threadId: string, capturedEnabled = enabled, resetDraft = true) => {
-    if (!owner || !accountId || current.current.owner !== owner) {
-      throw new Error("The account or connection changed before the message could be sent. Please try again.");
+  const adoptThread = (threadId: string) => {
+    if (!owner || !accountId || current.current.owner !== owner || current.current.scope !== scope) {
+      throw new Error("The chat changed before the message could be sent. Please try again.");
     }
-    if (!saveThreadWebAccess(browserConsentStorage(), accountId, threadId, capturedEnabled)) {
+    if (!saveThreadWebAccess(browserConsentStorage(), accountId, threadId, enabled)) {
       throw new Error("The chat's Web setting could not be saved. No message was sent. Please try again.");
     }
     setState((previous) => ({
-      ...previous, enabled: { ...previous.enabled, ...(resetDraft ? { new: false } : {}), [threadId]: capturedEnabled },
-      ...(resetDraft ? { warning: null, error: null } : {}),
+      ...previous, enabled: { ...previous.enabled, new: false, [threadId]: enabled }, warning: null, error: null,
     }));
   };
   const forgetThread = (threadId: string) => {

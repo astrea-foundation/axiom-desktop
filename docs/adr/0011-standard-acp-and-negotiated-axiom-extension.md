@@ -1,10 +1,5 @@
 # ADR 0011: Standard ACP with a negotiated Axiom extension
 
-> The ACP/extension boundary remains accepted. The original Web-only and
-> Shieldz-only details below are superseded by negotiated Desktop Agent mode,
-> automation-key management and native deposit billing. Use the
-> [current ACP contract](../acp-compatibility.md) for methods, features and recovery.
-
 Status: accepted (early implementation)
 
 ## Context
@@ -52,14 +47,14 @@ collection metadata; renderer folder labels do not influence filesystem paths.
 Electron and ACP never receive access or refresh tokens. Extension 0.2 replaces
 the old browser/API-key account requests with native login
 start/complete/cancel, raises the account feature to version 2, and adds
-`billing@2` for bounded credit and mainnet deposit status. The former invoice
-methods are superseded by [ADR 0014](0014-clean-storage-and-deposit-billing.md).
-Wallet custody and transaction authority never cross the extension.
+`billing@1` for bounded credit status and Shieldz invoice creation/status. A
+pending invoice URL may cross the typed boundary; wallet custody and transaction
+authority never do.
 
 ## Bounds and failure behavior
 
 - ACP is newline-delimited JSON-RPC on stdout; diagnostics use stderr.
-- The first-party process client rejects frames larger than 64 MiB (raised from 4 MiB for local attachments) and keeps at
+- The first-party process client rejects frames larger than 4 MiB and keeps at
   most 64 KiB of stderr diagnostics.
 - Extension identifiers, queries, native-login handles, evidence, manifests,
   selections, and compaction focus have explicit bounds.

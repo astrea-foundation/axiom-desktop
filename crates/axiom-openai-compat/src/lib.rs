@@ -338,15 +338,11 @@ impl WireMessage {
             "tool" => ChatRole::Tool,
             _ => return Err(CompatError::new("message role is not supported")),
         };
-        let (content, images, files) = self.content.map_or_else(
-            || Ok((String::new(), Vec::new(), Vec::new())),
-            WireContent::into_parts,
-        )?;
         Ok(ChatMessage {
             role,
-            content,
-            images,
-            files,
+            content: self
+                .content
+                .map_or_else(|| Ok(String::new()), WireContent::into_text)?,
             reasoning_content: self.reasoning_content,
             name: self.name,
             refusal: self.refusal,
@@ -370,38 +366,14 @@ pub enum WireContent {
 }
 
 impl WireContent {
-    fn into_parts(self) -> Result<ContentParts> {
+    fn into_text(self) -> Result<String> {
         match self {
-            Self::Text(text) => Ok((text, Vec::new(), Vec::new())),
+            Self::Text(text) => Ok(text),
             Self::Parts(parts) => {
                 let mut texts = Vec::with_capacity(parts.len());
-                let mut images = Vec::new();
-                let mut files = Vec::new();
                 for part in parts {
                     match part {
                         WireContentPart::Text { text, .. } => texts.push(text),
-                        WireContentPart::ImageUrl { image_url, .. } => {
-                            images.push(axiom_inference::ImageContent::from_data_url(&image_url.url)
-                                .map_err(|_| CompatError::new("images must be valid inline PNG, JPEG, WebP, or GIF data URLs (up to 5 MiB each)"))?);
-                        }
-                        WireContentPart::File { file } => {
-                            let (mime_type, data) = file
-                                .file_data
-                                .strip_prefix("data:")
-                                .and_then(|s| s.split_once(";base64,"))
-                                .ok_or_else(|| {
-                                    CompatError::new("files require inline base64 data URLs")
-                                })?;
-                            let content = axiom_inference::FileContent {
-                                name: file.filename,
-                                mime_type: mime_type.into(),
-                                data: data.into(),
-                            };
-                            content
-                                .validate()
-                                .map_err(|_| CompatError::new("invalid file upload"))?;
-                            files.push(content);
-                        }
                         WireContentPart::Unsupported => {
                             return Err(CompatError::new(
                                 "message content part type is not supported",
@@ -409,7 +381,7 @@ impl WireContent {
                         }
                     }
                 }
-                Ok((texts.join("\n"), images, files))
+                Ok(texts.join("\n"))
             }
         }
     }
@@ -419,65 +391,28 @@ impl WireContent {
             for part in parts {
                 if let WireContentPart::Text { unsupported, .. } = part {
                     collect_keys("messages.content", Some(unsupported), reported);
-                } else if let WireContentPart::ImageUrl {
-                    image_url,
-                    unsupported,
-                } = part
-                {
-                    collect_keys("messages.content", Some(unsupported), reported);
-                    collect_keys(
-                        "messages.content.image_url",
-                        Some(&image_url.unsupported),
-                        reported,
-                    );
                 }
             }
         }
     }
 }
 
-type ContentParts = (
-    String,
-    Vec<axiom_inference::ImageContent>,
-    Vec<axiom_inference::FileContent>,
-);
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct WireFile {
-    pub filename: String,
-    pub file_data: String,
-}
-
 /// A single content part.
 ///
-/// Text and inline image bytes are representable. Provider adapters enforce
-/// authenticated image support; unsupported content is never silently dropped.
+/// Only text is representable. No catalog model advertises image, audio, or
+/// file input, and dropping such a part would answer as though the caller had
+/// never sent it. The catch-all variant exists so the request fails during
+/// translation with a specific message rather than as an opaque parse error.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WireContentPart {
-    File {
-        file: WireFile,
-    },
     Text {
         text: String,
         #[serde(flatten)]
         unsupported: serde_json::Map<String, serde_json::Value>,
     },
-    ImageUrl {
-        image_url: WireImageUrl,
-        #[serde(flatten)]
-        unsupported: serde_json::Map<String, serde_json::Value>,
-    },
     #[serde(other)]
     Unsupported,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-pub struct WireImageUrl {
-    pub url: String,
-    #[serde(flatten)]
-    pub unsupported: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -1081,28 +1016,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn direct_files_preserve_bytes_and_reject_remote_or_non_user_inputs() {
-        let raw = serde_json::json!({"model":"new-model","messages":[{"role":"user","content":[
-            {"type":"file","file":{"filename":"notes.txt","file_data":"data:text/plain;base64,aGVsbG8="}}
-        ]}]});
-        let parsed: ChatCompletionRequest = serde_json::from_value(raw.clone()).unwrap();
-        let translated = parsed.into_domain(CompatMode::Strict).unwrap();
-        assert!(translated.request.messages[0].content.is_empty());
-        assert_eq!(translated.request.messages[0].files[0].data, "aGVsbG8=");
-        for role in ["assistant", "system", "tool"] {
-            let mut invalid = raw.clone();
-            invalid["messages"][0]["role"] = serde_json::json!(role);
-            let parsed: ChatCompletionRequest = serde_json::from_value(invalid).unwrap();
-            assert!(parsed.into_domain(CompatMode::Strict).is_err());
-        }
-        let mut invalid = raw;
-        invalid["messages"][0]["content"][0]["file"]["file_data"] =
-            serde_json::json!("https://example.com/a.pdf");
-        let parsed: ChatCompletionRequest = serde_json::from_value(invalid).unwrap();
-        assert!(parsed.into_domain(CompatMode::Lenient).is_err());
-    }
-
-    #[test]
     fn translates_messages_tools_choice_reasoning_and_response_format_losslessly() {
         let wire: ChatCompletionRequest = serde_json::from_value(serde_json::json!({
             "model": "cherry",
@@ -1141,30 +1054,6 @@ mod tests {
             domain.response_format,
             ResponseFormat::JsonSchema { .. }
         ));
-    }
-
-    #[test]
-    fn inline_images_are_preserved_and_unknown_options_follow_compatibility_mode() {
-        let raw = serde_json::json!({"model":"x","messages":[{"role":"user","content":[
-            {"type":"text","text":"describe"},
-            {"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgpmaXh0dXJl", "detail":"high"}, "extra":true}
-        ]}]});
-        let parsed: ChatCompletionRequest = serde_json::from_value(raw.clone()).unwrap();
-        assert!(parsed.into_domain(CompatMode::Strict).is_err());
-        let parsed: ChatCompletionRequest = serde_json::from_value(raw).unwrap();
-        let translated = parsed.into_domain(CompatMode::Lenient).unwrap();
-        assert_eq!(translated.request.messages[0].images.len(), 1);
-        assert_eq!(translated.request.messages[0].content, "describe");
-        assert!(
-            translated
-                .ignored_parameters
-                .contains(&"messages.content.image_url.detail".into())
-        );
-        assert!(
-            translated
-                .ignored_parameters
-                .contains(&"messages.content.extra".into())
-        );
     }
 
     #[test]

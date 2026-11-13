@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import type {
   AccountStatus,
   ActivityEvent,
+  BillingInvoice,
   BillingStatus,
   CollectionState,
   ContextUsage,
@@ -13,7 +14,6 @@ import type {
   ConfigureDesktopAgentResponse,
   ProfilePreferences,
   SecurityStatus,
-  SecurityEvidence,
   ThreadSummary,
   TimelineItem as DurableTimelineItem,
 } from "./generated/protocol.js";
@@ -59,10 +59,6 @@ export interface ClientSessionState {
   cwd: string;
   settings: ThreadSettings | null;
   security: SecurityStatus | null;
-  /** Public report from the last explicit/local preflight; never response-receipt proof. */
-  securityEvidence?: SecurityEvidence | null;
-  securityVerificationPending?: boolean;
-  securityVerificationError?: string | null;
   contextUsage?: ContextUsage | null;
   requestUsage?: RequestUsage[];
   modes: SessionMode[];
@@ -77,7 +73,6 @@ export interface ClientSessionState {
   threadRevision: number;
   lastTimelineSequence: number;
   lastMessageAt?: string | null;
-  lastUserMessageAt?: string | null;
 }
 
 export interface ClientState {
@@ -90,6 +85,7 @@ export interface ClientState {
   preferences: ProfilePreferences | null;
   account: AccountStatus | null;
   billing: BillingStatus | null;
+  invoice: BillingInvoice | null;
   diagnostic: string;
   error: string | null;
 }
@@ -118,7 +114,6 @@ function emptySession(sessionId: string, cwd = ""): ClientSessionState {
     threadRevision: 0,
     lastTimelineSequence: 0,
     lastMessageAt: null,
-    lastUserMessageAt: null,
   };
 }
 
@@ -257,9 +252,21 @@ function settingsFromThread(thread: ThreadSummary): ThreadSettings {
   };
 }
 
+function invoiceStateCanAdvance(
+  previous: BillingInvoice["state"],
+  next: BillingInvoice["state"],
+): boolean {
+  if (previous === next) return true;
+  if (next === "paid") return true;
+  if (previous === "creating") return true;
+  if (previous === "pending") return next !== "creating";
+  // Review, expiry, and failure do not regain a checkout capability. A late
+  // verified payment may still advance any of them to paid.
+  return false;
+}
+
 export class AxiomStateStore extends EventEmitter {
   private accountContextGeneration = 0;
-  private securityContexts = new WeakMap<ClientSessionState, object>();
   // Text already included by either a stream update or an authoritative page.
   private textRevisions = new Map<string, number>();
   private value: ClientState = {
@@ -272,6 +279,7 @@ export class AxiomStateStore extends EventEmitter {
     preferences: null,
     account: null,
     billing: null,
+    invoice: null,
     diagnostic: "",
     error: null,
   };
@@ -285,9 +293,6 @@ export class AxiomStateStore extends EventEmitter {
   }
 
   setConnected(connected: boolean, error: string | null = null): void {
-    if (!connected) {
-      for (const session of Object.values(this.value.sessions)) this.invalidateSecurity(session);
-    }
     this.value.connected = connected;
     this.value.error = error;
     this.changed();
@@ -296,35 +301,6 @@ export class AxiomStateStore extends EventEmitter {
   setDiagnostic(diagnostic: string): void {
     this.value.diagnostic = diagnostic;
     this.changed();
-  }
-
-  // A different model, removed/reloaded session, account or runtime gets a new
-  // identity, including an A -> B -> A model switch while a request is pending.
-  securityContextToken(sessionId: string): object | null {
-    const session = this.value.sessions[sessionId];
-    if (!session) return null;
-    let token = this.securityContexts.get(session);
-    if (!token) this.securityContexts.set(session, token = {});
-    return token;
-  }
-
-  setSecurityVerification(sessionId: string, update: {
-    pending: boolean; evidence?: SecurityEvidence | null; error?: string | null;
-  }): void {
-    const session = this.value.sessions[sessionId];
-    if (!session) return;
-    session.securityVerificationPending = update.pending;
-    session.securityVerificationError = update.error ?? null;
-    if (update.evidence !== undefined) session.securityEvidence = update.evidence;
-    this.changed();
-  }
-
-  private invalidateSecurity(session: ClientSessionState): void {
-    this.securityContexts.delete(session);
-    session.security = { state: "unverified" };
-    session.securityEvidence = null;
-    session.securityVerificationPending = false;
-    session.securityVerificationError = null;
   }
 
   setAccount(account: AccountStatus): void {
@@ -346,6 +322,7 @@ export class AxiomStateStore extends EventEmitter {
       this.value.collections = { revision: 0, collections: [] };
       this.value.preferences = null;
       this.value.billing = null;
+      this.value.invoice = null;
       this.value.error = null;
       this.accountContextGeneration += 1;
     }
@@ -367,6 +344,17 @@ export class AxiomStateStore extends EventEmitter {
     if (this.value.billing && status.revision <= this.value.billing.revision) return;
     if (this.value.billing && status.ledgerSequence < this.value.billing.ledgerSequence) return;
     this.value.billing = status;
+    this.changed();
+  }
+
+  setInvoice(invoice: BillingInvoice): void {
+    if (this.value.invoice && invoice.revision <= this.value.invoice.revision) return;
+    if (
+      this.value.invoice
+      && invoice.id === this.value.invoice.id
+      && !invoiceStateCanAdvance(this.value.invoice.state, invoice.state)
+    ) return;
+    this.value.invoice = invoice;
     this.changed();
   }
 
@@ -434,18 +422,10 @@ export class AxiomStateStore extends EventEmitter {
     if (items.at(-1)?.sequence !== lastSequence && lastSequence !== 0) {
       throw new Error("timeline replacement did not reach the authoritative tail");
     }
-    const requestUsage = pages.flatMap((page) => page.requestUsage ?? []);
-    const usageIds = new Set<string>();
-    for (const usage of requestUsage) {
-      if (!validRequestUsage(usage) || usageIds.has(usage.requestId)) {
-        throw new Error("timeline accounting page identity is invalid");
-      }
-      usageIds.add(usage.requestId);
-    }
     const session = this.applyThreadSummary(first.thread);
     session.activeTurnId = session.running ? first.activeTurnId ?? null : null;
     session.contextUsage = validContextUsage(first.contextUsage);
-    session.requestUsage = requestUsage;
+    session.requestUsage = (first.requestUsage ?? []).filter(validRequestUsage);
     session.desktopAgent = first.desktopAgent ?? null;
     session.timeline = items.map(fromDurable);
     this.textRevisions.set(threadId, revision);
@@ -477,10 +457,7 @@ export class AxiomStateStore extends EventEmitter {
     const thinking = options.find((option) => option.id === "thinking")?.currentValue;
     if (model || thinking) {
       session.settings ??= { model: "", thinkingLevel: "medium", permissionProfile: "web" };
-      if (model) {
-        if (model !== session.settings.model) this.invalidateSecurity(session);
-        session.settings.model = model;
-      }
+      if (model) session.settings.model = model;
       if (thinking) session.settings.thinkingLevel = thinking;
     }
     this.changed();
@@ -525,7 +502,6 @@ export class AxiomStateStore extends EventEmitter {
       session.threadRevision = Math.max(session.threadRevision, metadata.threadRevision);
       session.lastTimelineSequence = Math.max(session.lastTimelineSequence, metadata.lastTimelineSequence);
       if (metadata.lastMessageAt !== undefined) session.lastMessageAt = metadata.lastMessageAt;
-      if (metadata.lastUserMessageAt !== undefined) session.lastUserMessageAt = metadata.lastUserMessageAt;
     }
 
     const type = String(update.sessionUpdate ?? "");
@@ -562,8 +538,6 @@ export class AxiomStateStore extends EventEmitter {
         kind,
         text,
         status: kind === "user" ? "completed" : "streaming",
-        ...(kind === "user" && Array.isArray(object(update._meta)?.axiomAttachments)
-          ? { raw: { metadata: { attachments: object(update._meta)!.axiomAttachments } } } : {}),
       });
       if (metadata) this.textRevisions.set(record.sessionId, metadata.threadRevision);
     } else if (type === "tool_call" || type === "tool_call_update") {
@@ -594,14 +568,7 @@ export class AxiomStateStore extends EventEmitter {
       this.setConfig(record.sessionId, update.configOptions as SessionConfigOption[]);
       return session.needsResync ? record.sessionId : null;
     } else if (type === "session_info_update" && typeof update.title === "string") {
-      const summary = this.value.catalog.find((thread) => thread.threadId === record.sessionId);
-      if (!metadata || !summary || metadata.threadRevision >= summary.revision) {
-        session.title = update.title;
-        if (summary) {
-          summary.title = update.title;
-          if (metadata) summary.revision = Math.max(summary.revision, metadata.threadRevision);
-        }
-      }
+      session.title = update.title;
     }
     this.changed();
     return session.needsResync ? record.sessionId : null;
@@ -629,6 +596,7 @@ export class AxiomStateStore extends EventEmitter {
       this.value.collections = { revision: 0, collections: [] };
       this.value.preferences = null;
       this.value.billing = null;
+      this.value.invoice = null;
       this.value.error = null;
       this.accountContextGeneration += 1;
     } else if (sequenceGap) {
@@ -655,14 +623,12 @@ export class AxiomStateStore extends EventEmitter {
     if (thread.revision < session.threadRevision) return session;
     session.title = thread.title ?? null;
     session.cwd = thread.cwd;
-    if (session.settings?.model && session.settings.model !== thread.selectedModel) this.invalidateSecurity(session);
     session.settings = settingsFromThread(thread);
     session.running = !["ready", "closed"].includes(thread.lifecycle);
     if (!session.running) session.activeTurnId = null;
     session.threadRevision = thread.revision;
     session.lastTimelineSequence = thread.lastTimelineSequence;
     session.lastMessageAt = thread.lastMessageAt ?? null;
-    session.lastUserMessageAt = thread.lastUserMessageAt ?? null;
     return session;
   }
 
@@ -692,6 +658,19 @@ export class AxiomStateStore extends EventEmitter {
         )
       ) {
         this.value.billing = event.status;
+      }
+    } else if (event.kind === "invoice_changed") {
+      if (
+        !this.value.invoice
+        || (
+          event.invoice.revision > this.value.invoice.revision
+          && (
+            event.invoice.id !== this.value.invoice.id
+            || invoiceStateCanAdvance(this.value.invoice.state, event.invoice.state)
+          )
+        )
+      ) {
+        this.value.invoice = event.invoice;
       }
     }
     else if (event.kind === "security_changed" && sessionId) {

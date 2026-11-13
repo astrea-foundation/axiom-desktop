@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { accountPresentation, desktopErrorMessage, signInErrorMessage } from "../src/renderer/src/signInFlow.js";
+import { accountPresentation, desktopErrorMessage, LOGIN_CHOICES, signInErrorMessage } from "../src/renderer/src/signInFlow.js";
 
 test("account presentation distinguishes startup, sign-in, revocation, and outages", () => {
   assert.equal(accountPresentation(false, false, null).kind, "starting");
@@ -33,6 +33,13 @@ test("account presentation distinguishes startup, sign-in, revocation, and outag
       },
       session: { expiresAt: "2030-01-01T00:00:00Z", credentialStore: "system keyring" },
     }).kind, "valid");
+});
+
+test("desktop offers every supported standard login method", () => {
+  assert.deepEqual(
+    LOGIN_CHOICES.map((choice) => choice.method),
+    ["passkey", "google", "password", "ethereum_wallet"],
+  );
 });
 
 test("sign-in errors remove IPC wrapping while preserving useful detail", () => {

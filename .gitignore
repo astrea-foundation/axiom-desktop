@@ -1,4 +1,7 @@
 /target/
+/fuzz/artifacts/
+/fuzz/corpus/
+/fuzz/target/
 /dist/
 **/node_modules/
 .pnpm-store/
@@ -13,6 +16,7 @@ apps/desktop/.electron-vite/
 *.sqlite3-shm
 *.sqlite3-wal
 .axiomcli/
+.searxng/
 .cache/
 
 # Editor and local development artifacts

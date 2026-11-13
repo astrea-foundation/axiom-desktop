@@ -94,12 +94,11 @@ export function useChatAutoScroll(threadId: string) {
     if (event.button !== 0 || event.pointerType === "touch") return;
     const target = event.target as HTMLElement;
     scrollbarGesture.current = target === viewportRef.current;
-    if (target.closest("[data-timeline-kind]") && !target.closest("[data-preserve-follow]")) pause();
+    if (target.closest("[data-timeline-kind]")) pause();
   };
   const onClickCapture = (event: MouseEvent<HTMLDivElement>) => {
     // Also handles touch taps and keyboard activation of transcript controls.
-    const target = event.target as HTMLElement;
-    if (target.closest("[data-timeline-kind]") && !target.closest("[data-preserve-follow]")) pause();
+    if ((event.target as HTMLElement).closest("[data-timeline-kind]")) pause();
   };
   const onTouchStartCapture = (event: TouchEvent<HTMLDivElement>) => {
     touchY.current = event.touches.length === 1 ? event.touches[0]!.clientY : null;

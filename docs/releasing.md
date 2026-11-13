@@ -1,267 +1,179 @@
 # Release procedure
 
-Development lands on `dev`. A public release requires the explicit promotion
-workflow in [CONTRIBUTING](../CONTRIBUTING.md), a stable `vMAJOR.MINOR.PATCH` tag
-on promoted `main`, and matching Desktop/AxiomCLI versions. A version bump or
-push to `dev` does not publish installers or activate the update feed.
+Tagged releases build the reproducible AxiomCLI Linux archive and native Axiom
+Desktop packages for macOS Intel, macOS Apple Silicon, Windows x64, and Windows
+ARM64. A pushed release tag must be a stable `vMAJOR.MINOR.PATCH` with no
+prerelease or build suffix, and the version after `v` must match
+`apps/axiomcli/Cargo.toml`. This keeps the product version valid for macOS bundle
+and Windows executable metadata. The workflow validates the contract before the
+budgeted live evaluation and before any packaging job. Desktop's source manifest
+is synchronized with AxiomCLI by the packaging script before invoking
+electron-builder.
 
-There are no existing users to migrate. Fresh installers include installation
-identity and the native updater. The [implementation plan](automatic-updates-plan.md)
-and [qualification report](testing/automatic-updates-2026-09-22.md) distinguish
-implemented code from outstanding signed OS acceptance.
+## Desktop and terminal CLI installers
 
-## Supported platforms
+The `desktop installers` workflow (`desktop-packages.yml`) builds Linux x64,
+macOS Intel/Apple Silicon, and Windows x64/ARM64. Run it manually with the
+explicit `unsigned` option for early-access releases without Apple or Windows
+credentials. The `codex/desktop-packaging-*` build branches always build unsigned
+artifacts. This does not change the signed defaults in electron-builder.yml.
 
-| Target | Desktop installer | Standalone CLI + proxy installer |
+Every desktop package includes the complete matching AxiomCLI binary. The
+packaging script checks its architecture and version before packaging.
+User-facing steps are in [Install Axiom Desktop and AxiomCLI](installing-desktop.md).
+Windows packages include the matching Visual C++ runtime DLLs beside the CLI;
+the build machine needs Visual Studio's C++ tools and redistributable files.
+
+| Platform | Downloads | Terminal CLI installation |
 |---|---|---|
-| Windows x64 / ARM64 | Combined NSIS EXE | Combined NSIS EXE, per-user |
-| macOS Intel / Apple Silicon | Universal PKG | Universal PKG |
-| Linux x64, glibc 2.35+ | DEB, Pacman, AppImage | Self-extracting SH, per-user |
+| Windows | NSIS EXE | Installer adds its resources/bin directory to PATH for the selected user/machine scope; open a new terminal. Uninstall removes only that entry. |
+| macOS | PKG, DMG, ZIP | Recommended PKG installs Axiom.app and /usr/local/bin/axiomcli. DMG/ZIP users copy Axiom.app to /Applications, then choose Axiom → Install Command-Line Tool. |
+| Linux | AppImage, DEB, Arch pkg.tar.xz | DEB/Arch own /usr/bin/axiomcli. Run the AppImage with --install to install the app and CLI for the current user. |
 
-Each Mac PKG contains universal Mach-O binaries for Intel and Apple Silicon.
-Each Windows EXE contains x64 and ARM64 payloads and selects the native one at
-installation. There is one download per product for each of these operating
-systems; Linux keeps its three Desktop formats and standalone SH installer.
-
-Native jobs record version, source revision, update key and hashes before
-uploading inputs. Windows inputs also carry their native Visual C++ runtime.
-Packaging verifies both receipts before combining or signing anything. Failed
-packaging can reuse the retained native inputs for seven days. It does not
-rebuild Rust or repeat successful validation jobs.
-
-All Desktop packages contain their matching CLI. No bundled CLI is updated
-independently. Linux ARM and musl are not public targets. AppImage requires FUSE;
-Linux local tool execution requires Bubblewrap. macOS/Windows approved host tools
-retain the boundaries documented in [the threat model](threat-model.md).
-
-## Update trust and release setup
-
-Use a dedicated Ed25519 update-signing key, separate from account, inference,
-Apple, Windows and old archive/GPG keys. Store its PKCS#8 PEM as
-`AXIOM_UPDATE_SIGNING_KEY` in the native protected `release` environment.
-Set repository variable `AXIOM_UPDATE_PUBLIC_KEYS` in both repositories to the
-comma-separated, lowercase 32-byte public keys in hex. Native release builds
-compile this list; packaging checks it before shipping. Never use the committed
-signature-test fixture key for a release.
-
-Generate and back up the key through the normal maintainer secret-management
-process. No private key is checked in or provisioned by the development task.
-For rotation, first publish clients that trust both keys, then change the signer.
-Retain old public keys while installed clients or remembered signed inventories
-still require them. Removing a trusted key without that overlap fails closed.
-
-Both source repositories are private. Create **public**
-`astrea-foundation/axiom-releases` with an initial README commit before the first
-publication. Only installers, checksums and signed manifests are uploaded there.
-Its release tag is a distribution label; the signed `revision` identifies the
-native source tag checked in the private source repository.
-
-Configure protected release credentials:
-
-| Repository/environment | Credential | Required access |
-|---|---|---|
-| native `release` | `AXIOM_UPDATE_SIGNING_KEY` | Ed25519 private PEM |
-| native `release` | `AXIOM_RELEASES_TOKEN` | Contents write on the public distribution repository only |
-| native `release` | `AXIOM_PLATFORM_RELEASE_TOKEN` | Actions write on `axiom-platform`, to dispatch `release.yml` on `main` |
-| platform `release` | `AXIOM_RELEASES_TOKEN` | Contents write on the distribution repository, to read drafts and publish them |
-| platform `release` | `AXIOM_NATIVE_READ_TOKEN` | Contents read on `axiomai`, for source-tag ancestry verification |
-| platform `release` | `CLOUDFLARE_API_TOKEN` | Existing account/zone validation, CDN object write and website deployment |
-
-The platform workflow also records the published catalog on `main` using its
-repository token. Configure release-bot access consistent with branch protection;
-ordinary development remains on `dev`. Bring the generated release catalog back
-to `dev` with the normal post-release `main` merge. Tokens never enter installers.
-
-macOS uses the protected `release` secrets `MACOS_CERTIFICATE_BASE64`,
-`MACOS_CERTIFICATE_PASSWORD`, `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, and
-`APPLE_TEAM_ID`. The certificate bundle must contain Developer ID **Application**
-and **Installer** identities. The workflow uses a temporary keychain, signs the
-code and PKGs, submits notarization and staples/verifies tickets. Desktop's
-packaging script disables electron-builder's separate app notarization and
-submits the final PKG once, including its signed app payload. This follows
-[Apple's outermost-container guidance](https://developer.apple.com/documentation/xcode/packaging-mac-software-for-distribution)
-and avoids an extra notarization queue wait for each product. The standalone
-CLI's separate PKG still requires its own notarization and stapled ticket.
-
-Windows uses the existing protected `windows-signing` environment and Azure OIDC:
-`AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, and
-`AXIOM_SIGNING_ENDPOINT`, `AXIOM_SIGNING_ACCOUNT`, `AXIOM_SIGNING_PROFILE`,
-`AXIOM_SIGNING_PUBLISHER` variables. Signing runs on x64 with .NET 8 and pinned
-`ArtifactSigning` 0.1.20; ARM64 binaries are built on a native ARM64 runner first.
-All payload code, uninstallers and final NSIS installers require valid timestamped
-Authenticode signatures from the expected publisher. No unsigned fallback exists.
-The signing host installs and uninstalls both combined packages on x64. A short
-ARM64 job repeats installation, checks native PE architecture and executes the
-installed CLI to verify version and update trust. These jobs reuse signed bytes;
-they do not compile Rust or repeat the functional suites.
-
-## Build and publish
-
-The tag-triggered [release workflow](../.github/workflows/release.yml):
-
-1. Checks `main` ancestry, stable version, completed CI for the tagged revision,
-   and the existing budgeted live E2EE gate.
-2. Builds Linux Desktop/CLI and native macOS/Windows x64/ARM64 inputs. One
-   signing job per OS combines the two architectures into Desktop and CLI installers.
-3. Collects the complete 8-installer matrix. `download-manifest.mjs` hashes
-   final signed/notarized bytes, writes `SHA256SUMS`, and signs `manifest.json`.
-4. Publishes signed installers and checksums in `axiomai`’s Releases tab using
-   the workflow token, then creates or verifies the public distribution draft.
-5. Dispatches the platform publisher on its `main` branch with native version
-   and revision. Its separate run owns CDN verification and channel activation.
-
-The manifest's `sequence` defaults to the native commit timestamp. It must
-increase between versions; a deliberate `AXIOM_RELEASE_SEQUENCE` override is
-available to the generator. `revision` defaults to `git rev-parse HEAD`.
-Equal version or sequence with changed metadata is rejected by clients. Use a
-new version for any artifact correction; never rebuild over an existing release.
-
-Both products consume `https://axiom.stream/api/releases/latest`. The schema-3
-manifest uses `downloads` for Desktop and `cliDownloads` for standalone installers.
-Mac and Windows records use `arch: "universal"`; Linux uses `arch: "x64"`.
-The current updater selects a universal installer on either supported native
-architecture. There is one feed, with no bridge release or compatibility aliases.
-Schema-2 parsing remains solely for already-published signed release records.
-See [the installer decision](adr/0019-combined-installers.md).
-Each record contains product, platform, architecture, format, name, length,
-SHA-256, and exact CDN and public GitHub asset URLs. Canonical signing recursively
-sorts object keys and uses compact UTF-8 JSON without the `signature` field.
-The native and platform repositories each check in their own contract and vectors.
-
-Follow the [platform publication guide](https://github.com/astrea-foundation/axiom-platform/blob/dev/docs/operations/releases.md)
-for retries. It verifies all bytes before changing the public feed and records
-`release-publication.json` as a workflow artifact. An Actions build-input ZIP is
-never linked as an installer. Blockmaps and Electron support files are not part
-of this updater's public contract; the native helper uses the complete installer.
-
-## CI baseline
-
-Pull requests targeting `main` run Linux Rust and Desktop UI checks. Merging does
-not repeat those checks automatically. Native macOS/Windows validation is an
-explicit `ci.yml` dispatch with `target=native` (all four native jobs), `all`
-(also Linux/UI), or a specific platform; `linux` and
-`desktop` rerun only those checks. Validate the complete candidate on `dev`,
-promote it, confirm the promoted tree matches, and tag that validated candidate
-commit now reachable from `main`. The release gate requires successful Rust, UI,
-and all four native CI jobs for the exact tagged revision, combining targeted
-runs when needed. Packaging reuses those results instead of repeating the suites.
-Retry only failed validation targets or packaging jobs. These checks do not
-replace signed OS installation acceptance.
-
-Routine qualification runs functional tests once. The repeated deterministic
-evaluation and three host-performance benchmarks are opt-in with
-`extended=true`; see [evaluations](evaluations.md#routine-checks-and-opt-in-extended-lane).
-Small persistence, cancellation, process cleanup, protocol and security tests
-stay required. Clippy already checks all Linux targets, and native tests compile
-their targets, so CI does not precede either with a duplicate `cargo check`.
-CI omits development/test debug symbols, retains assertions, downloads the pinned
-`cargo-deny` executable with checksum verification, and limits a dispatched native matrix to two concurrent
-jobs. Release build profiles and signing checks are unchanged.
-The audit installer action is pinned to a commit and disables source-build
-fallbacks, so a fresh PR does not spend minutes compiling the audit tool itself.
-
-The release build retains the complete signed `axiom-signed-release` artifact for seven days
-before cross-repository publication. If the narrow upload or dispatch credentials
-are not configured, the job summary records that operator publication is still
-required; a successful build alone does not mean the release is public. An
-authenticated operator can download that artifact, set `AXIOM_UPDATE_PUBLIC_KEYS`
-to the release public key, and run `node scripts/publish-github-release.mjs DIRECTORY`
-from the promoted native checkout. Follow the platform publication guide to
-verify both mirrors and promote the catalog. Do not rebuild installers merely to
-retry publication, and do not copy a broad personal token into Actions.
-New drafts are resolved through the authenticated release listing, since GitHub's
-release-by-tag endpoint resolves published releases. Retries resume the same draft
-and preserve the immutable artifact checks.
-
-Branch checks use Ubuntu 24.04 with Python 3.12 and permit Bubblewrap user
-namespaces on the disposable runner. Release binaries retain Ubuntu 22.04 for
-glibc 2.35; the release/preview jobs install Python 3.12 explicitly. Rust test
-concurrency stays at two, and failure caches are retained. Test credential
-deadlines retain their scheduling headroom; production deadlines and runtime
-sandboxing are unchanged. Git attributes preserve LF across Windows checkouts.
-
-## Development previews
-
-The **Preview installers** workflow can run on `dev` without production secrets:
+Build on the target OS after installing Rust, Node and pnpm:
 
 ```sh
-gh workflow run desktop-packages.yml --ref dev
-```
-
-It builds actual unsigned installers into Actions artifacts, with stable updates
-disabled. It does not publish GitHub releases, CDN objects, or feeds. Local builds
-use the same native builders:
-
-```sh
-cargo build --locked --release -p axiomcli -p axiom-proxy
+cargo build --locked --release -p axiomcli
 node apps/desktop/scripts/package-desktop.mjs --linux --x64 --unsigned
-node scripts/package-cli.mjs --linux --x64 --unsigned
+# Native macOS: --mac --arm64 (or --x64)
+# Native Windows: --win --x64 (or --arm64)
 ```
 
-Use `--mac --arm64|--x64` or `--win --arm64|--x64` on native hosts. Windows needs
-NSIS 3.11 and the Visual C++ runtime files. Linux packaging uses Ubuntu 22.04,
-`libarchive-tools`, `rpm`, FUSE and Bubblewrap. The builders verify native binary
-architecture/version and include project and Rust dependency license notices.
-Standalone macOS and Desktop both register `axiomcli`; an unrelated existing
-command is preserved and must be resolved before switching owners.
+Linux release builds use Ubuntu 22.04 so the CLI does not acquire newer glibc
+requirements from a rolling-release workstation. Linux ARM is not in this
+release matrix. Install `libarchive-tools` on the Ubuntu build machine: the
+Arch packaging step requires `bsdtar`. The Arch package installs with `sudo pacman -U FILE.pkg.tar.xz`;
+the DEB installs with `sudo apt install ./FILE.deb`.
 
-## Acceptance and recovery
+AppImage users run `chmod +x FILE.AppImage` followed by `./FILE.AppImage --install`.
+This installs a durable copy under `~/.local/share/axiom-desktop`, desktop menu
+metadata, and `~/.local/bin/axiomcli`; it registers that directory in common
+shell profiles. Open a new terminal afterward. Repeat --install on a newer
+AppImage to replace the program while retaining account data. For portable
+use, `./FILE.AppImage --axiom-cli --help` runs the bundled CLI directly. The
+custom AppRun never silently disables Electron's sandbox.
 
-Run fresh install, A-to-B update, same-terminal TUI resume, GUI reopen, cancel,
-locked-process waits, denied elevation, interrupted installation and uninstall
-on every advertised OS/architecture/package. Preserve account data, drafts,
-workspace and session; reset runtime-only outdated-TEE consent. Verify OS
-publisher signatures and test with real signed installers, not just mocks.
-Record results in [validation](validation.md). Current local tests do not establish
-Windows/macOS signed installation acceptance.
+The macOS PKG requires the standard administrator installation authorization.
+It refuses to overwrite an unrelated /usr/local/bin/axiomcli. Unsigned preview
+apps are ad-hoc signed for executable integrity, with the Electron JIT/library
+entitlements; they are not Developer-ID signed or notarized. Users must approve
+the app/installer in Privacy & Security where the OS permits it. Windows may
+show SmartScreen warnings or block unsigned code under stricter policies.
+For signed PKG releases the certificate bundle must also contain a Developer ID
+Installer certificate, in addition to the Developer ID Application certificate.
 
-The native helper checks the installed CLI's exact version before relaunch. This
-is a headless startup check, not proof that every GUI or account feature works.
-An installer failure is recorded for the next app check. Re-run the matching
-verified installer to repair files. Linux standalone retains old version slots;
-never manually reactivate an older version against incompatible account data.
-The old developer archive scripts remain available for reproducibility work but
-are not release downloads or automatic-update installation owners.
+Keep appId `stream.axiom.desktop`, product name `Axiom`, Linux package name
+`axiom-desktop`, installation scope, and native account-data paths stable.
+Increment the embedded product version for each public release. Exit the app
+and CLI before an upgrade, and use the same installation format. Switching
+between AppImage and a system package requires removing the old program
+installation to avoid duplicate launchers. Installers never remove account data; schema changes
+still require compatible application migrations.
 
-The source repository's Releases tab is populated after successful signing and
-inventory verification, even when cross-repository publication needs an operator.
-`node scripts/publish-github-release.mjs DIRECTORY --source` resumes this step,
-checks every existing asset and publishes only a complete draft. Failed or
-superseded build tags are not advertised as releases. Public website/feed
-activation remains the platform publisher's responsibility.
+The workflow exercises installed CLI startup and reinstall behavior on native
+macOS/Windows runners and a DEB installation on Ubuntu. The AppImage installer
+tests cover argument forwarding, replacement, command collisions, and preserved
+account data. GUI/credential-vault/inference acceptance remains a separate check.
 
-### v0.1.7 packaging repair
+## Public CDN publication
 
-The first combined release run `35803134333` completed all native builds and
-Mac/Linux packaging, but Windows afterPack called an unavailable internal
-`WinPackager.sign` method. The hook now uses Axiom's configured SHA-256 signer
-directly. The first retry then correctly rejected an unsigned copied CLI. The
-hook now explicitly signs executables, runtime DLLs and PowerShell scripts in
-all three owned resource directories. Regression checks exercise that complete
-resource inventory and signing failure propagation.
+Collect the workflow's installer files into one clean directory, then generate
+the combined manifest and checksums:
 
-The one-time `recover-017.yml` dispatch runs from `v0.1.7-packaging.2` (signing), followed by `v0.1.7-packaging.3` (verification only), pointing
-to the promoted repair on `main`, as required by the existing tag-only signing
-environments. Packaging tags do not trigger a full native rebuild. It verifies
-the immutable v0.1.7 revision and original artifact run, rejects changes outside
-the signing hook, its test, this documentation and the two release workflows, then
-overlays only the fixed hook on the tagged source. Receipt hashes, version and
-update-key checks still authenticate both retained Windows native inputs. The
-run records the product and packaging-repair revisions separately. No native
-binary or successful Mac/Linux installer is rebuilt or relabeled. Signed Windows
-x64/ARM64 install checks still gate the complete manifest and source Release.
-Future tags use the corrected normal release workflow.
+```sh
+node scripts/download-manifest.mjs /path/to/installers 0.1.0 unsigned
+```
 
-Run `35807400501` completed Windows signing and x64 installation checks. Both
-ARM64 packages also passed architecture, signature, version, trust-key and
-uninstall checks, but final temporary-directory removal raced an uninstaller
-image lock. The cleanup now retries for at most ten seconds, then warns without failing a
-verified release; functional and signature failures still fail immediately. A Windows VM test held a real file
-lock and verified successful cleanup after it released. The final verification
-workflow authenticates the retained signed run and its successful x64 job,
-retests ARM64 with the fixed cleanup, and publishes the same signed bytes.
+The companion API repository has `deploy/cdn/cdn.mjs` to provision the R2 bucket
+`axiom-cdn` at `cdn.axiom.stream` and publish this directory. Versioned installers
+live at `/downloads/<version>/<filename>`. `/downloads/latest.json` is promoted
+only after all listed files have been uploaded and fetched with matching hashes.
+Public image/font assets use `/assets/` in the same scalable R2 bucket.
 
-The release operator may sign and publish the complete inventory from retained
-artifacts once the functional/signature checks above have passed; temporary-file
-cleanup is not a publication gate. Keep the original product revision in the
-signed inventory and record the separate packaging revision and input run IDs.
+## Automated tag workflow
+
+Before pushing a tag, run the ordinary workspace quality checks and the
+deterministic and real-service evaluation lanes documented in
+[`evaluations.md`](evaluations.md). Push the tag only from the intended reviewed
+commit. The `signed release artifact` workflow then:
+
+1. requires a budgeted live provider-E2EE regression gate;
+2. builds, signs, and verifies the reproducible Linux x86-64 GNU archive;
+3. builds AxiomCLI and Desktop natively on Intel and Apple-Silicon macOS
+   runners, signs the complete app, notarizes it, and emits DMG and ZIP files;
+4. builds AxiomCLI and Desktop natively on x64 and ARM64 Windows runners,
+   Authenticode-signs the package, and emits NSIS installers; and
+5. uploads each architecture as a separate GitHub Actions artifact.
+
+The workflow needs a protected `release` environment with these secrets:
+
+| Secret | Purpose |
+|---|---|
+| `AXIOM_EVAL_API_KEY` | live provider-E2EE regression credential |
+| `AXIOM_EVAL_BASE_URL` | live evaluation API origin |
+| `AXIOM_EVAL_MODEL` | live evaluation model ID |
+| `AXIOMCLI_RELEASE_GPG_KEY_BASE64` | base64-encoded Linux archive signing key |
+| `AXIOMCLI_RELEASE_GPG_FINGERPRINT` | full authorized Linux signing-key fingerprint |
+| `MACOS_CERTIFICATE_BASE64` | base64-encoded Apple signing certificate |
+| `MACOS_CERTIFICATE_PASSWORD` | Apple signing-certificate password |
+| `APPLE_ID` | notarization account |
+| `APPLE_APP_SPECIFIC_PASSWORD` | notarization app password |
+| `APPLE_TEAM_ID` | Apple developer team |
+| `WINDOWS_CERTIFICATE_BASE64` | base64-encoded Authenticode certificate |
+| `WINDOWS_CERTIFICATE_PASSWORD` | Authenticode certificate password |
+
+The current workflow uploads run artifacts; it does not create or publish a
+GitHub Release. Publishing, channel promotion, and update-feed changes are
+separate, explicitly reviewed operations.
+
+## Artifact verification
+
+The Linux archive contains `bin/axiomcli`, `bin/axiom-proxy`, the Apache-2.0
+project license, third-party notice/inventory files, user documentation,
+compatibility policy, and build metadata. The exact cargo-deny release used to
+generate the embedded license inventory is pinned in `.cargo-deny-version` and
+recorded in `BUILD-METADATA`. Reproduce and verify it locally with:
+
+```text
+cargo install cargo-deny --version "=$(tr -d '\r\n' < .cargo-deny-version)" --locked
+export SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)
+export AXIOMCLI_SIGNING_KEY=<full maintainer-key fingerprint>
+scripts/package-release --sign
+scripts/verify-release dist/*.tar.gz dist/*.tar.gz.asc
+```
+
+Run the package command twice in separate output directories and compare
+SHA-256 digests. Install into a clean prefix with
+`scripts/install-release ARCHIVE PREFIX`, run the release smoke workflow, and
+then use `scripts/uninstall-release PREFIX`. Verification rejects checksum or
+signature failure, path traversal, multiple top-level roots, missing notices,
+missing/non-starting binaries, and strings shaped like Axiom credentials.
+
+For every Desktop artifact, verify before promotion that:
+
+- the filename and application version equal the tag and expected architecture;
+- `Axiom.app` or `Axiom.exe` and the embedded
+  `resources/bin/axiomcli[.exe]` have the expected native architecture;
+- the embedded sidecar starts with `--version` and reports the tagged product
+  version without opening a window;
+- all executable code and the installer carry the intended publisher identity;
+- macOS Gatekeeper accepts the signed app/DMG and validates the app's stapled
+  notarization ticket, or Windows reports valid Authenticode signatures; and
+- extracted artifacts contain no credentials or unplanned files.
+
+CI requires exact primary artifact counts and tag-derived names, verifies the
+embedded application version, checks native application and sidecar
+architectures, runs the packaged sidecar's headless `--version`, and validates
+the app/sidecar/installer signatures as applicable. macOS additionally verifies
+the signed DMG and the app's stapled notarization ticket. Credential scanning
+and independent target-machine verification remain explicit release-review
+checks.
+
+Interactive target-machine acceptance is also required before public promotion;
+see [`platform-support.md`](platform-support.md). Those tests are intentionally
+not run as part of a headless build or while another user controls the desktop.
+
+Uninstall removes only installed program and documentation files. It preserves
+platform configuration, account-scoped local threads, installation identity,
+and credential-vault entries unless the user separately signs out or explicitly
+deletes that data.

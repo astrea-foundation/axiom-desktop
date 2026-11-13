@@ -25,7 +25,7 @@ use axiomcli::{
     policy::{EffectClass, PolicyRule, RuleAction},
     provider::{InferenceProvider, SecureAxiomProvider},
     session::{ExportOptions, SessionStore},
-    tools::registry_with_search,
+    tools::{default_registry, registry_with_search},
     web::HostedSearchClient,
 };
 use clap::{Parser, Subcommand};
@@ -75,15 +75,6 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Download, verify, install and restart an installed Axiom release.
-    Update(axiomcli::updates::Arguments),
-    /// Run the account-bound secure loopback proxy under Desktop supervision.
-    DesktopProxy {
-        #[arg(long)]
-        account_id: String,
-        #[command(flatten)]
-        arguments: axiom_proxy::Arguments,
-    },
     /// Run the terminal interface in the current terminal viewport.
     Tui {
         #[arg(long)]
@@ -108,10 +99,8 @@ enum Command {
     Doctor,
     /// List models exposed by the configured secure Axiom service.
     Models,
-    /// Delete one account/frontend state database. Stop Desktop and CLI first.
+    /// Delete one pre-release frontend state database after explicit confirmation.
     ResetLocalState {
-        #[arg(long)]
-        account: String,
         #[arg(long, value_enum)]
         frontend: FrontendKind,
         /// Confirm permanent deletion of this frontend's local threads and collections.
@@ -220,21 +209,8 @@ enum SessionAction {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let cli = Cli::parse();
-    if let Some(Command::Update(arguments)) = cli.command {
-        // Update helpers must survive shutdown of the process being replaced.
-        return axiomcli::updates::command(arguments).await;
-    }
     install_descendant_cleanup();
-    let _installation_lease = axiomcli::updates::lease()?;
-    // The proxy owns no chat store, tools, agent configuration or system prompt.
-    if let Some(Command::DesktopProxy {
-        account_id,
-        arguments,
-    }) = cli.command
-    {
-        return axiomcli::proxy::run(arguments, account_id).await;
-    }
+    let cli = Cli::parse();
     let frontend = match &cli.command {
         Some(Command::Acp { frontend }) => *frontend,
         _ => FrontendKind::Cli,
@@ -252,22 +228,6 @@ async fn main() -> anyhow::Result<()> {
     paths
         .prepare()
         .context("failed to prepare Axiom platform paths")?;
-    if let Some(Command::ResetLocalState {
-        account,
-        frontend,
-        confirm,
-    }) = &cli.command
-    {
-        anyhow::ensure!(*confirm, "refusing to delete local state without --confirm");
-        let removed = paths
-            .reset_account_frontend_state(account, *frontend)
-            .context("failed to reset account local state")?;
-        println!(
-            "removed {} local state file(s) for account {account}, frontend {frontend}",
-            removed.len()
-        );
-        return Ok(());
-    }
     let config =
         Config::load_for(frontend, &paths).context("failed to load AxiomCLI configuration")?;
     let auth = {
@@ -311,10 +271,6 @@ async fn main() -> anyhow::Result<()> {
         cwd: None,
         resume: None,
     }) {
-        Command::Update(_) => unreachable!("update is handled before agent initialization"),
-        Command::DesktopProxy { .. } => {
-            unreachable!("desktop proxy is handled before agent initialization")
-        }
         Command::Doctor => {
             doctor(&config, &auth, &paths).await;
             Ok(())
@@ -326,8 +282,20 @@ async fn main() -> anyhow::Result<()> {
             }
             Ok(())
         }
-        Command::ResetLocalState { .. } => {
-            unreachable!("local reset handled before authentication")
+        Command::ResetLocalState { frontend, confirm } => {
+            anyhow::ensure!(confirm, "refusing to delete local state without --confirm");
+            let removed = paths
+                .reset_legacy_frontend_state(frontend)
+                .context("failed to reset frontend local state")?;
+            if removed.is_empty() {
+                println!("{frontend} local state is already empty");
+            } else {
+                println!(
+                    "removed {} {frontend} local state file(s); shared identity, credentials, trust policy, configuration, and chat workspace were preserved",
+                    removed.len()
+                );
+            }
+            Ok(())
         }
         Command::Sessions { action } => manage_sessions(action, &account_store),
         Command::Plans { cwd, action } => manage_plans(&resolve_cwd(cwd)?, action),
@@ -516,7 +484,23 @@ async fn doctor(config: &Config, auth: &AuthManager, paths: &AxiomPaths) {
         ValidationStatus::Unavailable(message) => format!("not checked ({message})"),
     };
     println!("Axiom authorization: {auth_status}");
-    println!("web search: authenticated Axiom API (Decodo); no paid search issued by diagnostics");
+    if config.web_search_provider == "searxng" {
+        let endpoint = format!("{}/", config.searxng_url.trim_end_matches('/'));
+        let status = reqwest::Client::new()
+            .get(endpoint)
+            .timeout(std::time::Duration::from_secs(3))
+            .send()
+            .await
+            .map_or_else(
+                |error| format!("unavailable ({error})"),
+                |response| response.status().to_string(),
+            );
+        println!("SearXNG health: {status}");
+    } else {
+        println!(
+            "web search: authenticated Axiom API (Decodo); no paid search issued by diagnostics"
+        );
+    }
     if let Some(path) = Config::user_path() {
         println!("user config: {}", path.display());
     }
@@ -676,10 +660,14 @@ async fn build_runner(
         }
     }
     let provider = build_provider(config, auth)?;
-    let mut tools = registry_with_search(
-        config.max_tool_output_bytes,
-        Arc::new(HostedSearchClient::new(auth.clone())?),
-    )?;
+    let mut tools = if config.web_search_provider == "searxng" {
+        default_registry(config.max_tool_output_bytes, &config.searxng_url)?
+    } else {
+        registry_with_search(
+            config.max_tool_output_bytes,
+            Arc::new(HostedSearchClient::new(auth.clone())?),
+        )?
+    };
     if frontend == FrontendKind::Cli {
         for tool in
             axiomcli::mcp::connect_tools(&config.mcp_servers, config.max_tool_output_bytes).await?
@@ -819,7 +807,6 @@ async fn run_headless(
     }
     let submitted = runtime
         .dispatch(AppCommand::SubmitPrompt {
-            attachments: Vec::new(),
             session_id: session_id.clone(),
             turn_id: turn_id.clone(),
             text: prompt.clone(),
@@ -831,16 +818,26 @@ async fn run_headless(
         store.set_last_used_thinking(thinking)?;
     }
 
-    if let Some(store) = &durable_store {
-        let title = axiomcli::session_title::session_title(&prompt);
-        if let Err(error) = store.set_title_if_absent(&session_id, &title) {
-            tracing::warn!(%session_id, %error, "could not persist session title");
-        }
-    }
+    let title_task = durable_store.clone().map(|title_store| {
+        let title_runner = runner.clone();
+        let title_session = session_id.clone();
+        let title_prompt = prompt.clone();
+        tokio::spawn(async move {
+            let title = title_runner
+                .generate_title(
+                    &title_session,
+                    &title_prompt,
+                    CancellationToken::new(),
+                    Some(&title_store),
+                )
+                .await?;
+            title_store.set_title_if_absent(&title_session, &title)?;
+            Ok::<(), AxiomError>(())
+        })
+    });
 
     let (events_tx, mut events_rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
     let context = TurnContext {
-        attachments: Vec::new(),
         session_id: session_id.clone(),
         turn_id: turn_id.clone(),
         cwd,
@@ -899,6 +896,18 @@ async fn run_headless(
     let terminal = runtime.dispatch(terminal).await?;
     if let Some(store) = &durable_store {
         store.append_all(&terminal)?;
+    }
+    if let Some(title_task) = title_task {
+        match tokio::time::timeout(std::time::Duration::from_secs(2), title_task).await {
+            Ok(Ok(Ok(()))) => {}
+            Ok(Ok(Err(error))) => {
+                tracing::warn!(%error, "background session title generation failed");
+            }
+            Ok(Err(error)) => tracing::warn!(%error, "background session title task failed"),
+            Err(_) => {
+                tracing::warn!("background session title generation did not finish before exit");
+            }
+        }
     }
     result.map_err(anyhow::Error::from)
 }

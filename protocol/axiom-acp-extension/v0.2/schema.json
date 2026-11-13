@@ -22,12 +22,6 @@
     "promptMetadata": {
       "$ref": "#/$defs/PromptMetadata"
     },
-    "getAttachmentsRequest": {
-      "$ref": "#/$defs/GetAttachmentsRequest"
-    },
-    "getAttachmentsResponse": {
-      "$ref": "#/$defs/GetAttachmentsResponse"
-    },
     "deliveryMetadata": {
       "$ref": "#/$defs/DeliveryMetadata"
     },
@@ -130,35 +124,14 @@
     "billingStatusResponse": {
       "$ref": "#/$defs/BillingStatusResponse"
     },
-    "giftCodeRedeemRequest": {
-      "$ref": "#/$defs/GiftCodeRedeemRequest"
+    "billingInvoiceCreateRequest": {
+      "$ref": "#/$defs/BillingInvoiceCreateRequest"
     },
-    "giftCodeRedeemResponse": {
-      "$ref": "#/$defs/GiftCodeRedeemResponse"
+    "billingInvoiceStatusRequest": {
+      "$ref": "#/$defs/BillingInvoiceStatusRequest"
     },
-    "usageSummaryRequest": {
-      "$ref": "#/$defs/UsageSummaryRequest"
-    },
-    "usageSummaryResponse": {
-      "$ref": "#/$defs/UsageSummaryResponse"
-    },
-    "apiKeyListRequest": {
-      "$ref": "#/$defs/ApiKeyListRequest"
-    },
-    "apiKeyListResponse": {
-      "$ref": "#/$defs/ApiKeyListResponse"
-    },
-    "apiKeyCreateRequest": {
-      "$ref": "#/$defs/ApiKeyCreateRequest"
-    },
-    "apiKeyCreatedResponse": {
-      "$ref": "#/$defs/ApiKeyCreatedResponse"
-    },
-    "apiKeyRevokeRequest": {
-      "$ref": "#/$defs/ApiKeyRevokeRequest"
-    },
-    "apiKeyRevokeResponse": {
-      "$ref": "#/$defs/ApiKeyRevokeResponse"
+    "billingInvoiceResponse": {
+      "$ref": "#/$defs/BillingInvoiceResponse"
     },
     "verifySecurityRequest": {
       "$ref": "#/$defs/VerifySecurityRequest"
@@ -196,8 +169,6 @@
     "desktopBootstrapRequest",
     "desktopBootstrapResponse",
     "promptMetadata",
-    "getAttachmentsRequest",
-    "getAttachmentsResponse",
     "deliveryMetadata",
     "listThreadsRequest",
     "listThreadsResponse",
@@ -232,16 +203,9 @@
     "logoutRequest",
     "billingStatusRequest",
     "billingStatusResponse",
-    "giftCodeRedeemRequest",
-    "giftCodeRedeemResponse",
-    "usageSummaryRequest",
-    "usageSummaryResponse",
-    "apiKeyListRequest",
-    "apiKeyListResponse",
-    "apiKeyCreateRequest",
-    "apiKeyCreatedResponse",
-    "apiKeyRevokeRequest",
-    "apiKeyRevokeResponse",
+    "billingInvoiceCreateRequest",
+    "billingInvoiceStatusRequest",
+    "billingInvoiceResponse",
     "verifySecurityRequest",
     "verifySecurityResponse",
     "compactRequest",
@@ -363,13 +327,6 @@
         },
         "lastMessageAt": {
           "description": "Latest actual message activity, absent for message-free threads.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "lastUserMessageAt": {
-          "description": "Latest user submission. Streaming output does not advance sidebar order.",
           "type": [
             "string",
             "null"
@@ -522,13 +479,6 @@
           "maximum": 65535,
           "default": 0
         },
-        "usage": {
-          "type": "integer",
-          "format": "uint16",
-          "minimum": 0,
-          "maximum": 65535,
-          "default": 0
-        },
         "securityEvidence": {
           "type": "integer",
           "format": "uint16",
@@ -544,20 +494,6 @@
           "default": 0
         },
         "steering": {
-          "type": "integer",
-          "format": "uint16",
-          "minimum": 0,
-          "maximum": 65535,
-          "default": 0
-        },
-        "messageRevision": {
-          "type": "integer",
-          "format": "uint16",
-          "minimum": 0,
-          "maximum": 65535,
-          "default": 0
-        },
-        "attachments": {
           "type": "integer",
           "format": "uint16",
           "minimum": 0,
@@ -653,179 +589,10 @@
           ],
           "format": "uint64",
           "minimum": 0
-        },
-        "revision": {
-          "description": "Replace local history starting at this user message before the normal\nnative E2EE turn. Never interpreted by the hosted backend.",
-          "anyOf": [
-            {
-              "$ref": "#/$defs/PromptRevision"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "attachments": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/PromptAttachment"
-          }
         }
       },
       "required": [
         "clientItemId"
-      ]
-    },
-    "PromptRevision": {
-      "type": "object",
-      "properties": {
-        "userItemId": {
-          "type": "string"
-        },
-        "expectedRevision": {
-          "type": "integer",
-          "format": "uint64",
-          "minimum": 0
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "userItemId",
-        "expectedRevision"
-      ]
-    },
-    "PromptAttachment": {
-      "oneOf": [
-        {
-          "type": "object",
-          "properties": {
-            "name": {
-              "type": "string"
-            },
-            "text": {
-              "type": "string"
-            },
-            "kind": {
-              "type": "string",
-              "const": "text"
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "name",
-            "text"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "name": {
-              "type": "string"
-            },
-            "image": {
-              "$ref": "#/$defs/ImageContent"
-            },
-            "kind": {
-              "type": "string",
-              "const": "image"
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "name",
-            "image"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "name": {
-              "type": "string"
-            },
-            "file": {
-              "$ref": "#/$defs/FileContent"
-            },
-            "kind": {
-              "type": "string",
-              "const": "file"
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "name",
-            "file"
-          ]
-        }
-      ]
-    },
-    "ImageContent": {
-      "type": "object",
-      "properties": {
-        "mimeType": {
-          "type": "string"
-        },
-        "data": {
-          "description": "Canonical base64, without a data-URL prefix. Remote URLs are not images.",
-          "type": "string"
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "mimeType",
-        "data"
-      ]
-    },
-    "FileContent": {
-      "description": "Original file bytes. Extraction belongs to the attested provider, not Axiom.",
-      "type": "object",
-      "properties": {
-        "name": {
-          "type": "string"
-        },
-        "mimeType": {
-          "type": "string"
-        },
-        "data": {
-          "type": "string"
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "name",
-        "mimeType",
-        "data"
-      ]
-    },
-    "GetAttachmentsRequest": {
-      "type": "object",
-      "properties": {
-        "threadId": {
-          "type": "string"
-        },
-        "userItemId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "threadId",
-        "userItemId"
-      ]
-    },
-    "GetAttachmentsResponse": {
-      "type": "object",
-      "properties": {
-        "attachments": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/PromptAttachment"
-          }
-        }
-      },
-      "required": [
-        "attachments"
       ]
     },
     "DeliveryMetadata": {
@@ -844,13 +611,6 @@
         },
         "lastMessageAt": {
           "description": "Latest actual message activity; operational updates do not advance it.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "lastUserMessageAt": {
-          "description": "Latest user submission. Streaming output does not advance sidebar order.",
           "type": [
             "string",
             "null"
@@ -964,12 +724,6 @@
           "format": "uint64",
           "minimum": 0
         },
-        "afterRequestId": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
         "limit": {
           "type": [
             "integer",
@@ -1036,12 +790,6 @@
           ],
           "format": "uint64",
           "minimum": 0
-        },
-        "nextRequestUsageCursor": {
-          "type": [
-            "string",
-            "null"
-          ]
         }
       },
       "required": [
@@ -1449,17 +1197,6 @@
           "type": "integer",
           "format": "uint32",
           "minimum": 0
-        },
-        "supportsImages": {
-          "type": "boolean",
-          "default": false
-        },
-        "fileMimeTypes": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "default": []
         },
         "autoCompactThresholdTokens": {
           "type": "integer",
@@ -1939,11 +1676,18 @@
         },
         "postedMicrousd": {
           "type": "integer",
-          "format": "int64"
+          "format": "uint64",
+          "minimum": 0
+        },
+        "heldMicrousd": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
         },
         "availableMicrousd": {
           "type": "integer",
-          "format": "int64"
+          "format": "uint64",
+          "minimum": 0
         },
         "ledgerSequence": {
           "type": "integer",
@@ -1951,13 +1695,20 @@
           "minimum": 0
         },
         "trialMicrousd": {
-          "type": "integer",
+          "type": [
+            "integer",
+            "null"
+          ],
           "format": "uint64",
           "minimum": 0
         },
         "paidMicrousd": {
-          "type": "integer",
-          "format": "int64"
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
         },
         "paymentReviewRequired": {
           "type": "boolean",
@@ -1965,6 +1716,25 @@
         },
         "currency": {
           "type": "string"
+        },
+        "invoicesEnabled": {
+          "type": "boolean"
+        },
+        "invoiceMinUsdCents": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "invoiceMaxUsdCents": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "settlementAsset": {
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "paymentAccount": {
           "anyOf": [
@@ -1975,26 +1745,18 @@
               "type": "null"
             }
           ]
-        },
-        "zecUsdQuote": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ZecUsdQuote"
-            },
-            {
-              "type": "null"
-            }
-          ]
         }
       },
       "required": [
         "revision",
         "postedMicrousd",
+        "heldMicrousd",
         "availableMicrousd",
         "ledgerSequence",
-        "trialMicrousd",
-        "paidMicrousd",
-        "currency"
+        "currency",
+        "invoicesEnabled",
+        "invoiceMinUsdCents",
+        "invoiceMaxUsdCents"
       ]
     },
     "PaymentAccount": {
@@ -2137,194 +1899,64 @@
         "observed_at"
       ]
     },
-    "ZecUsdQuote": {
-      "description": "Indicative live market price; deposit credit uses its confirmation-time rate.",
+    "BillingInvoiceCreateRequest": {
       "type": "object",
       "properties": {
-        "price_microusd_per_zec": {
-          "type": "string"
-        },
-        "source": {
-          "type": "string"
-        },
-        "as_of": {
-          "type": "string"
-        },
-        "expires_at": {
-          "type": "string"
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "price_microusd_per_zec",
-        "source",
-        "as_of",
-        "expires_at"
-      ]
-    },
-    "GiftCodeRedeemRequest": {
-      "type": "object",
-      "properties": {
-        "code": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 64
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "code"
-      ]
-    },
-    "GiftCodeRedeemResponse": {
-      "type": "object",
-      "properties": {
-        "creditedMicrousd": {
+        "amountUsdCents": {
           "type": "integer",
           "format": "uint64",
           "minimum": 0
         },
-        "alreadyRedeemed": {
-          "type": "boolean"
-        },
-        "status": {
-          "$ref": "#/$defs/BillingStatus"
-        }
-      },
-      "required": [
-        "creditedMicrousd",
-        "alreadyRedeemed",
-        "status"
-      ]
-    },
-    "UsageSummaryRequest": {
-      "type": "object",
-      "properties": {
-        "period": {
-          "$ref": "#/$defs/UsagePeriod",
-          "default": "all_time"
-        },
-        "timezone": {
-          "description": "IANA timezone for calendar boundaries. Omitted clients retain UTC/all-time behavior.",
-          "type": [
-            "string",
-            "null"
-          ],
-          "minLength": 1,
-          "maxLength": 128
-        }
-      }
-    },
-    "UsagePeriod": {
-      "type": "string",
-      "enum": [
-        "week",
-        "month",
-        "all_time"
-      ]
-    },
-    "UsageSummaryResponse": {
-      "type": "object",
-      "properties": {
-        "summary": {
-          "$ref": "#/$defs/UsageSummary"
-        }
-      },
-      "required": [
-        "summary"
-      ]
-    },
-    "UsageSummary": {
-      "type": "object",
-      "properties": {
-        "period": {
-          "type": "string"
-        },
-        "totalCostMicrousd": {
-          "type": "string"
-        },
-        "models": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/ModelSpend"
-          }
-        }
-      },
-      "required": [
-        "period",
-        "totalCostMicrousd",
-        "models"
-      ]
-    },
-    "ModelSpend": {
-      "type": "object",
-      "properties": {
-        "provider": {
-          "type": "string"
-        },
-        "modelId": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "modelName": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "costMicrousd": {
-          "description": "Exact USD millionths; never an IEEE-754 amount.",
+        "clientRequestId": {
           "type": "string"
         }
       },
       "required": [
-        "provider",
-        "costMicrousd"
+        "amountUsdCents",
+        "clientRequestId"
       ]
     },
-    "ApiKeyListRequest": {
-      "type": "object"
-    },
-    "ApiKeyListResponse": {
+    "BillingInvoiceStatusRequest": {
       "type": "object",
       "properties": {
-        "keys": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/ApiKeyRecord"
-          }
+        "invoiceId": {
+          "type": "string"
         }
       },
-      "additionalProperties": false,
       "required": [
-        "keys"
+        "invoiceId"
       ]
     },
-    "ApiKeyRecord": {
+    "BillingInvoiceResponse": {
       "type": "object",
       "properties": {
+        "invoice": {
+          "$ref": "#/$defs/BillingInvoice"
+        }
+      },
+      "required": [
+        "invoice"
+      ]
+    },
+    "BillingInvoice": {
+      "type": "object",
+      "properties": {
+        "revision": {
+          "description": "Monotonic within one agent runtime; clients ignore older invoice state.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
         "id": {
           "type": "string"
         },
-        "name": {
-          "type": "string"
+        "amountUsdCents": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
         },
-        "scopes": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "createdAt": {
-          "type": "string"
-        },
-        "lastUsedAt": {
-          "type": [
-            "string",
-            "null"
-          ]
+        "state": {
+          "$ref": "#/$defs/InvoiceState"
         },
         "expiresAt": {
           "type": [
@@ -2332,114 +1964,42 @@
             "null"
           ]
         },
-        "revokedAt": {
+        "paidAt": {
           "type": [
             "string",
             "null"
           ]
         },
-        "usageStartedAt": {
-          "type": "string"
-        },
-        "usage": {
-          "$ref": "#/$defs/ApiKeyUsage"
+        "payUrl": {
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
-      "additionalProperties": false,
       "required": [
+        "revision",
         "id",
-        "name",
-        "scopes",
-        "createdAt",
-        "usageStartedAt",
-        "usage"
+        "amountUsdCents",
+        "state"
       ]
     },
-    "ApiKeyUsage": {
-      "type": "object",
-      "properties": {
-        "requestCount": {
-          "type": "string"
-        },
-        "inputTokens": {
-          "type": "string"
-        },
-        "cachedInputTokens": {
-          "type": "string"
-        },
-        "outputTokens": {
-          "type": "string"
-        },
-        "costMicrousd": {
-          "type": "string"
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "requestCount",
-        "inputTokens",
-        "cachedInputTokens",
-        "outputTokens",
-        "costMicrousd"
+    "InvoiceState": {
+      "type": "string",
+      "enum": [
+        "creating",
+        "pending",
+        "paid",
+        "expired",
+        "failed",
+        "review"
       ]
-    },
-    "ApiKeyCreateRequest": {
-      "type": "object",
-      "properties": {
-        "name": {
-          "type": "string"
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "name"
-      ]
-    },
-    "ApiKeyCreatedResponse": {
-      "type": "object",
-      "properties": {
-        "key": {
-          "$ref": "#/$defs/ApiKeyRecord"
-        },
-        "token": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "key",
-        "token"
-      ]
-    },
-    "ApiKeyRevokeRequest": {
-      "type": "object",
-      "properties": {
-        "id": {
-          "type": "string"
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "id"
-      ]
-    },
-    "ApiKeyRevokeResponse": {
-      "type": "object"
     },
     "VerifySecurityRequest": {
       "type": "object",
       "properties": {
         "threadId": {
           "type": "string"
-        },
-        "acceptOutdatedTee": {
-          "type": "boolean",
-          "default": false
-        },
-        "modelId": {
-          "type": [
-            "string",
-            "null"
-          ]
         }
       },
       "required": [
@@ -2500,11 +2060,7 @@
           "minimum": 0
         },
         "attestationGeneration": {
-          "description": "Relay lease generation, when the provider protocol uses relay leases.",
-          "type": [
-            "integer",
-            "null"
-          ],
+          "type": "integer",
           "format": "uint64",
           "minimum": 0
         },
@@ -2539,6 +2095,12 @@
             "string",
             "null"
           ]
+        },
+        "workloadIdentityAllowlistConfigured": {
+          "type": "boolean"
+        },
+        "approvedWorkloadIdentity": {
+          "type": "boolean"
         }
       },
       "required": [
@@ -2550,10 +2112,13 @@
         "e2eeEncryptionVersion",
         "trustPolicyVersion",
         "verifiedAtUnixSeconds",
+        "attestationGeneration",
         "hardExpiresAtUnixSeconds",
         "modelKeyFingerprint",
         "checks",
-        "providerClaims"
+        "providerClaims",
+        "workloadIdentityAllowlistConfigured",
+        "approvedWorkloadIdentity"
       ]
     },
     "SecurityStatus": {
@@ -2580,8 +2145,6 @@
         "verifying",
         "unattested_development",
         "verified",
-        "degraded",
-        "outdated",
         "failed"
       ]
     },
@@ -2852,6 +2415,22 @@
           "required": [
             "kind",
             "status"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "invoice": {
+              "$ref": "#/$defs/BillingInvoice"
+            },
+            "kind": {
+              "type": "string",
+              "const": "invoice_changed"
+            }
+          },
+          "required": [
+            "kind",
+            "invoice"
           ]
         },
         {

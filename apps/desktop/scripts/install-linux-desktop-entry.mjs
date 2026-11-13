@@ -23,13 +23,13 @@ const workspaceRoot = resolve(desktopRoot, "../..");
 const dataHome = process.env.XDG_DATA_HOME || join(homedir(), ".local", "share");
 const applicationsDir = join(dataHome, "applications");
 const iconsDir = join(dataHome, "icons", "hicolor", "512x512", "apps");
-const staging = process.argv.includes("--staging");
-const desktopPath = join(applicationsDir, staging ? `${APP_ID}.staging.desktop` : LINUX_DESKTOP_FILE);
+const desktopPath = join(applicationsDir, LINUX_DESKTOP_FILE);
 const iconPath = join(iconsDir, `${APP_ID}.png`);
+const staging = process.argv.includes("--staging");
 
 const desktopEntry = `[Desktop Entry]
 Type=Application
-Name=${staging ? `${APP_NAME} Staging` : APP_NAME}
+Name=${APP_NAME}
 Comment=Private AI chat sealed on your machine
 Exec=pnpm --dir ${execArgument(workspaceRoot)} ${staging ? "desktop:staging" : "desktop"}
 Path=${desktopString(workspaceRoot)}

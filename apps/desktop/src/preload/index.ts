@@ -1,8 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
 import { agentApi, type AgentApi } from "./agent-api";
-import { proxyApi } from "./proxy-api";
-import type { ProxyApi } from "../shared/proxy";
-import type { UpdatesApi } from "../shared/updates";
 
 export type DesktopApi = {
   platform: NodeJS.Platform;
@@ -17,8 +14,6 @@ export type DesktopApi = {
   onActiveChange: (callback: (active: boolean) => void) => () => void;
   setTheme: (preference: "light" | "dark" | "system", resolved: "light" | "dark") => void;
   agent: AgentApi;
-  proxy: ProxyApi;
-  updates: UpdatesApi;
 };
 
 const previewArgument = process.argv.find((argument) => argument.startsWith("--axiom-platform-preview="));
@@ -69,25 +64,6 @@ const api: DesktopApi = {
     };
   },
   agent: agentApi,
-  proxy: proxyApi,
-  updates: {
-    onBeforeRestart: callback => {
-      const listener = (_event: unknown, token: string) => {
-        void callback().then(() => ipcRenderer.send('updates:flushed', token, null), () => ipcRenderer.send('updates:flushed', token, true));
-      };
-      ipcRenderer.on('updates:prepare-restart', listener);
-      return () => ipcRenderer.removeListener('updates:prepare-restart', listener);
-    },
-    getState: () => ipcRenderer.invoke("updates:state"),
-    check: () => ipcRenderer.invoke("updates:check"),
-    install: () => ipcRenderer.invoke("updates:install"),
-    cancel: () => ipcRenderer.invoke("updates:cancel"),
-    onStateChange: (callback) => {
-      const listener = (_event: unknown, state: Parameters<typeof callback>[0]) => callback(state);
-      ipcRenderer.on("updates:state-changed", listener);
-      return () => ipcRenderer.removeListener("updates:state-changed", listener);
-    },
-  },
 };
 
 contextBridge.exposeInMainWorld("axiomDesktop", api);

@@ -1,22 +1,14 @@
-import {prepareUpdateRestart} from './update-lifecycle';
-import { validatePrompt } from "@axiom/axiom-acp-client";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { spawn } from "node:child_process";
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, nativeTheme, shell, type IpcMainInvokeEvent } from "electron";
-import { createChildEnvironment, DESKTOP_SIDECAR_INHERITED_ENV } from "@axiom/axiom-acp-client";
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, shell, type IpcMainInvokeEvent } from "electron";
 import type { ElicitationOutcome, ListThreadsRequest, LoginMethod, PermissionOutcome, ThreadSettingsRequest } from "@axiom/axiom-acp-client";
-import { AgentSidecar, resolveSidecar } from "./agent-sidecar";
-import { ProxySupervisor } from "./proxy-supervisor";
+import { AgentSidecar } from "./agent-sidecar";
 import { agentRevision, desktopAgentRequest } from "./desktop-agent-settings";
-import { requirePaymentAccount, resolveServiceOrigins, STAGING_API_ORIGIN } from "./service-origins";
+import { activeInvoicePaymentUrl, requirePaymentAccount, resolveServiceOrigins, STAGING_API_ORIGIN } from "./service-origins";
 import { platformWindowChrome } from "./window-chrome";
 import { installMacCli } from "./install-cli";
 import { APP_ID, APP_NAME, setLinuxDesktopIdentity } from "../../scripts/desktop-identity.mjs";
-import { UpdateService } from "./update-service";
-import { updateIdentity } from "./update-identity";
-import { nativeUpdates } from "./native-updates";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -27,27 +19,8 @@ const BACKGROUND_DARK = "#141416";
 const IS_STAGING_PROFILE = !app.isPackaged && process.env.AXIOM_DESKTOP_STAGING_PROFILE === "1";
 // TODO(brand): confirm the legal line before release.
 const COPYRIGHT = "© 2026 Astrea Foundation";
-const proxy = new ProxySupervisor(async (port, accountId, token) => {
-  const command = await resolveSidecar();
-  const origins = resolveServiceOrigins({ packaged: app.isPackaged, authUrl: process.env.AXIOM_AUTH_URL, apiUrl: process.env.AXIOM_BASE_URL });
-  return spawn(command, ["desktop-proxy", "--account-id", accountId, "--bind", `127.0.0.1:${port}`, "--axiom-base-url", origins.api], {
-    cwd: app.getPath("home"), windowsHide: true, stdio: "pipe",
-    env: createChildEnvironment(process.env, {
-      AXIOM_AUTH_URL: origins.auth, AXIOM_BASE_URL: origins.api, AXIOM_PROXY_TOKEN: token,
-      ...(IS_STAGING_PROFILE ? {
-        XDG_CONFIG_HOME: join(app.getPath("home"), ".axiom-staging", "config"),
-        XDG_DATA_HOME: join(app.getPath("home"), ".axiom-staging", "data"),
-      } : {}),
-    }, ["AXIOM_API_KEY"], DESKTOP_SIDECAR_INHERITED_ENV),
-  });
-}, (state) => {
-  for (const window of BrowserWindow.getAllWindows()) window.webContents.send("proxy:state-changed", state);
-});
-const sidecar = new AgentSidecar((state) => {
-  proxy.setAccount(state.connected && state.account?.state === "valid" ? state.account.account?.id ?? null : null, state.runtimeInstanceId);
-});
+const sidecar = new AgentSidecar();
 let shutdownStarted = false;
-let updates: UpdateService | undefined;
 // Dev-only: preview another platform's chrome (AXIOM_DESKTOP_PLATFORM_PREVIEW=win32).
 const PLATFORM_PREVIEW = app.isPackaged ? undefined : process.env.AXIOM_DESKTOP_PLATFORM_PREVIEW;
 
@@ -99,6 +72,25 @@ function loginMethod(value: unknown): LoginMethod | undefined {
   return value as LoginMethod;
 }
 
+function invoiceAmount(value: unknown): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 1 || (value as number) > 10_000_000) {
+    throw new Error("invoice amount is invalid");
+  }
+  return value as number;
+}
+
+function invoiceClientRequestId(value: unknown): string {
+  const requestId = boundedString(value, "invoice client request ID", 128);
+  if (!/^[A-Za-z0-9_.:-]+$/.test(requestId)) throw new Error("invoice client request ID is invalid");
+  return requestId;
+}
+
+function invoiceId(value: unknown): string {
+  const id = boundedString(value, "invoice ID", 32);
+  if (!/^[0-9a-f]{32}$/.test(id)) throw new Error("invoice ID is invalid");
+  return id;
+}
+
 type AgentHandler = (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown;
 
 function agentHandle(channel: string, handler: AgentHandler): void {
@@ -112,33 +104,12 @@ function agentHandle(channel: string, handler: AgentHandler): void {
     if (!trusted || !BrowserWindow.fromWebContents(event.sender)) {
       throw new Error("agent IPC rejected an untrusted renderer");
     }
-    if (updates?.snapshot().status === 'installing' && (channel.startsWith('agent:prompt') || channel === 'proxy:start')) {
-      throw new Error('Axiom is installing an update. Wait for it to restart.');
-    }
     return handler(event, ...args);
   });
 }
 
 function installAgentIpc(): void {
-  agentHandle("proxy:state", () => proxy.snapshot());
-  agentHandle("proxy:start", (_event, port: unknown, accountId: unknown, runtimeId: unknown) => {
-    if (!Number.isInteger(port) || (port as number) < 1 || (port as number) > 65535) throw new Error("Port must be between 1 and 65535");
-    return proxy.start(port as number, boundedString(accountId, "account ID", 128), boundedString(runtimeId, "runtime ID", 128));
-  });
-  agentHandle("proxy:stop", () => proxy.stop());
-  agentHandle("proxy:copy-token", (_event, accountId: unknown, runtimeId: unknown) => {
-    clipboard.writeText(proxy.copyToken(boundedString(accountId, "account ID", 128), boundedString(runtimeId, "runtime ID", 128)));
-  });
   agentHandle("agent:state", () => sidecar.state());
-  agentHandle("agent:usage-summary", async (_event, accountId: unknown, period: unknown = "all_time", timezone: unknown = "UTC") => {
-    const id = boundedString(accountId, "account ID", 128);
-    if (period !== "week" && period !== "month" && period !== "all_time") throw new Error("Invalid usage period");
-    const zone = boundedString(timezone, "timezone", 128);
-    requirePaymentAccount(id, sidecar.state());
-    const result = await sidecar.usageSummary({ period, timezone: zone });
-    requirePaymentAccount(id, sidecar.state());
-    return result;
-  });
   agentHandle("agent:desktop-bootstrap", () => sidecar.desktopBootstrap());
   agentHandle("agent:chat-new", () => sidecar.newChat());
   agentHandle("agent:chat-load", (_event, sessionId: unknown) =>
@@ -155,22 +126,6 @@ function installAgentIpc(): void {
       webEnabled,
       agentRevision(revision),
     );
-  });
-  agentHandle("agent:prompt-with-attachments", (_event, sessionId: unknown, text: unknown, clientItemId: unknown, webEnabled: unknown, revision: unknown, attachments: unknown) => {
-    if (typeof webEnabled !== "boolean" || typeof text !== "string") throw new Error("Invalid prompt input");
-    validatePrompt(text, attachments);
-    return sidecar.prompt(boundedString(sessionId, "thread ID", 128), text, boundedString(clientItemId, "client item ID", 512), webEnabled, agentRevision(revision), undefined, attachments);
-  });
-  agentHandle("agent:attachments", (_event, threadId: unknown, userItemId: unknown) =>
-    sidecar.getAttachments(boundedString(threadId, "thread ID", 128), boundedString(userItemId, "user message ID", 512)));
-  agentHandle("agent:prompt-revise", (_event, sessionId: unknown, text: unknown, userItemId: unknown, expectedRevision: unknown, webEnabled: unknown, revision: unknown) => {
-    if (typeof webEnabled !== "boolean") throw new Error("webEnabled must be a boolean");
-    if (typeof text !== "string") throw new Error("Invalid prompt input");
-    validatePrompt(text, [], true);
-    return sidecar.prompt(boundedString(sessionId, "thread ID", 128), text,
-      crypto.randomUUID(), webEnabled, agentRevision(revision), {
-        userItemId: boundedString(userItemId, "user message ID", 512), expectedRevision: agentRevision(expectedRevision),
-      });
   });
   agentHandle("agent:cancel", (_event, sessionId: unknown) =>
     sidecar.cancel(boundedString(sessionId, "session ID", 128)),
@@ -243,34 +198,28 @@ function installAgentIpc(): void {
     return sidecar.setSettings(settings);
   });
   agentHandle("agent:account-status", () => sidecar.accountStatus());
-  agentHandle("agent:api-keys", async (_event, accountId: unknown) => {
-    const id = boundedString(accountId, "account ID", 128);
-    requirePaymentAccount(id, sidecar.state());
-    const result = await sidecar.apiKeys();
-    requirePaymentAccount(id, sidecar.state());
-    return result;
-  });
-  agentHandle("agent:api-key-create", async (_event, name: unknown, accountId: unknown) => {
-    const id = boundedString(accountId, "account ID", 128);
-    requirePaymentAccount(id, sidecar.state());
-    const result = await sidecar.createApiKey(boundedString(name, "API key name", 480));
-    requirePaymentAccount(id, sidecar.state());
-    return result;
-  });
-  agentHandle("agent:api-key-revoke", async (_event, keyId: unknown, accountId: unknown) => {
-    const id = boundedString(accountId, "account ID", 128);
-    requirePaymentAccount(id, sidecar.state());
-    const result = await sidecar.revokeApiKey(boundedString(keyId, "API key ID", 128));
-    requirePaymentAccount(id, sidecar.state());
-    return result;
-  });
   agentHandle("agent:billing-status", () => sidecar.billingStatus());
-  agentHandle("agent:redeem-gift-code", async (_event, code: unknown, accountId: unknown) => {
-    const id = boundedString(accountId, "account ID", 128);
-    requirePaymentAccount(id, sidecar.state());
-    const result = await sidecar.redeemGiftCode(boundedString(code, "gift code", 64));
-    requirePaymentAccount(id, sidecar.state());
-    return result;
+  agentHandle("agent:billing-invoice-create", (_event, amountUsdCents: unknown, clientRequestId: unknown, accountId: unknown) => {
+    requirePaymentAccount(boundedString(accountId, "account ID", 128), sidecar.state());
+    return sidecar.createBillingInvoice(
+      invoiceAmount(amountUsdCents),
+      invoiceClientRequestId(clientRequestId),
+    );
+  });
+  agentHandle("agent:billing-invoice-status", (_event, value: unknown) =>
+    sidecar.billingInvoiceStatus(invoiceId(value)),
+  );
+  // This is the only payment navigation capability exposed to the renderer.
+  // Only a Top up/Reopen checkout gesture invokes this handler. Background
+  // invoice/balance polling never opens a browser. Revalidate current account
+  // state after async invoice creation, immediately before delegating to the OS.
+  agentHandle("agent:billing-open-payment", async (_event, value: unknown, accountId: unknown) => {
+    const paymentUrl = activeInvoicePaymentUrl(
+      boundedString(value, "invoice payment URL", 4_096),
+      sidecar.state(),
+      boundedString(accountId, "account ID", 128),
+    );
+    await shell.openExternal(paymentUrl);
   });
   agentHandle("agent:native-login-start", (_event, methodHint: unknown) =>
     sidecar.nativeLoginStart(loginMethod(methodHint)),
@@ -282,10 +231,9 @@ function installAgentIpc(): void {
     sidecar.nativeLoginCancel(boundedString(loginId, "login ID", 128)),
   );
   agentHandle("agent:account-open", () => sidecar.openAccountPortal());
-  agentHandle("agent:logout", async () => { await proxy.stop(); return sidecar.logout(); });
-  agentHandle("agent:security-verify", (_event, sessionId: unknown, acceptOutdatedTee: unknown, modelId: unknown) =>
-    sidecar.verifySecurity(boundedString(sessionId, "session ID", 128), acceptOutdatedTee === true,
-      acceptOutdatedTee === true ? boundedString(modelId, "model ID", 512) : undefined),
+  agentHandle("agent:logout", () => sidecar.logout());
+  agentHandle("agent:security-verify", (_event, sessionId: unknown) =>
+    sidecar.verifySecurity(boundedString(sessionId, "session ID", 128)),
   );
   agentHandle("agent:compact", (_event, sessionId: unknown, focus: unknown) =>
     sidecar.compact(
@@ -541,29 +489,7 @@ if (primaryInstance) app.on("second-instance", () => {
   window.focus();
 });
 
-if (primaryInstance) void app.whenReady().then(async () => {
-  const metadata = app.isPackaged
-    ? JSON.parse(await readFile(join(app.getAppPath(), "package.json"), "utf8")) as { axiomUpdateFormat?: unknown; axiomUpdateChannel?: string }
-    : {};
-  updates = new UpdateService(updateIdentity({ version: app.getVersion(), platform: process.platform,
-    arch: process.arch, packaged: app.isPackaged && metadata.axiomUpdateChannel === 'stable', packageFormat: metadata.axiomUpdateFormat, appImage: process.env.APPIMAGE }), {
-    run: nativeUpdates(resolveSidecar),
-    parentPid: process.pid,
-    prepareRestart: prepareUpdateRestart,
-    canRestart: () => !Object.values(sidecar.state().sessions).some(session => session.running)
-      && !['running', 'starting', 'stopping'].includes(proxy.snapshot().status),
-    restart: async () => {
-      await Promise.all([proxy.dispose(), sidecar.stop()]);
-      app.quit();
-    },
-    emit: (state) => {
-      for (const window of BrowserWindow.getAllWindows()) window.webContents.send("updates:state-changed", state);
-    },
-  });
-  agentHandle("updates:state", () => updates!.snapshot());
-  agentHandle("updates:check", () => updates!.check());
-  agentHandle("updates:install", () => updates!.install());
-  agentHandle("updates:cancel", () => updates!.cancel());
+if (primaryInstance) void app.whenReady().then(() => {
   installAgentIpc();
   ipcMain.on("window:minimize", (event) => {
     BrowserWindow.fromWebContents(event.sender)?.minimize();
@@ -597,7 +523,6 @@ if (primaryInstance) void app.whenReady().then(async () => {
   });
 
   const window = createWindow();
-  updates.start();
   void sidecar.start().catch((error: unknown) => {
     console.error("Could not start AxiomCLI sidecar", error);
   });
@@ -630,5 +555,5 @@ app.on("before-quit", (event) => {
   if (shutdownStarted) return;
   event.preventDefault();
   shutdownStarted = true;
-  void Promise.all([proxy.dispose(), sidecar.stop(), updates?.dispose()]).finally(() => app.quit());
+  void sidecar.stop().finally(() => app.quit());
 });

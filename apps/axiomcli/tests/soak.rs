@@ -14,7 +14,6 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 #[test]
-#[ignore = "performance benchmark; run scripts/axiomcli-eval deterministic explicitly"]
 fn repeated_cli_startup_stays_within_the_development_budget() {
     let started = std::time::Instant::now();
     for _ in 0..10 {
@@ -72,21 +71,12 @@ impl InferenceProvider for LongStreamProvider {
 }
 
 #[tokio::test]
-async fn stream_deltas_merge_into_one_bounded_persisted_message() {
-    check_stream_and_transcript(64, 32, false).await;
-}
-
-#[tokio::test]
-#[ignore = "durable-write soak benchmark; run scripts/axiomcli-eval deterministic explicitly"]
 async fn long_stream_and_many_transcript_entries_stay_within_recorded_budgets() {
-    check_stream_and_transcript(10_000, 5_000, true).await;
-}
-
-async fn check_stream_and_transcript(chunks: usize, checkpoints: usize, benchmark: bool) {
+    const CHUNKS: usize = 10_000;
     let workspace = tempfile::tempdir().expect("workspace");
     let engine = AgentEngine::with_limits(
         Arc::new(LongStreamProvider {
-            chunks,
+            chunks: CHUNKS,
             chunk: "petal-stream-0123456789abcdef\n".into(),
         }),
         Arc::new(ToolRegistry::new()),
@@ -115,7 +105,6 @@ async fn check_stream_and_transcript(chunks: usize, checkpoints: usize, benchmar
     engine
         .run(
             TurnContext {
-                attachments: Vec::new(),
                 session_id: SessionId::new(),
                 turn_id: TurnId::new(),
                 cwd: workspace.path().to_path_buf(),
@@ -132,11 +121,9 @@ async fn check_stream_and_transcript(chunks: usize, checkpoints: usize, benchmar
         .await
         .expect("long stream");
     let (deltas, retained_bytes) = collector.await.expect("event collector");
-    assert_eq!(deltas, chunks);
-    assert_eq!(retained_bytes, chunks * 30);
-    if benchmark {
-        assert!(started.elapsed() < Duration::from_secs(10));
-    }
+    assert_eq!(deltas, CHUNKS);
+    assert_eq!(retained_bytes, CHUNKS * 30);
+    assert!(started.elapsed() < Duration::from_secs(10));
 
     let state = tempfile::tempdir().expect("state");
     let database = state.path().join("state.sqlite3");
@@ -156,7 +143,6 @@ async fn check_stream_and_transcript(chunks: usize, checkpoints: usize, benchmar
     let turn_id = TurnId::new();
     let submitted = runtime
         .dispatch(AppCommand::SubmitPrompt {
-            attachments: Vec::new(),
             session_id: session_id.clone(),
             turn_id: turn_id.clone(),
             text: "stream a long response".into(),
@@ -165,7 +151,7 @@ async fn check_stream_and_transcript(chunks: usize, checkpoints: usize, benchmar
         .expect("submit prompt");
     store.append_all(&submitted).expect("persist prompt");
     let persistence_started = std::time::Instant::now();
-    for index in 0..checkpoints {
+    for index in 0..5_000 {
         let event = runtime
             .emit(
                 session_id.clone(),
@@ -202,21 +188,12 @@ async fn check_stream_and_transcript(chunks: usize, checkpoints: usize, benchmar
     assert!(export.len() < 512 * 1024);
     let persistence_elapsed = persistence_started.elapsed();
     let database_bytes = std::fs::metadata(database).expect("database").len();
+    assert!(persistence_elapsed < Duration::from_secs(10));
+    assert!(database_bytes < 16 * 1024 * 1024);
     eprintln!(
-        "session summary: stream_chunks={chunks} transcript_checkpoints={checkpoints} persistence_ms={} database_bytes={database_bytes}",
+        "long-session summary: stream_chunks={CHUNKS} transcript_checkpoints=5000 persistence_ms={} database_bytes={database_bytes}",
         persistence_elapsed.as_millis()
     );
-    // Hosted Windows disks have substantially higher per-commit flush latency:
-    // 5,000 separate durable commits measured 103 seconds on windows-latest.
-    // Keep the same commit count and storage bounds with platform I/O budgets.
-    let persistence_budget = Duration::from_secs(if cfg!(windows) { 180 } else { 30 });
-    if benchmark {
-        assert!(
-            persistence_elapsed < persistence_budget,
-            "{checkpoints} durable checkpoints took {persistence_elapsed:?}, budget {persistence_budget:?}"
-        );
-    }
-    assert!(database_bytes < 16 * 1024 * 1024);
 }
 
 #[tokio::test]

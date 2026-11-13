@@ -6,26 +6,6 @@ export type TimelinePresentationRow =
   | { kind: "tool"; key: string; item: ClientTimelineItem }
   | { kind: "activity"; key: string; item: ClientTimelineItem };
 
-/** Revisions replace whole turns; a steering message is not a turn boundary. */
-export function messageRevisionSources(items: ClientTimelineItem[]): Map<string, ClientTimelineItem> {
-  const sources = new Map<string, ClientTimelineItem>();
-  const turns = new Map<string, ClientTimelineItem>();
-  let latest: ClientTimelineItem | undefined;
-  for (const item of items) {
-    if (item.kind === "user") {
-      const metadata = (item.raw as { metadata?: { steering?: boolean } } | undefined)?.metadata;
-      if (metadata?.steering || (item.turnId && turns.has(item.turnId))) continue;
-      latest = item;
-      if (item.turnId) turns.set(item.turnId, item);
-      sources.set(item.id, item);
-    } else if (item.kind === "assistant" || item.kind === "reasoning") {
-      const source = item.turnId ? turns.get(item.turnId) : latest;
-      if (source) sources.set(item.id, source);
-    }
-  }
-  return sources;
-}
-
 function messageStatus(
   status: string | undefined,
   fallback: Message["status"] = "complete",
@@ -113,7 +93,7 @@ function emptyTerminalAssistant(item: ClientTimelineItem): boolean {
     && !["pending", "in_progress", "streaming"].includes(item.status ?? "");
 }
 
-function routineNotice(item: ClientTimelineItem): boolean {
+function routineProviderNotice(item: ClientTimelineItem): boolean {
   // Standard ACP presents connection notices as thought chunks. They are
   // operational status, not model reasoning. Failed connections remain visible.
   if (item.kind === "reasoning" && /^provider:\d+$/.test(item.id)) {
@@ -124,7 +104,7 @@ function routineNotice(item: ClientTimelineItem): boolean {
   if (raw.kind !== "notice" || !raw.metadata || typeof raw.metadata !== "object") return false;
   const code = (raw.metadata as Record<string, unknown>).code;
   // Keep these records in durable history; the composer owns their UI.
-  return code === "provider_status" || code === "security_status" || code === "permission";
+  return code === "provider_status" || code === "security_status";
 }
 
 export function hasActiveResponse(rows: TimelinePresentationRow[]): boolean {
@@ -150,7 +130,7 @@ export function hasActiveResponse(rows: TimelinePresentationRow[]): boolean {
 export function presentTimeline(items: ClientTimelineItem[]): TimelinePresentationRow[] {
   // Filter before grouping so invisible status records cannot split a model's
   // reasoning and assistant output into two separate generation indicators.
-  const timeline = items.filter((item) => !routineNotice(item));
+  const timeline = items.filter((item) => !routineProviderNotice(item));
   const rows: TimelinePresentationRow[] = [];
   for (let index = 0; index < timeline.length; index += 1) {
     const item = timeline[index];

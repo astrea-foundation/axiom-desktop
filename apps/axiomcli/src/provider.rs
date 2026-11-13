@@ -32,15 +32,6 @@ pub struct ProviderSecurityVerification {
 
 #[async_trait]
 pub trait InferenceProvider: Send + Sync {
-    async fn accept_outdated_tee(
-        &self,
-        _model: &str,
-        _cancellation: CancellationToken,
-    ) -> Result<ProviderSecurityVerification> {
-        Err(AxiomError::Provider(
-            "this provider does not support outdated-TEE consent".into(),
-        ))
-    }
     /// Establish and verify the selected model's security session without
     /// performing inference. Front ends use this as a startup preflight.
     async fn verify_security(
@@ -134,10 +125,7 @@ impl SecureAxiomProvider {
         Self::new(relay_base_url, api_key, timeout)
     }
 
-    pub(crate) async fn client(
-        &self,
-        cancellation: &CancellationToken,
-    ) -> Result<Arc<SecureClient>> {
+    async fn client(&self, cancellation: &CancellationToken) -> Result<Arc<SecureClient>> {
         let value = match &self.credential {
             ProviderCredential::Fixed(value) => value.expose_secret().to_owned(),
             ProviderCredential::Managed(manager) => manager
@@ -171,7 +159,6 @@ impl SecureAxiomProvider {
         &self,
         model_id: &str,
         cancellation: CancellationToken,
-        refresh_attestation: bool,
     ) -> Result<(
         Arc<SecureClient>,
         ModelInfo,
@@ -195,11 +182,6 @@ impl SecureAxiomProvider {
             .trust_policy(cancellation.clone())
             .await
             .map_err(map_secure_error)?;
-        if refresh_attestation {
-            // An explicit verification must obtain a new local attestation,
-            // not merely return the reusable lease used by ordinary inference.
-            client.invalidate(model).await.map_err(map_secure_error)?;
-        }
         let session = client
             .establish(model, &trust_policy, cancellation)
             .await
@@ -220,41 +202,14 @@ impl std::fmt::Debug for SecureAxiomProvider {
 
 #[async_trait]
 impl InferenceProvider for SecureAxiomProvider {
-    async fn accept_outdated_tee(
-        &self,
-        model: &str,
-        cancellation: CancellationToken,
-    ) -> Result<ProviderSecurityVerification> {
-        let client = self.client(&cancellation).await?;
-        let models = client
-            .models(cancellation.clone())
-            .await
-            .map_err(map_secure_error)?;
-        let model_info = models
-            .iter()
-            .find(|entry| entry.id == model)
-            .ok_or_else(|| AxiomError::Provider("selected secure model is unavailable".into()))?;
-        if cancellation.is_cancelled() {
-            return Err(AxiomError::Cancelled);
-        }
-        self.config
-            .accept_outdated_tee_for_provider(&model_info.provider_id)
-            .map_err(map_secure_error)?;
-        self.verify_security(model, cancellation).await
-    }
-
     async fn verify_security(
         &self,
         model: &str,
         cancellation: CancellationToken,
     ) -> Result<ProviderSecurityVerification> {
-        let (_, _, session) = self.establish_verified(model, cancellation, true).await?;
+        let (_, _, session) = self.establish_verified(model, cancellation).await?;
         Ok(ProviderSecurityVerification {
-            state: if session.evidence().state == axiom_secure_client::SecurityState::Degraded {
-                ProviderSecurityState::Degraded
-            } else {
-                ProviderSecurityState::Verified
-            },
+            state: ProviderSecurityState::Verified,
             evidence: Some(session.evidence().clone()),
         })
     }
@@ -279,7 +234,7 @@ impl InferenceProvider for SecureAxiomProvider {
         };
         let output = events;
         output
-            .send(ProviderEvent::Accounting(Box::new(accounting.clone())))
+            .send(ProviderEvent::Accounting(accounting.clone()))
             .await
             .map_err(|_| AxiomError::Cancelled)?;
         let (events, mut incoming) = mpsc::channel(64);
@@ -301,7 +256,7 @@ impl InferenceProvider for SecureAxiomProvider {
             )
             .await?;
             let (client, model, mut session) = match self
-                .establish_verified(&request.model, cancellation.clone(), false)
+                .establish_verified(&request.model, cancellation.clone())
                 .await
             {
                 Ok(session) => session,
@@ -309,13 +264,7 @@ impl InferenceProvider for SecureAxiomProvider {
             };
             send_provider_event(
                 &events,
-                ProviderEvent::SecurityState(
-                    if session.evidence().state == axiom_secure_client::SecurityState::Degraded {
-                        ProviderSecurityState::Degraded
-                    } else {
-                        ProviderSecurityState::Verified
-                    },
-                ),
+                ProviderEvent::SecurityState(ProviderSecurityState::Verified),
                 &cancellation,
             )
             .await?;
@@ -326,7 +275,7 @@ impl InferenceProvider for SecureAxiomProvider {
                 Some(model.auto_compact_threshold_tokens());
             send_provider_event(
                 &events,
-                ProviderEvent::Accounting(Box::new(established_accounting)),
+                ProviderEvent::Accounting(established_accounting),
                 &cancellation,
             )
             .await?;
@@ -354,19 +303,11 @@ impl InferenceProvider for SecureAxiomProvider {
                         )
                         .await?;
                         let (_, _, mut refreshed) = self
-                            .establish_verified(&retry_request.model, cancellation.clone(), false)
+                            .establish_verified(&retry_request.model, cancellation.clone())
                             .await?;
                         send_provider_event(
                             &retry_events,
-                            ProviderEvent::SecurityState(
-                                if session.evidence().state
-                                    == axiom_secure_client::SecurityState::Degraded
-                                {
-                                    ProviderSecurityState::Degraded
-                                } else {
-                                    ProviderSecurityState::Verified
-                                },
-                            ),
+                            ProviderEvent::SecurityState(ProviderSecurityState::Verified),
                             &cancellation,
                         )
                         .await?;
@@ -430,12 +371,12 @@ impl InferenceProvider for SecureAxiomProvider {
             });
         } else if !accounting.response_verified {
             result = Err(AxiomError::Provider(
-                "Response authentication was not verified".into(),
+                "Response receipt was not verified".into(),
             ));
             accounting.state = InvocationState::Failed;
         }
         output
-            .send(ProviderEvent::Accounting(Box::new(accounting)))
+            .send(ProviderEvent::Accounting(accounting))
             .await
             .map_err(|_| AxiomError::Cancelled)?;
         result
@@ -479,7 +420,7 @@ fn update_request_accounting(
             let verified = record.response_verified;
             let context_window = record.context_window_tokens;
             let compact_at = record.auto_compact_threshold_tokens;
-            *record = *snapshot.clone();
+            *record = snapshot.clone();
             record.response_verified = verified;
             record.context_window_tokens = record.context_window_tokens.or(context_window);
             record.auto_compact_threshold_tokens =
@@ -487,7 +428,7 @@ fn update_request_accounting(
         }
         ProviderEvent::ResponseVerified => record.response_verified = true,
         ProviderEvent::Finished(reason) => {
-            record.finish_reason = Some(format!("{reason:?}").to_lowercase());
+            record.finish_reason = Some(format!("{reason:?}").to_lowercase())
         }
         _ => {}
     }
@@ -526,19 +467,7 @@ async fn secure_stream_failure<T>(
     ) {
         let _ = send_provider_event(
             events,
-            ProviderEvent::SecurityState(
-                if matches!(
-                    &error,
-                    AxiomError::SecureProvider {
-                        code: "PROVIDER_TDX_OUT_OF_DATE",
-                        ..
-                    }
-                ) {
-                    ProviderSecurityState::Outdated
-                } else {
-                    ProviderSecurityState::Failed
-                },
-            ),
+            ProviderEvent::SecurityState(ProviderSecurityState::Failed),
             &CancellationToken::new(),
         )
         .await;

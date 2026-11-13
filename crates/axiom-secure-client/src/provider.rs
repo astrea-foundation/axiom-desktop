@@ -45,7 +45,7 @@ pub trait SecureProvider: sealed::Provider + Send + Sync {
 
     /// Whether this installed provider engine understands the complete
     /// cryptographic contract. Server advertisements can offer rollout
-    /// choices, but cannot add cryptographic protocols the driver does not implement.
+    /// choices, but cannot expand this local allowlist.
     fn supports_contract(
         &self,
         e2ee_protocol: &str,
@@ -83,10 +83,10 @@ impl ProviderRegistry {
                 config.clone(),
                 Arc::clone(&credential),
             )) as Arc<dyn SecureProvider>;
-            let tinfoil = Arc::new(crate::providers::tinfoil::TinfoilProvider::new(
+            let phala = Arc::new(crate::providers::phala::PhalaProvider::new(
                 config, credential,
             )) as Arc<dyn SecureProvider>;
-            Self::new([near, tinfoil])
+            Self::new([near, phala])
         }
         #[cfg(feature = "test-fixture")]
         {
@@ -94,11 +94,11 @@ impl ProviderRegistry {
                 config.clone(),
                 Arc::clone(&credential),
             )) as Arc<dyn SecureProvider>;
-            let tinfoil = Arc::new(crate::providers::tinfoil::TinfoilProvider::new(
+            let phala = Arc::new(crate::providers::phala::PhalaProvider::new(
                 config.clone(),
                 Arc::clone(&credential),
             )) as Arc<dyn SecureProvider>;
-            let mut providers = vec![near, tinfoil];
+            let mut providers = vec![near, phala];
             if config.uses_test_fixture() {
                 providers.push(Arc::new(crate::providers::fixture::FixtureProvider::new(
                     config, credential,
