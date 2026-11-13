@@ -9,7 +9,7 @@ const PNG_SIGNATURE = [137, 80, 78, 71, 13, 10, 26, 10];
 
 function validDimensions(width: unknown, height: unknown): width is number {
   return typeof width === "number" && typeof height === "number" && width >= 256 && height >= 256
-    && width <= 8192 && height <= 8192 && width % 32 === 0 && height % 32 === 0 && width * height <= 1536 * 1536;
+    && width <= 8192 && height <= 8192 && width % 32 === 0 && height % 32 === 0 && width * height <= 2048 * 2048;
 }
 
 /** One instance per webContents. Native image descriptors become opaque local
@@ -30,11 +30,11 @@ export class AgentStateTransport {
     const result = await read(image.request);
     if (current() !== image) throw new Error("Image context changed while loading");
     if (result.mimeType !== "image/png" || result.sha256 !== image.request.sha256
-      || result.width !== image.width || result.height !== image.height || result.data.length > 14_000_000) {
+      || result.width !== image.width || result.height !== image.height || result.data.length > 28_000_000) {
       throw new Error("Saved image identity differs");
     }
     const bytes = Buffer.from(result.data, "base64");
-    if (bytes.length < 24 || bytes.length > 10 * 1024 * 1024 || bytes.toString("base64") !== result.data
+    if (bytes.length < 24 || bytes.length > 20 * 1024 * 1024 || bytes.toString("base64") !== result.data
       || !PNG_SIGNATURE.every((n, i) => bytes[i] === n) || bytes.readUInt32BE(16) !== image.width
       || bytes.readUInt32BE(20) !== image.height || createHash("sha256").update(bytes).digest("hex") !== image.request.sha256) {
       throw new Error("Saved image content differs");
@@ -85,17 +85,17 @@ export class AgentStateTransport {
           return { type: "image", mimeType: "image/png", axiomImageAsset: image.id, lazy: true, width: image.width, height: image.height };
         }
         if (!this.context || block.mimeType !== "image/png" || typeof block.data !== "string"
-          || block.data.length > 14_000_000) return empty;
+          || block.data.length > 28_000_000) return empty;
         const data = block.data;
         let image = this.images.get(data);
         let bytes: Buffer | undefined;
         if (!image) {
           bytes = Buffer.from(data, "base64");
-          if (bytes.length < 24 || bytes.length > 10 * 1024 * 1024
+          if (bytes.length < 24 || bytes.length > 20 * 1024 * 1024
             || bytes.toString("base64") !== data || !PNG_SIGNATURE.every((n, i) => bytes![i] === n)) return empty;
           const width = bytes.readUInt32BE(16), height = bytes.readUInt32BE(20);
           if (width < 256 || height < 256 || width > 8192 || height > 8192
-            || width % 32 || height % 32 || width * height > 1536 * 1536) return empty;
+            || width % 32 || height % 32 || width * height > 2048 * 2048) return empty;
           image = { id: randomUUID(), width, height, sent: false };
           this.images.set(data, image);
         }

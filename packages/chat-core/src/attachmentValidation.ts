@@ -1,9 +1,9 @@
 import type { PromptAttachment } from "./viewTypes.js";
 
 export const MAX_PROMPT_BYTES = 4 * 1024 * 1024;
-export const MAX_ATTACHMENT_BYTES = 16 * 1024 * 1024;
+export const MAX_ATTACHMENT_BYTES = 144 * 1024 * 1024;
 export const MAX_FILE_BYTES = 10 * 1024 * 1024;
-export const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+export const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 export const MAX_ATTACHMENTS = 10;
 const bytes = (text: string) => new TextEncoder().encode(text).length;
 
@@ -32,14 +32,14 @@ export function validatePrompt(text: unknown, attachments: unknown, allowEmpty =
       const image = file.image;
       if (!image || !["image/png", "image/jpeg", "image/webp", "image/gif"].includes(image.mimeType) || typeof image.data !== "string"
         || !image.data.length || image.data.length > Math.ceil(MAX_IMAGE_BYTES / 3) * 4
-        || (image.data.length % 4 !== 0 || /[^A-Za-z0-9+/]/u.test(image.data.replace(/={1,2}$/u, "")))) throw new Error(`${file.name}: use a PNG, JPEG, WebP, or GIF image up to 5 MiB.`);
+        || (image.data.length % 4 !== 0 || /[^A-Za-z0-9+/]/u.test(image.data.replace(/={1,2}$/u, "")))) throw new Error(`${file.name}: use a PNG, JPEG, WebP, or GIF image up to 20 MiB.`);
       const rawSize = image.data.length / 4 * 3 - (image.data.endsWith("==") ? 2 : image.data.endsWith("=") ? 1 : 0);
-      if (rawSize > MAX_IMAGE_BYTES) throw new Error(`${file.name}: image exceeds 5 MiB.`);
+      if (rawSize > MAX_IMAGE_BYTES) throw new Error(`${file.name}: image exceeds 20 MiB.`);
       combinedText += `\n[Attached image ${JSON.stringify(file.name)}]`;
     } else throw new Error("Unsupported attachment type.");
   }
   if (bytes(combinedText) > MAX_PROMPT_BYTES) throw new Error("The message and attachment names together must fit within 4 MiB.");
-  if (promptBytes(text, attachments) > MAX_ATTACHMENT_BYTES) throw new Error("The message and encoded files together must fit within 16 MiB.");
+  if (promptBytes(text, attachments) > MAX_ATTACHMENT_BYTES) throw new Error("The message and encoded files together must fit within 144 MiB.");
 }
 
 export type { PromptAttachment } from "./viewTypes.js";

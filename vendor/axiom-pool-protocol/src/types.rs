@@ -315,7 +315,7 @@ impl Input {
                 let mut pixels = 0u64;
                 for image in references {
                     ensure!(image.mime_type == "image/png", "PNG reference required");
-                    pixels += image.validate()?;
+                    pixels += image.validate_reference()?;
                 }
                 ensure!(
                     pixels <= binding.limits.input_image_pixels,

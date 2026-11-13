@@ -20,12 +20,12 @@ function imageBlock(value: unknown): ToolImage | null {
   if (!block || typeof block !== "object") return null;
   const image = block as Record<string,unknown>;
   if (image.type !== "image" || image.mimeType !== "image/png") return null;
-  if (typeof image.data === "string" && image.data.length <= 14_000_000) return image as ToolImage;
+  if (typeof image.data === "string" && image.data.length <= 28_000_000) return image as ToolImage;
   const width = image.width, height = image.height;
   return ((typeof image.imageUrl === "string" && image.imageUrl.startsWith("blob:"))
     || (typeof image.assetId === "string" && image.assetId.length > 0 && image.assetId.length <= 128))
     && typeof width === "number" && typeof height === "number" && width >= 256 && height >= 256
-    && width <= 8192 && height <= 8192 && width % 32 === 0 && height % 32 === 0 && width * height <= 1536 * 1536
+    && width <= 8192 && height <= 8192 && width % 32 === 0 && height % 32 === 0 && width * height <= 2048 * 2048
     ? image as ToolImage : null;
 }
 
