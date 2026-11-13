@@ -25,7 +25,7 @@ export function McpSourceLabel({ source }: { source: NonNullable<ToolActivity["m
   const host = mcpHost(source.destination);
   return <span className="inline-flex min-w-0 items-center gap-1 text-[11px] text-[var(--color-text-tertiary)]">
     {host ? <Globe2 size={12} className="shrink-0" aria-hidden="true" /> : null}
-    <span className="truncate">{host ? `Remote · ${host}` : "Local process"}</span>
+    <span className="truncate">{host ? `Remote at ${host}` : "Local process"}</span>
   </span>;
 }
 

@@ -336,7 +336,7 @@ export function FundingPanel({ accountId, connected, payment, quote, onRefreshBi
           </form>}
         {payments.length ? <details className="mt-5 border-t border-[var(--color-border)] pt-4"><summary className="cursor-pointer text-[12px] text-[var(--color-text-secondary)]">Recent payments</summary>
           <ul className="mt-3 space-y-1">{payments.map((p) => <li key={p.id}><button type="button" className="flex w-full items-center gap-2.5 rounded-lg p-2 text-left text-[12px] hover:bg-[var(--wash-row)]" onClick={() => { checkoutRevision.current++; setNow(Date.now()); setSelected(p); intent.current = null; setError(null); setRenewal(null); setRateUpdatedId(null); setDepositClosed(false); }}>
-            <CryptoIcon code={p.pay_currency} className="h-5 w-5" /><span className="flex-1 tabular-nums">{usdFromMicrousd(p.amount_microusd, 2)} · {cryptoSymbol(p.pay_currency)}</span><span className="text-[11px] text-[var(--color-text-tertiary)]">{sentPayments.has(p.id) && awaitingQuote(p) ? "Checking payment" : cryptoStatus(p, now)}</span>
+            <CryptoIcon code={p.pay_currency} className="h-5 w-5" /><span className="flex-1 tabular-nums">{usdFromMicrousd(p.amount_microusd, 2)} in {cryptoSymbol(p.pay_currency)}</span><span className="text-[11px] text-[var(--color-text-tertiary)]">{sentPayments.has(p.id) && awaitingQuote(p) ? "Checking payment" : cryptoStatus(p, now)}</span>
           </button></li>)}</ul>
         </details> : null}
         {error ? <p role="alert" className="mt-3 text-[12px] text-[var(--color-danger-strong)]">{error}</p> : null}

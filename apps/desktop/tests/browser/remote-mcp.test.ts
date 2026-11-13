@@ -46,7 +46,7 @@ for(const theme of ["light","dark"])test(`remote tools expose destinations and r
     const external=proof.getByRole("region",{name:"External services"});
     assert.match(await external.innerText(),/Enabled for this conversation: mcp.example.com/);
     assert.match(await external.innerText(),/Requests attempted in loaded history: history.example.com/);
-    assert.match(await proof.innerText(),/Model inference · Environment attestation/);
+    assert.match(await proof.innerText(),/Model inference and environment attestation/);
     await external.scrollIntoViewIfNeeded();await capture(page,`${theme}-privacy`);
     await page.keyboard.press("Escape");
     await page.getByRole("button",{name:/Called Project tracker.*show details/}).click();
@@ -66,14 +66,14 @@ test("remote connection form discloses destination before connecting and never d
     const notice=page.locator("[data-remote-mcp-notice]").first();assert.match(await notice.innerText(),/support.example.com/);
     await capture(page,"remote-connection-form");
     await page.getByRole("button",{name:"Connect",exact:true}).click();
-    const card=page.getByRole("region",{name:"Support tools connection"});await card.getByText("Ready · 1 tool",{exact:true}).waitFor();
+    const card=page.getByRole("region",{name:"Support tools connection"});await card.getByText("Ready with 1 tool",{exact:true}).waitFor();
     assert.doesNotMatch(await page.locator("body").innerText(),/synthetic-test-bearer-value/);
     assert.doesNotMatch(JSON.stringify(await page.evaluate(()=>(window as any).__remoteMcpTest.snapshot())),/synthetic-test-bearer-value/);
     await card.getByRole("button",{name:"Edit",exact:true}).click();assert.equal(await page.getByLabel("API token",{exact:true}).inputValue(),"");
     await page.getByRole("textbox",{name:"Name",exact:true}).fill("Customer support");
     await page.getByRole("button",{name:"Connect",exact:true}).click();
     const renamed=page.getByRole("region",{name:"Customer support connection"});
-    await renamed.getByText("Ready · 1 tool",{exact:true}).waitFor();
+    await renamed.getByText("Ready with 1 tool",{exact:true}).waitFor();
     assert.equal((await page.evaluate(()=>(window as any).__remoteMcpTest.snapshot())).servers.find((server:any)=>server.displayName==="Customer support").name,"support_tools");
     await renamed.getByRole("button",{name:"Disconnect",exact:true}).click();await renamed.getByText("Needs sign-in or API token",{exact:true}).waitFor();
     assert.deepEqual(errors,[]);

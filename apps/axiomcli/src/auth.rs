@@ -2456,7 +2456,7 @@ fn client_name(client_id: &str) -> String {
         .and_then(|value| sanitize_device_label(&value))
         .unwrap_or_else(|| format!("{} device", std::env::consts::OS));
     let suffix = &client_id[client_id.len() - 6..];
-    format!("{hostname} · {suffix}")
+    format!("{hostname} ({suffix})")
 }
 
 fn sanitize_device_label(value: &str) -> Option<String> {

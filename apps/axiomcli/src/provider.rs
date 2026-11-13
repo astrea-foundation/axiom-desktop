@@ -1018,7 +1018,7 @@ mod test_http_provider {
             events
                 .send(ProviderEvent::Status {
                     connected: true,
-                    detail: "Axiom development inference connected · UNATTESTED".into(),
+                    detail: "Axiom development inference connected (UNATTESTED)".into(),
                 })
                 .await
                 .map_err(|_| AxiomError::Cancelled)?;

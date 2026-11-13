@@ -40,7 +40,7 @@ export function UpdatesPanel({ updates }: { updates?: DesktopUpdates }) {
         <div role="progressbar" aria-label="Update download" aria-valuenow={progress} aria-valuemin={0} aria-valuemax={100} className="h-1.5 overflow-hidden rounded-full bg-[var(--surface-track)]">
           <div className="h-full rounded-full bg-[var(--color-text-secondary)]" style={{width: `${progress}%`}} />
         </div>
-        <p className="mt-2 text-[11.5px] tabular-nums text-[var(--color-text-tertiary)]">{progress}% · {mb(state.download?.received ?? 0)} of {mb(state.download?.total ?? 0)}</p>
+        <p className="mt-2 text-[11.5px] tabular-nums text-[var(--color-text-tertiary)]">{progress}% downloaded ({mb(state.download?.received ?? 0)} of {mb(state.download?.total ?? 0)})</p>
       </div> : null}
       {updates?.error ?? state.error ? <p role="alert" className="mt-4 text-[12px] leading-5 text-[var(--color-danger-strong)]">{updates?.error ?? state.error}</p> : null}
       <div className="mt-5 flex flex-wrap gap-2">
@@ -56,7 +56,7 @@ export function UpdatesPanel({ updates }: { updates?: DesktopUpdates }) {
     </div>
     {file ? <details className="mt-4 border-t border-[var(--color-border)] pt-4 text-[12px] text-[var(--color-text-tertiary)]">
       <summary className="cursor-pointer">Update details</summary>
-      <p className="mt-3 break-all">{file.name} · {mb(file.bytes)}</p>
+      <p className="mt-3 break-all">{file.name} ({mb(file.bytes)})</p>
       <p className="mt-2">The native updater verifies the release signature and downloaded file before installing.</p>
       <code className="mt-2 block select-all break-all text-[11px]">{file.sha256}</code>
     </details> : null}

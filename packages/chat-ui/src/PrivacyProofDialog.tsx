@@ -161,7 +161,7 @@ export function PrivacyProofDialog({ session, model, modelId, state, now, webEna
           className="-mr-1 rounded-lg p-1.5 text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--wash-chip-hover)] hover:text-[var(--color-text-primary)]"><X size={16} /></button>
       </header>
       <div className="min-h-0 overflow-y-auto px-6 pb-5 sm:px-7">
-        <h3 className="mb-3 text-[12px] font-medium text-[var(--color-text-secondary)]">Model inference · Environment attestation</h3>
+        <h3 className="mb-3 text-[12px] font-medium text-[var(--color-text-secondary)]">Model inference and environment attestation</h3>
         <div className="flex items-center gap-3">
           <div className={`shadow-glass-tile flex h-10 w-10 shrink-0 items-center justify-center rounded-[13px] bg-[var(--surface-tile)] ${verified ? "text-[var(--color-success)]" : state === "failed" ? "text-[var(--color-danger)]" : "text-[var(--color-text-tertiary)]"}`}>
             {verified ? <ShieldCheck size={21} aria-hidden="true" /> : state === "failed" ? <ShieldX size={21} aria-hidden="true" /> : <Shield size={21} aria-hidden="true" />}

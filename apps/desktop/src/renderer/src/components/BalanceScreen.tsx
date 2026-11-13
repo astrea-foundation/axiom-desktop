@@ -89,7 +89,7 @@ export function BalanceScreen({ onClose, connected, account, billing, onRefreshB
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <div className="text-[32px] font-semibold tracking-[-0.03em] text-[var(--color-text-primary)]">
-                    {billing ? usdFromMicrousd(billing.availableMicrousd, 2) : "—"}
+                    {billing ? usdFromMicrousd(billing.availableMicrousd, 2) : "Loading…"}
                   </div>
                   {!billing ? <div role="status" className="mt-0.5 text-[12px] text-[var(--color-text-tertiary)]">{!connected ? "Connect to load your balance." : billingError ? "Balance unavailable" : "Loading balance…"}</div> : null}
                   {billing && billing.postedMicrousd < 0 ? <p role="status" className="mt-2 text-[12px] text-[var(--color-text-secondary)]">Top up to send another message.</p> : null}

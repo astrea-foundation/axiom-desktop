@@ -88,8 +88,8 @@ export function ViewedImageDetails({ threadId, imageId }: { threadId?: string; i
     <figcaption className="mt-2 flex min-w-0 max-w-[22rem] flex-wrap items-center gap-x-2 gap-y-1">
       <ImageId id={imageId} />
       {origin ? <span className="min-w-0 truncate text-[11.5px] text-[var(--color-text-tertiary)]"
-        title={image?.origin === "uploaded" && image.name ? `${origin} · ${image.name}` : origin}>
-        {origin}{image?.origin === "uploaded" && image.name ? ` · ${image.name}` : ""}
+        title={image?.origin === "uploaded" && image.name ? `${origin}: ${image.name}` : origin}>
+        {origin}{image?.origin === "uploaded" && image.name ? `: ${image.name}` : ""}
       </span> : null}
     </figcaption>
   </figure>;

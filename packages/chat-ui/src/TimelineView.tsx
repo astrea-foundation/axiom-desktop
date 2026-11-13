@@ -122,8 +122,8 @@ export function TimelineView({
           className="flex items-center gap-2 px-1 py-3 text-[12.5px] text-[var(--color-text-secondary)]">
           <LoaderCircle aria-hidden="true" size={15} className="shrink-0 animate-spin motion-reduce:animate-none" />
           <span className="tabular-nums">Compacting context
-            {session.compaction.total > 1 ? ` · Pass ${Math.min(session.compaction.completed + 1, session.compaction.total)}/${session.compaction.total}` : session.compaction.total === 0 ? " · Preparing" : ""}
-            {` · ${session.compaction.estimated ? "~" : ""}${new Intl.NumberFormat("en-US").format(session.compaction.generatedTokens)} tokens generated`}
+            {session.compaction.total > 1 ? `. Pass ${Math.min(session.compaction.completed + 1, session.compaction.total)}/${session.compaction.total}` : session.compaction.total === 0 ? ". Preparing" : ""}
+            {`. ${session.compaction.estimated ? "~" : ""}${new Intl.NumberFormat("en-US").format(session.compaction.generatedTokens)} tokens generated`}
           </span>
         </div>
       ) : null}

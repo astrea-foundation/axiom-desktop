@@ -2021,7 +2021,7 @@ impl AgentEngine {
                         && let Some(destination) = source.destination
                     {
                         request.explanation = format!(
-                            "Remote service · {}\nThis will send the inputs below to {}, outside Axiom’s attested environment. Inputs may include conversation or file content.\n\n{}",
+                            "Remote service: {}\nThis will send the inputs below to {}, outside Axiom’s attested environment. Inputs may include conversation or file content.\n\n{}",
                             source.server, destination, request.explanation
                         );
                     }

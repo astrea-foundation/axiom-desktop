@@ -60,7 +60,7 @@ export function StorageMigrationScreen({ progress, detail, disconnected, onRetry
           </ol>
           <div className="mt-7" role="status" aria-live="polite" aria-atomic="true">
             <p className="text-[12px] text-[var(--color-text-secondary)]">
-              {steps[current]?.label ?? "Preparing your storage"}{counted ? ` · ${progress.completed} of ${progress.total} ${progress.phase === "moving_media" ? "saved records" : "files"}` : "…"}
+              {steps[current]?.label ?? "Preparing your storage"}{counted ? `: ${progress.completed} of ${progress.total} ${progress.phase === "moving_media" ? "saved records" : "files"}` : "…"}
             </p>
           </div>
           <div role="progressbar" aria-label="Current storage update step"

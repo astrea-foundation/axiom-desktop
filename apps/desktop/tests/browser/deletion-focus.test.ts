@@ -1763,11 +1763,11 @@ for (const platform of ["linux", "win32", "darwin"]) {
     try {
       const indicator = page.locator("[data-context-usage]");
       await indicator.waitFor();
-      assert.equal(await indicator.innerText(), "—");
+      assert.equal(await indicator.innerText(), "N/A");
       assert.doesNotMatch(await page.locator(".composer-shell").innerText(), /Ctrl|⌘|↵/);
       await page.locator('[data-thread-id="old-thread"]').click();
       await page.locator("textarea").waitFor();
-      assert.equal(await indicator.innerText(), "—");
+      assert.equal(await indicator.innerText(), "N/A");
       const setUsage = (total: number, modelId = "test-model") => page.evaluate((usage) => (window as any).__deletionTest.setContextUsage(usage), {
         inputTokens: total - 1_000, outputTokens: 1_000, modelId,
         reportedAt: "2026-09-07T00:00:00Z", contextWindowTokens: 100_000, autoCompactThresholdTokens: 85_000,
@@ -1821,7 +1821,7 @@ for (const platform of ["linux", "win32", "darwin"]) {
         await page.screenshot({ path: "/tmp/axiom-context-usage.png" });
       }
       await page.getByRole("button", { name: "New thread", exact: true }).click();
-      assert.equal(await indicator.innerText(), "—");
+      assert.equal(await indicator.innerText(), "N/A");
       await page.locator("textarea").fill("Composer still works");
       assert.deepEqual(errors, []);
     } finally { await page.close(); }
@@ -3560,7 +3560,7 @@ test("model picker filters by catalog tags, hosts, capabilities and tag search",
     await picker.getByRole("button", { name: "Only models that accept images", exact: true }).click();
     assert.equal(await rows.count(), 1);
     assert.match(await rows.first().innerText(), /^Qwen3.6 35B/);
-    assert.match(await status.innerText(), /^1 model · Cheap \+ Images$/);
+    assert.match(await status.innerText(), /^1 model: Cheap \+ Images$/);
     await page.evaluate(() => document.getAnimations().forEach(animation => animation.finish()));
     await picker.screenshot({ path: "/tmp/axiom-tagged-picker-filtered.png" });
 
@@ -3600,7 +3600,7 @@ test("catalog refresh withdraws saved models and shows Tinfoil upload icons", as
     assert.equal(await picker.getByRole("img", {name:"File uploads"}).count(), 1);
     const logo = picker.locator('img[title="Tinfoil"]');
     assert.ok(await logo.evaluate((node: HTMLImageElement) => node.complete && node.naturalWidth > 0));
-    assert.doesNotMatch(await picker.innerText(), / · Images|File uploads/);
+    assert.doesNotMatch(await picker.innerText(), /: Images|File uploads/);
     await page.evaluate(() => document.getAnimations().forEach(animation => animation.finish()));
     await page.screenshot({path:"/tmp/axiom-provider-picker.png"});
     await picker.getByRole("button", {name:/New vision/}).click();
@@ -3970,7 +3970,7 @@ test("regenerating one image keeps the original and chat response and sends only
     const originalUrl=await originalImage.getAttribute("src");
     const regenerate=page.getByRole("button",{name:"Regenerate image",exact:true}).first();
     await regenerate.click();
-    await page.getByText("Generating image · 38%",{exact:true}).waitFor();
+    await page.getByText("Generating image (38%)",{exact:true}).waitFor();
     assert.equal(await regenerate.isDisabled(),true);
     assert.equal(await originalImage.getAttribute("src"),originalUrl);
     assert.equal(await page.getByText("The original chat response stays intact.",{exact:true}).count(),1);
@@ -3995,7 +3995,7 @@ test("image generation percentages update live and saved images have distinct ra
         input: {prompt: "A synthetic test image"}, content: [], locations: [], imageProgress: {stage: "generating", percent: 38},
       }}]);
     });
-    await page.getByText("Generating image · 38%", {exact: true}).waitFor();
+    await page.getByText("Generating image (38%)", {exact: true}).waitFor();
     const bar = page.getByRole("progressbar", {name: "Image generation progress"});
     assert.equal(await bar.getAttribute("aria-valuenow"), "38");
     assert.equal(await page.getByRole("link", {name: "Save image", exact: true}).count(), 0);
@@ -4006,7 +4006,7 @@ test("image generation percentages update live and saved images have distinct ra
         input: {}, content: [], locations: [], imageProgress: {stage: "finishing", percent: 99},
       }}]);
     });
-    await page.getByText("Finishing image · 99%", {exact: true}).waitFor();
+    await page.getByText("Finishing image (99%)", {exact: true}).waitFor();
     assert.equal(await bar.getAttribute("aria-valuenow"), "99");
     await page.evaluate(() => {
       const canvas = document.createElement("canvas"); canvas.width = canvas.height = 1024;
@@ -4024,7 +4024,7 @@ test("image generation percentages update live and saved images have distinct ra
     for (const name of names) assert.match(name!, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.png$/);
     assert.notEqual(names[0], names[1]);
     assert.equal(await page.getByRole("progressbar").count(), 0);
-    assert.equal(await page.getByText(/(?:Generated|Edited) image · 100%/).count(), 0);
+    assert.equal(await page.getByText(/(?:Generated|Edited) image \(100%\)/).count(), 0);
     const downloaded = page.waitForEvent("download");
     await links.first().click();
     const firstName = (await downloaded).suggestedFilename();
@@ -4152,7 +4152,7 @@ test("image tool details show the viewed image, request cards above the result, 
     const viewedImage = viewedFigure.getByRole("button", { name: `View image ${viewed}`, exact: true });
     await viewedImage.waitFor();
     await page.waitForFunction((id) => document.querySelector<HTMLImageElement>(`[data-viewed-image="${id}"] img`)?.naturalWidth === 768, viewed);
-    assert.match(await viewedFigure.innerText(), new RegExp(`${viewed}[\\s\\S]*Uploaded image · cat\\.png`));
+    assert.match(await viewedFigure.innerText(), new RegExp(`${viewed}[\\s\\S]*Uploaded image: cat\\.png`));
     assert.equal(await page.getByText("supplied as visual input").count(), 0, "raw tool output stays hidden");
     assert.equal(await page.getByText('"input"').count(), 0);
     await viewedImage.click();
@@ -4657,7 +4657,7 @@ test("MCP settings add and test a local server without displaying saved secrets"
     await page.getByRole("button", { name: "Save connection" }).click();
     const server = page.getByRole("region", { name: "new_local connection" });
     await server.getByRole("button", { name: "Test connection" }).click();
-    await server.getByText(/Ready · 1 tool/).waitFor();
+    await server.getByText(/Ready with 1 tool/).waitFor();
     await server.getByText("Inspect tools").click();
     await server.getByText("mcp__new_local__echo", { exact: true }).waitFor();
     await server.getByRole("button", { name: "Edit", exact: true }).click();

@@ -14,9 +14,9 @@ const search: ToolActivity = {
 test("image progress displays percentages and disappears after completion", () => {
   const image: ToolActivity = {callId: "image", name: "generate_image", title: "generate_image", kind: "other", status: "in_progress",
     input: {prompt: "A mug"}, content: [], locations: [], imageProgress: {stage: "generating", percent: 38}};
-  assert.equal(toolLabel(image), "Generating image · 38%");
-  assert.equal(toolLabel({...image, input: {image_id: "img_example"}}), "Editing image · 38%");
-  assert.equal(toolLabel({...image, imageProgress: {stage: "finishing", percent: 99}}), "Finishing image · 99%");
+  assert.equal(toolLabel(image), "Generating image (38%)");
+  assert.equal(toolLabel({...image, input: {image_id: "img_example"}}), "Editing image (38%)");
+  assert.equal(toolLabel({...image, imageProgress: {stage: "finishing", percent: 99}}), "Finishing image (99%)");
   assert.equal(toolLabel({...image, status: "completed"}), "Generated image");
   const completed = renderToStaticMarkup(createElement(ToolCallCard, {tool: {...image, status: "completed"}}));
   assert.doesNotMatch(completed, /progressbar|100%/);
@@ -43,8 +43,8 @@ test("generate renders ordered references and preserves percentage progress", ()
   const image: ToolActivity = {callId: "new-image", name: "generate", title: "generate", kind: "other", status: "in_progress",
     input: {prompt: "Use <image1>", reference_image_ids: ["img_" + "a".repeat(32)]}, content: [], locations: [],
     imageProgress: {stage: "generating", percent: 38}};
-  assert.equal(toolLabel(image), "Editing image · 38%");
-  assert.equal(toolLabel({...image, input: {prompt: "A blue mug", reference_image_ids: []}}), "Generating image · 38%");
+  assert.equal(toolLabel(image), "Editing image (38%)");
+  assert.equal(toolLabel({...image, input: {prompt: "A blue mug", reference_image_ids: []}}), "Generating image (38%)");
   const html = renderToStaticMarkup(createElement(ToolCallCard, {tool: image}));
   assert.match(html, /aria-valuenow="38"/);
 });

@@ -10,7 +10,7 @@ export function FirstLaunchUpdate({updates}: {updates: DesktopUpdates}) {
   const heading = failed ? 'Couldn’t update Axiom' : applying ? 'Restarting into the latest Axiom…' : 'Getting the latest Axiom…';
   const detail = applying ? 'Axiom will reopen when installation finishes.'
     : state.status === 'waiting' ? 'Waiting for other Axiom activity to finish before restarting.'
-    : progress !== null ? `Downloading version ${state.release?.version} · ${progress}%`
+    : progress !== null ? `Downloading version ${state.release?.version} (${progress}%)`
     : retry ? 'You can retry or continue with the installed version.' : 'Checking for a newer version before you get started.';
   return <section aria-label="First launch update" className="flex h-full min-h-0 flex-1 items-center justify-center p-6">
     <div className="w-full max-w-[430px] rounded-2xl border border-[var(--color-border)] bg-[var(--wash-row)] p-7">

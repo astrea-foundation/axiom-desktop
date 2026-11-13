@@ -201,8 +201,8 @@ function mergeTool(
     callId,
     mcpSource: mcpSource(object(update._meta)?.axiomMcpSource) ?? previous?.mcpSource,
     started: update.status === "in_progress" ? true : previous?.started ?? false,
-    name: typeof update.title === "string" && /(?:^| · )[a-z][a-z0-9_]*$/.test(update.title)
-      ? update.title.split(" · ").at(-1) : previous?.name,
+    name: typeof update.title === "string" && /(?:^|(?: \u00b7|:) )[a-z][a-z0-9_]*$/.test(update.title)
+      ? update.title.split(/(?: \u00b7|:) /).at(-1) : previous?.name,
     title: typeof update.title === "string" ? update.title : (previous?.title ?? "Tool activity"),
     kind: typeof update.kind === "string" ? update.kind : (previous?.kind ?? "other"),
     status: typeof update.status === "string" ? update.status : (previous?.status ?? "pending"),
