@@ -332,13 +332,7 @@ pub(crate) fn error_for_status_body(status: StatusCode, body: &[u8]) -> SecureCl
                 .as_ref()
                 .and_then(|p| p.detail.as_ref())
                 .and_then(|d| d.retry_at_unix_seconds);
-            SecureClientError::with_code(
-                axiom_inference::ProviderFailureKind::RateLimited,
-                crate::SecureErrorCode::TrialCapacity,
-                "Free trials are currently at capacity. Please try again later.",
-                true,
-            )
-            .with_retry_at(retry_at)
+            SecureClientError::trial_capacity(retry_at)
         }
         Some("ATTESTATION_KEY_CHANGED") => SecureClientError::with_code(
             axiom_inference::ProviderFailureKind::AttestationRejected,

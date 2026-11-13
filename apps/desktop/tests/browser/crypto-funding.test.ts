@@ -74,7 +74,7 @@ async function open() {
     }}});
   });
   await page.goto(`${origin}tests/browser/crypto-funding.fixture.html`);
-  try { await page.getByRole("button", {name: "Other crypto", exact: true}).waitFor(); }
+  try { await page.getByRole("button", {name: "Choose a currency", exact: true}).waitFor(); }
   catch (error) { console.error(errors, await page.locator("body").innerText()); await page.close(); throw error; }
   return {page, errors};
 }
@@ -101,7 +101,7 @@ test("primary discount, safe retries, quote, network, memo and status restoratio
     assert.match(await networkWarning.innerText(), /Network: TRON \(TRC20\) only\./);
     await page.screenshot({path: "/tmp/axiom-nowpayments-desktop-quote.png", fullPage: true});
     await page.getByRole("button", {name: "Close deposit", exact: true}).click();
-    await page.getByRole("button", {name: "Other crypto", exact: true}).click();
+    await page.getByRole("button", {name: "Choose a currency", exact: true}).click();
     await page.evaluate(() => (window as any).__cryptoTest.finish("account-a"));
     await page.getByRole("status").filter({hasText: /^Credited$/}).waitFor();
     assert.equal(await page.getByRole("button", {name: "Copy memo"}).count(), 0);
@@ -113,14 +113,14 @@ test("primary discount, safe retries, quote, network, memo and status restoratio
 test("an in-flight payment reply cannot enter another account", async () => {
   const {page, errors} = await open();
   try {
-    await page.getByRole("button", {name: "Other crypto", exact: true}).click();
+    await page.getByRole("button", {name: "Choose a currency", exact: true}).click();
     await page.getByRole("combobox", {name: "Crypto", exact: true}).click();
     await page.getByRole("option", {name: /^USDT/}).click();
     await page.evaluate(() => (window as any).__cryptoTest.hold());
     await page.getByRole("button", {name: "Create payment", exact: true}).click();
     await page.evaluate(() => window.dispatchEvent(new Event("axiom-test-switch-account")));
     await page.evaluate(() => (window as any).__cryptoTest.release());
-    await page.getByRole("button", {name: "Other crypto", exact: true}).click();
+    await page.getByRole("button", {name: "Choose a currency", exact: true}).click();
     await page.getByRole("button", {name: "Create payment", exact: true}).waitFor();
     assert.equal(await page.getByText("TtestPaymentAddress", {exact: true}).count(), 0);
     assert.deepEqual(errors, []);
@@ -133,7 +133,7 @@ test("rate countdown renews automatically; cancelling retains the original payme
     const time = new Date("2026-10-06T07:00:00Z");
     await page.clock.install({time});
     await page.clock.pauseAt(time);
-    await page.getByRole("button", {name: "Other crypto", exact: true}).click();
+    await page.getByRole("button", {name: "Choose a currency", exact: true}).click();
     const picker = page.getByRole("combobox", {name: "Crypto", exact: true});
     await picker.click();
     await page.getByRole("option", {name: "Bitcoin", exact: true}).click();
@@ -178,7 +178,7 @@ test("a lost renewal response retries the same order and never loops on an expir
   try {
     const time = new Date("2026-10-06T07:00:00Z");
     await page.clock.install({time}); await page.clock.pauseAt(time);
-    await page.getByRole("button", {name: "Other crypto", exact: true}).click();
+    await page.getByRole("button", {name: "Choose a currency", exact: true}).click();
     await page.getByRole("combobox", {name: "Crypto", exact: true}).click();
     await page.getByRole("option", {name: "Bitcoin", exact: true}).click();
     await page.getByRole("button", {name: "Create payment", exact: true}).click();
@@ -206,7 +206,7 @@ test("sent transfers survive reopening and keep confirming beyond the quote dead
   try {
     const time = new Date("2026-10-06T07:00:00Z");
     await page.clock.install({time}); await page.clock.pauseAt(time);
-    await page.getByRole("button", {name: "Other crypto", exact: true}).click();
+    await page.getByRole("button", {name: "Choose a currency", exact: true}).click();
     await page.getByRole("combobox", {name: "Crypto", exact: true}).click();
     await page.getByRole("option", {name: "Monero", exact: true}).click();
     await page.getByRole("button", {name: "Create payment", exact: true}).click();
@@ -215,7 +215,7 @@ test("sent transfers survive reopening and keep confirming beyond the quote dead
     await page.getByRole("status").filter({hasText: /^Checking payment$/}).waitFor();
     assert.equal(await page.evaluate(() => (window as any).__cryptoTest.requests.length), 1);
     await page.evaluate(() => window.dispatchEvent(new Event("axiom-test-remount-funding")));
-    await page.getByRole("button", {name: "Other crypto", exact: true}).click();
+    await page.getByRole("button", {name: "Choose a currency", exact: true}).click();
     await page.locator("summary").filter({hasText: "Recent payments"}).click();
     await page.getByRole("button", {name: /\$25\.00 in XMR/}).click();
     await page.getByRole("status").filter({hasText: /^Checking payment$/}).waitFor();
@@ -238,7 +238,7 @@ test("late renewal replies cannot replace a cancelled checkout, another account 
     try {
       const time = new Date("2026-10-06T07:00:00Z");
       await page.clock.install({time}); await page.clock.pauseAt(time);
-      await page.getByRole("button", {name: "Other crypto", exact: true}).click();
+      await page.getByRole("button", {name: "Choose a currency", exact: true}).click();
       await page.getByRole("combobox", {name: "Crypto", exact: true}).click();
       await page.getByRole("option", {name: "Bitcoin", exact: true}).click();
       await page.getByRole("button", {name: "Create payment", exact: true}).click();
@@ -254,7 +254,7 @@ test("late renewal replies cannot replace a cancelled checkout, another account 
         await page.getByRole("status").filter({hasText: /^Confirming$/}).waitFor();
       }
       await page.evaluate(() => (window as any).__cryptoTest.release());
-      if (action === "switch") await page.getByRole("button", {name: "Other crypto", exact: true}).click();
+      if (action === "switch") await page.getByRole("button", {name: "Choose a currency", exact: true}).click();
       if (action === "confirming") {
         await page.evaluate(() => (window as any).__cryptoTest.finishOriginal("account-a"));
         await page.clock.runFor(5_000);
@@ -275,7 +275,7 @@ test("provider confirmations stop renewal even when the customer has not marked 
   try {
     const time = new Date("2026-10-06T07:00:00Z");
     await page.clock.install({time}); await page.clock.pauseAt(time);
-    await page.getByRole("button", {name: "Other crypto", exact: true}).click();
+    await page.getByRole("button", {name: "Choose a currency", exact: true}).click();
     await page.getByRole("combobox", {name: "Crypto", exact: true}).click();
     await page.getByRole("option", {name: "Monero", exact: true}).click();
     await page.getByRole("button", {name: "Create payment", exact: true}).click();
@@ -293,7 +293,7 @@ test("provider confirmations stop renewal even when the customer has not marked 
 test("icon picker uses clean names and keyboard selection; Escape closes one layer and restores focus", async () => {
   const {page, errors} = await open();
   try {
-    const entry = page.getByRole("button", {name: "Other crypto", exact: true});
+    const entry = page.getByRole("button", {name: "Choose a currency", exact: true});
     assert.equal(await entry.locator("img").count(), 3);
     await entry.click();
     const dialog = page.getByRole("dialog", {name: "Deposit crypto", exact: true});
@@ -337,7 +337,7 @@ test("deposit dialog and icon picker fit a small window and dark theme", async (
   try {
     await page.setViewportSize({width: 360, height: 568});
     await page.evaluate(() => document.documentElement.dataset.theme = "dark");
-    await page.getByRole("button", {name: "Other crypto", exact: true}).click();
+    await page.getByRole("button", {name: "Choose a currency", exact: true}).click();
     const picker = page.getByRole("combobox", {name: "Crypto", exact: true});
     await picker.click();
     const bounds = await page.getByRole("listbox").boundingBox();
@@ -360,7 +360,7 @@ test("six-hour invoices retain their deadline on rate refresh and cancellation f
     const time = new Date("2026-10-12T07:00:00Z");
     await page.clock.install({time}); await page.clock.pauseAt(time);
     await page.evaluate(() => (window as any).__cryptoTest.enableInvoices());
-    await page.getByRole("button", {name: "Other crypto", exact: true}).click();
+    await page.getByRole("button", {name: "Choose a currency", exact: true}).click();
     await page.getByRole("combobox", {name: "Crypto", exact: true}).click();
     await page.getByRole("option", {name: "Bitcoin", exact: true}).click();
     await page.getByRole("button", {name: "Create payment", exact: true}).click();

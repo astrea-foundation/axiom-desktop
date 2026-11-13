@@ -71,9 +71,18 @@ replays all saved image bytes before loading its timeline.
 
 ## Balance and payments
 
-Open the account menu and choose **Balance** to view credit and top up with mainnet
-Zcash. **5% off** means $9.50 of Zcash buys $10 of credit, using the rate at
-confirmation. The reusable address stays available.
+Open the account menu and choose **Billing** to view weekly and purchased credits,
+manage a subscription, or add credits with Card or Crypto. Capabilities depend on
+the selected account/server. See [credits and subscriptions](billing.md) for plan,
+auto top-up and reset behavior. Direct Zcash remains available within Crypto;
+its reusable address and confirmation-time valuation are retained.
+
+When there is too little available credit to start a request, chat and image
+errors say **Insufficient balance. Top up your Axiom balance to continue.**
+Open **Billing** to add credit or redeem a gift code. Existing request holds can
+reduce available credit even when the displayed account balance is positive.
+The CLI gives `/topup`, `/redeem` and `/balance` guidance for the same failure;
+the local proxy returns HTTP 402 with `insufficient_credit` and the top-up message.
 
 When there is too little available credit to start a request, chat and image
 errors say **Insufficient balance. Top up your Axiom balance to continue.**

@@ -388,6 +388,14 @@ pub async fn serve_stdio(
         sync,
         builder,
         context,
+        account::credit_billing,
+        extension::CreditBillingRequest,
+        extension::CreditBillingResponse
+    );
+    let builder = request_handler!(
+        sync,
+        builder,
+        context,
         account::create_crypto_payment,
         extension::CreateCryptoPaymentRequest,
         extension::CryptoPaymentResponse

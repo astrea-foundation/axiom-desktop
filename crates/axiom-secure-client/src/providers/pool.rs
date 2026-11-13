@@ -486,7 +486,9 @@ impl Session {
     }
 }
 fn pool_error(error: &anyhow::Error, detail: &'static str) -> SecureClientError {
-    if error.is::<axiom_pool_client::InsufficientCredit>() {
+    if let Some(capacity) = error.downcast_ref::<axiom_pool_client::TrialCapacity>() {
+        SecureClientError::trial_capacity(capacity.retry_at)
+    } else if error.is::<axiom_pool_client::InsufficientCredit>() {
         SecureClientError::new(
             axiom_inference::ProviderFailureKind::InsufficientCredit,
             crate::INSUFFICIENT_CREDIT_MESSAGE,
@@ -567,6 +569,17 @@ fn evidence(model: &ModelInfo, policy: &TrustPolicy, worker: &VerifiedWorker) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pool_trial_capacity_preserves_the_public_retry_time() {
+        let error = pool_error(&anyhow::Error::new(axiom_pool_client::TrialCapacity {
+            retry_at: Some(1_791_849_600),
+        }).context("private upstream diagnostics"), "worker verification failed");
+        assert_eq!(error.code(), crate::SecureErrorCode::TrialCapacity);
+        assert_eq!(error.retry_at(), Some(1_791_849_600));
+        assert!(error.retryable());
+        assert!(!error.safe_detail().contains("private"));
+    }
 
     #[test]
     fn pool_balance_failures_keep_their_type_instead_of_reporting_bad_attestation() {

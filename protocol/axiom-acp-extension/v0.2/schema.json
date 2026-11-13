@@ -163,6 +163,12 @@
     "billingStatusResponse": {
       "$ref": "#/$defs/BillingStatusResponse"
     },
+    "creditBillingRequest": {
+      "$ref": "#/$defs/CreditBillingRequest"
+    },
+    "creditBillingResponse": {
+      "$ref": "#/$defs/CreditBillingResponse"
+    },
     "cryptoOptionsRequest": {
       "$ref": "#/$defs/CryptoOptionsRequest"
     },
@@ -300,6 +306,8 @@
     "logoutRequest",
     "billingStatusRequest",
     "billingStatusResponse",
+    "creditBillingRequest",
+    "creditBillingResponse",
     "cryptoOptionsRequest",
     "cryptoOptionsResponse",
     "createCryptoPaymentRequest",
@@ -3118,6 +3126,1342 @@
         "available",
         "capacity_microusd",
         "spent_microusd"
+      ]
+    },
+    "CreditBillingRequest": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/CreditBillingAction"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "action"
+      ]
+    },
+    "CreditBillingAction": {
+      "description": "A finite operation set. Renderers cannot select arbitrary URLs, headers or principals.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "summary"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "plans"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "prices"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "period": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "timezone": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "usage"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "plan_key": {
+              "type": "string"
+            },
+            "catalog_version": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "checkout"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "id",
+            "plan_key",
+            "catalog_version"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "plan_key": {
+              "type": "string"
+            },
+            "catalog_version": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "change"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "id",
+            "plan_key",
+            "catalog_version"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "portal"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "setup_card"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "id"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "cards"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "auto_topup"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "settings": {
+              "$ref": "#/$defs/AutomaticTopupSettings"
+            },
+            "kind": {
+              "type": "string",
+              "const": "configure_auto_topup"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "settings"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "kind": {
+              "type": "string",
+              "const": "fallback"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "enabled"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "operations"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "operation"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "id"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "check"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "id"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "cancel_topup"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "id"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "card_options"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "amount_microusd": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "kind": {
+              "type": "string",
+              "const": "create_card_payment"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "id",
+            "amount_microusd"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "card_payments"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "check_card_payment"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "id"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "cancel_card_payment"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "id"
+          ]
+        }
+      ]
+    },
+    "AutomaticTopupSettings": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "version": {
+          "type": "string"
+        },
+        "threshold_units": {
+          "type": "string"
+        },
+        "amount_cents": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "monthly_cap_cents": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "payment_method_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "consent_version": {
+          "type": "string"
+        },
+        "consent_accepted": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "version",
+        "threshold_units",
+        "amount_cents",
+        "monthly_cap_cents",
+        "consent_version",
+        "consent_accepted"
+      ]
+    },
+    "CreditBillingResponse": {
+      "type": "object",
+      "properties": {
+        "result": {
+          "$ref": "#/$defs/CreditBillingResult"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "result"
+      ]
+    },
+    "CreditBillingResult": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "summary"
+            },
+            "value": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/CreditSummary"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "plans"
+            },
+            "value": {
+              "$ref": "#/$defs/SubscriptionPlans"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "prices"
+            },
+            "value": {
+              "$ref": "#/$defs/CreditPrices"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "usage"
+            },
+            "value": {
+              "$ref": "#/$defs/CreditUsage"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "operation"
+            },
+            "value": {
+              "$ref": "#/$defs/BillingOperation"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "portal"
+            },
+            "value": {
+              "$ref": "#/$defs/BillingPortal"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "cards"
+            },
+            "value": {
+              "$ref": "#/$defs/SavedBillingCards"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "auto_topup"
+            },
+            "value": {
+              "$ref": "#/$defs/AutomaticTopup"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "operations"
+            },
+            "value": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/BillingOperation"
+              }
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "card_options"
+            },
+            "value": {
+              "$ref": "#/$defs/CardFundingOptions"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "card_payment"
+            },
+            "value": {
+              "$ref": "#/$defs/CardFundingPayment"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "card_payments"
+            },
+            "value": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/CardFundingPayment"
+              }
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ]
+        }
+      ]
+    },
+    "CreditSummary": {
+      "type": "object",
+      "properties": {
+        "format": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "scale": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "string"
+        },
+        "policy_version": {
+          "type": "string"
+        },
+        "reference_microusd_per_credit": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "default_multiplier_ppm": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "paid_fallback": {
+          "type": "boolean"
+        },
+        "payment_review_required": {
+          "type": "boolean"
+        },
+        "purchased": {
+          "$ref": "#/$defs/PurchasedCredits"
+        },
+        "trial": {
+          "$ref": "#/$defs/TrialCredits"
+        },
+        "allowance": {
+          "$ref": "#/$defs/WeeklyCredits"
+        },
+        "subscription": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CreditSubscription"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "capabilities": {
+          "$ref": "#/$defs/CreditCapabilities"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "format",
+        "enabled",
+        "scale",
+        "revision",
+        "policy_version",
+        "reference_microusd_per_credit",
+        "default_multiplier_ppm",
+        "paid_fallback",
+        "payment_review_required",
+        "purchased",
+        "trial",
+        "allowance",
+        "capabilities"
+      ]
+    },
+    "PurchasedCredits": {
+      "type": "object",
+      "properties": {
+        "currency": {
+          "type": "string"
+        },
+        "scale": {
+          "type": "string"
+        },
+        "posted_units": {
+          "type": "string"
+        },
+        "held_units": {
+          "type": "string"
+        },
+        "available_units": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "currency",
+        "scale",
+        "posted_units",
+        "held_units",
+        "available_units"
+      ]
+    },
+    "TrialCredits": {
+      "type": "object",
+      "properties": {
+        "posted_units": {
+          "type": "string"
+        },
+        "held_units": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "posted_units",
+        "held_units"
+      ]
+    },
+    "WeeklyCredits": {
+      "type": "object",
+      "properties": {
+        "limit_units": {
+          "type": "string"
+        },
+        "remaining_units": {
+          "type": "string"
+        },
+        "held_units": {
+          "type": "string"
+        },
+        "generation": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "resets_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "effective_until": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "limit_units",
+        "remaining_units",
+        "held_units"
+      ]
+    },
+    "CreditSubscription": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "plan_key": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string"
+        },
+        "paid_through_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cancel_at_period_end": {
+          "type": "boolean"
+        },
+        "pending_plan_key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "plan_key",
+        "state",
+        "cancel_at_period_end"
+      ]
+    },
+    "CreditCapabilities": {
+      "type": "object",
+      "properties": {
+        "subscriptions": {
+          "type": "boolean"
+        },
+        "auto_topup": {
+          "type": "boolean"
+        },
+        "card": {
+          "type": "boolean"
+        },
+        "crypto": {
+          "type": "boolean"
+        },
+        "admin": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "subscriptions",
+        "auto_topup",
+        "card",
+        "crypto",
+        "admin"
+      ]
+    },
+    "SubscriptionPlans": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "currency": {
+          "type": "string"
+        },
+        "billing_interval": {
+          "type": "string"
+        },
+        "allowance_interval_days": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "plans": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SubscriptionPlan"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "currency",
+        "billing_interval",
+        "allowance_interval_days",
+        "plans"
+      ]
+    },
+    "SubscriptionPlan": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "amount_cents": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "weekly_units": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "key",
+        "name",
+        "amount_cents",
+        "weekly_units",
+        "version"
+      ]
+    },
+    "CreditPrices": {
+      "type": "object",
+      "properties": {
+        "scale": {
+          "type": "string"
+        },
+        "reference_microusd_per_credit": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "default_version": {
+          "type": "string"
+        },
+        "default_multiplier_ppm": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "overrides": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CreditModelPrice"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "scale",
+        "reference_microusd_per_credit",
+        "default_version",
+        "default_multiplier_ppm",
+        "overrides"
+      ]
+    },
+    "CreditModelPrice": {
+      "type": "object",
+      "properties": {
+        "provider": {
+          "type": "string"
+        },
+        "model_id": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "multiplier_ppm": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "provider",
+        "model_id",
+        "version",
+        "multiplier_ppm"
+      ]
+    },
+    "CreditUsage": {
+      "type": "object",
+      "properties": {
+        "period": {
+          "type": "string"
+        },
+        "scale": {
+          "type": "string"
+        },
+        "total_units": {
+          "type": "string"
+        },
+        "allocation": {
+          "$ref": "#/$defs/CreditUsageAllocation"
+        },
+        "models": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CreditModelUsage"
+          }
+        },
+        "purchased": {
+          "$ref": "#/$defs/PurchasedUsage"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "period",
+        "scale",
+        "total_units",
+        "allocation",
+        "models",
+        "purchased"
+      ]
+    },
+    "CreditUsageAllocation": {
+      "type": "object",
+      "properties": {
+        "subscription_units": {
+          "type": "string"
+        },
+        "trial_units": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "subscription_units",
+        "trial_units"
+      ]
+    },
+    "CreditModelUsage": {
+      "type": "object",
+      "properties": {
+        "provider": {
+          "type": "string"
+        },
+        "model_id": {
+          "type": "string"
+        },
+        "units": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "provider",
+        "model_id",
+        "units"
+      ]
+    },
+    "PurchasedUsage": {
+      "type": "object",
+      "properties": {
+        "currency": {
+          "type": "string"
+        },
+        "scale": {
+          "type": "string"
+        },
+        "total_units": {
+          "type": "string"
+        },
+        "models": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CreditModelUsage"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "currency",
+        "scale",
+        "total_units",
+        "models"
+      ]
+    },
+    "BillingOperation": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string"
+        },
+        "url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "amount_cents": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "card": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SavedBillingCard"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "created_at": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "state",
+        "amount_cents",
+        "created_at"
+      ]
+    },
+    "SavedBillingCard": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "brand": {
+          "type": "string"
+        },
+        "last4": {
+          "type": "string"
+        },
+        "exp_month": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "exp_year": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "brand",
+        "last4",
+        "exp_month",
+        "exp_year"
+      ]
+    },
+    "BillingPortal": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "url"
+      ]
+    },
+    "SavedBillingCards": {
+      "type": "object",
+      "properties": {
+        "cards": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SavedBillingCard"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "cards"
+      ]
+    },
+    "AutomaticTopup": {
+      "type": "object",
+      "properties": {
+        "currency": {
+          "type": "string"
+        },
+        "scale": {
+          "type": "string"
+        },
+        "available": {
+          "type": "boolean"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "version": {
+          "type": "string"
+        },
+        "threshold_units": {
+          "type": "string"
+        },
+        "amount_cents": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "monthly_cap_cents": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "payment_method_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "paused_reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cap_month": {
+          "type": "string"
+        },
+        "used_cents": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "consent_version": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "currency",
+        "scale",
+        "available",
+        "enabled",
+        "version",
+        "threshold_units",
+        "amount_cents",
+        "monthly_cap_cents",
+        "cap_month",
+        "used_cents",
+        "consent_version"
+      ]
+    },
+    "CardFundingOptions": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "currency": {
+          "type": "string"
+        },
+        "min_amount_microusd": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "max_amount_microusd": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "currency",
+        "min_amount_microusd",
+        "max_amount_microusd"
+      ]
+    },
+    "CardFundingPayment": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "amount_microusd": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "credited_microusd": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "refunded_microusd": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "status": {
+          "type": "string"
+        },
+        "checkout_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "expires_at": {
+          "type": "string"
+        },
+        "created_at": {
+          "type": "string"
+        },
+        "review_required": {
+          "type": "boolean"
+        },
+        "cancel_requested": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "amount_microusd",
+        "credited_microusd",
+        "refunded_microusd",
+        "status",
+        "expires_at",
+        "created_at",
+        "review_required",
+        "cancel_requested"
       ]
     },
     "CryptoOptionsRequest": {

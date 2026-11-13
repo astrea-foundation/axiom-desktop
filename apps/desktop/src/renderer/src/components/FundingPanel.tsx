@@ -100,15 +100,15 @@ export function CryptoPaymentDetails({ payment, options, now = Date.now(), sent 
         <p className="inline-flex items-center gap-1.5"><Clock3 size={13} aria-hidden="true" />Send within <span role="timer" aria-label="Time left to send for this rate" aria-live="off" className="font-medium tabular-nums">{timeLeft}</span> for this rate.</p>
       </div>
     </> : null}
-    <div className="flex justify-between gap-3 border-t border-[var(--color-border)] pt-4"><span className="text-[var(--color-text-secondary)]">USD credit</span><span className="font-medium tabular-nums">{usdFromMicrousd(payment.amount_microusd, 2)}</span></div>
+    <div className="flex justify-between gap-3 border-t border-[var(--color-border)] pt-4"><span className="text-[var(--color-text-secondary)]">Payment value</span><span className="font-medium tabular-nums">{usdFromMicrousd(payment.amount_microusd, 2)}</span></div>
     {status === "Partial payment" ? <p className="text-[12px] text-[var(--color-text-secondary)]">Payment needs review.</p> : null}
     {copied ? <p role="status" className="sr-only">Copied {copied}</p> : null}
     {copyError ? <p role="alert">Select the value to copy it.</p> : null}
   </div>;
 }
 
-export function FundingPanel({ accountId, connected, payment, quote, onRefreshBilling }: {
-  accountId: string; connected: boolean; payment?: PaymentAccount | null; quote?: ZecUsdQuote | null; onRefreshBilling: () => Promise<void>;
+export function FundingPanel({ accountId, connected, payment, quote, onRefreshBilling, collapseDirect = false }: {
+  accountId: string; connected: boolean; payment?: PaymentAccount | null; quote?: ZecUsdQuote | null; onRefreshBilling: () => Promise<void>; collapseDirect?: boolean;
 }) {
   const [options, setOptions] = useState<CryptoOptions | null>(null);
   const [open, setOpen] = useState(false);
@@ -290,11 +290,11 @@ export function FundingPanel({ accountId, connected, payment, quote, onRefreshBi
     sentRef.current = updated; checkoutRevision.current++; setSentPayments(updated); setRenewal(null); setError(null);
   };
   return <>
-    {payment ? <DepositPanel payment={payment} connected={connected} quote={quote} discountBps={options?.zcash_discount_bps ?? 0} /> : payment === null ? <p className="mt-4 text-[12px] text-[var(--color-text-tertiary)]">Deposits are temporarily unavailable.</p> : null}
-    {options?.enabled && options.currencies.length ? <section className="mt-5 border-t border-[var(--color-border)] pt-5 text-[13px]" aria-label="Other crypto">
-      <button type="button" aria-label="Other crypto" aria-haspopup="dialog" aria-expanded={open} onClick={() => setOpen(true)}
+    {!collapseDirect && payment ? <DepositPanel payment={payment} connected={connected} quote={quote} discountBps={options?.zcash_discount_bps ?? 0} /> : null}
+    {options?.enabled && options.currencies.length ? <section className="mt-5 text-[13px]" aria-label="Crypto currencies">
+      <button type="button" aria-label="Choose a currency" aria-haspopup="dialog" aria-expanded={open} onClick={() => setOpen(true)}
         className="group flex w-full items-center justify-between gap-4 rounded-2xl border border-[var(--color-border)] bg-[var(--surface-tile)] px-4 py-4 text-left transition-[border-color,background-color,transform] hover:border-[var(--color-border-strong)] hover:bg-[var(--surface-card-hover)] active:scale-[0.99] focus-visible:outline-2 focus-visible:outline-offset-2">
-        <span className="font-medium">Other crypto</span>
+        <span className="font-medium">Choose a currency</span>
         <span aria-hidden="true" className="flex items-center gap-3"><span className="flex -space-x-1.5">
           {["btc", "usdc", "xmr"].filter((code) => options.currencies.some((c) => c.code === code)).map((code) => <span key={code} className="rounded-full ring-2 ring-[var(--surface-tile)]"><CryptoIcon code={code} className="h-7 w-7" /></span>)}
           <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-[var(--color-bg-surface-hover)] text-[var(--color-text-secondary)] ring-2 ring-[var(--surface-tile)]"><Plus size={13} /></span>
@@ -321,7 +321,7 @@ export function FundingPanel({ accountId, connected, payment, quote, onRefreshBi
               onChange={(value) => { intent.current = null; setCoin(value); setError(null); setDepositClosed(false); }} />
             </div>
             <CryptoNetworkWarning coin={options.currencies.find((c) => c.code === coin)} currencies={options.currencies} />
-            <div><label htmlFor={`crypto-amount-${accountId}`} className="mb-2 block text-[12px] font-medium text-[var(--color-text-secondary)]">Amount (USD credit)</label>
+            <div><label htmlFor={`crypto-amount-${accountId}`} className="mb-2 block text-[12px] font-medium text-[var(--color-text-secondary)]">Amount (USD)</label>
               <div className="flex min-h-14 items-center gap-2 rounded-xl border border-[var(--color-border)] bg-[var(--wash-row)] px-3.5 transition-colors focus-within:border-[var(--color-border-accent)]">
                 <span aria-hidden="true" className="text-[16px] text-[var(--color-text-tertiary)]">$</span>
                 <input id={`crypto-amount-${accountId}`} className="min-w-0 flex-1 bg-transparent py-3 text-[18px] font-medium tabular-nums outline-none disabled:opacity-40" inputMode="decimal" value={amount} disabled={!connected || busy || !!intent.current} maxLength={7}
@@ -343,5 +343,6 @@ export function FundingPanel({ accountId, connected, payment, quote, onRefreshBi
         {!connected ? <p role="status" className="mt-3 text-[12px]">Reconnecting…</p> : null}
       </CryptoDepositDialog> : null}
     </section> : null}
+    {collapseDirect && payment ? <details className="mt-4 text-[13px]"><summary className="cursor-pointer py-2">Zcash direct deposit</summary><DepositPanel payment={payment} connected={connected} quote={quote} discountBps={options?.zcash_discount_bps ?? 0} /></details> : payment === null ? <p className="mt-4 text-[12px] text-[var(--color-text-tertiary)]">Deposits are temporarily unavailable.</p> : null}
   </>;
 }

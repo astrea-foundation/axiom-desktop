@@ -12,6 +12,8 @@ pub use axiom_inference::RequestUsage;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+mod credit_billing;
+pub use credit_billing::*;
 
 pub const PROTOCOL_VERSION: &str = "0.2";
 const PROTOCOL_FAMILY: &str = "0";
@@ -111,7 +113,7 @@ impl FeatureVersions {
             profile_preferences: 1,
             collections: 1,
             account: 2,
-            billing: 5,
+            billing: 7,
             usage: 1,
             security_evidence: 4,
             web_consent: 1,
@@ -1699,6 +1701,8 @@ pub struct ProtocolSchema {
     pub logout_request: LogoutRequest,
     pub billing_status_request: BillingStatusRequest,
     pub billing_status_response: BillingStatusResponse,
+    pub credit_billing_request: CreditBillingRequest,
+    pub credit_billing_response: CreditBillingResponse,
     pub crypto_options_request: CryptoOptionsRequest,
     pub crypto_options_response: CryptoOptionsResponse,
     pub create_crypto_payment_request: CreateCryptoPaymentRequest,

@@ -83,6 +83,16 @@ pub struct SecureClientError {
 }
 
 impl SecureClientError {
+    pub(crate) fn trial_capacity(retry_at: Option<i64>) -> Self {
+        Self::with_code(
+            ProviderFailureKind::RateLimited,
+            SecureErrorCode::TrialCapacity,
+            "Free trials are currently at capacity. Please try again later.",
+            true,
+        )
+        .with_retry_at(retry_at.filter(|at| (1..=253_402_300_799).contains(at)))
+    }
+
     #[must_use]
     pub const fn new(kind: ProviderFailureKind, safe_detail: &'static str) -> Self {
         Self {

@@ -14,6 +14,8 @@ use serde::de::DeserializeOwned;
 use tokio_util::sync::CancellationToken;
 
 use crate::{AxiomError, Result, auth::AuthManager};
+pub mod command;
+pub mod credits;
 
 const MAX_BILLING_RESPONSE_BYTES: usize = 64 * 1024;
 // Deposit provisioning/receipt display is optional once the ledger is loaded.

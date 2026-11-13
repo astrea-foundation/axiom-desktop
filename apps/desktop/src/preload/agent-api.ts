@@ -8,6 +8,8 @@ import type {
   LocalPayloadRequest,
   LocalPayloadResponse,
   BillingStatusResponse,
+  CreditBillingAction,
+  CreditBillingResponse,
   CryptoOptionsResponse,
   CryptoPaymentResponse,
   CryptoPaymentsResponse,
@@ -75,6 +77,7 @@ export interface AgentApi {
   setSettings: (settings: ThreadSettingsRequest) => Promise<ThreadSettingsResult>;
   accountStatus: () => Promise<AccountStatusResponse>;
   billingStatus: () => Promise<BillingStatusResponse>;
+  creditBilling?: (action: CreditBillingAction, accountId: string) => Promise<CreditBillingResponse>;
   cryptoOptions: (accountId: string) => Promise<CryptoOptionsResponse>;
   cryptoPayments: (accountId: string) => Promise<CryptoPaymentsResponse>;
   cryptoInvoiceAction: (request: CryptoInvoiceActionRequest, accountId: string) => Promise<CryptoPaymentResponse>;
@@ -167,6 +170,7 @@ export const agentApi: AgentApi = {
   setSettings: (settings) => invoke("set-settings", settings),
   accountStatus: () => invoke("account-status"),
   billingStatus: () => invoke("billing-status"),
+  creditBilling: (action, accountId) => invoke("credit-billing", action, accountId),
   cryptoOptions: (accountId) => invoke("crypto-options", accountId),
   cryptoPayments: (accountId) => invoke("crypto-payments", accountId),
   cryptoInvoiceAction: (request, accountId) => invoke("crypto-invoice-action", request, accountId),

@@ -75,6 +75,8 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Manage account credits, subscriptions, card payments and automatic top-up.
+    Billing(axiomcli::billing::command::Arguments),
     /// Download, verify, install and restart an installed Axiom release.
     Update(axiomcli::updates::Arguments),
     /// Permanently delete all local Axiom data and saved credentials. Stop Axiom first.
@@ -380,6 +382,9 @@ async fn main() -> anyhow::Result<()> {
         cwd: None,
         resume: None,
     }) {
+        Command::Billing(arguments) => axiomcli::billing::command::run(arguments, &auth)
+            .await
+            .map_err(Into::into),
         Command::Update(_) => unreachable!("update is handled before agent initialization"),
         Command::FactoryReset(_) => {
             unreachable!("factory reset is handled before agent initialization")

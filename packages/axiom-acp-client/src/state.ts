@@ -102,7 +102,7 @@ export interface ClientState {
   collections: CollectionState;
   preferences: ProfilePreferences | null;
   account: AccountStatus | null;
-  billing: BillingStatus | null;
+  billing: (BillingStatus & { credits?: import("@axiom/chat-core/creditBalances").CreditBalanceSummary | null }) | null;
   diagnostic: string;
   error: string | null;
 }
@@ -440,7 +440,14 @@ export class AxiomStateStore extends EventEmitter {
   setBilling(status: BillingStatus): void {
     if (this.value.billing && status.revision <= this.value.billing.revision) return;
     if (this.value.billing && status.ledgerSequence < this.value.billing.ledgerSequence) return;
-    this.value.billing = status;
+    this.value.billing = { ...status, ...(this.value.billing?.credits ? {credits: this.value.billing.credits} : {}) };
+    this.changed();
+  }
+
+  setCreditBalances(summary: import("@axiom/chat-core/creditBalances").CreditBalanceSummary | null): void {
+    if (!this.value.billing) return;
+    if (summary && this.value.billing.credits && BigInt(summary.revision) < BigInt(this.value.billing.credits.revision)) return;
+    this.value.billing = { ...this.value.billing, credits: summary };
     this.changed();
   }
 

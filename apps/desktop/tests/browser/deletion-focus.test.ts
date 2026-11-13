@@ -2270,9 +2270,9 @@ $$`);
   } finally { await page.close(); }
 });
 
-async function openAccountScreen(page: Page, name: "Settings" | "Balance") {
+async function openAccountScreen(page: Page, name: "Settings" | "Billing") {
   await page.getByRole("button", { name: "Account menu", exact: true }).click();
-  await page.getByRole("menuitem", { name: name === "Settings" ? "Settings" : /^Balance/ }).click();
+  await page.getByRole("menuitem", { name: name === "Settings" ? "Settings" : /^Billing/ }).click();
   await page.getByRole("region", { name, exact: true }).waitFor();
 }
 
@@ -2360,9 +2360,9 @@ for (const platform of ["linux", "win32", "darwin"]) {
       const menu = page.getByRole("menu", { name: "Account actions", exact: true });
       const bounds = await menu.boundingBox(), anchor = await trigger.boundingBox();
       assert.ok(bounds && anchor && bounds.y + bounds.height <= anchor.y);
-      assert.match(await menu.getByRole("menuitem", { name: /^Balance/ }).innerText(), /\$12\.35$/);
+      assert.match(await menu.getByRole("menuitem", { name: /^Billing/ }).innerText(), /\$12\.35$/);
       await page.getByRole("menuitem", { name: "Settings", exact: true }).press("ArrowDown");
-      assert.equal(await page.evaluate(() => document.activeElement?.textContent?.startsWith("Balance")), true);
+      assert.equal(await page.evaluate(() => document.activeElement?.textContent?.startsWith("Billing")), true);
       await page.keyboard.press("Escape");
       assert.equal(await menu.count(), 0);
       assert.equal(await trigger.getAttribute("aria-expanded"), "false");
@@ -2380,7 +2380,7 @@ for (const platform of ["linux", "win32", "darwin"]) {
       await menu.waitFor({ state: "detached" });
       await page.evaluate(() => (window as any).__deletionTest.failBalance(true));
       await trigger.click();
-      await menu.getByRole("menuitem", { name: "Balance Unavailable", exact: true }).waitFor();
+      await menu.getByRole("menuitem", { name: "Billing Unavailable", exact: true }).waitFor();
       const logout = menu.getByRole("menuitem", { name: "Log out", exact: true });
       if (platform === "linux") {
         await logout.click();
@@ -2406,7 +2406,7 @@ test("balance is a separate screen and payments stay hidden after sign-out", asy
   try {
     const billing = depositBilling(25_000_000);
     await page.evaluate((billing) => (window as any).__deletionTest.setBilling(billing), billing);
-    await openAccountScreen(page, "Balance");
+    await openAccountScreen(page, "Billing");
     assert.equal(await page.getByRole("region", { name: "Settings", exact: true }).count(), 0);
     const address = page.getByLabel("Mainnet deposit address", { exact: true });
     assert.equal(await address.innerText(), billing.paymentAccount!.address);
@@ -2421,7 +2421,7 @@ test("balance is a separate screen and payments stay hidden after sign-out", asy
     await page.getByRole("button", { name: "Sign out", exact: true }).click();
     await page.getByRole("button", { name: "Sign in", exact: true }).waitFor();
     await page.getByRole("button", { name: "Back", exact: true }).click();
-    await openAccountScreen(page, "Balance");
+    await openAccountScreen(page, "Billing");
     await page.getByText("Sign in to view your balance and payment options.").waitFor();
     assert.equal(await page.getByRole("region", { name: "Zcash deposits", exact: true }).count(), 0);
     assert.equal(await address.count(), 0);
@@ -2429,7 +2429,7 @@ test("balance is a separate screen and payments stay hidden after sign-out", asy
     await page.getByRole("region", { name: "Browser sign-in", exact: true }).waitFor();
     assert.equal(await page.getByRole("dialog").count(), 0);
     assert.deepEqual(await page.evaluate(() => (window as any).__deletionTest.calls.filter((call: any) => call.method === "nativeLoginStart").map((call: any) => call.text)), ["[]"]);
-    assert.equal(await page.getByRole("region", { name: "Balance", exact: true }).count(), 0);
+    assert.equal(await page.getByRole("region", { name: "Billing", exact: true }).count(), 0);
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
 });
@@ -2444,7 +2444,7 @@ test("balance refreshes keep one top-up panel and preserve gift code input", asy
     await page.clock.install();
     const billing = depositBilling(900_000);
     await page.evaluate((billing) => (window as any).__deletionTest.setBilling(billing), billing);
-    await openAccountScreen(page, "Balance");
+    await openAccountScreen(page, "Billing");
     const panel = page.getByRole("region", { name: "Balance and payments", exact: true });
     const giftCode = panel.getByLabel("Gift code", { exact: true });
     await giftCode.fill("AXG-UNSUBMITTED");
@@ -2482,7 +2482,7 @@ test("failed balance reads show an error, back off, and recover without blaming 
     await page.clock.install({ time: now });
     await page.clock.pauseAt(now + 100);
     await page.evaluate(() => (window as any).__deletionTest.failBalance(true));
-    await openAccountScreen(page, "Balance");
+    await openAccountScreen(page, "Billing");
     const panel = page.getByRole("region", { name: "Balance and payments", exact: true });
     await panel.getByText("Balance unavailable", { exact: true }).waitFor();
     await panel.getByRole("alert").getByText("Balance test failure", { exact: true }).waitFor();
@@ -2523,7 +2523,7 @@ test("a failed deposit refresh retains loaded credit and stops polling after lea
       (window as any).__deletionTest.setBilling(billing);
       (window as any).__deletionTest.failBalance(true);
     }, depositBilling(4_000_000));
-    await openAccountScreen(page, "Balance");
+    await openAccountScreen(page, "Billing");
     const panel = page.getByRole("region", { name: "Balance and payments", exact: true });
     await panel.getByRole("alert").waitFor();
     assert.equal(await panel.getByText("$4.00", { exact: true }).first().isVisible(), true);
@@ -2546,7 +2546,7 @@ test("deposit monitoring resumes when a later refresh enables a payment account"
     await page.clock.install({ time: now });
     await page.clock.pauseAt(now + 100);
     await page.evaluate((billing) => (window as any).__deletionTest.setBilling({ ...billing, paymentAccount: null }), depositBilling(1_000_000));
-    await openAccountScreen(page, "Balance");
+    await openAccountScreen(page, "Billing");
     await page.waitForFunction(() => !(document.querySelector('[aria-label="Refresh balance"]') as HTMLButtonElement)?.disabled);
     const count = () => page.evaluate(() => (window as any).__deletionTest.calls.filter((call: any) => call.method === "billingStatus").length);
     let previous = await count();
@@ -2567,7 +2567,7 @@ test("a stale manual balance failure cannot overwrite a new account's active ref
   const { page, errors } = await openApp();
   try {
     await page.evaluate((billing) => (window as any).__deletionTest.setBilling({ ...billing, paymentAccount: null }), depositBilling(1_000_000));
-    await openAccountScreen(page, "Balance");
+    await openAccountScreen(page, "Billing");
     const refresh = page.getByRole("button", { name: "Refresh balance", exact: true });
     await page.waitForFunction(() => !(document.querySelector('[aria-label="Refresh balance"]') as HTMLButtonElement)?.disabled);
     await page.evaluate(() => {
@@ -2594,7 +2594,7 @@ test("balance shows debt and a reusable deposit address without displaying a res
   const { page, errors } = await openApp();
   try {
     await page.evaluate((billing) => (window as any).__deletionTest.setBilling(billing), depositBilling(-230_534));
-    await openAccountScreen(page, "Balance");
+    await openAccountScreen(page, "Billing");
     const panel = page.getByRole("region", { name: "Balance and payments", exact: true });
     await panel.getByText("-$0.23", { exact: true }).waitFor();
     await panel.getByText("Top up to send another message.", { exact: true }).waitFor();
@@ -2880,8 +2880,8 @@ test("balance deposit controls fit the reference window, respect reduced motion,
       }
       await page.getByRole("button", { name: "Back", exact: true }).click();
       await page.setViewportSize({ width: 751, height: 791 });
-      await openAccountScreen(page, "Balance");
-      assert.equal(await page.getByRole("region", { name: "Balance", exact: true }).evaluate((element) => getComputedStyle(element).animationName), "none");
+      await openAccountScreen(page, "Billing");
+      assert.equal(await page.getByRole("region", { name: "Billing", exact: true }).evaluate((element) => getComputedStyle(element).animationName), "none");
       const panel = page.getByRole("region", { name: "Balance and payments", exact: true });
       if (screenshot) await page.screenshot({ path: `${screenshot}-${theme}-balance.png`, animations: "disabled" });
       assert.equal(await panel.evaluate((element) => element.scrollWidth <= element.clientWidth), true, "balance content fits the panel width");
@@ -2895,7 +2895,7 @@ test("balance deposit controls fit the reference window, respect reduced motion,
       assert.ok(giftBounds && panelBounds && giftBounds.y >= panelBounds.y && giftBounds.y + giftBounds.height <= panelBounds.y + panelBounds.height);
       await page.getByRole("button", { name: "Back", exact: true }).click();
     }
-    await openAccountScreen(page, "Balance");
+    await openAccountScreen(page, "Billing");
     for (const width of [800, 560]) {
       await page.setViewportSize({ width, height: 600 });
       const panel = page.getByRole("region", { name: "Balance and payments", exact: true });
@@ -2949,7 +2949,7 @@ test("deposit progress keeps ZEC primary and changes estimated USD to credited U
       });
     }, { confirmations, credited });
     await showDeposit("3");
-    await openAccountScreen(page, "Balance");
+    await openAccountScreen(page, "Billing");
     const row = page.getByRole("region", { name: "Zcash deposits" }).locator("li summary");
     await row.getByText("~$0.10", { exact: true }).waitFor();
     // Measure both amounts in the same frame while the account panel animates.
@@ -3620,7 +3620,7 @@ test("gift redemption shows the code, updates balance, retries safely and clears
         return {creditedMicrousd: 25_000_000, alreadyRedeemed: false, status};
       };
     });
-    await openAccountScreen(page, "Balance");
+    await openAccountScreen(page, "Billing");
     const code = "AXG-AAAA-AAAA-AAAA-AAAA-AAAA-AAAA-AAAA-AAAA";
     const field = page.getByLabel("Gift code", {exact: true});
     await field.fill(code);
@@ -4908,17 +4908,17 @@ test("MCP selection under Agent applies only to that thread with Agent off", asy
   try {
     await page.evaluate(() => (window as any).__deletionTest.enableMcp());
     await page.getByRole("button", { name: "Viewed Existing thread", exact: true }).click();
-    await page.getByRole("button", { name: "Agent", exact: true }).click();
-    const dialog = page.getByRole("dialog", { name: "Agent settings" });
+    await page.getByRole("button", { name: "Tools", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Tools for this conversation" });
     await dialog.getByRole("checkbox", { name: /echo Echo from a local server/ }).check();
     assert.equal(await page.getByRole("button", { name: "Agent", exact: true }).getAttribute("aria-pressed"), "false");
     await dialog.getByRole("button", { name: "Close Agent settings", exact: true }).click();
     await dialog.waitFor({ state: "hidden" });
-    await page.getByRole("button", { name: "Agent", exact: true }).click();
+    await page.getByRole("button", { name: "Tools", exact: true }).click();
     assert.equal(await dialog.getByRole("checkbox", { name: /echo Echo from a local server/ }).isChecked(), true);
     await dialog.getByRole("button", { name: "Close Agent settings", exact: true }).click();
     await page.getByRole("button", { name: "New thread", exact: true }).click();
-    await page.getByRole("button", { name: "Agent", exact: true }).click();
+    await page.getByRole("button", { name: "Tools", exact: true }).click();
     assert.equal(await dialog.getByRole("checkbox", { name: /echo Echo from a local server/ }).isChecked(), false);
     assert.deepEqual(errors, []);
   } finally { await page.close(); }

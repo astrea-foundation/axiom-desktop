@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { validateCreditBalances } from "@axiom/chat-core/creditBalances";
 import type {
   AccountStatusResponse,
   LocalPayloadRequest,
@@ -72,7 +73,7 @@ const EXTENSION_CAPABILITIES = {
     desktopMcp: 2,
     localPayload: 2,
     account: 2,
-    billing: 5,
+    billing: 7,
     usage: 1,
     securityEvidence: 4,
     webConsent: 1,
@@ -178,6 +179,7 @@ export class AxiomAcpClient extends EventEmitter {
   private supportsImageResources = false;
   private supportsImageResolution = false;
   private supportsCryptoInvoices = false;
+  private supportsCreditBilling = false;
   private supportsAttachments = false;
   private desktopBootstrap: DesktopBootstrapResponse | null = null;
   private closing = false;
@@ -265,6 +267,7 @@ export class AxiomAcpClient extends EventEmitter {
     this.supportsImageResolution = (meta?.features?.imageResources ?? 0) >= 2;
     this.state.setImageGenerationAvailable(this.supportsImageGeneration);
     this.supportsCryptoInvoices = (meta?.features?.billing ?? 0) >= 5;
+    this.supportsCreditBilling = (meta?.features?.billing ?? 0) >= 7;
     this.supportsAttachments = (meta?.features?.attachments ?? 0) >= 2;
     this.initialized = true;
     this.state.setConnected(true);
@@ -477,6 +480,27 @@ export class AxiomAcpClient extends EventEmitter {
       if (this.state.accountContextToken() === context) {
         this.state.setRunning(threadId, false);
         await this.refreshThread(threadId, true).catch(() => undefined);
+      }
+    }
+  }
+
+  async regenerateImage(threadId: string, callId: string): Promise<{ callId: string }> {
+    if (!this.supportsImageRegeneration) throw new ProtocolError("Restart Axiom to regenerate individual images.");
+    if (!callId || callId.length > 512 || !threadId || threadId.length > 128) throw new ProtocolError("Invalid image identity");
+    if (this.state.snapshot().sessions[threadId]?.running) throw new ProtocolError("Wait for the current response or stop it first.");
+    const context = this.state.accountContextToken();
+    const cancellation = new AbortController();
+    this.pendingImageRequests.set(threadId, cancellation);
+    this.state.setRunning(threadId, true);
+    try {
+      const result = await this.process.request<{ callId: string }>("_axiom/image/regenerate", { threadId, callId }, 0, cancellation.signal);
+      this.assertAccountContext(context);
+      return result;
+    } finally {
+      if (this.pendingImageRequests.get(threadId) === cancellation) this.pendingImageRequests.delete(threadId);
+      if (this.state.accountContextToken() === context) {
+        this.state.setRunning(threadId, false);
+        await this.refreshThread(threadId).catch(() => undefined);
       }
     }
   }
@@ -762,9 +786,13 @@ export class AxiomAcpClient extends EventEmitter {
     // Startup, the account menu and the balance/deposit screens can all request
     // the same balance at once. Share only in-flight work for this exact account
     // generation; never cache a settled balance or join an old owner's request.
-    const promise = this.process.request<BillingStatusResponse>("_axiom/billing/status", {}).then((result) => {
+    const promise = this.process.request<BillingStatusResponse>("_axiom/billing/status", {}).then(async (result) => {
       this.assertAccountContext(accountContext);
       this.state.setBilling(result.status);
+      if (this.supportsCreditBilling) {
+        await this.creditBilling({kind: "summary"}).catch(() => undefined);
+        this.assertAccountContext(accountContext);
+      }
       return result;
     }).finally(() => {
       // An old account's completion must not detach a newer account's request.
@@ -772,6 +800,24 @@ export class AxiomAcpClient extends EventEmitter {
     });
     this.billingRefresh = { context: accountContext, promise };
     return promise;
+  }
+
+  async creditBilling(action: import("./generated/protocol.js").CreditBillingAction): Promise<import("./generated/protocol.js").CreditBillingResponse> {
+    if (!this.supportsCreditBilling) throw new ProtocolError("Restart Axiom with the updated native app to manage subscriptions and credits.");
+    const { validateCreditAction } = await import("./credit-billing.js");
+    validateCreditAction(action);
+    const context = this.state.accountContextToken();
+    const result = await this.process.request<import("./generated/protocol.js").CreditBillingResponse>("_axiom/billing/credits", {action});
+    this.assertAccountContext(context);
+    if (result.result.kind === "summary") {
+      const summary: unknown = result.result.value;
+      if (summary === null) this.state.setCreditBalances(null);
+      else {
+        validateCreditBalances(summary);
+        this.state.setCreditBalances(summary);
+      }
+    }
+    return result;
   }
 
   async cryptoOptions(): Promise<CryptoOptionsResponse> {

@@ -1,4 +1,5 @@
 export * from "./client.js";
+export * from "./credit-billing.js";
 export * from "./attachments.js";
 export * from "./errors.js";
 export * from "./generated/protocol.js";

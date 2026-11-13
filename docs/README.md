@@ -9,6 +9,7 @@ must be recorded against the actual source revision and signed installers.
 |---|---|
 | [Install and update](installing-desktop.md) | Packages, bundled CLI and installation |
 | [Desktop](desktop.md) | Conversations, Agent/Web controls, evidence, credit and usage |
+| [Credits and subscriptions](billing.md) | Weekly allowance, purchased credits, card/crypto, auto top-up and CLI controls |
 | [CLI and TUI](cli.md) | Commands, terminal interaction, funding, plans and sessions |
 | [Local proxy](proxy.md) | Loopback integration and OpenAI compatibility |
 | [MCP connections](mcp.md) | Remote/local connections, conversation tools and approvals |

@@ -3,6 +3,8 @@ import { useChatHost } from "./ChatHost";
 import { ChartPie, LogIn, RefreshCw } from "lucide-react";
 import { useEffect, useId, useState } from "react";
 import type { UsageSummary } from "@axiom/chat-core/viewTypes";
+import { creditAmount, purchasedCreditAmount } from "@axiom/chat-core/creditBalances";
+import { creditUsageBreakdown, purchasedUsageBreakdown, type CreditUsageSummary } from "@axiom/chat-core/creditUsage";
 import { formatSpend, pieSlice, shareLabel, spendingBreakdown, type UsagePeriod } from "@axiom/chat-core/usageSpend";
 
 const COLORS = ["#ff7653", "#9295c9", "#73a79c", "#d7ad68", "#77a5c6", "#c58eaa", "#ada687", "#7e8fa6"];
@@ -13,7 +15,8 @@ const PERIODS: { id: UsagePeriod; label: string; totalLabel: string }[] = [
   { id: "month", label: "This month", totalLabel: "Spending this month" },
   { id: "all_time", label: "All time", totalLabel: "All-time spending" },
 ];
-type UsageState = { requestKey: string } & ({ kind: "loading" } | { kind: "error" } | { kind: "ready"; summary: UsageSummary });
+type UsageData = {denomination: "usd"; summary: UsageSummary} | {denomination: "credits"; summary: CreditUsageSummary};
+type UsageState = { requestKey: string } & ({ kind: "loading" } | { kind: "error" } | { kind: "ready"; data: UsageData });
 
 export function UsagePanel({ accountId, connected, onLogin }: {
   accountId: string | null;
@@ -24,6 +27,8 @@ export function UsagePanel({ accountId, connected, onLogin }: {
   const [state, setState] = useState<UsageState>({ kind: "loading", requestKey: "" });
   const [refresh, setRefresh] = useState(0);
   const [period, setPeriod] = useState<UsagePeriod>("all_time");
+  const [bucket, setBucket] = useState<"credits" | "purchased">("credits");
+  useEffect(() => setBucket("credits"), [accountId]);
   const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
   const requestKey = JSON.stringify([accountId, connected, period, timezone, refresh]);
   const panelId = useId();
@@ -33,10 +38,17 @@ export function UsagePanel({ accountId, connected, onLogin }: {
     setState({ kind: "loading", requestKey });
     void (async () => {
       try {
+        const credits = await api?.creditUsageSummary?.(accountId, {period, timezone});
+        if (credits) {
+          creditUsageBreakdown(credits, period);
+          purchasedUsageBreakdown(credits, period);
+          if (!cancelled) setState({kind: "ready", data: {denomination: "credits", summary: credits}, requestKey});
+          return;
+        }
         if (!api?.usageSummary) throw new Error("Usage is unavailable");
         const { summary } = await api.usageSummary(accountId, { period, timezone });
         spendingBreakdown(summary, period);
-        if (!cancelled) setState({ kind: "ready", summary, requestKey });
+        if (!cancelled) setState({ kind: "ready", data: {denomination: "usd", summary}, requestKey });
       } catch {
         if (!cancelled) setState({ kind: "error", requestKey });
       }
@@ -74,16 +86,20 @@ export function UsagePanel({ accountId, connected, onLogin }: {
           <p className="mb-4 text-[13px] text-[var(--color-text-secondary)]">Couldn’t load your usage.</p>
           <button type="button" onClick={() => setRefresh(value => value + 1)} className={buttonClass}><RefreshCw size={14} />Try again</button>
         </div>
-        : <UsageBreakdown key={requestKey} summary={current.summary} period={period} onRefresh={() => setRefresh(value => value + 1)} />}
+        : <UsageBreakdown key={requestKey} data={current.data} period={period} bucket={bucket} onBucket={setBucket} onRefresh={() => setRefresh(value => value + 1)} />}
     </div>
     <p className="mt-4 text-[11px] text-[var(--color-text-tertiary)]">Weeks start Monday. Dates use your local timezone ({timezone.replaceAll("_", " ")}).</p>
   </div>;
 }
 
-function UsageBreakdown({ summary, period, onRefresh }: { summary: UsageSummary; period: UsagePeriod; onRefresh: () => void }) {
+function UsageBreakdown({ data, period, bucket, onBucket, onRefresh }: { data: UsageData; period: UsagePeriod;
+  bucket: "credits" | "purchased"; onBucket(value: "credits" | "purchased"): void; onRefresh: () => void }) {
   const [activeModel, setActiveModel] = useState<string | null>(null);
   const chartId = useId();
-  const { total, models } = spendingBreakdown(summary, period);
+  const paid = data.denomination === "credits" && bucket === "purchased";
+  const { total, models } = data.denomination === "credits" ? paid ? purchasedUsageBreakdown(data.summary, period) : creditUsageBreakdown(data.summary, period) : spendingBreakdown(data.summary, period);
+  const format = data.denomination === "credits" ? paid ? (value: bigint) => purchasedCreditAmount(value.toString(), true) : (value: bigint) => `${creditAmount(value.toString(), true)} credits` : formatSpend;
+  const modelLabel = data.denomination === "credits" ? paid ? "Purchased credit by model" : "Credits by model" : "Spending by model";
   let start = 0;
   let cumulative = 0n;
   const slices = models.map((model, index) => {
@@ -95,10 +111,14 @@ function UsageBreakdown({ summary, period, onRefresh }: { summary: UsageSummary;
   });
 
   return <div>
+    {data.denomination === "credits" && <div role="group" aria-label="Usage balance" className="mb-5 flex gap-2">
+      <button type="button" className={`${buttonClass} aria-pressed:border-[var(--color-text-primary)]`} aria-pressed={bucket === "credits"} onClick={() => onBucket("credits")}>Allowance credits</button>
+      <button type="button" className={`${buttonClass} aria-pressed:border-[var(--color-text-primary)]`} aria-pressed={bucket === "purchased"} onClick={() => onBucket("purchased")}>Purchased credit</button>
+    </div>}
     <div className="flex items-start justify-between gap-4">
       <div>
-        <p className="text-[12px] text-[var(--color-text-tertiary)]">{PERIODS.find(item => item.id === period)!.totalLabel}</p>
-        <p data-usage-total className="mt-2 break-all text-[36px] font-medium leading-tight tracking-[-0.04em] text-[var(--color-text-primary)] tabular-nums">{formatSpend(total)}</p>
+        <p className="text-[12px] text-[var(--color-text-tertiary)]">{data.denomination === "credits" ? paid ? "Purchased credit spent" : "Credits consumed" : PERIODS.find(item => item.id === period)!.totalLabel}</p>
+        <p data-usage-total className="mt-2 break-all text-[36px] font-medium leading-tight tracking-[-0.04em] text-[var(--color-text-primary)] tabular-nums">{format(total)}</p>
       </div>
       <button type="button" onClick={onRefresh} aria-label="Refresh usage" className={`${buttonClass} !p-2`}><RefreshCw size={15} /></button>
     </div>
@@ -107,11 +127,11 @@ function UsageBreakdown({ summary, period, onRefresh }: { summary: UsageSummary;
       <h3 className="text-[15px] font-medium text-[var(--color-text-primary)]">{period === "all_time" ? "No spending yet" : `No spending this ${period}`}</h3>
       <p className="mt-1 text-[12.5px] text-[var(--color-text-tertiary)]">{period === "all_time" ? "Your model breakdown will appear here after your first charge." : "Charges for this period will appear here."}</p>
     </div> : <div className="mt-7 rounded-[16px] border border-[var(--color-border)] bg-[var(--wash-row)] p-4 sm:p-5">
-      <h3 className="text-[13px] font-medium text-[var(--color-text-primary)]">Spending by model</h3>
+      <h3 className="text-[13px] font-medium text-[var(--color-text-primary)]">{modelLabel}</h3>
       <div className="mt-3 flex flex-wrap items-center justify-center gap-4">
         <svg viewBox="0 0 240 240" role="img" aria-labelledby={`${chartId}-title ${chartId}-desc`} className="w-[220px] max-w-full shrink-0">
-          <title id={`${chartId}-title`}>Spending by model</title>
-          <desc id={`${chartId}-desc`}>{models.map(model => `${model.label}: ${formatSpend(model.amount)}, ${shareLabel(model)}`).join(". ")}</desc>
+          <title id={`${chartId}-title`}>{modelLabel}</title>
+          <desc id={`${chartId}-desc`}>{models.map(model => `${model.label}: ${format(model.amount)}, ${shareLabel(model)}`).join(". ")}</desc>
           {slices.map(model => models.length === 1
             ? <circle key={model.id} cx="120" cy="120" r="106" fill={model.color} />
             : <path key={model.id} d={model.path} fill={model.color} stroke="var(--surface-card)" strokeWidth="2"
@@ -122,11 +142,11 @@ function UsageBreakdown({ summary, period, onRefresh }: { summary: UsageSummary;
           {slices.map(model => <li key={model.id}>
             <button type="button" className={`flex w-full items-center gap-3 rounded-[9px] p-2.5 text-left transition-colors ${activeModel === model.id ? "bg-[var(--wash-chip)]" : "hover:bg-[var(--wash-hover)]"}`}
               onMouseEnter={() => setActiveModel(model.id)} onMouseLeave={() => setActiveModel(null)} onFocus={() => setActiveModel(model.id)} onBlur={() => setActiveModel(null)} onClick={() => setActiveModel(model.id)}
-              aria-label={`${model.label}, ${model.provider}, ${formatSpend(model.amount)}, ${shareLabel(model)} of spending`}>
+              aria-label={`${model.label}, ${model.provider}, ${format(model.amount)}, ${shareLabel(model)} of usage`}>
               <span aria-hidden="true" className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: model.color }} />
               <span className="min-w-0 flex-1"><span className="block break-words text-[12.5px] font-medium text-[var(--color-text-primary)]">{model.label}</span>
                 <span className="block text-[11px] text-[var(--color-text-tertiary)]">{model.provider}</span></span>
-              <span className="shrink-0 text-right tabular-nums"><span className="block text-[12.5px] text-[var(--color-text-primary)]">{formatSpend(model.amount)}</span><span className="block text-[11px] text-[var(--color-text-tertiary)]">{shareLabel(model)}</span></span>
+              <span className="shrink-0 text-right tabular-nums"><span className="block text-[12.5px] text-[var(--color-text-primary)]">{format(model.amount)}</span><span className="block text-[11px] text-[var(--color-text-tertiary)]">{shareLabel(model)}</span></span>
             </button>
           </li>)}
         </ul>

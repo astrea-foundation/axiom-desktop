@@ -219,6 +219,7 @@ export interface NativeSession {
 }
 
 export interface BillingStatus {
+  credits?: import("./creditBalances.js").CreditBalanceSummary | null;
   /**
    * Monotonic within one agent runtime; clients ignore older projections.
    */

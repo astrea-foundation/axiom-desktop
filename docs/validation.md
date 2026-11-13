@@ -225,6 +225,14 @@ requirements. See [the pool guide](inference-pool.md).
 
 ## Automated checks
 
+Subscription/credit controls use `billing@7`; new server enrollment and automatic
+charges default off. Local fixtures cover ledger allocations, reset boundaries,
+native account changes, explicit consent, payment recovery and admin job retries.
+Before release, qualify actual sandbox Checkout, saved-card/off-session/SCA,
+monthly renewal/refund/webhook flows and the installed client. No live deployment
+or signed-installer qualification is implied by these source checks. See
+[billing behavior](billing.md).
+
 Run the [development checks](development.md#checks), including Rust formatting,
 strict Clippy, functional tests, dependency policy, generated ACP contract checks,
 TypeScript checks and Desktop unit/browser tests. Validate installer changes

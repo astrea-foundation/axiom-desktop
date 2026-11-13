@@ -131,7 +131,7 @@ are never an instruction to send conversation plaintext through a hosted endpoin
 | Collections | `collection/list`, `collection/create`, `collection/rename`, `collection/set_collapsed`, `collection/move`, `collection/delete`, `collection/assign` |
 | Native account | `account/status`, `account/native_login_start`, `account/native_login_complete`, `account/native_login_cancel`, `account/logout` |
 | Automation-key management | `account/api_keys`, `account/api_key_create`, `account/api_key_revoke` |
-| Billing | `billing/status`, `billing/redeem_gift_code`, `billing/crypto_options`, `billing/create_crypto_payment`, `billing/crypto_payments` |
+| Billing | `billing/status`, `billing/redeem_gift_code`, `billing/crypto_options`, `billing/create_crypto_payment`, `billing/crypto_payments`, `billing/crypto_invoice_action`, `billing/credits` |
 | Usage | `usage/summary` (optional `period`: `week`/`month`/`all_time`, IANA `timezone`; defaults: all time/UTC) |
 | Evidence/compaction/steering | `security/verify`, `security/prewarm`, `compaction/start`, `turn/steer` |
 
@@ -334,6 +334,45 @@ are bounded to 0–99 and monotonic; successful tool completion supplies the UI'
 100% state. Stages are `queued`, `generating` and `finishing`. Progress is tool
 state rather than assistant text, model output or additional image content.
 
+`imageGeneration@3` exposes `generate` and `view_image` automatically for a
+vision-capable selected model when the native image service is installed. A
+prompt creates an image; an optional `reference_image_ids` array selects up to
+five distinct conversation-local images for editing or composition. The array
+defines `<image1>`, `<image2>`, etc. for that call. Prompt metadata has no Images toggle or
+per-message image permission. Native code checks model capability on every
+turn and rejects unadvertised image calls and nonvision image uploads. The earlier
+version-1 toggle and version-2 singular-reference contracts are not negotiated
+for new calls; their saved tool records remain renderable. Instructions
+require an explicit user request for image creation or editing; image analysis
+alone is not such a request. Web consent and Agent/MCP authority remain separate.
+
+`imageGeneration@4` adds `_axiom/image/regenerate` with only `threadId` and
+`callId`. Native code resolves a completed image tool record under the active
+account, verifies its reference order, and runs that stored request in a fresh
+image-only turn. It adds the result without replacing the user prompt, prior
+images, or later messages, and never calls the chat model. Running work is
+serialized per thread, supports standard cancellation, and retains normal
+authenticated progress, accounting, and durable recovery. Earlier sidecars
+reject the action before sending any generation request. The model-facing tool
+uses an enumerated `aspect_ratio`; client-side sizing fills the largest exact
+32-pixel-grid output within the existing area cap. New images default to 2:3.
+
+`view_image` selects one conversation-local `image_id` for optional inspection,
+including a result generated earlier in the same turn. Native code supplies a
+bounded visual observation after all replies in the tool-call batch, preserving
+provider tool-history ordering. The observation is application context, not a
+new user request. ACP receives a normal text tool result; image bytes go only to
+the selected model's encrypted vision input. Successful views reconstruct from
+the saved tool arguments and completion status, using the existing local image
+catalog. No additional ACP extension or image-generation request is needed.
+
+Image progress uses standard tool-call updates with
+`rawOutput.imageProgress = {stage, percent}`. Native tool metadata retains the
+latest value as `image_progress` for durable snapshots. Intermediate percentages
+are bounded to 0–99 and monotonic; successful tool completion supplies the UI's
+100% state. Stages are `queued`, `generating` and `finishing`. Progress is tool
+state rather than assistant text, model output or additional image content.
+
 ## Accounts, billing and public evidence
 
 Login-start accepts a method hint and returns a hosted URL and opaque handle.
@@ -388,6 +427,16 @@ Payment responses add optional `quote_id`, `invoice_expires_at`, and `active` fo
 older-server compatibility, preserving the server's snake_case funding contract.
 The native client checks that invoice metadata appears together, expiry is exactly
 six hours after creation, and rate expiry never exceeds invoice expiry.
+
+`billing@7` adds `_axiom/billing/credits` with finite tagged actions/results for
+the independent `credits@3` summary, plans, model multipliers, credit usage,
+subscription Checkout/change/portal, saved-card setup, auto top-up consent,
+operation recovery and one-time card funding. Credit values are exact bounded
+decimal strings at scale 1,000,000. Legacy `BillingStatus` monetary fields retain
+their denomination and exclude weekly allowance. Updated SDK state carries the
+credit summary separately and discards stale account/runtime replies. Native
+requests use account token leases; renderers cannot select URLs, headers or an
+arbitrary principal. See [billing controls](billing.md#integration).
 
 Billing status can include shared `trial_capacity` metadata. Trial admission
 errors are typed `TRIAL_CAPACITY` with a retry timestamp; clients show a capacity

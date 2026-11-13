@@ -223,6 +223,8 @@ export interface ProtocolSchema {
   logoutRequest: LogoutRequest;
   billingStatusRequest: BillingStatusRequest;
   billingStatusResponse: BillingStatusResponse;
+  creditBillingRequest: CreditBillingRequest;
+  creditBillingResponse: CreditBillingResponse;
   cryptoOptionsRequest: CryptoOptionsRequest;
   cryptoOptionsResponse: CryptoOptionsResponse;
   createCryptoPaymentRequest: CreateCryptoPaymentRequest;
@@ -969,6 +971,177 @@ export interface TrialCapacity {
   capacity_microusd: number;
   spent_microusd: string;
   retry_at?: string | null;
+}
+export interface CreditBillingRequest {
+  action: CreditBillingAction;
+}
+export interface AutomaticTopupSettings {
+  enabled: boolean;
+  version: string;
+  threshold_units: string;
+  amount_cents: number;
+  monthly_cap_cents: number;
+  payment_method_id?: string | null;
+  consent_version: string;
+  consent_accepted: boolean;
+}
+export interface CreditBillingResponse {
+  result: CreditBillingResult;
+}
+export interface CreditSummary {
+  format: string;
+  enabled: boolean;
+  scale: string;
+  revision: string;
+  policy_version: string;
+  reference_microusd_per_credit: number;
+  default_multiplier_ppm: number;
+  paid_fallback: boolean;
+  payment_review_required: boolean;
+  purchased: PurchasedCredits;
+  trial: TrialCredits;
+  allowance: WeeklyCredits;
+  subscription?: CreditSubscription | null;
+  capabilities: CreditCapabilities;
+}
+export interface PurchasedCredits {
+  currency: string;
+  scale: string;
+  posted_units: string;
+  held_units: string;
+  available_units: string;
+}
+export interface TrialCredits {
+  posted_units: string;
+  held_units: string;
+}
+export interface WeeklyCredits {
+  limit_units: string;
+  remaining_units: string;
+  held_units: string;
+  generation?: string | null;
+  resets_at?: string | null;
+  effective_until?: string | null;
+}
+export interface CreditSubscription {
+  id: string;
+  plan_key: string;
+  state: string;
+  paid_through_at?: string | null;
+  cancel_at_period_end: boolean;
+  pending_plan_key?: string | null;
+}
+export interface CreditCapabilities {
+  subscriptions: boolean;
+  auto_topup: boolean;
+  card: boolean;
+  crypto: boolean;
+  admin: boolean;
+}
+export interface SubscriptionPlans {
+  enabled: boolean;
+  currency: string;
+  billing_interval: string;
+  allowance_interval_days: number;
+  plans: SubscriptionPlan[];
+}
+export interface SubscriptionPlan {
+  key: string;
+  name: string;
+  amount_cents: number;
+  weekly_units: string;
+  version: string;
+}
+export interface CreditPrices {
+  scale: string;
+  reference_microusd_per_credit: number;
+  default_version: string;
+  default_multiplier_ppm: number;
+  overrides: CreditModelPrice[];
+}
+export interface CreditModelPrice {
+  provider: string;
+  model_id: string;
+  version: string;
+  multiplier_ppm: number;
+}
+export interface CreditUsage {
+  period: string;
+  scale: string;
+  total_units: string;
+  allocation: CreditUsageAllocation;
+  models: CreditModelUsage[];
+  purchased: PurchasedUsage;
+}
+export interface CreditUsageAllocation {
+  subscription_units: string;
+  trial_units: string;
+}
+export interface CreditModelUsage {
+  provider: string;
+  model_id: string;
+  units: string;
+}
+export interface PurchasedUsage {
+  currency: string;
+  scale: string;
+  total_units: string;
+  models: CreditModelUsage[];
+}
+export interface BillingOperation {
+  id: string;
+  kind: string;
+  state: string;
+  url?: string | null;
+  amount_cents: number;
+  card?: SavedBillingCard | null;
+  created_at: string;
+}
+export interface SavedBillingCard {
+  id: string;
+  brand: string;
+  last4: string;
+  exp_month: number;
+  exp_year: number;
+}
+export interface BillingPortal {
+  url: string;
+}
+export interface SavedBillingCards {
+  cards: SavedBillingCard[];
+}
+export interface AutomaticTopup {
+  currency: string;
+  scale: string;
+  available: boolean;
+  enabled: boolean;
+  version: string;
+  threshold_units: string;
+  amount_cents: number;
+  monthly_cap_cents: number;
+  payment_method_id?: string | null;
+  paused_reason?: string | null;
+  cap_month: string;
+  used_cents: number;
+  consent_version: string;
+}
+export interface CardFundingOptions {
+  enabled: boolean;
+  currency: string;
+  min_amount_microusd: number;
+  max_amount_microusd: number;
+}
+export interface CardFundingPayment {
+  id: string;
+  amount_microusd: number;
+  credited_microusd: number;
+  refunded_microusd: number;
+  status: string;
+  checkout_url?: string | null;
+  expires_at: string;
+  created_at: string;
+  review_required: boolean;
+  cancel_requested: boolean;
 }
 export interface CryptoOptionsRequest {
   [k: string]: unknown;

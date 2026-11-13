@@ -123,6 +123,20 @@ export class AgentSidecar {
     let client: AxiomAcpClient | null = null;
     try {
       const command = await resolveSidecar();
+      // Installed native trust configuration is startup input, never an ACP
+      // or renderer preference. Packaged apps only use their own resource.
+      const chutesConfig = app.isPackaged
+        ? join(process.resourcesPath, "chutes", "native.json")
+        : process.env.AXIOM_CHUTES_CLIENT_CONFIG_FILE;
+      let chutesEnv: NodeJS.ProcessEnv = {};
+      if (chutesConfig) {
+        try {
+          await access(chutesConfig, constants.R_OK);
+          chutesEnv = { AXIOM_CHUTES_CLIENT_CONFIG_FILE: chutesConfig };
+        } catch (error) {
+          if (!app.isPackaged) throw error;
+        }
+      }
       client = new AxiomAcpClient({
         command,
         args: ["acp", "--frontend", "desktop-chat"],
@@ -305,6 +319,10 @@ export class AgentSidecar {
 
   cryptoOptions() {
     return this.requireClient().cryptoOptions().catch((error: unknown) => { throw actionableAcpError(error); });
+  }
+
+  creditBilling(action: import("@axiom/axiom-acp-client").CreditBillingAction) {
+    return this.requireClient().creditBilling(action).catch((error: unknown) => { throw actionableAcpError(error); });
   }
 
   cryptoPayments() {

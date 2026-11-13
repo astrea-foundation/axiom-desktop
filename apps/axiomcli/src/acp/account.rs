@@ -679,6 +679,40 @@ pub(super) fn redeem_gift_code(
     Ok(())
 }
 
+pub(super) fn credit_billing(
+    context: &ServerContext,
+    request: extension::CreditBillingRequest,
+    responder: Responder<extension::CreditBillingResponse>,
+    connection: &ConnectionTo<Client>,
+) -> agent_client_protocol::Result<()> {
+    if !extension_enabled(&context.extension_state, ExtensionFeature::CreditBilling) {
+        return responder.respond_with_error(extension_not_negotiated());
+    }
+    let client = context.billing.clone();
+    let cancellation = CancellationToken::new();
+    let guard = respond_or_return!(
+        responder,
+        context
+            .account_work
+            .register(cancellation.clone())
+            .map_err(agent_error)
+    );
+    let request_cancellation = responder.cancellation();
+    connection.spawn(async move {
+        let _guard = guard;
+        let operation = client.credit_control(&request.action, &cancellation);
+        tokio::pin!(operation);
+        let result = tokio::select! {
+            biased;
+            result = &mut operation => result,
+            () = request_cancellation.cancelled() => { cancellation.cancel(); operation.await }
+        };
+        let result = respond_or_return!(responder, result.map_err(agent_error));
+        responder.respond(extension::CreditBillingResponse { result })
+    })?;
+    Ok(())
+}
+
 pub(super) fn crypto_options(
     context: &ServerContext,
     _request: extension::CryptoOptionsRequest,

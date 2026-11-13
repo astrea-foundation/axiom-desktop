@@ -753,7 +753,7 @@ fn map_secure_error(error: axiom_secure_client::SecureClientError) -> AxiomError
                 || error.safe_detail().to_owned(),
                 |at| {
                     format!(
-                        "Free trials are currently at capacity. Try again at {} UTC.",
+                        "Free trials are currently at capacity. Check back at {} UTC.",
                         at.format("%Y-%m-%d %H:%M:%S")
                     )
                 },

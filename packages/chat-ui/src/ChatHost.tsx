@@ -1,6 +1,7 @@
 /** @jsxRuntime automatic */
 import { createContext, useContext, type ReactNode } from 'react';
 import type { PromptAttachment, PermissionOutcome, ElicitationOutcome, UsageSummary, UsageSummaryRequest } from '@axiom/chat-core/viewTypes';
+import type { CreditUsageSummary } from '@axiom/chat-core/creditUsage';
 
 export interface ConversationImage {
   imageId: string;
@@ -19,6 +20,7 @@ export interface ChatHost {
   loadGeneratedImage?(assetId: string): Promise<{ imageUrl: string; width: number; height: number }>;
   releaseGeneratedImage?(assetId: string): void;
   usageSummary?(accountId: string, request: Pick<UsageSummaryRequest, 'period' | 'timezone'>): Promise<{ summary: UsageSummary }>;
+  creditUsageSummary?(accountId: string, request: Pick<UsageSummaryRequest, 'period' | 'timezone'>): Promise<CreditUsageSummary | null>;
   resolvePermission?(interactionId: string, outcome: PermissionOutcome): Promise<unknown>;
   resolveElicitation?(interactionId: string, outcome: ElicitationOutcome): Promise<unknown>;
 }

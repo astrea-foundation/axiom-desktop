@@ -332,6 +332,24 @@ function installAgentIpc(): void {
     return result;
   });
   agentHandle("agent:billing-status", () => sidecar.billingStatus());
+  agentHandle("agent:credit-billing", async (_event, request: unknown, accountId: unknown) => {
+    const id = boundedString(accountId, "account ID", 128);
+    requirePaymentAccount(id, sidecar.state());
+    const { validateCreditAction, allowedBillingUrl } = await import("@axiom/axiom-acp-client");
+    const action = validateCreditAction(request);
+    const response = await sidecar.creditBilling(action);
+    requirePaymentAccount(id, sidecar.state());
+    if (["checkout", "portal", "setup_card", "create_card_payment", "operation"].includes(action.kind)) {
+      const result = response.result;
+      const url = result.kind === "portal" ? result.value.url : result.kind === "operation" ? result.value.url
+        : result.kind === "card_payment" ? result.value.checkout_url : null;
+      if (url) {
+        if (!allowedBillingUrl(url)) throw new Error("Invalid billing destination.");
+        await shell.openExternal(url);
+      }
+    }
+    return response;
+  });
   agentHandle("agent:crypto-options", async (_event, accountId: unknown) => {
     const id = boundedString(accountId, "account ID", 128);
     requirePaymentAccount(id, sidecar.state());

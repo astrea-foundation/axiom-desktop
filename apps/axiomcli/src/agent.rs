@@ -3611,6 +3611,13 @@ impl TurnRunner for AgentEngine {
                 self.update_estimated_context_tokens(&context.session_id, known_context_tokens)
                     .await;
             }
+            if !image_observations.is_empty() {
+                messages.extend(image_observations);
+                known_context_tokens =
+                    known_context_tokens.max(model_context_tokens(&model, &messages));
+                self.update_context_tokens(&context.session_id, known_context_tokens)
+                    .await;
+            }
         }
     }
 
@@ -4466,7 +4473,7 @@ fn image_context_tokens(model: &axiom_inference::ModelInfo) -> usize {
 fn inference_request_for_model(
     model: &axiom_inference::ModelInfo,
     model_id: String,
-    messages: Vec<ChatMessage>,
+    mut messages: Vec<ChatMessage>,
     tools: Vec<crate::provider::ToolDefinition>,
     thinking: ThinkingLevel,
 ) -> InferenceRequest {
@@ -5043,6 +5050,71 @@ mod engine_tests {
             history[0].reasoning_content.as_deref(),
             Some("synthetic reasoning")
         );
+    }
+
+    #[test]
+    fn request_history_preserves_reasoning_only_assistants_when_replay_is_supported() {
+        let mut reasoning_only = ChatMessage::text(ChatRole::Assistant, "");
+        reasoning_only.reasoning_content = Some("unfinished thinking".into());
+        let mut answer = ChatMessage::text(ChatRole::Assistant, "partial answer");
+        answer.reasoning_content = Some("answer reasoning".into());
+        let mut refusal = ChatMessage::text(ChatRole::Assistant, "");
+        refusal.refusal = Some("refused".into());
+        let mut call = ChatMessage::text(ChatRole::Assistant, "");
+        call.reasoning_content = Some("tool reasoning".into());
+        call.tool_calls = vec![tool_call("call-one", "fake", r#"{"value":1}"#)];
+        let result = tool_error_message("call-one".into(), "fake", "interrupted");
+        let user = ChatMessage::text(ChatRole::User, "original prompt");
+        let followup = ChatMessage::text(ChatRole::User, "followup");
+        let interrupted = interrupted_turn_context();
+        let mut empty_reasoning = ChatMessage::text(ChatRole::Assistant, "");
+        empty_reasoning.reasoning_content = Some(String::new());
+        let history = vec![
+            user.clone(),
+            reasoning_only.clone(),
+            ChatMessage::text(ChatRole::Assistant, ""),
+            empty_reasoning,
+            answer.clone(),
+            refusal.clone(),
+            call.clone(),
+            result.clone(),
+            interrupted.clone(),
+            followup.clone(),
+        ];
+        let expected = vec![user, answer, refusal, call, result, interrupted, followup];
+
+        for reasoning_replay in [false, true] {
+            let model = axiom_inference::ModelInfo {
+                id: "test".into(),
+                reasoning_replay,
+                ..Default::default()
+            };
+            let mut expected = expected.clone();
+            if reasoning_replay {
+                let mut preserved = reasoning_only.clone();
+                preserved.content = "<response_incomplete>The response ended before an answer was produced. The preceding reasoning is unfinished.</response_incomplete>".into();
+                expected.insert(1, preserved);
+            }
+            let prepared = model_messages(&model, &history);
+            assert_eq!(prepared, expected);
+            assert_eq!(model_messages(&model, &prepared), prepared);
+            let request = inference_request_for_model(
+                &model,
+                model.id.clone(),
+                history.clone(),
+                Vec::new(),
+                ThinkingLevel::Medium,
+            );
+            let mut expected_request = expected;
+            if !reasoning_replay {
+                for message in &mut expected_request {
+                    message.reasoning_content = None;
+                }
+            }
+            assert_eq!(request.messages, expected_request);
+            request.validate().unwrap();
+        }
+        assert_eq!(history[1], reasoning_only);
     }
 
     #[tokio::test]
@@ -9786,6 +9858,191 @@ mod engine_tests {
         assert!(messages.iter().any(|message| message.role == ChatRole::User
             && message.content.contains("before completion")));
         assert_eq!(messages.last().unwrap().content, "What marker?");
+    }
+
+    #[tokio::test]
+    async fn stopped_reasoning_only_history_allows_followup_with_either_web_setting() {
+        for (reasoning_replay, web_enabled) in
+            [(false, false), (false, true), (true, false), (true, true)]
+        {
+            let mut scripted = ScriptedProvider::new(vec![AssistantTurn {
+                reasoning: None,
+                text: "continued after Stop".into(),
+                tool_calls: Vec::new(),
+            }]);
+            scripted.model_details = Some(vec![axiom_inference::ModelInfo {
+                id: "test".into(),
+                reasoning_replay,
+                ..Default::default()
+            }]);
+            let provider = Arc::new(scripted);
+            let engine =
+                AgentEngine::new(provider.clone(), Arc::new(ToolRegistry::new()), "test", 2);
+            let ctx = context();
+            let store = crate::session::SessionStore::in_memory().unwrap();
+            let events = [
+                AppEvent::SessionCreated {
+                    cwd: ctx.cwd.clone(),
+                    origin: Origin::Test,
+                    profile: ctx.permission_profile,
+                },
+                AppEvent::PromptAccepted {
+                    attachments: Vec::new(),
+                    turn_id: ctx.turn_id.clone(),
+                    text: "download the videos".into(),
+                },
+                AppEvent::TurnStarted {
+                    turn_id: ctx.turn_id.clone(),
+                },
+                AppEvent::ReasoningDelta {
+                    turn_id: ctx.turn_id.clone(),
+                    text: "unfinished thinking before Stop".into(),
+                },
+                AppEvent::TurnCancelled {
+                    turn_id: ctx.turn_id.clone(),
+                },
+            ]
+            .into_iter()
+            .enumerate()
+            .map(|(index, event)| EventEnvelope {
+                schema_version: 1,
+                sequence: (index + 1) as u64,
+                occurred_at: chrono::Utc::now(),
+                correlation_id: CorrelationId::new(),
+                origin: Origin::Test,
+                session_id: ctx.session_id.clone(),
+                event,
+            })
+            .collect::<Vec<_>>();
+            store.append_all(&events).unwrap();
+
+            // ACP Stop reconstructs the runner from these materialized records.
+            // Reopening the thread uses the same restoration path.
+            for _ in 0..2 {
+                engine
+                    .restore_session(&ctx.session_id, &store.load(&ctx.session_id).unwrap())
+                    .await
+                    .unwrap();
+            }
+            let snapshot = store.thread_snapshot(&ctx.session_id, None, 100).unwrap();
+            let (tx, _rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
+            engine
+                .run(
+                    TurnContext {
+                        turn_id: TurnId::new(),
+                        web_enabled,
+                        ..ctx.clone()
+                    },
+                    "try again with these settings".into(),
+                    tx,
+                    CancellationToken::new(),
+                )
+                .await
+                .unwrap();
+
+            let requests = provider.requests.lock().await;
+            let messages = &requests[0].messages;
+            let assistant = messages.iter().find(|m| m.role == ChatRole::Assistant);
+            if reasoning_replay {
+                let assistant = assistant.expect("interrupted thinking is replayed");
+                assert_eq!(
+                    assistant.content,
+                    "<response_incomplete>The response ended before an answer was produced. The preceding reasoning is unfinished.</response_incomplete>"
+                );
+                assert_eq!(
+                    assistant.reasoning_content.as_deref(),
+                    Some("unfinished thinking before Stop")
+                );
+            } else {
+                assert!(assistant.is_none());
+            }
+            assert_eq!(messages[1].content, "download the videos");
+            assert!(messages.iter().any(|m| {
+                m.role == ChatRole::System && m.content.contains("before completion")
+            }));
+            assert_eq!(
+                messages.last().unwrap().content,
+                "try again with these settings"
+            );
+            assert_ne!(
+                messages[0]
+                    .content
+                    .contains("Web access for this message: OFF"),
+                web_enabled
+            );
+
+            let after = store.thread_snapshot(&ctx.session_id, None, 100).unwrap();
+            assert_eq!(after.items, snapshot.items);
+            assert!(after.items.iter().any(|item| {
+                item.kind == crate::session::TimelineItemKind::Reasoning
+                    && item.content == "unfinished thinking before Stop"
+            }));
+        }
+    }
+
+    #[tokio::test]
+    async fn empty_or_reasoning_only_completion_does_not_poison_the_next_request() {
+        for reasoning_replay in [false, true] {
+            for reasoning in [
+                None,
+                Some(String::new()),
+                Some("thinking without an answer".into()),
+            ] {
+                let expected_reasoning = reasoning.clone();
+                let mut scripted = ScriptedProvider::new(vec![
+                    AssistantTurn {
+                        reasoning,
+                        text: String::new(),
+                        tool_calls: Vec::new(),
+                    },
+                    AssistantTurn {
+                        reasoning: None,
+                        text: "next answer".into(),
+                        tool_calls: Vec::new(),
+                    },
+                ]);
+                scripted.model_details = Some(vec![axiom_inference::ModelInfo {
+                    id: "test".into(),
+                    reasoning_replay,
+                    ..Default::default()
+                }]);
+                let provider = Arc::new(scripted);
+                let engine =
+                    AgentEngine::new(provider.clone(), Arc::new(ToolRegistry::new()), "test", 2);
+                let ctx = context();
+                for prompt in ["first prompt", "next prompt"] {
+                    let (tx, _rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
+                    engine
+                        .run(
+                            TurnContext {
+                                turn_id: TurnId::new(),
+                                ..ctx.clone()
+                            },
+                            prompt.into(),
+                            tx,
+                            CancellationToken::new(),
+                        )
+                        .await
+                        .unwrap();
+                }
+                let requests = provider.requests.lock().await;
+                let messages = &requests[1].messages;
+                let assistant = messages.iter().find(|m| m.role == ChatRole::Assistant);
+                if reasoning_replay && expected_reasoning.as_deref().is_some_and(|r| !r.is_empty())
+                {
+                    let assistant = assistant.expect("nonempty thinking is replayed");
+                    assert_eq!(
+                        assistant.content,
+                        "<response_incomplete>The response ended before an answer was produced. The preceding reasoning is unfinished.</response_incomplete>"
+                    );
+                    assert_eq!(assistant.reasoning_content, expected_reasoning);
+                } else {
+                    assert!(assistant.is_none());
+                }
+                assert_eq!(messages[1].content, "first prompt");
+                assert_eq!(messages.last().unwrap().content, "next prompt");
+            }
+        }
     }
 
     #[tokio::test]
