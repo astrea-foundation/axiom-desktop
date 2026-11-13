@@ -11,12 +11,20 @@ pub enum AxiomError {
     SessionNotFound(String),
     #[error("permission denied: {0}")]
     PermissionDenied(String),
+    #[error("you declined this action; stopped without running it")]
+    ApprovalDeclined,
     #[error("operation requires approval: {0}")]
     ApprovalRequired(String),
     #[error("path is outside the workspace: {0}")]
     OutsideWorkspace(PathBuf),
     #[error("provider error: {0}")]
     Provider(String),
+    #[error("{message}")]
+    SecureProvider {
+        kind: axiom_inference::ProviderFailureKind,
+        code: &'static str,
+        message: &'static str,
+    },
     #[error("tool error: {0}")]
     Tool(String),
     #[error("git error: {0}")]

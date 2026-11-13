@@ -1,103 +1,142 @@
 # Troubleshooting
 
-Start with `axiomcli doctor`. It reports the selected model, Axiom relay URL,
-secure-provider mode, permission profile, SearXNG health, and local
-configuration/session paths without printing credentials.
+Start with `axiomcli doctor` for configuration, selected model, account/provider
+and search diagnostics. It can make network requests; `--help` and `--version`
+are offline checks. See [CLI](cli.md), [configuration](configuration.md) and
+[installation](installing-desktop.md) for normal setup.
 
-## Provider or model errors
+## Account and provider errors
 
-- Run `/account` in the TUI or `axiomcli doctor` to validate the current login.
-  If no credential is present, use `/login` and choose browser authorization or
-  paste an existing API key.
-- Run `axiomcli models` to test bounded model discovery.
-- Set `AXIOM_API_KEY` only as an automation override. It prevents `/login` from
-  replacing the credential until the environment variable is unset.
-- If browser approval succeeds but the loopback callback is blocked, copy the
-  one-time `axc_` code from the website into AxiomCLI. It is not the permanent
-  API key and becomes unusable after one successful exchange.
-- Authentication errors are not retried; rate limits and transient errors use
-  bounded retries with a stable idempotency key.
-- A truncated or malformed stream fails the turn. It is never treated as a
-  complete answer.
-- Attestation rejection, stale/mismatched nonces, model/key mismatches, TLS
-  binding failures, and ciphertext authentication failures are security
-  failures. AxiomCLI does not retry them through an insecure transport.
-- An insufficient-credit response includes a link to `axiom.stream` for a top
-  up and preserves the partial response already journaled before the failure.
+Use `/account` in the TUI, or Desktop Settings, to inspect the current account.
+`/login` opens the system browser. Native sessions require the OS credential
+vault; a locked or denied vault cannot fall back to a plaintext token file.
+If a loopback callback is blocked, the pending native flow can still complete
+through PKCE polling. Keep the login flow open until completion or cancellation.
 
-## Local proxy fails
+Desktop preserves the native sign-in failure reason in its error banner, including
+TLS connection causes. Version 0.1.7 can hide failures while starting sign-in behind
+the generic `Internal error` message. A failed start can happen before a request
+reaches the account service, so server logs alone cannot identify it.
 
-- Set `AXIOM_API_KEY` for the upstream service and generate an independent
-  `AXIOM_PROXY_TOKEN` of at least 32 bytes for local clients.
-- Start `axiom-proxy` and read its first stdout line as the bounded JSON
-  readiness record. Logs are JSON metadata on stderr.
-- Configure the OpenAI-compatible client with the readiness address plus `/v1`
-  and the local token—not the Axiom credential.
-- HTTP 401 means the local token is absent or wrong. HTTP 402 means the Axiom
-  account needs credit. HTTP 502 can represent unavailable/rejected
-  attestation, a network failure, invalid encrypted output, or another
-  fail-closed upstream error; inspect the sanitized `request_failed` record.
-- Only numeric loopback addresses are accepted. LAN exposure is intentionally
-  unsupported in this version.
+If sign-in and the update check both fail to connect, compare the same check on
+another network (for example, a phone hotspot). On macOS, run the bundled native
+client from Terminal to check the same updater without installing anything:
 
-## A command will not run
+```sh
+/Applications/Axiom.app/Contents/Resources/bin/axiomcli update --check
+```
 
-On Linux, `/usr/bin/bwrap` is required. AxiomCLI fails closed if it is absent.
-The `workspace` profile automatically permits only its narrow development
-command list; other structured programs require confirmation. Shell commands
-always require confirmation. The process receives no network and only an
-allowlisted environment.
+`InvalidContentType` in the TLS error means the client encountered an invalid TLS
+record type, before receiving the release HTTP response. Check proxy, VPN and
+network-filter settings; that error alone does not identify which component sent
+the invalid data. Keep certificate verification enabled.
 
-If Cargo cannot find an already installed toolchain inside the sandbox, verify
-that the invoking account’s Cargo and Rustup directories exist. AxiomCLI mounts
-those caches read-only into the sandbox.
+`AXIOM_API_KEY` selects automation credentials in CLI/proxy modes and prevents
+native `/login` until unset. Desktop removes this override from its sidecar.
+`axiomcli models` checks model discovery separately from inference.
 
-## Search fails
+Attestation, nonce, model/key, TLS-binding or response-authentication failures
+must fail closed. A truncated stream is incomplete even if some text appeared.
+Do not disable verification to work around a failure. The
+[security guide](threat-model.md) distinguishes retryable transport/pre-send
+failures from ambiguous or security failures.
 
-Run `scripts/searxng-dev start` and then `scripts/searxng-dev query "test"` in a
-source checkout, or point `searxng_url` at a SearXNG service you operate or
-otherwise trust. A hosted Axiom service is not part of this repository.
-Individual upstream engines can throttle or time out. Empty results and engine
-warnings are returned honestly. `fetch_url` rejecting a loopback/private target
-is expected security behavior.
+For insufficient credit, inspect the native account's billing status. Current
+Axiom payment mode uses a mainnet ZEC deposit address and indicative valuation;
+invoice checkout is no longer supported.
+See [Desktop credit and usage](desktop.md). Payment state never substitutes for
+local response verification.
 
-## MCP fails or disconnects
+## Local proxy
 
-MCP commands must be in trusted user configuration, not repository config. A
-read-only tool is retried once after reconnect only when its name and schema are
-unchanged. A side-effecting disconnect reports an unknown outcome and is never
-replayed. Inspect the bounded error and the server’s own stderr without routing
-MCP logs into ACP stdout.
+[The proxy guide](proxy.md) owns environment variables, endpoints and limits.
+For standalone use, set the upstream automation credential and an independent
+local token of at least 32 bytes. Read the first stdout line for the JSON
+readiness address, and give local clients that address plus `/v1` and the local
+token. Diagnostic metadata goes to stderr.
+
+HTTP 401 indicates missing/wrong local authorization; 402 indicates insufficient
+credit. A sanitized `request_failed` record helps explain 502 errors, including
+network, attestation or encrypted-response failure. Only numeric loopback binds
+are supported. Desktop's Proxy screen manages its own account-bound instance.
+
+## Local tools and approval
+
+On Linux, `/usr/bin/bwrap` is required for process execution. Missing Bubblewrap
+fails closed; sandboxed processes get no host network and only the sanitized
+environment/mounts. If Cargo cannot find an installed toolchain, check that the
+invoking account's Cargo/Rustup directories exist for read-only mounting.
+
+macOS and Windows use host processes with a sanitized environment, not a
+Bubblewrap-equivalent sandbox. Windows batch/PowerShell scripts require the
+explicit shell path supported by the tool. Desktop Agent mode must be enabled
+for local tools; Web is a separate control for built-in search/fetch.
+
+The default `confirm` profile asks before tools; headless execution cannot answer
+an approval and fails it closed. `full_access` removes tool prompts but does not
+remove hard workspace boundaries. A denial or restrictive project rule cannot
+be overridden by a session grant. See [profiles](configuration.md#trusted-user-configuration).
+Use `permissions add-project-rule --action ask|deny --effect ...` to add a
+restrictive repository rule; it cannot grant authority.
+
+## Search and MCP
+
+Hosted Axiom search requires a native account session, not an automation key.
+A 429 means the rolling account quota was reached; honor `Retry-After`. A 502/503
+indicates service/provider failure. There is no automatic provider fallback.
+Search queries leave the device outside inference E2EE; see [privacy](privacy.md).
+
+Only `web_search_provider = "axiom"` is supported. If startup rejects an older
+provider setting, remove that override or explicitly select `axiom` after
+reviewing the hosted-search privacy behavior. Rejection of loopback/private
+URLs by `fetch_url` is expected.
+
+MCP server commands belong in trusted user configuration. Desktop's chat profile
+does not connect them. A disconnected read-only tool may retry once only if its
+name/schema are unchanged. A side-effecting operation with an ambiguous outcome
+is never replayed. Keep server logs off ACP stdout.
 
 ## Session recovery
 
-Use `axiomcli sessions list` and `axiomcli tui --resume SESSION_ID`. The saved
-workspace must still exist and must match any supplied `--cwd`. Interrupted
-tools are shown as unknown and are not replayed. Use `sessions export` before
-pruning or manually repairing data. Corrupt tails are reported and recovery
-stops before the damaged event rather than deleting evidence.
+Use `axiomcli sessions list` and `axiomcli tui --resume SESSION_ID`. The canonical
+workspace must still exist and match any `--cwd`, and the active account must own
+the session. Signing out closes the account store; switching accounts does not
+expose another account's threads. Desktop drafts and account data persist locally.
+
+Incomplete turns are marked interrupted after restart; tools are not replayed.
+Accounting reconciliation cannot turn incomplete text into a verified response.
+Export with `sessions export` while the database can still be read. Unknown,
+malformed or newer schemas are rejected; there is no general `sessions prune`
+command or automatic destructive repair. Preserve the database for investigation.
+[Versioning](versioning.md#local-database) describes supported migrations and the
+account-scoped explicit reset path.
 
 ## Terminal display
 
-The minimum useful viewport is 42×10 cells. Press `?` for keyboard help. Set
-`AXIOMCLI_COLOR=none`, `NO_COLOR=1`, `AXIOMCLI_ASCII=1`, or
-`AXIOMCLI_REDUCED_MOTION=1` for accessibility/compatibility. `Esc` clears the
-current focus or closes a temporary overlay. Press `Ctrl+C` twice consecutively
-to exit; the first press displays a confirmation in the status line. Terminal
-restoration is guarded across normal exit and panic. Use `Ctrl+F` to search the
-work history, including folded task details; `/` opens the command menu. Press
-`Tab` to focus the work history, then `Enter` to show or
-hide a selected task's reasoning/tool details, or `v` for the full viewer.
+The minimum useful viewport is 42×10 cells. `?` opens help, `/` the command menu,
+and `Ctrl+F` history search. `Tab` focuses history; `Enter` toggles task details
+and `v` opens its full viewer. `Esc` clears focus/closes an overlay. Two consecutive
+`Ctrl+C` presses exit; the first displays confirmation.
 
-## Permission was denied
+Use `AXIOMCLI_COLOR=none`, `NO_COLOR=1`, `AXIOMCLI_ASCII=1` or
+`AXIOMCLI_REDUCED_MOTION=1` for terminal compatibility/accessibility. Terminal
+restoration is guarded for normal exit and panic.
 
-Read the normalized effect shown by the prompt. `n` denies, `y` permits one
-operation, and—when offered—`e`/`p` grant an exact or prefix scope for the
-current session. Configured asks/denials and hard workspace boundaries cannot
-be overridden by a session grant. Headless mode cannot answer approvals and
-therefore fails them closed.
+## Updates
 
-To persist a restrictive repository rule through the explicit configuration
-flow, use `axiomcli permissions add-project-rule --action ask|deny --effect ...`.
-This command can only add `ask` or `deny` rules; project configuration cannot
-grant authority.
+Use `axiomcli update --check` or Settings → Updates to inspect a failure. Close
+other installed AxiomCLI/ACP sessions and proxies before applying; a bundled TUI
+also needs Desktop to close. The helper waits at most three minutes and does not
+kill those processes. Keep using the installed Windows launcher for TUI updates.
+
+Signature, unknown-key, changed-inventory and checksum errors fail closed. Retry
+after connectivity is restored; do not bypass verification. Source builds require
+a rebuild. A release without a matching platform/package is not substituted with
+another product. Unsigned previews have stable updates disabled.
+
+If installation or OS authorization fails, the helper records the error in the
+per-installation `axiom/updates` directory under the OS user cache. The next app
+check displays it. Retry the same verified installer from the public release to
+repair program files; account data is outside the installation. Staging directories
+can be removed once no update helper is running. Linux standalone keeps previous
+version directories, but do not reactivate one against incompatible account data.

@@ -8,39 +8,46 @@ use std::{
 };
 
 use clap::ValueEnum;
-use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 
-use crate::{Result, app::PermissionProfile, error::AxiomError, policy::PolicyRule};
+use crate::{
+    Result,
+    app::PermissionProfile,
+    error::AxiomError,
+    paths::{AxiomPaths, FrontendKind},
+    policy::PolicyRule,
+};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
 #[serde(rename_all = "snake_case")]
 pub enum PermissionProfileArg {
+    None,
+    Web,
     Observe,
     #[default]
     Confirm,
-    Workspace,
-    Autonomous,
+    FullAccess,
 }
 
 impl From<PermissionProfileArg> for PermissionProfile {
     fn from(value: PermissionProfileArg) -> Self {
         match value {
+            PermissionProfileArg::None => Self::None,
+            PermissionProfileArg::Web => Self::Web,
             PermissionProfileArg::Observe => Self::Observe,
             PermissionProfileArg::Confirm => Self::Confirm,
-            PermissionProfileArg::Workspace => Self::Workspace,
-            PermissionProfileArg::Autonomous => Self::Autonomous,
+            PermissionProfileArg::FullAccess => Self::FullAccess,
         }
     }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 pub struct Config {
     pub model: String,
     pub base_url: String,
     pub permission_profile: PermissionProfile,
-    pub searxng_url: String,
+    pub web_search_provider: String,
     pub max_agent_steps: Option<usize>,
     pub max_context_bytes: usize,
     pub max_context_tokens: usize,
@@ -57,7 +64,6 @@ pub struct Config {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct McpServerConfig {
     pub name: String,
     pub command: String,
@@ -67,15 +73,23 @@ pub struct McpServerConfig {
     /// are display hints and never grant this policy classification.
     #[serde(default)]
     pub read_only_tools: Vec<String>,
+    /// Trusted per-server tool deadline; discovery keeps a separate short timeout.
+    #[serde(default = "default_mcp_tool_timeout_secs")]
+    pub tool_timeout_secs: u64,
+}
+
+#[must_use]
+pub const fn default_mcp_tool_timeout_secs() -> u64 {
+    300
 }
 
 #[derive(Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 struct ConfigLayer {
     model: Option<String>,
     base_url: Option<String>,
     permission_profile: Option<PermissionProfile>,
-    searxng_url: Option<String>,
+    web_search_provider: Option<String>,
     max_agent_steps: Option<usize>,
     max_context_bytes: Option<usize>,
     max_context_tokens: Option<usize>,
@@ -98,8 +112,8 @@ impl ConfigLayer {
         if let Some(value) = self.permission_profile {
             config.permission_profile = value;
         }
-        if let Some(value) = self.searxng_url {
-            config.searxng_url = value;
+        if let Some(value) = self.web_search_provider {
+            config.web_search_provider = value;
         }
         if let Some(value) = self.max_agent_steps {
             config.max_agent_steps = Some(value);
@@ -130,21 +144,27 @@ impl ConfigLayer {
         }
     }
 
+    fn apply_desktop_shared(mut self, config: &mut Config) {
+        // The shared file is also the CLI's trusted configuration. Desktop
+        // consumes its common fields, but these two CLI-only authority
+        // surfaces cannot alter the fixed Web/no-MCP desktop product profile.
+        self.permission_profile = None;
+        self.mcp_servers = None;
+        self.apply_trusted(config);
+    }
+
     fn apply_project(self, config: &mut Config) -> Result<()> {
-        if self.base_url.is_some() || self.searxng_url.is_some() || self.mcp_servers.is_some() {
+        if self.base_url.is_some()
+            || self.web_search_provider.is_some()
+            || self.mcp_servers.is_some()
+        {
             return Err(AxiomError::Config(
                 "project config cannot set network endpoints or MCP server commands; use the trusted user config or environment"
                     .into(),
             ));
         }
         if let Some(profile) = self.permission_profile {
-            if profile == PermissionProfile::Plan {
-                return Err(AxiomError::Config(
-                    "project config cannot enable plan artifact writes; use --plan or trusted user configuration"
-                        .into(),
-                ));
-            }
-            if profile_rank(profile) > profile_rank(config.permission_profile) {
+            if !profile_is_narrower_or_equal(profile, config.permission_profile) {
                 return Err(AxiomError::Config(
                     "project config cannot broaden the trusted permission profile".into(),
                 ));
@@ -190,26 +210,39 @@ impl ConfigLayer {
     }
 }
 
-const fn profile_rank(profile: PermissionProfile) -> u8 {
-    match profile {
-        PermissionProfile::Plan => 0,
-        PermissionProfile::Observe => 1,
-        PermissionProfile::Confirm => 2,
-        PermissionProfile::Workspace => 3,
-        PermissionProfile::Autonomous => 4,
+const fn profile_is_narrower_or_equal(
+    candidate: PermissionProfile,
+    trusted: PermissionProfile,
+) -> bool {
+    match trusted {
+        PermissionProfile::None => matches!(candidate, PermissionProfile::None),
+        PermissionProfile::Web => {
+            matches!(candidate, PermissionProfile::None | PermissionProfile::Web)
+        }
+        PermissionProfile::Observe => {
+            matches!(
+                candidate,
+                PermissionProfile::None | PermissionProfile::Observe
+            )
+        }
+        PermissionProfile::Confirm => !matches!(candidate, PermissionProfile::FullAccess),
+        PermissionProfile::FullAccess => true,
     }
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
-            model: "glm-5-2".into(),
+            model: "auto".into(),
             base_url: "https://api.axiom.stream".into(),
             permission_profile: PermissionProfile::Confirm,
-            searxng_url: "http://127.0.0.1:8888".into(),
+            web_search_provider: "axiom".into(),
             max_agent_steps: None,
-            max_context_bytes: 2 * 1024 * 1024,
-            max_context_tokens: 256 * 1024,
+            // Provider model metadata owns the normal context/compaction
+            // limit. These deliberately larger values are only local memory
+            // safety ceilings and may still be lowered by trusted config.
+            max_context_bytes: 16 * 1024 * 1024,
+            max_context_tokens: 4 * 1024 * 1024,
             max_tool_output_bytes: 128 * 1024,
             max_turn_secs: None,
             request_timeout_secs: 120,
@@ -223,13 +256,50 @@ impl Default for Config {
 
 impl Config {
     pub fn load() -> Result<Self> {
+        let paths = AxiomPaths::discover()?;
+        Self::load_for(FrontendKind::Cli, &paths)
+    }
+
+    pub fn load_for(frontend: FrontendKind, paths: &AxiomPaths) -> Result<Self> {
         let mut config = Self::default();
-        if let Some(path) = Self::user_path()
-            && path.exists()
+        let shared_path = paths.shared_config_path();
+        if shared_path.exists() {
+            let layer = read_layer(&shared_path)?;
+            if frontend == FrontendKind::DesktopChat {
+                layer.apply_desktop_shared(&mut config);
+            } else {
+                layer.apply_trusted(&mut config);
+            }
+        }
+        let frontend_path = paths.frontend_config_path(frontend);
+        if frontend_path.exists() {
+            let layer = read_layer(&frontend_path)?;
+            if frontend == FrontendKind::DesktopChat
+                && layer
+                    .permission_profile
+                    .is_some_and(|profile| profile != PermissionProfile::Web)
+            {
+                return Err(AxiomError::Config(format!(
+                    "{}: desktop chat permission_profile is fixed to web",
+                    frontend_path.display()
+                )));
+            }
+            layer.apply_trusted(&mut config);
+        }
+        if frontend == FrontendKind::DesktopChat
+            && let Ok(profile) = std::env::var("AXIOM_PERMISSION_PROFILE")
+            && profile != "web"
         {
-            read_layer(&path)?.apply_trusted(&mut config);
+            return Err(AxiomError::Config(
+                "AXIOM_PERMISSION_PROFILE cannot override desktop chat; use web".into(),
+            ));
         }
         apply_environment(&mut config)?;
+        if frontend == FrontendKind::DesktopChat {
+            // This is a product invariant, not a mutable user preference.
+            config.permission_profile = PermissionProfile::Web;
+            config.mcp_servers.clear();
+        }
         config.validate()?;
         Ok(config)
     }
@@ -262,7 +332,7 @@ impl Config {
         // Applying against a maximally permissive trusted profile validates
         // that the project layer contains no authority-granting settings.
         let mut config = Config {
-            permission_profile: PermissionProfile::Autonomous,
+            permission_profile: PermissionProfile::FullAccess,
             ..Config::default()
         };
         layer.apply_project(&mut config)?;
@@ -309,11 +379,15 @@ impl Config {
         }
         let base_url = reqwest::Url::parse(&self.base_url)
             .map_err(|error| AxiomError::Config(format!("invalid base_url: {error}")))?;
-        let searxng_url = reqwest::Url::parse(&self.searxng_url)
-            .map_err(|error| AxiomError::Config(format!("invalid searxng_url: {error}")))?;
-        if !valid_endpoint(&base_url) || !valid_endpoint(&searxng_url) {
+        if self.web_search_provider != "axiom" {
             return Err(AxiomError::Config(
-                "provider and SearXNG URLs must use http(s), include a host, and contain no embedded credentials"
+                "web_search_provider must be axiom; other search providers are not supported"
+                    .into(),
+            ));
+        }
+        if !valid_endpoint(&base_url) {
+            return Err(AxiomError::Config(
+                "base_url must use http(s), include a host, and contain no embedded credentials"
                     .into(),
             ));
         }
@@ -322,6 +396,11 @@ impl Config {
             rule.validate()?;
         }
         for server in &self.mcp_servers {
+            if !(1..=86_400).contains(&server.tool_timeout_secs) {
+                return Err(AxiomError::Config(
+                    "MCP tool_timeout_secs must be between 1 and 86400".into(),
+                ));
+            }
             if server.name.trim().is_empty()
                 || server.command.trim().is_empty()
                 || server.name.contains('\0')
@@ -353,15 +432,15 @@ impl Config {
     }
 
     #[must_use]
-    pub fn user_path() -> Option<PathBuf> {
-        ProjectDirs::from("ai", "AxiomAI", "axiomcli")
-            .map(|dirs| dirs.config_dir().join("config.toml"))
+    pub fn user_dir() -> Option<PathBuf> {
+        AxiomPaths::discover()
+            .ok()
+            .map(|paths| paths.frontend_config_dir(FrontendKind::Cli))
     }
 
     #[must_use]
-    pub fn data_dir() -> Option<PathBuf> {
-        ProjectDirs::from("ai", "AxiomAI", "axiomcli")
-            .map(|dirs| dirs.data_local_dir().to_path_buf())
+    pub fn user_path() -> Option<PathBuf> {
+        Self::user_dir().map(|directory| directory.join("config.toml"))
     }
 
     /// Persist one restrictive project policy rule through an explicit user
@@ -440,8 +519,8 @@ fn apply_environment(config: &mut Config) -> Result<()> {
     if let Ok(value) = std::env::var("AXIOM_MODEL") {
         config.model = value;
     }
-    if let Ok(value) = std::env::var("AXIOM_SEARXNG_URL") {
-        config.searxng_url = value;
+    if let Ok(value) = std::env::var("AXIOM_WEB_SEARCH_PROVIDER") {
+        config.web_search_provider = value;
     }
     if let Ok(value) = std::env::var("AXIOM_PERMISSION_PROFILE") {
         config.permission_profile = PermissionProfile::from_str(&value)?;
@@ -450,14 +529,144 @@ fn apply_environment(config: &mut Config) -> Result<()> {
 }
 
 fn read_layer(path: &std::path::Path) -> Result<ConfigLayer> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(AxiomError::Config(format!(
+            "{} must be a regular non-symlink file",
+            path.display()
+        )));
+    }
     let content = std::fs::read_to_string(path)?;
+    warn_about_unknown_config_fields(path, &content)?;
     toml::from_str(&content)
         .map_err(|error| AxiomError::Config(format!("{}: {error}", path.display())))
+}
+
+fn warn_about_unknown_config_fields(path: &Path, content: &str) -> Result<()> {
+    const TOP_LEVEL_FIELDS: &[&str] = &[
+        "model",
+        "base_url",
+        "permission_profile",
+        "web_search_provider",
+        "max_agent_steps",
+        "max_context_bytes",
+        "max_context_tokens",
+        "max_tool_output_bytes",
+        "max_turn_secs",
+        "request_timeout_secs",
+        "animation",
+        "policy_rules",
+        "mcp_servers",
+    ];
+    const MCP_FIELDS: &[&str] = &[
+        "name",
+        "command",
+        "args",
+        "read_only_tools",
+        "tool_timeout_secs",
+    ];
+
+    let document: toml::Value = toml::from_str(content)
+        .map_err(|error| AxiomError::Config(format!("{}: {error}", path.display())))?;
+    let Some(table) = document.as_table() else {
+        return Err(AxiomError::Config(format!(
+            "{}: configuration root must be a TOML table",
+            path.display()
+        )));
+    };
+    for field in table.keys() {
+        if !TOP_LEVEL_FIELDS.contains(&field.as_str()) {
+            tracing::warn!(path = %path.display(), field, "unknown config field was ignored");
+        }
+    }
+    if let Some(toml::Value::Array(servers)) = table.get("mcp_servers") {
+        for (index, server) in servers.iter().enumerate() {
+            if let Some(server) = server.as_table() {
+                for field in server.keys() {
+                    if !MCP_FIELDS.contains(&field.as_str()) {
+                        tracing::warn!(
+                            path = %path.display(),
+                            index,
+                            field,
+                            "unknown MCP config field was ignored"
+                        );
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn user_config_lives_in_the_shared_axiom_cli_directory() {
+        let directory = Config::user_dir().expect("platform config directory");
+        let path = Config::user_path().expect("user config path");
+
+        assert!(directory.ends_with(Path::new("axiom/cli")));
+        assert_eq!(path, directory.join("config.toml"));
+    }
+
+    #[test]
+    fn desktop_configuration_is_layered_but_web_policy_is_immutable() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let paths = AxiomPaths::from_roots(root.path().join("config"), root.path().join("data"));
+        paths.prepare().expect("prepare paths");
+        std::fs::write(
+            paths.frontend_config_path(FrontendKind::DesktopChat),
+            "model = \"desktop-model\"\npermission_profile = \"web\"\n",
+        )
+        .expect("desktop config");
+
+        for (profile, expected) in [
+            ("confirm", PermissionProfile::Confirm),
+            ("full_access", PermissionProfile::FullAccess),
+        ] {
+            std::fs::write(
+                paths.shared_config_path(),
+                format!(
+                    "model = \"shared-model\"\npermission_profile = \"{profile}\"\nrequest_timeout_secs = 321\n[[mcp_servers]]\nname = \"shared-tools\"\ncommand = \"shared-command\"\n"
+                ),
+            )
+            .expect("shared config");
+
+            let desktop =
+                Config::load_for(FrontendKind::DesktopChat, &paths).expect("desktop config");
+            assert_eq!(desktop.model, "desktop-model");
+            assert_eq!(desktop.request_timeout_secs, 321);
+            assert_eq!(desktop.permission_profile, PermissionProfile::Web);
+            assert!(desktop.mcp_servers.is_empty());
+
+            let cli = Config::load_for(FrontendKind::Cli, &paths).expect("CLI config");
+            assert_eq!(cli.model, "shared-model");
+            assert_eq!(cli.request_timeout_secs, 321);
+            assert_eq!(cli.permission_profile, expected);
+            assert_eq!(cli.mcp_servers.len(), 1);
+            assert_eq!(cli.mcp_servers[0].name, "shared-tools");
+        }
+
+        std::fs::write(
+            paths.frontend_config_path(FrontendKind::DesktopChat),
+            "permission_profile = \"confirm\"\n",
+        )
+        .expect("invalid desktop config");
+        assert!(Config::load_for(FrontendKind::DesktopChat, &paths).is_err());
+
+        std::fs::write(
+            paths.frontend_config_path(FrontendKind::DesktopChat),
+            "permission_profile = \"web\"\n",
+        )
+        .expect("restored desktop config");
+        std::fs::write(paths.shared_config_path(), "unknown_shared_field = true\n")
+            .expect("additive shared config");
+        let desktop = Config::load_for(FrontendKind::DesktopChat, &paths)
+            .expect("unknown additive keys do not block desktop");
+        assert_eq!(desktop.permission_profile, PermissionProfile::Web);
+    }
 
     #[test]
     fn invalid_urls_fail_validation() {
@@ -472,6 +681,23 @@ mod tests {
                 ..Config::default()
             };
             assert!(config.validate().is_err());
+        }
+    }
+
+    #[test]
+    fn unsupported_search_providers_fail_instead_of_changing_the_destination() {
+        assert!(Config::default().validate().is_ok());
+        for provider in ["retired-provider", "", "AXIOM"] {
+            let mut config = Config::default();
+            let layer: ConfigLayer = toml::from_str(&format!("web_search_provider = {provider:?}"))
+                .expect("provider config");
+            layer.apply_trusted(&mut config);
+            let error = config.validate().expect_err("unsupported provider");
+            assert!(
+                error
+                    .to_string()
+                    .contains("web_search_provider must be axiom")
+            );
         }
     }
 
@@ -498,9 +724,12 @@ mod tests {
     #[test]
     fn profile_parser_is_strict() {
         assert_eq!(
-            PermissionProfile::from_str("workspace").expect("profile"),
-            PermissionProfile::Workspace
+            PermissionProfile::from_str("full_access").expect("profile"),
+            PermissionProfile::FullAccess
         );
+        assert!(PermissionProfile::from_str("workspace").is_err());
+        assert!(PermissionProfile::from_str("autonomous").is_err());
+        assert!(PermissionProfile::from_str("plan").is_err());
         assert!(PermissionProfile::from_str("YOLO").is_err());
     }
 
@@ -511,7 +740,23 @@ mod tests {
         layer.apply_trusted(&mut config);
         assert_eq!(config.model, "cherry");
         assert_eq!(config.permission_profile, PermissionProfile::Confirm);
-        assert_eq!(config.searxng_url, "http://127.0.0.1:8888");
+        assert_eq!(config.web_search_provider, "axiom");
+    }
+
+    #[test]
+    fn additive_config_and_mcp_fields_are_ignored_without_losing_known_values() {
+        let root = tempfile::tempdir().expect("config root");
+        let path = root.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "model='cherry'\nfuture_ui_setting=true\n[[mcp_servers]]\nname='future'\ncommand='helper'\nfuture_transport='v2'\n",
+        )
+        .expect("config fixture");
+        let layer = read_layer(&path).expect("additive config");
+        let mut config = Config::default();
+        layer.apply_trusted(&mut config);
+        assert_eq!(config.model, "cherry");
+        assert_eq!(config.mcp_servers[0].name, "future");
     }
 
     #[test]
@@ -557,7 +802,7 @@ mod tests {
     fn project_layer_cannot_broaden_authority_or_launch_mcp() {
         let mut config = Config::default();
         let broad: ConfigLayer =
-            toml::from_str("permission_profile = 'autonomous'").expect("layer");
+            toml::from_str("permission_profile = 'full_access'").expect("layer");
         assert!(broad.apply_project(&mut config).is_err());
 
         let mcp: ConfigLayer =

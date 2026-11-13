@@ -1,0 +1,15 @@
+#!/bin/sh
+set -eu
+app_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+export APPDIR="$app_dir"
+case "${1:-}" in
+  --axiom-cli)
+    shift
+    exec "$app_dir/resources/bin/axiomcli" "$@"
+    ;;
+  --install)
+    shift
+    exec "$app_dir/resources/install-appimage.sh" "$@"
+    ;;
+esac
+exec "$app_dir/axiom-desktop" "$@"

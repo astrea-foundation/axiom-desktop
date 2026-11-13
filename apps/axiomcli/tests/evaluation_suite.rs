@@ -1,3 +1,7 @@
+#[path = "support/search.rs"]
+mod search;
+use search::test_registry;
+
 use std::{
     collections::VecDeque,
     path::Path,
@@ -14,7 +18,6 @@ use axiomcli::{
         AssistantTurn, FunctionCall, InferenceProvider, InferenceRequest, ProviderEvent,
         SecureAxiomProvider, ToolCall,
     },
-    tools::default_registry,
     workspace::Workspace,
 };
 use serde::Serialize;
@@ -58,6 +61,7 @@ impl InferenceProvider for ScriptedProvider {
 
 fn call(id: &str, name: &str, arguments: &Value) -> AssistantTurn {
     AssistantTurn {
+        reasoning: None,
         text: String::new(),
         tool_calls: vec![ToolCall {
             id: id.into(),
@@ -72,6 +76,7 @@ fn call(id: &str, name: &str, arguments: &Value) -> AssistantTurn {
 
 fn done(text: &str) -> AssistantTurn {
     AssistantTurn {
+        reasoning: None,
         text: text.into(),
         tool_calls: Vec::new(),
     }
@@ -138,7 +143,7 @@ async fn run_agent(
     });
     let engine = AgentEngine::with_limits(
         provider.clone(),
-        Arc::new(default_registry(32 * 1024, "http://127.0.0.1:9").expect("tools")),
+        Arc::new(test_registry(32 * 1024).expect("tools")),
         "deterministic-evaluation",
         AgentLimits {
             max_steps: Some(12),
@@ -153,10 +158,13 @@ async fn run_agent(
     engine
         .run(
             TurnContext {
+                attachments: Vec::new(),
                 session_id: SessionId::new(),
                 turn_id: TurnId::new(),
                 cwd: root.to_path_buf(),
                 permission_profile: profile,
+                web_enabled: true,
+                steering: None,
                 approval: None,
                 questions: None,
             },
@@ -392,7 +400,7 @@ fn investigation_fixture() -> (TempDir, Vec<AssistantTurn>) {
 async fn original_multilanguage_evaluation_set_is_repeatable_from_clean_fixtures() {
     for repetition in 0..2 {
         let (typescript, turns) = typescript_fixture();
-        let run = run_agent(typescript.path(), turns, PermissionProfile::Autonomous).await;
+        let run = run_agent(typescript.path(), turns, PermissionProfile::FullAccess).await;
         let expected = std::fs::read_to_string(typescript.path().join("src/report.ts"))
             .expect("TypeScript result")
             .contains("rectangleArea(6, 7)")
@@ -400,14 +408,14 @@ async fn original_multilanguage_evaluation_set_is_repeatable_from_clean_fixtures
         score("typescript_multifile", &run, expected, Some("ts-verify"), 0).assert_gate(3);
 
         let (python, turns) = python_fixture();
-        let run = run_agent(python.path(), turns, PermissionProfile::Autonomous).await;
+        let run = run_agent(python.path(), turns, PermissionProfile::FullAccess).await;
         let expected = std::fs::read_to_string(python.path().join("calculator.py"))
             .expect("Python result")
             .contains("left / right");
         score("python_test_repair", &run, expected, Some("py-verify"), 1).assert_gate(4);
 
         let (config_docs, turns) = configuration_and_docs_fixture();
-        let run = run_agent(config_docs.path(), turns, PermissionProfile::Autonomous).await;
+        let run = run_agent(config_docs.path(), turns, PermissionProfile::FullAccess).await;
         let expected = std::fs::read_to_string(config_docs.path().join("app.toml"))
             .expect("config result")
             .contains("cherry-blossom")
@@ -462,7 +470,7 @@ async fn live_model_investigation_baseline_is_budgeted_and_non_mutating() {
         );
         let engine = AgentEngine::with_limits(
             provider,
-            Arc::new(default_registry(32 * 1024, "http://127.0.0.1:9").expect("tools")),
+            Arc::new(test_registry(32 * 1024).expect("tools")),
             model.clone(),
             AgentLimits {
                 max_steps: Some(6),
@@ -476,11 +484,13 @@ async fn live_model_investigation_baseline_is_budgeted_and_non_mutating() {
         let started = Instant::now();
         engine
             .run(
-                TurnContext {
+                TurnContext {attachments: Vec::new(),
                     session_id: SessionId::new(),
                     turn_id: TurnId::new(),
                     cwd: root.path().to_path_buf(),
                     permission_profile: PermissionProfile::Observe,
+                    web_enabled: true,
+                    steering: None,
                     approval: None,
                     questions: None,
                 },

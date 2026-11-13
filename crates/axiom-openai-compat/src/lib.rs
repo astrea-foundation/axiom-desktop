@@ -103,9 +103,9 @@ pub struct TranslatedRequest {
 /// An OpenAI-compatible chat completion request.
 ///
 /// Unknown keys are captured rather than refused at parse time so that
-/// [`CompatMode`] can decide their fate. Nested structures keep
-/// `deny_unknown_fields`: a malformed message, tool, or schema is a client bug
-/// in every mode.
+/// [`CompatMode`] can decide their fate. This applies recursively: lenient
+/// mode can survive additive SDK metadata while strict mode still refuses any
+/// field that cannot be represented faithfully.
 #[derive(Clone, Debug, Deserialize)]
 pub struct ChatCompletionRequest {
     pub model: String,
@@ -118,6 +118,8 @@ pub struct ChatCompletionRequest {
     pub parallel_tool_calls: Option<bool>,
     #[serde(default)]
     pub reasoning_effort: Option<String>,
+    #[serde(default)]
+    pub thinking_mode: axiom_inference::ThinkingMode,
     #[serde(default)]
     pub max_tokens: Option<u32>,
     #[serde(default)]
@@ -164,6 +166,56 @@ impl ChatCompletionRequest {
         reported
     }
 
+    fn nested_parameters(&self) -> Vec<String> {
+        let mut reported = Vec::new();
+        collect_keys(
+            "stream_options",
+            self.stream_options.as_ref().map(|value| &value.unsupported),
+            &mut reported,
+        );
+        for message in &self.messages {
+            collect_keys("messages", Some(&message.unsupported), &mut reported);
+            if let Some(content) = &message.content {
+                content.collect_parameters(&mut reported);
+            }
+            for call in &message.tool_calls {
+                collect_keys(
+                    "messages.tool_calls",
+                    Some(&call.unsupported),
+                    &mut reported,
+                );
+                collect_keys(
+                    "messages.tool_calls.function",
+                    Some(&call.function.unsupported),
+                    &mut reported,
+                );
+            }
+        }
+        for tool in &self.tools {
+            collect_keys("tools", Some(&tool.unsupported), &mut reported);
+            collect_keys(
+                "tools.function",
+                Some(&tool.function.unsupported),
+                &mut reported,
+            );
+        }
+        if let Some(WireToolChoice::Named(choice)) = &self.tool_choice {
+            collect_keys("tool_choice", Some(&choice.unsupported), &mut reported);
+            collect_keys(
+                "tool_choice.function",
+                Some(&choice.function.unsupported),
+                &mut reported,
+            );
+        }
+        if let Some(format) = &self.response_format {
+            format.collect_parameters(&mut reported);
+        }
+        reported.sort_unstable();
+        reported.dedup();
+        reported.truncate(MAX_REPORTED_PARAMETERS);
+        reported
+    }
+
     pub fn into_domain(self, mode: CompatMode) -> Result<TranslatedRequest> {
         if self.max_tokens.is_some()
             && self.max_completion_tokens.is_some()
@@ -181,13 +233,21 @@ impl ChatCompletionRequest {
                 "n must be 1: additional choices cannot be produced",
             ));
         }
-        let ignored_parameters = self.classify_parameters();
-        if mode == CompatMode::Strict && !self.unsupported.is_empty() {
+        let nested_parameters = self.nested_parameters();
+        let mut ignored_parameters = self.classify_parameters();
+        ignored_parameters.extend(nested_parameters.iter().cloned());
+        ignored_parameters.sort_unstable();
+        ignored_parameters.dedup();
+        ignored_parameters.truncate(MAX_REPORTED_PARAMETERS);
+        if mode == CompatMode::Strict
+            && (!self.unsupported.is_empty() || !nested_parameters.is_empty())
+        {
             let mut refused: Vec<String> = self
                 .unsupported
                 .keys()
                 .filter_map(|key| sanitize_parameter_name(key))
                 .collect();
+            refused.extend(nested_parameters);
             refused.sort_unstable();
             refused.dedup();
             refused.truncate(MAX_REPORTED_PARAMETERS);
@@ -201,6 +261,8 @@ impl ChatCompletionRequest {
             .collect::<Result<Vec<_>>>()?;
         let request = InferenceRequest {
             model: self.model,
+            request_id: None,
+            thinking_mode: self.thinking_mode,
             messages: self
                 .messages
                 .into_iter()
@@ -240,14 +302,14 @@ impl ChatCompletionRequest {
 }
 
 #[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct StreamOptions {
     #[serde(default)]
     pub include_usage: bool,
+    #[serde(flatten)]
+    pub unsupported: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct WireMessage {
     pub role: String,
     #[serde(default)]
@@ -262,6 +324,8 @@ pub struct WireMessage {
     pub tool_call_id: Option<String>,
     #[serde(default)]
     pub tool_calls: Vec<WireToolCall>,
+    #[serde(flatten)]
+    pub unsupported: serde_json::Map<String, serde_json::Value>,
 }
 
 impl WireMessage {
@@ -274,11 +338,15 @@ impl WireMessage {
             "tool" => ChatRole::Tool,
             _ => return Err(CompatError::new("message role is not supported")),
         };
+        let (content, images, files) = self.content.map_or_else(
+            || Ok((String::new(), Vec::new(), Vec::new())),
+            WireContent::into_parts,
+        )?;
         Ok(ChatMessage {
             role,
-            content: self
-                .content
-                .map_or_else(|| Ok(String::new()), WireContent::into_text)?,
+            content,
+            images,
+            files,
             reasoning_content: self.reasoning_content,
             name: self.name,
             refusal: self.refusal,
@@ -302,14 +370,38 @@ pub enum WireContent {
 }
 
 impl WireContent {
-    fn into_text(self) -> Result<String> {
+    fn into_parts(self) -> Result<ContentParts> {
         match self {
-            Self::Text(text) => Ok(text),
+            Self::Text(text) => Ok((text, Vec::new(), Vec::new())),
             Self::Parts(parts) => {
                 let mut texts = Vec::with_capacity(parts.len());
+                let mut images = Vec::new();
+                let mut files = Vec::new();
                 for part in parts {
                     match part {
-                        WireContentPart::Text { text } => texts.push(text),
+                        WireContentPart::Text { text, .. } => texts.push(text),
+                        WireContentPart::ImageUrl { image_url, .. } => {
+                            images.push(axiom_inference::ImageContent::from_data_url(&image_url.url)
+                                .map_err(|_| CompatError::new("images must be valid inline PNG, JPEG, WebP, or GIF data URLs (up to 5 MiB each)"))?);
+                        }
+                        WireContentPart::File { file } => {
+                            let (mime_type, data) = file
+                                .file_data
+                                .strip_prefix("data:")
+                                .and_then(|s| s.split_once(";base64,"))
+                                .ok_or_else(|| {
+                                    CompatError::new("files require inline base64 data URLs")
+                                })?;
+                            let content = axiom_inference::FileContent {
+                                name: file.filename,
+                                mime_type: mime_type.into(),
+                                data: data.into(),
+                            };
+                            content
+                                .validate()
+                                .map_err(|_| CompatError::new("invalid file upload"))?;
+                            files.push(content);
+                        }
                         WireContentPart::Unsupported => {
                             return Err(CompatError::new(
                                 "message content part type is not supported",
@@ -317,34 +409,84 @@ impl WireContent {
                         }
                     }
                 }
-                Ok(texts.join("\n"))
+                Ok((texts.join("\n"), images, files))
+            }
+        }
+    }
+
+    fn collect_parameters(&self, reported: &mut Vec<String>) {
+        if let Self::Parts(parts) = self {
+            for part in parts {
+                if let WireContentPart::Text { unsupported, .. } = part {
+                    collect_keys("messages.content", Some(unsupported), reported);
+                } else if let WireContentPart::ImageUrl {
+                    image_url,
+                    unsupported,
+                } = part
+                {
+                    collect_keys("messages.content", Some(unsupported), reported);
+                    collect_keys(
+                        "messages.content.image_url",
+                        Some(&image_url.unsupported),
+                        reported,
+                    );
+                }
             }
         }
     }
 }
 
+type ContentParts = (
+    String,
+    Vec<axiom_inference::ImageContent>,
+    Vec<axiom_inference::FileContent>,
+);
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WireFile {
+    pub filename: String,
+    pub file_data: String,
+}
+
 /// A single content part.
 ///
-/// Only text is representable. No catalog model advertises image, audio, or
-/// file input, and dropping such a part would answer as though the caller had
-/// never sent it. The catch-all variant exists so the request fails during
-/// translation with a specific message rather than as an opaque parse error.
+/// Text and inline image bytes are representable. Provider adapters enforce
+/// authenticated image support; unsupported content is never silently dropped.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WireContentPart {
+    File {
+        file: WireFile,
+    },
     Text {
         text: String,
+        #[serde(flatten)]
+        unsupported: serde_json::Map<String, serde_json::Value>,
+    },
+    ImageUrl {
+        image_url: WireImageUrl,
+        #[serde(flatten)]
+        unsupported: serde_json::Map<String, serde_json::Value>,
     },
     #[serde(other)]
     Unsupported,
 }
 
 #[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
+pub struct WireImageUrl {
+    pub url: String,
+    #[serde(flatten)]
+    pub unsupported: serde_json::Map<String, serde_json::Value>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
 pub struct WireTool {
     #[serde(rename = "type")]
     pub kind: String,
     pub function: WireFunctionDefinition,
+    #[serde(flatten)]
+    pub unsupported: serde_json::Map<String, serde_json::Value>,
 }
 
 impl WireTool {
@@ -365,7 +507,6 @@ impl WireTool {
 }
 
 #[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct WireFunctionDefinition {
     pub name: String,
     #[serde(default)]
@@ -374,6 +515,8 @@ pub struct WireFunctionDefinition {
     pub parameters: serde_json::Value,
     #[serde(default)]
     pub strict: Option<bool>,
+    #[serde(flatten)]
+    pub unsupported: serde_json::Map<String, serde_json::Value>,
 }
 
 fn empty_schema() -> serde_json::Value {
@@ -405,26 +548,29 @@ impl WireToolChoice {
 }
 
 #[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct WireNamedToolChoice {
     #[serde(rename = "type")]
     pub kind: String,
     pub function: WireNamedFunction,
+    #[serde(flatten)]
+    pub unsupported: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct WireNamedFunction {
     pub name: String,
+    #[serde(flatten)]
+    pub unsupported: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct WireToolCall {
     pub id: String,
     #[serde(rename = "type")]
     pub kind: String,
     pub function: WireFunctionCall,
+    #[serde(flatten)]
+    pub unsupported: serde_json::Map<String, serde_json::Value>,
 }
 
 impl WireToolCall {
@@ -444,41 +590,87 @@ impl WireToolCall {
 }
 
 #[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct WireFunctionCall {
     pub name: String,
     pub arguments: String,
+    #[serde(flatten)]
+    pub unsupported: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum WireResponseFormat {
-    Text,
-    JsonObject,
-    JsonSchema { json_schema: WireJsonSchema },
+    Text {
+        #[serde(flatten)]
+        unsupported: serde_json::Map<String, serde_json::Value>,
+    },
+    JsonObject {
+        #[serde(flatten)]
+        unsupported: serde_json::Map<String, serde_json::Value>,
+    },
+    JsonSchema {
+        json_schema: WireJsonSchema,
+        #[serde(flatten)]
+        unsupported: serde_json::Map<String, serde_json::Value>,
+    },
 }
 
 impl WireResponseFormat {
     fn into_domain(self) -> ResponseFormat {
         match self {
-            Self::Text => ResponseFormat::Text,
-            Self::JsonObject => ResponseFormat::JsonObject,
-            Self::JsonSchema { json_schema } => ResponseFormat::JsonSchema {
+            Self::Text { .. } => ResponseFormat::Text,
+            Self::JsonObject { .. } => ResponseFormat::JsonObject,
+            Self::JsonSchema { json_schema, .. } => ResponseFormat::JsonSchema {
                 name: json_schema.name,
                 schema: json_schema.schema,
                 strict: json_schema.strict,
             },
         }
     }
+
+    fn collect_parameters(&self, reported: &mut Vec<String>) {
+        match self {
+            Self::Text { unsupported } | Self::JsonObject { unsupported } => {
+                collect_keys("response_format", Some(unsupported), reported);
+            }
+            Self::JsonSchema {
+                json_schema,
+                unsupported,
+            } => {
+                collect_keys("response_format", Some(unsupported), reported);
+                collect_keys(
+                    "response_format.json_schema",
+                    Some(&json_schema.unsupported),
+                    reported,
+                );
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct WireJsonSchema {
     pub name: String,
     pub schema: serde_json::Value,
     #[serde(default)]
     pub strict: bool,
+    #[serde(flatten)]
+    pub unsupported: serde_json::Map<String, serde_json::Value>,
+}
+
+fn collect_keys(
+    prefix: &str,
+    fields: Option<&serde_json::Map<String, serde_json::Value>>,
+    reported: &mut Vec<String>,
+) {
+    let Some(fields) = fields else {
+        return;
+    };
+    for key in fields.keys() {
+        if let Some(name) = sanitize_parameter_name(&format!("{prefix}.{key}")) {
+            reported.push(name);
+        }
+    }
 }
 
 fn parse_reasoning(value: Option<&str>) -> Result<ReasoningEffort> {
@@ -780,7 +972,9 @@ pub fn stream_event(
             Some(finish_reason_name(&reason)),
             None,
         )),
-        ProviderEvent::SecurityState(_)
+        ProviderEvent::Accounting(_)
+        | ProviderEvent::SecurityState(_)
+        | ProviderEvent::ResponseVerified
         | ProviderEvent::Status { .. }
         | ProviderEvent::Usage { .. } => None,
     }
@@ -887,6 +1081,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn direct_files_preserve_bytes_and_reject_remote_or_non_user_inputs() {
+        let raw = serde_json::json!({"model":"new-model","messages":[{"role":"user","content":[
+            {"type":"file","file":{"filename":"notes.txt","file_data":"data:text/plain;base64,aGVsbG8="}}
+        ]}]});
+        let parsed: ChatCompletionRequest = serde_json::from_value(raw.clone()).unwrap();
+        let translated = parsed.into_domain(CompatMode::Strict).unwrap();
+        assert!(translated.request.messages[0].content.is_empty());
+        assert_eq!(translated.request.messages[0].files[0].data, "aGVsbG8=");
+        for role in ["assistant", "system", "tool"] {
+            let mut invalid = raw.clone();
+            invalid["messages"][0]["role"] = serde_json::json!(role);
+            let parsed: ChatCompletionRequest = serde_json::from_value(invalid).unwrap();
+            assert!(parsed.into_domain(CompatMode::Strict).is_err());
+        }
+        let mut invalid = raw;
+        invalid["messages"][0]["content"][0]["file"]["file_data"] =
+            serde_json::json!("https://example.com/a.pdf");
+        let parsed: ChatCompletionRequest = serde_json::from_value(invalid).unwrap();
+        assert!(parsed.into_domain(CompatMode::Lenient).is_err());
+    }
+
+    #[test]
     fn translates_messages_tools_choice_reasoning_and_response_format_losslessly() {
         let wire: ChatCompletionRequest = serde_json::from_value(serde_json::json!({
             "model": "cherry",
@@ -925,6 +1141,30 @@ mod tests {
             domain.response_format,
             ResponseFormat::JsonSchema { .. }
         ));
+    }
+
+    #[test]
+    fn inline_images_are_preserved_and_unknown_options_follow_compatibility_mode() {
+        let raw = serde_json::json!({"model":"x","messages":[{"role":"user","content":[
+            {"type":"text","text":"describe"},
+            {"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgpmaXh0dXJl", "detail":"high"}, "extra":true}
+        ]}]});
+        let parsed: ChatCompletionRequest = serde_json::from_value(raw.clone()).unwrap();
+        assert!(parsed.into_domain(CompatMode::Strict).is_err());
+        let parsed: ChatCompletionRequest = serde_json::from_value(raw).unwrap();
+        let translated = parsed.into_domain(CompatMode::Lenient).unwrap();
+        assert_eq!(translated.request.messages[0].images.len(), 1);
+        assert_eq!(translated.request.messages[0].content, "describe");
+        assert!(
+            translated
+                .ignored_parameters
+                .contains(&"messages.content.image_url.detail".into())
+        );
+        assert!(
+            translated
+                .ignored_parameters
+                .contains(&"messages.content.extra".into())
+        );
     }
 
     #[test]
@@ -1018,6 +1258,62 @@ mod tests {
     }
 
     #[test]
+    fn lenient_mode_survives_additive_nested_metadata_while_strict_reports_it() {
+        let body = serde_json::json!({
+            "model":"x",
+            "messages":[{
+                "role":"user",
+                "content":[{"type":"text","text":"hi","provider_cache_hint":true}],
+                "cache_control":{"type":"ephemeral"}
+            }],
+            "tools":[{"type":"function","provider_hint":"future","function":{
+                "name":"lookup",
+                "parameters":{"type":"object"},
+                "future_schema_dialect":"v2"
+            }}],
+            "stream":true,
+            "stream_options":{"include_usage":true,"continuous_usage_stats":true},
+            "response_format":{"type":"json_object","future_format_hint":true}
+        });
+
+        let lenient: ChatCompletionRequest = serde_json::from_value(body.clone()).unwrap();
+        let translated = lenient.into_domain(CompatMode::Lenient).unwrap();
+        assert!(
+            translated
+                .ignored_parameters
+                .contains(&"messages.cache_control".into())
+        );
+        assert!(
+            translated
+                .ignored_parameters
+                .contains(&"messages.content.provider_cache_hint".into())
+        );
+        assert!(
+            translated
+                .ignored_parameters
+                .contains(&"tools.provider_hint".into())
+        );
+        assert!(
+            translated
+                .ignored_parameters
+                .contains(&"tools.function.future_schema_dialect".into())
+        );
+        assert!(
+            translated
+                .ignored_parameters
+                .contains(&"stream_options.continuous_usage_stats".into())
+        );
+        assert!(
+            translated
+                .ignored_parameters
+                .contains(&"response_format.future_format_hint".into())
+        );
+
+        let strict: ChatCompletionRequest = serde_json::from_value(body).unwrap();
+        assert!(strict.into_domain(CompatMode::Strict).is_err());
+    }
+
+    #[test]
     fn joins_text_content_parts_and_keeps_bare_strings() {
         let wire: ChatCompletionRequest = serde_json::from_value(serde_json::json!({
             "model":"x","messages":[
@@ -1079,6 +1375,7 @@ mod tests {
 
         let response = InferenceResponse {
             assistant: AssistantTurn {
+                reasoning: None,
                 text: String::new(),
                 tool_calls: vec![ToolCall {
                     id: "call-1".to_owned(),

@@ -99,6 +99,16 @@ impl ServerHandler for FixtureServer {
                 std::fs::write(state, (count + 1).to_string()).expect("write count");
                 std::process::exit(87);
             }
+            "delayed" => {
+                if let Some(path) = &self.state {
+                    let count = std::fs::read_to_string(path)
+                        .ok()
+                        .and_then(|value| value.parse::<u32>().ok())
+                        .unwrap_or(0);
+                    std::fs::write(path, (count + 1).to_string()).expect("call count");
+                }
+                tokio::time::sleep(Duration::from_millis(1200)).await;
+            }
             "slow" => context.ct.cancelled().await,
             _ => {}
         }
@@ -192,9 +202,10 @@ fn config(mode: &str, state: Option<&Path>, read_only: bool) -> McpServerConfig 
     ]);
     McpServerConfig {
         name: "Blossom Fixture".into(),
-        command: "/usr/bin/env".into(),
+        command: "env".into(),
         args,
         read_only_tools: read_only.then(|| "echo".into()).into_iter().collect(),
+        tool_timeout_secs: axiomcli::config::default_mcp_tool_timeout_secs(),
     }
 }
 
@@ -202,7 +213,7 @@ fn context(temp: &TempDir) -> ToolContext {
     ToolContext {
         session_id: axiomcli::app::SessionId::new(),
         cwd: temp.path().to_path_buf(),
-        permission_profile: PermissionProfile::Workspace,
+        permission_profile: PermissionProfile::Confirm,
     }
 }
 
@@ -363,4 +374,35 @@ async fn malformed_protocol_results_fail_closed_without_panicking() {
     let message = error.to_string();
     assert!(message.contains("MCP server `Blossom Fixture`"));
     assert!(message.len() < 5000);
+}
+
+#[tokio::test]
+async fn per_server_deadlines_allow_slow_tools_and_never_replay_a_timeout() {
+    let temp = TempDir::new().unwrap();
+    for (seconds, succeeds) in [(2, true), (1, false)] {
+        let marker = temp.path().join(format!("calls-{seconds}"));
+        let mut cfg = config("delayed", Some(&marker), true);
+        cfg.tool_timeout_secs = seconds;
+        let tools = connect_tools(&[cfg], 4096).await.unwrap();
+        let result = tools[0]
+            .execute(&context(&temp), json!({}), CancellationToken::new())
+            .await;
+        if succeeds {
+            assert!(result.is_ok(), "{result:?}");
+        } else {
+            assert!(result.unwrap_err().to_string().contains("timed out"));
+        }
+        assert_eq!(std::fs::read_to_string(marker).unwrap(), "1");
+    }
+}
+
+#[tokio::test]
+async fn invalid_deadlines_are_rejected_before_starting_a_server() {
+    for seconds in [0, 86_401] {
+        let mut cfg = config("normal", None, true);
+        cfg.tool_timeout_secs = seconds;
+        assert!(connect_tools(&[cfg], 4096).await.is_err());
+    }
+    let cfg: McpServerConfig = toml::from_str("name = 'fixture'\ncommand = 'fixture'").unwrap();
+    assert_eq!(cfg.tool_timeout_secs, 300);
 }

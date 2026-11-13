@@ -1,4 +1,12 @@
-use std::{net::IpAddr, time::Duration};
+use std::{
+    net::IpAddr,
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 use url::Url;
 
@@ -6,9 +14,18 @@ use crate::{Result, SecureClientError};
 
 #[derive(Clone, Debug)]
 pub struct SecureClientConfig {
+    // Shared by this runtime's client clones, never serialized or written to disk.
+    accept_outdated_near_tcb: Arc<AtomicBool>,
     pub relay_base_url: Url,
     pub request_timeout: Duration,
     pub attestation_timeout: Duration,
+    /// Last-known-good model metadata is for discovery only. Establishment
+    /// still performs fresh endpoint validation and attestation.
+    pub catalog_max_stale: Duration,
+    pub verified_session_ttl: Duration,
+    /// Optional shared rollback journal for signed trust-policy updates.
+    pub trust_policy_cache_path: Option<PathBuf>,
+    pub trust_policy_refresh_interval: Duration,
     pub limits: SecureClientLimits,
     pub endpoint_policy: EndpointPolicy,
     #[cfg(feature = "test-fixture")]
@@ -25,9 +42,14 @@ impl SecureClientConfig {
             ));
         }
         Ok(Self {
+            accept_outdated_near_tcb: Arc::new(AtomicBool::new(false)),
             relay_base_url,
             request_timeout: Duration::from_secs(120),
             attestation_timeout: Duration::from_secs(60),
+            catalog_max_stale: Duration::from_secs(30 * 60),
+            verified_session_ttl: Duration::from_secs(240),
+            trust_policy_cache_path: None,
+            trust_policy_refresh_interval: Duration::from_secs(300),
             limits: SecureClientLimits::default(),
             endpoint_policy: EndpointPolicy::default(),
             #[cfg(feature = "test-fixture")]
@@ -50,9 +72,14 @@ impl SecureClientConfig {
             ));
         }
         Ok(Self {
+            accept_outdated_near_tcb: Arc::new(AtomicBool::new(false)),
             relay_base_url,
             request_timeout: Duration::from_secs(15),
             attestation_timeout: Duration::from_secs(10),
+            catalog_max_stale: Duration::from_secs(60),
+            verified_session_ttl: Duration::from_secs(30),
+            trust_policy_cache_path: None,
+            trust_policy_refresh_interval: Duration::from_secs(30),
             limits: SecureClientLimits::default(),
             endpoint_policy: EndpointPolicy {
                 require_https: false,
@@ -67,11 +94,28 @@ impl SecureClientConfig {
     pub(crate) const fn uses_test_fixture(&self) -> bool {
         self.test_fixture
     }
+
+    /// Explicit local-user consent for missing Intel updates, for this runtime only.
+    /// This cannot relax any cryptographic, identity, freshness or GPU check.
+    pub fn accept_outdated_tee_for_provider(&self, provider: &str) -> Result<()> {
+        if provider != "near" {
+            return Err(SecureClientError::configuration(
+                "this provider has no supported outdated-TEE exception",
+            ));
+        }
+        self.accept_outdated_near_tcb.store(true, Ordering::SeqCst);
+        Ok(())
+    }
+
+    pub(crate) fn accepts_outdated_tcb(&self, provider: &str) -> bool {
+        provider == "near" && self.accept_outdated_near_tcb.load(Ordering::SeqCst)
+    }
 }
 
 #[derive(Clone, Debug)]
 pub struct SecureClientLimits {
     pub model_catalog_bytes: usize,
+    pub trust_policy_bytes: usize,
     pub attestation_report_bytes: usize,
     pub attestation_quote_bytes: usize,
     pub nvidia_evidence_bytes: usize,
@@ -89,17 +133,26 @@ impl Default for SecureClientLimits {
     fn default() -> Self {
         Self {
             model_catalog_bytes: 4 * 1024 * 1024,
-            attestation_report_bytes: 2 * 1024 * 1024,
+            trust_policy_bytes: 128 * 1024,
+            // Bounded provider evidence, independently verified on this device.
+            attestation_report_bytes: 16 * 1024 * 1024,
             attestation_quote_bytes: 256 * 1024,
             nvidia_evidence_bytes: 1024 * 1024,
             nvidia_jwt_bytes: 256 * 1024,
-            nvidia_jwks_bytes: 256 * 1024,
+            // NVIDIA publishes a rotating multi-key certificate set. Keep its
+            // download bounded while allowing the vendor's >512 KiB key set.
+            nvidia_jwks_bytes: 1024 * 1024,
             intel_collateral_bytes: 2 * 1024 * 1024,
             relay_error_bytes: 4 * 1024,
-            relay_response_bytes: 2 * 1024 * 1024,
-            relay_sse_event_bytes: 1024 * 1024,
-            relay_stream_bytes: 16 * 1024 * 1024,
-            serialized_relay_request_bytes: 2 * 1024 * 1024,
+            // A completion receipt contains the bounded 32 MiB provider
+            // encrypted response again as base64. Leave room for that proof and its
+            // surrounding JSON without relaxing the total stream bound.
+            // Non-stream responses carry both the encrypted provider JSON fields
+            // and a base64 copy of those same signed bytes.
+            relay_response_bytes: 96 * 1024 * 1024,
+            relay_sse_event_bytes: 48 * 1024 * 1024,
+            relay_stream_bytes: 128 * 1024 * 1024,
+            serialized_relay_request_bytes: 64 * 1024 * 1024,
         }
     }
 }
@@ -182,6 +235,8 @@ pub(crate) fn is_public_address(address: IpAddr) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{EndpointPolicy, SecureClientConfig};
+    use crate::{config::SecureClientLimits, http::bounded_body};
+    use axiom_inference::ProviderFailureKind;
 
     #[test]
     fn production_config_and_provider_urls_require_https() {
@@ -209,5 +264,34 @@ mod tests {
                 "{rejected}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn attestation_report_limit_accepts_the_boundary_and_rejects_the_next_byte() {
+        let limit = SecureClientLimits::default().attestation_report_bytes;
+        assert_eq!(limit, 16 * 1024 * 1024);
+
+        let exact = reqwest::Response::from(
+            http::Response::builder()
+                .body(vec![0_u8; limit])
+                .expect("exact-limit response"),
+        );
+        assert_eq!(
+            bounded_body(exact, limit)
+                .await
+                .expect("exact-limit body")
+                .len(),
+            limit
+        );
+
+        let oversized = reqwest::Response::from(
+            http::Response::builder()
+                .body(vec![0_u8; limit + 1])
+                .expect("oversized response"),
+        );
+        let error = bounded_body(oversized, limit)
+            .await
+            .expect_err("limit plus one must fail closed");
+        assert_eq!(error.kind(), ProviderFailureKind::SessionEstablishment);
     }
 }

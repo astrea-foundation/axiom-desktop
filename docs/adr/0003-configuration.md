@@ -1,5 +1,9 @@
 # ADR 0003: Layered early configuration
 
+> Superseded implementation details. [Current configuration](../configuration.md)
+> defines shared/frontend layers, restrictive project input, unknown-key warnings
+> and implemented OS credential storage. The original decision below is historical.
+
 Status: accepted for the early implementation
 
 ## Decision

@@ -8,6 +8,7 @@ mod client;
 mod config;
 mod error;
 mod http;
+mod lease;
 mod provider;
 mod providers;
 mod relay;
@@ -15,7 +16,7 @@ mod security;
 
 pub use client::SecureClient;
 pub use config::{EndpointPolicy, SecureClientConfig, SecureClientLimits};
-pub use error::{Result, SecureClientError};
+pub use error::{Result, SecureClientError, SecureErrorCode};
 pub use provider::{ProviderRegistry, SecureProvider, VerifiedSession};
 pub use security::{EvidenceCheck, EvidenceClaim, SecurityEvidence, SecurityState, TrustPolicy};
 
@@ -26,13 +27,6 @@ pub use security::{EvidenceCheck, EvidenceClaim, SecurityEvidence, SecurityState
 /// protocol implementation in the proxy crate.
 #[cfg(feature = "test-fixture")]
 pub mod test_support;
-
-/// Bounded parser entry points for the standalone fuzz workspace.
-///
-/// This module is absent from ordinary production builds. It deliberately
-/// exposes no session establishment, provider credentials, or key material.
-#[cfg(feature = "fuzzing")]
-pub mod fuzz_support;
 
 use std::sync::Arc;
 

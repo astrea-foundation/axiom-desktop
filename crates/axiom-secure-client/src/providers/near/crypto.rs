@@ -18,7 +18,7 @@ const NONCE_BYTES: usize = 24;
 const TAG_BYTES: usize = 16;
 const WIRE_PREFIX_BYTES: usize = EPHEMERAL_PUBLIC_BYTES + NONCE_BYTES;
 const MINIMUM_WIRE_BYTES: usize = WIRE_PREFIX_BYTES + TAG_BYTES;
-const MAXIMUM_WIRE_BYTES: usize = 262_000 + MINIMUM_WIRE_BYTES;
+const MAXIMUM_WIRE_BYTES: usize = 20 * 1024 * 1024 + MINIMUM_WIRE_BYTES;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Ed25519PublicKey([u8; 32]);
@@ -98,7 +98,7 @@ impl std::fmt::Debug for ClientIdentity {
 }
 
 pub(crate) fn encrypt_hex(recipient: Ed25519PublicKey, plaintext: &[u8]) -> Result<String> {
-    if plaintext.len() > 262_000 {
+    if plaintext.len() > MAXIMUM_WIRE_BYTES - MINIMUM_WIRE_BYTES {
         return Err(crypto_error("plaintext exceeds the protocol limit"));
     }
     let recipient_x25519 = X25519PublicKey::from(ed25519_public_to_x25519(&recipient.0)?);
@@ -189,37 +189,6 @@ fn derive_key(shared_secret: &[u8]) -> Result<Zeroizing<[u8; 32]>> {
     Ok(output)
 }
 
-pub(crate) fn report_data_is_bound(
-    report_data_hex: &str,
-    signing_key_hex: &str,
-    tls_spki_hex: &str,
-    nonce_hex: &str,
-) -> Result<bool> {
-    let report_data = decode_hex(report_data_hex, "report data is invalid")?;
-    let signing_key = decode_exact_32(signing_key_hex, "signing key is invalid")?;
-    let tls_spki = decode_exact_32(tls_spki_hex, "TLS fingerprint is invalid")?;
-    let nonce = decode_exact_32(nonce_hex, "attestation nonce is invalid")?;
-    if report_data.len() < 64 {
-        return Ok(false);
-    }
-    let mut hasher = Sha256::new();
-    hasher.update(signing_key);
-    hasher.update(tls_spki);
-    let expected = hasher.finalize();
-    Ok(report_data[..32] == expected[..] && report_data[32..64] == nonce)
-}
-
-fn decode_exact_32(value: &str, detail: &'static str) -> Result<[u8; 32]> {
-    decode_hex(value, detail)?
-        .try_into()
-        .map_err(|_| crypto_error(detail))
-}
-
-fn decode_hex(value: &str, detail: &'static str) -> Result<Vec<u8>> {
-    let normalized = value.trim().strip_prefix("0x").unwrap_or(value.trim());
-    hex::decode(normalized).map_err(|_| crypto_error(detail))
-}
-
 fn crypto_error(detail: &'static str) -> SecureClientError {
     SecureClientError::new(axiom_inference::ProviderFailureKind::Encryption, detail)
 }
@@ -243,8 +212,6 @@ mod tests {
         #[serde(rename = "hkdf_vectors")]
         hkdf_cases: Vec<HkdfVector>,
         encrypt_roundtrips: Vec<Roundtrip>,
-        #[serde(rename = "report_data_vectors")]
-        report_data_cases: Vec<ReportDataVector>,
     }
 
     #[derive(Deserialize)]
@@ -273,21 +240,12 @@ mod tests {
         expected_plaintext: String,
     }
 
-    #[derive(Deserialize)]
-    struct ReportDataVector {
-        signing_key_hex: String,
-        tls_fingerprint_hex: String,
-        nonce_hex: String,
-        report_data_hex: String,
-        valid: bool,
-    }
-
     fn vectors() -> Vectors {
         serde_json::from_str(include_str!("../../../../../fixtures/e2ee/near-v2.json")).unwrap()
     }
 
     #[test]
-    fn authoritative_conversion_hkdf_and_report_vectors_match() {
+    fn authoritative_conversion_and_hkdf_vectors_match() {
         let vectors = vectors();
         assert_eq!(vectors.hkdf_info.as_bytes(), HKDF_INFO);
         for vector in vectors.key_conversions {
@@ -311,25 +269,14 @@ mod tests {
                 vector.derived_key_hex
             );
         }
-        for vector in vectors.report_data_cases {
-            assert_eq!(
-                report_data_is_bound(
-                    &vector.report_data_hex,
-                    &vector.signing_key_hex,
-                    &vector.tls_fingerprint_hex,
-                    &vector.nonce_hex,
-                )
-                .unwrap(),
-                vector.valid
-            );
-        }
     }
 
     #[test]
     fn decrypts_python_and_round_trips_rust_ciphertext() {
         for vector in vectors().encrypt_roundtrips {
             let secret = StaticSecret::from(
-                decode_exact_32(&vector.recipient_x25519_secret_hex, "test secret").unwrap(),
+                <[u8; 32]>::try_from(hex::decode(&vector.recipient_x25519_secret_hex).unwrap())
+                    .unwrap(),
             );
             assert_eq!(
                 decrypt_hex(&secret, &vector.wire_hex).unwrap(),
@@ -370,14 +317,24 @@ mod tests {
         assert!(recipient.decrypt_hex(&hex::encode(tampered)).is_err());
         assert!(recipient.decrypt_hex("00").is_err());
         assert!(recipient.decrypt_hex("not-hex").is_err());
-        assert!(encrypt_hex(public, &vec![0; 262_001]).is_err());
+        assert!(
+            encrypt_hex(
+                public,
+                &vec![0; MAXIMUM_WIRE_BYTES - MINIMUM_WIRE_BYTES + 1]
+            )
+            .is_err()
+        );
     }
 
     #[test]
     fn boundary_sized_plaintext_round_trips() {
         let recipient = ClientIdentity::generate();
         let public = Ed25519PublicKey::from_hex(&recipient.public_key_hex()).unwrap();
-        for plaintext in [Vec::new(), vec![b'x'; 4_096], vec![b'y'; 262_000]] {
+        for plaintext in [
+            Vec::new(),
+            vec![b'x'; 4_096],
+            vec![b'y'; axiom_inference::MAX_MESSAGE_TEXT_BYTES],
+        ] {
             let wire = encrypt_hex(public, &plaintext).unwrap();
             assert_eq!(recipient.decrypt_hex(&wire).unwrap(), plaintext);
         }

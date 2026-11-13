@@ -2,7 +2,9 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::{Result, SecureClientError};
 
-pub(crate) const MAX_CIPHERTEXT_HEX_CHARS: usize = 524_288;
+pub(crate) const MAX_CIPHERTEXT_HEX_CHARS: usize = 40 * 1024 * 1024 + 1024;
+// Version-2 NEAR envelopes contain a 32-byte ephemeral key, 24-byte
+// nonce and 16-byte authentication tag before any plaintext content.
 const MIN_CIPHERTEXT_HEX_CHARS: usize = 144;
 
 #[derive(Clone, PartialEq, Eq, Serialize)]
@@ -116,6 +118,10 @@ pub(crate) struct EncryptedMessage {
 
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct RelayChatRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_request_id: Option<String>,
+    pub provider_id: String,
+    pub inference_encryption: &'static str,
     pub model_id: String,
     pub encryption_version: u16,
     pub e2ee_protocol: String,
@@ -138,6 +144,13 @@ pub(crate) struct RelayChatRequest {
     pub response_format: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking_mode: Option<axiom_inference::ThinkingMode>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_e2ee_context: Option<serde_json::Value>,
+    pub attestation_generation: u64,
+    pub verified_key_fingerprint: String,
+    pub verified_keyset_digest: Option<String>,
 }
 
 impl RelayChatRequest {
@@ -158,8 +171,44 @@ impl RelayChatRequest {
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
+pub(crate) struct ProviderKeyLease {
+    pub model_id: String,
+    pub model: String,
+    pub base_url: String,
+    pub provider: String,
+    pub attestation_protocol: String,
+    pub encryption_version: u16,
+    pub e2ee_protocol: String,
+    pub model_public_key: String,
+    pub verified: bool,
+    pub attestation_generation: u64,
+    pub model_key_fingerprint: String,
+    #[serde(default)]
+    pub keyset_digest: Option<String>,
+    #[serde(default)]
+    pub response_signing_address: Option<String>,
+    #[serde(default)]
+    pub response_signing_key_fingerprint: Option<String>,
+    pub hard_expires_at_unix_seconds: u64,
+}
+
+#[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub(crate) struct NearCompletionProof {
+    pub provider: String,
+    pub protocol: String,
+    pub chat_id: String,
+    pub model: String,
+    pub request_hash: String,
+    pub response_hash: String,
+    pub response_body_base64: String,
+    pub signed_text: String,
+    pub signature: String,
+    pub signing_address: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
 #[allow(clippy::struct_field_names)]
 pub(crate) struct RelayUsage {
     #[serde(default)]
@@ -173,7 +222,6 @@ pub(crate) struct RelayUsage {
 }
 
 #[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct RelayCompletion {
     pub id: String,
     #[serde(default)]
@@ -189,6 +237,8 @@ pub(crate) struct RelayCompletion {
     pub finish_reason: String,
     #[serde(default)]
     pub usage: RelayUsage,
+    #[serde(default)]
+    pub proof: Option<serde_json::Value>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -213,14 +263,12 @@ pub(crate) struct EncryptedToolCallDelta {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct CreatedPayload {
     pub run_id: String,
     pub inference_encryption: String,
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct DeltaPayload {
     pub run_id: String,
     #[serde(default)]
@@ -232,25 +280,32 @@ pub(crate) struct DeltaPayload {
     #[serde(default)]
     pub encrypted_tool_calls: Vec<EncryptedToolCallDelta>,
     pub sequence: u64,
+    #[serde(default)]
+    pub response_id: Option<String>,
+    #[serde(default)]
+    pub content_field: Option<String>,
+    #[serde(default)]
+    pub reasoning_field: Option<String>,
+    #[serde(default)]
+    pub refusal_field: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct CompletedPayload {
     pub run_id: String,
     #[serde(default)]
     pub usage: RelayUsage,
     pub finish_reason: String,
+    #[serde(default)]
+    pub proof: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct RunPayload {
     pub run_id: String,
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct CancelledPayload {
     pub run_id: String,
     #[serde(default)]
@@ -258,10 +313,43 @@ pub(crate) struct CancelledPayload {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct FailedPayload {
     pub run_id: String,
-    pub error: String,
+    // Preserve wire validation but never reflect untrusted remote error text.
+    #[serde(rename = "error")]
+    pub _error: String,
     #[serde(default)]
     pub code: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn relay_response_metadata_is_additive_but_encrypted_tool_calls_stay_exact() {
+        let completion: RelayCompletion = serde_json::from_value(serde_json::json!({
+            "id": "response-1",
+            "encrypted_content": "a".repeat(144),
+            "finish_reason": "stop",
+            "usage": {
+                "prompt_tokens": 4,
+                "future_cached_tokens": 2
+            },
+            "future_provider_metadata": {"revision": 2}
+        }))
+        .unwrap();
+        assert_eq!(completion.usage.prompt_tokens, Some(4));
+
+        let strict_tool_call = serde_json::from_value::<EncryptedToolCall>(serde_json::json!({
+            "id": "call-1",
+            "type": "function",
+            "function": {
+                "encrypted_name": "a".repeat(144),
+                "encrypted_arguments": "b".repeat(144)
+            },
+            "future_execution_semantics": true
+        }));
+        assert!(strict_tool_call.is_err());
+    }
 }

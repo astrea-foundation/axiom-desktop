@@ -7,13 +7,20 @@
 use std::{collections::BTreeMap, fmt};
 
 use serde::{Deserialize, Serialize};
+mod accounting;
+mod attachments;
+pub use accounting::{InvocationPurpose, InvocationState, RequestUsage, UsageCompleteness};
+pub use attachments::{
+    FILE_MIME_TYPES, FileContent, ImageContent, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS,
+    MAX_FILE_BYTES, MAX_IMAGE_BYTES, PromptAttachment, user_message, validate_prompt,
+    validate_stored_prompt,
+};
 
-pub const MAX_MESSAGES: usize = 101;
 pub const MAX_TOOLS: usize = 128;
 pub const MAX_TOOL_CALLS: usize = 128;
 pub const MAX_TOOL_CALL_ID_CHARS: usize = 256;
 pub const MAX_FUNCTION_NAME_CHARS: usize = 64;
-pub const MAX_MESSAGE_TEXT_BYTES: usize = 262_000;
+pub const MAX_MESSAGE_TEXT_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_TOOL_DESCRIPTION_BYTES: usize = 16_384;
 pub const MAX_TOOL_PARAMETERS_BYTES: usize = 131_072;
 pub const MAX_TOOL_ARGUMENTS_BYTES: usize = 262_000;
@@ -33,6 +40,10 @@ pub struct ChatMessage {
     pub role: ChatRole,
     #[serde(default)]
     pub content: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<ImageContent>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<FileContent>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -51,6 +62,8 @@ impl ChatMessage {
         Self {
             role,
             content: content.into(),
+            images: Vec::new(),
+            files: Vec::new(),
             reasoning_content: None,
             name: None,
             refusal: None,
@@ -149,14 +162,25 @@ pub enum ResponseFormat {
     },
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThinkingMode {
+    #[default]
+    ProviderDefault,
+    Enabled,
+    Disabled,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct InferenceRequest {
     pub model: String,
+    pub request_id: Option<String>,
     pub messages: Vec<ChatMessage>,
     pub tools: Vec<ToolDefinition>,
     pub tool_choice: ToolChoice,
     pub parallel_tool_calls: Option<bool>,
     pub reasoning_effort: ReasoningEffort,
+    pub thinking_mode: ThinkingMode,
     pub max_output_tokens: Option<u32>,
     pub sampling: SamplingParameters,
     pub response_format: ResponseFormat,
@@ -172,11 +196,13 @@ impl InferenceRequest {
     ) -> Self {
         Self {
             model: model.into(),
+            request_id: None,
             messages,
             tools,
             tool_choice: ToolChoice::Auto,
             parallel_tool_calls: None,
             reasoning_effort: ReasoningEffort::Medium,
+            thinking_mode: ThinkingMode::ProviderDefault,
             max_output_tokens: None,
             sampling: SamplingParameters::default(),
             response_format: ResponseFormat::Text,
@@ -191,13 +217,38 @@ impl InferenceRequest {
         {
             return Err(ValidationError::invalid("model"));
         }
-        if self.messages.is_empty() || self.messages.len() > MAX_MESSAGES {
+        if self.messages.is_empty() {
             return Err(ValidationError::count("messages"));
         }
         if self.tools.len() > MAX_TOOLS {
             return Err(ValidationError::count("tools"));
         }
         for message in &self.messages {
+            if !message.files.is_empty()
+                && (message.role != ChatRole::User
+                    || message.files.len() + message.images.len() > MAX_ATTACHMENTS)
+            {
+                return Err(ValidationError::invalid("message.files"));
+            }
+            let mut attachment_bytes = message.content.len();
+            for file in &message.files {
+                file.validate()?;
+                attachment_bytes = attachment_bytes.saturating_add(file.data.len());
+            }
+            for image in &message.images {
+                attachment_bytes = attachment_bytes.saturating_add(image.data.len());
+            }
+            if attachment_bytes > MAX_ATTACHMENT_BYTES {
+                return Err(ValidationError::invalid("message.attachments"));
+            }
+            if !message.images.is_empty()
+                && (message.role != ChatRole::User || message.images.len() > MAX_ATTACHMENTS)
+            {
+                return Err(ValidationError::invalid("message.images"));
+            }
+            for image in &message.images {
+                image.validate()?;
+            }
             validate_bytes("message.content", &message.content, MAX_MESSAGE_TEXT_BYTES)?;
             validate_optional_bytes(
                 "message.reasoning_content",
@@ -243,13 +294,19 @@ impl InferenceRequest {
         if self.max_output_tokens == Some(0) {
             return Err(ValidationError::invalid("max_output_tokens"));
         }
-        for (field, value) in [
-            ("temperature", self.sampling.temperature),
-            ("top_p", self.sampling.top_p),
-        ] {
-            if value.is_some_and(|number| !number.is_finite()) {
-                return Err(ValidationError::invalid(field));
-            }
+        if self
+            .sampling
+            .temperature
+            .is_some_and(|number| !number.is_finite() || !(0.0..=2.0).contains(&number))
+        {
+            return Err(ValidationError::invalid("temperature"));
+        }
+        if self
+            .sampling
+            .top_p
+            .is_some_and(|number| !number.is_finite() || !(0.0..=1.0).contains(&number))
+        {
+            return Err(ValidationError::invalid("top_p"));
         }
         Ok(())
     }
@@ -368,7 +425,7 @@ fn validate_call_id(value: &str) -> Result<(), ValidationError> {
     }
 }
 
-fn validate_tool_calls(calls: &[ToolCall]) -> Result<(), ValidationError> {
+pub fn validate_tool_calls(calls: &[ToolCall]) -> Result<(), ValidationError> {
     if calls.len() > MAX_TOOL_CALLS {
         return Err(ValidationError::count("tool_calls"));
     }
@@ -502,11 +559,19 @@ fn merge_stable(
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProviderEvent {
+    Accounting(Box<RequestUsage>),
     SecurityState(ProviderSecurityState),
+    /// The exact response associated with this provider call passed its
+    /// terminal cryptographic verification. Secure adapters emit this only
+    /// after the verified stream has returned successfully; preflight
+    /// attestation alone must never produce it.
+    ResponseVerified,
     Status {
         connected: bool,
         detail: String,
     },
+    /// Incremental display material, provisional until terminal verification.
+    /// A delta alone does not establish successful completion or a verified receipt.
     TextDelta(String),
     ReasoningDelta(String),
     RefusalDelta(String),
@@ -523,6 +588,8 @@ pub enum ProviderSecurityState {
     Unverified,
     Verifying,
     Verified,
+    Degraded,
+    Outdated,
     Failed,
     UnattestedDevelopment,
 }
@@ -530,6 +597,7 @@ pub enum ProviderSecurityState {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct AssistantTurn {
     pub text: String,
+    pub reasoning: Option<String>,
     pub tool_calls: Vec<ToolCall>,
 }
 
@@ -543,6 +611,10 @@ pub struct InferenceResponse {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "Provider capabilities are independent catalog flags, not mutually exclusive states"
+)]
 pub struct ModelInfo {
     pub id: String,
     #[serde(default)]
@@ -567,14 +639,45 @@ pub struct ModelInfo {
     pub context_window_tokens: u32,
     #[serde(default)]
     pub max_output_tokens: u32,
+    /// Exact display price in micro-USD per one million uncached input tokens.
+    #[serde(default)]
+    pub input_price_microusd_per_million_tokens: Option<u64>,
+    /// Exact display price in micro-USD per one million output tokens.
+    #[serde(default)]
+    pub output_price_microusd_per_million_tokens: Option<u64>,
     #[serde(default)]
     pub supported_reasoning_efforts: Vec<ReasoningEffort>,
+    #[serde(default)]
+    pub supported_thinking_modes: Vec<ThinkingMode>,
+    #[serde(default)]
+    pub reasoning_replay: bool,
     #[serde(default)]
     pub supports_tools: bool,
     #[serde(default)]
     pub supports_parallel_tools: bool,
     #[serde(default)]
     pub supports_streaming: bool,
+    #[serde(default)]
+    pub supports_images: bool,
+    #[serde(default)]
+    pub file_mime_types: Vec<String>,
+    #[serde(default)]
+    pub reasoning_parameters: std::collections::BTreeMap<String, serde_json::Value>,
+    #[serde(default)]
+    pub thinking_parameters: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+pub const AUTO_COMPACT_CONTEXT_PERCENT: u32 = 85;
+
+impl ModelInfo {
+    /// Token occupancy at which conversation context should be compacted.
+    /// The provider's live full context window is the source of truth.
+    #[must_use]
+    pub fn auto_compact_threshold_tokens(&self) -> u32 {
+        self.context_window_tokens
+            .saturating_mul(AUTO_COMPACT_CONTEXT_PERCENT)
+            / 100
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -634,6 +737,15 @@ mod tests {
     }
 
     #[test]
+    fn requests_still_require_at_least_one_message() {
+        let request = InferenceRequest::streaming("cherry", Vec::new(), Vec::new());
+
+        let error = request.validate().unwrap_err();
+        assert_eq!(error.kind, ValidationErrorKind::Count);
+        assert_eq!(error.field, "messages");
+    }
+
+    #[test]
     fn model_catalog_defaults_do_not_imply_capabilities() {
         let model: ModelInfo = serde_json::from_str(r#"{"id":"cherry"}"#).unwrap();
 
@@ -641,6 +753,18 @@ mod tests {
         assert!(!model.supports_tools);
         assert!(!model.supports_streaming);
         assert!(model.supported_reasoning_efforts.is_empty());
+        assert_eq!(model.auto_compact_threshold_tokens(), 0);
+    }
+
+    #[test]
+    fn auto_compaction_uses_eighty_five_percent_of_live_context() {
+        let model = ModelInfo {
+            id: "cherry".into(),
+            context_window_tokens: 1_048_576,
+            ..ModelInfo::default()
+        };
+
+        assert_eq!(model.auto_compact_threshold_tokens(), 891_289);
     }
 
     #[test]
@@ -659,6 +783,31 @@ mod tests {
         let error = request.validate().unwrap_err();
         assert_eq!(error.kind, ValidationErrorKind::Size);
         assert!(!error.to_string().contains(secret));
+    }
+
+    #[test]
+    fn sampling_metadata_is_finite_and_bounded() {
+        let base = InferenceRequest::streaming(
+            "cherry",
+            vec![ChatMessage::text(ChatRole::User, "hello")],
+            Vec::new(),
+        );
+        for temperature in [-0.01, 2.01, f64::INFINITY, f64::NAN] {
+            let mut request = base.clone();
+            request.sampling.temperature = Some(temperature);
+            assert_eq!(request.validate().unwrap_err().field, "temperature");
+        }
+        for top_p in [-0.01, 1.01, f64::INFINITY, f64::NAN] {
+            let mut request = base.clone();
+            request.sampling.top_p = Some(top_p);
+            assert_eq!(request.validate().unwrap_err().field, "top_p");
+        }
+        for (temperature, top_p) in [(0.0, 0.0), (1.0, 0.9), (2.0, 1.0)] {
+            let mut request = base.clone();
+            request.sampling.temperature = Some(temperature);
+            request.sampling.top_p = Some(top_p);
+            request.validate().expect("bounded numeric sampling");
+        }
     }
 
     #[test]

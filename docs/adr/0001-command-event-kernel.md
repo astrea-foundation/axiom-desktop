@@ -1,5 +1,9 @@
 # ADR 0001: Shared command/event kernel
 
+> The shared runtime decision remains accepted. The early event-persistence
+> description below predates materialized SQLite storage; see
+> [ADR 0005](0005-storage-and-recovery.md) and [versioning](../versioning.md).
+
 Status: accepted for the early implementation
 
 ## Decision

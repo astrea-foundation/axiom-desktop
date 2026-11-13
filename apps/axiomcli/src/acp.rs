@@ -1,31 +1,115 @@
 use std::{
-    collections::{BTreeMap, HashMap},
-    path::PathBuf,
+    collections::{BTreeMap, HashMap, HashSet},
+    ops::{Deref, DerefMut},
+    path::{Path, PathBuf},
     str::FromStr as _,
     sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
+        Arc, Mutex as StdMutex,
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use agent_client_protocol::schema::{ProtocolVersion, v1 as protocol};
-use agent_client_protocol::{Agent, Client, ConnectionTo, Responder, Stdio};
+use agent_client_protocol::{Agent, ByteStreams, Client, ConnectionTo, Responder};
 use async_trait::async_trait;
-use tokio::sync::{Mutex, mpsc};
+use axiom_acp_extension as extension;
+use axiom_acp_extension::{
+    AccountState as ExtensionAccountState, AccountStatus as ExtensionAccountStatus, ActivityEvent,
+    BillingStatusRequest, BillingStatusResponse, CollectionStateResponse, CompactRequest,
+    CompactResponse, CompactionPhase, DeleteConfirmRequest, DeleteConfirmResponse,
+    DeletePreviewRequest, DeletePreviewResponse, DesktopBootstrapRequest, DesktopBootstrapResponse,
+    EventNotification, ExtensionCapabilities, ExtensionError, ExtensionErrorCode, FeatureVersions,
+    GetThreadTimelineRequest, GetThreadTimelineResponse, ListModelsRequest, ListModelsResponse,
+    ListThreadsRequest, ListThreadsResponse, LogoutRequest, ModelInfo, NativeLoginCancelRequest,
+    NativeLoginCompleteRequest, NativeLoginStartRequest, NativeLoginStartResponse,
+    NativeLoginState, ProfilePreferencesResponse, SecurityEvidence as ExtensionSecurityEvidence,
+    SecurityState as ExtensionSecurityState, SecurityStatus as ExtensionSecurityStatus,
+    VerifySecurityRequest, VerifySecurityResponse,
+};
+use tokio::sync::{Mutex, Notify, mpsc};
+use tokio_util::compat::{TokioAsyncReadCompatExt as _, TokioAsyncWriteCompatExt as _};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    agent::{APP_EVENT_QUEUE_CAPACITY, QuestionHandler, TurnRunner},
+    agent::{
+        APP_EVENT_QUEUE_CAPACITY, QuestionHandler, SecurityVerification, TurnRunner,
+        reconcile_model_settings, reconcile_new_session_settings,
+    },
     app::{
         AppCommand, AppEvent, Origin, PermissionProfile, QuestionRequest, Runtime, SessionId,
         TurnId,
     },
-    auth::{AuthManager, ValidationStatus},
+    auth::{AuthManager, LoginMethod, ValidationStatus, VersionedValidationStatus},
+    billing::BillingClient,
     config::Config,
+    paths::FrontendKind,
     policy::{ApprovalChoice, ApprovalHandler, ApprovalRequest, ApprovalResponse},
     session::{SessionStore, model_for_resume, permission_for_resume, thinking_for_resume},
     slash::{self, SlashCommand},
+    tool_display::{ToolDisplayPhase, describe_tool},
 };
+
+/// Complete an expected request failure through its JSON-RPC responder instead
+/// of returning it from the handler and terminating the ACP connection task.
+/// The only errors allowed to escape a request handler are transport failures
+/// produced while sending responses, notifications, or spawned work.
+macro_rules! respond_or_return {
+    ($responder:ident, $result:expr) => {
+        match $result {
+            Ok(value) => value,
+            Err(error) => return $responder.respond_with_error(error),
+        }
+    };
+}
+
+mod account;
+mod catalog;
+mod collections;
+mod prompts;
+mod security;
+mod server;
+mod sessions;
+mod settings;
+mod threads;
+
+use server::ServerContext;
+pub use server::serve_stdio;
+
+#[derive(Default)]
+struct PersistenceFailpoint {
+    scope: StdMutex<Option<String>>,
+}
+
+impl PersistenceFailpoint {
+    fn from_environment() -> Self {
+        let enabled = cfg!(debug_assertions)
+            && std::env::var("AXIOMCLI_TEST_RUNNER").is_ok()
+            && std::env::var("AXIOMCLI_TEST_FAIL_PERSISTENCE")
+                .ok()
+                .is_some_and(|value| !value.trim().is_empty());
+        Self {
+            scope: StdMutex::new(enabled.then(|| {
+                std::env::var("AXIOMCLI_TEST_FAIL_PERSISTENCE")
+                    .expect("checked test persistence failpoint")
+            })),
+        }
+    }
+
+    fn check(&self, scope: &str) -> crate::Result<()> {
+        let mut configured = self
+            .scope
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if configured.as_deref() == Some(scope) {
+            configured.take();
+            return Err(crate::AxiomError::Storage(format!(
+                "injected {scope} persistence failure"
+            )));
+        }
+        Ok(())
+    }
+}
 
 fn send_available_commands(
     connection: &ConnectionTo<Client>,
@@ -33,11 +117,21 @@ fn send_available_commands(
 ) -> agent_client_protocol::Result<()> {
     let commands = slash::COMMANDS
         .iter()
+        .filter(|spec| !matches!(spec.name, "theme" | "web" | "usage"))
         .map(|spec| {
             let command = protocol::AvailableCommand::new(spec.name, spec.description);
             if matches!(
                 spec.name,
-                "help" | "model" | "resume" | "delete" | "login" | "logout" | "account"
+                "help"
+                    | "permissions"
+                    | "model"
+                    | "resume"
+                    | "delete"
+                    | "login"
+                    | "logout"
+                    | "account"
+                    | "security"
+                    | "refresh"
             ) {
                 command
             } else {
@@ -56,6 +150,7 @@ fn send_available_commands(
 }
 
 const MODEL_CONFIG_ID: &str = "model";
+const THINKING_CONFIG_ID: &str = "thinking";
 
 fn model_config_option(current: &str, models: &[String]) -> protocol::SessionConfigOption {
     let mut values = models.to_vec();
@@ -77,6 +172,101 @@ fn model_config_option(current: &str, models: &[String]) -> protocol::SessionCon
     .category(protocol::SessionConfigOptionCategory::Model)
 }
 
+fn thinking_config_option_for(
+    current: crate::app::ThinkingLevel,
+    levels: &[crate::app::ThinkingLevel],
+) -> protocol::SessionConfigOption {
+    protocol::SessionConfigOption::select(
+        THINKING_CONFIG_ID,
+        "Thinking",
+        current.to_string(),
+        levels
+            .iter()
+            .map(|level| {
+                protocol::SessionConfigSelectOption::new(
+                    level.to_string(),
+                    match level {
+                        crate::app::ThinkingLevel::ProviderDefault => "Provider default".to_owned(),
+                        crate::app::ThinkingLevel::Enabled => "On".to_owned(),
+                        crate::app::ThinkingLevel::Disabled => "Off".to_owned(),
+                        _ => level.to_string(),
+                    },
+                )
+            })
+            .collect::<Vec<_>>(),
+    )
+    .description("Reasoning effort used for subsequent AxiomCLI requests")
+}
+
+fn thinking_config_option(current: crate::app::ThinkingLevel) -> protocol::SessionConfigOption {
+    // This event carries a value, not a new catalog. Do not invent supported
+    // alternatives; full config snapshots carry the actual advertised list.
+    thinking_config_option_for(current, &[current])
+}
+
+fn supported_thinking_levels(model: &axiom_inference::ModelInfo) -> Vec<crate::app::ThinkingLevel> {
+    crate::agent::supported_thinking_levels(model)
+}
+
+fn permission_modes(
+    profile: PermissionProfile,
+    frontend: FrontendKind,
+) -> protocol::SessionModeState {
+    let profiles: &[PermissionProfile] = if frontend == FrontendKind::DesktopChat {
+        &[
+            PermissionProfile::Web,
+            PermissionProfile::Confirm,
+            PermissionProfile::FullAccess,
+        ]
+    } else {
+        &PermissionProfile::ALL
+    };
+    protocol::SessionModeState::new(
+        profile.to_string(),
+        profiles
+            .iter()
+            .copied()
+            .map(|permission| {
+                protocol::SessionMode::new(permission.to_string(), permission.label())
+                    .description(permission.description())
+            })
+            .collect(),
+    )
+}
+
+fn session_config_options(
+    model: &str,
+    models: &[String],
+    thinking: crate::app::ThinkingLevel,
+    supported_thinking: Option<&[crate::app::ThinkingLevel]>,
+) -> Vec<protocol::SessionConfigOption> {
+    let mut options = vec![model_config_option(model, models)];
+    match supported_thinking {
+        Some([]) => {}
+        Some(levels) => options.push(thinking_config_option_for(thinking, levels)),
+        None if thinking != crate::app::ThinkingLevel::ProviderDefault => {
+            options.push(thinking_config_option(thinking));
+        }
+        None => {}
+    }
+    options
+}
+
+fn tool_kind(name: &str) -> protocol::ToolKind {
+    match name {
+        "read_file" | "list_files" | "glob_files" | "inspect_metadata" | "inspect_git"
+        | "select_context" | "view_session_diff" => protocol::ToolKind::Read,
+        "apply_patch" | "replace_text" | "plan_create" | "plan_revise" => protocol::ToolKind::Edit,
+        "search_text" | "web_search" | "fetch_url" => protocol::ToolKind::Search,
+        "run_command" | "run_shell" | "start_background" | "background_wait"
+        | "background_list" | "background_status" | "stop_background" => {
+            protocol::ToolKind::Execute
+        }
+        "update_progress" | "plan_propose" | "ask_user_questions" => protocol::ToolKind::Think,
+        _ => protocol::ToolKind::Other,
+    }
+}
+
 fn send_model_config_update(
     connection: &ConnectionTo<Client>,
     session_id: &protocol::SessionId,
@@ -91,13 +281,664 @@ fn send_model_config_update(
     ))
 }
 
+fn send_config_update(
+    connection: &ConnectionTo<Client>,
+    session_id: &protocol::SessionId,
+    model: &str,
+    models: &[String],
+    thinking: crate::app::ThinkingLevel,
+) -> agent_client_protocol::Result<()> {
+    connection.send_notification(protocol::SessionNotification::new(
+        session_id.clone(),
+        protocol::SessionUpdate::ConfigOptionUpdate(protocol::ConfigOptionUpdate::new(
+            session_config_options(model, models, thinking, None),
+        )),
+    ))
+}
+
 fn slash_help_text() -> String {
     let lines = slash::COMMANDS
         .iter()
+        .filter(|spec| !matches!(spec.name, "theme" | "web" | "usage"))
         .map(|spec| format!("{} — {}", spec.usage, spec.description))
         .collect::<Vec<_>>()
         .join("\n");
     format!("AxiomCLI commands:\n{lines}\nCommands run locally and are not model prompts.")
+}
+
+fn security_summary(verification: &SecurityVerification) -> String {
+    verification.evidence.as_ref().map_or_else(
+        || {
+            format!(
+                "Security state: {:?}. No attestation evidence is available for this transport.",
+                verification.status
+            )
+        },
+        |evidence| {
+            let workload_hash = evidence
+                .provider_claims
+                .iter()
+                .find(|claim| claim.name == "workload_manifest_sha256")
+                .map_or("unavailable", |claim| claim.value.as_str());
+            format!(
+                "Security state: {:?}\nProvider: {}\nModel: {}\nAttestation: {}\nEncryption: {} v{}\nWorkload manifest SHA-256: {}",
+                verification.status,
+                evidence.provider_id,
+                evidence.model_id,
+                evidence.attestation_protocol,
+                evidence.e2ee_protocol,
+                evidence.e2ee_encryption_version,
+                workload_hash,
+            )
+        },
+    )
+}
+
+fn now_unix_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+fn extension_meta(capabilities: ExtensionCapabilities) -> protocol::Meta {
+    let mut meta = protocol::Meta::new();
+    meta.insert(
+        extension::META_KEY.into(),
+        serde_json::to_value(capabilities).expect("extension capabilities serialize"),
+    );
+    meta
+}
+
+fn prompt_metadata(
+    meta: Option<&protocol::Meta>,
+) -> crate::Result<Option<extension::PromptMetadata>> {
+    meta.and_then(|meta| meta.get(extension::META_KEY))
+        .map(|value| {
+            let metadata = serde_json::from_value::<extension::PromptMetadata>(value.clone())
+                .map_err(|_| crate::AxiomError::Protocol("invalid Axiom prompt metadata".into()))?;
+            if metadata.client_item_id.is_empty()
+                || metadata.client_item_id.len() > extension::MAX_IDENTIFIER_BYTES
+            {
+                return Err(crate::AxiomError::Protocol(
+                    "invalid Axiom client item ID".into(),
+                ));
+            }
+            Ok(metadata)
+        })
+        .transpose()
+}
+
+fn prompt_web_enabled(
+    frontend: FrontendKind,
+    metadata: Option<&extension::PromptMetadata>,
+) -> bool {
+    frontend != FrontendKind::DesktopChat || metadata.is_some_and(|metadata| metadata.web_enabled)
+}
+
+fn delivery_meta(
+    revision: Option<&crate::session::ThreadRevision>,
+    timeline_item_id: Option<String>,
+    client_item_id: Option<String>,
+) -> Option<protocol::Meta> {
+    revision.map(|revision| {
+        let mut meta = protocol::Meta::new();
+        meta.insert(
+            extension::META_KEY.into(),
+            serde_json::to_value(extension::DeliveryMetadata {
+                thread_revision: revision.revision,
+                last_timeline_sequence: revision.last_timeline_sequence,
+                last_message_at: revision.last_message_at.clone(),
+                last_user_message_at: revision.last_user_message_at.clone(),
+                timeline_item_id,
+                client_item_id,
+            })
+            .expect("delivery metadata serializes"),
+        );
+        meta
+    })
+}
+
+fn send_session_update(
+    connection: &ConnectionTo<Client>,
+    session_id: &protocol::SessionId,
+    update: protocol::SessionUpdate,
+    revision: Option<&crate::session::ThreadRevision>,
+    timeline_item_id: Option<String>,
+    client_item_id: Option<String>,
+) -> agent_client_protocol::Result<()> {
+    connection.send_notification(
+        protocol::SessionNotification::new(session_id.clone(), update).meta(delivery_meta(
+            revision,
+            timeline_item_id,
+            client_item_id,
+        )),
+    )
+}
+
+fn negotiated_extension_features(meta: Option<&protocol::Meta>) -> Option<FeatureVersions> {
+    meta.and_then(|meta| meta.get(extension::META_KEY))
+        .and_then(|value| serde_json::from_value::<ExtensionCapabilities>(value.clone()).ok())
+        .filter(ExtensionCapabilities::is_compatible)
+        .map(|capabilities| capabilities.features)
+}
+
+fn extension_security_state(state: crate::app::SecurityStatus) -> ExtensionSecurityState {
+    match state {
+        crate::app::SecurityStatus::Unverified => ExtensionSecurityState::Unverified,
+        crate::app::SecurityStatus::Verifying => ExtensionSecurityState::Verifying,
+        crate::app::SecurityStatus::UnattestedDevelopment => {
+            ExtensionSecurityState::UnattestedDevelopment
+        }
+        crate::app::SecurityStatus::Verified => ExtensionSecurityState::Verified,
+        crate::app::SecurityStatus::Degraded => ExtensionSecurityState::Degraded,
+        crate::app::SecurityStatus::Outdated => ExtensionSecurityState::Outdated,
+        crate::app::SecurityStatus::Failed => ExtensionSecurityState::Failed,
+    }
+}
+
+fn extension_security_status(state: crate::app::SecurityStatus) -> ExtensionSecurityStatus {
+    ExtensionSecurityStatus {
+        state: extension_security_state(state),
+        detail: None,
+    }
+}
+
+fn extension_security_evidence(
+    status: crate::app::SecurityStatus,
+    evidence: axiom_secure_client::SecurityEvidence,
+) -> crate::Result<ExtensionSecurityEvidence> {
+    // Tinfoil authenticates its router directly and has no relay lease generation.
+    // Keep the generation requirement for protocols whose relay leases use it.
+    let direct_tinfoil = evidence.provider_id == "tinfoil"
+        && evidence.attestation_protocol == "tinfoil-snp-sigstore-v1"
+        && evidence.e2ee_protocol == "tinfoil-ehbp-v1";
+    let attestation_generation = evidence.attestation_generation;
+    if attestation_generation == Some(0) || (attestation_generation.is_none() && !direct_tinfoil) {
+        return Err(crate::AxiomError::Protocol(
+            "verified provider evidence is missing its attestation generation".into(),
+        ));
+    }
+    let hard_expires_at_unix_seconds = evidence
+        .hard_expires_at_unix_seconds
+        .filter(|expiry| *expiry > 0)
+        .ok_or_else(|| {
+            crate::AxiomError::Protocol(
+                "verified provider evidence is missing its hard expiry".into(),
+            )
+        })?;
+    Ok(ExtensionSecurityEvidence {
+        status: extension_security_status(status),
+        provider_id: evidence.provider_id,
+        model_id: evidence.model_id,
+        attestation_protocol: evidence.attestation_protocol,
+        e2ee_protocol: evidence.e2ee_protocol,
+        e2ee_encryption_version: evidence.e2ee_encryption_version,
+        trust_policy_version: evidence.trust_policy_version,
+        verified_at_unix_seconds: evidence.verified_at_unix_seconds,
+        attestation_generation,
+        hard_expires_at_unix_seconds,
+        model_key_fingerprint: evidence.model_key_fingerprint,
+        tls_spki_fingerprint: evidence.tls_spki_fingerprint,
+        checks: evidence
+            .checks
+            .into_iter()
+            .take(extension::MAX_EVIDENCE_CLAIMS)
+            .map(|check| extension::EvidenceCheck {
+                name: bounded_extension_text(check.label, 512),
+                passed: check.passed,
+                detail: bounded_extension_text(check.status, extension::MAX_EVIDENCE_VALUE_BYTES),
+            })
+            .collect(),
+        provider_claims: evidence
+            .provider_claims
+            .into_iter()
+            .take(extension::MAX_EVIDENCE_CLAIMS)
+            .map(|claim| extension::EvidenceClaim {
+                name: bounded_extension_text(claim.name, 512),
+                value: bounded_extension_text(claim.value, extension::MAX_EVIDENCE_VALUE_BYTES),
+            })
+            .collect(),
+        workload_manifest: evidence.workload_manifest.map(|manifest| {
+            bounded_extension_text(manifest, extension::MAX_WORKLOAD_MANIFEST_BYTES)
+        }),
+    })
+}
+
+fn strict_extension_security_verification(
+    verification: SecurityVerification,
+) -> crate::Result<(
+    crate::app::SecurityStatus,
+    Option<ExtensionSecurityEvidence>,
+)> {
+    let status = verification.status;
+    let evidence = verification
+        .evidence
+        .map(|evidence| extension_security_evidence(status, evidence))
+        .transpose()?;
+    if matches!(
+        status,
+        crate::app::SecurityStatus::Verified | crate::app::SecurityStatus::Degraded
+    ) && evidence.is_none()
+    {
+        return Err(crate::AxiomError::Protocol(
+            "verified provider returned no attestation evidence".into(),
+        ));
+    }
+    Ok((status, evidence))
+}
+
+fn bounded_extension_text(mut value: String, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
+        return value;
+    }
+    let boundary = value
+        .char_indices()
+        .map(|(index, _)| index)
+        .take_while(|index| *index <= max_bytes.saturating_sub(3))
+        .last()
+        .unwrap_or(0);
+    value.truncate(boundary);
+    value.push('…');
+    value
+}
+
+fn extension_thread_lifecycle(
+    value: crate::session::ThreadLifecycle,
+) -> extension::ThreadLifecycle {
+    match value {
+        crate::session::ThreadLifecycle::Ready => extension::ThreadLifecycle::Ready,
+        crate::session::ThreadLifecycle::Running => extension::ThreadLifecycle::Running,
+        crate::session::ThreadLifecycle::WaitingForApproval => {
+            extension::ThreadLifecycle::WaitingForApproval
+        }
+        crate::session::ThreadLifecycle::WaitingForAnswer => {
+            extension::ThreadLifecycle::WaitingForAnswer
+        }
+        crate::session::ThreadLifecycle::Compacting => extension::ThreadLifecycle::Compacting,
+        crate::session::ThreadLifecycle::Closed => extension::ThreadLifecycle::Closed,
+    }
+}
+
+fn extension_thread_summary(summary: crate::session::ThreadSummary) -> extension::ThreadSummary {
+    extension::ThreadSummary {
+        thread_id: summary.id,
+        title: summary.title,
+        cwd: summary.cwd.display().to_string(),
+        origin: summary.origin,
+        profile: summary.profile,
+        selected_model: summary.selected_model,
+        thinking_level: summary.thinking_level.to_string(),
+        lifecycle: extension_thread_lifecycle(summary.lifecycle),
+        archived: summary.archived,
+        revision: summary.revision,
+        last_timeline_sequence: summary.last_timeline_sequence,
+        created_at: summary.created_at,
+        updated_at: summary.updated_at,
+        last_message_at: summary.last_message_at,
+        last_user_message_at: summary.last_user_message_at,
+    }
+}
+
+fn extension_timeline_kind(value: crate::session::TimelineItemKind) -> extension::TimelineItemKind {
+    match value {
+        crate::session::TimelineItemKind::UserMessage => extension::TimelineItemKind::UserMessage,
+        crate::session::TimelineItemKind::AssistantMessage => {
+            extension::TimelineItemKind::AssistantMessage
+        }
+        crate::session::TimelineItemKind::Reasoning => extension::TimelineItemKind::Reasoning,
+        crate::session::TimelineItemKind::ToolCall => extension::TimelineItemKind::ToolCall,
+        crate::session::TimelineItemKind::Plan => extension::TimelineItemKind::Plan,
+        crate::session::TimelineItemKind::Notice => extension::TimelineItemKind::Notice,
+    }
+}
+
+fn extension_timeline_status(
+    value: crate::session::TimelineItemStatus,
+) -> extension::TimelineItemStatus {
+    match value {
+        crate::session::TimelineItemStatus::Pending => extension::TimelineItemStatus::Pending,
+        crate::session::TimelineItemStatus::InProgress => extension::TimelineItemStatus::InProgress,
+        crate::session::TimelineItemStatus::Completed => extension::TimelineItemStatus::Completed,
+        crate::session::TimelineItemStatus::Cancelled => extension::TimelineItemStatus::Cancelled,
+        crate::session::TimelineItemStatus::Failed => extension::TimelineItemStatus::Failed,
+        crate::session::TimelineItemStatus::Interrupted => {
+            extension::TimelineItemStatus::Interrupted
+        }
+    }
+}
+
+fn extension_timeline_item(mut item: crate::session::TimelineItem) -> extension::TimelineItem {
+    if item.kind == crate::session::TimelineItemKind::ToolCall {
+        let name = item
+            .metadata
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("tool");
+        let arguments = item
+            .metadata
+            .get("arguments")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        let phase = match item.status {
+            crate::session::TimelineItemStatus::Completed => ToolDisplayPhase::Completed,
+            crate::session::TimelineItemStatus::Failed
+            | crate::session::TimelineItemStatus::Cancelled
+            | crate::session::TimelineItemStatus::Interrupted => ToolDisplayPhase::Failed,
+            crate::session::TimelineItemStatus::Pending => ToolDisplayPhase::Proposed,
+            crate::session::TimelineItemStatus::InProgress => ToolDisplayPhase::Running,
+        };
+        let title = describe_tool(name, &arguments, phase, None);
+        let kind = serde_json::to_value(tool_kind(name)).unwrap_or(serde_json::Value::Null);
+        item.metadata["title"] = serde_json::Value::String(title);
+        item.metadata["kind"] = kind;
+    }
+    extension::TimelineItem {
+        id: item.id,
+        thread_id: item.thread_id,
+        turn_id: item.turn_id,
+        sequence: item.sequence,
+        kind: extension_timeline_kind(item.kind),
+        status: extension_timeline_status(item.status),
+        client_item_id: item.client_item_id,
+        external_id: item.external_id,
+        content: item.content,
+        metadata: item.metadata,
+        created_at: item.created_at,
+        updated_at: item.updated_at,
+    }
+}
+
+fn extension_preferences(
+    value: crate::session::ProfilePreferences,
+) -> extension::ProfilePreferences {
+    extension::ProfilePreferences {
+        model: value.model,
+        thinking_level: value.thinking_level.to_string(),
+        updated_at: value.updated_at,
+    }
+}
+
+fn extension_collections(value: crate::session::CollectionState) -> extension::CollectionState {
+    extension::CollectionState {
+        revision: value.revision,
+        collections: value
+            .collections
+            .into_iter()
+            .map(|collection| extension::Collection {
+                id: collection.id,
+                name: collection.name,
+                collapsed: collection.collapsed,
+                position: collection.position,
+                thread_ids: collection.thread_ids,
+                created_at: collection.created_at,
+                updated_at: collection.updated_at,
+            })
+            .collect(),
+    }
+}
+
+fn extension_account_status(status: VersionedValidationStatus) -> ExtensionAccountStatus {
+    let revision = status.revision;
+    match status.status {
+        ValidationStatus::Missing => ExtensionAccountStatus {
+            revision,
+            state: ExtensionAccountState::SignedOut,
+            account: None,
+            session: None,
+            detail: None,
+        },
+        ValidationStatus::Valid(account) => ExtensionAccountStatus {
+            revision,
+            state: ExtensionAccountState::Valid,
+            account: Some(extension::AccountProfile {
+                id: account.account.id,
+                display_name: account.account.display_name,
+                avatar_url: account.account.avatar_url,
+                verified_email: account.account.verified_email,
+                linked_methods: account
+                    .account
+                    .linked_methods
+                    .into_iter()
+                    .map(extension_login_method)
+                    .collect(),
+            }),
+            session: Some(extension::NativeSession {
+                expires_at: account.session.expires_at,
+                credential_store: account.source.label().into(),
+            }),
+            detail: None,
+        },
+        ValidationStatus::Expired => ExtensionAccountStatus {
+            revision,
+            state: ExtensionAccountState::Expired,
+            account: None,
+            session: None,
+            detail: Some("The native account session expired or was revoked".into()),
+        },
+        ValidationStatus::Unavailable(detail) => ExtensionAccountStatus {
+            revision,
+            state: ExtensionAccountState::Unavailable,
+            account: None,
+            session: None,
+            detail: Some(detail),
+        },
+    }
+}
+
+fn extension_account_switching(revision: u64) -> ExtensionAccountStatus {
+    ExtensionAccountStatus {
+        revision,
+        state: ExtensionAccountState::Unavailable,
+        account: None,
+        session: None,
+        detail: Some("Switching the local Axiom account context".into()),
+    }
+}
+
+async fn publish_account_switch_started(
+    connection: &ConnectionTo<Client>,
+    extension_state: &ExtensionState,
+    auth: &AuthManager,
+) -> agent_client_protocol::Result<()> {
+    // Delete grants are account-local capabilities. Invalidate them at the
+    // same publication boundary that tells clients the old account context is
+    // no longer usable, before the replacement store can be opened.
+    extension_state
+        .clear_pending_deletes_for_account_switch()
+        .await;
+    send_extension_activity(
+        connection,
+        extension_state,
+        None,
+        ActivityEvent::AccountChanged {
+            status: extension_account_switching(auth.reserve_account_transition_revision()),
+        },
+    )
+}
+
+fn extension_login_method(method: LoginMethod) -> extension::LoginMethod {
+    match method {
+        LoginMethod::Passkey => extension::LoginMethod::Passkey,
+        LoginMethod::Google => extension::LoginMethod::Google,
+        LoginMethod::Password => extension::LoginMethod::Password,
+        LoginMethod::EthereumWallet => extension::LoginMethod::EthereumWallet,
+    }
+}
+
+fn extension_billing_status(
+    status: crate::billing::BillingStatus,
+    revision: u64,
+) -> extension::BillingStatus {
+    extension::BillingStatus {
+        revision,
+        posted_microusd: status.posted_microusd,
+        available_microusd: status.available_microusd,
+        ledger_sequence: status.ledger_sequence,
+        trial_microusd: status.trial_microusd,
+        paid_microusd: status.paid_microusd,
+        payment_review_required: status.payment_review_required,
+        currency: status.currency,
+        payment_account: status.payment_account,
+        zec_usd_quote: status.zec_usd_quote,
+    }
+}
+
+fn auth_login_method(method: extension::LoginMethod) -> LoginMethod {
+    match method {
+        extension::LoginMethod::Passkey => LoginMethod::Passkey,
+        extension::LoginMethod::Google => LoginMethod::Google,
+        extension::LoginMethod::Password => LoginMethod::Password,
+        extension::LoginMethod::EthereumWallet => LoginMethod::EthereumWallet,
+    }
+}
+
+fn validation_status_if_current(
+    auth: &AuthManager,
+    status: VersionedValidationStatus,
+) -> VersionedValidationStatus {
+    let revision = status.revision;
+    match status.status {
+        ValidationStatus::Valid(account) if !auth.account_status_is_current(&account) => {
+            let status = if auth.has_credential() {
+                ValidationStatus::Unavailable(
+                    "Axiom authorization changed while account status was being published; refresh account status"
+                        .into(),
+                )
+            } else {
+                ValidationStatus::Missing
+            };
+            VersionedValidationStatus { status, revision }
+        }
+        account_status => VersionedValidationStatus {
+            status: account_status,
+            revision,
+        },
+    }
+}
+
+fn send_extension_activity(
+    connection: &ConnectionTo<Client>,
+    extension_state: &ExtensionState,
+    session_id: Option<&protocol::SessionId>,
+    event: ActivityEvent,
+) -> agent_client_protocol::Result<()> {
+    send_extension_activity_correlated(connection, extension_state, session_id, None, event)
+}
+
+fn send_extension_activity_correlated(
+    connection: &ConnectionTo<Client>,
+    extension_state: &ExtensionState,
+    session_id: Option<&protocol::SessionId>,
+    correlation_id: Option<String>,
+    event: ActivityEvent,
+) -> agent_client_protocol::Result<()> {
+    if !extension_state.feature_enabled(ExtensionFeature::Activity) {
+        return Ok(());
+    }
+    connection.send_notification(EventNotification {
+        runtime_instance_id: extension_state.runtime_instance_id.clone(),
+        session_id: session_id.map(|id| id.0.to_string()),
+        sequence: extension_state.next_sequence(),
+        occurred_at: chrono::Utc::now().to_rfc3339(),
+        correlation_id,
+        thread_revision: None,
+        last_timeline_sequence: None,
+        event,
+    })
+}
+
+fn extension_enabled(state: &ExtensionState, feature: ExtensionFeature) -> bool {
+    state.feature_enabled(feature)
+}
+
+fn extension_rpc_error(
+    json_rpc_code: i32,
+    code: ExtensionErrorCode,
+    message: impl Into<String>,
+    retryable: bool,
+) -> agent_client_protocol::Error {
+    let message = message.into();
+    let data = ExtensionError {
+        code,
+        message: message.clone(),
+        retryable,
+        correlation_id: None,
+    };
+    agent_client_protocol::Error::new(json_rpc_code, message)
+        .data(serde_json::to_value(data).expect("Axiom extension error must serialize"))
+}
+
+fn extension_not_negotiated() -> agent_client_protocol::Error {
+    extension_rpc_error(
+        -32601,
+        ExtensionErrorCode::UnsupportedFeature,
+        "Axiom ACP extension feature was not negotiated during initialize",
+        false,
+    )
+}
+
+fn validate_session_ids(values: &[String]) -> crate::Result<Vec<SessionId>> {
+    if values.is_empty() || values.len() > extension::MAX_SESSION_IDS {
+        return Err(crate::AxiomError::Config(format!(
+            "session selection must contain 1-{} IDs",
+            extension::MAX_SESSION_IDS
+        )));
+    }
+    let mut ids = values
+        .iter()
+        .map(|value| {
+            SessionId::from_str(value)
+                .map_err(|_| crate::AxiomError::Config("invalid session ID".into()))
+        })
+        .collect::<crate::Result<Vec<_>>>()?;
+    ids.sort_by_key(ToString::to_string);
+    ids.dedup();
+    if ids.len() != values.len() {
+        return Err(crate::AxiomError::Config(
+            "session selection contains duplicate IDs".into(),
+        ));
+    }
+    Ok(ids)
+}
+
+fn extension_activity(event: &AppEvent) -> Option<ActivityEvent> {
+    match event {
+        AppEvent::TurnStarted { turn_id } => Some(ActivityEvent::ActiveTurnChanged {
+            turn_id: Some(turn_id.to_string()),
+        }),
+        AppEvent::TurnCompleted { .. }
+        | AppEvent::TurnCancelled { .. }
+        | AppEvent::ErrorRaised {
+            turn_id: Some(_), ..
+        } => Some(ActivityEvent::ActiveTurnChanged { turn_id: None }),
+        AppEvent::RequestUsageUpdated { usage } => Some(ActivityEvent::RequestUsageChanged {
+            usage: usage.clone(),
+        }),
+        AppEvent::ContextUsageUpdated { usage } => Some(ActivityEvent::ContextUsageChanged {
+            usage: usage.clone(),
+        }),
+        AppEvent::SecurityStatusChanged { state } => Some(ActivityEvent::SecurityChanged {
+            status: extension_security_status(*state),
+        }),
+        AppEvent::BackgroundTaskChanged { task_id, state } => Some(ActivityEvent::BackgroundTask {
+            task_id: task_id.clone(),
+            state: state.clone(),
+        }),
+        AppEvent::WorkspaceChanged { paths } => Some(ActivityEvent::WorkspaceChanged {
+            paths: paths
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect(),
+        }),
+        AppEvent::ContextCompacted {
+            messages_before, ..
+        } => Some(ActivityEvent::Compaction {
+            phase: CompactionPhase::Completed,
+            detail: Some(format!("compacted {messages_before} conversation messages")),
+        }),
+        _ => None,
+    }
 }
 
 #[derive(Clone)]
@@ -108,12 +949,628 @@ struct AcpSession {
     model: String,
     thinking: crate::app::ThinkingLevel,
     models: Vec<String>,
-    active_turn: Option<TurnId>,
-    cancellation: Option<CancellationToken>,
     has_prompt: bool,
+    security: crate::app::SecurityStatus,
 }
 
-type Sessions = Arc<Mutex<HashMap<protocol::SessionId, AcpSession>>>;
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum SessionWorkKind {
+    Prompt(TurnId),
+    SlashCommand,
+    Compaction,
+    SecurityVerification,
+    Configuration,
+    PermissionMode,
+    Loading,
+    Deletion,
+}
+
+#[derive(Clone)]
+struct SessionWork {
+    id: uuid::Uuid,
+    kind: SessionWorkKind,
+    cancellation: CancellationToken,
+    steering: Option<Arc<crate::steering::TurnSteering>>,
+    web_enabled: Option<bool>,
+    agent_revision: u64,
+}
+
+impl SessionWork {
+    fn new(kind: SessionWorkKind) -> Self {
+        Self {
+            id: uuid::Uuid::new_v4(),
+            steering: match &kind {
+                SessionWorkKind::Prompt(turn) => {
+                    Some(Arc::new(crate::steering::TurnSteering::new(turn.clone())))
+                }
+                _ => None,
+            },
+            web_enabled: None,
+            agent_revision: 0,
+            kind,
+            cancellation: CancellationToken::new(),
+        }
+    }
+
+    fn matches(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+async fn await_request_future<T>(
+    request_cancellation: &agent_client_protocol::RequestCancellation,
+    future: impl std::future::Future<Output = T>,
+) -> agent_client_protocol::Result<T> {
+    if request_cancellation.is_cancelled() {
+        return Err(agent_client_protocol::Error::request_cancelled());
+    }
+    tokio::pin!(future);
+    tokio::select! {
+        biased;
+        result = &mut future => Ok(result),
+        () = request_cancellation.cancelled() => {
+            Err(agent_client_protocol::Error::request_cancelled())
+        }
+    }
+}
+
+async fn await_session_future<T>(
+    request_cancellation: &agent_client_protocol::RequestCancellation,
+    work: &SessionWork,
+    future: impl std::future::Future<Output = T>,
+) -> agent_client_protocol::Result<T> {
+    if request_cancellation.is_cancelled() || work.cancellation.is_cancelled() {
+        work.cancellation.cancel();
+        return Err(agent_client_protocol::Error::request_cancelled());
+    }
+    tokio::pin!(future);
+    tokio::select! {
+        // A completed operation is its commit point. Prefer that result when
+        // completion and cancellation become ready in the same scheduler poll,
+        // so callers never report cancellation after a setter already committed.
+        biased;
+        result = &mut future => Ok(result),
+        () = request_cancellation.cancelled() => {
+            work.cancellation.cancel();
+            Err(agent_client_protocol::Error::request_cancelled())
+        }
+        () = work.cancellation.cancelled() => {
+            Err(agent_client_protocol::Error::request_cancelled())
+        }
+    }
+}
+
+fn apply_session_model_settings(
+    session: &mut AcpSession,
+    model: &str,
+    thinking: crate::app::ThinkingLevel,
+    models: &[String],
+    reset_security: bool,
+) {
+    model.clone_into(&mut session.model);
+    session.thinking = thinking;
+    session.models.clear();
+    session.models.extend_from_slice(models);
+    if reset_security {
+        session.security = crate::app::SecurityStatus::Unverified;
+    }
+}
+
+#[derive(Default)]
+struct SessionRegistry {
+    sessions: HashMap<protocol::SessionId, AcpSession>,
+    active_work: HashMap<SessionId, SessionWork>,
+    account_switching: bool,
+}
+
+impl Deref for SessionRegistry {
+    type Target = HashMap<protocol::SessionId, AcpSession>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.sessions
+    }
+}
+
+impl DerefMut for SessionRegistry {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.sessions
+    }
+}
+
+type Sessions = Arc<Mutex<SessionRegistry>>;
+
+#[derive(Default)]
+struct AccountWorkState {
+    switching: bool,
+    switch_excluded: Option<uuid::Uuid>,
+    active: HashMap<uuid::Uuid, CancellationToken>,
+}
+
+#[derive(Default)]
+struct AccountWorkTracker {
+    state: StdMutex<AccountWorkState>,
+    notify: Notify,
+}
+
+struct AccountWorkGuard {
+    id: uuid::Uuid,
+    tracker: Arc<AccountWorkTracker>,
+}
+
+/// One ACP request's reservation of the current account store. The tracker
+/// prevents a switch from completing while the work is alive, while the bound
+/// store independently rejects a delayed operation if the generation or
+/// account changed before it acquired the database mutex.
+struct AccountStoreWork {
+    store: SessionStore,
+    cancellation: CancellationToken,
+    guard: AccountWorkGuard,
+}
+
+impl Drop for AccountWorkGuard {
+    fn drop(&mut self) {
+        let removed = self
+            .tracker
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .active
+            .remove(&self.id)
+            .is_some();
+        if removed {
+            self.tracker.notify.notify_waiters();
+        }
+    }
+}
+
+impl AccountWorkTracker {
+    fn register(
+        self: &Arc<Self>,
+        cancellation: CancellationToken,
+    ) -> crate::Result<AccountWorkGuard> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| crate::AxiomError::Storage("account work lock was poisoned".into()))?;
+        if state.switching {
+            return Err(crate::AxiomError::InvalidTransition(
+                "the Axiom account is changing; retry after account status settles".into(),
+            ));
+        }
+        let id = uuid::Uuid::new_v4();
+        state.active.insert(id, cancellation);
+        Ok(AccountWorkGuard {
+            id,
+            tracker: self.clone(),
+        })
+    }
+
+    fn register_store(self: &Arc<Self>, store: &SessionStore) -> crate::Result<AccountStoreWork> {
+        self.register_store_with_cancellation(store, CancellationToken::new())
+    }
+
+    fn register_store_with_cancellation(
+        self: &Arc<Self>,
+        store: &SessionStore,
+        cancellation: CancellationToken,
+    ) -> crate::Result<AccountStoreWork> {
+        let guard = self.register(cancellation.clone())?;
+        let store = store.bind_active_account()?;
+        if cancellation.is_cancelled() {
+            return Err(crate::AxiomError::Cancelled);
+        }
+        Ok(AccountStoreWork {
+            store,
+            cancellation,
+            guard,
+        })
+    }
+
+    fn start_switch(&self, excluding: Option<uuid::Uuid>) -> crate::Result<()> {
+        let cancellations = {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| crate::AxiomError::Storage("account work lock was poisoned".into()))?;
+            if state.switching {
+                return Err(crate::AxiomError::InvalidTransition(
+                    "an Axiom account transition is already in progress".into(),
+                ));
+            }
+            state.switching = true;
+            state.switch_excluded = excluding;
+            state
+                .active
+                .iter()
+                .filter(|(id, _)| Some(**id) != excluding)
+                .map(|(_, cancellation)| cancellation.clone())
+                .collect::<Vec<_>>()
+        };
+        for cancellation in cancellations {
+            cancellation.cancel();
+        }
+        Ok(())
+    }
+
+    async fn drain_switch(&self) -> crate::Result<()> {
+        let drain = async {
+            loop {
+                let notified = self.notify.notified();
+                let drained = {
+                    let state = self
+                        .state
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    state
+                        .active
+                        .keys()
+                        .all(|id| Some(*id) == state.switch_excluded)
+                };
+                if drained {
+                    break;
+                }
+                notified.await;
+            }
+        };
+        tokio::time::timeout(ACCOUNT_WORK_DRAIN_TIMEOUT, drain)
+            .await
+            .map_err(|_| {
+                crate::AxiomError::InvalidTransition(
+                    "previous-account work did not stop; local account switching remains locked"
+                        .into(),
+                )
+            })
+    }
+
+    fn finish_switch(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.switching = false;
+        state.switch_excluded = None;
+    }
+}
+
+impl AccountStoreWork {
+    fn ensure_current(&self) -> crate::Result<()> {
+        if self.cancellation.is_cancelled() {
+            return Err(crate::AxiomError::Cancelled);
+        }
+        self.store.ensure_active_account_binding()
+    }
+
+    fn read<T>(
+        &self,
+        operation: impl FnOnce(&SessionStore) -> crate::Result<T>,
+    ) -> crate::Result<T> {
+        self.ensure_current()?;
+        let value = operation(&self.store)?;
+        self.ensure_current()?;
+        Ok(value)
+    }
+
+    fn mutate<T>(
+        &self,
+        operation: impl FnOnce(&SessionStore) -> crate::Result<T>,
+    ) -> crate::Result<T> {
+        self.ensure_current()?;
+        let value = operation(&self.store)?;
+        self.ensure_current()?;
+        Ok(value)
+    }
+
+    /// Serialize the final account-derived publication against the switch
+    /// start boundary. If this closure runs, its notification/response is
+    /// enqueued before `start_switch` can publish the account reset; otherwise
+    /// stale account data is dropped with a cancellation error.
+    fn publish<T>(
+        &self,
+        publication: impl FnOnce() -> agent_client_protocol::Result<T>,
+    ) -> agent_client_protocol::Result<T> {
+        let state = self.guard.tracker.state.lock().map_err(|_| {
+            agent_client_protocol::util::internal_error("account work lock was poisoned")
+        })?;
+        if state.switching
+            || !state.active.contains_key(&self.guard.id)
+            || self.cancellation.is_cancelled()
+        {
+            return Err(agent_client_protocol::Error::request_cancelled());
+        }
+        self.store
+            .ensure_active_account_binding()
+            .map_err(agent_error)?;
+        publication()
+    }
+}
+
+async fn release_session_work(sessions: &Sessions, internal_id: &SessionId, work: &SessionWork) {
+    if let Some(inbox) = &work.steering {
+        inbox.close();
+    }
+    work.cancellation.cancel();
+    let mut registry = sessions.lock().await;
+    if registry
+        .active_work
+        .get(internal_id)
+        .is_some_and(|active| active.matches(work))
+    {
+        registry.active_work.remove(internal_id);
+    }
+}
+
+async fn release_session_works(
+    sessions: &Sessions,
+    internal_ids: &[SessionId],
+    work: &SessionWork,
+) {
+    work.cancellation.cancel();
+    let mut registry = sessions.lock().await;
+    for internal_id in internal_ids {
+        if work_matches(&registry, internal_id, work) {
+            registry.active_work.remove(internal_id);
+        }
+    }
+}
+
+const ACCOUNT_WORK_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Cancel and drain all previous-account work before the caller closes or
+/// opens the dynamic store. While this barrier is active, work reservations
+/// and `work_matches` both fail, so stale tasks cannot enter a new commit.
+async fn begin_account_switch(
+    sessions: &Sessions,
+    work_tracker: &AccountWorkTracker,
+    excluding_work: Option<&SessionWork>,
+    excluding_task: Option<&AccountWorkGuard>,
+) -> crate::Result<()> {
+    let excluded_id = excluding_work.map(|work| work.id);
+    {
+        let mut registry = sessions.lock().await;
+        if registry.account_switching {
+            return Err(crate::AxiomError::InvalidTransition(
+                "an Axiom account transition is already in progress".into(),
+            ));
+        }
+        registry.account_switching = true;
+        let mut seen = HashSet::new();
+        for work in registry
+            .active_work
+            .values()
+            .filter(|work| Some(work.id) != excluded_id && seen.insert(work.id))
+        {
+            work.cancellation.cancel();
+        }
+    }
+    if let Err(error) = work_tracker.start_switch(excluding_task.map(|guard| guard.id)) {
+        sessions.lock().await.account_switching = false;
+        return Err(error);
+    }
+    Ok(())
+}
+
+async fn drain_account_switch(
+    sessions: &Sessions,
+    work_tracker: &AccountWorkTracker,
+) -> crate::Result<()> {
+    work_tracker.drain_switch().await?;
+    let mut registry = sessions.lock().await;
+    registry.active_work.clear();
+    registry.sessions.clear();
+    Ok(())
+}
+
+async fn finish_account_switch(sessions: &Sessions, work_tracker: &AccountWorkTracker) {
+    let mut registry = sessions.lock().await;
+    registry.account_switching = false;
+    drop(registry);
+    work_tracker.finish_switch();
+}
+
+async fn commit_account_store_switch(
+    sessions: &Sessions,
+    work_tracker: &AccountWorkTracker,
+    store: Option<&SessionStore>,
+    account_id: Option<&str>,
+) -> crate::Result<()> {
+    drain_account_switch(sessions, work_tracker).await?;
+    let result = match (store, account_id) {
+        (Some(store), Some(account_id)) => store.activate_account(account_id),
+        (Some(store), None) => store.deactivate_account(),
+        (None, _) => Ok(()),
+    };
+    finish_account_switch(sessions, work_tracker).await;
+    result
+}
+
+fn work_matches(registry: &SessionRegistry, internal_id: &SessionId, work: &SessionWork) -> bool {
+    !registry.account_switching
+        && registry
+            .active_work
+            .get(internal_id)
+            .is_some_and(|active| active.matches(work))
+}
+
+async fn set_session_security_if_work(
+    sessions: &Sessions,
+    external_id: &protocol::SessionId,
+    internal_id: &SessionId,
+    work: &SessionWork,
+    expected_model: &str,
+    status: crate::app::SecurityStatus,
+) -> bool {
+    let mut registry = sessions.lock().await;
+    if !work_matches(&registry, internal_id, work) {
+        return false;
+    }
+    let Some(session) = registry.get_mut(external_id) else {
+        return false;
+    };
+    if session.internal_id != *internal_id || session.model != expected_model {
+        return false;
+    }
+    session.security = status;
+    true
+}
+
+async fn fail_active_prompt(
+    sessions: &Sessions,
+    runtime: &Runtime,
+    store: Option<&SessionStore>,
+    internal_id: &SessionId,
+    work: &SessionWork,
+    message: &str,
+) {
+    work.cancellation.cancel();
+    let SessionWorkKind::Prompt(turn_id) = &work.kind else {
+        tracing::warn!(%internal_id, "non-prompt work passed to prompt finalizer");
+        release_session_work(sessions, internal_id, work).await;
+        return;
+    };
+    match runtime
+        .dispatch(AppCommand::FailTurn {
+            session_id: internal_id.clone(),
+            turn_id: turn_id.clone(),
+            message: message.to_owned(),
+        })
+        .await
+    {
+        Ok(events) => {
+            if let Some(store) = store
+                && let Err(error) = store.append_all(&events)
+            {
+                tracing::warn!(%error, %internal_id, "could not persist failed ACP turn");
+            }
+        }
+        Err(error) => {
+            tracing::warn!(%error, %internal_id, "could not terminalize failed ACP turn");
+        }
+    }
+    let mut registry = sessions.lock().await;
+    if work_matches(&registry, internal_id, work) {
+        registry.active_work.remove(internal_id);
+    }
+}
+
+struct PendingDelete {
+    session_ids: Vec<SessionId>,
+    expires_at_unix_seconds: u64,
+}
+
+#[derive(Clone, Copy)]
+enum ExtensionFeature {
+    Steering = 1 << 11,
+    ThreadCatalog = 1 << 0,
+    Timeline = 1 << 1,
+    ModelCatalog = 1 << 2,
+    ProfilePreferences = 1 << 3,
+    Collections = 1 << 4,
+    Account = 1 << 5,
+    SecurityEvidence = 1 << 6,
+    Compaction = 1 << 7,
+    Activity = 1 << 8,
+    DesktopChat = 1 << 9,
+    DesktopAgent = 1 << 12,
+    Billing = 1 << 10,
+    Usage = 1 << 13,
+    Attachments = 1 << 14,
+    GiftCodes = 1 << 15,
+}
+
+struct ExtensionState {
+    enabled_features: AtomicU64,
+    runtime_instance_id: String,
+    sequence: AtomicU64,
+    billing_revision: AtomicU64,
+    pending_deletes: Mutex<HashMap<String, PendingDelete>>,
+    native_logins: Mutex<HashMap<String, crate::auth::NativeLogin>>,
+}
+
+impl ExtensionState {
+    fn new() -> Self {
+        Self {
+            enabled_features: AtomicU64::new(0),
+            runtime_instance_id: uuid::Uuid::new_v4().to_string(),
+            sequence: AtomicU64::new(0),
+            billing_revision: AtomicU64::new(0),
+            pending_deletes: Mutex::new(HashMap::new()),
+            native_logins: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn next_sequence(&self) -> u64 {
+        self.sequence.fetch_add(1, Ordering::AcqRel) + 1
+    }
+
+    fn next_billing_revision(&self) -> u64 {
+        self.billing_revision.fetch_add(1, Ordering::AcqRel) + 1
+    }
+
+    async fn clear_pending_deletes_for_account_switch(&self) {
+        self.pending_deletes.lock().await.clear();
+    }
+
+    fn negotiate(&self, features: Option<FeatureVersions>) {
+        let Some(features) = features else {
+            self.enabled_features.store(0, Ordering::Release);
+            return;
+        };
+        let mut mask = 0;
+        if features.attachments >= 2 {
+            mask |= ExtensionFeature::Attachments as u64;
+        }
+        if features.steering >= 1 {
+            mask |= ExtensionFeature::Steering as u64;
+        }
+        if features.thread_catalog >= 1 {
+            mask |= ExtensionFeature::ThreadCatalog as u64;
+        }
+        if features.timeline >= 2 {
+            mask |= ExtensionFeature::Timeline as u64;
+        }
+        if features.model_catalog >= 1 {
+            mask |= ExtensionFeature::ModelCatalog as u64;
+        }
+        if features.profile_preferences >= 1 {
+            mask |= ExtensionFeature::ProfilePreferences as u64;
+        }
+        if features.collections >= 1 {
+            mask |= ExtensionFeature::Collections as u64;
+        }
+        if features.account >= 2 {
+            mask |= ExtensionFeature::Account as u64;
+        }
+        if features.billing >= 2 {
+            mask |= ExtensionFeature::Billing as u64;
+        }
+        if features.billing >= 3 {
+            mask |= ExtensionFeature::GiftCodes as u64;
+        }
+        if features.usage >= 1 {
+            mask |= ExtensionFeature::Usage as u64;
+        }
+        if features.security_evidence >= 3 {
+            mask |= ExtensionFeature::SecurityEvidence as u64;
+        }
+        if features.compaction >= 1 {
+            mask |= ExtensionFeature::Compaction as u64;
+        }
+        if features.activity >= 1 {
+            mask |= ExtensionFeature::Activity as u64;
+        }
+        if features.desktop_chat >= 1 {
+            mask |= ExtensionFeature::DesktopChat as u64;
+        }
+        if features.desktop_agent >= 1 {
+            mask |= ExtensionFeature::DesktopAgent as u64;
+        }
+        self.enabled_features.store(mask, Ordering::Release);
+    }
+
+    fn feature_enabled(&self, feature: ExtensionFeature) -> bool {
+        self.enabled_features.load(Ordering::Acquire) & feature as u64 != 0
+    }
+}
 
 #[derive(Clone)]
 struct AcpApproval {
@@ -170,6 +1627,9 @@ impl ApprovalHandler for AcpApproval {
                 .block_task() => response.map_err(|error| crate::AxiomError::Protocol(error.to_string()))?,
         };
         let choice = match response.outcome {
+            protocol::RequestPermissionOutcome::Cancelled => {
+                return Err(crate::AxiomError::Cancelled);
+            }
             protocol::RequestPermissionOutcome::Selected(selected) => {
                 match selected.option_id.0.as_ref() {
                     "allow_once" => ApprovalChoice::AllowOnce,
@@ -262,888 +1722,21 @@ impl QuestionHandler for AcpQuestions {
     }
 }
 
-/// Serve ACP v1 over stdio. Stdout is owned by the protocol transport.
-pub async fn serve_stdio(
-    runner: Arc<dyn TurnRunner>,
-    config: Config,
-    store: Option<SessionStore>,
-    auth: AuthManager,
-) -> agent_client_protocol::Result<()> {
-    let sessions: Sessions = Arc::new(Mutex::new(HashMap::new()));
-    let runtime = Runtime::new(512);
-    let default_model = config.model.clone();
-    let default_thinking = crate::app::ThinkingLevel::Medium;
-
-    let new_sessions = sessions.clone();
-    let new_runtime = runtime.clone();
-    let new_runner = runner.clone();
-    let new_config = config;
-    let prompt_sessions = sessions.clone();
-    let prompt_runtime = runtime.clone();
-    let cancel_sessions = sessions.clone();
-    let new_store = store.clone();
-    let load_store = store.clone();
-    let prompt_store = store;
-    let prompt_auth = auth;
-    let load_sessions = sessions.clone();
-    let load_runtime = runtime.clone();
-    let load_runner = runner.clone();
-    let new_default_model = default_model.clone();
-    let load_default_model = default_model;
-    let new_default_thinking = default_thinking;
-    let load_default_thinking = default_thinking;
-    let config_sessions = sessions.clone();
-    let config_runtime = runtime.clone();
-    let config_runner = runner.clone();
-    let config_store = prompt_store.clone();
-    let supports_load = load_store.is_some();
-    let supports_elicitation = Arc::new(AtomicBool::new(false));
-    let initialize_elicitation = supports_elicitation.clone();
-
-    Agent
-        .builder()
-        .name("axiomcli")
-        .on_receive_request(
-            async move |request: protocol::InitializeRequest,
-                        responder: Responder<protocol::InitializeResponse>,
-                        _connection| {
-                initialize_elicitation.store(
-                    request.client_capabilities.elicitation.as_ref().is_some_and(|value| value.form.is_some()),
-                    Ordering::Release,
-                );
-                responder.respond(
-                    protocol::InitializeResponse::new(ProtocolVersion::V1)
-                    .agent_capabilities(
-                        protocol::AgentCapabilities::new().load_session(supports_load),
-                    )
-                    .agent_info(
-                        protocol::Implementation::new("axiomcli", env!("CARGO_PKG_VERSION"))
-                            .title("AxiomCLI"),
-                    ),
-                )
-            },
-            agent_client_protocol::on_receive_request!(),
-        )
-        .on_receive_request(
-            async move |request: protocol::NewSessionRequest,
-                        responder: Responder<protocol::NewSessionResponse>,
-                        connection: ConnectionTo<Client>| {
-                if !request.cwd.is_absolute() {
-                    return responder
-                        .respond_with_internal_error("ACP session cwd must be absolute");
-                }
-                let cwd = request.cwd.canonicalize().map_err(|error| {
-                    agent_client_protocol::util::internal_error(format!(
-                        "cannot open ACP workspace: {error}"
-                    ))
-                })?;
-                let profile = new_config
-                    .for_workspace(&cwd)
-                    .map_err(agent_error)?
-                    .permission_profile;
-                let internal_id = SessionId::new();
-                let session_model = new_store
-                    .as_ref()
-                    .map(SessionStore::last_used_model)
-                    .transpose()
-                    .map_err(agent_error)?
-                    .flatten()
-                    .unwrap_or_else(|| new_default_model.clone());
-                let session_thinking = new_store
-                    .as_ref()
-                    .map(SessionStore::last_used_thinking)
-                    .transpose()
-                    .map_err(agent_error)?
-                    .flatten()
-                    .unwrap_or(new_default_thinking);
-                let created = new_runtime
-                    .dispatch(AppCommand::CreateSession {
-                        session_id: internal_id.clone(),
-                        cwd: cwd.clone(),
-                        origin: Origin::Acp,
-                        profile,
-                    })
-                    .await
-                    .map_err(agent_error)?;
-                if let Some(store) = &new_store {
-                    store.append_all(&created).map_err(agent_error)?;
-                }
-                if session_model != new_default_model {
-                    new_runner
-                        .set_model(&internal_id, session_model.clone())
-                        .await
-                        .map_err(agent_error)?;
-                }
-                if session_thinking != new_default_thinking {
-                    new_runner
-                        .set_thinking_level(&internal_id, session_thinking)
-                        .await
-                        .map_err(agent_error)?;
-                }
-                let selected_model = new_runtime
-                    .dispatch(AppCommand::ChangeModel {
-                        session_id: internal_id.clone(),
-                        model: session_model.clone(),
-                    })
-                    .await
-                    .map_err(agent_error)?;
-                if let Some(store) = &new_store {
-                    store.append_all(&selected_model).map_err(agent_error)?;
-                }
-                let selected_thinking = new_runtime
-                    .dispatch(AppCommand::ChangeThinkingLevel {
-                        session_id: internal_id.clone(),
-                        level: session_thinking,
-                    })
-                    .await
-                    .map_err(agent_error)?;
-                if let Some(store) = &new_store {
-                    store
-                        .append_all(&selected_thinking)
-                        .map_err(agent_error)?;
-                }
-                let external_id = protocol::SessionId::new(internal_id.to_string());
-                new_sessions.lock().await.insert(
-                    external_id.clone(),
-                    AcpSession {
-                        internal_id,
-                        cwd,
-                        profile,
-                        model: session_model,
-                        thinking: session_thinking,
-                        models: Vec::new(),
-                        active_turn: None,
-                        cancellation: None,
-                        has_prompt: false,
-                    },
-                );
-                responder.respond(protocol::NewSessionResponse::new(external_id.clone()))?;
-                send_available_commands(&connection, &external_id)
-            },
-            agent_client_protocol::on_receive_request!(),
-        )
-        .on_receive_request(
-            async move |request: protocol::LoadSessionRequest,
-                        responder: Responder<protocol::LoadSessionResponse>,
-                        connection: ConnectionTo<Client>| {
-                let Some(store) = &load_store else {
-                    return responder.respond_with_internal_error(
-                        "durable session loading is unavailable",
-                    );
-                };
-                if !request.cwd.is_absolute() {
-                    return responder
-                        .respond_with_internal_error("ACP session cwd must be absolute");
-                }
-                let external_id = request.session_id.clone();
-                if load_sessions.lock().await.contains_key(&external_id) {
-                    return responder.respond_with_internal_error("ACP session is already loaded");
-                }
-                let internal_id = SessionId::from_str(request.session_id.0.as_ref())
-                    .map_err(|_| agent_client_protocol::util::internal_error("invalid session ID"))?;
-                let summary = store.summary(&internal_id).map_err(agent_error)?;
-                let requested_cwd = request.cwd.canonicalize().map_err(|error| {
-                    agent_client_protocol::util::internal_error(format!(
-                        "cannot open ACP workspace: {error}"
-                    ))
-                })?;
-                let saved_cwd = summary.cwd.canonicalize().map_err(|error| {
-                    agent_client_protocol::util::internal_error(format!(
-                        "saved ACP workspace is unavailable: {error}"
-                    ))
-                })?;
-                if requested_cwd != saved_cwd {
-                    return responder.respond_with_internal_error(
-                        "ACP load cwd does not match the session workspace identity",
-                    );
-                }
-                let loaded = store.load_recovering(&internal_id).map_err(agent_error)?;
-                if let Some(warning) = loaded.warnings.first() {
-                    return responder.respond_with_internal_error(warning.clone());
-                }
-                let restored = load_runtime
-                    .restore(&loaded.events)
-                    .await
-                    .map_err(agent_error)?;
-                load_runner
-                    .restore_session(&internal_id, &loaded.events)
-                    .await
-                    .map_err(agent_error)?;
-                for envelope in &loaded.events {
-                    send_event(
-                        &connection,
-                        &external_id,
-                        envelope.event.clone(),
-                    )?;
-                }
-                let resumed = load_runtime
-                    .emit(
-                        internal_id.clone(),
-                        AppEvent::SessionResumed {
-                            cwd: saved_cwd.clone(),
-                            origin: Origin::Acp,
-                            profile: restored.profile,
-                        },
-                    )
-                    .await
-                    .map_err(agent_error)?;
-                store.append(&resumed).map_err(agent_error)?;
-                let recovery = store.recovery_status(&internal_id).map_err(agent_error)?;
-                if recovery.interrupted_turns > 0 || !recovery.interrupted_tools.is_empty() {
-                    connection.send_notification(protocol::SessionNotification::new(
-                        external_id.clone(),
-                        protocol::SessionUpdate::AgentThoughtChunk(protocol::ContentChunk::new(
-                            protocol::ContentBlock::Text(protocol::TextContent::new(format!(
-                                "[recovery] {} interrupted turn(s), {} operation(s) unknown; nothing replayed",
-                                recovery.interrupted_turns,
-                                recovery.interrupted_tools.len()
-                            ))),
-                        )),
-                    ))?;
-                }
-                load_sessions.lock().await.insert(
-                    external_id.clone(),
-                    AcpSession {
-                        internal_id,
-                        cwd: saved_cwd,
-                        profile: permission_for_resume(&loaded.events, restored.profile),
-                        model: model_for_resume(&loaded.events, &load_default_model),
-                        thinking: thinking_for_resume(
-                            &loaded.events,
-                            load_default_thinking,
-                        ),
-                        models: Vec::new(),
-                        active_turn: None,
-                        cancellation: None,
-                        has_prompt: loaded.events.iter().any(|envelope| {
-                            matches!(envelope.event, AppEvent::PromptAccepted { .. })
-                        }),
-                    },
-                );
-                responder.respond(protocol::LoadSessionResponse::new())?;
-                send_available_commands(&connection, &external_id)
-            },
-            agent_client_protocol::on_receive_request!(),
-        )
-        .on_receive_request(
-            async move |request: protocol::PromptRequest,
-                        responder: Responder<protocol::PromptResponse>,
-                        connection: ConnectionTo<Client>| {
-                let prompt = match prompt_text(&request.prompt) {
-                    Ok(prompt) => prompt,
-                    Err(message) => return responder.respond_with_internal_error(message),
-                };
-                let session_id = request.session_id.clone();
-                if let Some(command) = slash::parse(&prompt) {
-                    let command = match command {
-                        Ok(command) => command,
-                        Err(error) => {
-                            send_text(&connection, &session_id, format!("Command error: {error}"))?;
-                            return responder.respond(protocol::PromptResponse::new(
-                                protocol::StopReason::EndTurn,
-                            ));
-                        }
-                    };
-                    let internal_id = {
-                        let sessions = prompt_sessions.lock().await;
-                        let Some(session) = sessions.get(&session_id) else {
-                            return responder.respond_with_internal_error("unknown ACP session");
-                        };
-                        if session.cancellation.is_some() {
-                            return responder
-                                .respond_with_internal_error("session already has active work");
-                        }
-                        session.internal_id.clone()
-                    };
-                    match command {
-                        SlashCommand::Help => {
-                            send_text(&connection, &session_id, slash_help_text())?;
-                            return responder.respond(protocol::PromptResponse::new(
-                                protocol::StopReason::EndTurn,
-                            ));
-                        }
-                        SlashCommand::Permission(profile) => {
-                            let events = prompt_runtime
-                                .dispatch(AppCommand::ChangePermissionProfile {
-                                    session_id: internal_id,
-                                    profile,
-                                })
-                                .await
-                                .map_err(agent_error)?;
-                            if let Some(store) = &prompt_store {
-                                store.append_all(&events).map_err(agent_error)?;
-                            }
-                            if let Some(session) = prompt_sessions.lock().await.get_mut(&session_id)
-                            {
-                                session.profile = profile;
-                            }
-                            send_text(
-                                &connection,
-                                &session_id,
-                                format!("Permission profile changed to {profile}."),
-                            )?;
-                            return responder.respond(protocol::PromptResponse::new(
-                                protocol::StopReason::EndTurn,
-                            ));
-                        }
-                        SlashCommand::Model => {
-                            let models = runner
-                                .available_models(CancellationToken::new())
-                                .await
-                                .map_err(agent_error)?;
-                            let current = {
-                                let mut sessions = prompt_sessions.lock().await;
-                                let Some(session) = sessions.get_mut(&session_id) else {
-                                    return responder
-                                        .respond_with_internal_error("unknown ACP session");
-                                };
-                                session.models.clone_from(&models);
-                                session.model.clone()
-                            };
-                            send_model_config_update(
-                                &connection,
-                                &session_id,
-                                &current,
-                                &models,
-                            )?;
-                            send_text(
-                                &connection,
-                                &session_id,
-                                "Choose a model using the client model selector.".into(),
-                            )?;
-                            return responder.respond(protocol::PromptResponse::new(
-                                protocol::StopReason::EndTurn,
-                            ));
-                        }
-                        SlashCommand::Resume => {
-                            send_text(
-                                &connection,
-                                &session_id,
-                                "Use your ACP client's session list and session/load support to resume a transcript. The interactive /resume picker is available in the terminal UI."
-                                    .into(),
-                            )?;
-                            return responder.respond(protocol::PromptResponse::new(
-                                protocol::StopReason::EndTurn,
-                            ));
-                        }
-                        SlashCommand::Delete => {
-                            send_text(
-                                &connection,
-                                &session_id,
-                                "The interactive multi-select /delete picker is available in the terminal UI. ACP transcript deletion will use a native client capability when the protocol defines one."
-                                    .into(),
-                            )?;
-                            return responder.respond(protocol::PromptResponse::new(
-                                protocol::StopReason::EndTurn,
-                            ));
-                        }
-                        SlashCommand::Thinking(level) => {
-                            runner
-                                .set_thinking_level(&internal_id, level)
-                                .await
-                                .map_err(agent_error)?;
-                            let events = prompt_runtime
-                                .dispatch(AppCommand::ChangeThinkingLevel {
-                                    session_id: internal_id,
-                                    level,
-                                })
-                                .await
-                                .map_err(agent_error)?;
-                            if let Some(store) = &prompt_store {
-                                store.append_all(&events).map_err(agent_error)?;
-                            }
-                            if let Some(session) = prompt_sessions.lock().await.get_mut(&session_id)
-                            {
-                                session.thinking = level;
-                            }
-                            send_text(
-                                &connection,
-                                &session_id,
-                                format!("Thinking set to {level}."),
-                            )?;
-                            return responder.respond(protocol::PromptResponse::new(
-                                protocol::StopReason::EndTurn,
-                            ));
-                        }
-                        SlashCommand::Login => {
-                            let login = prompt_auth
-                                .start_browser_login()
-                                .await
-                                .map_err(agent_error)?;
-                            send_text(
-                                &connection,
-                                &session_id,
-                                format!(
-                                    "Authorize AxiomCLI in your browser. Confirm code {}.\n{}",
-                                    login.user_code(),
-                                    login.authorization_url()
-                                ),
-                            )?;
-                            let account = login
-                                .complete(CancellationToken::new())
-                                .await
-                                .map_err(agent_error)?;
-                            send_text(
-                                &connection,
-                                &session_id,
-                                format!(
-                                    "Signed in as credential {} (stored in {}).",
-                                    account.key_name,
-                                    account.source.label()
-                                ),
-                            )?;
-                            return responder.respond(protocol::PromptResponse::new(
-                                protocol::StopReason::EndTurn,
-                            ));
-                        }
-                        SlashCommand::Logout => {
-                            prompt_auth.logout().map_err(agent_error)?;
-                            send_text(
-                                &connection,
-                                &session_id,
-                                "Signed out. The saved Axiom authorization was removed.".into(),
-                            )?;
-                            return responder.respond(protocol::PromptResponse::new(
-                                protocol::StopReason::EndTurn,
-                            ));
-                        }
-                        SlashCommand::Account => {
-                            let text = match prompt_auth.validate().await {
-                                ValidationStatus::Missing => {
-                                    "Not signed in. Run /login to connect AxiomCLI.".to_owned()
-                                }
-                                ValidationStatus::Valid(account) => format!(
-                                    "Axiom authorization is valid: {} (stored in {}).",
-                                    account.key_name,
-                                    account.source.label()
-                                ),
-                                ValidationStatus::Invalid => {
-                                    "The saved Axiom authorization is invalid or revoked."
-                                        .to_owned()
-                                }
-                                ValidationStatus::Unavailable(message) => message,
-                            };
-                            send_text(&connection, &session_id, text)?;
-                            return responder.respond(protocol::PromptResponse::new(
-                                protocol::StopReason::EndTurn,
-                            ));
-                        }
-                        SlashCommand::Security => {
-                            let model = {
-                                let sessions = prompt_sessions.lock().await;
-                                let Some(session) = sessions.get(&session_id) else {
-                                    return responder
-                                        .respond_with_internal_error("unknown ACP session");
-                                };
-                                session.model.clone()
-                            };
-                            let verification = runner
-                                .verify_security(&model, CancellationToken::new())
-                                .await
-                                .map_err(agent_error)?;
-                            let text = verification.evidence.map_or_else(
-                                || format!("Security state: {:?}. No attestation evidence is available for this transport.", verification.status),
-                                |evidence| {
-                                    let workload_hash = evidence
-                                        .provider_claims
-                                        .iter()
-                                        .find(|claim| claim.name == "workload_manifest_sha256")
-                                        .map_or("unavailable", |claim| claim.value.as_str());
-                                    format!(
-                                        "Security state: {:?}\nProvider: {}\nModel: {}\nAttestation: {}\nEncryption: {} v{}\nWorkload manifest SHA-256: {}",
-                                        verification.status,
-                                        evidence.provider_id,
-                                        evidence.model_id,
-                                        evidence.attestation_protocol,
-                                        evidence.e2ee_protocol,
-                                        evidence.e2ee_encryption_version,
-                                        workload_hash,
-                                    )
-                                },
-                            );
-                            send_text(&connection, &session_id, text)?;
-                            return responder.respond(protocol::PromptResponse::new(
-                                protocol::StopReason::EndTurn,
-                            ));
-                        }
-                        SlashCommand::Compact { focus } => {
-                            let cancellation = CancellationToken::new();
-                            if let Some(session) = prompt_sessions.lock().await.get_mut(&session_id)
-                            {
-                                session.cancellation = Some(cancellation.clone());
-                            }
-                            let task_sessions = prompt_sessions.clone();
-                            let task_runtime = prompt_runtime.clone();
-                            let task_runner = runner.clone();
-                            let task_connection = connection.clone();
-                            let task_store = prompt_store.clone();
-                            connection.spawn(async move {
-                                let (events_tx, mut events_rx) =
-                                    mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
-                                let compact = task_runner.compact(
-                                    &internal_id,
-                                    focus,
-                                    events_tx,
-                                    cancellation.clone(),
-                                );
-                                tokio::pin!(compact);
-                                let result = loop {
-                                    tokio::select! {
-                                        result = &mut compact => break result,
-                                        event = events_rx.recv() => {
-                                            let Some(event) = event else { continue };
-                                            let envelope = task_runtime
-                                                .emit(internal_id.clone(), event.clone())
-                                                .await
-                                                .map_err(agent_error)?;
-                                            if let Some(store) = &task_store {
-                                                store.append(&envelope).map_err(agent_error)?;
-                                            }
-                                            send_event(&task_connection, &session_id, event)?;
-                                        }
-                                    }
-                                };
-                                while let Ok(event) = events_rx.try_recv() {
-                                    let envelope = task_runtime
-                                        .emit(internal_id.clone(), event.clone())
-                                        .await
-                                        .map_err(agent_error)?;
-                                    if let Some(store) = &task_store {
-                                        store.append(&envelope).map_err(agent_error)?;
-                                    }
-                                    send_event(&task_connection, &session_id, event)?;
-                                }
-                                let stop_reason = match result {
-                                    Ok(result) => {
-                                        let events = task_runtime
-                                            .dispatch(AppCommand::RecordContextCompaction {
-                                                session_id: internal_id.clone(),
-                                                summary: result.summary,
-                                                messages_before: result.messages_before,
-                                            })
-                                            .await
-                                            .map_err(agent_error)?;
-                                        if let Some(store) = &task_store {
-                                            store.append_all(&events).map_err(agent_error)?;
-                                        }
-                                        send_text(
-                                            &task_connection,
-                                            &session_id,
-                                            format!(
-                                                "Context compacted from {} conversation message(s).",
-                                                result.messages_before
-                                            ),
-                                        )?;
-                                        protocol::StopReason::EndTurn
-                                    }
-                                    Err(crate::AxiomError::Cancelled) => {
-                                        protocol::StopReason::Cancelled
-                                    }
-                                    Err(error) => {
-                                        send_text(
-                                            &task_connection,
-                                            &session_id,
-                                            format!("AxiomCLI compaction error: {error}"),
-                                        )?;
-                                        protocol::StopReason::EndTurn
-                                    }
-                                };
-                                if let Some(session) =
-                                    task_sessions.lock().await.get_mut(&session_id)
-                                {
-                                    session.cancellation = None;
-                                }
-                                responder.respond(protocol::PromptResponse::new(stop_reason))
-                            })?;
-                            return Ok(());
-                        }
-                    }
-                }
-                let deterministic_test_runner = cfg!(debug_assertions)
-                    && std::env::var("AXIOMCLI_TEST_RUNNER")
-                        .is_ok_and(|value| !value.trim().is_empty());
-                if !prompt_auth.has_credential() && !deterministic_test_runner {
-                    send_text(
-                        &connection,
-                        &session_id,
-                        "Authentication required. Run /login to connect an Axiom account."
-                            .into(),
-                    )?;
-                    return responder.respond(protocol::PromptResponse::new(
-                        protocol::StopReason::EndTurn,
-                    ));
-                }
-                let turn_id = TurnId::new();
-                let cancellation = CancellationToken::new();
-                let (
-                    internal_id,
-                    cwd,
-                    session_profile,
-                    session_model,
-                    session_thinking,
-                    should_generate_title,
-                ) = {
-                    let mut sessions = prompt_sessions.lock().await;
-                    let Some(session) = sessions.get_mut(&session_id) else {
-                        return responder.respond_with_internal_error("unknown ACP session");
-                    };
-                    if session.cancellation.is_some() {
-                        return responder
-                            .respond_with_internal_error("session already has an active turn");
-                    }
-                    session.active_turn = Some(turn_id.clone());
-                    session.cancellation = Some(cancellation.clone());
-                    let should_generate_title = !session.has_prompt;
-                    session.has_prompt = true;
-                    (
-                        session.internal_id.clone(),
-                        session.cwd.clone(),
-                        session.profile,
-                        session.model.clone(),
-                        session.thinking,
-                        should_generate_title,
-                    )
-                };
-
-                let submitted = prompt_runtime
-                    .dispatch(AppCommand::SubmitPrompt {
-                        session_id: internal_id.clone(),
-                        turn_id: turn_id.clone(),
-                        text: prompt.clone(),
-                    })
-                    .await
-                    .map_err(agent_error)?;
-                if let Some(store) = &prompt_store {
-                    store.append_all(&submitted).map_err(agent_error)?;
-                    store
-                        .set_last_used_model(&session_model)
-                        .map_err(agent_error)?;
-                    store
-                        .set_last_used_thinking(session_thinking)
-                        .map_err(agent_error)?;
-                }
-
-                if should_generate_title
-                    && let Some(title_store) = prompt_store.clone()
-                {
-                    let title_runner = runner.clone();
-                    let title_session = internal_id.clone();
-                    let title_prompt = prompt.clone();
-                    tokio::spawn(async move {
-                        match title_runner
-                            .generate_title(
-                                &title_session,
-                                &title_prompt,
-                                CancellationToken::new(),
-                            )
-                            .await
-                        {
-                            Ok(title) => {
-                                if let Err(error) =
-                                    title_store.set_title_if_absent(&title_session, &title)
-                                {
-                                    tracing::warn!(
-                                        session_id = %title_session,
-                                        %error,
-                                        "could not persist generated ACP session title"
-                                    );
-                                }
-                            }
-                            Err(error) => tracing::warn!(
-                                session_id = %title_session,
-                                %error,
-                                "background ACP session title generation failed"
-                            ),
-                        }
-                    });
-                }
-
-                let task_sessions = prompt_sessions.clone();
-                let task_runtime = prompt_runtime.clone();
-                let task_runner = runner.clone();
-                let task_connection = connection.clone();
-                let task_store = prompt_store.clone();
-                let task_elicitation = supports_elicitation.clone();
-                connection.spawn(async move {
-                    let (events_tx, mut events_rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
-                    let run = task_runner.run(
-                        crate::agent::TurnContext {
-                            session_id: internal_id.clone(),
-                            turn_id: turn_id.clone(),
-                            cwd,
-                            permission_profile: session_profile,
-                            approval: Some(Arc::new(AcpApproval {
-                                connection: task_connection.clone(),
-                                session_id: session_id.clone(),
-                            })),
-                            questions: Some(Arc::new(AcpQuestions {
-                                connection: task_connection.clone(),
-                                session_id: session_id.clone(),
-                                supported: task_elicitation,
-                            })),
-                        },
-                        prompt,
-                        events_tx,
-                        cancellation.clone(),
-                    );
-                    tokio::pin!(run);
-
-                    let result = loop {
-                        tokio::select! {
-                            result = &mut run => break result,
-                            event = events_rx.recv() => {
-                                let Some(event) = event else { continue };
-                                let envelope = task_runtime.emit(internal_id.clone(), event.clone()).await.map_err(agent_error)?;
-                                if let Some(store) = &task_store {
-                                    store.append(&envelope).map_err(agent_error)?;
-                                }
-                                send_event(&task_connection, &session_id, event)?;
-                            }
-                        }
-                    };
-                    if result.is_err() {
-                        cancellation.cancel();
-                    }
-                    while let Ok(event) = events_rx.try_recv() {
-                        let envelope = task_runtime
-                            .emit(internal_id.clone(), event.clone())
-                            .await
-                            .map_err(agent_error)?;
-                        if let Some(store) = &task_store {
-                            store.append(&envelope).map_err(agent_error)?;
-                        }
-                        send_event(&task_connection, &session_id, event)?;
-                    }
-
-                    let stop_reason = match result {
-                        Ok(()) => {
-                            let completed = task_runtime
-                                .dispatch(AppCommand::FinishTurn {
-                                    session_id: internal_id,
-                                    turn_id,
-                                })
-                                .await
-                                .map_err(agent_error)?;
-                            if let Some(store) = &task_store {
-                                store.append_all(&completed).map_err(agent_error)?;
-                            }
-                            protocol::StopReason::EndTurn
-                        }
-                        Err(crate::AxiomError::Cancelled) => {
-                            let completed = task_runtime
-                                .dispatch(AppCommand::CancelTurn {
-                                    session_id: internal_id,
-                                    turn_id,
-                                })
-                                .await
-                                .map_err(agent_error)?;
-                            if let Some(store) = &task_store {
-                                store.append_all(&completed).map_err(agent_error)?;
-                            }
-                            protocol::StopReason::Cancelled
-                        }
-                        Err(error) => {
-                            let completed = task_runtime
-                                .dispatch(AppCommand::FailTurn {
-                                    session_id: internal_id,
-                                    turn_id,
-                                    message: error.to_string(),
-                                })
-                                .await
-                                .map_err(agent_error)?;
-                            if let Some(store) = &task_store {
-                                store.append_all(&completed).map_err(agent_error)?;
-                            }
-                            send_text(
-                                &task_connection,
-                                &session_id,
-                                format!("AxiomCLI error: {error}"),
-                            )?;
-                            protocol::StopReason::EndTurn
-                        }
-                    };
-                    if let Some(session) = task_sessions.lock().await.get_mut(&session_id) {
-                        session.active_turn = None;
-                        session.cancellation = None;
-                    }
-                    responder.respond(protocol::PromptResponse::new(stop_reason))
-                })?;
-                Ok(())
-            },
-            agent_client_protocol::on_receive_request!(),
-        )
-        .on_receive_request(
-            async move |request: protocol::SetSessionConfigOptionRequest,
-                        responder: Responder<protocol::SetSessionConfigOptionResponse>,
-                        _connection| {
-                if request.config_id.0.as_ref() != MODEL_CONFIG_ID {
-                    return responder.respond_with_internal_error("unknown session config option");
-                }
-                let Some(value) = request.value.as_value_id() else {
-                    return responder
-                        .respond_with_internal_error("model config requires a selected value ID");
-                };
-                let model = value.0.to_string();
-                let (internal_id, models) = {
-                    let sessions = config_sessions.lock().await;
-                    let Some(session) = sessions.get(&request.session_id) else {
-                        return responder.respond_with_internal_error("unknown ACP session");
-                    };
-                    if session.cancellation.is_some() {
-                        return responder.respond_with_internal_error(
-                            "cannot change model while the session has active work",
-                        );
-                    }
-                    if !session.models.iter().any(|candidate| candidate == &model) {
-                        return responder.respond_with_internal_error(
-                            "model is not in the provider catalog",
-                        );
-                    }
-                    (session.internal_id.clone(), session.models.clone())
-                };
-                config_runner
-                    .set_model(&internal_id, model.clone())
-                    .await
-                    .map_err(agent_error)?;
-                let events = config_runtime
-                    .dispatch(AppCommand::ChangeModel {
-                        session_id: internal_id,
-                        model: model.clone(),
-                    })
-                    .await
-                    .map_err(agent_error)?;
-                if let Some(store) = &config_store {
-                    store.append_all(&events).map_err(agent_error)?;
-                }
-                if let Some(session) = config_sessions.lock().await.get_mut(&request.session_id) {
-                    session.model.clone_from(&model);
-                }
-                responder.respond(protocol::SetSessionConfigOptionResponse::new(vec![
-                    model_config_option(&model, &models),
-                ]))
-            },
-            agent_client_protocol::on_receive_request!(),
-        )
-        .on_receive_notification(
-            async move |notification: protocol::CancelNotification, _connection| {
-                if let Some(token) = cancel_sessions
-                    .lock()
-                    .await
-                    .get(&notification.session_id)
-                    .and_then(|session| session.cancellation.clone())
-                {
-                    token.cancel();
-                }
-                Ok(())
-            },
-            agent_client_protocol::on_receive_notification!(),
-        )
-        .connect_to(Stdio::new())
-        .await
+#[cfg(test)]
+fn prompt_text(blocks: &[protocol::ContentBlock]) -> std::result::Result<String, &'static str> {
+    let (text, attachments) = prompt_input(blocks)?;
+    if text.trim().is_empty() && attachments.is_empty() {
+        Err("AxiomCLI currently requires a non-empty text prompt")
+    } else {
+        Ok(text)
+    }
 }
 
-fn prompt_text(blocks: &[protocol::ContentBlock]) -> std::result::Result<String, &'static str> {
+fn prompt_input(
+    blocks: &[protocol::ContentBlock],
+) -> std::result::Result<(String, Vec<axiom_inference::PromptAttachment>), &'static str> {
     let mut text = String::new();
+    let mut attachments = Vec::new();
     for block in blocks {
         let content = match block {
             protocol::ContentBlock::Text(content) => content.text.clone(),
@@ -1152,6 +1745,21 @@ fn prompt_text(blocks: &[protocol::ContentBlock]) -> std::result::Result<String,
                 resource.title.as_deref().unwrap_or(&resource.name),
                 resource.uri
             ),
+            protocol::ContentBlock::Image(image) => {
+                attachments.push(axiom_inference::PromptAttachment::Image {
+                    name: image.uri.clone().unwrap_or_else(|| "Attached image".into()),
+                    image: axiom_inference::ImageContent {
+                        mime_type: image.mime_type.clone(),
+                        data: image.data.clone(),
+                    },
+                });
+                continue;
+            }
+            protocol::ContentBlock::Resource(_) => {
+                return Err(
+                    "Use direct file attachments; embedded resource extraction is unsupported",
+                );
+            }
             _ => return Err("ACP prompt contains a content type AxiomCLI did not advertise"),
         };
         if !text.is_empty() {
@@ -1159,125 +1767,269 @@ fn prompt_text(blocks: &[protocol::ContentBlock]) -> std::result::Result<String,
         }
         text.push_str(&content);
     }
-    if text.trim().is_empty() {
-        Err("AxiomCLI currently requires a non-empty text prompt")
-    } else {
-        Ok(text)
-    }
+    Ok((text, attachments))
+}
+
+struct EventDelivery<'a> {
+    cwd: Option<&'a Path>,
+    extension_state: Option<&'a ExtensionState>,
+    correlation_id: Option<String>,
+    revision: Option<&'a crate::session::ThreadRevision>,
+    client_item_id: Option<&'a str>,
 }
 
 fn send_event(
     connection: &ConnectionTo<Client>,
     session_id: &protocol::SessionId,
     event: AppEvent,
+    delivery: EventDelivery<'_>,
 ) -> agent_client_protocol::Result<()> {
+    let EventDelivery {
+        cwd,
+        extension_state,
+        correlation_id,
+        revision,
+        client_item_id,
+    } = delivery;
+    if let Some(extension_state) = extension_state
+        && let Some(activity) = extension_activity(&event)
+    {
+        send_extension_activity_correlated(
+            connection,
+            extension_state,
+            Some(session_id),
+            correlation_id.clone(),
+            activity,
+        )?;
+    }
     match event {
-        AppEvent::TextDelta { text, .. } => send_text(connection, session_id, text),
-        AppEvent::ReasoningDelta { text, .. } => {
-            connection.send_notification(protocol::SessionNotification::new(
-                session_id.clone(),
-                protocol::SessionUpdate::AgentThoughtChunk(protocol::ContentChunk::new(
-                    protocol::ContentBlock::Text(protocol::TextContent::new(text)),
-                )),
+        AppEvent::SteeringApplied {
+            client_item_id,
+            text,
+            ..
+        } => {
+            let chunk = protocol::ContentChunk::new(protocol::ContentBlock::Text(
+                protocol::TextContent::new(text),
             ))
+            .message_id(client_item_id.as_str());
+            send_session_update(
+                connection,
+                session_id,
+                protocol::SessionUpdate::UserMessageChunk(chunk),
+                revision,
+                None,
+                Some(client_item_id),
+            )
         }
-        AppEvent::PermissionProfileChanged { profile } => send_text(
-            connection,
-            session_id,
-            format!("[settings] permission profile: {profile}"),
-        ),
-        AppEvent::ModelChanged { model } => {
-            send_text(connection, session_id, format!("[settings] model: {model}"))
+        AppEvent::PromptAccepted {
+            turn_id,
+            text,
+            attachments,
+        } => {
+            let message_id =
+                client_item_id.map_or_else(|| format!("user:{turn_id}"), ToOwned::to_owned);
+            let mut chunk = protocol::ContentChunk::new(protocol::ContentBlock::Text(
+                protocol::TextContent::new(text),
+            ))
+            .message_id(message_id.as_str());
+            if !attachments.is_empty()
+                && extension_state
+                    .is_some_and(|state| state.feature_enabled(ExtensionFeature::Attachments))
+            {
+                let mut meta = protocol::Meta::new();
+                meta.insert(
+                    "axiomAttachments".into(),
+                    serde_json::json!(
+                        attachments
+                            .iter()
+                            .map(axiom_inference::PromptAttachment::summary)
+                            .collect::<Vec<_>>()
+                    ),
+                );
+                chunk = chunk.meta(meta);
+            }
+            send_session_update(
+                connection,
+                session_id,
+                protocol::SessionUpdate::UserMessageChunk(chunk),
+                revision,
+                None,
+                client_item_id.map(ToOwned::to_owned),
+            )
         }
-        AppEvent::ThinkingLevelChanged { level } => send_text(
+        AppEvent::TextDelta { turn_id, text } => {
+            let message_id = format!("assistant:{turn_id}");
+            let chunk = protocol::ContentChunk::new(protocol::ContentBlock::Text(
+                protocol::TextContent::new(text),
+            ))
+            .message_id(message_id.as_str());
+            send_session_update(
+                connection,
+                session_id,
+                protocol::SessionUpdate::AgentMessageChunk(chunk),
+                revision,
+                revision.and_then(|value| value.timeline_item_id.clone()),
+                None,
+            )
+        }
+        AppEvent::ReasoningDelta { turn_id, text } => {
+            let message_id = format!("reasoning:{turn_id}");
+            let chunk = protocol::ContentChunk::new(protocol::ContentBlock::Text(
+                protocol::TextContent::new(text),
+            ))
+            .message_id(message_id.as_str());
+            send_session_update(
+                connection,
+                session_id,
+                protocol::SessionUpdate::AgentThoughtChunk(chunk),
+                revision,
+                revision.and_then(|value| value.timeline_item_id.clone()),
+                None,
+            )
+        }
+        AppEvent::PermissionProfileChanged { profile } => send_session_update(
             connection,
             session_id,
-            format!("[settings] thinking: {level}"),
+            protocol::SessionUpdate::CurrentModeUpdate(protocol::CurrentModeUpdate::new(
+                profile.to_string(),
+            )),
+            revision,
+            None,
+            None,
         ),
-        AppEvent::ContextCompacted {
-            messages_before, ..
-        } => send_text(
+        AppEvent::ModelChanged { model } => send_session_update(
             connection,
             session_id,
-            format!("[context] compacted {messages_before} conversation message(s)"),
+            protocol::SessionUpdate::ConfigOptionUpdate(protocol::ConfigOptionUpdate::new(vec![
+                model_config_option(&model, std::slice::from_ref(&model)),
+            ])),
+            revision,
+            None,
+            None,
+        ),
+        AppEvent::ThinkingLevelChanged {
+            level: crate::app::ThinkingLevel::ProviderDefault,
+        } => Ok(()),
+        AppEvent::ThinkingLevelChanged { level } => send_session_update(
+            connection,
+            session_id,
+            protocol::SessionUpdate::ConfigOptionUpdate(protocol::ConfigOptionUpdate::new(vec![
+                thinking_config_option(level),
+            ])),
+            revision,
+            None,
+            None,
         ),
         AppEvent::ProviderStatusChanged { connected, detail } => {
-            connection.send_notification(protocol::SessionNotification::new(
-                session_id.clone(),
-                protocol::SessionUpdate::AgentThoughtChunk(protocol::ContentChunk::new(
-                    protocol::ContentBlock::Text(protocol::TextContent::new(format!(
-                        "[{}] {detail}",
-                        if connected {
-                            "provider"
-                        } else {
-                            "provider status"
-                        }
-                    ))),
+            let message_id = format!("provider:{}", revision.map_or(0, |value| value.revision));
+            let chunk = protocol::ContentChunk::new(protocol::ContentBlock::Text(
+                protocol::TextContent::new(format!(
+                    "[{}] {detail}",
+                    if connected {
+                        "provider"
+                    } else {
+                        "provider status"
+                    }
                 )),
             ))
+            .message_id(message_id.as_str());
+            send_session_update(
+                connection,
+                session_id,
+                protocol::SessionUpdate::AgentThoughtChunk(chunk),
+                revision,
+                None,
+                None,
+            )
         }
         AppEvent::ProgressUpdated {
             message,
             completed,
             total,
-        } => connection.send_notification(protocol::SessionNotification::new(
-            session_id.clone(),
-            protocol::SessionUpdate::AgentThoughtChunk(protocol::ContentChunk::new(
-                protocol::ContentBlock::Text(protocol::TextContent::new(
-                    match (completed, total) {
-                        (Some(completed), Some(total)) => {
-                            format!("[progress {completed}/{total}] {message}")
-                        }
-                        _ => format!("[progress] {message}"),
-                    },
-                )),
-            )),
-        )),
-        AppEvent::TaskListUpdated { items } => {
-            connection.send_notification(protocol::SessionNotification::new(
-                session_id.clone(),
-                protocol::SessionUpdate::Plan(protocol::Plan::new(
-                    items
-                        .into_iter()
-                        .map(|item| {
-                            protocol::PlanEntry::new(
-                                format!("{} · {}", item.id, item.title),
-                                protocol::PlanEntryPriority::Medium,
-                                match item.status {
-                                    crate::app::TaskStatus::Pending => {
-                                        protocol::PlanEntryStatus::Pending
-                                    }
-                                    crate::app::TaskStatus::InProgress => {
-                                        protocol::PlanEntryStatus::InProgress
-                                    }
-                                    crate::app::TaskStatus::Completed => {
-                                        protocol::PlanEntryStatus::Completed
-                                    }
-                                },
-                            )
-                        })
-                        .collect(),
-                )),
+        } => {
+            let text = match (completed, total) {
+                (Some(completed), Some(total)) => {
+                    format!("[progress {completed}/{total}] {message}")
+                }
+                _ => format!("[progress] {message}"),
+            };
+            let message_id = format!("progress:{}", revision.map_or(0, |value| value.revision));
+            let chunk = protocol::ContentChunk::new(protocol::ContentBlock::Text(
+                protocol::TextContent::new(text),
             ))
+            .message_id(message_id.as_str());
+            send_session_update(
+                connection,
+                session_id,
+                protocol::SessionUpdate::AgentThoughtChunk(chunk),
+                revision,
+                None,
+                None,
+            )
         }
+        AppEvent::TaskListUpdated { items } => send_session_update(
+            connection,
+            session_id,
+            protocol::SessionUpdate::Plan(protocol::Plan::new(
+                items
+                    .into_iter()
+                    .map(|item| {
+                        protocol::PlanEntry::new(
+                            format!("{} · {}", item.id, item.title),
+                            protocol::PlanEntryPriority::Medium,
+                            match item.status {
+                                crate::app::TaskStatus::Pending => {
+                                    protocol::PlanEntryStatus::Pending
+                                }
+                                crate::app::TaskStatus::InProgress => {
+                                    protocol::PlanEntryStatus::InProgress
+                                }
+                                crate::app::TaskStatus::Completed => {
+                                    protocol::PlanEntryStatus::Completed
+                                }
+                            },
+                        )
+                    })
+                    .collect(),
+            )),
+            revision,
+            None,
+            None,
+        ),
         AppEvent::ToolProposed {
             call_id,
             name,
             arguments,
             ..
-        } => connection.send_notification(protocol::SessionNotification::new(
-            session_id.clone(),
-            protocol::SessionUpdate::ToolCall(
-                protocol::ToolCall::new(call_id, name)
-                    .status(protocol::ToolCallStatus::Pending)
-                    .raw_input(arguments),
-            ),
-        )),
+        } => {
+            let kind = tool_kind(&name);
+            // ACP has no separate field for the provider-neutral tool name. Keep
+            // that stable identity in the title for generic clients while making
+            // the leading text useful to a person watching the task run.
+            let title = format!(
+                "{} · {name}",
+                describe_tool(&name, &arguments, ToolDisplayPhase::Proposed, cwd)
+            );
+            send_session_update(
+                connection,
+                session_id,
+                protocol::SessionUpdate::ToolCall(
+                    protocol::ToolCall::new(call_id, title)
+                        .kind(kind)
+                        .status(protocol::ToolCallStatus::Pending)
+                        .raw_input(arguments),
+                ),
+                revision,
+                None,
+                None,
+            )
+        }
         AppEvent::ToolStarted { call_id, .. } => send_tool_update(
             connection,
             session_id,
             call_id,
             protocol::ToolCallUpdateFields::new().status(protocol::ToolCallStatus::InProgress),
+            revision,
         ),
         AppEvent::ToolOutput {
             call_id, content, ..
@@ -1288,6 +2040,7 @@ fn send_event(
             protocol::ToolCallUpdateFields::new().content(vec![
                 protocol::ContentBlock::Text(protocol::TextContent::new(content)).into(),
             ]),
+            revision,
         ),
         AppEvent::ToolCompleted { call_id, success } => send_tool_update(
             connection,
@@ -1298,89 +2051,75 @@ fn send_event(
             } else {
                 protocol::ToolCallStatus::Failed
             }),
+            revision,
         ),
         AppEvent::DiffAvailable {
             call_id,
             diff,
             truncated,
-        } => send_tool_update(
-            connection,
-            session_id,
-            call_id,
-            protocol::ToolCallUpdateFields::new().content(vec![
-                protocol::ContentBlock::Text(protocol::TextContent::new(format!(
-                    "DIFF\n{diff}{}",
-                    if truncated {
-                        "\n… diff truncated"
-                    } else {
-                        ""
-                    }
-                )))
-                .into(),
-            ]),
-        ),
-        AppEvent::BackgroundTaskChanged { task_id, state } => {
-            connection.send_notification(protocol::SessionNotification::new(
-                session_id.clone(),
-                protocol::SessionUpdate::AgentThoughtChunk(protocol::ContentChunk::new(
+            files,
+        } => {
+            let locations = files
+                .iter()
+                .map(|file| protocol::ToolCallLocation::new(file.path.clone()))
+                .collect::<Vec<_>>();
+            let content = if files.is_empty() {
+                vec![
                     protocol::ContentBlock::Text(protocol::TextContent::new(format!(
-                        "[background {task_id}] {state}"
-                    ))),
-                )),
-            ))
-        }
-        AppEvent::QuestionsAsked { request } => {
-            connection.send_notification(protocol::SessionNotification::new(
-                session_id.clone(),
-                protocol::SessionUpdate::AgentThoughtChunk(protocol::ContentChunk::new(
-                    protocol::ContentBlock::Text(protocol::TextContent::new(format!(
-                        "[attention {}] {} structured question(s)",
-                        request.request_id,
-                        request.questions.len()
-                    ))),
-                )),
-            ))
-        }
-        AppEvent::QuestionsAnswered { request_id, .. } => {
-            connection.send_notification(protocol::SessionNotification::new(
-                session_id.clone(),
-                protocol::SessionUpdate::AgentThoughtChunk(protocol::ContentChunk::new(
-                    protocol::ContentBlock::Text(protocol::TextContent::new(format!(
-                        "[attention {request_id}] answered"
-                    ))),
-                )),
-            ))
-        }
-        AppEvent::QuestionsFailed { request_id, reason } => {
-            connection.send_notification(protocol::SessionNotification::new(
-                session_id.clone(),
-                protocol::SessionUpdate::AgentThoughtChunk(protocol::ContentChunk::new(
-                    protocol::ContentBlock::Text(protocol::TextContent::new(format!(
-                        "[attention {request_id}] closed without answers: {reason}"
-                    ))),
-                )),
-            ))
+                        "DIFF\n{diff}{}",
+                        if truncated {
+                            "\n… diff truncated"
+                        } else {
+                            ""
+                        }
+                    )))
+                    .into(),
+                ]
+            } else {
+                files
+                    .into_iter()
+                    .map(|file| {
+                        protocol::Diff::new(file.path, file.new_text)
+                            .old_text(file.old_text)
+                            .into()
+                    })
+                    .collect()
+            };
+            send_tool_update(
+                connection,
+                session_id,
+                call_id,
+                protocol::ToolCallUpdateFields::new()
+                    .content(content)
+                    .locations(locations),
+                revision,
+            )
         }
         AppEvent::PlanProposed {
             plan_id,
-            revision,
+            revision: plan_revision,
             markdown,
-        } => connection.send_notification(protocol::SessionNotification::new(
-            session_id.clone(),
+        } => send_session_update(
+            connection,
+            session_id,
             protocol::SessionUpdate::Plan(protocol::Plan::new(vec![protocol::PlanEntry::new(
-                format!("{plan_id} r{revision}\n{markdown}"),
+                format!("{plan_id} r{plan_revision}\n{markdown}"),
                 protocol::PlanEntryPriority::High,
                 protocol::PlanEntryStatus::Pending,
             )])),
-        )),
+            revision,
+            None,
+            None,
+        ),
         AppEvent::PlanReviewed {
             plan_id,
-            revision,
+            revision: plan_revision,
             decision,
-        } => connection.send_notification(protocol::SessionNotification::new(
-            session_id.clone(),
+        } => send_session_update(
+            connection,
+            session_id,
             protocol::SessionUpdate::Plan(protocol::Plan::new(vec![protocol::PlanEntry::new(
-                format!("{plan_id} r{revision}: {decision}"),
+                format!("{plan_id} r{plan_revision}: {decision}"),
                 protocol::PlanEntryPriority::High,
                 if decision == "approved" || decision == "abandoned" {
                     protocol::PlanEntryStatus::Completed
@@ -1388,7 +2127,29 @@ fn send_event(
                     protocol::PlanEntryStatus::InProgress
                 },
             )])),
-        )),
+            revision,
+            None,
+            None,
+        ),
+        AppEvent::WarningRaised { message } | AppEvent::ErrorRaised { message, .. } => {
+            let message_id = format!(
+                "notice:{}:{}",
+                revision.map_or(0, |value| value.revision),
+                correlation_id.as_deref().unwrap_or("unknown")
+            );
+            let chunk = protocol::ContentChunk::new(protocol::ContentBlock::Text(
+                protocol::TextContent::new(message),
+            ))
+            .message_id(message_id.as_str());
+            send_session_update(
+                connection,
+                session_id,
+                protocol::SessionUpdate::AgentMessageChunk(chunk),
+                revision,
+                None,
+                None,
+            )
+        }
         _ => Ok(()),
     }
 }
@@ -1398,11 +2159,16 @@ fn send_tool_update(
     session_id: &protocol::SessionId,
     call_id: String,
     fields: protocol::ToolCallUpdateFields,
+    revision: Option<&crate::session::ThreadRevision>,
 ) -> agent_client_protocol::Result<()> {
-    connection.send_notification(protocol::SessionNotification::new(
-        session_id.clone(),
+    send_session_update(
+        connection,
+        session_id,
         protocol::SessionUpdate::ToolCallUpdate(protocol::ToolCallUpdate::new(call_id, fields)),
-    ))
+        revision,
+        None,
+        None,
+    )
 }
 
 fn send_text(
@@ -1419,12 +2185,272 @@ fn send_text(
 }
 
 fn agent_error(error: crate::AxiomError) -> agent_client_protocol::Error {
-    agent_client_protocol::util::internal_error(error)
+    match error {
+        crate::AxiomError::SecureProvider {
+            code: "PROVIDER_TDX_OUT_OF_DATE",
+            message,
+            ..
+        } => agent_client_protocol::Error::new(-32010, message),
+        crate::AxiomError::Cancelled => agent_client_protocol::Error::request_cancelled(),
+        crate::AxiomError::SecureProvider {
+            kind:
+                axiom_inference::ProviderFailureKind::LocalAuthentication
+                | axiom_inference::ProviderFailureKind::Authentication,
+            ..
+        } => agent_client_protocol::Error::new(
+            -32001,
+            "Refresh your Axiom account or sign in again before verifying this connection.",
+        ),
+        error => agent_client_protocol::util::internal_error(error),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn independently_paged_accounting_requires_timeline_version_two() {
+        let state = ExtensionState::new();
+        let mut features = FeatureVersions::all();
+        features.timeline = 1;
+        state.negotiate(Some(features));
+        assert!(!state.feature_enabled(ExtensionFeature::Timeline));
+        features.timeline = 2;
+        state.negotiate(Some(features));
+        assert!(state.feature_enabled(ExtensionFeature::Timeline));
+    }
+
+    #[test]
+    fn context_usage_activity_carries_only_replacement_token_metadata() {
+        let usage = extension::ContextUsage {
+            input_tokens: 75_000,
+            output_tokens: 1_000,
+            model_id: "test".into(),
+            reported_at: "2026-09-07T00:00:00Z".into(),
+            context_window_tokens: Some(100_000),
+            auto_compact_threshold_tokens: Some(85_000),
+        };
+        let event = extension_activity(&AppEvent::ContextUsageUpdated { usage }).unwrap();
+        assert_eq!(
+            serde_json::to_value(event).unwrap(),
+            serde_json::json!({
+                "kind": "context_usage_changed", "usage": {
+                    "inputTokens": 75_000, "outputTokens": 1000, "modelId": "test",
+                    "reportedAt": "2026-09-07T00:00:00Z", "contextWindowTokens": 100_000,
+                    "autoCompactThresholdTokens": 85_000
+                }
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn account_switch_drains_work_paused_before_the_store_lock_before_opening_b() {
+        let root = tempfile::tempdir().expect("temporary account root");
+        let paths = crate::paths::AxiomPaths::from_roots(
+            root.path().join("config"),
+            root.path().join("data"),
+        );
+        paths.prepare().expect("prepare paths");
+        let store = SessionStore::account_routed(paths, FrontendKind::DesktopChat);
+        store.activate_account("account-a").expect("activate A");
+        let sessions: Sessions = Arc::new(Mutex::new(SessionRegistry::default()));
+        let tracker = Arc::new(AccountWorkTracker::default());
+        let cancellation = CancellationToken::new();
+        let guard = tracker
+            .register(cancellation.clone())
+            .expect("register A work");
+        let paused_before_store_lock = Arc::new(Notify::new());
+        let resume_store_work = Arc::new(Notify::new());
+        let delayed_paused = paused_before_store_lock.clone();
+        let delayed_resume = resume_store_work.clone();
+        let delayed_store = store.clone();
+        let delayed = tokio::spawn(async move {
+            let _guard = guard;
+            delayed_paused.notify_one();
+            cancellation.cancelled().await;
+            delayed_resume.notified().await;
+            let runtime = Runtime::new(8);
+            let session_id = SessionId::new();
+            let events = runtime
+                .dispatch(AppCommand::CreateSession {
+                    session_id,
+                    cwd: PathBuf::from("/account-a/private"),
+                    origin: Origin::Acp,
+                    profile: PermissionProfile::Web,
+                })
+                .await
+                .expect("create delayed A session");
+            delayed_store
+                .append_all(&events)
+                .expect("the drained task finishes against A");
+        });
+
+        paused_before_store_lock.notified().await;
+        begin_account_switch(&sessions, &tracker, None, None)
+            .await
+            .expect("begin switch");
+        assert!(
+            tracker.register(CancellationToken::new()).is_err(),
+            "new account work must not enter while the switch barrier is active"
+        );
+        let switch_sessions = sessions.clone();
+        let switch_tracker = tracker.clone();
+        let switch_store = store.clone();
+        let switch_started = Arc::new(Notify::new());
+        let task_started = switch_started.clone();
+        let account_switch = tokio::spawn(async move {
+            task_started.notify_one();
+            commit_account_store_switch(
+                &switch_sessions,
+                &switch_tracker,
+                Some(&switch_store),
+                Some("account-b"),
+            )
+            .await
+        });
+        switch_started.notified().await;
+        tokio::task::yield_now().await;
+        assert!(
+            !account_switch.is_finished(),
+            "B must not open while paused A work still owns its account reservation"
+        );
+
+        resume_store_work.notify_one();
+        delayed.await.expect("delayed A task");
+        account_switch
+            .await
+            .expect("account switch task")
+            .expect("commit B switch");
+
+        assert_eq!(store.active_account_id().as_deref(), Some("account-b"));
+        assert!(store.list(true).expect("B catalog").is_empty());
+        store.activate_account("account-a").expect("reactivate A");
+        assert_eq!(store.list(true).expect("A catalog").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn bound_acp_store_work_paused_before_lock_fails_instead_of_crossing_accounts() {
+        let root = tempfile::tempdir().expect("temporary account root");
+        let paths = crate::paths::AxiomPaths::from_roots(
+            root.path().join("config"),
+            root.path().join("data"),
+        );
+        paths.prepare().expect("prepare paths");
+        let store = SessionStore::account_routed(paths, FrontendKind::DesktopChat);
+        store.activate_account("account-a").expect("activate A");
+        let sessions: Sessions = Arc::new(Mutex::new(SessionRegistry::default()));
+        let tracker = Arc::new(AccountWorkTracker::default());
+        let account_store = tracker.register_store(&store).expect("bind ACP work to A");
+        let paused_before_store_lock = Arc::new(Notify::new());
+        let resume_store_work = Arc::new(Notify::new());
+        let delayed_paused = paused_before_store_lock.clone();
+        let delayed_resume = resume_store_work.clone();
+        let delayed = tokio::spawn(async move {
+            delayed_paused.notify_one();
+            delayed_resume.notified().await;
+            account_store.read(|store| store.thread_catalog(None, true, None, 200))
+        });
+
+        paused_before_store_lock.notified().await;
+        begin_account_switch(&sessions, &tracker, None, None)
+            .await
+            .expect("begin switch");
+        let switch_sessions = sessions.clone();
+        let switch_tracker = tracker.clone();
+        let switch_store = store.clone();
+        let account_switch = tokio::spawn(async move {
+            commit_account_store_switch(
+                &switch_sessions,
+                &switch_tracker,
+                Some(&switch_store),
+                Some("account-b"),
+            )
+            .await
+        });
+
+        resume_store_work.notify_one();
+        let error = delayed
+            .await
+            .expect("delayed ACP store task")
+            .expect_err("cancelled A work must not return a catalog");
+        assert!(matches!(error, crate::AxiomError::Cancelled));
+        account_switch
+            .await
+            .expect("account switch task")
+            .expect("commit B switch");
+        assert_eq!(store.active_account_id().as_deref(), Some("account-b"));
+        assert!(store.list(true).expect("B catalog").is_empty());
+    }
+
+    #[tokio::test]
+    async fn account_derived_publication_finishes_before_switch_start_or_is_dropped() {
+        let store = SessionStore::in_memory().expect("store");
+        let tracker = Arc::new(AccountWorkTracker::default());
+        let account_store = tracker.register_store(&store).expect("register store work");
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let publication = tokio::task::spawn_blocking(move || {
+            account_store.publish(|| {
+                entered_tx.send(()).expect("signal publication");
+                release_rx.recv().expect("release publication");
+                Ok(())
+            })
+        });
+        entered_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("publication entered");
+
+        let switch_tracker = tracker.clone();
+        let (switch_done_tx, switch_done_rx) = std::sync::mpsc::channel();
+        let switch = tokio::task::spawn_blocking(move || {
+            let result = switch_tracker.start_switch(None);
+            switch_done_tx.send(()).expect("signal switch result");
+            result
+        });
+        assert!(matches!(
+            switch_done_rx.recv_timeout(std::time::Duration::from_millis(50)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ));
+
+        release_tx.send(()).expect("release publication");
+        publication
+            .await
+            .expect("publication task")
+            .expect("account A publication");
+        switch
+            .await
+            .expect("switch task")
+            .expect("switch starts after publication");
+
+        let stale = tracker
+            .register_store(&store)
+            .err()
+            .expect("new publication work is rejected during the switch");
+        assert!(matches!(stale, crate::AxiomError::InvalidTransition(_)));
+    }
+
+    #[tokio::test]
+    async fn account_switch_publication_boundary_clears_pending_delete_grants() {
+        let extension = ExtensionState::new();
+        extension.pending_deletes.lock().await.insert(
+            "account-a-grant".into(),
+            PendingDelete {
+                session_ids: vec![SessionId::new()],
+                expires_at_unix_seconds: u64::MAX,
+            },
+        );
+
+        extension.clear_pending_deletes_for_account_switch().await;
+
+        assert!(extension.pending_deletes.lock().await.is_empty());
+    }
+
+    #[test]
+    fn cancelled_operations_use_the_standard_json_rpc_cancellation_code() {
+        let error = agent_error(crate::AxiomError::Cancelled);
+        assert_eq!(i32::from(error.code), -32800);
+    }
 
     #[test]
     fn text_blocks_are_joined_without_accepting_empty_prompts() {
@@ -1446,5 +2472,208 @@ mod tests {
             .expect("resource link"),
             "[Referenced resource: source](file:///tmp/source.rs)"
         );
+    }
+
+    #[test]
+    fn every_builtin_tool_has_an_intentional_acp_kind() {
+        for name in [
+            "list_files",
+            "glob_files",
+            "inspect_metadata",
+            "select_context",
+            "inspect_git",
+            "view_session_diff",
+            "search_text",
+            "read_file",
+            "apply_patch",
+            "replace_text",
+            "run_command",
+            "run_shell",
+            "start_background",
+            "background_list",
+            "background_status",
+            "background_wait",
+            "web_search",
+            "fetch_url",
+            "stop_background",
+            "plan_create",
+            "plan_revise",
+            "plan_propose",
+            "ask_user_questions",
+            "update_progress",
+        ] {
+            assert_ne!(tool_kind(name), protocol::ToolKind::Other, "{name}");
+        }
+    }
+
+    #[test]
+    fn workload_manifest_projection_preserves_one_mib_and_bounds_unicode_truncation() {
+        let limit = extension::MAX_WORKLOAD_MANIFEST_BYTES;
+        assert_eq!(limit, 1024 * 1024);
+        for value in ["x".repeat(limit), "é".repeat(limit / 2)] {
+            assert_eq!(bounded_extension_text(value.clone(), limit), value);
+        }
+        for value in ["x".repeat(limit + 1), "é".repeat(limit / 2 + 1)] {
+            let projected = bounded_extension_text(value.clone(), limit);
+            assert!(projected.len() <= limit);
+            assert!(projected.ends_with('…'));
+            assert!(value.starts_with(projected.trim_end_matches('…')));
+        }
+    }
+
+    #[test]
+    fn verified_security_cannot_be_serialized_without_evidence() {
+        let result = strict_extension_security_verification(SecurityVerification {
+            status: crate::app::SecurityStatus::Verified,
+            evidence: None,
+        });
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn verified_security_rejects_incomplete_lease_evidence_even_for_fixtures() {
+        let evidence = axiom_secure_client::SecurityEvidence {
+            state: axiom_secure_client::SecurityState::Verified,
+            provider_id: "fixture".into(),
+            model_id: "fixture-model".into(),
+            attestation_protocol: "fixture-attestation-v1".into(),
+            e2ee_protocol: "fixture-e2ee-v1".into(),
+            e2ee_encryption_version: 1,
+            trust_policy_version: "fixture-policy".into(),
+            verified_at_unix_seconds: 1,
+            attestation_generation: None,
+            hard_expires_at_unix_seconds: None,
+            model_key_fingerprint: "00".repeat(32),
+            tls_spki_fingerprint: None,
+            checks: Vec::new(),
+            provider_claims: Vec::new(),
+            workload_manifest: None,
+        };
+        assert!(
+            extension_security_evidence(crate::app::SecurityStatus::Verified, evidence).is_err()
+        );
+    }
+
+    #[test]
+    fn tinfoil_security_report_does_not_require_a_relay_lease_generation() {
+        let evidence = axiom_secure_client::SecurityEvidence {
+            state: axiom_secure_client::SecurityState::Verified,
+            provider_id: "tinfoil".into(),
+            model_id: "tinfoil-gpt-oss-120b".into(),
+            attestation_protocol: "tinfoil-snp-sigstore-v1".into(),
+            e2ee_protocol: "tinfoil-ehbp-v1".into(),
+            e2ee_encryption_version: 1,
+            trust_policy_version: "test-policy".into(),
+            verified_at_unix_seconds: 1,
+            attestation_generation: None,
+            hard_expires_at_unix_seconds: Some(241),
+            model_key_fingerprint: "00".repeat(32),
+            tls_spki_fingerprint: None,
+            checks: Vec::new(),
+            provider_claims: Vec::new(),
+            workload_manifest: None,
+        };
+        let projected =
+            extension_security_evidence(crate::app::SecurityStatus::Verified, evidence.clone())
+                .expect("Tinfoil evidence has no relay lease");
+        assert_eq!(projected.attestation_generation, None);
+        assert_eq!(projected.hard_expires_at_unix_seconds, 241);
+        for index in 0..5 {
+            let mut invalid = evidence.clone();
+            match index {
+                0 => invalid.provider_id = "near".into(),
+                1 => invalid.attestation_protocol = "other".into(),
+                2 => invalid.e2ee_protocol = "other".into(),
+                3 => invalid.attestation_generation = Some(0),
+                _ => invalid.hard_expires_at_unix_seconds = None,
+            }
+            assert!(
+                extension_security_evidence(crate::app::SecurityStatus::Verified, invalid,)
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn applying_a_different_model_invalidates_verified_session_security() {
+        let mut session = AcpSession {
+            internal_id: SessionId::new(),
+            cwd: PathBuf::from("/workspace"),
+            profile: PermissionProfile::Web,
+            model: "near/model-a".into(),
+            thinking: crate::app::ThinkingLevel::High,
+            models: vec!["near/model-a".into(), "tinfoil/model-b".into()],
+            has_prompt: false,
+            security: crate::app::SecurityStatus::Verified,
+        };
+
+        apply_session_model_settings(
+            &mut session,
+            "tinfoil/model-b",
+            crate::app::ThinkingLevel::Medium,
+            &["near/model-a".into(), "tinfoil/model-b".into()],
+            true,
+        );
+        assert_eq!(session.security, crate::app::SecurityStatus::Unverified);
+
+        session.security = crate::app::SecurityStatus::Verified;
+        apply_session_model_settings(
+            &mut session,
+            "tinfoil/model-b",
+            crate::app::ThinkingLevel::Medium,
+            &["near/model-a".into(), "tinfoil/model-b".into()],
+            false,
+        );
+        assert_eq!(session.security, crate::app::SecurityStatus::Verified);
+    }
+
+    #[test]
+    fn prompt_client_item_identity_is_bounded_and_nonempty() {
+        let mut meta = protocol::Meta::new();
+        meta.insert(
+            extension::META_KEY.into(),
+            serde_json::json!({"clientItemId": ""}),
+        );
+        assert!(prompt_metadata(Some(&meta)).is_err());
+        meta.insert(
+            extension::META_KEY.into(),
+            serde_json::json!({"clientItemId": "x".repeat(extension::MAX_IDENTIFIER_BYTES + 1)}),
+        );
+        assert!(prompt_metadata(Some(&meta)).is_err());
+    }
+
+    #[test]
+    fn desktop_web_requires_an_explicit_boolean_opt_in_on_every_prompt() {
+        assert!(!prompt_web_enabled(FrontendKind::DesktopChat, None));
+        assert!(prompt_web_enabled(FrontendKind::Cli, None));
+        for (value, expected) in [
+            (serde_json::json!({"clientItemId":"test"}), false),
+            (
+                serde_json::json!({"clientItemId":"test","webEnabled":false}),
+                false,
+            ),
+            (
+                serde_json::json!({"clientItemId":"test","webEnabled":true}),
+                true,
+            ),
+        ] {
+            let meta = serde_json::from_value(serde_json::json!({"axiom":value})).expect("meta");
+            let decoded = prompt_metadata(Some(&meta)).expect("valid metadata");
+            assert_eq!(
+                prompt_web_enabled(FrontendKind::DesktopChat, decoded.as_ref()),
+                expected
+            );
+        }
+        for invalid in [
+            serde_json::json!("true"),
+            serde_json::json!(1),
+            serde_json::Value::Null,
+        ] {
+            let meta = serde_json::from_value(serde_json::json!({
+                "axiom":{"clientItemId":"test","webEnabled":invalid}
+            }))
+            .expect("meta");
+            assert!(prompt_metadata(Some(&meta)).is_err());
+        }
     }
 }

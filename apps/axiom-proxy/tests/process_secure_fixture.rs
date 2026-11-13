@@ -12,7 +12,7 @@ use std::{
 };
 
 use axiom_secure_client::test_support::{
-    FixtureModelIdentity, encrypt_for_client, sign_attestation,
+    FixtureModelIdentity, encrypt_for_client, sign_attestation, sign_response_receipt,
 };
 use axum::{
     Json, Router,
@@ -487,7 +487,23 @@ async fn actual_proxy_preserves_encryption_streaming_tools_errors_and_cancellati
     .await
     .unwrap();
     assert!(abrupt.contains("upstream_failed"));
-    assert!(abrupt.ends_with("data: [DONE]\n\n"));
+    assert!(!abrupt.contains("data: [DONE]"));
+    assert!(!abrupt.contains("\"finish_reason\":\"stop\""));
+
+    let invalid_receipt = post_json(
+        &client,
+        &proxy.base_url,
+        json!({"model":MODEL_ID,"messages":[{"role":"user","content":"bad stream receipt fixture"}],"stream":true}),
+    )
+    .await
+    .error_for_status()
+    .unwrap()
+    .text()
+    .await
+    .unwrap();
+    assert!(invalid_receipt.contains("\"error\""), "{invalid_receipt}");
+    assert!(!invalid_receipt.contains("data: [DONE]"));
+    assert!(!invalid_receipt.contains("\"finish_reason\":\"stop\""));
 
     let mut slow = post_json(
         &client,
@@ -618,9 +634,10 @@ async fn catalog(State(state): State<Arc<FixtureState>>) -> Json<Value> {
         "base_url":state.provider_base_url,
         "provider":"axiom-test-fixture",
         "provider_label":"Axiom Test Fixture",
-        "e2ee_protocol":"near-v2",
+        "e2ee_protocol":"near-v3",
         "e2ee_encryption_version":2,
         "attestation_protocol":"signed-test-fixture-v1",
+        "relay_contract_version":2,
         "context_window_tokens":131_072,
         "max_output_tokens":8192,
         "supported_reasoning_efforts":["medium","high"]
@@ -666,8 +683,11 @@ async fn relay_chat(State(state): State<Arc<FixtureState>>, body: Bytes) -> Resp
             .into_response();
     }
     let client_key = request["client_public_key_hex"].as_str().unwrap();
+    let request_hash = request["provider_e2ee_context"]["request_body_hash"]
+        .as_str()
+        .unwrap();
     if request["stream"].as_bool() == Some(true) {
-        return stream_response(&state, client_key, &joined);
+        return stream_response(&state, client_key, request_hash, &joined);
     }
     let response = if joined.contains("tamper response fixture") {
         json!({
@@ -700,10 +720,71 @@ async fn relay_chat(State(state): State<Arc<FixtureState>>, body: Bytes) -> Resp
             "finish_reason":"stop","usage":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10}
         })
     };
+    let proof = completion_proof(&response, request_hash);
+    let mut response = response;
+    response["proof"] = proof;
     Json(response).into_response()
 }
 
-fn stream_response(state: &Arc<FixtureState>, client_key: &str, joined: &str) -> Response {
+fn completion_proof(response: &Value, request_hash: &str) -> Value {
+    let mut message = serde_json::Map::new();
+    if let Some(content) = response.get("encrypted_content") {
+        message.insert("content".into(), content.clone());
+    }
+    if let Some(reasoning) = response.get("encrypted_reasoning_content") {
+        message.insert("reasoning_content".into(), reasoning.clone());
+    }
+    if let Some(refusal) = response.get("encrypted_refusal") {
+        message.insert("refusal".into(), refusal.clone());
+    }
+    if let Some(calls) = response
+        .get("encrypted_tool_calls")
+        .and_then(Value::as_array)
+    {
+        message.insert(
+            "tool_calls".into(),
+            Value::Array(
+                calls
+                    .iter()
+                    .map(|call| {
+                        json!({
+                            "id": call["id"],
+                            "type": call["type"],
+                            "function": {
+                                "name": call["function"]["encrypted_name"],
+                                "arguments": call["function"]["encrypted_arguments"],
+                            },
+                        })
+                    })
+                    .collect(),
+            ),
+        );
+    }
+    let raw = json!({
+        "id": response["id"],
+        "model": response["model"],
+        "choices": [{
+            "index": 0,
+            "message": Value::Object(message),
+            "finish_reason": response["finish_reason"],
+        }],
+        "usage": response["usage"],
+    });
+    let bytes = serde_json::to_vec(&raw).unwrap();
+    sign_response_receipt(
+        &bytes,
+        request_hash,
+        response["id"].as_str().unwrap(),
+        UPSTREAM_MODEL,
+    )
+}
+
+fn stream_response(
+    state: &Arc<FixtureState>,
+    client_key: &str,
+    request_hash: &str,
+    joined: &str,
+) -> Response {
     let run_id = "fixture-stream";
     let mut frames = vec![sse(
         "run.created",
@@ -728,7 +809,7 @@ fn stream_response(state: &Arc<FixtureState>, client_key: &str, joined: &str) ->
                 } else {
                     sse(
                         "message.encrypted_delta",
-                        &json!({"run_id":"fixture-slow","sequence":sequence - 1,
+                        &json!({"run_id":"fixture-slow","sequence":sequence,
                     "encrypted_delta":encrypt_for_client(&key,b"x").unwrap()}),
                     )
                 };
@@ -743,7 +824,8 @@ fn stream_response(state: &Arc<FixtureState>, client_key: &str, joined: &str) ->
             .body(Body::from_stream(stream))
             .unwrap();
     }
-    if joined.contains("stream tool fixture request") {
+    let mut raw_chunks = Vec::new();
+    let (usage, finish_reason) = if joined.contains("stream tool fixture request") {
         for (sequence, (name, arguments, id)) in [
             (Some("read_"), Some("{\"path\":"), Some("call-stream-1")),
             (Some("file"), Some("\"README.md\"}"), None),
@@ -751,40 +833,95 @@ fn stream_response(state: &Arc<FixtureState>, client_key: &str, joined: &str) ->
         .into_iter()
         .enumerate()
         {
+            let encrypted_name = encrypt_for_client(client_key, name.unwrap().as_bytes()).unwrap();
+            let encrypted_arguments =
+                encrypt_for_client(client_key, arguments.unwrap().as_bytes()).unwrap();
             frames.push(sse(
                 "message.encrypted_delta",
                 &json!({
-                    "run_id":run_id,"sequence":sequence,
+                    "run_id":run_id,"sequence":sequence + 1,
                     "encrypted_tool_calls":[{
                         "index":0,"id":id,"type":id.map(|_| "function"),
                         "function":{
-                            "encrypted_name":encrypt_for_client(client_key,name.unwrap().as_bytes()).unwrap(),
-                            "encrypted_arguments":encrypt_for_client(client_key,arguments.unwrap().as_bytes()).unwrap()
+                            "encrypted_name":encrypted_name,
+                            "encrypted_arguments":encrypted_arguments,
                         }
                     }]
                 }),
             ));
+            raw_chunks.push(json!({
+                "id": run_id,
+                "model": UPSTREAM_MODEL,
+                "choices": [{
+                    "index": 0,
+                    "delta": {
+                        "tool_calls": [{
+                            "index": 0,
+                            "id": id,
+                            "type": id.map(|_| "function"),
+                            "function": {
+                                "name": encrypted_name,
+                                "arguments": encrypted_arguments,
+                            },
+                        }],
+                    },
+                }],
+            }));
         }
-        frames.push(sse(
-            "message.encrypted_completed",
-            &json!({"run_id":run_id,"usage":{"prompt_tokens":9,"completion_tokens":4,"total_tokens":13},"finish_reason":"tool_calls"}),
-        ));
+        (
+            json!({"prompt_tokens":9,"completion_tokens":4,"total_tokens":13}),
+            "tool_calls",
+        )
     } else {
-        frames.push(sse(
-            "message.encrypted_delta",
-            &json!({"run_id":run_id,"sequence":0,
-                "encrypted_reasoning_delta":encrypt_for_client(client_key,b"fixture reasoning").unwrap()}),
-        ));
+        let encrypted_reasoning = encrypt_for_client(client_key, b"fixture reasoning").unwrap();
         frames.push(sse(
             "message.encrypted_delta",
             &json!({"run_id":run_id,"sequence":1,
-                "encrypted_delta":encrypt_for_client(client_key,b"fixture streamed answer").unwrap()}),
+                "encrypted_reasoning_delta":encrypted_reasoning}),
         ));
+        raw_chunks.push(json!({
+            "id": run_id,
+            "model": UPSTREAM_MODEL,
+            "choices": [{"index": 0, "delta": {"reasoning_content": encrypted_reasoning}}],
+        }));
+        let encrypted_content = encrypt_for_client(client_key, b"fixture streamed answer").unwrap();
         frames.push(sse(
-            "message.encrypted_completed",
-            &json!({"run_id":run_id,"usage":{"prompt_tokens":11,"completion_tokens":6,"total_tokens":17},"finish_reason":"stop"}),
+            "message.encrypted_delta",
+            &json!({"run_id":run_id,"sequence":2,
+                "encrypted_delta":encrypted_content}),
         ));
+        raw_chunks.push(json!({
+            "id": run_id,
+            "model": UPSTREAM_MODEL,
+            "choices": [{"index": 0, "delta": {"content": encrypted_content}}],
+        }));
+        (
+            json!({"prompt_tokens":11,"completion_tokens":6,"total_tokens":17}),
+            "stop",
+        )
+    };
+    raw_chunks.push(json!({
+        "id": run_id,
+        "model": UPSTREAM_MODEL,
+        "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
+        "usage": usage,
+    }));
+    let mut raw_body = String::new();
+    for chunk in &raw_chunks {
+        raw_body.push_str("data: ");
+        raw_body.push_str(&chunk.to_string());
+        raw_body.push_str("\n\n");
     }
+    raw_body.push_str("data: [DONE]\n\n");
+    let mut proof =
+        sign_response_receipt(raw_body.as_bytes(), request_hash, run_id, UPSTREAM_MODEL);
+    if joined.contains("bad stream receipt fixture") {
+        proof["signature"] = json!(format!("0x{}", "00".repeat(65)));
+    }
+    frames.push(sse(
+        "message.encrypted_completed",
+        &json!({"run_id":run_id,"usage":usage,"finish_reason":finish_reason,"proof":proof}),
+    ));
     frames.push(sse("run.completed", &json!({"run_id":run_id})));
     sse_body(frames)
 }

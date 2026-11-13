@@ -24,7 +24,10 @@ The test suite uses the MIT-licensed `portable-pty` crate to exercise terminal
 resize, cancellation, panic unwinding, and restoration against an actual
 pseudo-terminal rather than a mocked input stream.
 
-The development search service downloads and runs official SearXNG separately.
-SearXNG is AGPL-3.0-or-later and is not linked, vendored, or redistributed as
-part of the AxiomCLI Rust binary. See `dev/searxng/README.md` and the pinned
-source revision in `scripts/searxng-dev`.
+Desktop's Tinfoil provider mark is derived from the symbol in the official
+`tinfoilsh/tinfoil-webapp` `public/logo-white.svg`, retrieved September 21, 2026.
+Only the symbol path is retained, with a cropped viewBox and monochrome fill.
+It identifies the upstream provider; Tinfoil retains its trademark rights.
+Source: https://github.com/tinfoilsh/tinfoil-webapp/blob/main/public/logo-white.svg
+The upstream AGPL-3.0 license, modification notice and modified SVG source ship
+in Desktop resources under `licenses/tinfoil-logo/`.

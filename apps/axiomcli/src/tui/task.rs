@@ -1,13 +1,16 @@
 use std::{
     cell::RefCell,
     fmt::Write as _,
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 
 use serde_json::Value;
 
-use crate::app::{TaskItem, TurnId};
+use crate::{
+    app::{TaskItem, TurnId},
+    tool_display::{ToolDisplayPhase, describe_tool},
+};
 
 use super::markdown::StreamingMarkdownRenderer;
 
@@ -32,8 +35,6 @@ pub(super) enum TaskActivity {
     Starting,
     Thinking,
     Responding,
-    PreparingTool(String),
-    RunningTool(String),
     Working(String),
     Waiting(String),
 }
@@ -44,8 +45,6 @@ impl TaskActivity {
             Self::Starting => "Starting the task".into(),
             Self::Thinking => "Thinking through the next step".into(),
             Self::Responding => "Writing the response".into(),
-            Self::PreparingTool(name) => format!("Preparing {}", active_tool_label(name)),
-            Self::RunningTool(name) => active_tool_label(name),
             Self::Working(message) | Self::Waiting(message) => message.clone(),
         }
     }
@@ -57,11 +56,12 @@ pub(super) enum ToolPhase {
     Running,
     Completed,
     Failed,
+    Cancelled,
 }
 
 impl ToolPhase {
     pub(super) const fn is_terminal(self) -> bool {
-        matches!(self, Self::Completed | Self::Failed)
+        matches!(self, Self::Completed | Self::Failed | Self::Cancelled)
     }
 }
 
@@ -91,8 +91,23 @@ impl ToolView {
         }
     }
 
-    pub(super) fn timeline_label(&self) -> String {
-        tool_timeline_label(&self.name, &self.arguments, self.phase)
+    pub(super) fn timeline_label(&self, cwd: &Path) -> String {
+        let label = describe_tool(
+            &self.name,
+            &self.arguments,
+            match self.phase {
+                ToolPhase::Proposed | ToolPhase::Cancelled => ToolDisplayPhase::Proposed,
+                ToolPhase::Running => ToolDisplayPhase::Running,
+                ToolPhase::Completed => ToolDisplayPhase::Completed,
+                ToolPhase::Failed => ToolDisplayPhase::Failed,
+            },
+            Some(cwd),
+        );
+        if self.phase == ToolPhase::Cancelled {
+            format!("Stopped · {label}")
+        } else {
+            label
+        }
     }
 }
 
@@ -147,6 +162,13 @@ impl TaskRunView {
 
     pub(super) fn finish(&mut self, phase: TaskPhase, error: Option<String>) {
         self.phase = phase;
+        if phase == TaskPhase::Cancelled {
+            for tool in &mut self.tools {
+                if !tool.phase.is_terminal() {
+                    tool.phase = ToolPhase::Cancelled;
+                }
+            }
+        }
         self.error = error;
         self.error_detail = None;
         self.finished_at = Some(Instant::now());
@@ -292,120 +314,6 @@ impl TaskRunView {
     }
 }
 
-#[derive(Clone, Copy)]
-enum ToolClass {
-    Read,
-    Search,
-    Run,
-    Change,
-    Other,
-}
-
-fn classify_tool(name: &str) -> ToolClass {
-    let normalized = name.to_ascii_lowercase();
-    if normalized.contains("search")
-        || normalized.contains("grep")
-        || normalized.contains("find")
-        || normalized.contains("glob")
-        || normalized.contains("web")
-    {
-        ToolClass::Search
-    } else if normalized.contains("read")
-        || normalized.contains("list")
-        || normalized.contains("view")
-        || normalized == "cat"
-    {
-        ToolClass::Read
-    } else if normalized.contains("write")
-        || normalized.contains("edit")
-        || normalized.contains("patch")
-        || normalized.contains("replace")
-        || normalized.contains("delete")
-    {
-        ToolClass::Change
-    } else if normalized.contains("shell")
-        || normalized.contains("command")
-        || normalized.contains("exec")
-        || normalized.contains("run")
-        || normalized.contains("terminal")
-    {
-        ToolClass::Run
-    } else {
-        ToolClass::Other
-    }
-}
-
-fn active_tool_label(name: &str) -> String {
-    match classify_tool(name) {
-        ToolClass::Read => "Reading files".into(),
-        ToolClass::Search if name.to_ascii_lowercase().contains("web") => {
-            "Searching the web".into()
-        }
-        ToolClass::Search => "Searching the workspace".into(),
-        ToolClass::Run => "Running a command".into(),
-        ToolClass::Change => "Editing files".into(),
-        ToolClass::Other => format!("Using {}", humanize_name(name)),
-    }
-}
-
-fn tool_timeline_label(name: &str, arguments: &Value, phase: ToolPhase) -> String {
-    let target = tool_target(arguments);
-    let class = classify_tool(name);
-    let action = match (phase, class) {
-        (ToolPhase::Proposed | ToolPhase::Running, ToolClass::Read) => "Reading",
-        (ToolPhase::Proposed | ToolPhase::Running, ToolClass::Search) => "Searching",
-        (ToolPhase::Proposed | ToolPhase::Running, ToolClass::Run) => "Running",
-        (ToolPhase::Proposed | ToolPhase::Running, ToolClass::Change) => "Editing",
-        (ToolPhase::Proposed | ToolPhase::Running, ToolClass::Other) => "Using",
-        (ToolPhase::Completed, ToolClass::Read) => "Read",
-        (ToolPhase::Completed, ToolClass::Search) => "Searched",
-        (ToolPhase::Completed, ToolClass::Run) => "Ran",
-        (ToolPhase::Completed, ToolClass::Change) => "Edited",
-        (ToolPhase::Completed, ToolClass::Other) => "Used",
-        (ToolPhase::Failed, ToolClass::Read) => "Failed to read",
-        (ToolPhase::Failed, ToolClass::Search) => "Failed to search",
-        (ToolPhase::Failed, ToolClass::Run) => "Failed to run",
-        (ToolPhase::Failed, ToolClass::Change) => "Failed to edit",
-        (ToolPhase::Failed, ToolClass::Other) => "Failed to use",
-    };
-    let subject = match class {
-        ToolClass::Read => target.unwrap_or_else(|| "files".into()),
-        ToolClass::Search if name.to_ascii_lowercase().contains("web") => {
-            target.map_or_else(|| "the web".into(), |target| format!("the web · {target}"))
-        }
-        ToolClass::Search => target.map_or_else(
-            || "the workspace".into(),
-            |target| format!("the workspace · {target}"),
-        ),
-        ToolClass::Run => "a command".into(),
-        ToolClass::Change => target.unwrap_or_else(|| "files".into()),
-        ToolClass::Other => humanize_name(name),
-    };
-    format!("{action} {subject}")
-}
-
-fn tool_target(arguments: &Value) -> Option<String> {
-    let object = arguments.as_object()?;
-    for key in ["path", "query", "pattern", "url", "glob"] {
-        if let Some(value) = object.get(key).and_then(Value::as_str) {
-            let value = value.split_whitespace().collect::<Vec<_>>().join(" ");
-            if !value.is_empty() {
-                let mut characters = value.chars();
-                let mut compact = characters.by_ref().take(120).collect::<String>();
-                if characters.next().is_some() {
-                    compact.push('…');
-                }
-                return Some(compact);
-            }
-        }
-    }
-    None
-}
-
-fn humanize_name(name: &str) -> String {
-    name.replace(['_', '-'], " ")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -431,7 +339,10 @@ mod tests {
             task.timeline[2],
             TaskTimelineItem::Response { .. }
         ));
-        assert_eq!(task.tools[0].timeline_label(), "Read README.md");
+        assert_eq!(
+            task.tools[0].timeline_label(Path::new("/work")),
+            "Read `README.md`"
+        );
     }
 
     #[test]

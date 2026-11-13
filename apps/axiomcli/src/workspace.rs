@@ -123,7 +123,7 @@ pub enum EditIntent {
     Create {
         path: PathBuf,
         content: String,
-        #[serde(default)]
+        #[serde(default, rename = "file_permissions", alias = "mode")]
         mode: Option<u32>,
     },
     Update {
@@ -317,7 +317,7 @@ impl Workspace {
             kind: kind.into(),
             size_bytes: metadata.len(),
             readonly: metadata.permissions().readonly(),
-            executable: is_executable(&metadata),
+            executable: is_executable(&resolved, &metadata),
             content: if looks_binary(&prefix) {
                 ContentClassification::Binary
             } else {
@@ -1058,11 +1058,7 @@ fn stage_content(
             std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(mode))?;
         }
         #[cfg(not(unix))]
-        if mode.is_some() {
-            return Err(AxiomError::Tool(
-                "explicit file modes are not supported on this platform".into(),
-            ));
-        }
+        let _ = mode;
         Ok(())
     })();
     if let Err(error) = result {
@@ -1157,7 +1153,24 @@ fn open_verified(path: &Path, root: &Path) -> Result<File> {
         use std::os::unix::fs::OpenOptionsExt as _;
         options.custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK);
     }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
     let file = options.open(path)?;
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt as _;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+        if file.metadata()?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(AxiomError::Tool(format!(
+                "refusing to follow a Windows reparse point: {}",
+                path.display()
+            )));
+        }
+    }
     #[cfg(target_os = "linux")]
     {
         use std::os::fd::AsRawFd as _;
@@ -1166,7 +1179,21 @@ fn open_verified(path: &Path, root: &Path) -> Result<File> {
             return Err(AxiomError::OutsideWorkspace(actual));
         }
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    {
+        use nix::fcntl::{FcntlArg, fcntl};
+        let mut actual = PathBuf::new();
+        fcntl(&file, FcntlArg::F_GETPATH(&mut actual)).map_err(|error| {
+            AxiomError::Tool(format!(
+                "could not validate opened macOS workspace path: {error}"
+            ))
+        })?;
+        let actual = actual.canonicalize()?;
+        if !actual.starts_with(root) {
+            return Err(AxiomError::OutsideWorkspace(actual));
+        }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let actual = path.canonicalize()?;
         if !actual.starts_with(root) {
@@ -1212,13 +1239,25 @@ fn likely_generated(path: &Path, prefix: &[u8]) -> bool {
 }
 
 #[cfg(unix)]
-fn is_executable(metadata: &std::fs::Metadata) -> bool {
+fn is_executable(_path: &Path, metadata: &std::fs::Metadata) -> bool {
     use std::os::unix::fs::PermissionsExt as _;
     metadata.permissions().mode() & 0o111 != 0
 }
 
-#[cfg(not(unix))]
-fn is_executable(_metadata: &std::fs::Metadata) -> bool {
+#[cfg(windows)]
+fn is_executable(path: &Path, _metadata: &std::fs::Metadata) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "exe" | "com" | "bat" | "cmd" | "ps1"
+            )
+        })
+}
+
+#[cfg(not(any(unix, windows)))]
+fn is_executable(_path: &Path, _metadata: &std::fs::Metadata) -> bool {
     false
 }
 
@@ -1268,6 +1307,17 @@ pub struct ProcessManager {
     max_output_bytes: usize,
     slots: Arc<Semaphore>,
     next_sequence: Arc<AtomicU64>,
+    owner: Arc<ProcessManagerOwner>,
+}
+
+struct ProcessManagerOwner {
+    process_groups: crate::process_env::ProcessGroupRegistry,
+}
+
+impl Drop for ProcessManagerOwner {
+    fn drop(&mut self) {
+        self.process_groups.terminate_all();
+    }
 }
 
 impl Default for ProcessManager {
@@ -1279,11 +1329,23 @@ impl Default for ProcessManager {
 impl ProcessManager {
     #[must_use]
     pub fn new(max_output_bytes: usize) -> Self {
+        Self::with_process_group_registry(
+            max_output_bytes,
+            crate::process_env::ProcessGroupRegistry::default(),
+        )
+    }
+
+    #[must_use]
+    pub(crate) fn with_process_group_registry(
+        max_output_bytes: usize,
+        process_groups: crate::process_env::ProcessGroupRegistry,
+    ) -> Self {
         Self {
             tasks: Arc::new(Mutex::new(HashMap::new())),
             max_output_bytes: max_output_bytes.max(1024),
             slots: Arc::new(Semaphore::new(4)),
             next_sequence: Arc::new(AtomicU64::new(1)),
+            owner: Arc::new(ProcessManagerOwner { process_groups }),
         }
     }
 
@@ -1293,11 +1355,20 @@ impl ProcessManager {
         request: &ProcessRequest,
         cancellation: CancellationToken,
     ) -> Result<ProcessOutcome> {
-        self.run_inner(workspace, request, cancellation, None).await
+        Self::run_inner(
+            self.max_output_bytes,
+            self.owner.process_groups.clone(),
+            workspace,
+            request,
+            cancellation,
+            None,
+        )
+        .await
     }
 
     async fn run_inner(
-        &self,
+        max_output_bytes: usize,
+        process_groups: crate::process_env::ProcessGroupRegistry,
         workspace: &Workspace,
         request: &ProcessRequest,
         cancellation: CancellationToken,
@@ -1341,8 +1412,21 @@ impl ProcessManager {
         {
             command.process_group(0);
         }
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt as _;
+            const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+            command
+                .as_std_mut()
+                .creation_flags(CREATE_NEW_PROCESS_GROUP);
+        }
         let mut child = command.spawn()?;
         let pid = child.id();
+        // Registration is synchronous and happens before the first await after
+        // spawn. If this future is cancelled or the runtime is torn down from
+        // this point onward, the guard kills the complete, separately-created
+        // tool process group from Drop.
+        let mut process_group = process_groups.register(pid);
         let stdout = child
             .stdout
             .take()
@@ -1352,7 +1436,7 @@ impl ProcessManager {
             .take()
             .ok_or_else(|| AxiomError::Tool("missing stderr pipe".into()))?;
         let retained = Arc::new(AtomicUsize::new(0));
-        let max = self.max_output_bytes;
+        let max = max_output_bytes;
         let stdout_task = tokio::spawn(read_bounded(
             stdout,
             max,
@@ -1370,16 +1454,21 @@ impl ProcessManager {
         let timeout = Duration::from_secs(request.timeout_secs.clamp(1, 3600));
         let status = tokio::select! {
             () = cancellation.cancelled() => {
-                terminate_process_group(pid, &mut child).await;
+                terminate_process_group(pid, &mut child, &mut process_group).await;
                 return Err(AxiomError::Cancelled);
             }
             result = tokio::time::timeout(timeout, child.wait()) => if let Ok(status) = result {
                 status?
             } else {
-                terminate_process_group(pid, &mut child).await;
+                terminate_process_group(pid, &mut child, &mut process_group).await;
                 return Err(AxiomError::Tool(format!("process timed out after {} seconds", request.timeout_secs)));
             }
         };
+        // A process leader can exit successfully after daemonizing children.
+        // End the group before waiting for output pipes, both to close inherited
+        // descriptors and to ensure `run_command` never becomes an unmanaged
+        // background-process escape hatch.
+        process_group.terminate().await;
         let (mut stdout, stdout_truncated) = stdout_task
             .await
             .map_err(|error| AxiomError::Tool(error.to_string()))??;
@@ -1387,8 +1476,8 @@ impl ProcessManager {
             .await
             .map_err(|error| AxiomError::Tool(error.to_string()))??;
         let mut encoding_truncated = false;
-        stdout = truncate_utf8(&stdout, self.max_output_bytes, &mut encoding_truncated);
-        let remaining = self.max_output_bytes.saturating_sub(stdout.len());
+        stdout = truncate_utf8(&stdout, max_output_bytes, &mut encoding_truncated);
+        let remaining = max_output_bytes.saturating_sub(stdout.len());
         stderr = truncate_utf8(&stderr, remaining, &mut encoding_truncated);
         Ok(ProcessOutcome {
             exit_code: status.code(),
@@ -1439,12 +1528,22 @@ impl ProcessManager {
                 completion,
             },
         );
-        let manager = self.clone();
+        // Do not capture a ProcessManager clone here. The last registry/tool
+        // owner must be able to drop and synchronously terminate every group
+        // even while detached background bookkeeping is still alive.
+        let max_output_bytes = self.max_output_bytes;
+        let process_groups = self.owner.process_groups.clone();
         tokio::spawn(async move {
             let _permit = permit;
-            let outcome = manager
-                .run_inner(&workspace, &request, cancellation, Some(state.clone()))
-                .await;
+            let outcome = Self::run_inner(
+                max_output_bytes,
+                process_groups,
+                &workspace,
+                &request,
+                cancellation,
+                Some(state.clone()),
+            )
+            .await;
             let mut snapshot = state.lock().await;
             match outcome {
                 Ok(outcome) => {
@@ -1528,6 +1627,29 @@ impl ProcessManager {
             .map_err(|_| AxiomError::Tool("background task watcher closed".into()))?;
         }
         self.snapshot(id).await
+    }
+
+    /// Stop every managed background command and synchronously terminate all
+    /// process groups before awaiting task bookkeeping. This is safe to call at
+    /// ACP EOF while Tokio is still alive; guard Drop remains the fallback for
+    /// abrupt runtime teardown.
+    pub async fn shutdown(&self) {
+        let mut completions = {
+            let tasks = self.tasks.lock().await;
+            tasks
+                .values()
+                .map(|task| {
+                    task.cancellation.cancel();
+                    task.completion.clone()
+                })
+                .collect::<Vec<_>>()
+        };
+        self.owner.process_groups.terminate_all();
+        for completion in &mut completions {
+            if completion.borrow().as_str() == "running" {
+                let _ = tokio::time::timeout(Duration::from_secs(2), completion.changed()).await;
+            }
+        }
     }
 }
 
@@ -1630,79 +1752,46 @@ fn sandboxed_command(
 ) -> Result<Command> {
     #[cfg(target_os = "linux")]
     {
-        let bwrap = Path::new("/usr/bin/bwrap");
-        if !bwrap.is_file() {
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let inherited_path = std::env::var_os("PATH");
+        linux_sandboxed_command(
+            workspace,
+            cwd,
+            request,
+            home.as_deref(),
+            inherited_path.as_deref(),
+            &linuxbrew_prefixes(),
+        )
+    }
+
+    #[cfg(windows)]
+    {
+        let program = crate::process_env::resolve_windows_program(&request.program, cwd)
+            .ok_or_else(|| {
+                AxiomError::Tool(
+                    "program was not found in the sanitized Windows PATH or is not a file".into(),
+                )
+            })?;
+        if crate::process_env::windows_program_requires_shell(&program) {
             return Err(AxiomError::Tool(
-                "process isolation requires /usr/bin/bwrap on Linux".into(),
+                "Windows .cmd, .bat, and .ps1 programs require run_shell so their shell semantics are explicit and approval-gated"
+                    .into(),
             ));
         }
-        let mut command = Command::new(bwrap);
-        command.env_clear().args([
-            "--die-with-parent",
-            "--unshare-all",
-            "--clearenv",
-            "--ro-bind",
-            "/usr",
-            "/usr",
-            "--ro-bind",
-            "/etc",
-            "/etc",
-            "--proc",
-            "/proc",
-            "--dev",
-            "/dev",
-            "--tmpfs",
-            "/tmp",
-            "--dir",
-            "/tmp/axiom-home",
-            "--dir",
-            "/tmp/cargo-home",
-            "--dir",
-            "/opt",
-            "--dir",
-            "/opt/axiomcli",
-        ]);
-        for system_path in ["/bin", "/lib", "/lib64", "/sbin"] {
-            if Path::new(system_path).exists() {
-                command.args(["--ro-bind", system_path, system_path]);
-            }
-        }
-        command.args([
-            "--bind",
-            &workspace.root().to_string_lossy(),
-            &workspace.root().to_string_lossy(),
-            "--chdir",
-            &cwd.to_string_lossy(),
-            "--setenv",
-            "HOME",
-            "/tmp/axiom-home",
-            "--setenv",
-            "CARGO_HOME",
-            "/tmp/cargo-home",
-            "--setenv",
-            "PATH",
-            "/opt/axiomcli/cargo-bin:/usr/bin:/bin",
-            "--setenv",
-            "LANG",
-            "C.UTF-8",
-        ]);
-        bind_development_cache(&mut command);
+        let mut command = Command::new(program);
+        crate::process_env::apply_sanitized_environment(&mut command);
+        command.args(&request.args).current_dir(cwd);
         for (key, value) in &request.env {
-            command.args(["--setenv", key, value]);
+            command.env(key, value);
         }
-        command.arg("--").arg(&request.program).args(&request.args);
         Ok(command)
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(all(not(target_os = "linux"), not(windows)))]
     {
         let mut command = Command::new(&request.program);
-        command
-            .args(&request.args)
-            .current_dir(cwd)
-            .env_clear()
-            .env("PATH", "/usr/bin:/bin")
-            .env("LANG", "C.UTF-8");
+        crate::process_env::apply_sanitized_environment(&mut command);
+        command.args(&request.args).current_dir(cwd);
         for (key, value) in &request.env {
             command.env(key, value);
         }
@@ -1711,9 +1800,380 @@ fn sandboxed_command(
 }
 
 #[cfg(target_os = "linux")]
-fn bind_development_cache(command: &mut Command) {
-    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
-        return;
+const MAX_LINUX_PATH_INPUTS: usize = 128;
+#[cfg(target_os = "linux")]
+const MAX_LINUX_TOOLCHAIN_PATHS: usize = 24;
+#[cfg(target_os = "linux")]
+const MAX_LINUX_TOOLCHAIN_MOUNTS: usize = 12;
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LinuxToolchainKind {
+    Nvm,
+    Pyenv,
+    Local,
+    Volta,
+    Bun,
+    Deno,
+    Pnpm,
+    Linuxbrew,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Debug)]
+struct LinuxToolchainMatch {
+    root: PathBuf,
+    kind: LinuxToolchainKind,
+    environment_root: Option<PathBuf>,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Debug, Default)]
+struct LinuxToolchainPlan {
+    path_entries: Vec<PathBuf>,
+    mounts: Vec<PathBuf>,
+    environment: BTreeMap<&'static str, PathBuf>,
+}
+
+#[cfg(target_os = "linux")]
+fn linuxbrew_prefixes() -> Vec<PathBuf> {
+    ["/home/linuxbrew/.linuxbrew", "/linuxbrew/.linuxbrew"]
+        .into_iter()
+        .map(PathBuf::from)
+        .collect()
+}
+
+#[cfg(target_os = "linux")]
+fn linux_sandboxed_command(
+    workspace: &Workspace,
+    cwd: &Path,
+    request: &ProcessRequest,
+    home: Option<&Path>,
+    inherited_path: Option<&std::ffi::OsStr>,
+    brew_prefixes: &[PathBuf],
+) -> Result<Command> {
+    let bwrap = Path::new("/usr/bin/bwrap");
+    if !bwrap.is_file() {
+        return Err(AxiomError::Tool(
+            "process isolation requires /usr/bin/bwrap on Linux".into(),
+        ));
+    }
+    let toolchains = discover_linux_toolchains(home, inherited_path, brew_prefixes);
+    let mut command = Command::new(bwrap);
+    command.env_clear().args([
+        "--die-with-parent",
+        "--unshare-all",
+        "--clearenv",
+        "--ro-bind",
+        "/usr",
+        "/usr",
+        "--ro-bind",
+        "/etc",
+        "/etc",
+        "--proc",
+        "/proc",
+        "--dev",
+        "/dev",
+        "--tmpfs",
+        "/tmp",
+        "--dir",
+        "/tmp/axiom-home",
+        "--dir",
+        "/tmp/cargo-home",
+        "--dir",
+        "/opt",
+        "--dir",
+        "/opt/axiomcli",
+    ]);
+    for system_path in ["/bin", "/lib", "/lib64", "/sbin"] {
+        if Path::new(system_path).exists() {
+            command.args(["--ro-bind", system_path, system_path]);
+        }
+    }
+    bind_linux_toolchains(&mut command, &toolchains.mounts);
+    let cargo_bin_bound = bind_development_cache(&mut command, home);
+    command
+        .arg("--bind")
+        .arg(workspace.root())
+        .arg(workspace.root())
+        .arg("--chdir")
+        .arg(cwd)
+        .args(["--setenv", "HOME", "/tmp/axiom-home"])
+        .args(["--setenv", "CARGO_HOME", "/tmp/cargo-home"])
+        .args(["--setenv", "LANG", "C.UTF-8"]);
+    for (key, value) in &toolchains.environment {
+        command.arg("--setenv").arg(key).arg(value);
+    }
+    let path = linux_sandbox_path(&toolchains.path_entries, cargo_bin_bound);
+    command.arg("--setenv").arg("PATH").arg(path);
+    for (key, value) in &request.env {
+        command.args(["--setenv", key, value]);
+    }
+    command.arg("--").arg(&request.program).args(&request.args);
+    Ok(command)
+}
+
+#[cfg(target_os = "linux")]
+fn discover_linux_toolchains(
+    home: Option<&Path>,
+    inherited_path: Option<&std::ffi::OsStr>,
+    brew_prefixes: &[PathBuf],
+) -> LinuxToolchainPlan {
+    let home = home
+        .filter(|path| path.is_absolute())
+        .and_then(|path| path.canonicalize().ok())
+        .filter(|path| path.is_dir());
+    let brew_prefixes = brew_prefixes
+        .iter()
+        .filter_map(|path| canonical_brew_prefix(path))
+        .collect::<Vec<_>>();
+    let mut plan = LinuxToolchainPlan::default();
+    let Some(inherited_path) = inherited_path else {
+        return plan;
+    };
+    let mut seen_paths = HashSet::new();
+    for candidate in std::env::split_paths(inherited_path).take(MAX_LINUX_PATH_INPUTS) {
+        if plan.path_entries.len() >= MAX_LINUX_TOOLCHAIN_PATHS
+            || !candidate.is_absolute()
+            || std::env::join_paths([candidate.as_path()]).is_err()
+            || !is_executable_directory(&candidate)
+        {
+            continue;
+        }
+        let Ok(candidate) = candidate.canonicalize() else {
+            continue;
+        };
+        if !seen_paths.insert(candidate.clone()) {
+            continue;
+        }
+        let Some(toolchain) =
+            classify_linux_toolchain(&candidate, home.as_deref(), brew_prefixes.as_slice())
+        else {
+            continue;
+        };
+        if !admit_linux_toolchain_mount(&mut plan.mounts, &toolchain.root) {
+            continue;
+        }
+        if let Some((key, value)) = linux_toolchain_environment(&toolchain) {
+            plan.environment.entry(key).or_insert(value);
+        }
+        plan.path_entries.push(candidate);
+    }
+    plan.mounts.sort();
+    plan
+}
+
+#[cfg(target_os = "linux")]
+fn canonical_brew_prefix(path: &Path) -> Option<PathBuf> {
+    if !path.is_absolute() {
+        return None;
+    }
+    let canonical = path.canonicalize().ok()?;
+    // A configured prefix must remain a specific installation tree. This
+    // rejects a replaced prefix symlink that would otherwise expose `/`.
+    (canonical.is_dir()
+        && canonical.components().count() >= 3
+        && canonical.starts_with(path)
+        && canonical != Path::new("/usr")
+        && canonical != Path::new("/etc"))
+    .then_some(canonical)
+}
+
+#[cfg(target_os = "linux")]
+fn classify_linux_toolchain(
+    candidate: &Path,
+    home: Option<&Path>,
+    brew_prefixes: &[PathBuf],
+) -> Option<LinuxToolchainMatch> {
+    if let Some(home) = home {
+        let roots = [
+            (".nvm", LinuxToolchainKind::Nvm),
+            (".pyenv", LinuxToolchainKind::Pyenv),
+            (".local", LinuxToolchainKind::Local),
+            (".volta", LinuxToolchainKind::Volta),
+            (".bun", LinuxToolchainKind::Bun),
+            (".deno", LinuxToolchainKind::Deno),
+            (".pnpm", LinuxToolchainKind::Pnpm),
+            (".pnpm-global", LinuxToolchainKind::Pnpm),
+            (".linuxbrew", LinuxToolchainKind::Linuxbrew),
+        ];
+        for (name, kind) in roots {
+            let declared = home.join(name);
+            let Ok(root) = declared.canonicalize() else {
+                continue;
+            };
+            if !root.is_dir() || root == home || !root.starts_with(home) {
+                continue;
+            }
+            if let Some(toolchain) = match_home_toolchain(candidate, &root, kind) {
+                return Some(toolchain);
+            }
+        }
+    }
+    for root in brew_prefixes {
+        if candidate == root.join("bin") || candidate == root.join("sbin") {
+            return Some(LinuxToolchainMatch {
+                root: root.clone(),
+                kind: LinuxToolchainKind::Linuxbrew,
+                environment_root: Some(root.clone()),
+            });
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn match_home_toolchain(
+    candidate: &Path,
+    root: &Path,
+    kind: LinuxToolchainKind,
+) -> Option<LinuxToolchainMatch> {
+    let relative = candidate.strip_prefix(root).ok()?;
+    let components = relative.components().collect::<Vec<_>>();
+    let is_bin = relative.file_name().is_some_and(|name| name == "bin");
+    let mut matched_kind = kind;
+    let (coherent_root, environment_root) = match kind {
+        LinuxToolchainKind::Nvm
+            if is_bin
+                && components.len() == 4
+                && components[0].as_os_str() == "versions"
+                && components[1].as_os_str() == "node" =>
+        {
+            (candidate.parent()?.to_path_buf(), None)
+        }
+        LinuxToolchainKind::Pyenv
+            if relative == Path::new("bin") || relative == Path::new("shims") =>
+        {
+            (root.to_path_buf(), Some(root.to_path_buf()))
+        }
+        LinuxToolchainKind::Pyenv
+            if is_bin && components.len() >= 3 && components[0].as_os_str() == "versions" =>
+        {
+            (candidate.parent()?.to_path_buf(), None)
+        }
+        // Keep generic user binaries narrow: `.local/share` can contain
+        // credentials and unrelated application data. Explicit tool roots
+        // such as pnpm are mounted independently below.
+        LinuxToolchainKind::Local if relative == Path::new("bin") => {
+            (candidate.to_path_buf(), None)
+        }
+        LinuxToolchainKind::Local if relative == Path::new("share/pnpm") => {
+            matched_kind = LinuxToolchainKind::Pnpm;
+            (candidate.to_path_buf(), Some(candidate.to_path_buf()))
+        }
+        LinuxToolchainKind::Volta | LinuxToolchainKind::Bun | LinuxToolchainKind::Deno
+            if relative == Path::new("bin") =>
+        {
+            (root.to_path_buf(), Some(root.to_path_buf()))
+        }
+        LinuxToolchainKind::Pnpm
+            if relative == Path::new("bin") || relative.as_os_str().is_empty() =>
+        {
+            (root.to_path_buf(), Some(candidate.to_path_buf()))
+        }
+        LinuxToolchainKind::Linuxbrew
+            if relative == Path::new("bin") || relative == Path::new("sbin") =>
+        {
+            (root.to_path_buf(), Some(root.to_path_buf()))
+        }
+        _ => return None,
+    };
+    Some(LinuxToolchainMatch {
+        root: coherent_root,
+        kind: matched_kind,
+        environment_root,
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn linux_toolchain_environment(toolchain: &LinuxToolchainMatch) -> Option<(&'static str, PathBuf)> {
+    let root = toolchain.environment_root.clone()?;
+    let key = match toolchain.kind {
+        LinuxToolchainKind::Pyenv => "PYENV_ROOT",
+        LinuxToolchainKind::Volta => "VOLTA_HOME",
+        LinuxToolchainKind::Bun => "BUN_INSTALL",
+        LinuxToolchainKind::Deno => "DENO_INSTALL",
+        LinuxToolchainKind::Pnpm => "PNPM_HOME",
+        LinuxToolchainKind::Linuxbrew => "HOMEBREW_PREFIX",
+        LinuxToolchainKind::Nvm | LinuxToolchainKind::Local => return None,
+    };
+    Some((key, root))
+}
+
+#[cfg(target_os = "linux")]
+fn admit_linux_toolchain_mount(mounts: &mut Vec<PathBuf>, root: &Path) -> bool {
+    if !root.is_absolute() || !is_executable_directory(root) {
+        return false;
+    }
+    if mounts.iter().any(|mount| root.starts_with(mount)) {
+        return true;
+    }
+    let replaces_descendant = mounts.iter().any(|mount| mount.starts_with(root));
+    if mounts.len() >= MAX_LINUX_TOOLCHAIN_MOUNTS && !replaces_descendant {
+        return false;
+    }
+    mounts.retain(|mount| !mount.starts_with(root));
+    mounts.push(root.to_path_buf());
+    true
+}
+
+#[cfg(target_os = "linux")]
+fn is_executable_directory(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    std::fs::metadata(path)
+        .is_ok_and(|metadata| metadata.is_dir() && metadata.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(target_os = "linux")]
+fn bind_linux_toolchains(command: &mut Command, mounts: &[PathBuf]) {
+    let mut created = HashSet::from([
+        PathBuf::from("/tmp"),
+        PathBuf::from("/opt"),
+        PathBuf::from("/opt/axiomcli"),
+    ]);
+    for source in mounts {
+        let mut parents = source
+            .ancestors()
+            .skip(1)
+            .filter(|path| *path != Path::new("/"))
+            .map(Path::to_path_buf)
+            .collect::<Vec<_>>();
+        parents.reverse();
+        for parent in parents {
+            if created.insert(parent.clone()) {
+                command.arg("--dir").arg(parent);
+            }
+        }
+        command.arg("--ro-bind").arg(source).arg(source);
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_sandbox_path(toolchain_paths: &[PathBuf], cargo_bin_bound: bool) -> std::ffi::OsString {
+    let mut paths = toolchain_paths.to_vec();
+    if cargo_bin_bound {
+        push_unique_linux_path(&mut paths, PathBuf::from("/opt/axiomcli/cargo-bin"));
+    }
+    for system in ["/usr/local/bin", "/usr/bin", "/bin"] {
+        if Path::new(system).is_dir() {
+            push_unique_linux_path(&mut paths, PathBuf::from(system));
+        }
+    }
+    std::env::join_paths(paths).unwrap_or_else(|_| std::ffi::OsString::from("/usr/bin:/bin"))
+}
+
+#[cfg(target_os = "linux")]
+fn push_unique_linux_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
+    if !paths.contains(&path) {
+        paths.push(path);
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn bind_development_cache(command: &mut Command, home: Option<&Path>) -> bool {
+    let Some(home) = home.filter(|path| path.is_absolute()) else {
+        return false;
     };
     let cargo = home.join(".cargo");
     let mounts = [
@@ -1725,28 +2185,43 @@ fn bind_development_cache(command: &mut Command) {
         ),
         (cargo.join("git"), PathBuf::from("/tmp/cargo-home/git")),
     ];
+    let mut cargo_bin_bound = false;
     for (source, target) in mounts {
         if source.exists() {
-            command.arg("--ro-bind").arg(source).arg(target);
+            command.arg("--ro-bind").arg(source).arg(&target);
+            cargo_bin_bound |= target == Path::new("/opt/axiomcli/cargo-bin");
         }
     }
     if home.join(".rustup").exists() {
         command.args(["--setenv", "RUSTUP_HOME", "/opt/axiomcli/rustup"]);
     }
+    cargo_bin_bound
 }
 
-async fn terminate_process_group(pid: Option<u32>, child: &mut tokio::process::Child) {
+async fn terminate_process_group(
+    _pid: Option<u32>,
+    child: &mut tokio::process::Child,
+    process_group: &mut crate::process_env::ProcessGroupGuard,
+) {
     #[cfg(unix)]
-    if let Some(pid) = pid.and_then(|pid| i32::try_from(pid).ok()) {
-        let _ = nix::sys::signal::killpg(
-            nix::unistd::Pid::from_raw(pid),
-            nix::sys::signal::Signal::SIGTERM,
-        );
-        tokio::time::sleep(Duration::from_millis(150)).await;
-        let _ = nix::sys::signal::killpg(
-            nix::unistd::Pid::from_raw(pid),
-            nix::sys::signal::Signal::SIGKILL,
-        );
+    process_group.terminate().await;
+    #[cfg(windows)]
+    if let Some(pid) = _pid {
+        let taskkill = std::env::var_os("SystemRoot")
+            .map(PathBuf::from)
+            .map(|root| root.join("System32").join("taskkill.exe"))
+            .filter(|path| path.is_file())
+            .unwrap_or_else(|| PathBuf::from("taskkill.exe"));
+        let mut termination = Command::new(taskkill);
+        let pid = pid.to_string();
+        crate::process_env::apply_sanitized_environment(&mut termination);
+        termination
+            .args(["/PID", pid.as_str(), "/T", "/F"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true);
+        let _ = tokio::time::timeout(Duration::from_secs(2), termination.status()).await;
     }
     let _ = child.kill().await;
     let _ = child.wait().await;
@@ -2220,6 +2695,169 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
+    fn make_executable(path: &Path) {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let mut permissions = std::fs::metadata(path).expect("metadata").permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(path, permissions).expect("executable mode");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_toolchain_discovery_maps_only_allowlisted_roots_and_deduplicates() {
+        let fixture = tempdir().expect("fixture");
+        let home = fixture.path().join("home");
+        let brew = fixture.path().join("linuxbrew");
+        let nvm_bin = home.join(".nvm/versions/node/v22.1.0/bin");
+        let pyenv_shims = home.join(".pyenv/shims");
+        let local_bin = home.join(".local/bin");
+        let pnpm = home.join(".local/share/pnpm");
+        let volta_bin = home.join(".volta/bin");
+        let bun_bin = home.join(".bun/bin");
+        let deno_bin = home.join(".deno/bin");
+        let brew_bin = brew.join("bin");
+        let arbitrary = home.join("custom/bin");
+        for directory in [
+            &nvm_bin,
+            &pyenv_shims,
+            &local_bin,
+            &pnpm,
+            &volta_bin,
+            &bun_bin,
+            &deno_bin,
+            &brew_bin,
+            &arbitrary,
+        ] {
+            std::fs::create_dir_all(directory).expect("toolchain directory");
+        }
+        let inherited = std::env::join_paths([
+            arbitrary.as_path(),
+            nvm_bin.as_path(),
+            nvm_bin.as_path(),
+            pyenv_shims.as_path(),
+            pnpm.as_path(),
+            local_bin.as_path(),
+            volta_bin.as_path(),
+            bun_bin.as_path(),
+            deno_bin.as_path(),
+            brew_bin.as_path(),
+            Path::new("relative/bin"),
+        ])
+        .expect("PATH fixture");
+
+        let plan =
+            discover_linux_toolchains(Some(&home), Some(&inherited), std::slice::from_ref(&brew));
+        let canonical = |path: &Path| path.canonicalize().expect("canonical fixture");
+        assert_eq!(
+            plan.path_entries,
+            [
+                &nvm_bin,
+                &pyenv_shims,
+                &pnpm,
+                &local_bin,
+                &volta_bin,
+                &bun_bin,
+                &deno_bin,
+                &brew_bin,
+            ]
+            .into_iter()
+            .map(|path| canonical(path))
+            .collect::<Vec<_>>()
+        );
+        assert!(!plan.path_entries.contains(&canonical(&arbitrary)));
+        assert!(plan.mounts.contains(&canonical(&local_bin)));
+        assert!(plan.mounts.contains(&canonical(&pnpm)));
+        assert!(!plan.mounts.contains(&canonical(&home.join(".local"))));
+        assert!(
+            plan.mounts
+                .contains(&canonical(&home.join(".nvm/versions/node/v22.1.0")))
+        );
+        assert_eq!(
+            plan.environment.get("VOLTA_HOME"),
+            Some(&canonical(&home.join(".volta")))
+        );
+        assert_eq!(plan.environment.get("PNPM_HOME"), Some(&canonical(&pnpm)));
+        assert!(plan.path_entries.len() <= MAX_LINUX_TOOLCHAIN_PATHS);
+        assert!(plan.mounts.len() <= MAX_LINUX_TOOLCHAIN_MOUNTS);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_toolchain_discovery_rejects_symlink_escape_and_non_executable_path() {
+        use std::os::unix::fs::{PermissionsExt as _, symlink};
+
+        let fixture = tempdir().expect("fixture");
+        let home = fixture.path().join("home");
+        let outside = fixture.path().join("outside");
+        std::fs::create_dir_all(&home).expect("home");
+        std::fs::create_dir_all(outside.join("bin")).expect("outside");
+        symlink(&outside, home.join(".volta")).expect("escaping toolchain symlink");
+        let locked = home.join(".bun/bin");
+        std::fs::create_dir_all(&locked).expect("locked directory");
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o600))
+            .expect("locked mode");
+        let inherited =
+            std::env::join_paths([outside.join("bin"), locked]).expect("synthetic inherited PATH");
+
+        let plan = discover_linux_toolchains(Some(&home), Some(&inherited), &[]);
+        assert!(plan.path_entries.is_empty());
+        assert!(plan.mounts.is_empty());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn linux_sandbox_resolves_relative_symlink_from_discovered_toolchain() {
+        use std::os::unix::fs::symlink;
+
+        if !Path::new("/usr/bin/bwrap").is_file() {
+            return;
+        }
+        let fixture = tempdir().expect("fixture");
+        let home = fixture.path().join("home");
+        let version = home.join(".nvm/versions/node/v-test");
+        let bin = version.join("bin");
+        let libexec = version.join("libexec");
+        std::fs::create_dir_all(&bin).expect("bin");
+        std::fs::create_dir_all(&libexec).expect("libexec");
+        let executable = libexec.join("axiom-relative-tool");
+        std::fs::write(
+            &executable,
+            "#!/bin/sh\nprintf '%s|relative-tool-ok' \"$HOME\"\n",
+        )
+        .expect("tool");
+        make_executable(&executable);
+        symlink(
+            "../libexec/axiom-relative-tool",
+            bin.join("axiom-relative-tool"),
+        )
+        .expect("relative symlink");
+        let inherited = std::env::join_paths([bin.as_path()]).expect("PATH");
+        let root = tempdir().expect("workspace");
+        let workspace = Workspace::new(root.path()).expect("workspace");
+        let request = process_request("axiom-relative-tool", &[]);
+        let mut command = linux_sandboxed_command(
+            &workspace,
+            workspace.root(),
+            &request,
+            Some(&home),
+            Some(&inherited),
+            &[],
+        )
+        .expect("sandbox command");
+        let output = command.output().await.expect("sandbox process");
+        assert!(
+            output.status.success(),
+            "bwrap stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            "/tmp/axiom-home|relative-tool-ok"
+        );
+    }
+
     #[tokio::test]
     async fn process_output_is_bounded() {
         let root = tempdir().expect("root");
@@ -2280,7 +2918,13 @@ mod tests {
         let host_read = manager
             .run(
                 &workspace,
-                &process_request("sh", &["-c", "test ! -e /home && test ! -e /root"]),
+                &process_request(
+                    "sh",
+                    &[
+                        "-c",
+                        "test ! -e /home/*/.ssh && test ! -e /home/*/.config && test ! -e /root/.ssh && test ! -e /root/.config",
+                    ],
+                ),
                 CancellationToken::new(),
             )
             .await
@@ -2353,7 +2997,7 @@ mod tests {
         );
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     #[tokio::test]
     async fn cancellation_terminates_the_process_tree() {
         let root = tempdir().expect("root");
@@ -2373,6 +3017,139 @@ mod tests {
         assert!(matches!(run.await, Err(AxiomError::Cancelled)));
         tokio::time::sleep(Duration::from_millis(1100)).await;
         assert!(!root.path().join("child-survived").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn successful_leader_exit_terminates_lingering_process_group_descendants() {
+        let root = tempdir().expect("root");
+        let workspace = Workspace::new(root.path()).expect("workspace");
+        let registry = crate::process_env::ProcessGroupRegistry::default();
+        let manager = ProcessManager::with_process_group_registry(4096, registry.clone());
+        let outcome = manager
+            .run(
+                &workspace,
+                &process_request(
+                    "sh",
+                    &["-c", "(sleep 1; printf survived > leader-child-survived) &"],
+                ),
+                CancellationToken::new(),
+            )
+            .await
+            .expect("leader exits successfully");
+
+        assert_eq!(outcome.exit_code, Some(0));
+        assert_eq!(registry.active_count(), 0);
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        assert!(!root.path().join("leader-child-survived").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dropping_last_manager_owner_kills_separate_background_process_group() {
+        let root = tempdir().expect("root");
+        let workspace = Workspace::new(root.path()).expect("workspace");
+        let registry = crate::process_env::ProcessGroupRegistry::default();
+        let manager = ProcessManager::with_process_group_registry(4096, registry.clone());
+        manager
+            .start(
+                workspace,
+                process_request(
+                    "sh",
+                    &[
+                        "-c",
+                        "(sleep 1; printf survived > dropped-manager-child-survived) & wait",
+                    ],
+                ),
+                CancellationToken::new(),
+                "test".into(),
+            )
+            .await
+            .expect("background process");
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while registry.active_count() == 0 && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(registry.active_count(), 1);
+        drop(manager);
+        assert_eq!(registry.active_count(), 0);
+
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        assert!(!root.path().join("dropped-manager-child-survived").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn owner_drop_before_background_spawn_closes_registry_and_kills_late_group() {
+        let root = tempdir().expect("root");
+        let workspace = Workspace::new(root.path()).expect("workspace");
+        let registry = crate::process_env::ProcessGroupRegistry::default();
+        let manager = ProcessManager::with_process_group_registry(4096, registry.clone());
+        manager
+            .start(
+                workspace,
+                process_request(
+                    "sh",
+                    &[
+                        "-c",
+                        "(sleep 1; printf survived > late-spawn-child-survived) & wait",
+                    ],
+                ),
+                CancellationToken::new(),
+                "test".into(),
+            )
+            .await
+            .expect("schedule background process");
+
+        // Tokio never polls a newly spawned task inline on a current-thread
+        // runtime. Drop the sole manager owner before the task can spawn and
+        // register its child, then let the late registration race execute.
+        assert_eq!(registry.active_count(), 0);
+        drop(manager);
+        assert!(registry.is_closed());
+        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+
+        assert_eq!(registry.active_count(), 0);
+        assert!(!root.path().join("late-spawn-child-survived").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn aborting_process_future_drops_guard_and_kills_its_group() {
+        let root = tempdir().expect("root");
+        let workspace = Workspace::new(root.path()).expect("workspace");
+        let registry = crate::process_env::ProcessGroupRegistry::default();
+        let manager = ProcessManager::with_process_group_registry(4096, registry.clone());
+        let run_manager = manager.clone();
+        let run = tokio::spawn(async move {
+            run_manager
+                .run(
+                    &workspace,
+                    &process_request(
+                        "sh",
+                        &[
+                            "-c",
+                            "(sleep 1; printf survived > aborted-future-child-survived) & wait",
+                        ],
+                    ),
+                    CancellationToken::new(),
+                )
+                .await
+        });
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while registry.active_count() == 0 && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(registry.active_count(), 1);
+        run.abort();
+        assert!(run.await.expect_err("task was aborted").is_cancelled());
+        assert_eq!(registry.active_count(), 0);
+
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        assert!(!root.path().join("aborted-future-child-survived").exists());
     }
 
     #[cfg(target_os = "linux")]

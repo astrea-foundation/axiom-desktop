@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fmt,
+    future::Future,
     path::PathBuf,
     str::FromStr,
     sync::{
@@ -16,6 +17,10 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::{AxiomError, Result};
+
+/// Maximum number of journal events projected before cooperative async
+/// restore returns control to Tokio.
+const RESTORE_COOPERATION_INTERVAL: usize = 128;
 
 macro_rules! typed_uuid {
     ($name:ident) => {
@@ -132,25 +137,68 @@ pub enum Origin {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PermissionProfile {
-    Plan,
+    None,
+    Web,
     Observe,
     #[default]
     Confirm,
-    Workspace,
-    Autonomous,
+    FullAccess,
+}
+
+impl PermissionProfile {
+    #[must_use]
+    pub fn for_desktop_agent(settings: &axiom_acp_extension::DesktopAgentSettings) -> Self {
+        if !settings.enabled {
+            return Self::Web;
+        }
+        match settings.permission {
+            axiom_acp_extension::DesktopAgentPermission::ApproveCommands => Self::Confirm,
+            axiom_acp_extension::DesktopAgentPermission::FullAccess => Self::FullAccess,
+        }
+    }
+    pub const ALL: [Self; 5] = [
+        Self::None,
+        Self::Web,
+        Self::Observe,
+        Self::Confirm,
+        Self::FullAccess,
+    ];
+
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::None => "None",
+            Self::Web => "Web",
+            Self::Observe => "Observe",
+            Self::Confirm => "Confirm",
+            Self::FullAccess => "Full Access",
+        }
+    }
+
+    #[must_use]
+    pub const fn description(self) -> &'static str {
+        match self {
+            Self::None => "Chat without giving the model any tools",
+            Self::Web => "Allow only web search and page fetching",
+            Self::Observe => "Allow read-only workspace inspection",
+            Self::Confirm => "Allow every tool after one confirmation per use",
+            Self::FullAccess => "Run every available tool without confirmation",
+        }
+    }
 }
 
 /// Provider-neutral reasoning preference for a session. Reasoning is always
-/// explicit; legacy journals that stored `auto` deserialize as `medium`. The
-/// direct secure Axiom transport validates the selected value against model
-/// catalog capabilities before sending it.
+/// explicit. The direct secure Axiom transport validates the selected value
+/// against model catalog capabilities before sending it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ThinkingLevel {
+    ProviderDefault,
+    Enabled,
+    Disabled,
     Minimal,
     Low,
     #[default]
-    #[serde(alias = "auto")]
     Medium,
     High,
     ExtraHigh,
@@ -159,6 +207,9 @@ pub enum ThinkingLevel {
 impl fmt::Display for ThinkingLevel {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
+            Self::ProviderDefault => "provider_default",
+            Self::Enabled => "enabled",
+            Self::Disabled => "disabled",
             Self::Minimal => "minimal",
             Self::Low => "low",
             Self::Medium => "medium",
@@ -173,11 +224,14 @@ impl FromStr for ThinkingLevel {
 
     fn from_str(input: &str) -> Result<Self> {
         match input {
+            "provider_default" => Ok(Self::ProviderDefault),
+            "enabled" | "on" => Ok(Self::Enabled),
+            "disabled" | "off" => Ok(Self::Disabled),
             "minimal" => Ok(Self::Minimal),
             "low" => Ok(Self::Low),
             "medium" => Ok(Self::Medium),
             "high" => Ok(Self::High),
-            "xhigh" | "extra-high" | "extra_high" => Ok(Self::ExtraHigh),
+            "xhigh" => Ok(Self::ExtraHigh),
             _ => Err(AxiomError::Config(format!(
                 "unknown thinking level `{input}`"
             ))),
@@ -188,11 +242,11 @@ impl FromStr for ThinkingLevel {
 impl fmt::Display for PermissionProfile {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
-            Self::Plan => "plan",
+            Self::None => "none",
+            Self::Web => "web",
             Self::Observe => "observe",
             Self::Confirm => "confirm",
-            Self::Workspace => "workspace",
-            Self::Autonomous => "autonomous",
+            Self::FullAccess => "full_access",
         })
     }
 }
@@ -202,11 +256,11 @@ impl FromStr for PermissionProfile {
 
     fn from_str(input: &str) -> Result<Self> {
         match input {
-            "plan" => Ok(Self::Plan),
+            "none" => Ok(Self::None),
+            "web" => Ok(Self::Web),
             "observe" => Ok(Self::Observe),
             "confirm" => Ok(Self::Confirm),
-            "workspace" => Ok(Self::Workspace),
-            "autonomous" => Ok(Self::Autonomous),
+            "full_access" => Ok(Self::FullAccess),
             _ => Err(AxiomError::Config(format!(
                 "unknown permission profile `{input}`"
             ))),
@@ -243,6 +297,8 @@ pub enum AppCommand {
         session_id: SessionId,
         turn_id: TurnId,
         text: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        attachments: Vec<axiom_inference::PromptAttachment>,
     },
     CancelTurn {
         session_id: SessionId,
@@ -261,9 +317,19 @@ pub enum AppCommand {
         session_id: SessionId,
         profile: PermissionProfile,
     },
+    ConfigureDesktopAgent {
+        session_id: SessionId,
+        settings: axiom_acp_extension::DesktopAgentSettings,
+    },
     ChangeModel {
         session_id: SessionId,
         model: String,
+    },
+    ChangeModelSettings {
+        session_id: SessionId,
+        model: String,
+        thinking: ThinkingLevel,
+        reset_security: bool,
     },
     ChangeThinkingLevel {
         session_id: SessionId,
@@ -290,7 +356,9 @@ impl AppCommand {
             | Self::FinishTurn { session_id, .. }
             | Self::FailTurn { session_id, .. }
             | Self::ChangePermissionProfile { session_id, .. }
+            | Self::ConfigureDesktopAgent { session_id, .. }
             | Self::ChangeModel { session_id, .. }
+            | Self::ChangeModelSettings { session_id, .. }
             | Self::ChangeThinkingLevel { session_id, .. }
             | Self::RecordContextCompaction { session_id, .. }
             | Self::CloseSession { session_id } => session_id,
@@ -311,6 +379,11 @@ pub struct CommandEnvelope {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum AppEvent {
+    SteeringApplied {
+        turn_id: TurnId,
+        client_item_id: String,
+        text: String,
+    },
     SessionCreated {
         cwd: PathBuf,
         origin: Origin,
@@ -324,6 +397,8 @@ pub enum AppEvent {
     PromptAccepted {
         turn_id: TurnId,
         text: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        attachments: Vec<axiom_inference::PromptAttachment>,
     },
     TurnStarted {
         turn_id: TurnId,
@@ -339,6 +414,12 @@ pub enum AppEvent {
     UsageUpdated {
         input_tokens: u64,
         output_tokens: u64,
+    },
+    ContextUsageUpdated {
+        usage: axiom_acp_extension::ContextUsage,
+    },
+    RequestUsageUpdated {
+        usage: axiom_inference::RequestUsage,
     },
     ProgressUpdated {
         message: String,
@@ -358,17 +439,14 @@ pub enum AppEvent {
         request_id: String,
         explanation: String,
         /// Serialized normalized policy effect. Kept provider-neutral so the
-        /// application event journal does not depend on presentation strings.
-        #[serde(default)]
+        /// application runtime does not depend on presentation strings.
         effect: serde_json::Value,
         /// Stable response choices that were actually offered for this request.
-        #[serde(default)]
         choices: Vec<String>,
     },
     PermissionResolved {
         request_id: String,
         allowed: bool,
-        #[serde(default)]
         choice: Option<String>,
     },
     ToolStarted {
@@ -391,6 +469,7 @@ pub enum AppEvent {
         call_id: String,
         diff: String,
         truncated: bool,
+        files: Vec<FileDiff>,
     },
     QuestionAsked {
         question_id: String,
@@ -429,6 +508,9 @@ pub enum AppEvent {
     PermissionProfileChanged {
         profile: PermissionProfile,
     },
+    DesktopAgentConfigured {
+        settings: axiom_acp_extension::DesktopAgentSettings,
+    },
     ModelChanged {
         model: String,
     },
@@ -446,6 +528,12 @@ pub enum AppEvent {
     SecurityStatusChanged {
         state: SecurityStatus,
     },
+    /// Every provider response contributing to this completed turn carried
+    /// terminal cryptographic proof. Preflight attestation is represented by
+    /// `SecurityStatusChanged` and is intentionally insufficient here.
+    ResponseVerified {
+        turn_id: TurnId,
+    },
     WarningRaised {
         message: String,
     },
@@ -460,6 +548,16 @@ pub enum AppEvent {
         message: String,
     },
     SessionClosed,
+}
+
+/// Presentation-neutral before/after file content for clients that support
+/// native diff rendering. The unified diff remains alongside this structure
+/// for the TUI.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileDiff {
+    pub path: PathBuf,
+    pub old_text: Option<String>,
+    pub new_text: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -506,6 +604,8 @@ pub enum SecurityStatus {
     Verifying,
     UnattestedDevelopment,
     Verified,
+    Degraded,
+    Outdated,
     Failed,
 }
 
@@ -514,9 +614,7 @@ pub struct EventEnvelope {
     pub schema_version: u32,
     pub sequence: u64,
     pub occurred_at: DateTime<Utc>,
-    #[serde(default)]
     pub correlation_id: CorrelationId,
-    #[serde(default)]
     pub origin: Origin,
     pub session_id: SessionId,
     pub event: AppEvent,
@@ -636,12 +734,10 @@ impl Kernel {
                 session_id,
                 turn_id,
                 text,
+                attachments,
             } => {
-                if text.trim().is_empty() {
-                    return Err(AxiomError::InvalidTransition(
-                        "prompt cannot be empty".into(),
-                    ));
-                }
+                axiom_inference::validate_prompt(&text, &attachments)
+                    .map_err(|error| AxiomError::InvalidTransition(error.to_string()))?;
                 let session = self.session_mut(&session_id)?;
                 if session.lifecycle != SessionLifecycle::Ready {
                     return Err(AxiomError::InvalidTransition(format!(
@@ -660,6 +756,7 @@ impl Kernel {
                     AppEvent::PromptAccepted {
                         turn_id: turn_id.clone(),
                         text,
+                        attachments,
                     },
                     AppEvent::TurnStarted { turn_id },
                 ]
@@ -689,6 +786,20 @@ impl Kernel {
                     message,
                 }]
             }
+            AppCommand::ConfigureDesktopAgent {
+                session_id,
+                settings,
+            } => {
+                let session = self.session_mut(&session_id)?;
+                if session.lifecycle != SessionLifecycle::Ready {
+                    return Err(AxiomError::InvalidTransition(
+                        "Agent settings may change only while the thread is idle".into(),
+                    ));
+                }
+                session.cwd = PathBuf::from(&settings.working_directory);
+                session.profile = PermissionProfile::for_desktop_agent(&settings);
+                vec![AppEvent::DesktopAgentConfigured { settings }]
+            }
             AppCommand::ChangePermissionProfile {
                 session_id,
                 profile,
@@ -715,6 +826,36 @@ impl Kernel {
                     ));
                 }
                 vec![AppEvent::ModelChanged { model }]
+            }
+            AppCommand::ChangeModelSettings {
+                session_id,
+                model,
+                thinking,
+                reset_security,
+            } => {
+                if model.trim().is_empty() || model.chars().any(char::is_whitespace) {
+                    return Err(AxiomError::InvalidTransition(
+                        "model ID must be a non-empty value without whitespace".into(),
+                    ));
+                }
+                let session = self.session_mut(&session_id)?;
+                if session.lifecycle != SessionLifecycle::Ready {
+                    return Err(AxiomError::InvalidTransition(
+                        "model settings may change only while the session is ready".into(),
+                    ));
+                }
+                let mut events = vec![AppEvent::ThinkingLevelChanged { level: thinking }];
+                if reset_security {
+                    events.push(AppEvent::SecurityStatusChanged {
+                        state: SecurityStatus::Unverified,
+                    });
+                }
+                // Keep the user-visible result focused on the action they
+                // took. Front ends apply this atomic batch in order, so the
+                // model event deliberately follows reconciled thinking and
+                // security invalidation and owns the final status message.
+                events.push(AppEvent::ModelChanged { model });
+                events
             }
             AppCommand::ChangeThinkingLevel { session_id, level } => {
                 let session = self.session_mut(&session_id)?;
@@ -778,6 +919,15 @@ impl Kernel {
     ) -> Result<EventEnvelope> {
         let session = self.session_mut(&session_id)?;
         match &event {
+            AppEvent::SteeringApplied { turn_id, .. } => {
+                if session.active_turn.as_ref() != Some(turn_id)
+                    || session.lifecycle != SessionLifecycle::Running
+                {
+                    return Err(AxiomError::InvalidTransition(
+                        "steering requires the active running turn".into(),
+                    ));
+                }
+            }
             AppEvent::PermissionRequired { request_id, .. } => {
                 if session.lifecycle != SessionLifecycle::Running {
                     return Err(AxiomError::InvalidTransition(
@@ -853,33 +1003,17 @@ impl Kernel {
     }
 
     pub fn restore_from_events(&mut self, events: &[EventEnvelope]) -> Result<SessionState> {
-        let first = events.first().ok_or_else(|| {
-            AxiomError::InvalidTransition("cannot restore an empty event stream".into())
-        })?;
-        let id = first.session_id.clone();
-        let mut state: Option<SessionState> = None;
+        let mut projection = RestoreProjection::new(events)?;
         for envelope in events {
-            if envelope.session_id != id {
-                return Err(AxiomError::InvalidTransition(
-                    "restore stream contains multiple sessions".into(),
-                ));
-            }
-            self.next_sequence = self.next_sequence.max(envelope.sequence);
-            replay_event(&mut state, &id, &envelope.event)?;
+            projection.replay(envelope)?;
         }
-        let mut state = state.ok_or_else(|| {
-            AxiomError::InvalidTransition("restore stream has no session creation".into())
-        })?;
-        // A close event records that the previous front end shut down; it does
-        // not tombstone a durable session. Unknown in-flight work is never
-        // replayed. Every successfully restored session resumes ready and the
-        // journal retains interrupted evidence for the recovery surface.
-        state.lifecycle = SessionLifecycle::Ready;
-        state.active_turn = None;
-        state.pending_permission = None;
-        state.pending_question = None;
-        self.sessions.insert(id, state.clone());
-        Ok(state)
+        Ok(self.install_restore(projection.finish()?))
+    }
+
+    fn install_restore(&mut self, restored: CompletedRestore) -> SessionState {
+        self.next_sequence = self.next_sequence.max(restored.max_sequence);
+        self.sessions.insert(restored.id, restored.state.clone());
+        restored.state
     }
 
     fn session_mut(&mut self, id: &SessionId) -> Result<&mut SessionState> {
@@ -919,7 +1053,7 @@ impl Kernel {
     ) -> EventEnvelope {
         self.next_sequence += 1;
         EventEnvelope {
-            schema_version: 3,
+            schema_version: 1,
             sequence: self.next_sequence,
             occurred_at: self.services.now(),
             correlation_id,
@@ -1022,6 +1156,12 @@ fn replay_event(state: &mut Option<SessionState>, id: &SessionId, event: &AppEve
                 session.pending_question = None;
             }
         }
+        AppEvent::DesktopAgentConfigured { settings } => {
+            if let Some(session) = state.as_mut() {
+                session.cwd = PathBuf::from(&settings.working_directory);
+                session.profile = PermissionProfile::for_desktop_agent(settings);
+            }
+        }
         AppEvent::PermissionProfileChanged { profile } => {
             if let Some(session) = state.as_mut() {
                 session.profile = *profile;
@@ -1035,6 +1175,60 @@ fn replay_event(state: &mut Option<SessionState>, id: &SessionId, event: &AppEve
         _ => {}
     }
     Ok(())
+}
+
+struct RestoreProjection {
+    id: SessionId,
+    state: Option<SessionState>,
+    max_sequence: u64,
+}
+
+struct CompletedRestore {
+    id: SessionId,
+    state: SessionState,
+    max_sequence: u64,
+}
+
+impl RestoreProjection {
+    fn new(events: &[EventEnvelope]) -> Result<Self> {
+        let first = events.first().ok_or_else(|| {
+            AxiomError::InvalidTransition("cannot restore an empty event stream".into())
+        })?;
+        Ok(Self {
+            id: first.session_id.clone(),
+            state: None,
+            max_sequence: 0,
+        })
+    }
+
+    fn replay(&mut self, envelope: &EventEnvelope) -> Result<()> {
+        if envelope.session_id != self.id {
+            return Err(AxiomError::InvalidTransition(
+                "restore stream contains multiple sessions".into(),
+            ));
+        }
+        self.max_sequence = self.max_sequence.max(envelope.sequence);
+        replay_event(&mut self.state, &self.id, &envelope.event)
+    }
+
+    fn finish(self) -> Result<CompletedRestore> {
+        let mut state = self.state.ok_or_else(|| {
+            AxiomError::InvalidTransition("restore stream has no session creation".into())
+        })?;
+        // A close event records that the previous front end shut down; it does
+        // not tombstone a durable session. Unknown in-flight work is never
+        // replayed. Every successfully restored session resumes ready and the
+        // durable turn records retain interrupted evidence for recovery.
+        state.lifecycle = SessionLifecycle::Ready;
+        state.active_turn = None;
+        state.pending_permission = None;
+        state.pending_question = None;
+        Ok(CompletedRestore {
+            id: self.id,
+            state,
+            max_sequence: self.max_sequence,
+        })
+    }
 }
 
 #[derive(Clone)]
@@ -1118,7 +1312,32 @@ impl Runtime {
     }
 
     pub async fn restore(&self, events: &[EventEnvelope]) -> Result<SessionState> {
-        self.kernel.lock().await.restore_from_events(events)
+        self.restore_with_cooperation(events, tokio::task::yield_now)
+            .await
+    }
+
+    async fn restore_with_cooperation<Cooperate, Cooperation>(
+        &self,
+        events: &[EventEnvelope],
+        mut cooperate: Cooperate,
+    ) -> Result<SessionState>
+    where
+        Cooperate: FnMut() -> Cooperation,
+        Cooperation: Future<Output = ()>,
+    {
+        // Projection is deliberately independent of the shared kernel. Other
+        // sessions remain dispatchable while a large journal is validated and
+        // replayed; only the final state/sequence installation takes the lock.
+        let mut projection = RestoreProjection::new(events)?;
+        for (index, envelope) in events.iter().enumerate() {
+            projection.replay(envelope)?;
+            if (index + 1).is_multiple_of(RESTORE_COOPERATION_INTERVAL) {
+                cooperate().await;
+            }
+        }
+        let restored = projection.finish()?;
+        let mut kernel = self.kernel.lock().await;
+        Ok(kernel.install_restore(restored))
     }
 
     #[must_use]
@@ -1129,21 +1348,27 @@ impl Runtime {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
     use chrono::TimeZone as _;
+    use tokio::sync::Notify;
 
     use super::*;
 
     #[test]
-    fn legacy_auto_thinking_deserializes_as_explicit_medium() {
+    fn thinking_levels_are_explicit() {
         assert_eq!(
-            serde_json::from_str::<ThinkingLevel>("\"auto\"").expect("legacy thinking"),
+            serde_json::from_str::<ThinkingLevel>("\"medium\"").expect("thinking"),
             ThinkingLevel::Medium
         );
         assert_eq!(
             serde_json::to_string(&ThinkingLevel::Medium).expect("explicit thinking"),
             "\"medium\""
         );
+        assert!(serde_json::from_str::<ThinkingLevel>("\"auto\"").is_err());
         assert!(ThinkingLevel::from_str("auto").is_err());
+        assert!(ThinkingLevel::from_str("extra-high").is_err());
+        assert!(ThinkingLevel::from_str("extra_high").is_err());
     }
 
     fn services() -> Arc<DeterministicServices> {
@@ -1160,6 +1385,21 @@ mod tests {
             origin: Origin::Test,
             cancellation: CancellationToken::new(),
             command,
+        }
+    }
+
+    fn journal_event(session_id: &SessionId, sequence: u64, event: AppEvent) -> EventEnvelope {
+        EventEnvelope {
+            schema_version: 1,
+            sequence,
+            occurred_at: Utc
+                .with_ymd_and_hms(2026, 8, 22, 0, 0, 0)
+                .single()
+                .expect("event time"),
+            correlation_id: CorrelationId::from_uuid(Uuid::from_u128(u128::from(sequence))),
+            origin: Origin::Test,
+            session_id: session_id.clone(),
+            event,
         }
     }
 
@@ -1203,7 +1443,7 @@ mod tests {
     }
 
     #[test]
-    fn session_setting_and_compaction_commands_are_validated_and_journaled() {
+    fn session_setting_and_compaction_commands_are_validated_and_emitted() {
         let mut kernel = Kernel::with_services(services());
         let session_id = create(&mut kernel);
         assert!(
@@ -1284,6 +1524,7 @@ mod tests {
         kernel
             .apply(envelope(
                 AppCommand::SubmitPrompt {
+                    attachments: Vec::new(),
                     session_id: session_id.clone(),
                     turn_id: turn_id.clone(),
                     text: "hello".into(),
@@ -1295,6 +1536,7 @@ mod tests {
             kernel
                 .apply(envelope(
                     AppCommand::SubmitPrompt {
+                        attachments: Vec::new(),
                         session_id: session_id.clone(),
                         turn_id: TurnId::new(),
                         text: "overlap".into()
@@ -1376,6 +1618,7 @@ mod tests {
             kernel
                 .apply(envelope(
                     AppCommand::SubmitPrompt {
+                        attachments: Vec::new(),
                         session_id,
                         turn_id: TurnId::new(),
                         text: "after close".into()
@@ -1430,6 +1673,7 @@ mod tests {
                 }
                 let command = match candidate {
                     Candidate::Submit => AppCommand::SubmitPrompt {
+                        attachments: Vec::new(),
                         session_id: session.clone(),
                         turn_id: TurnId::new(),
                         text: "next".into(),
@@ -1484,6 +1728,7 @@ mod tests {
         kernel
             .apply(envelope(
                 AppCommand::SubmitPrompt {
+                    attachments: Vec::new(),
                     session_id: session.clone(),
                     turn_id: turn,
                     text: "work".into(),
@@ -1542,7 +1787,7 @@ mod tests {
             let mut kernel = Kernel::with_services(services());
             let session = create(&mut kernel);
             let terminal_turn = TurnId::from_uuid(Uuid::from_u128(600));
-            kernel.apply(envelope(AppCommand::SubmitPrompt { session_id: session.clone(), turn_id: terminal_turn.clone(), text: "work".into() }, 601)).expect("submit");
+            kernel.apply(envelope(AppCommand::SubmitPrompt {attachments: Vec::new(),  session_id: session.clone(), turn_id: terminal_turn.clone(), text: "work".into() }, 601)).expect("submit");
             let terminal = if cancel {
                 AppCommand::CancelTurn { session_id: session.clone(), turn_id: terminal_turn.clone() }
             } else {
@@ -1555,7 +1800,7 @@ mod tests {
             };
             proptest::prop_assert!(kernel.apply(envelope(replay, 603)).is_err());
 
-            let rerun = AppCommand::SubmitPrompt {
+            let rerun = AppCommand::SubmitPrompt {attachments: Vec::new(),
                 session_id: session,
                 turn_id: terminal_turn,
                 text: "attempt to revive a terminal turn".into(),
@@ -1606,6 +1851,7 @@ mod tests {
                 kernel
                     .apply(envelope(
                         AppCommand::SubmitPrompt {
+                            attachments: Vec::new(),
                             session_id: session.clone(),
                             turn_id: turn.clone(),
                             text: "inspect".into(),
@@ -1638,6 +1884,7 @@ mod tests {
         let events = source
             .apply(envelope(
                 AppCommand::SubmitPrompt {
+                    attachments: Vec::new(),
                     session_id: session.clone(),
                     turn_id: turn,
                     text: "work".into(),
@@ -1682,5 +1929,110 @@ mod tests {
         .await
         .expect("not blocked")
         .expect("dispatch");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn runtime_restore_is_cooperative_unlocked_and_equivalent_to_kernel_replay() {
+        let restored_id = SessionId::from_uuid(Uuid::from_u128(900));
+        let mut events = vec![journal_event(
+            &restored_id,
+            1,
+            AppEvent::SessionCreated {
+                cwd: PathBuf::from("/tmp/large-restore"),
+                origin: Origin::Test,
+                profile: PermissionProfile::Observe,
+            },
+        )];
+        for sequence in 2..=RESTORE_COOPERATION_INTERVAL as u64 * 4 + 1 {
+            events.push(journal_event(
+                &restored_id,
+                sequence,
+                AppEvent::PermissionProfileChanged {
+                    profile: if sequence.is_multiple_of(2) {
+                        PermissionProfile::Confirm
+                    } else {
+                        PermissionProfile::Observe
+                    },
+                },
+            ));
+        }
+        let max_sequence = events.last().expect("last event").sequence;
+        let mut expected_kernel = Kernel::with_services(services());
+        let expected = expected_kernel
+            .restore_from_events(&events)
+            .expect("reference restore");
+
+        let runtime = Runtime::with_services(8, services());
+        let other_id = runtime.session_id();
+        runtime
+            .dispatch(AppCommand::CreateSession {
+                session_id: other_id.clone(),
+                cwd: PathBuf::from("/tmp/other-session"),
+                origin: Origin::Test,
+                profile: PermissionProfile::Observe,
+            })
+            .await
+            .expect("create other session");
+
+        let reached_checkpoint = Arc::new(Notify::new());
+        let release_checkpoint = Arc::new(Notify::new());
+        let first_checkpoint = Arc::new(AtomicBool::new(true));
+        let restore_runtime = runtime.clone();
+        let restore_events = Arc::new(events);
+        let restore_task = {
+            let reached_checkpoint = reached_checkpoint.clone();
+            let release_checkpoint = release_checkpoint.clone();
+            let first_checkpoint = first_checkpoint.clone();
+            tokio::spawn(async move {
+                restore_runtime
+                    .restore_with_cooperation(restore_events.as_slice(), move || {
+                        let is_first = first_checkpoint.swap(false, Ordering::SeqCst);
+                        let reached_checkpoint = reached_checkpoint.clone();
+                        let release_checkpoint = release_checkpoint.clone();
+                        async move {
+                            if is_first {
+                                reached_checkpoint.notify_one();
+                                release_checkpoint.notified().await;
+                            } else {
+                                tokio::task::yield_now().await;
+                            }
+                        }
+                    })
+                    .await
+            })
+        };
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            reached_checkpoint.notified(),
+        )
+        .await
+        .expect("restore reached cooperative checkpoint");
+        assert!(!restore_task.is_finished());
+        tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            runtime.dispatch(AppCommand::ChangePermissionProfile {
+                session_id: other_id,
+                profile: PermissionProfile::Confirm,
+            }),
+        )
+        .await
+        .expect("kernel remains responsive during projection")
+        .expect("other session dispatch");
+
+        release_checkpoint.notify_one();
+        let restored = restore_task
+            .await
+            .expect("restore task join")
+            .expect("runtime restore");
+        assert_eq!(restored, expected);
+        let next = runtime
+            .dispatch(AppCommand::ChangePermissionProfile {
+                session_id: restored_id,
+                profile: PermissionProfile::FullAccess,
+            })
+            .await
+            .expect("dispatch after restore");
+        assert_eq!(next[0].sequence, max_sequence + 1);
     }
 }

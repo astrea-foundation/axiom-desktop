@@ -1,12 +1,19 @@
-# Axiom desktop application
+# Axiom Desktop
 
-This directory is reserved for the Electron desktop application. The Electron
-main process will supervise Rust sidecars; renderer processes will not receive
-raw secrets, wallet keys, or direct process-spawning authority.
+Electron presentation and native integration for AxiomCLI over ACP. The native
+runtime owns authentication, local conversations, tools and provider E2EE.
 
-The Agent surface will control `axiomcli acp`. The Proxy surface will control
-the standalone `axiom-proxy` process through a separate versioned lifecycle
-protocol. The desktop implementation is intentionally left to its dedicated
-design and implementation effort.
+From the repository root:
 
-See [`../../docs/adr/0009-monorepo-and-secure-client-boundaries.md`](../../docs/adr/0009-monorepo-and-secure-client-boundaries.md).
+```sh
+pnpm install --frozen-lockfile
+pnpm desktop
+```
+
+- [Desktop behavior](../../docs/desktop.md)
+- [Development, capture and design conventions](../../docs/development.md)
+- [Install and update](../../docs/installing-desktop.md)
+- [Packaging and releases](../../docs/releasing.md)
+- [ACP contract](../../docs/acp-compatibility.md)
+
+The historical redesign handoff is [archived](../../docs/archive/desktop-redesign.md).

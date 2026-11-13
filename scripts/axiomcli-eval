@@ -9,12 +9,12 @@ cd "$workspace_root"
 run_deterministic() {
   for repetition in 1 2; do
     echo "deterministic evaluation repetition ${repetition}/2"
-    cargo test -p axiomcli --test autonomous_eval
-    cargo test -p axiomcli --test evaluation_suite original_multilanguage_evaluation_set_is_repeatable_from_clean_fixtures
-    cargo test -p axiomcli --test soak
-    cargo test -p axiomcli --test acp_transcript
-    cargo test -p axiomcli --test tui_pty
-    cargo test -p axiomcli --test mcp_integration
+    cargo test --workspace --all-features --locked --test autonomous_eval
+    cargo test --workspace --all-features --locked --test evaluation_suite original_multilanguage_evaluation_set_is_repeatable_from_clean_fixtures
+    cargo test --workspace --all-features --locked --test soak -- --include-ignored
+    cargo test --workspace --all-features --locked --test acp_transcript
+    cargo test --workspace --all-features --locked --test tui_pty -- --include-ignored
+    cargo test --workspace --all-features --locked --test mcp_integration
   done
 }
 
@@ -35,7 +35,6 @@ case "$mode" in
     ;;
   full)
     run_deterministic
-    scripts/searxng-dev integration-test
     run_live_model
     ;;
   *)

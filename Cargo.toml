@@ -3,14 +3,19 @@ resolver = "3"
 members = [
     "apps/axiomcli",
     "apps/axiom-proxy",
+    "crates/axiom-acp-extension",
     "crates/axiom-inference",
+    "crates/axiom-installation",
     "crates/axiom-openai-compat",
     "crates/axiom-secure-client",
 ]
+exclude = ["vendor/agent-client-protocol-2.0.0"]
 default-members = [
     "apps/axiomcli",
     "apps/axiom-proxy",
+    "crates/axiom-acp-extension",
     "crates/axiom-inference",
+    "crates/axiom-installation",
     "crates/axiom-openai-compat",
     "crates/axiom-secure-client",
 ]
@@ -21,9 +26,17 @@ license = "Apache-2.0"
 rust-version = "1.88"
 
 [workspace.dependencies]
+axiom-installation = { version = "0.1.0", path = "crates/axiom-installation" }
+axiom-acp-extension = { version = "0.2.0", path = "crates/axiom-acp-extension" }
 axiom-inference = { version = "0.1.0", path = "crates/axiom-inference" }
 axiom-openai-compat = { version = "0.1.0", path = "crates/axiom-openai-compat" }
 axiom-secure-client = { version = "0.1.0", path = "crates/axiom-secure-client" }
+
+[patch.crates-io]
+# ACP Rust SDK 2.0.0 can overflow small macOS worker stacks when a client
+# registers a deep typed-handler chain. Keep the published 2.0.0 API and apply
+# only upstream rust-sdk PR #306 until the fix ships in a crates.io release.
+agent-client-protocol = { path = "vendor/agent-client-protocol-2.0.0" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
