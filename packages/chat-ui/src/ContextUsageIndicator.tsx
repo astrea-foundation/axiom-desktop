@@ -31,7 +31,7 @@ export function contextUsagePresentation({ usage, contextWindowTokens, autoCompa
   const usageLabel = used === null ? "No usage reported yet" : `${tokens.format(used)} tokens`;
   const breakdownLabel = used !== null && usage ? `${tokens.format(usage.inputTokens)} input, ${tokens.format(usage.outputTokens)} output` : null;
   const capacityLabel = capacity === null ? "Context size unavailable" : `${tokens.format(capacity)} token context window`;
-  const percentageLabel = percentage === null ? "—" : `${percent.format(percentage)}% used`;
+  const percentageLabel = percentage === null ? "Not available" : `${percent.format(percentage)}% used`;
   const compactionLabel = threshold === null ? "Compaction threshold unavailable"
     : `Auto-compacts at ${tokens.format(threshold)} tokens (${percent.format(threshold / capacity! * 100)}%)`;
   return { percentage, usageLabel, breakdownLabel, capacityLabel, percentageLabel, compactionLabel };
@@ -126,7 +126,7 @@ export function ContextUsageIndicator(props: ContextUsageIndicatorProps) {
             <circle cx="16" cy="16" r="13" strokeWidth="2.5" stroke="currentColor" pathLength="100" strokeDasharray={`${fill} 100`} strokeLinecap={fill > 0 ? "round" : "butt"} />
           </svg>
           <span aria-hidden="true" className="text-[9px] font-medium tabular-nums">
-            {view.percentage === null ? "—" : Math.floor(view.percentage)}
+            {view.percentage === null ? "N/A" : Math.floor(view.percentage)}
           </span>
         </span>
       </button>
